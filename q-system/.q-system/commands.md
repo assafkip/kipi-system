@@ -57,16 +57,15 @@
 **Reactive mode (screenshot shared):**
 1. Identify person, role, company from screenshot
 2. Check CRM for history
-3. Generate 2-3 comments (Insight / Connector / Question styles)
+3. Generate 1 best comment (system picks the best style based on pool and context - no decision paralysis. Founder can ask for alternatives.)
 4. Log to tracker after founder picks one
 
 ### Relationship Progression Engine
 
-The system manages prospect relationships. The founder only:
+The system fully manages prospect relationships. The founder only:
 1. Copy-pastes engagement actions from the hitlist
-2. Reports what happened ("commented on X's post", "Y accepted")
 
-Everything else is automated: logging, status updates, next-step generation, follow-up scheduling.
+Everything else is automated: action detection, logging, status updates, next-step generation, follow-up scheduling. The system auto-detects comments posted, DMs sent, connection requests sent, accepts, replies, and scheduled calls. The founder NEVER needs to report what happened.
 
 **Relationship ladder:**
 ```
@@ -95,7 +94,7 @@ STAGE 5: DEMO/CALL
 ## Morning Briefing (`/q-morning`)
 
 **Step 0 - Session bootstrap:**
-- 0a: Checkpoint previous session + clean stale working memory (>48h in `memory/working/`). Read `memory/last-handoff.md` for prior session context. **MID-MORNING RESUME:** If the handoff note says "morning routine split", skip to Step 11 using the collected data from the handoff note.
+- 0a: Checkpoint previous session + clean stale working memory (>48h in `memory/working/`). Read `memory/last-handoff.md` for prior session context. **MISSED WRAP DETECTION (A2):** If `memory/last-handoff.md` is missing or older than 24h AND there were canonical file changes yesterday (check mtimes), a wrap was missed. Run a lightweight retroactive wrap: count yesterday's completed Actions, note unfinished items, log to progress.md with "[Auto-recovered from missed wrap]". No guilt. **MID-MORNING RESUME:** If the handoff note says "morning routine split", skip to Step 11 using the collected data from the handoff note.
 - 0b: Missed debrief detection (check calendar for unlogged meetings)
 - 0c: Load canonical state (`/q-begin`)
 - 0d: Load voice skill
@@ -113,9 +112,9 @@ STAGE 5: DEMO/CALL
 - Steps 6-7 (compliance checks) can be skipped if context is low. Step 11 is the deliverable.
 
 **Step 1 - Parallel data pull:**
-- Calendar: Pull events for the current week
-- Email: Search last 48 hours, cross-ref against contacts
-- CRM: Pull overdue/due-today actions, pipeline follow-ups
+- Calendar: Pull events for the current week. **NEW EVENT DETECTION (B4):** Cross-ref attendee names against CRM contacts. If a calendar event exists with a known prospect AND no matching action/tracker entry: auto-detect as newly scheduled meeting. Auto-create Meeting Prep action. Founder NEVER needs to report "scheduled a call with [name]."
+- Email: Search last 48 hours (inbox AND sent). Cross-ref against contacts. **EMAIL CONVERSATION DETECTION (C4):** Check sent folder for outbound emails to prospects. Cross-ref inbox for replies. Auto-detect email conversations. For sent emails with no reply after 7+ days: note for channel death tracking.
+- CRM: Pull overdue/due-today actions, pipeline follow-ups. **STALE ACTION CLEANUP (D5):** Auto-move any Actions with Due > 7 days past to Priority: Someday. Surface count in briefing without guilt.
 - Pipeline: Check investor/prospect pipeline status
 
 **Step 1.5 - Warm intro matching:**
@@ -152,7 +151,7 @@ STAGE 5: DEMO/CALL
 - Prospect engagement tracking
 
 **Step 5.9 - Lead sourcing (daily):**
-- Phase 1: Run scrapers across platforms
+- Phase 1: Run scrapers across platforms. **AUTO-ROTATION (C1):** Read `memory/morning-state.md` field `last_sourcing_day` (1-6). Auto-increment to next day. Founder NEVER needs to remember which queries to run.
 - Phase 2: Read and qualify every result (no keyword filter)
 - Phase 3: Generate personalized outreach
 - Phase 4: Create CRM entries
@@ -168,9 +167,17 @@ STAGE 5: DEMO/CALL
 
 **Step 8 - Output briefing**
 
+The briefing includes:
+- **START HERE:** Single highest-value, lowest-friction task
+- **TODAY'S FOCUS (CT1):** Top 3-5 prioritized items across all sections. "If you only have 30 minutes, do these." Mix of Quick Wins + at most 1 Deep Focus. Replaces scanning 15+ sections.
+- Calendar, meeting prep, actions due, pipeline, engagement hitlist, content, etc.
+- **Prospect temperature** includes relationship stage inline: `[Name] (score: 9, ↑) [Stage: Conversation] [DP: Outreach Sent]` - no cross-referencing needed (C2)
+
 **Step 9 - Push actions to CRM**
 
 **Step 10 - Update daily checklists**
+
+**Step 10.5 - Auto-sync CRM (A3):** Push all morning routine changes to CRM in one batch. Founder NEVER needs to manually sync after mornings.
 
 **Step 11 - MANDATORY: Generate daily schedule JSON + build HTML + open in browser**
 
@@ -196,7 +203,7 @@ The template (`daily-schedule-template.html`) is LOCKED. All CSS/JS/rendering is
 4. **Canonical drift check** (2 min): Any insights not yet in canonical files?
 5. **Tomorrow preview** (2 min): Calendar + prep status.
 
-After wrap: auto-checkpoint, promote `memory/working/` to `memory/weekly/` if relevant, clean stale working memory, run `/q-handoff`.
+After wrap (all automatic, founder does nothing): auto-checkpoint, promote `memory/working/` to `memory/weekly/` if relevant, clean stale working memory. **Then auto-run `/q-handoff`** (the founder NEVER needs to run /q-handoff separately after /q-wrap. Always chained automatically).
 
 ---
 

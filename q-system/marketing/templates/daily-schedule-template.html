@@ -83,6 +83,29 @@
   body.filter-people .action-item:not([data-energy="people"]) { opacity: 0.15; pointer-events: none; }
   body.filter-admin .action-item:not([data-energy="admin"]) { opacity: 0.15; pointer-events: none; }
 
+  /* ===== TODAY'S FOCUS ===== */
+  .today-focus {
+    background: rgba(52,211,153,0.06);
+    border: 1px solid rgba(52,211,153,0.18);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .today-focus-title {
+    font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: #34d399; margin-bottom: 10px;
+  }
+  .today-focus-item {
+    display: flex; align-items: center; gap: 10px; padding: 6px 0;
+    font-size: 13px; color: #d0d0d8;
+  }
+  .today-focus-item .tf-num {
+    font-weight: 800; color: #34d399; min-width: 20px;
+  }
+  .today-focus-item .tf-time {
+    font-size: 11px; color: #9ca3af; margin-left: auto; white-space: nowrap;
+  }
+
   /* ===== CALL BANNER ===== */
   .call-banner {
     background: rgba(239,68,68,0.08);
@@ -414,6 +437,21 @@ function renderSection(section, sectionIdx) {
   return div;
 }
 
+function renderTodayFocus(items) {
+  if (!items || !items.length) return null;
+  const div = el('div', { class: 'today-focus' });
+  div.appendChild(el('div', { class: 'today-focus-title' }, "TODAY'S FOCUS - if you only have 30 min, do these"));
+  items.forEach((item, i) => {
+    const row = el('div', { class: 'today-focus-item' },
+      el('span', { class: 'tf-num' }, String(i + 1)),
+      el('span', {}, item.text),
+      el('span', { class: 'tf-time' }, item.time || '')
+    );
+    div.appendChild(row);
+  });
+  return div;
+}
+
 function renderCallBanners(calls) {
   if (!calls || !calls.length) return null;
   const frag = document.createDocumentFragment();
@@ -524,6 +562,10 @@ function render() {
     energySel.appendChild(btn);
   });
   container.appendChild(energySel);
+
+  // Today's Focus
+  const focus = renderTodayFocus(d.todayFocus);
+  if (focus) container.appendChild(focus);
 
   // Call banners
   const banners = renderCallBanners(d.callBanners);

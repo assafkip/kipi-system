@@ -190,7 +190,7 @@ When the founder pastes a conversation transcript, meeting notes, or summary:
 ### Social post screenshot shared
 When the founder shares a social media post screenshot:
 1. Identify the person and their role
-2. Generate 2-3 comment suggestions
+2. Generate 1 best comment (system picks the best style based on pool and context - no decision paralysis. Founder can ask for alternatives if needed.)
 3. Offer to log the engagement
 
 ## Decision Origin Tagging (ENFORCED)
@@ -217,9 +217,9 @@ During Step 0c, read `last-handoff.md` for prior session context.
 
 ## Session Continuity
 
-Run `/q-handoff` before ending sessions or when context is running low. Generates a handoff note at `q-system/memory/last-handoff.md` for the next session.
+Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief check, canonical drift, tomorrow preview). `/q-wrap` auto-chains into `/q-handoff` - the founder never needs to run both separately.
 
-Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief check, canonical drift, tomorrow preview).
+`/q-morning` auto-detects missed wraps and runs a lightweight retroactive wrap. No action needed from the founder.
 
 ## Standalone Mode (Graceful Degradation)
 

@@ -30,6 +30,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 | `dateDisplay` | string | YES | Human-readable date for header |
 | `generated` | string | YES | Timestamp string for header |
 | `effort` | string | NO | Yesterday's effort summary (no "Yesterday:" prefix, template adds it) |
+| `todayFocus` | array | NO | Top 3-5 prioritized items for today (CT1). Shows as a prominent focus section before all other content. Each item: `{"text": "Reply to hot prospect DM", "time": "5 min", "energy": "quickwin"}` |
 | `callBanners` | array | NO | Today's calls/meetings shown as prominent banners |
 | `meetingPrep` | array | NO | Meeting prep boxes shown below banners |
 | `sections` | array | YES | Main content sections (see below) |
