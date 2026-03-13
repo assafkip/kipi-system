@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Daily Schedule - {{DATE}}</title>
+<title>Daily Schedule</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: #0a0a12;
     color: #d0d0d8;
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
@@ -20,8 +20,17 @@
   }
 
   /* ===== HEADER ===== */
-  .header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-  .header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .header {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
   .brand { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: #6366f1; text-transform: uppercase; }
   .generated { font-size: 11px; color: #3a3a48; }
   .date-title { font-size: 26px; font-weight: 800; color: #fff; margin-bottom: 4px; }
@@ -39,233 +48,505 @@
   .effort-bar strong { color: #5eead4; }
 
   /* ===== STICKY PROGRESS ===== */
-  .progress-bar {
-    position: sticky;
-    top: 0;
-    z-index: 100;
+  .progress-container {
+    position: sticky; top: 0; z-index: 100;
     background: #0a0a12;
+    padding: 10px 0 8px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
-    padding: 8px 0;
+  }
+  .progress-top {
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;
+  }
+  .progress-summary { font-size: 13px; color: #a0a0b0; font-weight: 600; }
+  .progress-summary span { color: #fff; }
+  .progress-bar-bg { width: 100%; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #10b981, #34d399); border-radius: 3px; transition: width 0.4s ease; width: 0%; }
+
+  /* ===== ENERGY MODE SELECTOR ===== */
+  .energy-selector {
+    display: flex; gap: 8px; margin: 14px 0 18px; flex-wrap: wrap;
+  }
+  .energy-btn {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+    padding: 6px 14px; border-radius: 20px; cursor: pointer; border: none;
+    transition: all 0.2s; background: rgba(255,255,255,0.04); color: #6b7280;
+  }
+  .energy-btn:hover { background: rgba(255,255,255,0.08); }
+  .energy-btn.active { color: #fff; }
+  .energy-btn[data-energy="all"].active { background: rgba(99,102,241,0.2); color: #818cf8; }
+  .energy-btn[data-energy="quickwin"].active { background: rgba(16,185,129,0.2); color: #34d399; }
+  .energy-btn[data-energy="deepfocus"].active { background: rgba(139,92,246,0.2); color: #a78bfa; }
+  .energy-btn[data-energy="people"].active { background: rgba(59,130,246,0.2); color: #60a5fa; }
+  .energy-btn[data-energy="admin"].active { background: rgba(107,114,128,0.2); color: #9ca3af; }
+  body.filter-quickwin .action-item:not([data-energy="quickwin"]) { opacity: 0.15; pointer-events: none; }
+  body.filter-deepfocus .action-item:not([data-energy="deepfocus"]) { opacity: 0.15; pointer-events: none; }
+  body.filter-people .action-item:not([data-energy="people"]) { opacity: 0.15; pointer-events: none; }
+  body.filter-admin .action-item:not([data-energy="admin"]) { opacity: 0.15; pointer-events: none; }
+
+  /* ===== CALL BANNER ===== */
+  .call-banner {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.2);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .call-banner-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+  }
+  .call-time { font-size: 14px; font-weight: 800; color: #ef4444; min-width: 80px; }
+  .call-info { font-size: 13px; color: #d0d0d8; }
+  .call-info strong { color: #fff; }
+  .call-detail { font-size: 12px; color: #9ca3af; line-height: 1.6; margin-top: 4px; }
+  .call-detail a { color: #818cf8; text-decoration: none; }
+  .call-detail a:hover { text-decoration: underline; }
+
+  /* ===== MEETING PREP BOX ===== */
+  .meeting-prep {
+    background: rgba(99,102,241,0.04);
+    border: 1px solid rgba(99,102,241,0.12);
+    border-radius: 10px;
+    padding: 14px 16px;
     margin-bottom: 16px;
   }
-  .progress-track {
-    height: 6px;
-    background: rgba(255,255,255,0.04);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-bottom: 4px;
+  .meeting-prep-title {
+    font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: #818cf8; margin-bottom: 10px;
   }
-  .progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #6366f1, #8b5cf6);
-    border-radius: 3px;
-    transition: width 0.5s ease;
+  .prep-item {
+    font-size: 13px; color: #d0d0d8; padding: 4px 0; line-height: 1.6;
   }
-  .progress-label {
-    font-size: 11px;
-    color: #4a4a58;
-    display: flex;
-    justify-content: space-between;
-  }
+  .prep-item strong { color: #fff; }
 
   /* ===== SECTIONS ===== */
-  .section { margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.04); border-radius: 10px; overflow: hidden; }
-  .section-header {
-    display: flex;
-    align-items: center;
-    padding: 12px 16px;
-    cursor: pointer;
-    user-select: none;
-    gap: 10px;
+  .section {
+    margin-bottom: 16px;
+    background: rgba(255,255,255,0.015);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 12px;
+    overflow: hidden;
   }
-  .section-header:hover { background: rgba(255,255,255,0.02); }
-  .section-accent { width: 3px; height: 20px; border-radius: 2px; flex-shrink: 0; }
-  .section-title { font-size: 14px; font-weight: 700; flex-grow: 1; }
-  .section-meta { font-size: 11px; color: #4a4a58; }
-  .section-chevron { font-size: 10px; color: #3a3a48; transition: transform 0.2s; }
-  .section.collapsed .section-body { display: none; }
+  .section-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; cursor: pointer; user-select: none;
+    transition: background 0.15s;
+  }
+  .section-header:hover { background: rgba(255,255,255,0.025); }
+  .section-accent { width: 4px; height: 18px; border-radius: 2px; flex-shrink: 0; }
+  .section-title { font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; flex: 1; }
+  .section-meta { font-size: 11px; color: #555; font-weight: 500; }
+  .section-chevron { color: #444; font-size: 11px; transition: transform 0.2s; }
   .section.collapsed .section-chevron { transform: rotate(-90deg); }
-  .section-body { padding: 0 16px 16px; }
+  .section.collapsed .section-body { display: none; }
+  .section-body { padding: 0 16px 14px; }
 
   /* ===== ACTION ITEMS ===== */
   .action-item {
-    padding: 12px 0;
+    padding: 14px 0;
     border-bottom: 1px solid rgba(255,255,255,0.03);
+    transition: opacity 0.3s;
   }
   .action-item:last-child { border-bottom: none; }
-  .action-top { display: flex; align-items: flex-start; gap: 10px; }
+  .action-item.checked { opacity: 0.3; }
+  .action-item.checked .action-title { text-decoration: line-through; color: #555; }
+  .action-top {
+    display: flex; align-items: flex-start; gap: 12px;
+  }
   .action-top input[type="checkbox"] {
-    margin-top: 3px;
-    accent-color: #6366f1;
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
+    appearance: none; -webkit-appearance: none;
+    width: 22px; height: 22px; min-width: 22px;
+    border: 2px solid #333; border-radius: 6px;
+    cursor: pointer; margin-top: 1px; transition: all 0.2s; position: relative;
   }
-  .action-content { flex-grow: 1; }
-  .action-title { font-size: 13px; font-weight: 600; color: #e0e0e8; line-height: 1.4; }
-  .action-tags { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+  .action-top input[type="checkbox"]:checked { background: #10b981; border-color: #10b981; }
+  .action-top input[type="checkbox"]:checked::after {
+    content: '\2713'; position: absolute; color: #fff; font-size: 14px; font-weight: 700;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+  }
+  .action-content { flex: 1; min-width: 0; }
+  .action-title { font-size: 14px; color: #e8e8f0; font-weight: 600; line-height: 1.4; }
+  .action-tags { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; align-items: center; }
   .tag {
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
   }
+  .tag-time { background: rgba(99,102,241,0.08); color: #818cf8; }
   .tag-qw { background: rgba(16,185,129,0.08); color: #34d399; }
   .tag-df { background: rgba(139,92,246,0.08); color: #a78bfa; }
-  .tag-people { background: rgba(245,158,11,0.08); color: #fbbf24; }
+  .tag-people { background: rgba(59,130,246,0.08); color: #60a5fa; }
   .tag-admin { background: rgba(107,114,128,0.08); color: #9ca3af; }
-  .tag-time { background: rgba(99,102,241,0.06); color: #818cf8; }
-  .tag-platform { background: rgba(56,189,248,0.08); color: #38bdf8; }
+  .tag-platform { background: rgba(255,255,255,0.04); color: #888; }
+  .tag-custom { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+  .tag-win { background: rgba(16,185,129,0.12); color: #34d399; }
+  .tag-key { background: rgba(239,68,68,0.12); color: #ef4444; }
+  .tag-days { font-size: 10px; color: #ef4444; font-weight: 700; }
 
-  /* ===== CONTEXT + COPY BOXES ===== */
+  /* ===== RELATIONSHIP CONTEXT ===== */
   .rel-context {
+    margin-top: 6px;
     font-size: 12px;
     color: #6b7280;
-    margin-top: 6px;
-    padding-left: 26px;
     line-height: 1.5;
+    padding-left: 34px;
   }
-  .rel-context .last { color: #818cf8; font-weight: 600; }
+
+  /* ===== COPY-PASTE BOX ===== */
   .copy-box {
-    margin-top: 8px;
-    margin-left: 26px;
+    margin: 8px 0 0 34px;
     background: rgba(16,185,129,0.04);
-    border: 1px solid rgba(16,185,129,0.1);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border: 1px solid rgba(16,185,129,0.12);
+    border-radius: 10px;
+    padding: 12px 14px;
     position: relative;
   }
   .copy-box-label {
-    font-size: 10px;
-    color: #34d399;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 600;
-    margin-bottom: 4px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: #10b981; margin-bottom: 6px;
+  }
+  .copy-box-text {
+    font-size: 13px; color: #c8c8d0; line-height: 1.65; white-space: pre-wrap; word-wrap: break-word;
   }
   .copy-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background: rgba(16,185,129,0.12);
-    color: #34d399;
-    border: none;
-    padding: 3px 10px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 700;
-    cursor: pointer;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    position: absolute; top: 10px; right: 10px;
+    background: #10b981; border: none;
+    color: #fff; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+    text-transform: uppercase; padding: 5px 14px; border-radius: 6px;
+    cursor: pointer; transition: all 0.2s;
   }
-  .copy-btn:hover { background: rgba(16,185,129,0.2); }
-  .copy-box-text {
-    font-size: 13px;
-    color: #d0d0d8;
-    line-height: 1.5;
-    display: block;
-    padding-right: 50px;
-  }
+  .copy-btn:hover { background: #059669; }
+  .copy-btn.copied { background: #6366f1; }
 
-  /* ===== INFO NOTES ===== */
-  .info-note {
+  /* ===== LINK ROW ===== */
+  .link-row {
+    margin: 6px 0 0 34px;
     font-size: 12px;
-    color: #6b7280;
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.02);
+  }
+  .link-row a {
+    color: #818cf8; text-decoration: none; font-weight: 500;
+  }
+  .link-row a:hover { text-decoration: underline; }
+
+  /* ===== NEEDS-EYES NOTE ===== */
+  .needs-eyes {
+    margin: 8px 0 0 34px;
+    padding: 10px 14px;
+    background: rgba(234,179,8,0.04);
+    border: 1px solid rgba(234,179,8,0.12);
+    border-radius: 10px;
+    font-size: 12px;
+    color: #eab308;
   }
 
-  /* ===== CHECKED STATE ===== */
-  .action-item.checked .action-title { text-decoration: line-through; color: #4a4a58; }
-  .action-item.checked .copy-box { opacity: 0.3; }
+  /* ===== INFO NOTE (FYI sections) ===== */
+  .info-note {
+    font-size: 12px; color: #6b7280; padding: 6px 0;
+  }
+  .info-note strong { color: #a0a0b0; }
+
+  /* ===== PIPELINE GRID ===== */
+  .pipeline-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0;
+  }
+  .pipeline-cell {
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+  }
+  .pipeline-num { font-size: 22px; font-weight: 800; color: #fff; }
+  .pipeline-label { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 600px) {
+    .container { padding: 20px 14px 80px; }
+    .date-title { font-size: 22px; }
+    .copy-box { margin-left: 0; }
+    .rel-context { padding-left: 0; }
+    .link-row { margin-left: 0; }
+    .needs-eyes { margin-left: 0; }
+    .pipeline-grid { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>
 </head>
 <body>
 <div class="container">
-
-  <!-- HEADER -->
-  <div class="header">
-    <div class="header-top">
-      <div class="brand">Q FOUNDER OS</div>
-      <div class="generated">Generated {{TIMESTAMP}}</div>
-    </div>
-    <div class="date-title">{{DATE_DISPLAY}}</div>
-  </div>
-
-  <!-- EFFORT BAR -->
-  <div class="effort-bar">
-    {{SUMMARY}}
-  </div>
-
-  <!-- PROGRESS BAR -->
-  <div class="progress-bar">
-    <div class="progress-track">
-      <div class="progress-fill" id="pf" style="width:0%"></div>
-    </div>
-    <div class="progress-label">
-      <span id="pl">0 of 0 done</span>
-      <span id="pt"></span>
-    </div>
-  </div>
-
-  <!-- SECTIONS GO HERE -->
-  {{SECTIONS}}
-
+  <!-- All content rendered by JavaScript from SCHEDULE_DATA -->
 </div>
 
 <script>
-// Persist checkbox state in localStorage
-const KEY = 'qfos-{{DATE}}';
-function load() {
-  try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch(e) { return {}; }
+// ===== SCHEDULE DATA (INJECTED BY BUILD SCRIPT) =====
+const SCHEDULE_DATA = __SCHEDULE_DATA__;
+
+// ===== RENDERER =====
+const $ = (s, p) => (p || document).querySelector(s);
+const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+const el = (tag, attrs, ...children) => {
+  const e = document.createElement(tag);
+  if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+    else e.setAttribute(k, v);
+  });
+  children.flat().forEach(c => {
+    if (c == null) return;
+    e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  });
+  return e;
+};
+
+const ACCENT_COLORS = {
+  green: '#10b981', blue: '#60a5fa', purple: '#a78bfa', red: '#ef4444',
+  yellow: '#f59e0b', pink: '#ec4899', gray: '#6b7280', indigo: '#6366f1', white: '#ccc'
+};
+const ENERGY_TAG_CLASS = { quickwin: 'tag-qw', deepfocus: 'tag-df', people: 'tag-people', admin: 'tag-admin' };
+const ENERGY_LABELS = { quickwin: 'Quick Win', deepfocus: 'Deep Focus', people: 'People', admin: 'Admin' };
+const STORAGE_KEY = 'ktlyst-' + SCHEDULE_DATA.date;
+
+function loadState() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } }
+function saveState(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+
+function copyText(textEl, btn) {
+  navigator.clipboard.writeText(textEl.innerText).then(() => {
+    btn.textContent = 'Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
 }
-function save(s) { localStorage.setItem(KEY, JSON.stringify(s)); }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const state = load();
-  const cbs = document.querySelectorAll('input[type="checkbox"]');
+function renderCopyBlock(block) {
+  const box = el('div', { class: 'copy-box' });
+  if (block.label) box.appendChild(el('div', { class: 'copy-box-label' }, block.label));
+  const textSpan = el('span', { class: 'copy-box-text' }, block.text);
+  const btn = el('button', { class: 'copy-btn', onclick: () => copyText(textSpan, btn) }, 'Copy');
+  box.appendChild(btn);
+  box.appendChild(textSpan);
+  return box;
+}
 
-  cbs.forEach(cb => {
-    if (state[cb.id]) {
-      cb.checked = true;
-      cb.closest('.action-item')?.classList.add('checked');
-    }
-    cb.addEventListener('change', () => {
-      const s = load();
-      s[cb.id] = cb.checked;
-      save(s);
-      cb.closest('.action-item')?.classList.toggle('checked', cb.checked);
-      updateProgress();
+function renderItem(item, sectionIdx, itemIdx) {
+  const id = `cb-${sectionIdx}-${itemIdx}`;
+  const wrapper = el('div', { class: 'action-item', 'data-energy': item.energy || 'quickwin' });
+
+  // Top row: checkbox + title + tags
+  const cb = el('input', { type: 'checkbox', id: id });
+  const titleEl = el('div', { class: 'action-title' });
+  titleEl.textContent = item.title;
+  if (item.badge === 'WIN') titleEl.appendChild(el('span', { class: 'tag-win', style: { marginLeft: '6px' } }, ' WIN'));
+  if (item.badge === 'KEY') titleEl.appendChild(el('span', { class: 'tag-key', style: { marginLeft: '6px' } }, ' KEY'));
+
+  const tags = el('div', { class: 'action-tags' });
+  if (item.energy) tags.appendChild(el('span', { class: 'tag ' + (ENERGY_TAG_CLASS[item.energy] || 'tag-qw') }, ENERGY_LABELS[item.energy] || item.energy));
+  if (item.time) tags.appendChild(el('span', { class: 'tag tag-time' }, item.time));
+  if (item.platform) tags.appendChild(el('span', { class: 'tag tag-platform' }, item.platform));
+  if (item.extraTags) item.extraTags.forEach(t => {
+    const tagEl = el('span', { class: 'tag tag-custom' }, t.text);
+    if (t.color) { tagEl.style.background = t.color + '14'; tagEl.style.color = t.color; }
+    tags.appendChild(tagEl);
+  });
+  if (item.daysAgo) tags.appendChild(el('span', { class: 'tag-days' }, item.daysAgo));
+
+  const content = el('div', { class: 'action-content' }, titleEl, tags);
+  const top = el('div', { class: 'action-top' }, cb, content);
+  wrapper.appendChild(top);
+
+  // Context
+  if (item.context) wrapper.appendChild(el('div', { class: 'rel-context', html: item.context }));
+
+  // Links (before copy blocks)
+  if (item.links) item.links.forEach(link => {
+    wrapper.appendChild(el('div', { class: 'link-row' },
+      el('a', { href: link.url, target: '_blank', html: link.text + ' &#8599;' })
+    ));
+  });
+
+  // Copy blocks
+  if (item.copyBlocks) item.copyBlocks.forEach((block, i) => {
+    const box = renderCopyBlock(block);
+    if (i > 0) box.style.marginTop = '6px';
+    wrapper.appendChild(box);
+  });
+
+  // Needs eyes
+  if (item.needsEyes) wrapper.appendChild(el('div', { class: 'needs-eyes' }, item.needsEyes));
+
+  return wrapper;
+}
+
+function renderSection(section, sectionIdx) {
+  const div = el('div', { class: 'section' + (section.collapsed ? ' collapsed' : '') });
+  const accentColor = ACCENT_COLORS[section.accent] || section.accent || '#6b7280';
+
+  const header = el('div', { class: 'section-header' });
+  header.appendChild(el('div', { class: 'section-accent', style: { background: accentColor } }));
+  header.appendChild(el('div', { class: 'section-title', style: { color: section.collapsed ? '#9ca3af' : accentColor } },
+    section.title));
+  if (section.meta) header.appendChild(el('div', { class: 'section-meta' }, section.meta));
+  header.appendChild(el('div', { class: 'section-chevron', html: '&#9660;' }));
+  header.addEventListener('click', () => div.classList.toggle('collapsed'));
+  div.appendChild(header);
+
+  const body = el('div', { class: 'section-body' });
+
+  // Render items
+  if (section.items) section.items.forEach((item, i) => body.appendChild(renderItem(item, sectionIdx, i)));
+
+  // Render info notes
+  if (section.infoNotes) section.infoNotes.forEach(note => {
+    body.appendChild(el('div', { class: 'info-note', html: note }));
+  });
+
+  // Render pipeline grid
+  if (section.pipeline) {
+    const grid = el('div', { class: 'pipeline-grid' });
+    section.pipeline.forEach(cell => {
+      grid.appendChild(el('div', { class: 'pipeline-cell' },
+        el('div', { class: 'pipeline-num' }, String(cell.value)),
+        el('div', { class: 'pipeline-label' }, cell.label)
+      ));
     });
-  });
+    body.appendChild(grid);
+  }
 
-  // Section collapse toggle
-  document.querySelectorAll('.section-header').forEach(h => {
-    h.addEventListener('click', () => h.closest('.section').classList.toggle('collapsed'));
-  });
+  div.appendChild(body);
+  return div;
+}
 
-  updateProgress();
-});
+function renderCallBanners(calls) {
+  if (!calls || !calls.length) return null;
+  const frag = document.createDocumentFragment();
+  calls.forEach(call => {
+    const banner = el('div', { class: 'call-banner' });
+    const header = el('div', { class: 'call-banner-header' },
+      el('div', { class: 'call-time' }, call.time),
+      el('div', { class: 'call-info', html: call.info })
+    );
+    banner.appendChild(header);
+    if (call.detail) banner.appendChild(el('div', { class: 'call-detail', html: call.detail }));
+    frag.appendChild(banner);
+  });
+  return frag;
+}
+
+function renderMeetingPrep(prep) {
+  if (!prep || !prep.length) return null;
+  const frag = document.createDocumentFragment();
+  prep.forEach(p => {
+    const box = el('div', { class: 'meeting-prep' });
+    box.appendChild(el('div', { class: 'meeting-prep-title' }, p.title));
+    if (p.items) p.items.forEach(item => {
+      box.appendChild(el('div', { class: 'prep-item', html: item }));
+    });
+    frag.appendChild(box);
+  });
+  return frag;
+}
 
 function updateProgress() {
-  const cbs = document.querySelectorAll('input[type="checkbox"]');
-  const done = [...cbs].filter(c => c.checked).length;
-  const total = cbs.length;
-  const pct = total ? Math.round(done / total * 100) : 0;
-  document.getElementById('pf').style.width = pct + '%';
-  document.getElementById('pl').textContent = done + ' of ' + total + ' done';
+  const checks = $$('.action-top input[type="checkbox"]');
+  let done = 0, totalMin = 0;
+  checks.forEach(cb => {
+    const item = cb.closest('.action-item');
+    if (cb.checked) { done++; item.classList.add('checked'); }
+    else { item.classList.remove('checked'); }
+    const timeTag = item.querySelector('.tag-time');
+    if (timeTag) { const m = timeTag.textContent.match(/(\d+)/); if (m) totalMin += parseInt(m[1]); }
+  });
+  const total = checks.length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  $('#totalActions').textContent = total;
+  $('#totalTime').textContent = totalMin;
+  $('#totalCount').textContent = total;
+  $('#doneCount').textContent = done;
+  $('#progressBar').style.width = pct + '%';
+
+  // Save state
+  const state = {};
+  checks.forEach(cb => { state[cb.id] = cb.checked; });
+  saveState(state);
 }
 
-function copyText(id, btn) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = 'Copy', 1500);
+function restoreState() {
+  const saved = loadState();
+  Object.keys(saved).forEach(id => {
+    const cb = document.getElementById(id);
+    if (cb && saved[id]) cb.checked = true;
   });
+  updateProgress();
 }
+
+function render() {
+  const d = SCHEDULE_DATA;
+  const container = $('.container');
+  container.innerHTML = '';
+
+  // Header
+  const header = el('div', { class: 'header' });
+  header.appendChild(el('div', { class: 'header-top' },
+    el('div', { class: 'brand' }, 'KTLYST'),
+    el('div', { class: 'generated' }, d.generated || '')
+  ));
+  header.appendChild(el('div', { class: 'date-title' }, d.dateDisplay || d.date));
+  container.appendChild(header);
+
+  // Effort bar
+  if (d.effort) {
+    const bar = el('div', { class: 'effort-bar' });
+    bar.innerHTML = '<strong>Yesterday:</strong> ' + d.effort;
+    container.appendChild(bar);
+  }
+
+  // Progress bar
+  const progress = el('div', { class: 'progress-container' });
+  progress.innerHTML = `
+    <div class="progress-top">
+      <div class="progress-summary">Today: <span id="totalActions">0</span> actions, ~<span id="totalTime">0</span> min</div>
+      <div class="progress-summary"><span id="doneCount">0</span> / <span id="totalCount">0</span> done</div>
+    </div>
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressBar"></div></div>
+  `;
+  container.appendChild(progress);
+
+  // Energy selector
+  const energySel = el('div', { class: 'energy-selector' });
+  ['all', 'quickwin', 'deepfocus', 'people', 'admin'].forEach(e => {
+    const btn = el('button', {
+      class: 'energy-btn' + (e === 'all' ? ' active' : ''),
+      'data-energy': e,
+      onclick: () => {
+        $$('.energy-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.body.className = e === 'all' ? '' : 'filter-' + e;
+      }
+    }, e === 'all' ? 'All' : (ENERGY_LABELS[e] || e));
+    energySel.appendChild(btn);
+  });
+  container.appendChild(energySel);
+
+  // Call banners
+  const banners = renderCallBanners(d.callBanners);
+  if (banners) container.appendChild(banners);
+
+  // Meeting prep
+  const prep = renderMeetingPrep(d.meetingPrep);
+  if (prep) container.appendChild(prep);
+
+  // Sections
+  const sectionsDiv = el('div', { id: 'sections' });
+  if (d.sections) d.sections.forEach((s, i) => sectionsDiv.appendChild(renderSection(s, i)));
+  container.appendChild(sectionsDiv);
+
+  // Bind checkboxes
+  $$('.action-top input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', updateProgress);
+  });
+
+  restoreState();
+}
+
+document.addEventListener('DOMContentLoaded', render);
 </script>
 </body>
 </html>

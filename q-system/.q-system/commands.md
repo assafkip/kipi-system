@@ -95,13 +95,22 @@ STAGE 5: DEMO/CALL
 ## Morning Briefing (`/q-morning`)
 
 **Step 0 - Session bootstrap:**
-- 0a: Checkpoint previous session + clean stale working memory (>48h in `memory/working/`). Read `memory/last-handoff.md` for prior session context.
+- 0a: Checkpoint previous session + clean stale working memory (>48h in `memory/working/`). Read `memory/last-handoff.md` for prior session context. **MID-MORNING RESUME:** If the handoff note says "morning routine split", skip to Step 11 using the collected data from the handoff note.
 - 0b: Missed debrief detection (check calendar for unlogged meetings)
 - 0c: Load canonical state (`/q-begin`)
 - 0d: Load voice skill
 - 0e: Load executive function skill (if AUDHD mode enabled)
 - 0f: Standalone mode check - test MCP server connectivity. If any are down, note which steps will be skipped, proceed with everything else. Never fail the whole routine because one server is unavailable.
 - 0g: Monthly checks (1st of month only): Decision origin audit (flag if >60% rubber-stamped). Review `memory/monthly/` files. Prediction calibration from `memory/working/predictions.jsonl`. Outreach A/B analysis by style code.
+- 0h: **Context budget strategy:** If context runs low after Step 5.9b, auto-run `/q-handoff` with collected data and tell the founder to start a new session. The new session resumes at Step 11.
+
+**Context-saving rules (ENFORCED):**
+- Save raw scraper results to files, not context. Read back only qualified results.
+- Only generate the content type assigned to today (e.g., Mon/Wed/Fri = signals, Tue/Thu = thought leadership).
+- Process lead sourcing results in batches of 10, discard low scores immediately.
+- Cap engagement targets at 10 per day.
+- Full meeting prep only for TODAY's meetings.
+- Steps 6-7 (compliance checks) can be skipped if context is low. Step 11 is the deliverable.
 
 **Step 1 - Parallel data pull:**
 - Calendar: Pull events for the current week
@@ -163,12 +172,17 @@ STAGE 5: DEMO/CALL
 
 **Step 10 - Update daily checklists**
 
-**Step 11 - MANDATORY: Generate daily schedule HTML and open in browser**
-- Use `q-system/marketing/templates/daily-schedule-template.html` as base
-- This is the primary deliverable. Never end without it.
-- Must follow AUDHD executive function rules if enabled
-- Dark theme, checkboxes, copy buttons, energy filters, localStorage persistence
-- Telegram push (if configured): Send top 3 actions via Telegram after HTML generation
+**Step 11 - MANDATORY: Generate daily schedule JSON + build HTML + open in browser**
+
+This is the primary deliverable. Never end without it. Claude NEVER writes raw HTML.
+
+1. **Read the schema:** `q-system/marketing/templates/schedule-data-schema.md`
+2. **Generate JSON:** Write `q-system/output/schedule-data-YYYY-MM-DD.json` conforming to the schema
+3. **Build HTML:** `bash q-system/marketing/templates/build-schedule.sh q-system/output/schedule-data-YYYY-MM-DD.json q-system/output/daily-schedule-YYYY-MM-DD.html`
+4. **Open in browser:** `open q-system/output/daily-schedule-YYYY-MM-DD.html`
+5. **Telegram push (if configured):** Send top 3 actions after HTML generation
+
+The template (`daily-schedule-template.html`) is LOCKED. All CSS/JS/rendering is permanent. Never edit it during morning routine. If a visual bug is found, fix the template in a separate session.
 
 ---
 
