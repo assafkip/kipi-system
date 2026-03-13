@@ -6,11 +6,14 @@
 
 ```
 ### RULE-XXX: [Name]
+- **Origin:** [USER-DIRECTED] / [CLAUDE-RECOMMENDED -> APPROVED/MODIFIED/REJECTED] / [SYSTEM-INFERRED]
 - **Decision:** [what we do]
 - **Reason:** [why]
 - **Date:** [when decided]
 - **Revisit:** [when to reconsider, or "permanent"]
 ```
+
+Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-stamped approvals, flag for review.
 
 ## Starter Rules
 

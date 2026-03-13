@@ -105,3 +105,6 @@ Run `/q-morning` to get your first daily schedule. It pulls your calendar, email
 | `/q-plan` | Review pipeline, prioritize actions |
 | `/q-market-create` | Generate LinkedIn/X/Medium content |
 | `/q-status` | Quick snapshot of where things stand |
+| `/q-wrap` | End-of-day health check (10 min) |
+| `/q-handoff` | Save context for next session |
+| `/q-reality-check` | Stress-test your positioning and claims |

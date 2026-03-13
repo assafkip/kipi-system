@@ -193,6 +193,49 @@ When the founder shares a social media post screenshot:
 2. Generate 2-3 comment suggestions
 3. Offer to log the engagement
 
+## Decision Origin Tagging (ENFORCED)
+
+Every decision logged to `canonical/decisions.md` MUST include an origin tag:
+- `[USER-DIRECTED]` - founder explicitly made this decision
+- `[CLAUDE-RECOMMENDED -> APPROVED]` - Claude suggested, founder approved
+- `[CLAUDE-RECOMMENDED -> MODIFIED]` - Claude suggested, founder changed it
+- `[CLAUDE-RECOMMENDED -> REJECTED]` - Claude suggested, founder rejected
+- `[SYSTEM-INFERRED]` - Claude made this autonomously based on existing rules
+
+Monthly audit on the 1st: check if >60% are rubber-stamped approvals. Surface if so.
+
+## Memory Architecture
+
+Time-stratified memory in `q-system/memory/`:
+- `working/` - session-scoped, ephemeral (<48h). Auto-cleaned during `/q-morning` Step 0a.
+- `weekly/` - 7-day rolling window. Reviewed during Monday morning routine.
+- `monthly/` - persistent insights. Reviewed on 1st of month.
+- `graph.jsonl` - entity-relationship triples for cross-contact queries.
+- `last-handoff.md` - session continuity note from `/q-handoff`.
+
+During Step 0c, read `last-handoff.md` for prior session context.
+
+## Session Continuity
+
+Run `/q-handoff` before ending sessions or when context is running low. Generates a handoff note at `q-system/memory/last-handoff.md` for the next session.
+
+Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief check, canonical drift, tomorrow preview).
+
+## Standalone Mode (Graceful Degradation)
+
+If any MCP server is unavailable, degrade gracefully. Never fail the morning routine because one server is down. Skip affected steps, note what's unavailable, proceed with everything else.
+
+## Inter-Skill Review Gates (ENFORCED)
+
+Before outputting ANY factual claim about the founder's product:
+1. Check against canonical files (current-state.md, talk-tracks.md)
+2. If not in canonical: mark `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}`
+3. If contradicts canonical: BLOCK the output
+
+## Reality Check Mode
+
+`/q-reality-check` is a challenger skill. It temporarily argues AGAINST current positioning to find weak spots. Run monthly or before major meetings.
+
 ## Operator Context
 
 Adapt to the founder's profile from `my-project/founder-profile.md`. Key accommodations:

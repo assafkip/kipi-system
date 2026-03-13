@@ -22,6 +22,9 @@
 | `/q-market-review [file]` | Validate content against guardrails. PASS/FAIL. | - |
 | `/q-market-publish [file]` | Mark content published. Update tracking. | - |
 | `/q-market-status` | Content pipeline snapshot. | - |
+| `/q-wrap` | Evening wrap. 10-min end-of-day system health check. | - |
+| `/q-handoff` | Session handoff. Context note for next session. | - |
+| `/q-reality-check` | Challenger mode. Stress-test positioning and claims. | - |
 
 ## Usage Notes
 
@@ -92,11 +95,13 @@ STAGE 5: DEMO/CALL
 ## Morning Briefing (`/q-morning`)
 
 **Step 0 - Session bootstrap:**
-- 0a: Checkpoint previous session
+- 0a: Checkpoint previous session + clean stale working memory (>48h in `memory/working/`). Read `memory/last-handoff.md` for prior session context.
 - 0b: Missed debrief detection (check calendar for unlogged meetings)
 - 0c: Load canonical state (`/q-begin`)
 - 0d: Load voice skill
 - 0e: Load executive function skill (if AUDHD mode enabled)
+- 0f: Standalone mode check - test MCP server connectivity. If any are down, note which steps will be skipped, proceed with everything else. Never fail the whole routine because one server is unavailable.
+- 0g: Monthly checks (1st of month only): Decision origin audit (flag if >60% rubber-stamped). Review `memory/monthly/` files. Prediction calibration from `memory/working/predictions.jsonl`. Outreach A/B analysis by style code.
 
 **Step 1 - Parallel data pull:**
 - Calendar: Pull events for the current week
@@ -163,3 +168,122 @@ STAGE 5: DEMO/CALL
 - This is the primary deliverable. Never end without it.
 - Must follow AUDHD executive function rules if enabled
 - Dark theme, checkboxes, copy buttons, energy filters, localStorage persistence
+- Telegram push (if configured): Send top 3 actions via Telegram after HTML generation
+
+---
+
+## Evening Wrap (`/q-wrap`)
+
+10-minute end-of-day system health check. 5 steps:
+
+1. **Effort log** (2 min): Count actions taken today from CRM. Track effort, not outcomes.
+2. **Unfinished actions triage** (3 min): What carries over? What's stale? No guilt.
+3. **Debrief check** (1 min): Any meetings without debriefs?
+4. **Canonical drift check** (2 min): Any insights not yet in canonical files?
+5. **Tomorrow preview** (2 min): Calendar + prep status.
+
+After wrap: auto-checkpoint, promote `memory/working/` to `memory/weekly/` if relevant, clean stale working memory, run `/q-handoff`.
+
+---
+
+## Session Handoff (`/q-handoff`)
+
+Generates a context note for the next session at `memory/last-handoff.md`.
+
+**Structure:** What happened this session, in-progress work, decisions made, files modified, blocked items, suggested next action.
+
+**Triggers:** User says "done"/"wrapping up", context running low, after `/q-wrap`.
+
+---
+
+## Reality Check (`/q-reality-check`)
+
+Challenger mode. Temporarily argues AGAINST current positioning.
+
+1. Read all canonical files
+2. Challenge positioning, traction, and market claims
+3. Rate each claim: STRONG (data-backed), MODERATE (anecdotal), WEAK (assumption)
+4. For WEAK claims: suggest a specific validation experiment
+5. Output the hardest question a VC/buyer will ask that you can't answer yet
+
+Run monthly or before major meetings. Not hostile, Socratic.
+
+---
+
+## Prediction Tracking
+
+When generating outreach, log predictions to `memory/working/predictions.jsonl`:
+```jsonl
+{"date":"YYYY-MM-DD","prospect":"Name","channel":"linkedin_dm","prediction":"will_reply","confidence":0.7,"style":"V1","outcome":null,"outcome_date":null}
+```
+
+**Style codes for A/B testing:**
+- V1: Value drop (signal share)
+- Q1: Genuine question
+- P1: Peer observation
+- C1: Content reference
+- W1: Warm intro follow-up
+
+Monthly: calculate reply rate per style, shift toward best performers.
+
+---
+
+## Predict-First Prompting (Debriefs)
+
+Before the founder describes a conversation, the system predicts:
+- Top 3 likely objections surfaced
+- Top 3 likely topics discussed
+- Predicted relationship outcome (warmer/cooler/same)
+
+After the founder describes it, compare. Wrong predictions reveal gaps in canonical files. Log accuracy to predictions.jsonl.
+
+---
+
+## Memory Management
+
+**Time-stratified architecture:**
+```
+memory/
+├── working/          # Session-scoped, ephemeral (<48h)
+├── weekly/           # 7-day rolling window
+├── monthly/          # Persistent insights
+├── last-handoff.md   # Session handoff note
+├── graph.jsonl       # Entity-relationship knowledge graph
+└── morning-state.md  # Morning routine state tracker
+```
+
+**Lifecycle:**
+- `working/` -> cleaned during `/q-morning` Step 0a or promoted during `/q-wrap`
+- `weekly/` -> reviewed Monday mornings, promoted to monthly/ or archived
+- `monthly/` -> reviewed 1st of month, promoted to canonical if proven
+
+---
+
+## Graph Knowledge Base
+
+Structured triples in `memory/graph.jsonl`:
+```jsonl
+{"s":"Person Name","p":"works_at","o":"Company","t":"2026-03-12"}
+{"s":"Person Name","p":"cares_about","o":"topic","t":"2026-03-12"}
+{"s":"Connector","p":"introduced","o":"Person Name","t":"2026-03-12"}
+```
+
+Written during debriefs and lead sourcing. Queried via grep for meeting prep and warm intro matching.
+
+---
+
+## Decision Origin Tagging
+
+All decisions in `canonical/decisions.md` must include origin tags:
+- `[USER-DIRECTED]`, `[CLAUDE-RECOMMENDED -> APPROVED/MODIFIED/REJECTED]`, `[SYSTEM-INFERRED]`
+
+Monthly audit (1st of month): flag if >60% are rubber-stamped approvals.
+
+---
+
+## Inter-Skill Review Gates
+
+Before outputting factual claims about the founder's product:
+1. Check canonical files (current-state.md, talk-tracks.md)
+2. If not found: mark `{{UNVALIDATED}}`
+3. If contradicts canonical: BLOCK output
