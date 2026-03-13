@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Schedule - {{DATE}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a12;
+    color: #d0d0d8;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 32px 20px 100px;
+  }
+
+  /* ===== HEADER ===== */
+  .header { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .brand { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: #6366f1; text-transform: uppercase; }
+  .generated { font-size: 11px; color: #3a3a48; }
+  .date-title { font-size: 26px; font-weight: 800; color: #fff; margin-bottom: 4px; }
+
+  /* ===== EFFORT CELEBRATION ===== */
+  .effort-bar {
+    background: rgba(16,185,129,0.06);
+    border: 1px solid rgba(16,185,129,0.12);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: #34d399;
+  }
+  .effort-bar strong { color: #5eead4; }
+
+  /* ===== STICKY PROGRESS ===== */
+  .progress-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: #0a0a12;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    padding: 8px 0;
+    margin-bottom: 16px;
+  }
+  .progress-track {
+    height: 6px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #6366f1, #8b5cf6);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+  .progress-label {
+    font-size: 11px;
+    color: #4a4a58;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section { margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.04); border-radius: 10px; overflow: hidden; }
+  .section-header {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    gap: 10px;
+  }
+  .section-header:hover { background: rgba(255,255,255,0.02); }
+  .section-accent { width: 3px; height: 20px; border-radius: 2px; flex-shrink: 0; }
+  .section-title { font-size: 14px; font-weight: 700; flex-grow: 1; }
+  .section-meta { font-size: 11px; color: #4a4a58; }
+  .section-chevron { font-size: 10px; color: #3a3a48; transition: transform 0.2s; }
+  .section.collapsed .section-body { display: none; }
+  .section.collapsed .section-chevron { transform: rotate(-90deg); }
+  .section-body { padding: 0 16px 16px; }
+
+  /* ===== ACTION ITEMS ===== */
+  .action-item {
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .action-item:last-child { border-bottom: none; }
+  .action-top { display: flex; align-items: flex-start; gap: 10px; }
+  .action-top input[type="checkbox"] {
+    margin-top: 3px;
+    accent-color: #6366f1;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+  .action-content { flex-grow: 1; }
+  .action-title { font-size: 13px; font-weight: 600; color: #e0e0e8; line-height: 1.4; }
+  .action-tags { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+  .tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tag-qw { background: rgba(16,185,129,0.08); color: #34d399; }
+  .tag-df { background: rgba(139,92,246,0.08); color: #a78bfa; }
+  .tag-people { background: rgba(245,158,11,0.08); color: #fbbf24; }
+  .tag-admin { background: rgba(107,114,128,0.08); color: #9ca3af; }
+  .tag-time { background: rgba(99,102,241,0.06); color: #818cf8; }
+  .tag-platform { background: rgba(56,189,248,0.08); color: #38bdf8; }
+
+  /* ===== CONTEXT + COPY BOXES ===== */
+  .rel-context {
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 6px;
+    padding-left: 26px;
+    line-height: 1.5;
+  }
+  .rel-context .last { color: #818cf8; font-weight: 600; }
+  .copy-box {
+    margin-top: 8px;
+    margin-left: 26px;
+    background: rgba(16,185,129,0.04);
+    border: 1px solid rgba(16,185,129,0.1);
+    border-radius: 8px;
+    padding: 10px 12px;
+    position: relative;
+  }
+  .copy-box-label {
+    font-size: 10px;
+    color: #34d399;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(16,185,129,0.12);
+    color: #34d399;
+    border: none;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .copy-btn:hover { background: rgba(16,185,129,0.2); }
+  .copy-box-text {
+    font-size: 13px;
+    color: #d0d0d8;
+    line-height: 1.5;
+    display: block;
+    padding-right: 50px;
+  }
+
+  /* ===== INFO NOTES ===== */
+  .info-note {
+    font-size: 12px;
+    color: #6b7280;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+  }
+
+  /* ===== CHECKED STATE ===== */
+  .action-item.checked .action-title { text-decoration: line-through; color: #4a4a58; }
+  .action-item.checked .copy-box { opacity: 0.3; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-top">
+      <div class="brand">Q FOUNDER OS</div>
+      <div class="generated">Generated {{TIMESTAMP}}</div>
+    </div>
+    <div class="date-title">{{DATE_DISPLAY}}</div>
+  </div>
+
+  <!-- EFFORT BAR -->
+  <div class="effort-bar">
+    {{SUMMARY}}
+  </div>
+
+  <!-- PROGRESS BAR -->
+  <div class="progress-bar">
+    <div class="progress-track">
+      <div class="progress-fill" id="pf" style="width:0%"></div>
+    </div>
+    <div class="progress-label">
+      <span id="pl">0 of 0 done</span>
+      <span id="pt"></span>
+    </div>
+  </div>
+
+  <!-- SECTIONS GO HERE -->
+  {{SECTIONS}}
+
+</div>
+
+<script>
+// Persist checkbox state in localStorage
+const KEY = 'qfos-{{DATE}}';
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch(e) { return {}; }
+}
+function save(s) { localStorage.setItem(KEY, JSON.stringify(s)); }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const state = load();
+  const cbs = document.querySelectorAll('input[type="checkbox"]');
+
+  cbs.forEach(cb => {
+    if (state[cb.id]) {
+      cb.checked = true;
+      cb.closest('.action-item')?.classList.add('checked');
+    }
+    cb.addEventListener('change', () => {
+      const s = load();
+      s[cb.id] = cb.checked;
+      save(s);
+      cb.closest('.action-item')?.classList.toggle('checked', cb.checked);
+      updateProgress();
+    });
+  });
+
+  // Section collapse toggle
+  document.querySelectorAll('.section-header').forEach(h => {
+    h.addEventListener('click', () => h.closest('.section').classList.toggle('collapsed'));
+  });
+
+  updateProgress();
+});
+
+function updateProgress() {
+  const cbs = document.querySelectorAll('input[type="checkbox"]');
+  const done = [...cbs].filter(c => c.checked).length;
+  const total = cbs.length;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('pf').style.width = pct + '%';
+  document.getElementById('pl').textContent = done + ' of ' + total + ' done';
+}
+
+function copyText(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+}
+</script>
+</body>
+</html>

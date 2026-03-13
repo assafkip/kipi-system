@@ -1,0 +1,19 @@
+# Secrets
+.env
+*.env
+settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output (generated daily, don't commit)
+q-system/output/*.html
+q-system/output/drafts/*
+q-system/output/lead-gen/*
+q-system/output/design-partner/*
+q-system/output/marketing/linkedin/*
+!**/.gitkeep
+
+# Session transcripts
+*.jsonl
