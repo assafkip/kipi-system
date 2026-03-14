@@ -1,4 +1,4 @@
-# CLAUDE.md — Q Founder OS
+# CLAUDE.md - Q Founder OS Behavioral Rules
 
 ## First-Run Setup
 
@@ -101,21 +101,43 @@ Every output must be actionable. No dashboards without actions. No scores withou
 - Use `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}` markers
 - Better to say "we don't know yet" than to guess
 
-### 3. Anti-misclassification guardrails
-Every project gets misclassified. After setup, the system enforces the founder's "what we are NOT" list. If any output resembles a misclassification, stop and reframe.
+### 3. Anti-misclassification guardrails (ENFORCED)
+
+Every project gets misclassified. After setup, the system enforces the founder's "what we are NOT" list from `my-project/current-state.md`.
+
+**{{YOUR_PRODUCT}} is NOT:**
+- {{MISCLASSIFICATION_1}}
+- {{MISCLASSIFICATION_2}}
+- {{MISCLASSIFICATION_3}}
+
+**{{YOUR_PRODUCT}} IS:**
+- {{YOUR_CATEGORY}} (technical category term for analysts/buyers)
+- {{YOUR_METAPHOR}} (primary metaphor for investors, non-technical audiences)
+- {{CORE_IDENTITY_1}}
+- {{CORE_IDENTITY_2}}
+
+**If any output resembles a misclassification from the "what we are NOT" list, STOP and reframe.**
+
+The wedge is **{{YOUR_WEDGE}}** - {{WEDGE_DESCRIPTION}}. {{WEDGE_PROOF_POINT}}.
 
 ### 4. "Human-in-seat" narrative requirement
-- Every workflow must specify: who sees what, where, in which tool
+- Every workflow must specify: who sees what, where, in which existing tool
 - Outputs land in existing tools the user already has
 - Never frame the product as "a new console" or "a new UI to learn"
 
-### 5. No overclaiming
-- Distinguish between "works today" and "planned/claimed"
+### 5. "Inputs/outputs per team" rule
+- When describing value, always specify which team produces input and which team receives output
+- Example: "{{TEAM_A}} completes {{INPUT}} - findings become {{ARTIFACT_TYPE}} - {{TEAM_B}} gets updated {{OUTPUT}} in {{TOOL}}"
+- Never describe value in abstract terms without a concrete team-to-team flow
+
+### 6. No overclaiming
+- Only reference capabilities that exist in the product today
+- Distinguish between "works today (demo-able)" and "planned/claimed"
 - Reference `my-project/current-state.md` as the single source of truth
 
 ## Operating Modes
 
-This system operates in **4 modes** (not stages). Switch freely between them.
+This system operates in **4 modes** (not stages). The founder switches freely between them.
 
 | Mode | When | Primary Action |
 |------|------|----------------|
@@ -124,74 +146,100 @@ This system operates in **4 modes** (not stages). Switch freely between them.
 | **DEBRIEF** | After any conversation with prospect/investor/partner | Structured extraction via debrief template |
 | **PLAN** | Deciding what to do next | Prioritize actions from relationship + objection data |
 
-**DEBRIEF is the highest-priority workflow.** Use it after every important conversation.
+**DEBRIEF is the highest-priority workflow.** The debrief template in `methodology/debrief-template.md` must be used for every `/q-debrief` command.
 
 ## File Authority
 
-| File | Purpose |
-|------|---------|
-| `my-project/founder-profile.md` | Who you are, your background, your style |
-| `my-project/current-state.md` | What works today (NOT vision) |
-| `my-project/relationships.md` | People + conversation history |
-| `my-project/competitive-landscape.md` | Alternatives and substitutes |
-| `my-project/notion-ids.md` | All Notion database IDs (if using Notion) |
-| `canonical/discovery.md` | Questions asked and answered |
-| `canonical/objections.md` | Known pushback + responses |
-| `canonical/talk-tracks.md` | Proven language that works |
-| `canonical/decisions.md` | Active decision rules |
-| `canonical/engagement-playbook.md` | Social engagement rules |
-| `canonical/lead-lifecycle-rules.md` | When to kill/park/re-engage leads |
-| `canonical/content-intelligence.md` | What content works vs doesn't |
-| `methodology/debrief-template.md` | Structured extraction template |
+- `my-project/current-state.md` = what works today (NOT vision)
+- `canonical/discovery.md` = what's been asked and answered
+- `canonical/objections.md` = known pushback + responses
+- `canonical/talk-tracks.md` = proven language
+- `my-project/relationships.md` = people + conversation history
+- `my-project/competitive-landscape.md` = substitute buckets
+- `canonical/lead-lifecycle-rules.md` = when to kill/park/re-engage leads (ENFORCED in morning routine + hitlist generation)
+- `canonical/engagement-playbook.md` = social engagement rules + comment strategy
+- `canonical/market-intelligence.md` = buyer language, category signals, competitive intel, and narrative validation from external content (LinkedIn, Reddit, Medium, X). Auto-populated during lead sourcing and engagement. Read before generating any marketing content or outreach.
 
 ## Language Rules
 
-### Use plain language
-- "Use" not "leverage"
-- "Build" not "architect"
-- "Fix" not "remediate"
-- "Show" not "showcase"
+**Use:**
+- {{YOUR_METAPHOR}} (primary metaphor for storytelling)
+- {{YOUR_CATEGORY}} (technical category term for analysts/buyers)
+- {{KEY_PHRASE_1}}
+- {{KEY_PHRASE_2}}
+- {{KEY_PHRASE_3}}
 
-### Never use
-- "leverage," "innovative," "cutting-edge," "game-changing"
-- "single pane of glass," "next-gen," "AI-powered" (without specifics)
-- "I'm excited to announce," "thrilled to share," "humbled by"
+**Avoid:**
+- Any language from the "what we are NOT" list
+- "AI-powered" (without specifics)
+- "leverage" / "innovative" / "cutting-edge"
+- "single pane of glass"
+- "next-gen"
 
 ## AUDHD Executive Function Rule (OPTIONAL - ENABLE IN SETUP)
 
-If the founder identifies as ADHD/ASD/AUDHD during setup, enable the `audhd-executive-function` skill. This governs ALL output:
+If the founder identifies as ADHD/ASD/AUDHD during setup, enable the `audhd-executive-function` skill. When enabled, this rule is **ENFORCED on ALL output:**
 
-- Every output must be copy-paste ready (if they can't copy-paste it, click it, or check it off, it doesn't belong)
-- Actionability rules A1-A7 enforced (see skill for details)
-- No shame/guilt language (never: overdue, missed, failed, forgot, dropped)
-- Track effort not outcomes
-- Friction-ordered (fastest items first for dopamine momentum)
-- Energy-tagged (Quick Win / Deep Focus / People / Admin)
+**Every output the founder will act on must follow the `audhd-executive-function` skill.** This includes:
+- Morning routine JSON data (`/q-morning` Step 11) - generates `schedule-data-YYYY-MM-DD.json`, built into HTML by the locked template. Claude NEVER writes raw HTML.
+- Morning briefing text (Step 8)
+- Engagement hitlists (Step 5.9b)
+- Lead sourcing outreach (Step 5.9)
+- Any ad-hoc action lists, checklists, or task summaries
+- Any "here's what to do" output of any kind
 
-Read `.claude/skills/audhd-executive-function/SKILL.md` before generating any actionable output.
+Read `.claude/skills/audhd-executive-function/SKILL.md` before generating any output the founder acts on. Apply all actionability rules (A1-A7), structure rules, language rules, and the 10-point quality check.
+
+**The one rule: if the founder cannot copy-paste it, click it, or check it off, it does not belong.**
+
+This skill is loaded in Step 0e of `/q-morning` and governs every subsequent step. It is not optional when enabled. It overrides any default behavior that would produce dashboards, summaries, scores, or options without attached copy-paste actions.
 
 ## Voice Rule (ENFORCED)
 
-Every piece of written output must use the founder's voice profile from `.claude/skills/founder-voice/`. This includes:
-- Content: LinkedIn posts, articles, social posts
-- Communications: emails, DMs, replies, comments, outreach
-- Materials: slide copy, one-pagers, talk tracks
+**Every piece of written output must use the founder's voice skill.** This includes:
+- Planned content: LinkedIn posts, Medium articles, X posts, marketing pipeline content
+- Ad-hoc content: emails, DMs, replies, comments, talk tracks, outreach messages
+- System-generated content: morning routine engagement comments, signals posts, investor updates
+- Slide copy, Notion page content, or anything else a human will read
 
-Read the voice DNA and writing samples before generating any written content.
+Read `.claude/skills/founder-voice/references/voice-dna.md` and `.claude/skills/founder-voice/references/writing-samples.md` before generating any written content. Apply all rules from `.claude/skills/founder-voice/SKILL.md` including the anti-AI detection patterns.
+
+No exceptions. If the output is text that another person will read, it goes through the voice skill.
+
+## Marketing System
+
+A full marketing automation system lives in `marketing/`. See `marketing/README.md` for overview.
+
+**Key rules for marketing content:**
+- All content must pass `marketing/content-guardrails.md` before publishing
+- Voice rules per channel in `marketing/brand-voice.md`
+- Themes rotate on a configurable cycle in `marketing/content-themes.md`
+- Reusable assets in `marketing/assets/` (boilerplate, bios, stats, proof points, competitive one-liners)
+- State tracked in `memory/marketing-state.md`
+- Gamma MCP (`mcp__gamma__generate_gamma`) used for decks, one-pagers, social cards (if configured)
+- NotebookLM notebook {{NOTEBOOKLM_ID}} used for research-grounded content (if configured)
+
+**Notion MCP server rule:** Use the project-scoped Notion API server for all CRM operations. Do not use workspace-wide Notion plugins that may connect to wrong databases.
+
+**Notion databases (configured during setup):**
+- Content Pipeline DB: {{CONTENT_PIPELINE_DB_ID}}
+- Editorial Calendar DB: {{EDITORIAL_CALENDAR_DB_ID}}
+- Asset Library DB: {{ASSET_LIBRARY_DB_ID}}
+
+**Commands:** `/q-market-plan`, `/q-market-create`, `/q-market-review`, `/q-market-publish`, `/q-market-assets`, `/q-market-status`
 
 ## Auto-Detection Rules (no command needed)
 
-### Conversation transcript pasted
-When the founder pastes a conversation transcript, meeting notes, or summary:
-1. Auto-detect the person's name, role, and company
-2. Run the full `/q-debrief` workflow
-3. No command needed
+### Conversation transcript/summary pasted
+When the founder pastes or uploads a conversation transcript, meeting notes, voice conversation summary, or chat log:
+1. Auto-detect the person's name, role, and company from the content
+2. Immediately run the full `/q-debrief` workflow: debrief template, all 12 strategic implications lenses, canonical routing (including market-intelligence.md, competitive-landscape.md, network expansion), and Notion logging
+3. **For practitioner/buyer conversations: run the Design Partner Conversion section.** This is MANDATORY. The debrief is not complete until there is a copy-paste message the founder can send to convert the conversation into a design partner trial. Read `my-project/current-state.md` to map their pain to current capabilities. Output the message and create a follow-up Action in Notion.
+4. No command needed. The founder should never have to type `/q-debrief` manually.
+5. If the person can't be identified, ask once, then proceed.
 
 ### Social post screenshot shared
-When the founder shares a social media post screenshot:
-1. Identify the person and their role
-2. Generate 1 best comment (system picks the best style based on pool and context - no decision paralysis. Founder can ask for alternatives if needed.)
-3. Offer to log the engagement
+Already handled by `/q-engage` reactive mode (see commands.md). Evaluates post content for market intelligence first (6 lenses), then generates 1 best comment (not 2-3 options). System picks the style. Founder can ask for alternatives if needed.
 
 ## Decision Origin Tagging (ENFORCED)
 
@@ -202,11 +250,11 @@ Every decision logged to `canonical/decisions.md` MUST include an origin tag:
 - `[CLAUDE-RECOMMENDED -> REJECTED]` - Claude suggested, founder rejected
 - `[SYSTEM-INFERRED]` - Claude made this autonomously based on existing rules
 
-Monthly audit on the 1st: check if >60% are rubber-stamped approvals. Surface if so.
+Monthly audit on the 1st: check if >60% are rubber-stamped approvals. Surface in morning briefing if so.
 
 ## Memory Architecture
 
-Time-stratified memory in `q-system/memory/`:
+Time-stratified memory in `memory/`:
 - `working/` - session-scoped, ephemeral (<48h). Auto-cleaned during `/q-morning` Step 0a.
 - `weekly/` - 7-day rolling window. Reviewed during Monday morning routine.
 - `monthly/` - persistent insights. Reviewed on 1st of month.
@@ -221,20 +269,36 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 
 `/q-morning` auto-detects missed wraps and runs a lightweight retroactive wrap. No action needed from the founder.
 
-## Standalone Mode (Graceful Degradation)
+## Preflight, Fail-Fast, and Audit Harness (ENFORCED)
 
-If any MCP server is unavailable, degrade gracefully. Never fail the morning routine because one server is down. Skip affected steps, note what's unavailable, proceed with everything else.
+**Before every `/q-morning` run, read `.q-system/preflight.md` FIRST.** This file contains:
+1. Tool manifest with exact tests, known limitations, and fallback chains
+2. Known issues registry (things that broke before, never re-discover)
+3. Session budget with hard split points and handoff format
+4. Step completion log format (flight recorder)
+
+**Every step must write its completion status to `output/morning-log-YYYY-MM-DD.json`.** This is a file on disk, not context. Even if context rots, the log is accurate. If a step isn't logged, it didn't happen.
+
+**After Step 11 (or whenever the routine ends), run the audit harness:**
+```bash
+python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json
+```
+Show the audit output to the founder. This is not optional. The founder should always see the completion verdict.
+
+If any MCP server is unavailable or any step fails during `/q-morning`, STOP the entire routine immediately and report what broke. Do NOT continue with partial data. The founder fixes the issue and re-runs. See `.q-system/preflight.md` for tool manifest and fallback chains, and `commands.md` "Fail-fast mode" section for the halt protocol.
 
 ## Inter-Skill Review Gates (ENFORCED)
 
-Before outputting ANY factual claim about the founder's product:
-1. Check against canonical files (current-state.md, talk-tracks.md)
+Before outputting ANY factual claim about {{YOUR_PRODUCT}}:
+1. Check against canonical files (current-state.md, talk-tracks.md, proof-points.md)
 2. If not in canonical: mark `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}`
 3. If contradicts canonical: BLOCK the output
 
+This applies to outreach, talk tracks, meeting prep, investor updates, and content.
+
 ## Reality Check Mode
 
-`/q-reality-check` is a challenger skill. It temporarily argues AGAINST current positioning to find weak spots. Run monthly or before major meetings.
+`/q-reality-check` is a challenger skill. It temporarily argues AGAINST current positioning to find weak spots. Run monthly or before major meetings. See commands.md for full workflow.
 
 ## Operator Context
 
@@ -244,12 +308,51 @@ Adapt to the founder's profile from `my-project/founder-profile.md`. Key accommo
 - Language preferences (ESL considerations, etc.)
 - Energy management approach
 
-### ADHD-Aware Interaction Rules (if enabled)
+### Output Format Rules
+- Simple, high-signal, bullet-pointed
+- Drop-in ready (usable immediately in decks, emails, docs)
+- No walls of text
+- Crisp talk tracks over long narratives
 
-- Never use pressure, shame, or urgency language
-- Track effort not outcomes. Present choices not commands.
+### ADHD-Aware Interaction Rules (if enabled during setup - ENFORCED)
+
+**Never use pressure, shame, or urgency language.**
+- No "you need to call them now"
+- No "this is overdue" or "you dropped the ball"
+- No numbered urgent action lists that imply failure
+- No framing missed follow-ups as problems. Just surface the next step.
+- No guilt-based motivation ("you haven't done X yet")
+
+**Accommodate RSD (Rejection Sensitive Dysphoria).**
 - Frame outreach as sharing expertise, not asking for favors
-- Suggest gradual ramps, not big asks (async-first before calls)
-- Batch similar-energy tasks together
-- Never stack more than 2-3 action items without a break
+- Present options, never demands
+- If something didn't work out, move to the next approach without dwelling on it
+- Never stack multiple "you should have done X" observations
+
+**Track effort, not outcomes.**
+- Celebrate actions taken (emails sent, posts drafted) rather than responses received
+- "You sent 4 outreach messages today" > "Nobody has responded yet"
+- Progress = actions completed, not conversion rates
+
+**Suggest gradual ramps, not big asks.**
+- Default to async-first (email, demo link, LinkedIn comment) before suggesting calls
+- Recommend small steps: share demo link -> schedule 20 min call -> deeper session
+- Never suggest cold-calling or high-pressure direct asks
+- Batch similar-energy tasks together (Quick Wins separate from Deep Focus)
+
+**Present choices, not commands.**
+- "Here are 3 options for reaching them" > "You should email them today"
+- Always frame as "you could..." or "one option is..." not "you need to..."
+- If something is time-sensitive, state the fact calmly ("Meeting is this week") without pressure
+
+**Respect the freeze response.**
+- If presenting feedback or a long list of actions, break it into small chunks
 - Lead with what's going well before surfacing gaps
+- When surfacing hard truths, pair each one with a concrete, low-effort next step
+- Never stack more than 2-3 action items without a break
+
+**Energy-aware task design.**
+- Always tag tasks with Energy mode (Quick Win / Deep Focus / People / Admin)
+- Always include Time Est so the founder can gauge capacity
+- Default to Quick Win framing whenever possible
+- Group similar tasks so context-switching is minimized
