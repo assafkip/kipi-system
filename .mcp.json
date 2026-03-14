@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "notion_api": {
+      "command": "notion-mcp-server",
+      "args": [],
+      "env": {
+        "NOTION_TOKEN": "${NOTION_TOKEN}"
+      }
+    },
+    "apify": {
+      "command": "npx",
+      "args": ["-y", "@apify/actors-mcp-server@0.9.10"],
+      "env": {
+        "APIFY_TOKEN": "${APIFY_TOKEN}",
+        "TOOLS": "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"
+      }
+    },
+    "reddit": {
+      "command": "npx",
+      "args": ["reddit-mcp-buddy"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}

@@ -130,8 +130,19 @@ Monthly calibration reports show prediction accuracy and reply rates by style. I
 
 ```
 q-founder-os/
-├── CLAUDE.md                    # System brain (behavioral rules, setup wizard)
+├── CLAUDE.md                    # Lightweight entry point with @imports
+├── .mcp.json                    # MCP server config (env var references, no secrets)
+├── .claude/
+│   ├── settings.json            # Permissions, deny rules, PreToolUse hooks
+│   ├── rules/
+│   │   ├── security.md          # Blocks .env/credentials access
+│   │   ├── coding-standards.md  # Code style rules
+│   │   └── content-output.md    # Content generation rules
+│   └── skills/
+│       ├── audhd-executive-function/  # ADHD accommodation rules
+│       └── founder-voice/             # Voice matching engine
 ├── q-system/
+│   ├── CLAUDE.md                # Full behavioral rules + setup wizard
 │   ├── .q-system/
 │   │   └── commands.md          # All command definitions and workflows
 │   ├── canonical/               # What you've learned (objections, talk tracks, decisions)
@@ -146,13 +157,19 @@ q-founder-os/
 │   │   ├── last-handoff.md      # Session continuity note
 │   │   └── morning-state.md     # Morning routine state tracker
 │   └── output/                  # Generated files (HTML schedules, drafts, outreach)
-├── .claude/
-│   └── skills/
-│       ├── audhd-executive-function/  # ADHD accommodation rules
-│       └── founder-voice/             # Voice matching engine
+├── memory/                      # Session memory (MEMORY.md index + topic files)
 └── .agents/
     └── product-marketing-context.md   # Marketing foundation
 ```
+
+## Security
+
+The system ships with security hardening out of the box:
+
+- **Deny rules** block reading/writing `.env`, credentials, `.pem`, and `.key` files
+- **PreToolUse hooks** intercept and block edits to sensitive files at runtime
+- **No hardcoded secrets** - `.mcp.json` uses `${ENV_VAR}` references
+- **Destructive command blocks** - `rm -rf`, `sudo`, `git push --force`, `curl | bash` are denied
 
 ## Optional integrations
 

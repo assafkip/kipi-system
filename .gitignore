@@ -1,7 +1,7 @@
-# Secrets
+# Secrets (local settings with real tokens)
 .env
 *.env
-settings.json
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -23,3 +23,6 @@ q-system/output/marketing/linkedin/*
 q-system/memory/working/*
 !q-system/memory/working/.gitkeep
 !q-system/memory/working/predictions.jsonl
+
+# Node
+node_modules/
