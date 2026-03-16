@@ -7,7 +7,7 @@
 #
 # Examples:
 #   bash q-system/.q-system/log-step.sh 2026-03-14 0f_connection_check done "7/7 passed"
-#   bash q-system/.q-system/log-step.sh 2026-03-14 1_notion_actions failed "" "property not found"
+#   bash q-system/.q-system/log-step.sh 2026-03-14 1_notion_actions failed "" "property Status not found"
 #   bash q-system/.q-system/log-step.sh 2026-03-14 5_site_metrics skipped "" "Monday only"
 #   bash q-system/.q-system/log-step.sh 2026-03-14 5.9_lead_sourcing partial "LinkedIn+Reddit only"
 #

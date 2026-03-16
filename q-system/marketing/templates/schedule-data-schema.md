@@ -131,7 +131,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | YES | Unique item ID (used for checkbox persistence) |
+| `id` | string | YES | Unique item ID. MUST match the action card ID used in `log-step.sh add-card` (e.g., C1, C2, DM1). This is the join key between the HTML, localStorage, the exported JSON, and the morning log. Used for checkbox/skip persistence and next-morning pickup. |
 | `title` | string | YES | Action title. Keep concise |
 | `energy` | string | YES | `quickwin`, `deepfocus`, `people`, or `admin` |
 | `time` | string | YES | Estimated time: `2 min`, `5 min`, `10 min`, `15 min`, `30 min` |
@@ -170,13 +170,15 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 Sections MUST appear in this order (skip empty ones):
 
 1. **Quick Wins** (`green`) - scheduling replies, short DMs, comments (2-3 min each)
-2. **LinkedIn Engagement** (`blue`) - comments on prospect posts
-3. **New Leads** (`yellow`) - connection requests, X replies
-4. **Special Outreach** (`pink`) - RSA, events, batch campaigns (only when applicable)
-5. **Posts** (`green`/`yellow`) - social content to publish (collapsed if already published)
-6. **Emails** (`purple`) - longer follow-ups
-7. **Meeting Prep** (`purple`, collapsed) - upcoming call prep
-8. **FYI** (`gray`, collapsed) - pipeline, signals, info-only
+2. **Open Loops** (`red`) - loops at level 2+ (7+ days old). Force-close items have skip=park UX. HIGHEST PRIORITY after quick wins.
+3. **Pipeline Follow-ups** (`purple`) - existing warm prospects, overdue actions, DP follow-ups. BEFORE new leads.
+4. **LinkedIn Engagement** (`blue`) - comments on prospect posts
+5. **New Leads** (`yellow`) - connection requests, X replies
+5. **Special Outreach** (`pink`) - RSA, events, batch campaigns (only when applicable)
+6. **Posts** (`green`/`yellow`) - social content to publish (collapsed if already published)
+7. **Emails** (`purple`) - longer follow-ups
+8. **Meeting Prep** (`purple`, collapsed) - upcoming call prep
+9. **FYI** (`gray`, collapsed) - pipeline, signals, info-only
 
 ## Item Ordering Within Sections (ENFORCED)
 
