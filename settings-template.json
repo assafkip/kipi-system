@@ -6,6 +6,23 @@
     "defaultMode": "acceptEdits"
   },
   "model": "opus",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+          }
+        ]
+      }
+    ]
+  },
   "mcpServers": {
     "_INSTRUCTIONS_": "Uncomment and configure the servers you need. Replace YOUR_*_TOKEN placeholders with your actual tokens. Delete this _INSTRUCTIONS_ key when done.",
 
