@@ -1,8 +1,8 @@
 # The Kipi System
 
-A decision-execution system built on Claude Code. It closes the gap between knowing what to do and actually doing it.
+**Run your day, not your to-do list.**
 
-Most tools help you organize information. This one makes you act on it. Every output is copy-paste ready, pre-decided, and friction-ordered. The human's job is reduced to: execute or skip.
+A decision-execution engine built on Claude Code. It closes the gap between knowing what to do and actually doing it. Every output is copy-paste ready, pre-decided, and friction-ordered. You execute or skip. That's it.
 
 I built this for myself. I'm a solo founder with ADHD running a pre-seed startup. I was drowning in follow-ups, avoiding phone calls, and watching every open loop slowly die. So I built a system that tracks every loop, escalates what's going cold, writes the follow-up text for me, and produces a single HTML file every morning that IS my entire workday.
 
