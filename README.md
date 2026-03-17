@@ -1,6 +1,6 @@
 # The Kipi System
 
-**Run your day, not your to-do list.**
+**Your AI brain. Externalized.**
 
 You had 4 meetings this week. You owe follow-ups to 3 of them. One person replied to your DM from last Tuesday and you haven't noticed. A warm intro is going cold because you forgot to send the deck. Your to-do list has 30 items, 12 are stale, and you're not sure which ones still matter.
 
