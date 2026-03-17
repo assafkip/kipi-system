@@ -1,189 +1,208 @@
-# Q Founder OS
+# Q Instance
 
-An AI-powered operating system for startup founders. It runs inside [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and manages your entire day: relationships, pipeline, content, outreach, meeting prep, and follow-ups.
+A decision-execution system built on Claude Code. It closes the gap between knowing what to do and actually doing it.
 
-You talk to it. It remembers everything. It writes in your voice. It tells you exactly what to do next and gives you the copy-paste text to do it.
+Most tools help you organize information. This one makes you act on it. Every output is copy-paste ready, pre-decided, and friction-ordered. The human's job is reduced to: execute or skip.
 
-## Who this is for
+I built this for myself. I'm a solo founder with ADHD running a pre-seed startup. I was drowning in follow-ups, avoiding phone calls, and watching every open loop slowly die. So I built a system that tracks every loop, escalates what's going cold, writes the follow-up text for me, and produces a single HTML file every morning that IS my entire workday.
 
-Solo founders and tiny teams who are doing sales, marketing, content, investor outreach, and product at the same time. Especially founders who:
+Then I realized the pattern isn't founder-specific. It's for anyone who manages concurrent relationships and can't afford to drop one.
 
-- Lose track of follow-ups and conversations
-- Spend too much time context-switching between tools
-- Want their outreach to sound like them, not like AI
-- Have ADHD/ASD and need external structure (optional AUDHD mode built in)
+## The pattern
 
-## What it does
+Every knowledge worker does the same thing:
 
-**Morning routine (`/q-morning`):** One command generates your entire day. Calendar, email, CRM, social posts, engagement hitlists, lead sourcing, meeting prep, pipeline health. Everything lands in a single HTML file with checkboxes, copy buttons, and time estimates. You copy, paste, and check things off.
+1. Process inputs (emails, meetings, reports, messages)
+2. Decide what matters
+3. Figure out what to do about it
+4. Write the email, make the call, send the message
+5. Track whether it worked
 
-**Relationship engine:** The system tracks every prospect through a 5-stage ladder (warm up, connect, first DM, conversation, demo). It generates the next action for each person, pre-written and copy-paste ready. You never decide who to contact or what to say. You just execute.
+Most software helps with step 1 and 5. Nobody helps with 2, 3, and 4. That's the gap this system fills.
 
-**Voice matching:** Feed it your writing samples and it learns how you actually communicate. Every DM, email, comment, and post sounds like you, not like AI. It knows your vocabulary, your patterns, your pet peeves.
-
-**Conversation memory:** Paste a meeting transcript and the system extracts what resonated, what got pushback, what you owe them, and what to say next time. Insights route automatically to the right files. After 50 conversations, your talk tracks are battle-tested.
-
-**Content engine:** Daily social posts, weekly thought leadership, engagement hitlists with copy-paste comments for your prospects' posts. All in your voice, all grounded in what you've actually learned from conversations.
-
-**AUDHD mode (optional):** If you have ADHD/ASD, the system becomes your external executive function. Items ordered by friction (lowest first for dopamine momentum). Energy-tagged tasks (Quick Win / Deep Focus / People / Admin). No shame language. Effort tracking, not outcome tracking. The system decides, you execute.
-
-## Setup
-
-### 1. Install Claude Code
-
-```bash
-npm install -g @anthropic-ai/claude-code
+```
+Unstructured input
+    -> Extract what matters
+        -> Store in canonical source of truth
+            -> Track every open loop
+                -> Produce executable daily output
+                    -> Compound over time
 ```
 
-You need an Anthropic API key. Get one at https://console.anthropic.com
+## What it actually does
 
-### 2. Clone this repo
+**Closes loops.** Every DM, email, connection request, and follow-up opens a tracked loop. 3 days without a response: warning. 7 days: prominent. 14 days: the system forces you to act, park, or kill the loop. Nothing gets forgotten.
 
-```bash
-git clone https://github.com/assafkip/q-founder-os.git
-cd q-founder-os
+**Debriefs conversations.** Paste a meeting transcript. The system extracts what resonated, what got pushback, new objections, and next steps. Insights route automatically to the right canonical files. After 50 conversations, your talk tracks are battle-tested without you maintaining them.
+
+**Produces a daily action plan.** One HTML file with every task for the day. Each item has the actual copy-paste text, a link to where to send it, a time estimate, and an energy tag. Items sorted by friction: 2-minute tasks first for momentum, deep work later. You open the file, start at the top, and work down.
+
+**Compounds knowledge.** What you learned from a conversation last month changes what the system suggests this week. Canonical files (positioning, objections, relationships, competitive landscape) are the source of truth that every workflow reads from. The system gets smarter with every interaction.
+
+**Matches your voice.** Feed it writing samples and it learns how you communicate. Every DM, email, comment, and post sounds like you. Not like AI. It knows your vocabulary, your sentence rhythm, your pet peeves about words like "leverage" and "synergy."
+
+**Tracks relationships.** Every person has a state: what they care about, what they pushed back on, when you last talked, what you owe them. The system surfaces the 3 warmest relationships that haven't been touched in 5+ days and drafts the follow-up for you.
+
+## ADHD mode
+
+If you have ADHD/ASD, this system was built for you. Literally. I have AUDHD (combined ADHD + Autism) and every design decision comes from that.
+
+- Items ordered by friction, lowest first. 2-minute wins build dopamine before hard tasks.
+- Energy tags on everything: Quick Win, Deep Focus, People, Admin. Batch similar-energy tasks.
+- No shame language. Never "overdue." Always "carried forward." Never "you forgot." Always "not yet done."
+- Effort tracking, not outcome tracking. "You sent 4 messages today" instead of "nobody responded."
+- The system decides who to contact, what to say, in what order, through which channel. You copy-paste and check boxes. Decision fatigue eliminated.
+- Based on research: Barkley's executive function model, Dodson's RSD framework, 30+ peer-reviewed sources.
+
+This isn't an optional add-on. It's the default design philosophy.
+
+## The architecture
+
+```
+q-instance/
+├── .q-system/
+│   ├── commands.md          # Every workflow defined (35+ steps in morning routine)
+│   ├── preflight.md         # Tool manifest, known issues, execution gates
+│   ├── loop-tracker.sh      # Opens, closes, escalates loops. Forces decisions at 14 days.
+│   ├── log-step.sh          # Flight recorder. Every step logged to disk.
+│   ├── session-start.py     # Auto-loads handoff + open loops on first tool use of the day
+│   ├── token-guard.py       # Circuit breaker for runaway AI token consumption
+│   └── audit-morning.py     # Post-execution audit. Catches skipped steps and missing content.
+│
+├── canonical/               # Source of truth. Updated by debriefs, calibration, research.
+│   ├── talk-tracks.md       # What to say, to whom, tested and tagged by audience
+│   ├── objections.md        # Every pushback heard, with the response that worked
+│   ├── discovery.md         # Questions asked and answered, gaps identified
+│   ├── decisions.md         # Every positioning decision with origin tag
+│   ├── market-intelligence.md  # Buyer language, competitive intel, category signals
+│   └── content-intelligence.md # What content performs, what doesn't, why
+│
+├── my-project/              # Your specific context
+│   ├── current-state.md     # What works today (not vision, not roadmap)
+│   ├── relationships.md     # Every person, what they care about, next step
+│   ├── competitive-landscape.md  # Substitutes, adjacents, positioning against each
+│   └── progress.md          # Log of decisions, debriefs, canonical changes
+│
+├── methodology/
+│   ├── debrief-template.md  # 12-lens conversation extraction with signal quality check
+│   └── modes.md             # 4 operating modes: CALIBRATE, CREATE, DEBRIEF, PLAN
+│
+├── marketing/
+│   ├── templates/           # LinkedIn, X, Medium, email, outreach templates
+│   ├── assets/              # Boilerplate, bio, stats, proof points, competitive one-liners
+│   └── content-guardrails.md # Rules every piece of content must pass
+│
+├── memory/
+│   ├── working/             # Expires in 48 hours
+│   ├── weekly/              # 7-day rolling patterns
+│   ├── monthly/             # Persistent insights
+│   ├── graph.jsonl          # Entity-relationship knowledge graph
+│   └── last-handoff.md      # Session continuity
+│
+├── hooks/
+│   └── session-start.py     # Loads context on first tool use each day
+│
+└── output/
+    ├── open-loops.json      # Every tracked loop with escalation state
+    ├── daily-schedule-*.html # The daily action plan
+    └── morning-log-*.json   # Flight recorder for the morning routine
 ```
 
-### 3. Start Claude Code
+## How loops work
 
 ```bash
-claude
+# Open a loop when you send something
+bash .q-system/loop-tracker.sh open dm_sent "Jane Smith" "Sent governance framework question"
+
+# System auto-escalates daily
+bash .q-system/loop-tracker.sh escalate
+# Output: 12 open (L0:5 L1:4 L2:2 L3:1)
+
+# Level 3 = 14+ days. System forces a decision:
+# ACT (send follow-up), PARK (re-engage on trigger), or KILL (close permanently)
+bash .q-system/loop-tracker.sh force-close L-2026-03-01-003 park
+
+# Loops auto-close when evidence is found
+# (Gmail reply detected, LinkedIn DM reply, connection accepted)
+bash .q-system/loop-tracker.sh close L-2026-03-16-001 "DM reply detected" "auto_gmail"
 ```
 
-That's it. The system detects it's a fresh install and walks you through setup one step at a time.
-
-## What the setup wizard asks
-
-The wizard asks one category at a time. You answer, it confirms, you move to the next.
-
-| Step | What it asks | Where it saves |
-|------|-------------|----------------|
-| 1. Who are you? | Name, role, company, stage, co-founder | `founder-profile.md` |
-| 2. Who do you sell to? | Buyer, industry, pain, alternatives, price | `current-state.md`, `discovery.md` |
-| 3. Your positioning | One-liner, metaphors, what you're NOT, top objections | `talk-tracks.md`, `objections.md` |
-| 4. Your voice | Style, words you use, words you hate, writing samples | `voice-dna.md`, `writing-samples.md` |
-| 5. Your tools | Notion, Google Calendar, Gmail, LinkedIn, Apify | `settings.json` snippets |
-| 6. Your CRM | Notion databases or local markdown files | `notion-ids.md` |
-| 7. Your network | Top 10 contacts, investors, partners, advisors | `relationships.md` |
-| 8. Confirmation | Summary review, verify everything loaded | Removes setup flag |
+9 loop types: `dm_sent`, `email_sent`, `materials_sent`, `comment_posted`, `action_created`, `debrief_next_step`, `dp_offer_sent`, `connection_request_sent`, `lead_sourced`. Each has a defined opener step, closer step, and the state file that connects them.
 
 ## Commands
 
-### Daily workflow
+**Daily:**
+- `/q-morning` - generates your entire day as an HTML file
+- `/q-wrap` - 10-minute end-of-day health check
+- `/q-handoff` - save context for next session
 
-| Command | What it does |
-|---------|-------------|
-| `/q-morning` | Full morning briefing + daily HTML schedule. The only command you need to start a day. |
-| `/q-wrap` | 10-minute end-of-day health check. Effort log, debrief check, tomorrow preview. |
-| `/q-handoff` | Save session context so the next session picks up where you left off. |
+**After conversations:**
+- `/q-debrief` - extract insights from any conversation (or just paste a transcript)
+- `/q-draft` - quick email, DM, or talking points
 
-### After conversations
+**Outreach:**
+- `/q-engage` - engagement hitlist with copy-paste comments for prospects' posts
+- `/q-create` - generate talk tracks, emails, slides for a specific audience
+- `/q-plan` - review pipeline, relationships, prioritize next actions
 
-| Command | What it does |
-|---------|-------------|
-| `/q-debrief` | Process a conversation. Or just paste a transcript and it runs automatically. |
-| `/q-draft` | Quick one-off email, DM, or talking points. |
+**Content:**
+- `/q-market-create` - LinkedIn, X, Medium content in your voice
+- `/q-market-plan` - weekly planning against theme rotation
 
-### Outreach and engagement
+**System:**
+- `/q-calibrate` - update canonical files with new information
+- `/q-reality-check` - stress-test your positioning against evidence
+- `/q-status` - quick snapshot of where things stand
 
-| Command | What it does |
-|---------|-------------|
-| `/q-engage` | Social engagement hitlist. Copy-paste comments for your prospects' posts. |
-| `/q-create` | Generate talk tracks, emails, slides for a specific audience. |
-| `/q-plan` | Review pipeline, relationships, and proof gaps. Prioritize next actions. |
+## Setup
 
-### Content
+```bash
+# 1. Install Claude Code
+npm install -g @anthropic-ai/claude-code
 
-| Command | What it does |
-|---------|-------------|
-| `/q-market-create` | Generate LinkedIn, X, Medium, or email content. |
-| `/q-market-plan` | Weekly content planning against your theme rotation. |
-| `/q-market-publish` | Mark content as published, update tracking. |
+# 2. Clone
+git clone https://github.com/assafkip/q-founder-os.git
+cd q-founder-os
 
-### System
-
-| Command | What it does |
-|---------|-------------|
-| `/q-status` | Quick snapshot of where things stand. |
-| `/q-reality-check` | Challenger mode. Stress-tests your positioning against evidence. |
-| `/q-investor-update` | Draft a milestone-triggered investor update for your full VC list. |
-
-## How the system learns
-
-Every conversation makes the system smarter. The debrief template extracts what resonated, what got pushback, and what you couldn't answer. Those extractions route to canonical files:
-
-- **Objections** get logged with responses that worked
-- **Talk tracks** get tagged by audience and updated with phrases that landed
-- **Discovery questions** track what buyers ask and how you answered
-- **Relationship files** remember what each person cares about
-- **A knowledge graph** maps who knows whom, who cares about what, and how people connect
-
-The system also predicts what each conversation will surface before you describe it. When predictions are wrong, it reveals gaps in what it knows. Over time, predictions get more accurate.
-
-## How outreach improves
-
-Every outreach message is tagged with a style code (value drop, genuine question, peer observation, content reference, warm intro). The system tracks which styles get replies and shifts toward what works for your specific audience.
-
-Monthly calibration reports show prediction accuracy and reply rates by style. If your high-confidence predictions are wrong more than half the time, the system tells you.
-
-## File structure
-
+# 3. Start
+claude
 ```
-q-founder-os/
-├── CLAUDE.md                    # Lightweight entry point with @imports
-├── .mcp.json                    # MCP server config (env var references, no secrets)
-├── .claude/
-│   ├── settings.json            # Permissions, deny rules, PreToolUse hooks
-│   ├── rules/
-│   │   ├── security.md          # Blocks .env/credentials access
-│   │   ├── coding-standards.md  # Code style rules
-│   │   └── content-output.md    # Content generation rules
-│   └── skills/
-│       ├── audhd-executive-function/  # ADHD accommodation rules
-│       └── founder-voice/             # Voice matching engine
-├── q-system/
-│   ├── CLAUDE.md                # Full behavioral rules + setup wizard
-│   ├── .q-system/
-│   │   └── commands.md          # All command definitions and workflows
-│   ├── canonical/               # What you've learned (objections, talk tracks, decisions)
-│   ├── my-project/              # Your context (profile, relationships, state)
-│   ├── methodology/             # Debrief template, process docs
-│   ├── marketing/               # Content system (templates, guardrails, themes)
-│   ├── memory/
-│   │   ├── working/             # Session-scoped scratch (auto-cleaned after 48h)
-│   │   ├── weekly/              # 7-day rolling insights (reviewed Mondays)
-│   │   ├── monthly/             # Persistent patterns (reviewed 1st of month)
-│   │   ├── graph.jsonl          # Entity-relationship knowledge graph
-│   │   ├── last-handoff.md      # Session continuity note
-│   │   └── morning-state.md     # Morning routine state tracker
-│   └── output/                  # Generated files (HTML schedules, drafts, outreach)
-├── memory/                      # Session memory (MEMORY.md index + topic files)
-└── .agents/
-    └── product-marketing-context.md   # Marketing foundation
-```
+
+The system walks you through setup: who you are, who you sell to, your positioning, your voice, your tools. One category at a time.
+
+## Integrations
+
+Works without any integrations (local markdown files). Each tool you connect adds capability:
+
+- **Notion** - CRM, pipeline, engagement tracking
+- **Google Calendar** - meeting detection, prep generation
+- **Gmail** - email monitoring, reply detection for loop auto-close
+- **Apify** - LinkedIn/X/Reddit scraping for lead sourcing
+- **Chrome** - LinkedIn DMs, interactive browsing, analytics
+- **Slack** - notifications, approval workflows
 
 ## Security
 
-The system ships with security hardening out of the box:
+- Deny rules block `.env`, credentials, `.pem`, `.key` files
+- PreToolUse hooks intercept dangerous operations at runtime
+- No hardcoded secrets in committed files
+- Destructive commands (`rm -rf`, `sudo`, `git push --force`) blocked by default
 
-- **Deny rules** block reading/writing `.env`, credentials, `.pem`, and `.key` files
-- **PreToolUse hooks** intercept and block edits to sensitive files at runtime
-- **No hardcoded secrets** - `.mcp.json` uses `${ENV_VAR}` references
-- **Destructive command blocks** - `rm -rf`, `sudo`, `git push --force`, `curl | bash` are denied
+## Beyond founders
 
-## Optional integrations
+The pattern (unstructured input -> canonical state -> loop tracking -> executable output -> compounding) applies to any domain where humans manage concurrent relationships and compound knowledge:
 
-The system works without any integrations (local files only). Each tool you connect makes it more powerful:
+- Lawyers managing cases
+- Account managers running portfolios
+- Doctors managing patient loads
+- Therapists tracking caseloads
+- Real estate agents juggling deals
+- Teachers managing classrooms
 
-| Tool | What it enables |
-|------|----------------|
-| **Notion** | CRM with contacts, interactions, pipeline, engagement tracking |
-| **Google Calendar** | Meeting detection, prep generation, schedule awareness |
-| **Gmail** | Email monitoring, unlogged conversation detection |
-| **Apify** | LinkedIn/X/Reddit/Medium scraping for lead sourcing and engagement |
-| **Chrome** | LinkedIn DM reading, Google Analytics, interactive browsing |
-| **Telegram** | Push notifications for top daily actions |
+The founder context is where I built it. The architecture is domain-agnostic. Fork it and adapt the canonical files, debrief template, and commands to your domain.
 
 ## Built by
 
-[Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/) - founder of [KTLYST](https://ktlystlabs.com), 12 years in threat intelligence (LinkedIn, Google, Meta, ElevenLabs). Built this to manage the cognitive overhead of running a pre-seed startup solo with ADHD. Then open-sourced it because the problem is universal.
+[Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/) - 12 years in threat intelligence at LinkedIn, Google, Meta, and ElevenLabs. Built this to manage the cognitive overhead of running a pre-seed startup solo with ADHD. Building [KTLYST](https://ktlystlabs.com) - the nervous system for enterprise security.
+
+The system that runs KTLYST's operations (morning routine, CRM, outreach, content, investor pipeline) is a production instance of this skeleton. Everything in this repo is the general-purpose framework without domain-specific content.
