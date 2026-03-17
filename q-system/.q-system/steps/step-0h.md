@@ -1,0 +1,6 @@
+- **0h - Context budget strategy:** The morning routine is split into two halves. If context is running low after Step 5.9b, auto-run `/q-handoff` and tell the founder: "Context is getting tight. Running handoff. Start a new session and run `/q-morning` again - it will pick up from the handoff note and skip to Step 11 (HTML generation)." The handoff note must include all data collected so far (calendar, actions, hitlist items, lead sourcing results) as structured data so the next session can build the JSON without re-running Steps 1-5.
+
+**Context-saving rules (ENFORCED across all steps):**
+- **Never hold raw Apify results in context.** Save to `output/lead-gen/` files immediately. Read back only the qualified subset.
+- **Never generate content for the wrong day.** Tuesday = TL post only. Friday = Medium only. Don't generate signals + TL + hot take + BTS all on the same day unless it's Monday.
+- **Step 5.9 Phase 2: score in batches.** Read 10 results, score, discard sub-10 scores immediately. Don't hold all 50 raw results in context simultaneously.

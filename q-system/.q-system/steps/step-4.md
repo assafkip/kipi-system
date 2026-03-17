@@ -1,0 +1,18 @@
+  - X visual post idea (Wed from Step 4 - founder creates visual, caption drafted)
+  - LinkedIn thought leadership draft (Tue/Thu from Step 4 continued, if generated)
+  - X thought leadership thread (Tue/Thu from Step 4 continued, if generated)
+  - Medium article status (Fri: draft ready for review / Sun: publish reminder)
+  - LinkedIn comments to post/reply (from Step 3, any threads with new replies, re-engagement opportunities)
+  - **ENGAGEMENT HITLIST (from Step 5.9b, COPY-PASTE READY):**
+    - LinkedIn comments: each with post link + ready comment text
+    - X replies: each with tweet link + ready reply text
+    - Connection requests: each with profile link + ready message
+    - Reddit comments: each with thread link + ready comment
+  - X engagements: 5-7 QTs/replies to target accounts (from Step 2.5 + Step 3)
+  - X DMs: 2-3 warm DMs to people who engaged with your posts (from Step 2.5)
+  - X replies: respond to any comments on yesterday's posts (from Step 2.5)
+  - Any other content to publish (Substack, etc.)
+  - Gamma social card link (if generated from Medium article on Fri)
+- Both pages use `- [ ]` checkbox syntax so founder can check off items in Notion UI
+- Include the actual draft text for posts (not just "generate a post") so founder can copy-paste
+- Set "Last updated" date in the page header

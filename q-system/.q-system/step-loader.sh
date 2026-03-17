@@ -18,14 +18,34 @@
 
 STEP_ID="$1"
 COMMANDS_FILE="q-system/.q-system/commands.md"
+STEPS_DIR="q-system/.q-system/steps"
 
 if [ -z "$STEP_ID" ]; then
   echo "Usage: bash q-system/.q-system/step-loader.sh <step_id>" >&2
   exit 1
 fi
 
+# Try individual step file FIRST (saves ~43K tokens vs reading full commands.md)
+SAFE_ID=$(echo "$STEP_ID" | sed 's/\./-/g')
+STEP_FILE="${STEPS_DIR}/step-${SAFE_ID}.md"
+
+if [ -f "$STEP_FILE" ]; then
+  echo "================================================================"
+  echo "  STEP ${STEP_ID} REQUIREMENTS (loaded from step file)"
+  echo "  Read these BEFORE executing. Do not skip any requirement."
+  echo "================================================================"
+  echo ""
+  cat "$STEP_FILE"
+  echo ""
+  echo "================================================================"
+  echo "  Execute this step now. Log deliverables, not just 'done'."
+  echo "================================================================"
+  exit 0
+fi
+
+# Fallback: extract from monolithic commands.md
 if [ ! -f "$COMMANDS_FILE" ]; then
-  echo "Commands file not found: $COMMANDS_FILE" >&2
+  echo "Neither step file ($STEP_FILE) nor commands file ($COMMANDS_FILE) found" >&2
   exit 1
 fi
 
