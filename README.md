@@ -2,13 +2,11 @@
 
 **Your AI brain. Externalized.**
 
-You had 4 meetings this week. You owe follow-ups to 3 of them. One person replied to your DM from last Tuesday and you haven't noticed. A warm intro is going cold because you forgot to send the deck. Your to-do list has 30 items, 12 are stale, and you're not sure which ones still matter.
+Your brain knows who you need to follow up with. It just doesn't remind you. Your brain knows what that person said last month that mattered. It just can't find it. Your brain knows exactly what email to write. It just won't write it for you.
 
-The Kipi System fixes this. One command in Claude Code produces your entire day: every action pre-written, every follow-up drafted, every open thread tracked. You copy, paste, check the box, move on.
+The Kipi System is the part of your brain that remembers everything, connects everything, and turns everything into the next action. It runs in Claude Code. It learns from every conversation you have. It produces your entire day as a single file: every action pre-written, every follow-up drafted, every open thread tracked.
 
-```
-One command. Your whole day. Every action ready to go.
-```
+You copy, paste, check the box, move on.
 
 ---
 
@@ -70,15 +68,15 @@ This isn't a feature toggle. It's how the whole system thinks. If you don't have
 
 ---
 
-## The system gets smarter every day
+## A brain that compounds
 
-Traditional tools are static. You put data in, you get data out. The Kipi System compounds.
+Your biological brain forgets 90% of every conversation within a week. This one doesn't.
 
-**Canonical files** are the source of truth: your positioning, your objections and the responses that worked, your competitive landscape, every relationship and what each person cares about. Every workflow reads from them. Every conversation updates them.
+**Canonical memory.** Your positioning, your objections and the responses that worked, your competitive landscape, every relationship and what each person cares about. Every workflow reads from this memory. Every conversation updates it.
 
-**Time-stratified memory.** Working memory expires in 48 hours (you don't need yesterday's scratch notes). Weekly patterns roll up. Monthly insights persist. The system forgets what doesn't matter and holds onto what does.
+**Time-layered recall.** Working memory expires in 48 hours (you don't need yesterday's scratch notes). Weekly patterns roll up. Monthly insights persist. Like a real brain, it forgets what doesn't matter and strengthens what does.
 
-**A knowledge graph** connects people, companies, what they said, and how they relate. "Who in my network works at a company that runs Okta?" is a question the system can answer.
+**Connections across conversations.** A knowledge graph links people, companies, what they said, and how they relate. The insight from a conversation three weeks ago changes what the system suggests today. You didn't have to remember it. The brain did.
 
 ---
 
@@ -195,6 +193,6 @@ The founder context is where I built it. Fork it and replace the canonical files
 
 I'm [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/). 12 years in threat intelligence at LinkedIn, Google, Meta, and ElevenLabs. I burned out at Google fighting the same problems over and over. Left corporate. Started building [KTLYST](https://ktlystlabs.com), a security product that turns threat reports into governed, deployable artifacts for every team.
 
-Running a pre-seed startup solo with ADHD meant everything was falling through the cracks. So I built this system for myself. It manages my investor pipeline, writes my outreach, preps my meetings, tracks every open loop, and produces a daily HTML file that IS my workday.
+Running a startup solo with ADHD meant my brain couldn't hold everything it needed to hold. So I built a second one. It manages my investor pipeline, writes my outreach in my voice, preps my meetings, tracks every open loop, and produces a daily HTML file that IS my workday. It remembers what I forget. It follows up when I don't. It compounds what I learn.
 
-KTLYST's operations run on a production instance of this system. This repo is the general-purpose skeleton without domain-specific content. Fork it and make it yours.
+KTLYST's operations run on a production instance of this brain. This repo is the general-purpose version. Fork it and teach it yours.
