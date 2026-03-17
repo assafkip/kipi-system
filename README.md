@@ -1,4 +1,4 @@
-# Q Instance
+# The Kipi System
 
 A decision-execution system built on Claude Code. It closes the gap between knowing what to do and actually doing it.
 
@@ -59,7 +59,7 @@ This isn't an optional add-on. It's the default design philosophy.
 ## The architecture
 
 ```
-q-instance/
+kipi-system/
 ├── .q-system/
 │   ├── commands.md          # Every workflow defined (35+ steps in morning routine)
 │   ├── preflight.md         # Tool manifest, known issues, execution gates
@@ -161,8 +161,8 @@ bash .q-system/loop-tracker.sh close L-2026-03-16-001 "DM reply detected" "auto_
 npm install -g @anthropic-ai/claude-code
 
 # 2. Clone
-git clone https://github.com/assafkip/q-founder-os.git
-cd q-founder-os
+git clone https://github.com/assafkip/kipi-system.git
+cd kipi-system
 
 # 3. Start
 claude
