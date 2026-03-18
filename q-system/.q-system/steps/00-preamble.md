@@ -1,6 +1,6 @@
 # Q Instance Commands
 
-> These are conventions for interacting with the KTLYST Q Instance. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
+> These are conventions for interacting with the Q Instance. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
 
 | Command | Purpose | Mode |
 |---------|---------|------|
@@ -98,11 +98,11 @@ For prospects with DP Status = Prospect who have NOT been contacted yet:
    - What they post/comment about (topics, themes, pain points)
    - Specific recent posts (quotes, subjects)
    - Professional focus areas and what they care about
-   - Any angles connecting to KTLYST's positioning
+   - Any angles connecting to {{YOUR_PRODUCT}}'s positioning
 2. **Personalize** using the `cold-email` marketing skill: For each prospect, craft:
    - Touch 1 comment (if they have recent posts to comment on)
    - Connection request (under 300 chars) referencing something specific from their activity
-   - Follow-up DM (under 500 chars) referencing their specific work, asking a genuine question, with UTM-tagged demo link as async CTA (e.g., `demo.ktlystlabs.com?utm_source=linkedin&utm_medium=dm&utm_campaign=cold-outreach&utm_content=[prospect-slug]`)
+   - Follow-up DM (under 500 chars) referencing their specific work, asking a genuine question, with UTM-tagged demo link as async CTA (e.g., `{{YOUR_DEMO_URL}}?utm_source=linkedin&utm_medium=dm&utm_campaign=cold-outreach&utm_content=[prospect-slug]`)
 3. **Save** all messages to `output/design-partner/personalized-outreach-YYYY-MM-DD.md`
 4. **Update Notion** contacts with research findings (What They Care About, Follow-up Action, Strategic Value)
 5. **Output** execution sequence (who to contact first, Touch 1 vs Touch 2)
@@ -122,7 +122,7 @@ When founder shares a LinkedIn post screenshot at any time (no command needed):
 4. **Market intelligence check** — Before generating a comment, evaluate the POST CONTENT for canonical value using the same 6 lenses from Step 2.5 (problem language, category signal, objection preview, competitive intel, buyer process, narrative check). If the post has canonical value, log to `canonical/market-intelligence.md`. This happens regardless of whether we comment.
 5. **Generate 1 best comment** — The system picks the best style (Insight / Connector / Question) based on pool, context, and post content. No options to choose from, no decision paralysis. If the founder wants alternatives, they can ask. Grounded in:
    - The post's actual content
-   - KTLYST's canonical positioning
+   - {{YOUR_PRODUCT}}'s canonical positioning
    - Person's pool and what matters to them
    - Prior interaction history (if any)
 6. **Log to Notion** (after founder picks a comment):
@@ -131,7 +131,7 @@ When founder shares a LinkedIn post screenshot at any time (no command needed):
    - Set Follow-up Date: 5-7 days out on LinkedIn Tracker entry
 
 **Rules (from `canonical/engagement-playbook.md`):**
-- Never pitch KTLYST in comments unless directly asked
+- Never pitch {{YOUR_PRODUCT}} in comments unless directly asked
 - Max 3-4 sentences per comment
 - One comment per person per week (unless they reply)
 - Every engagement logged to Notion — no exceptions
@@ -158,7 +158,7 @@ LinkedIn post (save to `output/marketing/linkedin/linkedin-process-improvement-Y
 - Result: What my day looks like now vs before (1-2 sentences)
 - Angle: AI-native founder building in public. "This is what building a startup looks like when your co-founder is an AI."
 - Tone: Honest, specific, vulnerable. Not "I'm so productive" - more "I have ADHD and this is how I cope with running a startup."
-- NO KTLYST pitch. This is about the founder journey, not the product.
+- NO {{YOUR_PRODUCT}} pitch. This is about the founder journey, not the product.
 - End with a question to drive comments (e.g., "What's the most tedious part of your workflow that you wish was automated?")
 
 X post (save to same file):
@@ -309,6 +309,6 @@ When founder reports an action, the system immediately:
 1. `/q-sync-notion` — push local changes to Notion, pull Notion changes to local
    - **Local → Notion:** New debriefs → Interactions, updated contacts → Contact properties, pipeline changes → Investor Pipeline
    - **Notion → Local:** Follow-up dates changed in Notion → relationships.md, pipeline stage changes → current-state.md
-   - **Notion IDs:** See `my-project/progress.md` entry "2026-02-27 — Notion Founder CRM Built" for all database data_source_ids
+   - **Notion IDs:** See `my-project/notion-ids.md` for all database IDs
 
 ### Morning briefing (`/q-morning`):

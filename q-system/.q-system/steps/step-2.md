@@ -6,7 +6,7 @@
 | **First-person proof** | "We built" / "Our team" / names their company | "I've seen" / "In my experience" | Third-person or hypothetical |
 | **Role fit** | Security leader/practitioner at enterprise (CISO, Dir SecOps, Det Eng Lead, IR Manager, GRC Lead) | Security IC or adjacent role (SOC analyst, compliance analyst, AppSec) | Non-security role tangentially discussing security |
 | **Engagement opportunity** | Post has a question or open problem we can genuinely add value to | Post has a take we can build on with a thoughtful comment | Post is closed/declarative, hard to add value without pitching |
-| **Multi-team pain** | Describes cross-silo problem (exactly KTLYST's value prop) | Describes single-team problem KTLYST solves (detection OR IR OR compliance etc.) | Single-tool problem (e.g., "how do I write a Splunk query") |
+| **Multi-team pain** | Describes cross-silo problem (exactly {{YOUR_PRODUCT}}'s value prop) | Describes single-team problem {{YOUR_PRODUCT}} solves | Single-tool problem |
 
 **Composite score = sum of 5 dimensions (max 25)**
 

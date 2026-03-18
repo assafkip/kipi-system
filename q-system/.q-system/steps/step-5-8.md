@@ -16,7 +16,7 @@ Stitches together ALL engagement signals from today's morning routine into one s
   | Clicked UTM link to /signals | +2 | Step 5.5 (GA, Mondays) or carry forward |
   | Accepted connection request | +2 | Step 3.8 (DM check) |
   | Viewed your LinkedIn profile | +1 | Step 3 (if visible in "Who viewed your profile") |
-  | Posted about KTLYST-shaped problem | +3 | Step 5.9 (problem-language search) |
+  | Posted about {{YOUR_PRODUCT}}-shaped problem | +3 | Step 5.9 (problem-language search) |
   | You sent outreach, no response | -1 per touch | Step 3.5 (pipeline check) |
   | No activity in 14+ days | -3 | Step 3.5 (last contact date) |
 

@@ -21,8 +21,8 @@ Follow the official installation at https://docs.anthropic.com/en/docs/claude-co
 
 ### 2. Clone this repo
 ```bash
-git clone https://github.com/assafkip/q-founder-os.git
-cd q-founder-os
+git clone https://github.com/assafkip/kipi-system.git
+cd kipi-system
 ```
 
 ### 3. Set up environment variables

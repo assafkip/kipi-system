@@ -115,14 +115,14 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
   "badge": null,
   "extraTags": [],
   "daysAgo": null,
-  "context": "<span style='color:#34d399'>He replied!</span> \"Thanks Assaf. Let's find time Wednesday March 25.\"",
+  "context": "<span style='color:#34d399'>He replied!</span> \"Thanks {{FOUNDER_FIRST_NAME}}. Let's find time next week.\"",
   "links": [
     {"text": "Open email", "url": "mailto:john@costanoa.vc?subject=Re:%20RSA"}
   ],
   "copyBlocks": [
     {
       "label": "Email Reply | Subject: Re: RSA",
-      "text": "No worries at all. Wednesday March 25 works great.\n\nAssaf"
+      "text": "No worries at all. That day works great.\n\n{{FOUNDER_FIRST_NAME}}"
     }
   ],
   "needsEyes": null
@@ -224,7 +224,7 @@ Items within each section sorted by friction (lowest first):
           "copyBlocks": [
             {
               "label": "Email Reply",
-              "text": "No worries at all. Wednesday March 25 works great.\n\nAssaf"
+              "text": "No worries at all. That day works great.\n\n{{FOUNDER_FIRST_NAME}}"
             }
           ]
         },

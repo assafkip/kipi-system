@@ -326,7 +326,7 @@ const ACCENT_COLORS = {
 };
 const ENERGY_TAG_CLASS = { quickwin: 'tag-qw', deepfocus: 'tag-df', people: 'tag-people', admin: 'tag-admin' };
 const ENERGY_LABELS = { quickwin: 'Quick Win', deepfocus: 'Deep Focus', people: 'People', admin: 'Admin' };
-const STORAGE_KEY = 'ktlyst-' + SCHEDULE_DATA.date;
+const STORAGE_KEY = 'kipi-' + SCHEDULE_DATA.date;
 
 function loadState() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } }
 function saveState(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
@@ -523,7 +523,7 @@ function render() {
   // Header
   const header = el('div', { class: 'header' });
   header.appendChild(el('div', { class: 'header-top' },
-    el('div', { class: 'brand' }, 'KTLYST'),
+    el('div', { class: 'brand' }, 'Kipi System'),
     el('div', { class: 'generated' }, d.generated || '')
   ));
   header.appendChild(el('div', { class: 'date-title' }, d.dateDisplay || d.date));

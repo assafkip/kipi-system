@@ -30,7 +30,7 @@ This step generates the founder's daily engagement actions with zero searching r
 
 - **Generate copy-paste comments** for each post found:
   - Style by pool: VCs get domain insight, practitioners get peer validation, connectors get amplification
-  - 2-3 sentences max, no KTLYST pitch
+  - 2-3 sentences max, no {{YOUR_PRODUCT}} pitch
   - Reference something specific from their post (not generic "great insights")
   - Must pass test: "Does this comment add value to the conversation?"
   - **VOICE RULE: Stay on the person's topic. Do NOT steer every comment toward detection engineering.** The founder's credibility is 12 years of security operations leadership (Google, Meta, ElevenLabs), not "detection engineering" specifically. If someone posts about ownership gaps, comment about ownership gaps. If someone posts about governance, comment about governance. If someone posts about silos, comment about silos. Only mention detection if THEY mentioned detection. The goal is to be a thoughtful practitioner voice on THEIR topic, not to position yourself as a detection expert. Detection is the wedge artifact, not the founder's identity.

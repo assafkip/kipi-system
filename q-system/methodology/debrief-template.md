@@ -1,6 +1,6 @@
 # Conversation Debrief Template
 
-This template is the **primary workflow** of the KTLYST Q Instance. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
+This template is the **primary workflow** of the Q Instance. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
 
 ## How to Trigger
 
@@ -178,11 +178,11 @@ If 3+ areas need changes from a single conversation, flag it as a **high-signal 
 
 After every conversation with a practitioner, CISO, or potential design partner, answer these questions:
 
-### 1. What did they describe that KTLYST can do RIGHT NOW?
+### 1. What did they describe that {{YOUR_PRODUCT}} can do RIGHT NOW?
 - Read `my-project/current-state.md` "What Works Today" section
 - Map their specific pain points to current capabilities
 - Be honest: what works, what partially works, what doesn't exist
-- Output a concrete list: "You described X. KTLYST can do Y today."
+- Output a concrete list: "You described X. {{YOUR_PRODUCT}} can do Y today."
 
 ### 2. What's the gap between what they need and what exists?
 - What output format do they need? (BigQuery, Splunk, Snowflake, KQL, etc.) Do we support it?
@@ -193,8 +193,8 @@ After every conversation with a practitioner, CISO, or potential design partner,
 ### 3. What can we offer them THIS WEEK?
 Design one of these (pick the lowest-friction option):
 - **Test run:** "Send me 2-3 reports you're already working with. I'll run them through and send back the output. You tell me if it's useful." (Zero integration, zero commitment, 10 min of their time)
-- **Recorded demo of their scenario:** Take the exact scenario they described in the conversation, run it through KTLYST, record a 2-min video showing their use case with real-looking data. Send on their preferred channel.
-- **Output sample:** Generate a sample artifact in their format (their query language, their tool) from a public report relevant to their domain. Send it with: "This is what KTLYST would produce for your team from [public report]. Is this useful?"
+- **Recorded demo of their scenario:** Take the exact scenario they described in the conversation, run it through {{YOUR_PRODUCT}}, record a 2-min video showing their use case with real-looking data. Send on their preferred channel.
+- **Output sample:** Generate a sample artifact in their format (their query language, their tool) from a public report relevant to their domain. Send it with: "This is what {{YOUR_PRODUCT}} would produce for your team from [public report]. Is this useful?"
 
 ### 4. What's the ask?
 Write the actual message (copy-paste ready) that the founder sends to convert this conversation into a design partner trial. Rules:
@@ -214,7 +214,7 @@ Write the actual message (copy-paste ready) that the founder sends to convert th
 DESIGN PARTNER CONVERSION - [Person] - [Date]
 
 What they described: [their scenario in 1-2 sentences]
-What KTLYST does today that matches: [specific capabilities]
+What {{YOUR_PRODUCT}} does today that matches: [specific capabilities]
 Gap: [what's missing, how hard to close]
 Offer: [test run / recorded demo / output sample]
 Build needed: [none / small / significant]
@@ -262,7 +262,7 @@ After completing the template and implications analysis, route insights to canon
   {"s":"Person Name","p":"works_at","o":"Company","t":"2026-03-12"}
   {"s":"Person Name","p":"cares_about","o":"cross-silo coordination","t":"2026-03-12"}
   {"s":"Person Name","p":"objected_to","o":"why not just use Claude","t":"2026-03-12"}
-  {"s":"Person Name","p":"resonated_with","o":"nervous system metaphor","t":"2026-03-12"}
+  {"s":"Person Name","p":"resonated_with","o":"{{YOUR_METAPHOR}}","t":"YYYY-MM-DD"}
   {"s":"Connector Name","p":"introduced","o":"Person Name","t":"2026-03-12"}
   ```
 
