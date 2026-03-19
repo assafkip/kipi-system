@@ -157,8 +157,7 @@ find q-consult/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec
 
 ## Notion IDs
 
-- ASK Consulting parent page: `321bf98c-0529-8012-9c0e-d97a72dba405`
-- KTLYST parent page: `314bf98c-0529-81bb-a576-d5982475fd2d` (DO NOT TOUCH)
+Read Notion IDs from `q-system/my-project/notion-ids.md`. Never hardcode IDs in this file.
 
 ## Catastrophic Fallback
 

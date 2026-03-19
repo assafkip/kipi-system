@@ -296,7 +296,7 @@ After completing the template and implications analysis, route insights to canon
 - [ ] Resonance phrases are verbatim (their words)
 - [ ] Objections have a proposed response (even if imperfect)
 - [ ] Next step is concrete (not "follow up" - specify what, when, via what channel)
-- [ ] Misclassification risk is assessed even if none detected ("None - they understood SLCP framing")
+- [ ] Misclassification risk is assessed even if none detected ("None - they understood the category framing")
 - [ ] Signal quality check completed with signal level assigned
 - [ ] If "thesis nod" only: noted, no over-investment in follow-up
 - [ ] If "pain confirmed" or higher: switching friction questions queued for next conversation
