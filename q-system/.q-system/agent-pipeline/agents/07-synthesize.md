@@ -47,4 +47,17 @@ See schedule-data-schema.md "Post Visuals" section for the full schema. Every po
 - {{QROOT}}/my-project/relationships.md (for meeting context)
 - {{QROOT}}/canonical/objections.md (for meeting prep)
 
+## Investor Update Check (embedded -- no separate agent)
+
+Before writing the final schedule JSON:
+1. Read `{{QROOT}}/memory/morning-state.md` for "Investor Update Tracker" section (if present)
+2. Check milestone triggers:
+   - Design partner signed
+   - Major product milestone shipped
+   - Key hire or partnership
+   - Press or notable mention
+   - 30+ days since last investor update
+3. If any trigger fires: add an Admin-energy item to the schedule: "Draft investor update -- [trigger reason]"
+4. If no trigger: skip silently, do not surface
+
 ## Token budget: this is the most expensive agent. Keep output tight.

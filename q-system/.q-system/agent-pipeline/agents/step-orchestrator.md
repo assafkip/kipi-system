@@ -67,12 +67,26 @@ Your context window will compact automatically as it approaches limits. Do not s
 8. Log each phase completion via log-step.sh
 9. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
+## Instance Customization
+
+Some instances may cut agents to save tokens. If an agent was cut for this instance, it will be listed here. The orchestrator should NOT reference cut agents and should skip any phase step that depends solely on a cut agent's output.
+
+**Agents NOT in this instance:** (none -- full pipeline. Edit this section per-instance.)
+
 ## Phase Sequence
 
-### Phase 0: Preflight (1 agent, sequential, MUST PASS)
-- Spawn: 00-preflight.md (sonnet)
-- Verify: bus/{date}/preflight.json exists and ready=true
-- If ready=false: HALT. Report which tools failed. Do not continue.
+### Phase 0: Preflight + Bootstrap (2 agents, SEQUENTIAL)
+1. Spawn: 00-preflight.md (sonnet)
+   - Verify: bus/{date}/preflight.json exists and ready=true
+   - If ready=false: HALT. Report which tools failed. Do not continue.
+2. Spawn: 00-session-bootstrap.md (sonnet) - action card pickup, loop escalation, canonical checksums
+   - Verify: bus/{date}/bootstrap.json exists
+   - AFTER bootstrap completes: Ask the founder the check-in questions:
+     - "Any calls or meetings today?"
+     - Active threads from bootstrap.json unconfirmed_cards
+     - "Any conversations outside LinkedIn/Reddit?"
+     - "Any new commitments or deadlines?"
+     - "Did you build anything since last session?"
 
 ### Phase 1: Data Ingest (4 agents, ALL PARALLEL)
 Launch in ONE message with 4 Agent tool calls:
@@ -83,16 +97,21 @@ Launch in ONE message with 4 Agent tool calls:
 Verify: calendar.json, gmail.json, notion.json all exist in bus/ (vc-pipeline.json optional)
 If any required agent fails: log the failure, continue with available data
 
-### Phase 2: Analysis (2 agents, PARALLEL)
-Launch in ONE message with 2 Agent tool calls:
+### Phase 2: Analysis (3 agents, PARALLEL)
+Launch in ONE message with 3 Agent tool calls:
 - 02-meeting-prep.md (sonnet) - reads calendar.json + notion.json
 - 02-warm-intro-match.md (sonnet) - reads vc-pipeline.json + notion.json (skips gracefully if vc-pipeline.json missing)
-Verify: meeting-prep.json, warm-intros.json
+- 02-x-activity.md (sonnet) - pulls founder's X posts + engagement, scans monitored handles
+Verify: meeting-prep.json, warm-intros.json, x-activity.json
 
-### Phase 3: LinkedIn (3 agents, SEQUENTIAL - Chrome needs one tab at a time)
+### Phase 3: LinkedIn + Reconciliation (4 agents, SEQUENTIAL for Chrome, then 1 parallel)
+Chrome agents (SEQUENTIAL -- one tab at a time):
 - 03-linkedin-posts.md (sonnet) - writes linkedin-posts.json
 - 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
 - 03-prospect-pipeline.md (sonnet) - reads notion.json, writes prospect-pipeline.json
+THEN (can run after posts + x-activity are done):
+- 03-publish-reconciliation.md (sonnet) - fuzzy-matches published posts against Content Pipeline, writes publish-reconciliation.json
+- 03-content-intel.md (sonnet, MONDAYS ONLY) - multi-platform content performance scrape, writes content-intel.json. Skip on non-Mondays.
 
 ### Phase 4: Content (2-4 agents, SEQUENTIAL then PARALLEL)
 - 04-signals-content.md (sonnet) - writes signals.json
@@ -101,12 +120,13 @@ Verify: meeting-prep.json, warm-intros.json
   - 04-post-visuals.md (sonnet) - reads signals.json (+ founder-brand-post.json if weekly brand day), generates Gamma social cards + carousels, writes post-visuals.json
   - IF weekly brand day: 04-founder-brand-post.md (sonnet) - writes founder-brand-post.json. NOTE: If brand day, run founder-brand-post BEFORE post-visuals so visuals agent can read both drafts. Sequence: signals -> founder-brand-post -> [value-routing + post-visuals] in parallel.
 
-### Phase 5: Pipeline (4 parallel, then conditional, then 1 sequential)
+### Phase 5: Pipeline (5 parallel, then conditional, then 1 sequential)
 Launch in ONE message:
 - 05-temperature-scoring.md (sonnet) - reads all bus/ files, writes temperature.json
 - 05-lead-sourcing.md (sonnet) - runs Apify, writes leads.json
-- 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json
+- 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json (includes warming ladder stage advancement)
 - 05-loop-review.md (sonnet) - reads notion.json + prospect-pipeline.json, writes loop-review.json
+- 05-connection-mining.md (sonnet) - scans LinkedIn 1st-degree connections for ICP matches, writes connection-mining.json
 After all complete, check leads.json:
 - If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
 - If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).
@@ -114,10 +134,12 @@ After all complete, check leads.json:
 THEN:
 - 05-engagement-hitlist.md (OPUS) - reads temperature + leads + linkedin-posts + pipeline-followup + loop-review, writes hitlist.json
 
-### Phase 6: Compliance (2 agents, PARALLEL)
+### Phase 6: Compliance + Health (4 agents, PARALLEL)
 Launch in ONE message:
 - 06-compliance-check.md (sonnet) - reads bus/ content + canonical files, writes compliance.json
-- 06-positioning-check.md (sonnet) - reads canonical files, writes positioning.json
+- 06-positioning-check.md (sonnet) - reads canonical files + drift detection, writes positioning.json
+- 06-client-deliverables.md (sonnet) - checks client commitments for overdue/upcoming, writes client-deliverables.json
+- 04-marketing-health.md (sonnet) - asset freshness, cadence progress, stale drafts, writes marketing-health.json
 
 ### Phase 7: Synthesis (1 agent, sequential, OPUS)
 - 07-synthesize.md (OPUS) - reads ALL bus/{date}/*.json, writes schedule-data-{date}.json

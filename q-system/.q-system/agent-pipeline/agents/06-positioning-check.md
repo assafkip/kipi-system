@@ -80,6 +80,24 @@ Write to `{{BUS_DIR}}/positioning.json`:
 }
 ```
 
+### Checkpoint drift detection
+
+Check whether canonical files were modified outside the Q system:
+1. Read `{{QROOT}}/memory/morning-state.md` for last checkpoint timestamp
+2. For each canonical file (decisions.md, talk-tracks.md, objections.md, verticals.md), check if the file was modified after the last checkpoint
+3. If drift detected: flag it in the output with the file name and what appears to have changed
+4. Do NOT auto-fix. Surface the drift for the founder to review.
+
+Add a `drift` section to the output:
+```json
+"drift": {
+  "detected": false,
+  "files": [
+    {"file": "...", "last_checkpoint": "...", "file_modified": "...", "summary": "..."}
+  ]
+}
+```
+
 Do NOT rewrite talk tracks. Do NOT update canonical files. Just audit and flag.
 
 ## Token budget: <3K tokens output
