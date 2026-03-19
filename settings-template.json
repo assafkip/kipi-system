@@ -7,6 +7,19 @@
   },
   "model": "opus",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "/q-morning|/q-scope|/q-plan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/.q-system/diagnose-tools.sh\" 2>/dev/null | head -50",
+            "timeout": 15000,
+            "statusMessage": "Checking tool availability..."
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
