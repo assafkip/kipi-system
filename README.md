@@ -200,6 +200,8 @@ Works standalone with local files. Each integration adds capability:
 | Apify | LinkedIn/X/Reddit scraping for lead sourcing |
 | Chrome | LinkedIn DMs, analytics, interactive browsing |
 | Slack | Notifications, approval workflows |
+| Threat Intel MCP | VirusTotal, AbuseIPDB, OTX feeds for signal enrichment |
+| OSINT Infra MCP | WHOIS, DNS, cert transparency, Shodan for infrastructure lookup |
 
 ---
 
