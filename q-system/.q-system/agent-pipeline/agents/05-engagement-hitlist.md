@@ -42,7 +42,10 @@ Combine inputs to rank engagement actions:
 
 - **Comment**: person made a public post you can add value to. Use their FULL post text.
 - **DM**: connection already exists, relationship stage is "Connect" or higher, there is a clear hook (their post, a value-drop signal, a previous conversation thread)
-- **Connection Request**: person is new, Tier A or B lead, no existing connection
+- **Connection Request**: person is new, Tier A or B lead, no existing connection. Pick from 3 styles:
+  - **Post reference**: they posted something specific you can cite
+  - **Signal share**: you have a relevant signal to offer
+  - **Advice-seeking**: senior leader, no recent post to reference, or cold Tier A lead. Ask for their perspective on a problem you're working on. No pitch, no product name, no value offer. Just "you've lived this, I'd value your take." This works because people accept to give advice, not to be sold to.
 
 ### Step 3: Generate copy for each action
 
@@ -55,7 +58,10 @@ All copy must follow these rules:
 - No hedging: write like you know what you're talking about
 - Comments: max 3-4 sentences. Add a real insight, not a compliment. Respect per-prospect weekly cap from cadence config.
 - DMs: max 4 sentences. Lead with their context, add one specific observation, soft ask or no ask.
-- Connection requests: max 300 chars note. Make it specific to their post or work.
+- Connection requests: max 300 chars note. Pick style based on context:
+  - Post reference: cite something specific they wrote
+  - Signal share: offer a relevant signal or resource
+  - Advice-seeking: ask for their perspective on a problem (best for senior leaders, no recent post, cold Tier A). Frame: "I'm working on [problem]. You've lived this. Would value your perspective." No product name, no pitch, no offer. The ask IS the hook.
 - No product pitch unless the prospect has already asked about it or is in Demo stage
 - If the prospect is in a regulated sector or their post discusses governance regulation, note this in the rationale. Comments can reference regulatory mandates as context but should NOT lead with compliance fear. The angle is "regulators now agree with the problem you're describing."
 
