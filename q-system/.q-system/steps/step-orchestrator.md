@@ -4,6 +4,38 @@ This step replaces the monolithic morning routine with a phased agent pipeline.
 Each phase spawns sub-agents via the Agent tool. Agents communicate through
 JSON files in the bus/ directory.
 
+## MANDATORY READS (before Phase 0 - do not skip)
+
+You are about to execute a 9-phase agent pipeline. Before spawning ANY agent,
+read these files. If you feel like you already know what to do from the skill
+prompt - you don't. Every session that skipped these reads re-discovered
+known bugs and broke guardrails.
+
+### Read 1: Preflight - Tool Manifest + Known Issues
+```
+Read: q-system/.q-system/preflight.md (offset: 1, limit: 136)
+```
+Sections 1-2: What tools work, what's broken, fallback chains, and known
+issues that have burned real sessions. The preflight agent tests connections,
+but it doesn't know about edge cases (LinkedIn search returning vendors,
+generic subreddit searches producing 0 leads, positioning drift). You do.
+
+### Read 2: Preflight - Execution Gates + Action Cards
+```
+Read: q-system/.q-system/preflight.md (offset: 246, limit: 75)
+```
+Sections 5-6: When to halt, how to log steps, and the rule that "card delivered"
+is NOT "done" - only founder-confirmed actions update state files.
+
+### Read 3: Current Positioning
+```
+Read: q-system/canonical/decisions.md (limit: 60)
+```
+So agents generate content with current positioning, not deprecated messaging.
+
+**DO NOT proceed to Setup until all 3 reads are done.**
+**DO NOT rely on the SKILL.md prompt for execution details. This file is your authority.**
+
 ## Setup
 
 ```bash
@@ -105,7 +137,17 @@ At the start of each day (Phase 0), delete bus/ directories older than 3 days:
 find q-system/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
 ```
 
-## Fallback
+## Fallback Chain (tool-level)
+
+| Tool fails | Auto-fallback | Founder approval? |
+|------------|---------------|-------------------|
+| Apify | Chrome scraping (see Phase 5 lead-sourcing-chrome) | No - auto, just log it |
+| Chrome | STOP and report | Yes |
+| Notion `mcp__notion_api__*` | curl with API token | No - auto, just log it |
+| Gmail | Skip email-dependent steps | Note in briefing |
+| Calendar | Skip meeting prep | Note in briefing |
+
+## Catastrophic Fallback
 
 If the agent pipeline fails catastrophically, fall back to the monolithic step-by-step
 flow using step-loader.sh. The old steps still exist in steps/.
