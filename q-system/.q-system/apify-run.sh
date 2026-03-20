@@ -19,8 +19,8 @@ ACTOR_ID="$1"
 INPUT_JSON="$2"
 MAX_WAIT="${3:-120}"
 
-# Token from settings - never hardcode in committed files
-TOKEN="${APIFY_TOKEN:-***REMOVED***}"
+# Token from environment - MUST be set via settings.json env vars or shell export
+TOKEN="${APIFY_TOKEN:?ERROR: APIFY_TOKEN not set. Add it to .claude/settings.local.json under env.}"
 
 # Step 1: Start the actor run and wait for completion
 # CRITICAL: Response is wrapped in {"data": {...}} - always extract .data first
