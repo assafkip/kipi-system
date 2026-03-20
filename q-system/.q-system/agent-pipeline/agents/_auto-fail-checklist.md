@@ -30,6 +30,9 @@ This file is the single source of truth for critical rules. Read by:
 - Uses "leverage," "delve," "innovative," "cutting-edge," "game-changing"
 - Uses hedging: "might," "could potentially," "it's worth noting"
 
+### Platform Rules
+- Reddit post without a URL link (subreddits like r/blueteamsec require posts to include a link)
+
 ### Data Integrity
 - Prospect company/role doesn't match what's in notion.json or contacts DB
 - Profile URL is a guessed slug (not captured from browser address bar)

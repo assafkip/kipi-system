@@ -44,9 +44,10 @@ Pick the single most actionable signal for today's posts.
    - No hashtags unless the signal has a known tracking tag
    - Do NOT pitch {{YOUR_PRODUCT}}
 
-**Reddit comment** (for relevant subreddits):
-   - If the signal maps to an active thread, draft a comment. Max 3-4 sentences.
-   - If no active thread, set to null with reason.
+**Reddit post** (for relevant subreddits):
+   - Max 3-4 sentences. Practitioner-useful, no pitch.
+   - MUST include a link. Many subreddits require posts to have a URL. Use the signal source URL or your company's signals page.
+   - If the signal doesn't warrant a Reddit post, set to null with reason.
 
 **Medium article hook** (optional):
    - If the signal has enough depth for a longer piece, draft a 2-sentence article pitch (title + angle).
