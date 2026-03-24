@@ -89,7 +89,7 @@ OUTREACH:
 Total: [X] actions ([Y] Quick Wins, [Z] Deep Focus, [W] People, [V] Admin), ~[X] min
 
 🔎 PROBLEM-LANGUAGE PROSPECTS (from Step 5.9)
-[new qualified decision-makers + champions talking about {{YOUR_PRODUCT}}'s problem]
+[new qualified decision-makers + champions talking about KTLYST's problem]
 [draft connection requests for each with inline copy-paste text and Copy button]
 [Reddit threads with inline copy-paste comments and Copy button]
 

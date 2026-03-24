@@ -1,12 +1,12 @@
 # Agent: Positioning Check
 
-You are a positioning audit agent. Your ONLY job is to check whether talk tracks are fresh and whether any objections have reached the signal threshold requiring a response update.
+You are a positioning audit agent. Your ONLY job is to check whether talk tracks are fresh and whether any objections have reached the 3-signal threshold requiring a response update.
 
 ## Reads
 
-- `q-system/canonical/talk-tracks.md` - current approved talk tracks
-- `q-system/canonical/objections.md` - known objections + current responses + signal counts
-- `q-system/canonical/positioning.md` - current positioning (what the product IS and IS NOT)
+- `{{BUS_DIR}}/canonical-digest.json` - compact digest with talk tracks and objections. Use this INSTEAD of full files. If missing, fall back to:
+  - `q-system/canonical/talk-tracks.md` (fallback only)
+  - `q-system/canonical/objections.md` (fallback only)
 
 ## Writes
 
@@ -14,29 +14,29 @@ You are a positioning audit agent. Your ONLY job is to check whether talk tracks
 
 ## Instructions
 
-1. Read talk-tracks.md (use offset/limit if over 200 lines - read the core tracks section first)
-2. Read objections.md (use offset/limit if over 200 lines - read the objections list section first)
-3. Read positioning.md to understand the "is" and "is not" list for the product
+1. Read canonical-digest.json from bus/. Extract `talk_tracks` and `objections` sections.
+2. If canonical-digest.json is missing, fall back to reading full files: talk-tracks.md (offset/limit if over 200 lines), objections.md (offset/limit if over 200 lines)
 
 ### Talk track freshness check
 
-For each major talk track (investor, buyer, technical), check:
-- Is the primary positioning metaphor present and primary?
-- Is the category label consistent?
-- Are any banned phrases present? (check canonical/positioning.md for banned language)
-- Are any claims made that are not in current-state.md?
+For each major talk track (investor, CISO, technical buyer), check:
+- Is the CNS (nervous system) metaphor present and primary for non-technical?
+- Is SLCP present for technical?
+- Is the cross-team coordination wedge framed correctly (1 input -> 7 artifacts -> 6 tools -> 40 seconds)?
+- Is detection described as ONE of seven artifact types (not the primary)?
+- Are any banned phrases present? ("detection tool," "SOC automation," "AI-powered" without specifics, "single pane of glass," "next-gen")
 
 ### Objection signal count validation
 
 Signal counting rules (apply strictly):
-- Only count objections against CURRENT positioning (check canonical/positioning.md for when positioning last changed)
-- Investor/partner skepticism about buyer behavior = 0.5 signal (not 1)
-- Target buyer saying "I won't buy" = 1.0 signal
+- Only count objections against CURRENT positioning (post-CNS/coordination wedge, Mar 1 2026)
+- VC skepticism about buyer behavior = 0.5 signal (not 1)
+- CISO saying "I won't buy" = 1.0 signal
 - Self-contradicting signal in same call = 0.5 signal
-- Threshold: 3 clean signals from buyer persona = recommend positioning response update
+- Threshold: 3 clean signals from buyer persona = recommend positioning change
 
 For each objection in objections.md:
-- Count only post-positioning-update signal instances
+- Count only post-Mar-1-2026 signal instances
 - Apply the weighting rules above
 - Flag if weighted count >= 3 and response has not been updated since the count reached 3
 
@@ -51,7 +51,7 @@ Write to `{{BUS_DIR}}/positioning.json`:
     "overall_fresh": true,
     "issues": [
       {
-        "track": "investor|buyer|technical",
+        "track": "investor|ciso|technical",
         "issue": "...",
         "severity": "auto-fail|warn",
         "suggested_fix": "..."
@@ -77,24 +77,6 @@ Write to `{{BUS_DIR}}/positioning.json`:
     "stable": 0
   },
   "overall_positioning_health": "good|needs_attention|critical"
-}
-```
-
-### Checkpoint drift detection
-
-Check whether canonical files were modified outside the Q system:
-1. Read `{{QROOT}}/memory/morning-state.md` for last checkpoint timestamp
-2. For each canonical file (decisions.md, talk-tracks.md, objections.md, verticals.md), check if the file was modified after the last checkpoint
-3. If drift detected: flag it in the output with the file name and what appears to have changed
-4. Do NOT auto-fix. Surface the drift for the founder to review.
-
-Add a `drift` section to the output:
-```json
-"drift": {
-  "detected": false,
-  "files": [
-    {"file": "...", "last_checkpoint": "...", "file_modified": "...", "summary": "..."}
-  ]
 }
 ```
 

@@ -14,7 +14,7 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 |------|-------------|---------------|-------------------|----------|
 | **Google Calendar** | `mcp__claude_ai_Google_Calendar__gcal_list_events` with `timeMin=today 00:00`, `timeMax=today+7 23:59` | Returns `events` array (even if empty) | None known | None. Halt. |
 | **Gmail** | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns `messages` array | None known | None. Halt. |
-| **Notion API** | `mcp__notion_api__API-post-database-query` on Contacts DB (ID from `my-project/notion-ids.md`) with `page_size: 1` | Returns `results` array | **`API-patch-page` only updates `title` property.** Cannot update Role, Company, Status, DP Status, Last Contact, What They Care About, Strategic Value, Follow-up Action, Pushback, Email, or any other field. For full property updates, use `mcp__claude_ai_Notion__notion-update-page` IF the workspace matches (see known issues). | None for reads. For writes, see Known Issues #1. |
+| **Notion API** | `mcp__notion_api__API-post-database-query` on Contacts DB `cabba10d-cd5d-4cff-b042-3241a2be18b5` with `page_size: 1` | Returns `results` array | **`API-patch-page` only updates `title` property.** Cannot update Role, Company, Status, DP Status, Last Contact, What They Care About, Strategic Value, Follow-up Action, Pushback, Email, or any other field. For full property updates, use `mcp__claude_ai_Notion__notion-update-page` IF the workspace matches (see known issues). | None for reads. For writes, see Known Issues #1. |
 | **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. Avoid triggering them. | None. Halt. |
 | **Apify** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. REST API always works. Token in settings.json: `YOUR_APIFY_TOKEN` | **REST API fallback.** All actors callable via `curl -X POST "https://api.apify.com/v2/acts/ACTOR_ID/runs?token=$APIFY_TOKEN&waitForFinish=120"`. Confirmed working actors listed below. |
 
@@ -22,7 +22,7 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 
 | Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
 |------|-------------|---------------|-------------------|----------|
-| **VC Pipeline API** | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON with pipeline data | Must be running locally. Founder needs to start it: `cd {{VC_PIPELINE_PATH}} && python app.py` | Skip Steps 1.5 (warm intro matching). Note in briefing. |
+| **VC Pipeline API** | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON with pipeline data | Must be running locally. Founder needs to start it: `cd /Users/assafkip/Desktop/Assafs_Qs/VC_Reachout/q-VC-Sourcing/ && python app.py` | Skip Steps 1.5 (warm intro matching). Note in briefing. |
 | **NotebookLM** | `mcp__notebooklm__list_notebooks` | Returns notebook list | Session-based, may need re-auth. | Skip deep research in Step 2. Use Apify for profile data instead. |
 
 ### Confirmed Working Apify Actors (validated Mar 10-11, 2026)
@@ -31,7 +31,7 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 |-------|-------------|-------|
 | `supreme_coder~linkedin-post` | `{"urls": ["https://www.linkedin.com/search/results/content/?keywords=ENCODED_QUERY&sortBy=date_posted"], "deepScrape": false, "maxItems": 10}` | Field is `urls` NOT `searchUrl`. `sortBy=date_posted` no quotes around value. |
 | `trudax~reddit-scraper-lite` | `{"startUrls": [{"url": "https://www.reddit.com/r/SUBREDDIT/search/?q=QUERY&sort=new&restrict_sr=on&t=month"}], "maxItems": 10}` | `restrict_sr=on` REQUIRED. Auth: Bearer token header, NOT query param. |
-| `apidojo~tweet-scraper` | Profile mode: pull recent tweets from handles. Search mode: works but limited. | Monitored handles: {{MONITORED_HANDLE_1}}, {{MONITORED_HANDLE_2}}, (configure in morning-state.md) |
+| `apidojo~tweet-scraper` | Profile mode: pull recent tweets from handles. Search mode: works but limited. | Monitored handles: @BushidoToken, @clintgibler, @RyanGCox_, @obadiahbridges |
 | `apify~google-search-scraper` | `{"queries": "site:medium.com SEARCH_TERMS 2025 OR 2026", "maxPagesPerQuery": 1, "resultsPerPage": 10}` | For Medium scraping. Returns `organicResults` array. |
 
 ### DO NOT USE (broken actors)
@@ -50,8 +50,8 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 Things we've hit before. Never re-discover these.
 
 ### KI-1: Notion has two MCP servers connected to different workspaces
-- `mcp__notion_api__*` connects to your Notion workspace ({{FOUNDER_EMAIL}}) - CORRECT for reads
-- `mcp__claude_ai_Notion__*` may connect to a different workspace - WRONG for your CRM data
+- `mcp__notion_api__*` connects to [REDACTED] (KTLYST CRM) - CORRECT for reads
+- `mcp__claude_ai_Notion__*` connects to AI Consulting workspace - WRONG for KTLYST data
 - **Rule:** Use `mcp__notion_api__*` for all database queries. Use `mcp__claude_ai_Notion__notion-update-page` ONLY if the page is accessible (test first with a read). If 404, fall back to manual update instructions.
 
 ### KI-2: Notion API-patch-page only updates title
@@ -60,12 +60,12 @@ Things we've hit before. Never re-discover these.
 - **Workaround:** For full property updates, try `mcp__claude_ai_Notion__notion-update-page` first. If 404 (wrong workspace), output the exact values the founder should update manually in Notion.
 
 ### KI-3: Notion Actions DB property names
-- The Actions DB (see `my-project/notion-ids.md` for ID) does NOT have a property called "Status" (the standard Notion status property)
+- The Actions DB (`0718ee69-d9d0-473d-8182-732d21c60491`) does NOT have a property called "Status" (the standard Notion status property)
 - Known properties: Action (title), Priority, Due, Type, Energy, Time Est, Contact, Notes, Action ID, Created
 - **Rule:** Do not filter by "Status" on Actions DB. Filter by Priority or Due instead.
 
 ### KI-4: Notion Investor Pipeline DB property names
-- The Investor Pipeline DB (see `my-project/notion-ids.md` for ID) does NOT have a property called "Status"
+- The Investor Pipeline DB (`fd92016f-7890-40c3-abe9-154c864e05b3`) does NOT have a property called "Status"
 - Known properties: Fund (title), Stage, Thesis Fit, Next Date, Next Step, Key Quote, Pass Reason, Check Size, Contact, Investor Type, Deal ID, Updated
 - **Rule:** Filter by "Stage" not "Status" on Pipeline DB.
 
@@ -76,7 +76,7 @@ Things we've hit before. Never re-discover these.
 
 ### KI-6: VC Pipeline API requires local server
 - `http://localhost:5050/api/pipeline` only works if the Python app is running
-- Location: `{{VC_PIPELINE_PATH}}` (configure during setup)
+- Location: `/Users/assafkip/Desktop/Assafs_Qs/VC_Reachout/q-VC-Sourcing/`
 - `WebFetch` returns "Invalid URL" for localhost URLs
 - **Rule:** Use `curl` via Bash tool, not WebFetch. If server is down, ask founder to start it or proceed without warm intro matching.
 
@@ -474,11 +474,11 @@ Claims that cross sessions get verified. Q does not trust data older than 48 hou
       "result": null
     },
     {
-      "claim": "{{CONTACT}} reviewing materials",
+      "claim": "Phil Venables reviewing materials",
       "source_file": "morning-state.md open items",
       "verified": true,
-      "verification_method": "Gmail shows their reply + founder's response with attachments",
-      "result": "Confirmed. Materials sent YYYY-MM-DD."
+      "verification_method": "Gmail shows his reply + Assaf's response with attachments",
+      "result": "Confirmed. Materials sent 2026-03-13."
     }
   ]
 }

@@ -21,8 +21,8 @@ bus_to_steps = {
     "meeting-prep.json": [],
     "linkedin-posts.json": ["3_linkedin_activity"],
     "linkedin-dms.json": ["3.8_dm_check"],
-    "prospect-pipeline.json": ["3.5_prospect_pipeline"],
-    "signals.json": ["4_signals_linkedin", "4_x_signals", "4_x_hot_take"],
+    "dp-pipeline.json": ["3.5_dp_pipeline"],
+    "signals.json": ["4_signals_linkedin", "4_x_signals", "4_x_hot_take", "4_x_bts"],
     "value-routing.json": ["4.1_value_drops"],
     "temperature.json": ["5.8_temperature_scoring"],
     "leads.json": ["5.9_lead_sourcing"],
@@ -33,7 +33,15 @@ bus_to_steps = {
     "pipeline-followup.json": ["5.85_pipeline_followup"],
     "notion-push.json": ["9_notion_push"],
     "daily-checklists.json": ["10_daily_checklists"],
-    "founder-brand-post.json": ["4_founder_brand_post"],
+    "kipi-promo.json": ["4_kipi_promo"],
+    # Canonical digest
+    "canonical-digest.json": ["0c_canonical_digest"],
+    # New agents (Sprint 1-3)
+    "content-metrics.json": ["1b_content_metrics"],
+    "copy-diffs.json": ["1c_copy_diff"],
+    "behavioral-signals.json": ["3b_behavioral_signals"],
+    "prospect-activity.json": ["3c_prospect_activity"],
+    "outreach-queue.json": ["7b_outreach_queue"],
 }
 
 steps = {}
@@ -87,8 +95,6 @@ log = {
     "state_checksums": {},
     "verification_queue": []
 }
-
-os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
 with open(log_path, "w") as f:
     json.dump(log, f, indent=2)

@@ -39,7 +39,11 @@ def audit(log_path):
         "5.9_lead_sourcing", "5.9b_engagement_hitlist",
         "6_decision_compliance", "7_positioning_freshness",
         "8_briefing_output", "8.5_start_here",
-        "9_notion_push", "10_daily_checklists", "11_html_output"
+        "9_notion_push", "10_daily_checklists", "11_html_output",
+        # Pipeline enhancement agents
+        "0c_canonical_digest",
+        "1b_content_metrics", "3b_behavioral_signals",
+        "7b_outreach_queue"
     }
 
     if day_of_week == 'monday':
@@ -79,7 +83,9 @@ def audit(log_path):
         "1_vc_pipeline", "1.5_warm_intro", "2.5_x_activity",
         "3.2_publish_reconciliation", "4.5_marketing_health",
         "0g_monthly_checks", "9.5_investor_update_check", "7.5_checkpoint_drift",
-        "2_meeting_prep"
+        "2_meeting_prep",
+        # Energy-gated agents (skip is valid if energy < 3)
+        "1c_copy_diff", "3c_prospect_activity"
     }
 
     completed = {k for k, v in steps.items() if v.get('status') == 'done'}

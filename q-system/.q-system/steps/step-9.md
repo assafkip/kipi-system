@@ -8,4 +8,4 @@
 - If violations or pending propagation found, offer to fix immediately
 - If unlogged emails found, offer to create Notion interactions
 - If LinkedIn follow-ups overdue, offer to generate comment suggestions
-- **ALWAYS create Notion Actions** for every actionable item surfaced in the briefing (meeting prep, follow-ups due, emails to send, debriefs to run, LinkedIn re-engagements). Use Actions DB (see `my-project/notion-ids.md` for DB ID). Set Energy, Time Est, Priority, Type, Due date, and Contact link for each.
+- **ALWAYS create Notion Actions** for every actionable item surfaced in the briefing (meeting prep, follow-ups due, emails to send, debriefs to run, LinkedIn re-engagements). Use Actions DB (DB 0718ee69-d9d0-473d-8182-732d21c60491). Set Energy, Time Est, Priority, Type, Due date, and Contact link for each.

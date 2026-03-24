@@ -1,5 +1,7 @@
 **Step 0 — Session bootstrap (runs before everything else):**
 
+> **PREFERRED: Use the agent pipeline.** Read `.q-system/steps/step-orchestrator.md` and execute phases 0-8 using the Agent tool. The monolithic steps below are fallback only. The orchestrator spawns 19 sub-agents across 8 phases, communicating through `bus/` JSON files. This is faster, uses fewer tokens, and produces better output per step.
+
 > **MANDATORY:** Before executing ANY step, read `.q-system/preflight.md`. It contains the tool manifest, known issues, session budget, and step logging format.
 
 > **HARNESS RULE:** Every step must end with a call to the log helper. Replace DATE with today's date in every call.

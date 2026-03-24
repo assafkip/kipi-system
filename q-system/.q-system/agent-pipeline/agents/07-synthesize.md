@@ -1,10 +1,3 @@
----
-name: 07-synthesize
-description: "Synthesis agent. Reads all bus/ files and produces the daily schedule JSON."
-model: opus
-maxTurns: 50
----
-
 # Agent: Morning Synthesis (Opus)
 
 You are the synthesis agent. You read ALL bus/ outputs from prior agents and produce the daily schedule JSON.
@@ -13,11 +6,16 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 
 1. Read all JSON files in {{BUS_DIR}}/
 2. Read the schedule schema: {{QROOT}}/marketing/templates/schedule-data-schema.md
-3. Read the AUDHD executive function skill if present: {{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md
-4. Read the voice skill for any written text if present: {{QROOT}}/.agents/skills/founder-voice/SKILL.md
-   - If these skill files don't exist, apply the core principles: every item must be copy-paste ready, have a next physical action, and an energy tag.
+3. Read the AUDHD executive function skill: {{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md
+4. Read the voice skill for any written text: {{QROOT}}/.agents/skills/assaf-voice/SKILL.md
 
-5. Synthesize everything into a single schedule-data JSON file following the schema exactly.
+5. **Read energy.json FIRST.** Apply compression before building the schedule:
+   - Level 1-2: Only Quick Win sections. Skip all Deep Focus items. Add a banner at top: "Low energy day. Minimum viable actions only."
+   - Level 3: Normal schedule. Tag Deep Focus items >30 min as "park if energy drops."
+   - Level 4-5: Full schedule, no compression.
+   - If energy.json missing, default to level 3.
+
+6. Synthesize everything into a single schedule-data JSON file following the schema exactly.
 
 ## Actionability Rules (ENFORCED)
 - Every item must have copy-paste text inline (A1)
@@ -36,28 +34,37 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 
 When building the "Posts" section, check `{{BUS_DIR}}/post-visuals.json`. For every post item, attach the `visuals` object from that file to the corresponding schedule item. The visuals object includes:
 - `recommended`: "hero_image" or "carousel"
-- `heroImage`: Image generation URLs (for signals, single-take, founder posts)
+- `heroImage`: Nano Banana image URLs (for signals, single-take, founder posts)
 - `carousel`: Gamma carousel URL + PDF export (for multi-point, data, regulatory posts)
 - `socialCard`: Gamma fallback
 
 See schedule-data-schema.md "Post Visuals" section for the full schema. Every post MUST have at least one visual option. If post-visuals.json is missing or incomplete, add a `needsEyes` note: "Visual generation failed - post manually or regenerate."
 
-## Key context files (read ONLY if needed for specific items)
-- {{QROOT}}/canonical/talk-tracks.md (for meeting prep talk tracks)
-- {{QROOT}}/my-project/relationships.md (for meeting context)
-- {{QROOT}}/canonical/objections.md (for meeting prep)
+## Content Performance (from content-metrics.json)
 
-## Investor Update Check (embedded -- no separate agent)
+If `{{BUS_DIR}}/content-metrics.json` exists and has data, include a collapsed FYI section in the schedule:
 
-Before writing the final schedule JSON:
-1. Read `{{QROOT}}/memory/morning-state.md` for "Investor Update Tracker" section (if present)
-2. Check milestone triggers:
-   - Design partner signed
-   - Major product milestone shipped
-   - Key hire or partnership
-   - Press or notable mention
-   - 30+ days since last investor update
-3. If any trigger fires: add an Admin-energy item to the schedule: "Draft investor update -- [trigger reason]"
-4. If no trigger: skip silently, do not surface
+```json
+{
+  "id": "content-performance",
+  "title": "Content Performance",
+  "accent": "gray",
+  "meta": "Last 10 posts",
+  "collapsed": true,
+  "items": [],
+  "infoNotes": [
+    "Best: [post_type] - [engagement_rate]% engagement ([impressions] impressions)",
+    "Worst: [post_type] - [engagement_rate]% engagement",
+    "Avg engagement: [avg]%",
+    "Trend: [up|flat|down]"
+  ]
+}
+```
+
+This gives the founder a quick read on what's working without requiring action.
+
+## Key context files
+- `{{BUS_DIR}}/canonical-digest.json` - use this for talk tracks, objections, and current state. Do NOT read the full canonical files unless the digest is missing.
+- {{QROOT}}/q-system/my-project/relationships.md (for meeting context, read ONLY if needed)
 
 ## Token budget: this is the most expensive agent. Keep output tight.

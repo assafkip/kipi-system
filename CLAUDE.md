@@ -17,6 +17,12 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 ## Project Structure
 - `q-system/` - Core operating system
   - `.q-system/` - Commands, preflight, audit harness
+  - `.q-system/agent-pipeline/` - Decomposed agent architecture for morning routine
+    - `agents/` - 19 agent prompt files (one per task)
+    - `bus/` - Inter-agent JSON data exchange (per-date directories)
+    - `orchestrator-design.md` - Phase execution plan
+    - `review-pipeline.sh` - Multi-pass content review definitions (4 Sonnet agents)
+    - `templates/` - Reusable folder structures for repeatable outputs
   - `canonical/` - Source of truth files (positioning, objections, talk tracks)
   - `marketing/` - Content pipeline, templates, assets, guardrails
   - `methodology/` - Debrief template and workflows
@@ -36,14 +42,15 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 
 ## Commands
-- `/q-morning` - Full morning briefing (11 steps)
+- `/q-morning` - Full morning briefing (agent pipeline: 8 phases, 19 sub-agents). Reads orchestrator from `.q-system/steps/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
-- `/q-create` - Generate specific output
+- `/q-create` - Generate specific output. Use templates from `.q-system/agent-pipeline/templates/` for repeatable outputs (deck, outreach, content, debrief).
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-draft` - Ad-hoc output generation
+- `/q-market-review` - Content review runs 4 Sonnet passes (voice, guardrails, anti-AI, actionability) via Agent tool. See `.q-system/agent-pipeline/review-pipeline.sh` for pass definitions.
+- `/q-draft` - Ad-hoc output generation. Use templates from `.q-system/agent-pipeline/templates/` when format matches.
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 

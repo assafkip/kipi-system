@@ -115,14 +115,14 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
   "badge": null,
   "extraTags": [],
   "daysAgo": null,
-  "context": "<span style='color:#34d399'>He replied!</span> \"Thanks {{FOUNDER_FIRST_NAME}}. Let's find time next week.\"",
+  "context": "<span style='color:#34d399'>He replied!</span> \"Thanks Assaf. Let's find time Wednesday March 25.\"",
   "links": [
     {"text": "Open email", "url": "mailto:john@costanoa.vc?subject=Re:%20RSA"}
   ],
   "copyBlocks": [
     {
       "label": "Email Reply | Subject: Re: RSA",
-      "text": "No worries at all. That day works great.\n\n{{FOUNDER_FIRST_NAME}}"
+      "text": "No worries at all. Wednesday March 25 works great.\n\nAssaf"
     }
   ],
   "needsEyes": null
@@ -157,64 +157,6 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 |-------|------|----------|-------------|
 | `label` | string | YES | Label above text: `Comment`, `LinkedIn DM`, `Email Reply | Subject: ...`, `Connection Request Note` |
 | `text` | string | YES | The actual copy-paste text. Use `\n` for newlines |
-
-### Post Visuals (for post-type items only)
-
-Every post item in the "Posts" section should include a `visuals` object with the recommended format and available assets. The founder picks which to use.
-
-```json
-{
-  "visuals": {
-    "recommended": "hero_image|carousel",
-    "heroImage": {
-      "urls": ["https://image-url-variant-1.png", "https://image-url-variant-2.png"],
-      "prompt": "Concept art prompt used..."
-    },
-    "carousel": {
-      "gammaUrl": "https://gamma.app/docs/...",
-      "pdfExport": "https://assets.api.gamma.app/export/pdf/...",
-      "numCards": 4,
-      "cardHeadlines": ["Hook question", "Insight 1", "Insight 2", "Takeaway"]
-    },
-    "socialCard": {
-      "gammaUrl": "https://gamma.app/docs/...",
-      "pdfExport": "https://assets.api.gamma.app/export/pdf/...",
-      "headline": "The sharpest stat from the post"
-    }
-  }
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `visuals` | object | NO | Visual assets for post items. Only present on post-type actions. |
-| `visuals.recommended` | string | YES | `hero_image` or `carousel` - the agent's recommended format |
-| `visuals.heroImage` | object | NO | Hero image(s) from image generation. Used for signals posts, single-take posts, founder brand posts. |
-| `visuals.heroImage.urls` | array | YES | 1-2 image variant URLs. Founder picks best one. |
-| `visuals.heroImage.prompt` | string | YES | The prompt used (for iteration if founder wants changes) |
-| `visuals.carousel` | object | NO | Multi-card carousel from Gamma. Used for multi-point, data-heavy, regulatory posts. |
-| `visuals.carousel.gammaUrl` | string | YES | Gamma editor URL |
-| `visuals.carousel.pdfExport` | string | YES | PDF download link for carousel |
-| `visuals.carousel.numCards` | number | YES | Number of cards in carousel |
-| `visuals.carousel.cardHeadlines` | array | YES | Headlines for each card |
-| `visuals.socialCard` | object | NO | Fallback single-image social card from Gamma |
-| `visuals.socialCard.gammaUrl` | string | YES | Gamma editor URL |
-| `visuals.socialCard.pdfExport` | string | YES | PDF download link |
-| `visuals.socialCard.headline` | string | YES | The headline used on the card |
-
-**Visual tool decision matrix (from 04-post-visuals.md):**
-- Signals/breaking news -> Image gen hero image
-- Multi-point thought leadership -> Gamma carousel
-- Single sharp take -> Image gen hero image
-- Founder brand (weekly) -> Image gen hero image
-- Data/stats heavy -> Gamma carousel
-- Regulatory -> Gamma carousel
-
-The HTML template renders these as:
-- Hero images: inline preview thumbnails with "Download" links
-- Carousels: "Open in Gamma" + "Download PDF" links
-- Social cards: "Download" link (fallback option)
-The founder downloads the asset and uploads it when posting.
 
 ### Extra Tag
 
@@ -282,7 +224,7 @@ Items within each section sorted by friction (lowest first):
           "copyBlocks": [
             {
               "label": "Email Reply",
-              "text": "No worries at all. That day works great.\n\n{{FOUNDER_FIRST_NAME}}"
+              "text": "No worries at all. Wednesday March 25 works great.\n\nAssaf"
             }
           ]
         },

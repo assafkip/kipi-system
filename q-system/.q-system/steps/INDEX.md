@@ -1,7 +1,11 @@
 # Step Index
 
+**PREFERRED:** Use `step-orchestrator.md` for agent pipeline execution (8 phases, 19 agents).
+The individual steps below are fallback if the pipeline fails.
+
 | Step ID | File | Lines |
 |---------|------|-------|
+| orchestrator | step-orchestrator.md | 90 |
 | 0 | step-0.md | 28 |
 | 0a | step-0a.md | 1 |
 | 0b | step-0b.md | 40 |

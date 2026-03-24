@@ -16,7 +16,7 @@
 
 **Rule (added to Step 0 of /q-morning and enforced globally):**
 
-Before ANY output that makes a factual claim about {{YOUR_PRODUCT}}, the system MUST:
+Before ANY output that makes a factual claim about KTLYST, the system MUST:
 
 1. **Check the claim against canonical files:**
    - Capability claims -> `my-project/current-state.md`

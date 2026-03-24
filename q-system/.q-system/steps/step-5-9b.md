@@ -30,15 +30,15 @@ This step generates the founder's daily engagement actions with zero searching r
 
 - **Generate copy-paste comments** for each post found:
   - Style by pool: VCs get domain insight, practitioners get peer validation, connectors get amplification
-  - 2-3 sentences max, no {{YOUR_PRODUCT}} pitch
+  - 2-3 sentences max, no KTLYST pitch
   - Reference something specific from their post (not generic "great insights")
   - Must pass test: "Does this comment add value to the conversation?"
-  - **VOICE RULE: Stay on the person's topic. Do NOT steer every comment toward your product's domain.** The founder's credibility is their professional experience, not their product category. If someone posts about ownership gaps, comment about ownership gaps. If someone posts about governance, comment about governance. If someone posts about silos, comment about silos. Only mention your domain if THEY mentioned it. The goal is to be a thoughtful practitioner voice on THEIR topic, not to position yourself as a domain expert.
+  - **VOICE RULE: Stay on the person's topic. Do NOT steer every comment toward detection engineering.** The founder's credibility is 12 years of security operations leadership (Google, Meta, ElevenLabs), not "detection engineering" specifically. If someone posts about ownership gaps, comment about ownership gaps. If someone posts about governance, comment about governance. If someone posts about silos, comment about silos. Only mention detection if THEY mentioned detection. The goal is to be a thoughtful practitioner voice on THEIR topic, not to position yourself as a detection expert. Detection is the wedge artifact, not the founder's identity.
 
 - **Also pull X/Twitter activity** for contacts with X handles:
   - Use Apify Twitter scraper for last 48h tweets from key handles
   - Generate copy-paste replies (1-2 sentences, sharper than LinkedIn)
-  - Same voice rule: reply to what THEY said. Don't pivot to your domain.
+  - Same voice rule: reply to what THEY said. Don't pivot to detection.
 
 - **Output appended to morning briefing (COPY-PASTE READY):**
   ```

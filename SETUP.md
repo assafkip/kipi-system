@@ -21,8 +21,8 @@ Follow the official installation at https://docs.anthropic.com/en/docs/claude-co
 
 ### 2. Clone this repo
 ```bash
-git clone https://github.com/assafkip/kipi-system.git
-cd kipi-system
+git clone https://github.com/assafkip/q-founder-os.git
+cd q-founder-os
 ```
 
 ### 3. Set up environment variables
@@ -211,22 +211,3 @@ The project ships with three layers of security hardening:
 | `/q-reality-check` | Stress-test your positioning |
 | `/q-investor-update` | Draft investor update email |
 | `/q-wrap` | End-of-day health check |
-
-## Optional Add-ons
-
-### Threat Intelligence MCP Server
-If your work involves security consulting, due diligence, or domain/URL investigation:
-
-```bash
-git clone https://github.com/assafkip/threat-intel-mcp.git ~/threat-intel-mcp
-claude mcp add threat-intel -s user -- uv run ~/threat-intel-mcp/server.py
-```
-
-Adds 4 tools: `vt_lookup` (VirusTotal), `urlhaus_lookup`, `threatfox_lookup`, `crt_lookup` (cert transparency). Requires free API keys -- see `q-system/tools/threat-intel-mcp/README.md`.
-
-### OSINT Infrastructure MCP Server
-Already included in `q-system/tools/osint-infra-mcp/`. Adds: `whois_lookup`, `dns_lookup`, `reverse_dns`, `wayback_snapshots`, `wayback_fetch`.
-
-```bash
-claude mcp add osint-infra -s user -- uv run --with "fastmcp>=2.0.0" --with "httpx>=0.27.0" q-system/tools/osint-infra-mcp/server.py
-```

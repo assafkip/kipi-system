@@ -7,19 +7,6 @@
   },
   "model": "opus",
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "/q-morning|/q-scope|/q-plan",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/.q-system/diagnose-tools.sh\" 2>/dev/null | head -50",
-            "timeout": 15000,
-            "statusMessage": "Checking tool availability..."
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": ".*",
@@ -31,18 +18,6 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Agent|Bash|WebSearch|WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/.q-system/tool-counter.sh\" 2>/dev/null || true",
-            "timeout": 5000
           }
         ]
       }
@@ -93,22 +68,6 @@
       "_comment": "Rename to 'playwright' to enable. Browser automation alternative to Chrome MCP.",
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
-    },
-
-    "_threat-intel": {
-      "_comment": "Rename to 'threat-intel' to enable. Threat intelligence feeds (VirusTotal, AbuseIPDB, OTX, etc). Requires server.py from your threat-intel-mcp repo.",
-      "command": "uv",
-      "args": ["run", "/path/to/threat-intel-mcp/server.py"],
-      "env": {
-        "VIRUSTOTAL_API_KEY": "YOUR_VIRUSTOTAL_KEY",
-        "ABUSECH_AUTH_KEY": "YOUR_ABUSECH_KEY"
-      }
-    },
-
-    "_osint-infra": {
-      "_comment": "Rename to 'osint-infra' to enable. OSINT infrastructure lookup (WHOIS, DNS, cert transparency, Shodan). Requires server.py from your osint-infra-mcp repo.",
-      "command": "uv",
-      "args": ["run", "--with", "fastmcp>=2.0.0", "--with", "httpx>=0.27.0", "/path/to/osint-infra-mcp/server.py"]
     }
   },
   "toolConfigurations": {
@@ -129,12 +88,6 @@
       "autoApprove": ["*"]
     },
     "mcp__apify__*": {
-      "autoApprove": ["*"]
-    },
-    "mcp__threat-intel__*": {
-      "autoApprove": ["*"]
-    },
-    "mcp__osint-infra__*": {
       "autoApprove": ["*"]
     }
   },

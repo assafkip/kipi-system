@@ -4,7 +4,7 @@
 |---|--------|-----------|--------------|-------------|
 | 1 | Google Calendar | `mcp__claude_ai_Google_Calendar__gcal_list_events` with today's date | Returns events array (even if empty) | Step 1 calendar, meeting prep |
 | 2 | Gmail | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns messages array | Step 1 email pull, reply detection |
-| 3 | Notion (API) | `mcp__notion_api__API-post-database-query` on Actions DB (ID from `my-project/notion-ids.md`) with `page_size: 1` | Returns results array | Steps 1-10 (CRM, pipeline, tracker, actions) |
+| 3 | Notion (API) | `mcp__notion_api__API-post-database-query` on Actions DB `0718ee69-d9d0-473d-8182-732d21c60491` with `page_size: 1` | Returns results array | Steps 1-10 (CRM, pipeline, tracker, actions) |
 | 4 | Chrome | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Steps 3.8, 5, 5.5 (DMs, GA, LinkedIn) |
 | 5 | Apify (MCP) | Any `mcp__apify__*` tool call | Returns response | Steps 2, 5.9 (profile scraping, lead sourcing) |
 | 5b | Apify (REST fallback) | `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` via Bash | Returns JSON with `data` array | Fallback if MCP Apify unavailable |
