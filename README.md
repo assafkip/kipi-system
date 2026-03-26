@@ -1,4 +1,4 @@
-# The Kipi System
+## The Kipi System
 
 **Your AI brain. Externalized.**
 
