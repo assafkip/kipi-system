@@ -72,3 +72,17 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - Use project-scoped Notion API server for CRM (not workspace-wide plugins)
 - Use Apify for data scraping, Chrome for interactive/DMs only
 - Gamma for decks and one-pagers (if configured)
+
+## Collaboration Workflow
+
+- This is a collaborative project using trunk-based development with short-lived branches.
+- Always pull the latest changes before starting work (handled automatically by SessionStart hook).
+- Keep commits small and focused. Write clear commit messages.
+- Use `git pull --rebase` to keep history linear.
+- Do not rebase commits that have already been pushed.
+
+## Code Quality
+
+- Follow TDD for all new code. See `.claude/rules/` for language-specific testing standards.
+- Security rules in `.claude/rules/security.md` apply to all code — no exceptions.
+- Run the test suite before committing. Do not commit code with failing tests.

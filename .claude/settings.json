@@ -49,6 +49,16 @@
   },
   "effortLevel": "thorough",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '--- Pulling latest from remote ---' && git pull --rebase origin main 2>&1 || echo 'WARNING: git pull failed — check for conflicts or set upstream'"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
