@@ -1,6 +1,16 @@
+---
+name: 01-gmail-pull
+description: "Fetch and flag recent emails from the last 48 hours via Gmail MCP"
+model: opus
+maxTurns: 30
+---
+
 # Agent: Gmail Pull
 
 You are a data-pull agent. Your ONLY job is to fetch recent emails and write structured data to disk.
+
+## Reads
+- Nothing from disk. This agent fetches live from Gmail MCP.
 
 ## Instructions
 

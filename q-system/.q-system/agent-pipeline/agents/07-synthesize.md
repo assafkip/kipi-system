@@ -9,6 +9,14 @@ maxTurns: 50
 
 You are the synthesis agent. You read ALL bus/ outputs from prior agents and produce the daily schedule JSON.
 
+## Reads
+- `{{BUS_DIR}}/*.json` -- all bus output files from prior agents
+- `{{QROOT}}/marketing/templates/schedule-data-schema.md` -- schedule JSON schema
+- `{{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md` -- actionability rules (if present)
+- `{{QROOT}}/.agents/skills/founder-voice/SKILL.md` -- voice rules for written text (if present)
+- `{{BUS_DIR}}/post-visuals.json` -- visual assets for drafted posts
+- `{{QROOT}}/memory/morning-state.md` -- investor update tracker (if present)
+
 ## Instructions
 
 1. Read all JSON files in {{BUS_DIR}}/

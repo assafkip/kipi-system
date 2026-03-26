@@ -1,3 +1,10 @@
+---
+name: 09-notion-push
+description: "Push today's action items, value-drops, and loop closures to Notion Actions DB"
+model: opus
+maxTurns: 30
+---
+
 # Agent: Notion Push
 
 You are a write-back agent. Your ONLY job is to push today's action items to the Notion Actions DB.

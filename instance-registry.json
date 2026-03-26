@@ -1,0 +1,67 @@
+{
+  "skeleton": {
+    "path": "/Users/assafkip/Desktop/kipi-system",
+    "remote": "https://github.com/assafkip/kipi-system.git"
+  },
+  "instances": [
+    {
+      "name": "KTLYST_strategy",
+      "path": "/Users/assafkip/Desktop/KTLYST_strategy",
+      "subtree_prefix": "q-system",
+      "current_q_dir": "q-ktlyst",
+      "has_git": true
+    },
+    {
+      "name": "ktlyst",
+      "path": "/Users/assafkip/Desktop/ktlyst",
+      "subtree_prefix": "q-system",
+      "current_q_dir": null,
+      "has_git": true
+    },
+    {
+      "name": "VC_Reachout",
+      "path": "/Users/assafkip/Desktop/assafs_qs/VC_Reachout",
+      "subtree_prefix": "q-system",
+      "current_q_dir": "q-VC-Sourcing",
+      "has_git": false
+    },
+    {
+      "name": "car-research",
+      "path": "/Users/assafkip/Desktop/car-research",
+      "subtree_prefix": "q-system",
+      "current_q_dir": "q-system",
+      "has_git": true
+    },
+    {
+      "name": "q-education",
+      "path": "/Users/assafkip/Desktop/q-education",
+      "subtree_prefix": "q-system",
+      "current_q_dir": "q-system",
+      "has_git": false
+    },
+    {
+      "name": "Pure_spectrum_Q",
+      "path": "/Users/assafkip/Desktop/Pure_spectrum_Q",
+      "subtree_prefix": "q-system",
+      "current_q_dir": ".q-system",
+      "has_git": true
+    },
+    {
+      "name": "q-investigate-osint-bot",
+      "path": "/Users/assafkip/Desktop/q-investigate-osint-bot",
+      "subtree_prefix": "q-system",
+      "current_q_dir": ".q-system",
+      "has_git": true
+    }
+  ],
+  "eliminate": [
+    {
+      "name": "kipi-pipeline-plugin",
+      "path": "/Users/assafkip/Desktop/kipi-pipeline-plugin"
+    },
+    {
+      "name": "q-founder-os",
+      "path": "/Users/assafkip/Desktop/q-founder-os"
+    }
+  ]
+}
