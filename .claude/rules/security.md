@@ -1,14 +1,23 @@
 ---
 paths:
-  - "**/*"
+  - "**/*.py"
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.js"
+  - "**/*.jsx"
 ---
 
-# Security Rules
+# Security Best Practices
 
-- Never read, edit, or write `.env`, `.env.*`, or credentials files
-- Never include API keys, tokens, or secrets in code output or committed files
-- Never expose MCP server tokens, OAuth credentials, or API keys
-- Use environment variable references (`${VAR}`) instead of hardcoded secrets
-- Never run `rm -rf` on root or dot directories
-- Never run untrusted scripts via `curl | bash`
-- Review all MCP server interactions for data leakage before executing
+These rules apply to ALL code changes. No exceptions.
+
+- Never hardcode secrets, API keys, credentials, or tokens. Use environment variables.
+- Validate and sanitize all user input at the boundary where it enters the system.
+- Use parameterized queries for all database access. Never use string concatenation or interpolation for SQL.
+- Apply principle of least privilege for file access, network access, and permissions.
+- Never use eval(), exec(), or any form of dynamic code execution with user-supplied data.
+- Check dependencies for known vulnerabilities before adding them (npm audit / pip audit).
+- Use HTTPS for all external API calls.
+- Never log sensitive data (passwords, tokens, PII). Scrub logs before writing.
+- Set appropriate CORS policies. Do not use wildcard origins in production.
+- Use cryptographically secure random generators for tokens and session IDs, not Math.random() or similar.

@@ -24,5 +24,7 @@ q-system/memory/working/*
 !q-system/memory/working/.gitkeep
 !q-system/memory/working/predictions.jsonl
 
+CLAUDE.local.md
+
 # Node
 node_modules/
