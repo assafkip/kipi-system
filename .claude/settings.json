@@ -1,5 +1,18 @@
 {
   "effortLevel": "thorough",
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "mcp__kipi__*"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
