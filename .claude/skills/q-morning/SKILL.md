@@ -27,10 +27,10 @@ Read the `kipi://paths` MCP resource to get resolved directories. Key directorie
 ## Preconditions
 
 Read these files FIRST, in this order:
-1. `q-system/.q-system/preflight.md` — tool manifest, known issues, fallback chains. **MANDATORY before anything else.**
+1. `q-system/preflight.md` — tool manifest, known issues, fallback chains. **MANDATORY before anything else.**
 2. `{config_dir}/enabled-integrations.md` — which tools are available
 3. `{config_dir}/founder-profile.md` — user context and accommodations
-4. `q-system/.q-system/steps/step-orchestrator.md` — full phase execution plan
+4. `q-system/steps/step-orchestrator.md` — full phase execution plan
 5. `{data_dir}/memory/last-handoff.md` — prior session context (if exists)
 
 ## Integration checks
@@ -51,7 +51,7 @@ Report what was skipped in the morning briefing summary.
 
 1. **Read preflight.md** — verify all required tools are reachable. If any REQUIRED tool fails, STOP (fail-fast).
 2. **Read step-orchestrator.md** — this is the full phase plan with agent assignments
-3. **Create bus directory:** `q-system/.q-system/agent-pipeline/bus/{today's date}/`
+3. **Create bus directory:** `q-system/agent-pipeline/bus/{today's date}/`
 4. **Initialize morning log:** Call `log_init` MCP tool with today's date
 5. **Run phases 0-8** per step-orchestrator.md:
    - Spawn sub-agents via the Agent tool per phase
@@ -60,7 +60,7 @@ Report what was skipped in the morning briefing summary.
    - Each agent reads only the bus/ files it needs and writes one JSON result
 6. **Log each step** via `log_step` MCP tool as phases complete
 7. **Build daily schedule** via `kipi_build_schedule` MCP tool
-8. **Run audit harness:** `python3 q-system/.q-system/audit-morning.py {state_dir}/output/morning-log-{date}.json`
+8. **Run audit harness:** `python3 q-system/audit-morning.py {state_dir}/output/morning-log-{date}.json`
 9. **Show audit results** to the founder. This is NOT optional.
 10. **Auto-backup:** Call `kipi_backup` MCP tool. This runs by default after every morning routine. Mention the archive path to the founder.
 
@@ -86,4 +86,4 @@ If any MCP server is unavailable or any step fails during execution, STOP the en
 
 ## Fallback
 
-If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `kipi_load_step` MCP tool.
+If the agent pipeline fails, the old monolithic steps in `steps/` still work via the `kipi_load_step` MCP tool.

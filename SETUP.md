@@ -115,11 +115,10 @@ q-founder-os/
     skills/                          # Marketing skills (32 skills from Corey Haines)
   q-system/
     CLAUDE.md                        # Full behavioral rules + setup wizard
-    .q-system/
-      commands.md                    # All slash commands defined here
-      preflight.md                   # Tool manifest + fail-fast protocol
-      audit-morning.py               # Post-morning audit harness
-      state-model.md                 # Progress tracking model
+    commands.md                      # All slash commands defined here
+    preflight.md                     # Tool manifest + fail-fast protocol
+    audit-morning.py                 # Post-morning audit harness
+    state-model.md                   # Progress tracking model
     canonical/                       # Your positioning knowledge base
       objections.md                  # Pushback heard + responses
       discovery.md                   # Questions asked + answers

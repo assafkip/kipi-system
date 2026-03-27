@@ -19,7 +19,7 @@ Compare yesterday's generated copy against what the founder actually posted. Log
 ## Instructions
 
 ### Step 1: Find yesterday's hitlist
-Calculate yesterday's date. Read `{{QROOT}}/.q-system/agent-pipeline/bus/{yesterday}/hitlist.json`. If missing, write `{"date":"{{DATE}}","diffs":[],"note":"no previous hitlist found"}` and exit.
+Calculate yesterday's date. Read `{{QROOT}}/agent-pipeline/bus/{yesterday}/hitlist.json`. If missing, write `{"date":"{{DATE}}","diffs":[],"note":"no previous hitlist found"}` and exit.
 
 ### Step 2: Check what was posted
 Use Chrome MCP to check https://www.linkedin.com/in/me/recent-activity/all/ and messaging.
@@ -37,7 +37,7 @@ For each hitlist action: check if comment/DM/CR was sent, compare generated vs a
 ```
 
 ### Step 5: Persist edits to SQLite
-For each `edited` action, insert into `copy_edits` table in `{{QROOT}}/.q-system/data/metrics.db`.
+For each `edited` action, insert into `copy_edits` table in `{{QROOT}}/data/metrics.db`.
 
 If Chrome fails after 2 attempts, write minimal output and exit. Do NOT block.
 

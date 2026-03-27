@@ -96,13 +96,12 @@ The system walks you through setup. Who you are, what you're building, how you t
 
 ```
 kipi-system/
-├── .q-system/
-│   ├── commands.md          # 35+ step morning routine and all workflows
-│   ├── verify-schedule.py   # Blocks HTML build if required sections missing
-│   ├── session-start.py     # Auto-loads context on first use each day
-│   ├── audit-morning.py     # Catches skipped steps and missing content
-│   ├── token-guard.py       # Stops runaway AI token consumption
-│   └── preflight.md         # Tool manifest, known issues, and verification rules
+├── commands.md              # 35+ step morning routine and all workflows
+├── verify-schedule.py       # Blocks HTML build if required sections missing
+├── session-start.py         # Auto-loads context on first use each day
+├── audit-morning.py         # Catches skipped steps and missing content
+├── token-guard.py           # Stops runaway AI token consumption
+├── preflight.md             # Tool manifest, known issues, and verification rules
 │   # MCP tools (via kipi-mcp server):
 │   #   loop_open/close/escalate/list/stats/touch/prune
 │   #   load_step

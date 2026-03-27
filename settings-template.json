@@ -17,7 +17,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/token-guard.py\""
           }
         ]
       }

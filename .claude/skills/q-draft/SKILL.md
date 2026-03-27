@@ -41,7 +41,7 @@ No external integrations required. Works entirely from local files.
 ## Process
 
 1. Identify output type, audience, and context from arguments (ask if unclear)
-2. Check `.q-system/agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
+2. Check `agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
 3. Read relevant canonical files and relationship history for the target person
 4. Generate the draft
 5. Save to `{state_dir}/output/drafts/{date}-{type}-{audience}.md`

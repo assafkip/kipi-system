@@ -10,7 +10,7 @@ maxTurns: 30
 Fetch Calendar, Gmail, and Notion data in one agent. Write all three to disk.
 
 ## Reads
-- `{{QROOT}}/.q-system/notion-config.json` (for Notion database IDs)
+- `{{QROOT}}/notion-config.json` (for Notion database IDs)
 
 ## Writes
 - `{{BUS_DIR}}/calendar.json`, `gmail.json`, `notion.json`
@@ -31,7 +31,7 @@ Flag emails mentioning: meeting, demo, intro, investment, design partner, or pro
 Write: `{"date":"{{DATE}}","emails":[{"subject":"...","from":"...","date":"...","snippet":"...","already_replied":false,"flagged":true,"flag_reason":"meeting|demo|product|null"}],"flagged_count":0}`
 
 ### 3. Notion
-Use `mcp__claude_ai_Notion__*` tools. Read `{{QROOT}}/.q-system/notion-config.json` FIRST for all database IDs.
+Use `mcp__claude_ai_Notion__*` tools. Read `{{QROOT}}/notion-config.json` FIRST for all database IDs.
 
 - **Contacts**: Status=Active/Nurturing
 - **Actions**: Priority=Today/This Week

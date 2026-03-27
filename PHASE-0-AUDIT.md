@@ -110,7 +110,7 @@ The skeleton has been independently developed in some areas:
 | `marketing/brand-voice.md` | Channel voice structure (LinkedIn vs X vs email) | KTLYST banned words, anti-patterns |
 | `marketing/content-guardrails.md` | Pre-publish checklist structure | KTLYST-specific claim rules |
 | `marketing/README.md` | Marketing system architecture | KTLYST "Head of Marketing" framing |
-| `.q-system/commands.md` | Command definitions and workflows | KTLYST-specific references |
+| `commands.md` | Command definitions and workflows | KTLYST-specific references |
 
 ---
 
@@ -125,7 +125,7 @@ The skeleton has been independently developed in some areas:
 | `skills/q-morning` | Already in kipi-system `.claude/commands/` |
 | `skills/q-debrief` | Already in kipi-system `.claude/commands/` |
 | `skills/q-wrap` | Already in kipi-system `.claude/commands/` |
-| `scripts/audit-morning.py` | Already in kipi-system `.q-system/` |
+| `scripts/audit-morning.py` | Already in kipi-system `q-system/` |
 | `kipi_build_schedule` MCP tool | Replaced old build-schedule.sh (deleted) |
 
 The plugin adds zero unique value. It's a packaging layer with symlinks. Every capability already exists in the instance or skeleton.
@@ -176,7 +176,7 @@ Read `{{QROOT}}/canonical/engagement-playbook.md` for:
 | Layer | Goes to | Contains |
 |-------|---------|----------|
 | **Framework** (skeleton) | `kipi-system/.claude/skills/founder-voice/SKILL.md` | Layer loading matrix, anti-AI scanner rules, register-by-channel structure, quality checks |
-| **Framework** (skeleton) | `kipi-system/q-system/.q-system/scripts/scan-draft.py` | Generic anti-AI scanner script (banned phrase detection, pattern matching) |
+| **Framework** (skeleton) | `kipi-system/q-system/scripts/scan-draft.py` | Generic anti-AI scanner script (banned phrase detection, pattern matching) |
 | **Content** (instance) | `{instance}/.claude/skills/founder-voice/references/voice-dna.md` | Founder's specific voice DNA, words they use/avoid, opening/closing patterns |
 | **Content** (instance) | `{instance}/.claude/skills/founder-voice/references/writing-samples.md` | Real writing samples from the founder |
 | **Content** (instance) | `{instance}/.claude/skills/founder-voice/references/gotchas.md` | Instance-specific voice gotchas (if exists) |
@@ -323,7 +323,7 @@ The skeleton and KTLYST have diverged. Here's the file-by-file mapping for agent
 - **Action:** Commit car-specific changes first. Then convert to subtree consumer. Car-specific content (car-spec.json, car-negotiator skill, Voss playbook) stays outside the subtree prefix.
 
 ### q-education
-- NOT a git repo. Has skeleton structure but missing `.q-system/steps/` and `.q-system/commands.md`
+- NOT a git repo. Has skeleton structure but missing `steps/` and `commands.md`
 - Founder profile is POPULATED (Assaf + school context)
 - **Action:** Initialize git. Add kipi-system as subtree. Lightweight instance (no full agent pipeline needed).
 

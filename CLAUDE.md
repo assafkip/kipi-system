@@ -20,8 +20,8 @@ User data lives outside the repo in XDG-standard directories. Read the `kipi://p
 
 ### Git repo (system code only)
 - `q-system/` - Core operating system
-  - `.q-system/` - Commands, preflight, audit harness
-  - `.q-system/agent-pipeline/` - Decomposed agent architecture for morning routine
+  - Commands, preflight, audit harness
+  - `agent-pipeline/` - Decomposed agent architecture for morning routine
     - `agents/` - 19 agent prompt files (one per task)
     - `orchestrator-design.md` - Phase execution plan
     - `templates/` - Reusable folder structures for repeatable outputs
@@ -50,21 +50,21 @@ All paths are resolved at runtime by platformdirs and vary by OS (e.g. `~/.confi
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 
 ## Commands
-- `/q-morning` - Full morning briefing (agent pipeline: 8 phases, 19 sub-agents). Reads orchestrator from `.q-system/steps/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
+- `/q-morning` - Full morning briefing (agent pipeline: 8 phases, 19 sub-agents). Reads orchestrator from `steps/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
-- `/q-create` - Generate specific output. Use templates from `.q-system/agent-pipeline/templates/` for repeatable outputs (deck, outreach, content, debrief).
+- `/q-create` - Generate specific output. Use templates from `agent-pipeline/templates/` for repeatable outputs (deck, outreach, content, debrief).
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
 - `/q-market-review` - Content review runs 4 Sonnet passes (voice, guardrails, anti-AI, actionability) via Agent tool. Review pipeline pass definitions are in `kipi-mcp/server.py` docstrings.
-- `/q-draft` - Ad-hoc output generation. Use templates from `.q-system/agent-pipeline/templates/` when format matches.
+- `/q-draft` - Ad-hoc output generation. Use templates from `agent-pipeline/templates/` when format matches.
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 
 ## Build and Test
 - Build daily schedule: Use the `kipi_build_schedule` MCP tool
-- Audit morning routine: `python3 q-system/.q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json`
+- Audit morning routine: `python3 q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json`
 
 ## Token Discipline (NON-NEGOTIABLE)
 

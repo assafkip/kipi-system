@@ -54,7 +54,7 @@ You are a data-pull agent. Your ONLY job is to scrape LinkedIn analytics for rec
 
 5. After writing the bus file, persist to SQLite:
 ```bash
-python3 {{QROOT}}/.q-system/data/db-query.py insert-content-metrics {{BUS_DIR}}/content-metrics.json
+python3 {{QROOT}}/data/db-query.py insert-content-metrics {{BUS_DIR}}/content-metrics.json
 ```
 6. Update `persisted_to_sqlite` to true in the JSON if the insert succeeded.
 7. Do NOT analyze strategy or draft content. Just pull metrics.

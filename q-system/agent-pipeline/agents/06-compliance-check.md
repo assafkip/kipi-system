@@ -17,7 +17,7 @@ You are a compliance agent. Your ONLY job is to check today's generated content 
 - `{{CONFIG_DIR}}/canonical/talk-tracks.md` - approved language and framing
 - `{{DATA_DIR}}/my-project/current-state.md` - what is built vs. planned
 - `{{CONFIG_DIR}}/canonical/decisions.md` - all active rules (RULE-001 through current)
-- Prior days' compliance: `q-system/.q-system/agent-pipeline/bus/*/compliance.json` (last 5 days if they exist)
+- Prior days' compliance: `q-system/agent-pipeline/bus/*/compliance.json` (last 5 days if they exist)
 
 ## Writes
 

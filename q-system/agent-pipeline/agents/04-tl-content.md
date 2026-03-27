@@ -41,7 +41,7 @@ Start with scar, number, or sharp claim. NEVER question. NEVER "I". Max 200 word
 1-3 tweet thread. First tweet stands alone (<280 chars). Punchier than LinkedIn.
 
 ## Anti-AI scan (deterministic, MANDATORY)
-After generating copy, run: `python3 {{QROOT}}/.q-system/scripts/scan-draft.py {{BUS_DIR}}/tl-content.json`
+After generating copy, run: `python3 {{QROOT}}/scripts/scan-draft.py {{BUS_DIR}}/tl-content.json`
 If FAIL: fix every violation, rewrite the flagged text, re-run scan. Do not write output until PASS.
 
 ## Verify against `_auto-fail-checklist.md`. Zero violations.

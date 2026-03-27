@@ -26,11 +26,11 @@ import os
 import sys
 from pathlib import Path
 
-# Resolve QROOT relative to this script's location (../ from .q-system/)
-QROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+# Resolve QROOT relative to this script's location (q-system/)
+QROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Import StepLogger from kipi-mcp package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "kipi-mcp", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "kipi-mcp", "src"))
 from kipi_mcp.step_logger import StepLogger
 
 
@@ -43,7 +43,7 @@ def load_log(date):
 
 
 def load_bus(date, filename):
-    path = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date, filename)
+    path = os.path.join(QROOT, "agent-pipeline", "bus", date, filename)
     if not os.path.isfile(path):
         return None
     with open(path) as f:
@@ -74,7 +74,7 @@ def check_phase(date, phase, fix=False):
                 canonical_dir = os.path.join(QROOT, "canonical")
                 if os.path.isdir(canonical_dir):
                     checks["canonical_file_count"] = str(len(os.listdir(canonical_dir)))
-                bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
+                bus_dir = os.path.join(QROOT, "agent-pipeline", "bus", date)
                 if os.path.isdir(bus_dir):
                     checks["bus_file_count"] = str(len([f for f in os.listdir(bus_dir) if f.endswith('.json')]))
                 for key, val in checks.items():
@@ -86,7 +86,7 @@ def check_phase(date, phase, fix=False):
         gates = log.get("gates_checked", {})
         gate_name = f"phase_{phase}"
         if gate_name not in gates:
-            bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
+            bus_dir = os.path.join(QROOT, "agent-pipeline", "bus", date)
             phase_complete = os.path.isdir(bus_dir)
             issues.append(f"Gate check not logged for phase {phase}")
             if fix and phase_complete:
@@ -135,7 +135,7 @@ def check_phase(date, phase, fix=False):
         for issue in issues:
             print(f"    [MISSING] {issue}")
         if not fix:
-            print(f"\n  To auto-fix: python3 {os.path.join(QROOT, '.q-system', 'verify-orchestrator.py')} {date} {phase} --fix")
+            print(f"\n  To auto-fix: python3 {os.path.join(QROOT, 'verify-orchestrator.py')} {date} {phase} --fix")
         return False
     else:
         print(f"  Orchestrator check (phase {phase}): PASS")

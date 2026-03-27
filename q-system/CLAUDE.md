@@ -279,7 +279,7 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 
 ## Preflight, Fail-Fast, and Audit Harness (ENFORCED)
 
-**Before every `/q-morning` run, read `.q-system/preflight.md` FIRST.** This file contains:
+**Before every `/q-morning` run, read `preflight.md` FIRST.** This file contains:
 1. Tool manifest with exact tests, known limitations, and fallback chains
 2. Known issues registry (things that broke before, never re-discover)
 3. Session budget with hard split points and handoff format
@@ -289,27 +289,27 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 
 **After Step 11 (or whenever the routine ends), run the audit harness:**
 ```bash
-python3 q-system/.q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json
+python3 q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json
 ```
 Show the audit output to the founder. This is not optional. The founder should always see the completion verdict.
 
-If any MCP server is unavailable or any step fails during `/q-morning`, STOP the entire routine immediately and report what broke. Do NOT continue with partial data. The founder fixes the issue and re-runs. See `.q-system/preflight.md` for tool manifest and fallback chains, and `commands.md` "Fail-fast mode" section for the halt protocol.
+If any MCP server is unavailable or any step fails during `/q-morning`, STOP the entire routine immediately and report what broke. Do NOT continue with partial data. The founder fixes the issue and re-runs. See `preflight.md` for tool manifest and fallback chains, and `commands.md` "Fail-fast mode" section for the halt protocol.
 
 ## Agent Pipeline Architecture
 
 `/q-morning` uses a decomposed agent pipeline instead of a monolithic step-by-step flow.
 
 **How it works:**
-1. Read `.q-system/steps/step-orchestrator.md` for the full phase plan
+1. Read `steps/step-orchestrator.md` for the full phase plan
 2. Create `{state_dir}/bus/{date}/` directory for inter-agent communication
 3. Run 8 phases, spawning sub-agents via the Agent tool
 4. Agents communicate through JSON files in the bus directory, not through context
 5. Parallel phases use multiple Agent calls in a single message
 6. Each agent reads only the bus/ files it needs and writes one JSON result
 
-**Agent prompts:** `.q-system/agent-pipeline/agents/` (19 files)
+**Agent prompts:** `agent-pipeline/agents/` (19 files)
 **Bus directory:** `{state_dir}/bus/{date}/`
-**Design doc:** `.q-system/agent-pipeline/orchestrator-design.md`
+**Design doc:** `agent-pipeline/orchestrator-design.md`
 
 **Model allocation:** Sonnet for all data pulls and checks. Opus for engagement hitlist (05) and synthesis (07) only.
 
@@ -317,9 +317,9 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 
 **Content review pipeline:** `/q-market-review` runs 4 focused Sonnet agents in sequence (voice, guardrails, anti-AI detection, actionability). Review pipeline pass definitions are in `kipi-mcp/server.py` docstrings.
 
-**Output templates:** `.q-system/agent-pipeline/templates/` has reusable folder structures for deck, outreach, content, and debrief outputs. `/q-create` and `/q-draft` should use these when the format matches.
+**Output templates:** `agent-pipeline/templates/` has reusable folder structures for deck, outreach, content, and debrief outputs. `/q-create` and `/q-draft` should use these when the format matches.
 
-**Fallback:** If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `kipi_load_step` MCP tool.
+**Fallback:** If the agent pipeline fails, the old monolithic steps in `steps/` still work via the `kipi_load_step` MCP tool.
 
 ## Inter-Skill Review Gates (ENFORCED)
 

@@ -315,7 +315,7 @@ When founder reports an action, the system immediately:
 
 **Step 0 — Session bootstrap (runs before everything else):**
 
-> **MANDATORY:** Before executing ANY step, read `.q-system/preflight.md`. It contains the tool manifest, known issues, session budget, and step logging format.
+> **MANDATORY:** Before executing ANY step, read `preflight.md`. It contains the tool manifest, known issues, session budget, and step logging format.
 
 > **HARNESS RULE:** Every step must end with a call to the log helper. Replace DATE with today's date in every call.
 > ```
@@ -1822,7 +1822,7 @@ Use the `log_deliver_cards` MCP tool with date=DATE
 
 **12c. Run the audit harness:**
 ```bash
-python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-DATE.json
+python3 q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-DATE.json
 ```
 **Always show the audit output to the founder.** This is not optional.
 

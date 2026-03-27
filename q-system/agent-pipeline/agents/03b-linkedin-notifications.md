@@ -23,7 +23,7 @@ Scrape LinkedIn notifications for behavioral signals. Write to disk.
 ```json
 {"date":"{{DATE}}","signals":[{"contact_name":"...","signal_type":"post_like|post_comment|profile_view|post_share|mention","signal_date":"...","post_url":"...","weight":2}],"profile_views":[{"contact_name":"...","viewed_date":"..."}],"persisted_to_sqlite":false}
 ```
-5. Persist to SQLite: `python3 {{QROOT}}/.q-system/data/db-query.py insert-behavioral-signals {{BUS_DIR}}/behavioral-signals.json`
+5. Persist to SQLite: `python3 {{QROOT}}/data/db-query.py insert-behavioral-signals {{BUS_DIR}}/behavioral-signals.json`
 6. Update persisted_to_sqlite to true if succeeded.
 
 Do NOT generate follow-up copy. Just pull and structure.

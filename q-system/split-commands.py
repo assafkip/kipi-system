@@ -9,15 +9,15 @@ files instead of parsing the 2000+ line monolith each time.
 Also generates a steps/INDEX.md that maps step IDs to files.
 
 Run this whenever commands.md is updated:
-  python3 q-system/.q-system/split-commands.py
+  python3 q-system/split-commands.py
 """
 
 import re
 import os
 from pathlib import Path
 
-COMMANDS_FILE = "q-system/.q-system/commands.md"
-STEPS_DIR = "q-system/.q-system/steps"
+COMMANDS_FILE = "q-system/commands.md"
+STEPS_DIR = "q-system/steps"
 INDEX_FILE = os.path.join(STEPS_DIR, "INDEX.md")
 
 

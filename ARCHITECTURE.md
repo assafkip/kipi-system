@@ -35,11 +35,10 @@ Each instance is a project that embeds the skeleton as a git subtree at `q-syste
 instance-root/
   q-system/                    # Git subtree (skeleton)
     q-system/                  # Core OS
-      .q-system/
-        agent-pipeline/
-          agents/              # 50 agent prompt files
-        scripts/               # Utility scripts
-        data/                  # DB init, queries
+      agent-pipeline/
+        agents/                # 50 agent prompt files
+      scripts/                 # Utility scripts
+      data/                    # DB init, queries
       canonical/               # Template files ({{}} placeholders)
       my-project/              # Template files ({{SETUP_NEEDED}})
       marketing/               # Template structure

@@ -24,7 +24,7 @@ From notion.json: Stage = Active/Warm/Nurturing, sorted by most recent Last Cont
 
 Rotation: check SQLite for recently scanned (last 2 days):
 ```bash
-python3 -c "import sqlite3,json; db=sqlite3.connect('{{QROOT}}/.q-system/data/metrics.db'); print(json.dumps([r[0] for r in db.execute('SELECT DISTINCT contact_name FROM behavioral_signals WHERE signal_date >= date(\"now\",\"-2 days\") AND source=\"prospect_activity_scan\"').fetchall()])); db.close()"
+python3 -c "import sqlite3,json; db=sqlite3.connect('{{QROOT}}/data/metrics.db'); print(json.dumps([r[0] for r in db.execute('SELECT DISTINCT contact_name FROM behavioral_signals WHERE signal_date >= date(\"now\",\"-2 days\") AND source=\"prospect_activity_scan\"').fetchall()])); db.close()"
 ```
 Skip anyone returned.
 

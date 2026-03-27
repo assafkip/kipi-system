@@ -18,11 +18,11 @@ import os
 import sys
 from datetime import datetime
 
-# Resolve {{QROOT}} relative to this script's location (../ from .q-system/)
-QROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+# Resolve QROOT relative to this script's location (q-system/)
+QROOT = os.path.dirname(os.path.abspath(__file__))
 
 def verify(date, phase):
-    bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
+    bus_dir = os.path.join(QROOT, "agent-pipeline", "bus", date)
 
     if not os.path.isdir(bus_dir):
         print(f"FAIL: Bus directory does not exist: {bus_dir}")

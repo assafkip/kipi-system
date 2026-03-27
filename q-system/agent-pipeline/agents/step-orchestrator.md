@@ -20,7 +20,7 @@ known bugs and broke guardrails.
 
 ### Read 1: Preflight -- Tool Manifest + Known Issues
 ```
-Read: q-consult/.q-system/preflight.md (offset: 1, limit: 136)
+Read: q-consult/preflight.md (offset: 1, limit: 136)
 ```
 Sections 1-2: What tools work, what's broken, fallback chains, and 10 known
 issues (KI-1 through KI-10) that have burned real sessions. The preflight agent
@@ -29,7 +29,7 @@ or KI-6 (generic subs produce 0 leads) or KI-9 (new positioning). You do.
 
 ### Read 2: Preflight -- Execution Gates + Action Cards
 ```
-Read: q-consult/.q-system/preflight.md (offset: 246, limit: 75)
+Read: q-consult/preflight.md (offset: 246, limit: 75)
 ```
 Sections 5-6: When to halt, how to log steps, and the rule that "card delivered"
 is NOT "done" -- only founder-confirmed actions update state files.
@@ -47,8 +47,8 @@ So agents generate content with current positioning, not deprecated messaging.
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-BUS_DIR="q-consult/.q-system/agent-pipeline/bus/${DATE}"
-AGENTS_DIR="q-consult/.q-system/agent-pipeline/agents"
+BUS_DIR="q-consult/agent-pipeline/bus/${DATE}"
+AGENTS_DIR="q-consult/agent-pipeline/agents"
 mkdir -p "${BUS_DIR}"
 ```
 
@@ -148,8 +148,8 @@ Launch in ONE message:
 ### Phase 8: Build + Verify (sequential)
 1. Run: Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-{date}.json" and html_path="output/daily-schedule-{date}.html"
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
-3. Run: `python3 q-consult/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
-4. Run: `python3 q-consult/.q-system/audit-morning.py q-consult/output/morning-log-{date}.json`
+3. Run: `python3 q-consult/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
+4. Run: `python3 q-consult/audit-morning.py q-consult/output/morning-log-{date}.json`
 5. Show audit output to founder
 Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 
@@ -163,7 +163,7 @@ These are the final agents. If either fails, log the error - do not retry.
 
 At the start of each day (Phase 0), delete bus/ directories older than 3 days:
 ```bash
-find q-consult/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
+find q-consult/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
 ```
 
 ## Fallback Chain (tool-level)

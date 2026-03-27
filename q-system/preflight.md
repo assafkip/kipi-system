@@ -493,7 +493,7 @@ Claims that cross sessions get verified. Q does not trust data older than 48 hou
 
 After Step 11 (or whenever the routine ends), run the audit. This MUST happen even if context is tight.
 
-The audit script (`q-system/.q-system/audit-morning.py`) checks:
+The audit script (`q-system/audit-morning.py`) checks:
 1. Step completion against expected steps for the day
 2. Gate compliance (were gate checks actually performed?)
 3. Action card counts (how many delivered, how many still unconfirmed from yesterday?)
@@ -502,7 +502,7 @@ The audit script (`q-system/.q-system/audit-morning.py`) checks:
 
 Run:
 ```bash
-python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json
+python3 q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json
 ```
 
 Show the output to the founder. This is not optional. If the verdict is not COMPLETE, the founder sees exactly what was missed.
@@ -519,17 +519,17 @@ Show the output to the founder. This is not optional. If the verdict is not COMP
 | `commands.md` every step | Writes completion to morning log + creates action cards for founder-facing outputs |
 | `commands.md` Steps 8, 9, 11 | Gate check: re-read morning log from disk, verify all prior steps logged |
 | `commands.md` Step 12 | Run audit harness, snapshot state checksums, verify claims |
-| `CLAUDE.md` | Rule: "Read `.q-system/preflight.md` before every `/q-morning` run" |
+| `CLAUDE.md` | Rule: "Read `preflight.md` before every `/q-morning` run" |
 | `memory/morning-state.md` | Audit results appended to track completion rate over time |
 
 ### Reading Order for `/q-morning`
 
-1. `.q-system/preflight.md` (this file) - tool manifest, known issues, session budget, gates, action cards
+1. `preflight.md` (this file) - tool manifest, known issues, session budget, gates, action cards
 2. Read previous day's morning log (if exists) for unconfirmed action cards and stale verification items
 3. Run Step 0f connection checks using the tool manifest
 4. Create today's morning log file (empty structure with all sections)
 5. Snapshot state file checksums (Step 0c)
-6. `.q-system/commands.md` - execute steps, logging each to morning log
+6. `commands.md` - execute steps, logging each to morning log
 7. At gate steps (8, 9, 11): re-read morning log from disk, check all prior steps
 8. After Step 11: run audit harness, show result to founder
 

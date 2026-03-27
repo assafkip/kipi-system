@@ -33,7 +33,7 @@ q-system/output/morning-log-*.json
 q-system/output/open-loops.json
 
 # Bus data (inter-agent communication, per-session)
-q-system/.q-system/agent-pipeline/bus/
+q-system/agent-pipeline/bus/
 
 # Python
 __pycache__/
