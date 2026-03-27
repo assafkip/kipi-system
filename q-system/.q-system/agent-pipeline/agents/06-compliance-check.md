@@ -14,9 +14,9 @@ You are a compliance agent. Your ONLY job is to check today's generated content 
 - `{{BUS_DIR}}/signals.json` - LinkedIn and X drafts
 - `{{BUS_DIR}}/value-routing.json` - value-drop messages
 - `{{BUS_DIR}}/hitlist.json` - engagement copy (comments, DMs, connection requests)
-- `q-system/canonical/talk-tracks.md` - approved language and framing
-- `q-system/my-project/current-state.md` - what is built vs. planned
-- `q-system/canonical/decisions.md` - all active rules (RULE-001 through current)
+- `{{CONFIG_DIR}}/canonical/talk-tracks.md` - approved language and framing
+- `{{DATA_DIR}}/my-project/current-state.md` - what is built vs. planned
+- `{{CONFIG_DIR}}/canonical/decisions.md` - all active rules (RULE-001 through current)
 - Prior days' compliance: `q-system/.q-system/agent-pipeline/bus/*/compliance.json` (last 5 days if they exist)
 
 ## Writes

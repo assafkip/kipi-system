@@ -10,12 +10,12 @@ maxTurns: 30
 You are a visual QA agent. Your job is to open the daily HTML schedule in Chrome, screenshot it, and verify it looks correct.
 
 ## Reads
-- `{{QROOT}}/output/daily-schedule-{{DATE}}.html` -- the generated daily schedule HTML to verify
+- `{{STATE_DIR}}/output/daily-schedule-{{DATE}}.html` -- the generated daily schedule HTML to verify
 
 ## Instructions
 
 1. Open the daily schedule HTML in Chrome:
-   File: {{QROOT}}/output/daily-schedule-{{DATE}}.html
+   File: {{STATE_DIR}}/output/daily-schedule-{{DATE}}.html
 
 2. Use Chrome MCP tools to:
    a. Create a new tab

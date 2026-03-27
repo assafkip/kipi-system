@@ -22,7 +22,7 @@ You are a data-pull agent. Your ONLY job is to scrape LinkedIn analytics for rec
    - Click into the post analytics (the impressions/views number below each post)
    - Extract: post_url, post_date, impressions, likes, comments, reposts
    - Calculate engagement_rate: (likes + comments + reposts) / impressions * 100
-   - Classify post_type based on content. Read `{{QROOT}}/marketing/content-themes.md` for post type categories.
+   - Classify post_type based on content. Read `{{CONFIG_DIR}}/marketing/content-themes.md` for post type categories.
 3. If Chrome fails to load analytics after 2 attempts, write `{"date": "{{DATE}}", "metrics": [], "error": "chrome_failed"}` and exit.
 4. Write results to `{{BUS_DIR}}/content-metrics.json`:
 

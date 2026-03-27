@@ -30,7 +30,7 @@ You are an X/Twitter activity agent. Your ONLY job is to pull the founder's rece
 - Note any reply threads that need a response from the founder
 
 ### 3. Monitored Accounts Scan
-- Read monitored X handles from `{{QROOT}}/my-project/lead-sources.md` (X Accounts to Monitor section)
+- Read monitored X handles from `{{DATA_DIR}}/my-project/lead-sources.md` (X Accounts to Monitor section)
 - For each, check if they posted in the last 48 hours
 - Surface posts where the founder could add value via reply or quote-tweet
 - Draft 1-2 sentence reply for each opportunity

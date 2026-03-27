@@ -1,17 +1,29 @@
 import sys
-import os
 import json
 import logging
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-KIPI_HOME = Path(os.environ.get("KIPI_HOME", Path(__file__).resolve().parents[3]))
-Q_SYSTEM = KIPI_HOME / "q-system"
-REGISTRY_PATH = KIPI_HOME / "instance-registry.json"
+from kipi_mcp.paths import KipiPaths
+from kipi_mcp.registry import RegistryManager
+from kipi_mcp.git_ops import GitOps
+from kipi_mcp.step_logger import StepLogger
+from kipi_mcp.loop_tracker import LoopTracker
+from kipi_mcp.step_loader import StepLoader
+from kipi_mcp.template_manager import TemplateManager
+from kipi_mcp.migrator import Migrator
+
+paths = KipiPaths()
+paths.ensure_dirs()
+
+# Auto-migrate from old repo layout if needed
+if paths.detect_legacy_layout():
+    migrator = Migrator(paths)
+    result = migrator.migrate(dry_run=False)
+    logger.info(f"Auto-migrated {len(result['copied'])} files to XDG directories")
 
 mcp = FastMCP(
     "kipi",
@@ -20,14 +32,7 @@ mcp = FastMCP(
 
 # --- Service instantiation ---
 
-from kipi_mcp.registry import RegistryManager
-from kipi_mcp.git_ops import GitOps
-from kipi_mcp.step_logger import StepLogger
-from kipi_mcp.loop_tracker import LoopTracker
-from kipi_mcp.step_loader import StepLoader
-from kipi_mcp.template_manager import TemplateManager
-
-registry = RegistryManager(REGISTRY_PATH)
+registry = RegistryManager(paths.registry_path)
 
 try:
     skeleton = registry.get_skeleton()
@@ -38,25 +43,24 @@ except Exception:
 
 git_ops = GitOps(skeleton_remote=skeleton_remote, skeleton_branch="main")
 
-step_logger = StepLogger(output_dir=Q_SYSTEM / "output")
+step_logger = StepLogger(output_dir=paths.output_dir)
 
-loop_tracker = LoopTracker(loop_file=Q_SYSTEM / "output" / "open-loops.json")
+loop_tracker = LoopTracker(loop_file=paths.output_dir / "open-loops.json")
 
 step_loader = StepLoader(
-    steps_dir=Q_SYSTEM / ".q-system" / "steps",
-    commands_file=Q_SYSTEM / ".q-system" / "commands.md",
+    steps_dir=paths.steps_dir,
+    commands_file=paths.commands_file,
 )
 
 template_manager = TemplateManager(
-    templates_dir=Q_SYSTEM / ".q-system" / "agent-pipeline" / "templates",
-    output_dir=Q_SYSTEM / "output",
-    schedule_template=Q_SYSTEM / "marketing" / "templates" / "schedule-template.html",
+    templates_dir=paths.templates_dir,
+    output_dir=paths.output_dir,
+    schedule_template=paths.schedule_template,
 )
 
-# Validator is optional — may not be implemented yet
 try:
     from kipi_mcp.validator import Validator
-    validator = Validator(kipi_home=KIPI_HOME, registry=registry)
+    validator = Validator(kipi_home=paths.repo_dir, registry=registry)
 except ImportError:
     validator = None
     logger.info("Validator module not available, kipi_validate tool will be disabled")
@@ -83,7 +87,32 @@ def kipi_list() -> str:
 @mcp.tool()
 def kipi_home() -> str:
     """Return the KIPI_HOME path."""
-    return json.dumps({"kipi_home": str(KIPI_HOME)})
+    return json.dumps({"kipi_home": str(paths.repo_dir)})
+
+
+@mcp.tool()
+def kipi_paths_info() -> str:
+    """Return all resolved kipi directory paths (config, data, state, repo)."""
+    return json.dumps({
+        "config_dir": str(paths.config_dir),
+        "data_dir": str(paths.data_dir),
+        "state_dir": str(paths.state_dir),
+        "repo_dir": str(paths.repo_dir),
+    })
+
+
+@mcp.tool()
+def kipi_migrate(dry_run: bool = True) -> str:
+    """Migrate user data from git repo to XDG directories.
+
+    Args:
+        dry_run: If True, report what would happen without copying. Default True for safety.
+    """
+    try:
+        m = Migrator(paths)
+        return json.dumps(m.migrate(dry_run=dry_run))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()

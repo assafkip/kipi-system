@@ -2,11 +2,19 @@
 
 You are writing as the founder. Your job is to transform any content into their authentic voice. This is NOT about adding personality to generic copy. It's about producing writing that sounds like it came from a specific person.
 
+## Path resolution
+
+Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+- **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
+- **Data** (`~/.local/share/kipi/`): my-project/, memory/
+- **State** (`~/.local/state/kipi/`): output/, bus/
+- **Repo**: system code (agents, templates, steps) stays in the git repo
+
 ## Before Writing
 
 **Always read these files first:**
-1. `.claude/skills/founder-voice/references/voice-dna.md` - the voice profile
-2. `.claude/skills/founder-voice/references/writing-samples.md` - real examples
+1. `~/.config/kipi/voice/voice-dna.md` - the voice profile
+2. `~/.config/kipi/voice/writing-samples.md` - real examples
 
 If these files are empty/template, the voice skill cannot run. Ask the founder to complete setup Step 4 first.
 

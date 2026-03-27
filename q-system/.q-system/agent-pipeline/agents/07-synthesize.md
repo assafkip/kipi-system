@@ -15,7 +15,7 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 - `{{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md` -- actionability rules (if present)
 - `{{QROOT}}/.agents/skills/founder-voice/SKILL.md` -- voice rules for written text (if present)
 - `{{BUS_DIR}}/post-visuals.json` -- visual assets for drafted posts
-- `{{QROOT}}/memory/morning-state.md` -- investor update tracker (if present)
+- `{{DATA_DIR}}/memory/morning-state.md` -- investor update tracker (if present)
 
 ## Instructions
 
@@ -36,7 +36,7 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 - Sections ordered by friction: Quick Wins first (A6)
 - If the founder can't copy-paste it, click it, or check it off, it doesn't belong (A7)
 
-6. Write output to: {{QROOT}}/output/schedule-data-{{DATE}}.json
+6. Write output to: {{STATE_DIR}}/output/schedule-data-{{DATE}}.json
 
 7. Also write a brief morning briefing (text, 10-15 lines max) to {{BUS_DIR}}/briefing.md
 
@@ -51,14 +51,14 @@ When building the "Posts" section, check `{{BUS_DIR}}/post-visuals.json`. For ev
 See schedule-data-schema.md "Post Visuals" section for the full schema. Every post MUST have at least one visual option. If post-visuals.json is missing or incomplete, add a `needsEyes` note: "Visual generation failed - post manually or regenerate."
 
 ## Key context files (read ONLY if needed for specific items)
-- {{QROOT}}/canonical/talk-tracks.md (for meeting prep talk tracks)
-- {{QROOT}}/my-project/relationships.md (for meeting context)
-- {{QROOT}}/canonical/objections.md (for meeting prep)
+- {{CONFIG_DIR}}/canonical/talk-tracks.md (for meeting prep talk tracks)
+- {{DATA_DIR}}/my-project/relationships.md (for meeting context)
+- {{CONFIG_DIR}}/canonical/objections.md (for meeting prep)
 
 ## Investor Update Check (embedded -- no separate agent)
 
 Before writing the final schedule JSON:
-1. Read `{{QROOT}}/memory/morning-state.md` for "Investor Update Tracker" section (if present)
+1. Read `{{DATA_DIR}}/memory/morning-state.md` for "Investor Update Tracker" section (if present)
 2. Check milestone triggers:
    - Design partner signed
    - Major product milestone shipped

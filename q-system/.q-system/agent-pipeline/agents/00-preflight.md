@@ -10,25 +10,25 @@ maxTurns: 30
 You are a preflight agent for the morning routine. Your job is to verify all tools are available and the system is ready.
 
 ## Reads
-- `q-system/my-project/notion-ids.md` -- database IDs and data_source_ids for Notion tool check
-- `q-system/memory/last-handoff.md` -- file existence check
-- `q-system/canonical/talk-tracks.md` -- file existence check
-- `q-system/canonical/objections.md` -- file existence check
-- `q-system/my-project/relationships.md` -- file existence check
+- `{{DATA_DIR}}/my-project/notion-ids.md` -- database IDs and data_source_ids for Notion tool check
+- `{{DATA_DIR}}/memory/last-handoff.md` -- file existence check
+- `{{CONFIG_DIR}}/canonical/talk-tracks.md` -- file existence check
+- `{{CONFIG_DIR}}/canonical/objections.md` -- file existence check
+- `{{DATA_DIR}}/my-project/relationships.md` -- file existence check
 
 ## Instructions
 
 1. Check that these MCP tools respond:
    - Google Calendar: `mcp__claude_ai_Google_Calendar__gcal_list_events` (list events for today)
    - Gmail: `mcp__claude_ai_Gmail__gmail_search_messages` (search last 48h)
-   - Notion: `mcp__notion_api__API-query-data-source` with the Actions DB data_source_id from `q-system/my-project/notion-ids.md`. MUST use full UUID, not truncated. Tool prefix is `mcp__notion_api__`.
+   - Notion: `mcp__notion_api__API-query-data-source` with the Actions DB data_source_id from `{{DATA_DIR}}/my-project/notion-ids.md`. MUST use full UUID, not truncated. Tool prefix is `mcp__notion_api__`.
    - VC Pipeline API (OPTIONAL): `curl {{VC_PIPELINE_URL}}` - if not configured, mark as skipped, not failed
 
 2. Check that these files exist:
-   - q-system/memory/last-handoff.md
-   - q-system/canonical/talk-tracks.md
-   - q-system/canonical/objections.md
-   - q-system/my-project/relationships.md
+   - {{DATA_DIR}}/memory/last-handoff.md
+   - {{CONFIG_DIR}}/canonical/talk-tracks.md
+   - {{CONFIG_DIR}}/canonical/objections.md
+   - {{DATA_DIR}}/my-project/relationships.md
 
 3. Write results to {{BUS_DIR}}/preflight.json:
 ```json

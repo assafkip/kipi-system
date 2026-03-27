@@ -15,15 +15,27 @@ Exit code 0 always (never blocks, only injects context).
 """
 
 import json
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-
-def get_project_dir():
-    """Find the project directory from environment or fallback."""
-    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+try:
+    from kipi_mcp.paths import KipiPaths
+    _paths = KipiPaths()
+except ImportError:
+    try:
+        from types import SimpleNamespace
+        from platformdirs import user_data_path, user_state_path
+        _paths = SimpleNamespace(
+            memory_dir=user_data_path("kipi") / "memory",
+            output_dir=user_state_path("kipi") / "output",
+        )
+    except ImportError:
+        from types import SimpleNamespace
+        _paths = SimpleNamespace(
+            memory_dir=Path.home() / ".local" / "share" / "kipi" / "memory",
+            output_dir=Path.home() / ".local" / "state" / "kipi" / "output",
+        )
 
 
 def get_sentinel_path():
@@ -44,9 +56,9 @@ def mark_ran():
     sentinel.write_text(datetime.now().isoformat())
 
 
-def load_handoff(project_dir):
+def load_handoff():
     """Read last-handoff.md for prior session context."""
-    handoff_path = Path(project_dir) / "q-system" / "memory" / "last-handoff.md"
+    handoff_path = _paths.memory_dir / "last-handoff.md"
     if not handoff_path.exists():
         return None
     content = handoff_path.read_text().strip()
@@ -55,10 +67,10 @@ def load_handoff(project_dir):
     return content
 
 
-def load_yesterday_cards(project_dir):
+def load_yesterday_cards():
     """Read yesterday's morning log for unconfirmed action cards."""
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    log_path = Path(project_dir) / "q-system" / "output" / f"morning-log-{yesterday}.json"
+    log_path = _paths.output_dir / f"morning-log-{yesterday}.json"
     if not log_path.exists():
         return None, yesterday
 
@@ -76,9 +88,9 @@ def load_yesterday_cards(project_dir):
     return unconfirmed, yesterday
 
 
-def load_open_loops(project_dir):
+def load_open_loops():
     """Read open-loops.json for loop state summary."""
-    loops_path = Path(project_dir) / "q-system" / "output" / "open-loops.json"
+    loops_path = _paths.output_dir / "open-loops.json"
     if not loops_path.exists():
         return None
     try:
@@ -100,10 +112,10 @@ def load_open_loops(project_dir):
         return None
 
 
-def load_today_log(project_dir):
+def load_today_log():
     """Check if today's morning routine already ran."""
     today = datetime.now().strftime("%Y-%m-%d")
-    log_path = Path(project_dir) / "q-system" / "output" / f"morning-log-{today}.json"
+    log_path = _paths.output_dir / f"morning-log-{today}.json"
     if not log_path.exists():
         return None
     try:
@@ -167,13 +179,11 @@ def main():
     if already_ran_today():
         sys.exit(0)
 
-    project_dir = get_project_dir()
-
     # Gather context
-    handoff = load_handoff(project_dir)
-    cards, yesterday = load_yesterday_cards(project_dir)
-    morning_status = load_today_log(project_dir)
-    loops_result = load_open_loops(project_dir)
+    handoff = load_handoff()
+    cards, yesterday = load_yesterday_cards()
+    morning_status = load_today_log()
+    loops_result = load_open_loops()
 
     # Format and output
     output = format_output(handoff, cards, yesterday, morning_status, loops_result)

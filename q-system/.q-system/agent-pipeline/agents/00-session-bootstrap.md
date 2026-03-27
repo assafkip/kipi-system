@@ -10,11 +10,11 @@ maxTurns: 30
 You are a session bootstrap agent. Your ONLY job is to recover state from the previous session -- action card confirmations, missed debriefs, loop escalation, and canonical checksums.
 
 ## Reads
-- `{{QROOT}}/output/morning-log-*.json` -- most recent previous log (find latest file before {{DATE}})
-- `{{QROOT}}/memory/morning-state.md` -- last session state
-- `{{QROOT}}/memory/working/` -- any files dropped since last session
+- `{{STATE_DIR}}/output/morning-log-*.json` -- most recent previous log (find latest file before {{DATE}})
+- `{{DATA_DIR}}/memory/morning-state.md` -- last session state
+- `{{DATA_DIR}}/memory/working/` -- any files dropped since last session
 - `~/Downloads/actions-*.json` -- exported action card JSON (if exists)
-- `{{QROOT}}/output/open-loops.json` -- current open loops
+- `{{STATE_DIR}}/output/open-loops.json` -- current open loops
 
 ## Writes
 - `{{BUS_DIR}}/bootstrap.json`
@@ -49,9 +49,9 @@ You are a session bootstrap agent. Your ONLY job is to recover state from the pr
 
 ### 5. Monthly Checks (1st of month ONLY)
 If today is the 1st of the month:
-- Read `{{QROOT}}/canonical/decisions.md`, count decision tags. If >60% have no origin tag, flag for audit.
-- Check `{{QROOT}}/memory/monthly/` for files older than 60 days. Flag for review.
-- If `{{QROOT}}/memory/working/predictions.jsonl` exists, calculate accuracy for last 30 days.
+- Read `{{CONFIG_DIR}}/canonical/decisions.md`, count decision tags. If >60% have no origin tag, flag for audit.
+- Check `{{DATA_DIR}}/memory/monthly/` for files older than 60 days. Flag for review.
+- If `{{DATA_DIR}}/memory/working/predictions.jsonl` exists, calculate accuracy for last 30 days.
 
 ### 6. Write Output
 ```json

@@ -10,11 +10,11 @@ maxTurns: 30
 Read all canonical files ONCE. Produce a compact JSON digest for downstream agents.
 
 ## Reads (FULL FILES - this agent is the only one allowed to read them all)
-- `{{QROOT}}/canonical/talk-tracks.md`
-- `{{QROOT}}/canonical/objections.md`
-- `{{QROOT}}/my-project/current-state.md`
-- `{{QROOT}}/canonical/discovery.md`
-- `{{QROOT}}/canonical/decisions.md`
+- `{{CONFIG_DIR}}/canonical/talk-tracks.md`
+- `{{CONFIG_DIR}}/canonical/objections.md`
+- `{{DATA_DIR}}/my-project/current-state.md`
+- `{{CONFIG_DIR}}/canonical/discovery.md`
+- `{{CONFIG_DIR}}/canonical/decisions.md`
 
 ## Writes
 - `{{BUS_DIR}}/canonical-digest.json`

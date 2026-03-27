@@ -4,7 +4,9 @@ Temporarily argue AGAINST current positioning to find weak spots. Stress-test cl
 
 ## Setup guard
 
-**FIRST:** Read `q-system/my-project/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Call `kipi_paths_info` MCP tool to get resolved directory paths. Use these paths for all file operations below.
+
+Read `{config_dir}/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
 
 > This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
 
@@ -13,14 +15,14 @@ Do not proceed with any other steps.
 ## Preconditions
 
 Read ALL canonical files:
-1. `q-system/canonical/talk-tracks.md`
-2. `q-system/canonical/objections.md`
-3. `q-system/canonical/discovery.md`
-4. `q-system/canonical/market-intelligence.md`
-5. `q-system/canonical/pricing-framework.md`
-6. `q-system/my-project/current-state.md`
-7. `q-system/my-project/competitive-landscape.md`
-8. `q-system/my-project/founder-profile.md`
+1. `{config_dir}/canonical/talk-tracks.md`
+2. `{config_dir}/canonical/objections.md`
+3. `{config_dir}/canonical/discovery.md`
+4. `{config_dir}/canonical/market-intelligence.md`
+5. `{config_dir}/canonical/pricing-framework.md`
+6. `{data_dir}/my-project/current-state.md`
+7. `{data_dir}/my-project/competitive-landscape.md`
+8. `{config_dir}/founder-profile.md`
 
 ## Integration checks
 

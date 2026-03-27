@@ -10,11 +10,11 @@ maxTurns: 30
 You are a data-pull agent. Your ONLY job is to fetch Notion CRM data and write it to disk.
 
 ## Reads
-- `q-system/my-project/notion-ids.md` -- all database IDs and data_source_ids
+- `{{DATA_DIR}}/my-project/notion-ids.md` -- all database IDs and data_source_ids
 
 ## Instructions
 
-Read `q-system/my-project/notion-ids.md` first to get all database IDs and data_source_ids.
+Read `{{DATA_DIR}}/my-project/notion-ids.md` first to get all database IDs and data_source_ids.
 
 Use Notion MCP tools: `mcp__notion_api__API-query-data-source` with the `data_source_id` parameter (full UUID). Do NOT use `mcp__notion__*` or `mcp__claude_ai_Notion__*` - those are wrong prefixes. Do NOT use database_id for queries - the API needs data_source_id.
 

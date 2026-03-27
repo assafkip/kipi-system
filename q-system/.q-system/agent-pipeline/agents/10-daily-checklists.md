@@ -13,14 +13,14 @@ You are a Notion update agent. Your ONLY job is to refresh the Daily Actions and
 - `{{BUS_DIR}}/hitlist.json` - engagement actions
 - `{{BUS_DIR}}/signals.json` - post drafts
 - `{{BUS_DIR}}/founder-brand-post.json` - founder brand post (if exists, Wednesdays)
-- `q-system/my-project/notion-ids.md` - page IDs for Daily Actions and Daily Posts pages
+- `{{DATA_DIR}}/my-project/notion-ids.md` - page IDs for Daily Actions and Daily Posts pages
 
 ## Writes
 - `{{BUS_DIR}}/daily-checklists.json` (log of what was updated)
 
 ## Instructions
 
-Read `q-system/my-project/notion-ids.md` to get the page IDs for Daily Actions and Daily Posts pages.
+Read `{{DATA_DIR}}/my-project/notion-ids.md` to get the page IDs for Daily Actions and Daily Posts pages.
 
 Use `mcp__notion_api__*` tools.
 

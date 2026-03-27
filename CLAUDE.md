@@ -15,24 +15,30 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - NotebookLM for research content (optional)
 
 ## Project Structure
+
+User data lives outside the repo in XDG-standard directories. Use the `kipi_paths_info` MCP tool to resolve all paths at runtime.
+
+### Git repo (system code only)
 - `q-system/` - Core operating system
   - `.q-system/` - Commands, preflight, audit harness
   - `.q-system/agent-pipeline/` - Decomposed agent architecture for morning routine
     - `agents/` - 19 agent prompt files (one per task)
-    - `bus/` - Inter-agent JSON data exchange (per-date directories)
     - `orchestrator-design.md` - Phase execution plan
     - `templates/` - Reusable folder structures for repeatable outputs
 - `kipi-mcp/` - Python MCP server package (schedule builder, step logger, loop tracker, template creator, validation, instance management)
-  - `canonical/` - Source of truth files (positioning, objections, talk tracks)
+  - `paths.py` - XDG path resolution for all user data directories
+  - `migrator.py` - Migration tool from legacy in-repo layout to XDG directories
+  - `canonical/` - Default/template canonical files
   - `marketing/` - Content pipeline, templates, assets, guardrails
   - `methodology/` - Debrief template and workflows
-  - `output/` - Generated content, drafts, lead gen results
-  - `my-project/` - Current state, relationships, progress
-  - `memory/` - Time-stratified memory (working/weekly/monthly)
 - `.agents/` - Product marketing context
 - `.claude/skills/` - AUDHD executive function + founder voice skills
 - `.claude/rules/` - Security, coding standards, content output rules
-- `memory/` - Session memory (MEMORY.md index + topic files)
+
+### XDG user data directories
+- `~/.config/kipi/` - User config (founder-profile, canonical files, voice, marketing config)
+- `~/.local/share/kipi/` - Persistent data (my-project/, memory/)
+- `~/.local/state/kipi/` - Runtime output (output/, bus/)
 
 ## Conventions
 - Never produce fluff - every sentence must carry information or enable action
@@ -56,7 +62,7 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 
 ## Build and Test
 - Build daily schedule: Use the `build_schedule` MCP tool
-- Audit morning routine: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json`
+- Audit morning routine: `python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json`
 
 ## Token Discipline (NON-NEGOTIABLE)
 

@@ -179,7 +179,7 @@ find q-consult/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec
 
 ## Notion IDs
 
-Read Notion IDs from `q-system/my-project/notion-ids.md`. Never hardcode IDs in this file.
+Read Notion IDs from `{{DATA_DIR}}/my-project/notion-ids.md`. Never hardcode IDs in this file.
 
 ## Catastrophic Fallback
 

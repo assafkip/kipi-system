@@ -1,35 +1,34 @@
 # Voice DNA
 
-> Populated during setup Step 4. This defines how the founder writes and communicates.
-
 ## Who the Founder Is
-- **Name:**
-- **Background:** (what gives them credibility)
-- **Communication style:** (direct, casual, academic, etc.)
-- **Language notes:** (ESL, neurodivergent patterns, cultural style)
+- **Name:** Jonathan Sorenson
+- **Background:** {{UNVALIDATED}}
+- **Communication style:** Humorous, to the point, sarcastic
+- **Language notes:** Neurodivergent — keep output structured and scannable
 
 ## The Core Voice
-What emotional place does the writing come from?
-(e.g., "frustrated practitioner who became a builder" or "engineer who got tired of broken tools")
+{{UNVALIDATED}} — needs writing samples to define. Placeholder: direct practitioner who cuts through AI hype.
 
 ## Words They Use
-(natural vocabulary, phrases they reach for)
+- "cool"
+- (add more as samples come in)
 
 ## Words They Never Use
-(buzzwords, corporate speak, anything that sounds wrong)
+- Standard corporate buzzwords (populate from writing samples)
 
 ## Patterns
-- **How they open:** (posts, emails, conversations)
-- **How they close:** (sign-offs, endings)
-- **Recurring structures:** (do they use questions? lists? stories?)
-- **Tone shifts:** (when do they get sharper? softer?)
+- **How they open:** {{UNVALIDATED}}
+- **How they close:** {{UNVALIDATED}}
+- **Recurring structures:** {{UNVALIDATED}}
+- **Tone shifts:** {{UNVALIDATED}}
 
 ## Register by Channel
-- **Social posts:** (e.g., proper caps, punchy, 150-250 words)
-- **DMs/emails:** (e.g., lowercase, minimal punctuation, short bursts)
-- **Articles:** (e.g., structured with headers, still direct)
-- **Talk tracks:** (e.g., conversational, specific examples)
+- **Social posts:** {{UNVALIDATED}}
+- **DMs/emails:** {{UNVALIDATED}}
+- **Articles:** {{UNVALIDATED}}
+- **Talk tracks:** {{UNVALIDATED}}
 
 ## Anti-Patterns
-Things that would make this NOT sound like the founder:
-- (e.g., "too polished," "too corporate," "too academic")
+- Too polished / corporate
+- Too serious — humor is core to the voice
+- Anything that sounds like a press release

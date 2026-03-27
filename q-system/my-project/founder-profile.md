@@ -1,29 +1,25 @@
 # Founder Profile
 
-{{SETUP_NEEDED}}
-
-> This file is populated during first-run setup. The presence of {{SETUP_NEEDED}} triggers the setup wizard.
-
 ## Identity
-- **Name:**
-- **Role:**
-- **Company:**
-- **One-liner:** (what you sell, who it's for)
-- **Stage:** (idea / pre-seed / seed / Series A / growth)
-- **Co-founder(s):**
+- **Name:** Jonathan Sorenson
+- **Role:** Founder
+- **Company:** EQbit
+- **One-liner:** AI business transformation — we make AI easy
+- **Stage:** Pre-seed
+- **Co-founder(s):** None
 
 ## Background
-- **Prior experience:** (relevant roles, companies, years)
-- **Domain expertise:** (what gives you credibility)
-- **Unique insight:** (what you know that others don't)
+- **Prior experience:** {{UNVALIDATED}}
+- **Domain expertise:** {{UNVALIDATED}}
+- **Unique insight:** {{UNVALIDATED}}
 
 ## Communication Style
-- **Primary language:**
-- **Writing style:** (direct, casual, academic, etc.)
-- **Neurodivergent accommodations:** (ADHD, ASD, AUDHD, none)
-- **AUDHD mode enabled:** false
+- **Primary language:** English
+- **Writing style:** Humorous, to the point, sarcastic
+- **Neurodivergent accommodations:** ND (AUDHD mode enabled)
+- **AUDHD mode enabled:** true
 
 ## Preferences
-- **Timezone:**
-- **Working hours:**
-- **Energy patterns:** (when are you sharpest?)
+- **Timezone:** {{UNVALIDATED}}
+- **Working hours:** {{UNVALIDATED}}
+- **Energy patterns:** {{UNVALIDATED}}

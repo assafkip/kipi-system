@@ -16,13 +16,13 @@
 ## Core Positioning
 
 ### One-liner
-> (filled during setup)
+> "We make AI easy"
 
 ### Primary metaphor
-> (if you have one)
+> None yet — develop through conversations
 
 ### Category
-> (how you describe what you are)
+> AI business transformation
 
 ## By Audience
 

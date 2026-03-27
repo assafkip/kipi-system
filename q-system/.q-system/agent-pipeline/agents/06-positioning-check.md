@@ -11,9 +11,9 @@ You are a positioning audit agent. Your ONLY job is to check whether talk tracks
 
 ## Reads
 
-- `q-system/canonical/talk-tracks.md` - current approved talk tracks
-- `q-system/canonical/objections.md` - known objections + current responses + signal counts
-- `q-system/canonical/positioning.md` - current positioning (what the product IS and IS NOT)
+- `{{CONFIG_DIR}}/canonical/talk-tracks.md` - current approved talk tracks
+- `{{CONFIG_DIR}}/canonical/objections.md` - known objections + current responses + signal counts
+- `{{CONFIG_DIR}}/canonical/positioning.md` - current positioning (what the product IS and IS NOT)
 
 ## Writes
 
@@ -90,7 +90,7 @@ Write to `{{BUS_DIR}}/positioning.json`:
 ### Checkpoint drift detection
 
 Check whether canonical files were modified outside the Q system:
-1. Read `{{QROOT}}/memory/morning-state.md` for last checkpoint timestamp
+1. Read `{{DATA_DIR}}/memory/morning-state.md` for last checkpoint timestamp
 2. For each canonical file (decisions.md, talk-tracks.md, objections.md, verticals.md), check if the file was modified after the last checkpoint
 3. If drift detected: flag it in the output with the file name and what appears to have changed
 4. Do NOT auto-fix. Surface the drift for the founder to review.

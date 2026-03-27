@@ -4,7 +4,9 @@ The only command you need to start a day. Runs an 8-phase agent pipeline: calend
 
 ## Setup guard
 
-**FIRST:** Read `q-system/my-project/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Call `kipi_paths_info` MCP tool to get resolved directory paths. Use these paths for all file operations below.
+
+Read `{config_dir}/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
 
 > This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
 
@@ -14,14 +16,14 @@ Do not proceed with any other steps.
 
 Read these files FIRST, in this order:
 1. `q-system/.q-system/preflight.md` — tool manifest, known issues, fallback chains. **MANDATORY before anything else.**
-2. `q-system/my-project/enabled-integrations.md` — which tools are available
-3. `q-system/my-project/founder-profile.md` — user context and accommodations
+2. `{config_dir}/enabled-integrations.md` — which tools are available
+3. `{config_dir}/founder-profile.md` — user context and accommodations
 4. `q-system/.q-system/steps/step-orchestrator.md` — full phase execution plan
-5. `memory/last-handoff.md` — prior session context (if exists)
+5. `{data_dir}/memory/last-handoff.md` — prior session context (if exists)
 
 ## Integration checks
 
-All integrations are OPTIONAL. Check `enabled-integrations.md` and skip unavailable ones:
+All integrations are OPTIONAL. Check `{config_dir}/enabled-integrations.md` and skip unavailable ones:
 
 | Integration | Used in | If unavailable |
 |------------|---------|----------------|
@@ -37,7 +39,7 @@ Report what was skipped in the morning briefing summary.
 
 1. **Read preflight.md** — verify all required tools are reachable. If any REQUIRED tool fails, STOP (fail-fast).
 2. **Read step-orchestrator.md** — this is the full phase plan with agent assignments
-3. **Create bus directory:** `q-system/.q-system/agent-pipeline/bus/{today's date}/`
+3. **Create bus directory:** `{state_dir}/bus/{today's date}/`
 4. **Initialize morning log:** Call `log_init` MCP tool with today's date
 5. **Run phases 0-8** per step-orchestrator.md:
    - Spawn sub-agents via the Agent tool per phase
@@ -46,7 +48,7 @@ Report what was skipped in the morning briefing summary.
    - Each agent reads only the bus/ files it needs and writes one JSON result
 6. **Log each step** via `log_step` MCP tool as phases complete
 7. **Build daily schedule** via `build_schedule` MCP tool
-8. **Run audit harness:** `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-{date}.json`
+8. **Run audit harness:** `python3 q-system/.q-system/audit-morning.py {state_dir}/output/morning-log-{date}.json`
 9. **Show audit results** to the founder. This is NOT optional.
 
 ## Model allocation

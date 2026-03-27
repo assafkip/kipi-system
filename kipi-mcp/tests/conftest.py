@@ -2,6 +2,21 @@ import json
 import pytest
 from pathlib import Path
 
+from kipi_mcp.paths import KipiPaths
+
+
+@pytest.fixture
+def tmp_kipi_paths(tmp_path):
+    """Create a KipiPaths with all dirs rooted under tmp_path."""
+    paths = KipiPaths(
+        config_override=tmp_path / "config",
+        data_override=tmp_path / "data",
+        state_override=tmp_path / "state",
+        repo_override=tmp_path / "repo",
+    )
+    paths.ensure_dirs()
+    return paths
+
 
 @pytest.fixture
 def tmp_registry(tmp_path):

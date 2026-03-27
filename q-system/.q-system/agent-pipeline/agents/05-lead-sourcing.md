@@ -12,10 +12,10 @@ You are a lead sourcing agent. Your ONLY job is to run Apify actors across 4 pla
 ## Reads
 
 - Apify actor results (fetched live via REST)
-- `q-system/my-project/current-state.md` - your target buyer personas and pain categories
-- `q-system/my-project/budget-qualifiers.md` - keep/skip signals for budget qualification
-- `q-system/my-project/founder-profile.md` - service_lines section for tagging
-- `q-system/canonical/market-intelligence.md` - target buyer language and pain categories
+- `{{DATA_DIR}}/my-project/current-state.md` - your target buyer personas and pain categories
+- `{{DATA_DIR}}/my-project/budget-qualifiers.md` - keep/skip signals for budget qualification
+- `{{CONFIG_DIR}}/founder-profile.md` - service_lines section for tagging
+- `{{CONFIG_DIR}}/canonical/market-intelligence.md` - target buyer language and pain categories
 
 ## Writes
 
@@ -27,7 +27,7 @@ You are a lead sourcing agent. Your ONLY job is to run Apify actors across 4 pla
 
 **Use `bash q-system/.q-system/apify-run.sh` for ALL Apify calls.** This script handles REST API auth, response nesting, dataset fetching, and error handling. Never write inline curl + parsing.
 
-Read `q-system/canonical/market-intelligence.md` first to get your target buyer language and pain categories. Use those terms in the search queries below.
+Read `{{CONFIG_DIR}}/canonical/market-intelligence.md` first to get your target buyer language and pain categories. Use those terms in the search queries below.
 
 Run these 4 in parallel using Bash tool calls. Replace {{SEARCH_TERMS}} with terms from market-intelligence.md:
 
@@ -60,14 +60,14 @@ For each post/result, score 0-5 on each dimension:
 - **Pain Signal** (0-5): Does the person describe a real operational problem? (5 = "we have no way to track X", 0 = generic opinion)
 - **First-Person Proof** (0-5): Is this their own experience? (5 = "I spent 3 days manually...", 0 = retweeted article)
 - **Role Fit** (0-5): Are they a buyer persona? (5 = matches your ICP exactly, 0 = student/vendor/irrelevant)
-- **Budget Signal** (0-5): Can they pay? Read `{{QROOT}}/my-project/budget-qualifiers.md` for keep/skip signals. (5 = quantified pain + senior title + team, 0 = student/side hustle/no revenue signal). **Score 0 = auto-discard regardless of other scores.**
+- **Budget Signal** (0-5): Can they pay? Read `{{DATA_DIR}}/my-project/budget-qualifiers.md` for keep/skip signals. (5 = quantified pain + senior title + team, 0 = student/side hustle/no revenue signal). **Score 0 = auto-discard regardless of other scores.**
 - **Engagement Opportunity** (0-5): Can you add real value in a comment? (5 = specific pain you can address, 0 = already has 50 generic replies)
 - **Multi-Team Pain** (0-5): Does the pain touch multiple teams or stakeholders? (5 = mentions 3+ teams or departments, 0 = single person complaint)
 - **Regulatory Relevance** (bonus +3): Is the person/company in a regulated sector or discussing regulatory governance mandates? +3 bonus to total score. Regulated prospects need governance infrastructure and have budget urgency.
 
 ### Service Line Tagging
 
-Tag each lead with which service line it maps to (read from `{{QROOT}}/my-project/founder-profile.md` service_lines section). This enables per-service-line pipeline tracking.
+Tag each lead with which service line it maps to (read from `{{CONFIG_DIR}}/founder-profile.md` service_lines section). This enables per-service-line pipeline tracking.
 
 Tiers:
 - Tier A (22-30): Send outreach today

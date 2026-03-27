@@ -4,7 +4,9 @@ Validate content against guardrails. Runs 4 focused review passes in sequence. R
 
 ## Setup guard
 
-**FIRST:** Read `q-system/my-project/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Call `kipi_paths_info` MCP tool to get resolved directory paths. Use these paths for all file operations below.
+
+Read `{config_dir}/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
 
 > This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
 
@@ -17,10 +19,10 @@ Do not proceed with any other steps.
 ## Preconditions
 
 Read these files:
-1. `q-system/my-project/founder-profile.md`
-2. `q-system/marketing/content-guardrails.md` — the validation rules
+1. `{config_dir}/founder-profile.md`
+2. `{config_dir}/marketing/content-guardrails.md` — the validation rules
 3. `.claude/skills/founder-voice/SKILL.md` — voice rules
-4. `.claude/skills/founder-voice/references/voice-dna.md` — voice DNA
+4. `{config_dir}/voice/voice-dna.md` — voice DNA
 5. `.claude/skills/audhd-executive-function/SKILL.md` — if AUDHD enabled
 
 ## Integration checks
@@ -38,7 +40,7 @@ Run 4 review passes IN SEQUENCE using Agent tool (Sonnet model for all):
 - PASS/FAIL with specific line-level fixes
 
 ### Pass 2: Guardrails
-- Check content against `marketing/content-guardrails.md`
+- Check content against `{config_dir}/marketing/content-guardrails.md`
 - Verify claims against canonical files
 - Check for overclaiming, misclassification language
 - PASS/FAIL with specific fixes

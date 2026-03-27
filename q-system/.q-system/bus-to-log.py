@@ -2,10 +2,29 @@
 """Bridge bus/ JSON files to morning-log.json for the audit harness."""
 import json, glob, os, sys
 from datetime import datetime
+from pathlib import Path
+
+try:
+    from kipi_mcp.paths import KipiPaths
+    _paths = KipiPaths()
+except ImportError:
+    try:
+        from types import SimpleNamespace
+        from platformdirs import user_state_path
+        _paths = SimpleNamespace(
+            bus_dir=user_state_path("kipi") / "bus",
+            output_dir=user_state_path("kipi") / "output",
+        )
+    except ImportError:
+        from types import SimpleNamespace
+        _paths = SimpleNamespace(
+            bus_dir=Path.home() / ".local" / "state" / "kipi" / "bus",
+            output_dir=Path.home() / ".local" / "state" / "kipi" / "output",
+        )
 
 date = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime("%Y-%m-%d")
-bus_dir = f"q-system/.q-system/agent-pipeline/bus/{date}"
-log_path = f"q-system/output/morning-log-{date}.json"
+bus_dir = str(_paths.bus_dir / date)
+log_path = str(_paths.output_dir / f"morning-log-{date}.json")
 
 if not os.path.isdir(bus_dir):
     print(f"No bus directory for {date}")
@@ -70,8 +89,8 @@ for bus_file, step_ids in bus_to_steps.items():
         }
 
 # Add build steps
-schedule_path = f"q-system/output/schedule-data-{date}.json"
-html_path = f"q-system/output/daily-schedule-{date}.html"
+schedule_path = str(_paths.output_dir / f"schedule-data-{date}.json")
+html_path = str(_paths.output_dir / f"daily-schedule-{date}.html")
 
 steps["8_briefing_output"] = {
     "status": "done" if os.path.isfile(schedule_path) else "skipped",

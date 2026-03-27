@@ -43,6 +43,16 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.venv/
+htmlcov/
+.coverage
+coverage.xml
 
 # Node
 node_modules/
+
+# XDG user data (never commit — lives outside repo)
+# These are defensive entries in case someone symlinks them in
+.config-kipi/
+.data-kipi/
+.state-kipi/

@@ -15,7 +15,7 @@ Read `{{AGENTS_DIR}}/_cadence-config.md` for posting frequency. Only draft conte
 ## Reads
 
 - Web search results (fetch live)
-- `q-system/canonical/market-intelligence.md` - buyer language, category signals (read before drafting)
+- `{{CONFIG_DIR}}/canonical/market-intelligence.md` - buyer language, category signals (read before drafting)
 
 ## Writes
 

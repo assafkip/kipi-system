@@ -4,11 +4,11 @@ Single source of truth for lead scoring, temperature signals, and strategic targ
 Read by agents that score prospects or generate outreach.
 
 ## Regulatory/Compliance Bonus Sectors
-Read `{{QROOT}}/canonical/engagement-playbook.md` for domain-specific targeting rules and sector bonuses.
+Read `{{CONFIG_DIR}}/canonical/engagement-playbook.md` for domain-specific targeting rules and sector bonuses.
 Bonus: +3 to lead score, +1 to temperature. Angle: "regulators now agree with the problem you're describing."
 
 ## Lead Scoring (5 dimensions, 0-5 each, max 25 + bonus)
-- **Pain Signal**: real operational problem described? (5 = "we have no way to track...", 0 = generic opinion). Read `{{QROOT}}/canonical/talk-tracks.md` for validated buyer pain language that scores 5 automatically from buyer roles.
+- **Pain Signal**: real operational problem described? (5 = "we have no way to track...", 0 = generic opinion). Read `{{CONFIG_DIR}}/canonical/talk-tracks.md` for validated buyer pain language that scores 5 automatically from buyer roles.
 - **First-Person Proof**: their own experience? (5 = "I spent 3 days...", 0 = retweeted article)
 - **Role Fit**: buyer? (5 = {{TARGET_PERSONA}} or equivalent decision-maker, 0 = student/vendor)
 - **Engagement Opportunity**: can you add value? (5 = specific pain, 0 = 50 generic replies already)

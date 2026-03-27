@@ -1,8 +1,15 @@
 # CLAUDE.md - Q Founder OS Behavioral Rules
 
+## Path Resolution
+
+All user data lives outside the git repo in XDG-standard directories. Use the `kipi_paths_info` MCP tool to resolve directory paths at runtime:
+- `~/.config/kipi/` — user config (founder-profile, canonical files, voice, marketing config)
+- `~/.local/share/kipi/` — persistent data (my-project/, memory/)
+- `~/.local/state/kipi/` — runtime output (output/, bus/)
+
 ## First-Run Setup
 
-**If `q-system/my-project/founder-profile.md` contains `{{SETUP_NEEDED}}`, this is a fresh install. Run the setup wizard before doing anything else.**
+**If `~/.config/kipi/founder-profile.md` contains `{{SETUP_NEEDED}}`, this is a fresh install. Run the setup wizard before doing anything else.**
 
 When the user starts their first session, walk them through setup step by step. Do NOT dump all questions at once. Ask one category at a time, confirm, move to the next. Use a conversational tone.
 
@@ -17,7 +24,7 @@ Ask:
 - What stage are you at? (idea, pre-seed, seed, Series A, growth)
 - Do you have a co-founder? If so, name and role.
 
-Save answers to `q-system/my-project/founder-profile.md`.
+Save answers to `~/.config/kipi/founder-profile.md`.
 
 **Step 2: Who do you sell to?**
 Ask:
@@ -27,7 +34,7 @@ Ask:
 - What do they use today instead of you? (competitors or manual process)
 - What's your price point or deal size? (if known)
 
-Save answers to `q-system/my-project/current-state.md` and `q-system/canonical/discovery.md`.
+Save answers to `~/.local/share/kipi/my-project/current-state.md` and `~/.config/kipi/canonical/discovery.md`.
 
 **Step 3: What's your positioning?**
 Ask:
@@ -36,7 +43,7 @@ Ask:
 - What are you NOT? (common misclassifications)
 - What are the top 3 objections you hear?
 
-Save to `q-system/canonical/talk-tracks.md`, `q-system/canonical/objections.md`.
+Save to `~/.config/kipi/canonical/talk-tracks.md`, `~/.config/kipi/canonical/objections.md`.
 
 **Step 4: Your voice**
 Ask:
@@ -46,7 +53,7 @@ Ask:
 - What language/communication patterns should I know about? (ESL, neurodivergent, etc.)
 - Share 2-3 examples of messages or posts you've written that sound like you (paste or link)
 
-Save to `.claude/skills/founder-voice/references/voice-dna.md` and `writing-samples.md`.
+Save to `~/.config/kipi/voice/voice-dna.md` and `~/.config/kipi/voice/writing-samples.md`.
 
 **Step 5: Your tools**
 Walk them through MCP server setup:
@@ -61,7 +68,8 @@ For each tool they want, provide the exact `settings.json` snippet to add. Show 
 If they have Notion:
 - Create the database structure (Contacts, Interactions, Actions, Pipeline, LinkedIn Tracker, Content Pipeline)
 - Walk them through connecting each DB
-- Save all database IDs to `q-system/my-project/notion-ids.md`
+- Save integration config to `~/.config/kipi/enabled-integrations.md`
+- Save all database IDs to `~/.local/share/kipi/my-project/notion-ids.md`
 
 If no Notion:
 - The system works with local files only. Relationships.md becomes the canonical CRM.
@@ -73,7 +81,7 @@ Ask:
 - Any design partners or early customers?
 - Any advisors or connectors?
 
-Populate `q-system/my-project/relationships.md`.
+Populate `~/.local/share/kipi/my-project/relationships.md`.
 
 **Step 8: Confirmation**
 Show a summary of everything configured. Ask if anything needs adjusting. Then:
@@ -103,7 +111,7 @@ Every output must be actionable. No dashboards without actions. No scores withou
 
 ### 3. Anti-misclassification guardrails (ENFORCED)
 
-Every project gets misclassified. After setup, the system enforces the founder's "what we are NOT" list from `my-project/current-state.md`.
+Every project gets misclassified. After setup, the system enforces the founder's "what we are NOT" list from `~/.local/share/kipi/my-project/current-state.md`.
 
 **{{YOUR_PRODUCT}} is NOT:**
 - {{MISCLASSIFICATION_1}}
@@ -133,7 +141,7 @@ The wedge is **{{YOUR_WEDGE}}** - {{WEDGE_DESCRIPTION}}. {{WEDGE_PROOF_POINT}}.
 ### 6. No overclaiming
 - Only reference capabilities that exist in the product today
 - Distinguish between "works today (demo-able)" and "planned/claimed"
-- Reference `my-project/current-state.md` as the single source of truth
+- Reference `~/.local/share/kipi/my-project/current-state.md` as the single source of truth
 
 ## Operating Modes
 
@@ -150,15 +158,15 @@ This system operates in **4 modes** (not stages). The founder switches freely be
 
 ## File Authority
 
-- `my-project/current-state.md` = what works today (NOT vision)
-- `canonical/discovery.md` = what's been asked and answered
-- `canonical/objections.md` = known pushback + responses
-- `canonical/talk-tracks.md` = proven language
-- `my-project/relationships.md` = people + conversation history
-- `my-project/competitive-landscape.md` = substitute buckets
-- `canonical/lead-lifecycle-rules.md` = when to kill/park/re-engage leads (ENFORCED in morning routine + hitlist generation)
-- `canonical/engagement-playbook.md` = social engagement rules + comment strategy
-- `canonical/market-intelligence.md` = buyer language, category signals, competitive intel, and narrative validation from external content (LinkedIn, Reddit, Medium, X). Auto-populated during lead sourcing and engagement. Read before generating any marketing content or outreach.
+- `~/.local/share/kipi/my-project/current-state.md` = what works today (NOT vision)
+- `~/.config/kipi/canonical/discovery.md` = what's been asked and answered
+- `~/.config/kipi/canonical/objections.md` = known pushback + responses
+- `~/.config/kipi/canonical/talk-tracks.md` = proven language
+- `~/.local/share/kipi/my-project/relationships.md` = people + conversation history
+- `~/.local/share/kipi/my-project/competitive-landscape.md` = substitute buckets
+- `~/.config/kipi/canonical/lead-lifecycle-rules.md` = when to kill/park/re-engage leads (ENFORCED in morning routine + hitlist generation)
+- `~/.config/kipi/canonical/engagement-playbook.md` = social engagement rules + comment strategy
+- `~/.config/kipi/canonical/market-intelligence.md` = buyer language, category signals, competitive intel, and narrative validation from external content (LinkedIn, Reddit, Medium, X). Auto-populated during lead sourcing and engagement. Read before generating any marketing content or outreach.
 
 ## Language Rules
 
@@ -202,7 +210,7 @@ This skill is loaded in Step 0e of `/q-morning` and governs every subsequent ste
 - System-generated content: morning routine engagement comments, signals posts, investor updates
 - Slide copy, Notion page content, or anything else a human will read
 
-Read `.claude/skills/founder-voice/references/voice-dna.md` and `.claude/skills/founder-voice/references/writing-samples.md` before generating any written content. Apply all rules from `.claude/skills/founder-voice/SKILL.md` including the anti-AI detection patterns.
+Read `~/.config/kipi/voice/voice-dna.md` and `~/.config/kipi/voice/writing-samples.md` before generating any written content. Apply all rules from `.claude/skills/founder-voice/SKILL.md` including the anti-AI detection patterns.
 
 No exceptions. If the output is text that another person will read, it goes through the voice skill.
 
@@ -215,7 +223,7 @@ A full marketing automation system lives in `marketing/`. See `marketing/README.
 - Voice rules per channel in `marketing/brand-voice.md`
 - Themes rotate on a configurable cycle in `marketing/content-themes.md`
 - Reusable assets in `marketing/assets/` (boilerplate, bios, stats, proof points, competitive one-liners)
-- State tracked in `memory/marketing-state.md`
+- State tracked in `~/.local/share/kipi/memory/marketing-state.md`
 - Gamma MCP (`mcp__gamma__generate_gamma`) used for decks, one-pagers, social cards (if configured)
 - NotebookLM notebook {{NOTEBOOKLM_ID}} used for research-grounded content (if configured)
 
@@ -234,7 +242,7 @@ A full marketing automation system lives in `marketing/`. See `marketing/README.
 When the founder pastes or uploads a conversation transcript, meeting notes, voice conversation summary, or chat log:
 1. Auto-detect the person's name, role, and company from the content
 2. Immediately run the full `/q-debrief` workflow: debrief template, all 12 strategic implications lenses, canonical routing (including market-intelligence.md, competitive-landscape.md, network expansion), and Notion logging
-3. **For practitioner/buyer conversations: run the Design Partner Conversion section.** This is MANDATORY. The debrief is not complete until there is a copy-paste message the founder can send to convert the conversation into a design partner trial. Read `my-project/current-state.md` to map their pain to current capabilities. Output the message and create a follow-up Action in Notion.
+3. **For practitioner/buyer conversations: run the Design Partner Conversion section.** This is MANDATORY. The debrief is not complete until there is a copy-paste message the founder can send to convert the conversation into a design partner trial. Read `~/.local/share/kipi/my-project/current-state.md` to map their pain to current capabilities. Output the message and create a follow-up Action in Notion.
 4. No command needed. The founder should never have to type `/q-debrief` manually.
 5. If the person can't be identified, ask once, then proceed.
 
@@ -243,7 +251,7 @@ Already handled by `/q-engage` reactive mode (see commands.md). Evaluates post c
 
 ## Decision Origin Tagging (ENFORCED)
 
-Every decision logged to `canonical/decisions.md` MUST include an origin tag:
+Every decision logged to `~/.config/kipi/canonical/decisions.md` MUST include an origin tag:
 - `[USER-DIRECTED]` - founder explicitly made this decision
 - `[CLAUDE-RECOMMENDED -> APPROVED]` - Claude suggested, founder approved
 - `[CLAUDE-RECOMMENDED -> MODIFIED]` - Claude suggested, founder changed it
@@ -254,14 +262,14 @@ Monthly audit on the 1st: check if >60% are rubber-stamped approvals. Surface in
 
 ## Memory Architecture
 
-Time-stratified memory in `memory/`:
+Time-stratified memory in `~/.local/share/kipi/memory/`:
 - `working/` - session-scoped, ephemeral (<48h). Auto-cleaned during `/q-morning` Step 0a.
 - `weekly/` - 7-day rolling window. Reviewed during Monday morning routine.
 - `monthly/` - persistent insights. Reviewed on 1st of month.
 - `graph.jsonl` - entity-relationship triples for cross-contact queries.
 - `last-handoff.md` - session continuity note from `/q-handoff`.
 
-During Step 0c, read `last-handoff.md` for prior session context.
+During Step 0c, read `~/.local/share/kipi/memory/last-handoff.md` for prior session context.
 
 ## Session Continuity
 
@@ -277,11 +285,11 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 3. Session budget with hard split points and handoff format
 4. Step completion log format (flight recorder)
 
-**Every step must write its completion status to `output/morning-log-YYYY-MM-DD.json`.** This is a file on disk, not context. Even if context rots, the log is accurate. If a step isn't logged, it didn't happen.
+**Every step must write its completion status to `~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json`.** This is a file on disk, not context. Even if context rots, the log is accurate. If a step isn't logged, it didn't happen.
 
 **After Step 11 (or whenever the routine ends), run the audit harness:**
 ```bash
-python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json
+python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json
 ```
 Show the audit output to the founder. This is not optional. The founder should always see the completion verdict.
 
@@ -293,14 +301,14 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 
 **How it works:**
 1. Read `.q-system/steps/step-orchestrator.md` for the full phase plan
-2. Create bus/{date}/ directory for inter-agent communication
+2. Create `~/.local/state/kipi/bus/{date}/` directory for inter-agent communication
 3. Run 8 phases, spawning sub-agents via the Agent tool
-4. Agents communicate through JSON files in bus/, not through context
+4. Agents communicate through JSON files in the bus directory, not through context
 5. Parallel phases use multiple Agent calls in a single message
 6. Each agent reads only the bus/ files it needs and writes one JSON result
 
 **Agent prompts:** `.q-system/agent-pipeline/agents/` (19 files)
-**Bus directory:** `.q-system/agent-pipeline/bus/{date}/`
+**Bus directory:** `~/.local/state/kipi/bus/{date}/`
 **Design doc:** `.q-system/agent-pipeline/orchestrator-design.md`
 
 **Model allocation:** Sonnet for all data pulls and checks. Opus for engagement hitlist (05) and synthesis (07) only.
@@ -328,7 +336,7 @@ This applies to outreach, talk tracks, meeting prep, investor updates, and conte
 
 ## Operator Context
 
-Adapt to the founder's profile from `my-project/founder-profile.md`. Key accommodations:
+Adapt to the founder's profile from `~/.config/kipi/founder-profile.md`. Key accommodations:
 - Communication style preferences
 - Neurodivergent accommodations (if flagged during setup)
 - Language preferences (ESL considerations, etc.)

@@ -51,10 +51,10 @@ Combine inputs to rank engagement actions:
 
 All copy must follow these rules:
 ### Budget gate (BEFORE generating copy)
-For every lead/prospect, check `budget_qualified` field from leads.json and connection-mining.json. If `budget_qualified: false` or `budget_signal: 0`, do NOT generate copy. Mark as `budget_disqualified: true` in output. Read `{{QROOT}}/my-project/budget-qualifiers.md` for the full keep/skip rules.
+For every lead/prospect, check `budget_qualified` field from leads.json and connection-mining.json. If `budget_qualified: false` or `budget_signal: 0`, do NOT generate copy. Mark as `budget_disqualified: true` in output. Read `{{DATA_DIR}}/my-project/budget-qualifiers.md` for the full keep/skip rules.
 
 ### Service line tagging
-Tag each action with the service line from the lead's `service_line` field. If no service line was tagged by the sourcing agent, infer from the pain description and tag based on `{{QROOT}}/my-project/founder-profile.md` service_lines section.
+Tag each action with the service line from the lead's `service_line` field. If no service line was tagged by the sourcing agent, infer from the pain description and tag based on `{{CONFIG_DIR}}/founder-profile.md` service_lines section.
 
 ### Copy rules
 - DMs and connection requests start with "I" (not the person's name)

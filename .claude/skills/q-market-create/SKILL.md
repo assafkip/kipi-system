@@ -4,7 +4,9 @@ Generate marketing content for any channel. Reads canonical files, applies templ
 
 ## Setup guard
 
-**FIRST:** Read `q-system/my-project/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Call `kipi_paths_info` MCP tool to get resolved directory paths. Use these paths for all file operations below.
+
+Read `{config_dir}/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
 
 > This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
 
@@ -19,13 +21,13 @@ Types: linkedin, x, medium, one-pager, outreach, deck, follow-up
 ## Preconditions
 
 Read these files:
-1. `q-system/my-project/enabled-integrations.md`
-2. `q-system/my-project/founder-profile.md`
-3. `q-system/canonical/talk-tracks.md`
-4. `q-system/canonical/market-intelligence.md`
-5. `q-system/marketing/content-themes.md` — current theme rotation
-6. `q-system/marketing/brand-voice.md` — per-channel voice rules
-7. `q-system/marketing/content-guardrails.md` — validation rules
+1. `{config_dir}/enabled-integrations.md`
+2. `{config_dir}/founder-profile.md`
+3. `{config_dir}/canonical/talk-tracks.md`
+4. `{config_dir}/canonical/market-intelligence.md`
+5. `{config_dir}/marketing/content-themes.md` — current theme rotation
+6. `{config_dir}/marketing/brand-voice.md` — per-channel voice rules
+7. `{config_dir}/marketing/content-guardrails.md` — validation rules
 8. `q-system/marketing/assets/` — reusable boilerplate, bios, stats, proof points
 
 ## Integration checks

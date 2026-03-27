@@ -19,7 +19,7 @@ You are a data analysis agent. Your ONLY job is to read Notion pipeline data, co
 2. Count by status bucket: Active, Warm, Cooling, Passed
 3. For each record, compute days since last touch (use `last_touch` field or most recent interaction date)
 4. Read `{{AGENTS_DIR}}/_cadence-config.md` for auto-close timing. Apply the breakup/park threshold from cadence config.
-5. Note pipeline health: compare active count to target in `q-system/my-project/current-state.md` (or use 12 as default). If active < target, flag `pipeline_below_target: true`
+5. Note pipeline health: compare active count to target in `{{DATA_DIR}}/my-project/current-state.md` (or use 12 as default). If active < target, flag `pipeline_below_target: true`
 6. Write results to `{{BUS_DIR}}/prospect-pipeline.json`:
 
 ```json

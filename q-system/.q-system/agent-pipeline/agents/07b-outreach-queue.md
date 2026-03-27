@@ -25,7 +25,7 @@ Merge all pending outreach into a single prioritized, deduplicated queue.
 {"date":"{{DATE}}","total_actions":0,"sources":{"hitlist":0,"value_routing":0,"pipeline_followup":0},"deduplicated":0,"queue":[{"rank":1,"contact_name":"...","channel":"linkedin_dm","action_type":"dm","copy":"...","platform_url":"...","source":"hitlist","also_in":[],"energy":"quickwin","time_est":"2 min","rationale":"..."}]}
 ```
 
-**{{TARGET_PERSONA}} copy check (ENFORCED):** Any outreach to a {{TARGET_PERSONA}} or equivalent decision-maker must anchor in validated buyer pains. Read `{{QROOT}}/canonical/talk-tracks.md` for approved pain language. Gain framing only for direct outreach.
+**{{TARGET_PERSONA}} copy check (ENFORCED):** Any outreach to a {{TARGET_PERSONA}} or equivalent decision-maker must anchor in validated buyer pains. Read `{{CONFIG_DIR}}/canonical/talk-tracks.md` for approved pain language. Gain framing only for direct outreach.
 
 Do NOT send messages. Do NOT update Notion.
 

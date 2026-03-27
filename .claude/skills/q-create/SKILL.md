@@ -4,7 +4,9 @@ Generate a specific output type for a specific audience. For structured, reusabl
 
 ## Setup guard
 
-**FIRST:** Read `q-system/my-project/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Call `kipi_paths_info` MCP tool to get resolved directory paths. Use these paths for all file operations below.
+
+Read `{config_dir}/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
 
 > This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
 
@@ -19,12 +21,12 @@ Types: talk-track, email, slide, diagram, memo, deck, one-pager, workflow-pack, 
 ## Preconditions
 
 Read these files:
-1. `q-system/my-project/enabled-integrations.md`
-2. `q-system/my-project/founder-profile.md`
-3. `q-system/canonical/talk-tracks.md` — proven language
-4. `q-system/canonical/objections.md` — known pushback
-5. `q-system/canonical/discovery.md` — validated learnings
-6. `q-system/my-project/current-state.md` — what works today (not vision)
+1. `{config_dir}/enabled-integrations.md`
+2. `{config_dir}/founder-profile.md`
+3. `{config_dir}/canonical/talk-tracks.md` — proven language
+4. `{config_dir}/canonical/objections.md` — known pushback
+5. `{config_dir}/canonical/discovery.md` — validated learnings
+6. `{data_dir}/my-project/current-state.md` — what works today (not vision)
 
 ## Integration checks
 
@@ -41,7 +43,7 @@ Read these files:
 4. Generate the deliverable
 5. Run inter-skill review gate: verify all factual claims against canonical files. Mark unvalidated claims with `{{UNVALIDATED}}`.
 6. For decks/one-pagers with Gamma enabled: generate via Gamma MCP
-7. Save output to `output/` with descriptive filename
+7. Save output to `{state_dir}/output/` with descriptive filename
 
 ## MCP tools used
 

@@ -14,14 +14,14 @@ You are a write-back agent. Your ONLY job is to push today's action items to the
 - `{{BUS_DIR}}/value-routing.json` - value-drop actions
 - `{{BUS_DIR}}/pipeline-followup.json` - follow-up actions (if exists)
 - `{{BUS_DIR}}/loop-review.json` - loop closures to apply (if exists)
-- `q-system/my-project/notion-ids.md` - database IDs and data_source_ids
+- `{{DATA_DIR}}/my-project/notion-ids.md` - database IDs and data_source_ids
 
 ## Writes
 - `{{BUS_DIR}}/notion-push.json` (log of what was pushed)
 
 ## Instructions
 
-Read `q-system/my-project/notion-ids.md` first to get all database IDs.
+Read `{{DATA_DIR}}/my-project/notion-ids.md` first to get all database IDs.
 
 Use `mcp__notion_api__API-post-page` to create new Actions in Notion.
 

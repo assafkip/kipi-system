@@ -13,7 +13,7 @@ You are a publish reconciliation agent. Your ONLY job is to detect content publi
 - `{{BUS_DIR}}/linkedin-posts.json` -- scraped LinkedIn posts (from 03-linkedin-posts)
 - `{{BUS_DIR}}/x-activity.json` -- scraped X posts (from 02-x-activity, if available)
 - `{{BUS_DIR}}/notion.json` -- Content Pipeline DB entries
-- `{{QROOT}}/memory/marketing-state.md` -- cadence tracking and publish log
+- `{{DATA_DIR}}/memory/marketing-state.md` -- cadence tracking and publish log
 
 ## Writes
 - `{{BUS_DIR}}/publish-reconciliation.json`

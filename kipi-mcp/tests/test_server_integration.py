@@ -11,6 +11,8 @@ from kipi_mcp.loop_tracker import LoopTracker
 EXPECTED_TOOLS = [
     "kipi_list",
     "kipi_home",
+    "kipi_paths_info",
+    "kipi_migrate",
     "kipi_new_instance",
     "kipi_update",
     "kipi_push_upstream",

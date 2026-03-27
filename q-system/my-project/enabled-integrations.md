@@ -1,7 +1,5 @@
 # Enabled Integrations
 
-{{SETUP_NEEDED}}
-
 ## Active
 - notion: false
 - google_calendar: false
@@ -22,4 +20,4 @@
 - asset_library_db:
 
 ## AUDHD Mode
-- enabled: false
+- enabled: true

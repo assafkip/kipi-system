@@ -11,9 +11,9 @@ Generate a manifest of what to write, not the content itself. The orchestrator w
 
 ## Reads
 - `{{BUS_DIR}}/canonical-digest.json`, `linkedin-posts.json`, `prospect-activity.json`, `content-metrics.json`, `copy-diffs.json`
-- `{{QROOT}}/canonical/content-intelligence.md`
-- `{{QROOT}}/memory/evergreen-ideas.md` (if exists)
-- `{{QROOT}}/memory/recent-changes.md` (if exists)
+- `{{CONFIG_DIR}}/canonical/content-intelligence.md`
+- `{{DATA_DIR}}/memory/evergreen-ideas.md` (if exists)
+- `{{DATA_DIR}}/memory/recent-changes.md` (if exists)
 - `{{AGENTS_DIR}}/_cadence-config.md`
 
 ## Writes
@@ -24,7 +24,7 @@ Generate a manifest of what to write, not the content itself. The orchestrator w
 1. Evaluate angles using this priority:
    - Evergreen queue match (memory/evergreen-ideas.md Available section)
    - Prospect echo (warm prospect posted about a product-relevant pain)
-   - {{TARGET_PERSONA}} pain echo (validated buyer pains from `{{QROOT}}/canonical/talk-tracks.md`)
+   - {{TARGET_PERSONA}} pain echo (validated buyer pains from `{{CONFIG_DIR}}/canonical/talk-tracks.md`)
    - Recent canonical change (memory/recent-changes.md this week)
    - Conference buzz (industry conference themes in the feed)
    - Canonical wedge (from talk tracks in digest, rotate, don't repeat last 2 weeks)
