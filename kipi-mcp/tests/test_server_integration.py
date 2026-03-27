@@ -40,6 +40,14 @@ EXPECTED_TOOLS = [
     "kipi_bus_to_log",
     "kipi_scan_draft",
     "kipi_audit_morning",
+    "ktlyst_init_db",
+    "ktlyst_insert_content_metrics",
+    "ktlyst_insert_behavioral_signals",
+    "ktlyst_insert_outreach",
+    "ktlyst_insert_copy_edit",
+    "ktlyst_query",
+    "ktlyst_daily_metrics",
+    "ktlyst_monthly_learnings",
 ]
 
 EXPECTED_RESOURCES = [

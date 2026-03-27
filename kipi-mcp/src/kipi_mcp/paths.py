@@ -141,6 +141,10 @@ class KipiPaths:
     def bus_dir(self) -> Path:
         return self.state_dir / "bus"
 
+    @property
+    def metrics_db(self) -> Path:
+        return self.data_dir / "metrics.db"
+
     # --- Repo subdirectories (system code, stays in git) ---
 
     @property

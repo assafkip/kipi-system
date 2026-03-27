@@ -8,7 +8,7 @@ JSON files in the bus/ directory.
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-BUS_DIR="q-system/agent-pipeline/bus/${DATE}"
+BUS_DIR="${STATE_DIR}/bus/${DATE}"
 AGENTS_DIR="q-system/agent-pipeline/agents"
 mkdir -p "${BUS_DIR}"
 ```
@@ -21,7 +21,7 @@ Your context window will compact automatically as it approaches limits. Do not s
 1. **Read each agent's .md file from AGENTS_DIR before spawning it. This is NON-NEGOTIABLE.**
    - Use the Read tool to load the file
    - Extract the body (everything after the YAML frontmatter closing `---`)
-   - Replace template variables: {{DATE}}, {{BUS_DIR}}, {{QROOT}}, {{AGENTS_DIR}}
+   - Replace template variables: {{DATE}}, {{BUS_DIR}}, {{CONFIG_DIR}}, {{DATA_DIR}}, {{STATE_DIR}}, {{AGENTS_DIR}}
    - Pass the substituted body as the Agent tool's `prompt` parameter
    - NEVER paraphrase, summarize, or rewrite agent instructions from memory
    - Read on-demand (when about to spawn), not upfront. File content falls out of context after launch.
@@ -71,8 +71,8 @@ Before spawning: check if bus/{date}/ already contains calendar.json, gmail.json
 Launch in ONE message with 4 Agent tool calls:
 - 01-data-ingest.md (sonnet) - MERGED agent: pulls Calendar + Gmail + Notion in one agent. Writes calendar.json, gmail.json, notion.json. Has built-in verification gate. Saves ~15-20K tokens vs 3 separate agents.
 - 01-vc-pipeline-pull.md (sonnet) - separate because it's a different API (localhost:5050)
-- 01b-content-metrics.md (sonnet) - Chrome scrapes LinkedIn analytics, writes content-metrics.json + SQLite
-- 01c-copy-diff.md (sonnet) - compares yesterday's hitlist copy vs actual posts (Chrome), writes copy-diffs.json + SQLite
+- 01b-content-metrics.md (sonnet) - Chrome scrapes LinkedIn analytics, writes content-metrics.json + persists to `ktlyst_*` MCP tools
+- 01c-copy-diff.md (sonnet) - compares yesterday's hitlist copy vs actual posts (Chrome), writes copy-diffs.json + persists to `ktlyst_*` MCP tools
 Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1
 If any fails: log the failure, continue with available data
 
@@ -84,9 +84,9 @@ Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=2
 
 ### Phase 3: LinkedIn (5 agents, SEQUENTIAL - Chrome needs one tab at a time)
 - 03-linkedin-posts.md (sonnet) - writes linkedin-posts.json
-- 03b-linkedin-notifications.md (sonnet) - scrapes linkedin.com/notifications for likes/views/comments/shares, writes behavioral-signals.json + persists to SQLite
+- 03b-linkedin-notifications.md (sonnet) - scrapes linkedin.com/notifications for likes/views/comments/shares, writes behavioral-signals.json + persists to `ktlyst_*` MCP tools
 - 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
-- 03c-prospect-activity.md (sonnet) - visits top 10 Hot+Warm prospect profiles, pulls their last 2 posts, writes prospect-activity.json. **ENERGY GATE: skip if energy < 3.** Takes ~6 min Chrome time. Rotates via SQLite (skips anyone checked in last 2 days).
+- 03c-prospect-activity.md (sonnet) - visits top 10 Hot+Warm prospect profiles, pulls their last 2 posts, writes prospect-activity.json. **ENERGY GATE: skip if energy < 3.** Takes ~6 min Chrome time. Rotates via `ktlyst_*` MCP tools (skips anyone checked in last 2 days).
 - 03-dp-pipeline.md (sonnet) - reads notion.json, writes dp-pipeline.json (no Chrome needed, can overlap)
 Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=3
 
@@ -139,6 +139,6 @@ These are the final agents. If either fails, log the error - do not retry.
 
 At the start of each day (Phase 0), delete bus/ directories older than 3 days:
 ```bash
-find q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
+find "${STATE_DIR}/bus/" -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
 ```
 

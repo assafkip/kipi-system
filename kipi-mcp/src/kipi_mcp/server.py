@@ -1,6 +1,7 @@
 import sys
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -23,6 +24,7 @@ from kipi_mcp.orchestrator_verifier import OrchestratorVerifier
 from kipi_mcp.bus_bridge import BusBridge
 from kipi_mcp.draft_scanner import DraftScanner
 from kipi_mcp.morning_auditor import MorningAuditor
+from kipi_mcp.metrics_store import MetricsStore
 
 paths = KipiPaths()
 paths.ensure_dirs()
@@ -86,6 +88,8 @@ orchestrator_verifier = OrchestratorVerifier(
 bus_bridge = BusBridge(bus_dir=paths.bus_dir, output_dir=paths.output_dir)
 draft_scanner = DraftScanner()
 morning_auditor = MorningAuditor()
+metrics_store = MetricsStore(db_path=paths.metrics_db)
+metrics_store.init_db()
 
 try:
     from kipi_mcp.validator import Validator
@@ -842,6 +846,176 @@ def kipi_audit_morning(log_file: str) -> str:
         return json.dumps(morning_auditor.audit(log))
     except Exception as e:
         logger.error("kipi_audit_morning failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
+# Metrics Store (8 tools)
+# ============================================================
+
+
+@mcp.tool()
+def ktlyst_init_db() -> str:
+    """Initialize the metrics database (idempotent). Returns list of table names."""
+    try:
+        tables = metrics_store.init_db()
+        return json.dumps({"tables": tables})
+    except Exception as e:
+        logger.error("ktlyst_init_db failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_insert_content_metrics(metrics_json: str) -> str:
+    """Insert content performance metrics from a JSON array of records.
+
+    Args:
+        metrics_json: JSON array of metric objects with keys: post_id, platform, publish_date, scraped_at, and optional impressions, engagement_rate, clicks, likes, comments, reposts, reach.
+    """
+    try:
+        records = json.loads(metrics_json)
+        return json.dumps(metrics_store.insert_content_metrics(records))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("ktlyst_insert_content_metrics failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_insert_behavioral_signals(signals_json: str) -> str:
+    """Insert behavioral signals from a JSON array.
+
+    Args:
+        signals_json: JSON array of signal objects with keys: contact_name, signal_type, signal_date, source, weight.
+    """
+    try:
+        signals = json.loads(signals_json)
+        return json.dumps(metrics_store.insert_behavioral_signals(signals))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("ktlyst_insert_behavioral_signals failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_insert_outreach(
+    contact_name: str, channel: str, action_type: str,
+    copy_text: str, send_date: str,
+) -> str:
+    """Insert a single outreach log record.
+
+    Args:
+        contact_name: Name of the contact.
+        channel: Communication channel (email, linkedin, etc.).
+        action_type: Type of action (cold_email, dm, follow_up, etc.).
+        copy_text: The outreach copy text sent.
+        send_date: Date sent in YYYY-MM-DD format.
+    """
+    try:
+        return json.dumps(metrics_store.insert_outreach_log(
+            contact_name, channel, action_type, copy_text, send_date,
+        ))
+    except Exception as e:
+        logger.error("ktlyst_insert_outreach failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_insert_copy_edit(
+    original_text: str, edited_text: str,
+    diff_summary: str = "", context: str = "",
+) -> str:
+    """Insert a copy edit record for learning analysis.
+
+    Args:
+        original_text: The original draft text.
+        edited_text: The edited/final text.
+        diff_summary: Brief description of what changed.
+        context: Where this edit happened (outreach, content, etc.).
+    """
+    try:
+        edit_date = datetime.now().strftime("%Y-%m-%d")
+        return json.dumps(metrics_store.insert_copy_edit(
+            original_text, edited_text, edit_date, diff_summary, context,
+        ))
+    except Exception as e:
+        logger.error("ktlyst_insert_copy_edit failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_query(query_type: str, days: int = 30) -> str:
+    """Query metrics data. Types: content, outreach, signals, edits, top_posts.
+
+    Args:
+        query_type: One of "content", "outreach", "signals", "edits", "top_posts".
+        days: Number of days to look back (default 30).
+    """
+    try:
+        if query_type == "content":
+            return json.dumps(metrics_store.query_content_performance(days=days))
+        elif query_type == "outreach":
+            return json.dumps(metrics_store.query_outreach_stats(days=days))
+        elif query_type == "signals":
+            return json.dumps(metrics_store.query_behavioral_signals(days=days))
+        elif query_type == "edits":
+            return json.dumps(metrics_store.query_copy_edits(days=days))
+        elif query_type == "top_posts":
+            return json.dumps(metrics_store.query_top_posts(limit=days))
+        else:
+            raise ToolError(f"Unknown query_type: {query_type}. Use: content, outreach, signals, edits, top_posts")
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("ktlyst_query failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_daily_metrics(
+    date: str, posts_published: int = 0, outreach_sent: int = 0,
+    responses_received: int = 0, meetings_booked: int = 0,
+    energy_level: int = 0, routine_completion_pct: float = 0.0,
+) -> str:
+    """Upsert daily metrics for a given date.
+
+    Args:
+        date: Date in YYYY-MM-DD format.
+        posts_published: Number of posts published.
+        outreach_sent: Number of outreach messages sent.
+        responses_received: Number of responses received.
+        meetings_booked: Number of meetings booked.
+        energy_level: Self-reported energy level (1-10).
+        routine_completion_pct: Morning routine completion percentage (0-100).
+    """
+    try:
+        return json.dumps(metrics_store.upsert_daily_metrics(
+            date,
+            posts_published=posts_published,
+            outreach_sent=outreach_sent,
+            responses_received=responses_received,
+            meetings_booked=meetings_booked,
+            energy_level=energy_level,
+            routine_completion_pct=routine_completion_pct,
+        ))
+    except Exception as e:
+        logger.error("ktlyst_daily_metrics failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def ktlyst_monthly_learnings(days: int = 30) -> str:
+    """Generate a monthly learnings report from copy edit patterns.
+
+    Args:
+        days: Number of days to analyze (default 30).
+    """
+    try:
+        return json.dumps(metrics_store.generate_monthly_learnings(days=days))
+    except Exception as e:
+        logger.error("ktlyst_monthly_learnings failed", exc_info=True)
         raise ToolError(str(e))
 
 

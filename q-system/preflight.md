@@ -136,7 +136,7 @@ The morning routine is too large for one context window. Plan for splits.
 
 ## 4. Step Completion Log
 
-Every step writes to `{{STATE_DIR}}/output/morning-log-YYYY-MM-DD.json` as it completes. This is the flight recorder.
+Every step writes to `{state_dir}/output/morning-log-YYYY-MM-DD.json` as it completes. This is the flight recorder.
 
 ### Log Format
 
