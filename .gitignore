@@ -26,5 +26,23 @@ q-system/memory/working/*
 
 CLAUDE.local.md
 
+# Morning logs (generated at runtime)
+q-system/output/morning-log-*.json
+
+# Open loops (runtime state)
+q-system/output/open-loops.json
+
+# Bus data (inter-agent communication, per-session)
+q-system/.q-system/agent-pipeline/bus/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
 # Node
 node_modules/
