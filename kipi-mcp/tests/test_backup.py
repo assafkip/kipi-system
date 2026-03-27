@@ -1,0 +1,144 @@
+"""Tests for kipi_mcp.backup module."""
+import json
+import tarfile
+import pytest
+from pathlib import Path
+
+from kipi_mcp.backup import BackupManager, MANIFEST_NAME
+
+
+@pytest.fixture
+def backup_mgr(tmp_kipi_paths):
+    """BackupManager with tmp paths and sample data."""
+    # Seed some files
+    (tmp_kipi_paths.config_dir / "founder-profile.md").write_text("# Profile\nName: Test")
+    (tmp_kipi_paths.canonical_dir / "talk-tracks.md").write_text("# Talk Tracks")
+    (tmp_kipi_paths.voice_dir / "voice-dna.md").write_text("# Voice DNA")
+    (tmp_kipi_paths.my_project_dir / "current-state.md").write_text("# State")
+    (tmp_kipi_paths.memory_dir / "graph.jsonl").write_text('{"s":"a","p":"knows","o":"b"}')
+    (tmp_kipi_paths.output_dir / "morning-log-2026-03-27.json").write_text("{}")
+    return BackupManager(tmp_kipi_paths)
+
+
+def test_backup_creates_archive(backup_mgr, tmp_kipi_paths):
+    result = backup_mgr.backup()
+    assert result["files_count"] == 6
+    assert result["size_bytes"] > 0
+    assert Path(result["path"]).exists()
+    assert "kipi-backup-" in result["path"]
+
+
+def test_backup_custom_output_path(backup_mgr, tmp_path):
+    out = tmp_path / "custom" / "my-backup.tar.gz"
+    result = backup_mgr.backup(output_path=out)
+    assert result["path"] == str(out)
+    assert out.exists()
+
+
+def test_backup_contains_manifest(backup_mgr):
+    result = backup_mgr.backup()
+    with tarfile.open(result["path"], "r:gz") as tar:
+        names = tar.getnames()
+        assert MANIFEST_NAME in names
+        manifest = json.loads(tar.extractfile(MANIFEST_NAME).read())
+        assert manifest["version"] == 1
+        assert len(manifest["files"]) == 6
+
+
+def test_backup_archive_structure(backup_mgr):
+    result = backup_mgr.backup()
+    with tarfile.open(result["path"], "r:gz") as tar:
+        names = [n for n in tar.getnames() if n != MANIFEST_NAME]
+        prefixes = {n.split("/")[0] for n in names}
+        assert prefixes == {"config", "data", "state"}
+
+
+def test_backup_skips_other_backups(backup_mgr, tmp_kipi_paths):
+    # Create a fake old backup in output dir
+    fake = tmp_kipi_paths.output_dir / "kipi-backup-20260101-000000.tar.gz"
+    fake.write_text("fake")
+    result = backup_mgr.backup()
+    with tarfile.open(result["path"], "r:gz") as tar:
+        names = tar.getnames()
+        assert not any("kipi-backup-" in n and n.endswith(".tar.gz") for n in names if n != MANIFEST_NAME)
+
+
+def test_restore_dry_run(backup_mgr, tmp_path):
+    result = backup_mgr.backup()
+    # Create a fresh manager pointing to new dirs
+    from kipi_mcp.paths import KipiPaths
+    new_paths = KipiPaths(
+        config_dir=tmp_path / "new_config",
+        data_dir=tmp_path / "new_data",
+        state_dir=tmp_path / "new_state",
+        repo_dir=tmp_path / "repo",
+    )
+    new_paths.ensure_dirs()
+    new_mgr = BackupManager(new_paths)
+
+    restore_result = new_mgr.restore(Path(result["path"]), dry_run=True)
+    assert restore_result["dry_run"] is True
+    assert len(restore_result["restored"]) == 6
+    # Files should NOT actually exist
+    assert not (tmp_path / "new_config" / "founder-profile.md").exists()
+
+
+def test_restore_writes_files(backup_mgr, tmp_path):
+    result = backup_mgr.backup()
+    from kipi_mcp.paths import KipiPaths
+    new_paths = KipiPaths(
+        config_dir=tmp_path / "restored_config",
+        data_dir=tmp_path / "restored_data",
+        state_dir=tmp_path / "restored_state",
+        repo_dir=tmp_path / "repo",
+    )
+    new_paths.ensure_dirs()
+    new_mgr = BackupManager(new_paths)
+
+    restore_result = new_mgr.restore(Path(result["path"]), dry_run=False)
+    assert restore_result["dry_run"] is False
+    assert len(restore_result["restored"]) == 6
+    assert (tmp_path / "restored_config" / "founder-profile.md").read_text() == "# Profile\nName: Test"
+    assert (tmp_path / "restored_data" / "my-project" / "current-state.md").read_text() == "# State"
+
+
+def test_restore_missing_archive_raises(backup_mgr):
+    with pytest.raises(FileNotFoundError):
+        backup_mgr.restore(Path("/nonexistent/backup.tar.gz"))
+
+
+def test_list_backups_empty(tmp_kipi_paths):
+    mgr = BackupManager(tmp_kipi_paths)
+    assert mgr.list_backups() == []
+
+
+def test_list_backups_returns_sorted(backup_mgr, tmp_path):
+    # Use explicit output paths to guarantee distinct filenames
+    backup_mgr.backup(output_path=tmp_path / "kipi-backup-20260101-000000.tar.gz")
+    backup_mgr.backup(output_path=tmp_path / "kipi-backup-20260102-000000.tar.gz")
+    # Copy them into the output dir where list_backups looks
+    import shutil
+    for f in tmp_path.glob("kipi-backup-*.tar.gz"):
+        shutil.copy2(f, backup_mgr.paths.output_dir / f.name)
+    backups = backup_mgr.list_backups()
+    assert len(backups) >= 2
+
+
+def test_roundtrip_preserves_content(backup_mgr, tmp_path):
+    """Full roundtrip: backup → restore to new location → verify identical."""
+    result = backup_mgr.backup()
+    from kipi_mcp.paths import KipiPaths
+    new_paths = KipiPaths(
+        config_dir=tmp_path / "rt_config",
+        data_dir=tmp_path / "rt_data",
+        state_dir=tmp_path / "rt_state",
+        repo_dir=tmp_path / "repo",
+    )
+    new_paths.ensure_dirs()
+    new_mgr = BackupManager(new_paths)
+    new_mgr.restore(Path(result["path"]), dry_run=False)
+
+    assert (tmp_path / "rt_config" / "canonical" / "talk-tracks.md").read_text() == "# Talk Tracks"
+    assert (tmp_path / "rt_config" / "voice" / "voice-dna.md").read_text() == "# Voice DNA"
+    assert (tmp_path / "rt_data" / "memory" / "graph.jsonl").read_text() == '{"s":"a","p":"knows","o":"b"}'
+    assert (tmp_path / "rt_state" / "output" / "morning-log-2026-03-27.json").read_text() == "{}"

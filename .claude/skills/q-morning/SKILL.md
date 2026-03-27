@@ -56,6 +56,7 @@ Report what was skipped in the morning briefing summary.
 7. **Build daily schedule** via `kipi_build_schedule` MCP tool
 8. **Run audit harness:** `python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-{date}.json`
 9. **Show audit results** to the founder. This is NOT optional.
+10. **Auto-backup:** Call `kipi_backup` MCP tool. This runs by default after every morning routine. Mention the archive path to the founder.
 
 ## Model allocation
 
@@ -68,7 +69,7 @@ If any MCP server is unavailable or any step fails during execution, STOP the en
 
 ## MCP tools used
 
-`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `kipi://loops/open` (resource), `kipi://loops/stats` (resource), `kipi_load_step`, `kipi_build_schedule`
+`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `kipi://loops/open` (resource), `kipi://loops/stats` (resource), `kipi_load_step`, `kipi_build_schedule`, `kipi_backup`
 
 ## Output rules
 
