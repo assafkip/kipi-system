@@ -283,7 +283,7 @@ Before executing ANY step, Claude MUST read the agent prompt file from `agent-pi
 
 ### HTML Build Verification (AUTOMATIC)
 
-The `kipi_build_schedule` MCP tool automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
+The `kipi_build_schedule` MCP tool automatically runs schedule verification before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. You can also run `kipi_verify_schedule` directly to check a schedule JSON file. The verification checks:
 - Pipeline follow-ups section exists with 3+ items with copy-paste text
 - Day-specific content exists (signals Mon/Wed/Fri, TL Tue/Thu, Medium Mon, Kipi Wed)
 - Section ordering is correct (follow-ups before new leads)
@@ -489,17 +489,14 @@ Claims that cross sessions get verified. Q does not trust data older than 48 hou
 
 After Step 11 (or whenever the routine ends), run the audit. This MUST happen even if context is tight.
 
-The audit script (`q-system/audit-morning.py`) checks:
+The `kipi_audit_morning` MCP tool checks:
 1. Step completion against expected steps for the day
 2. Gate compliance (were gate checks actually performed?)
 3. Action card counts (how many delivered, how many still unconfirmed from yesterday?)
 4. State file drift (did checksums change as expected?)
 5. Verification queue (any stale unverified claims?)
 
-Run:
-```bash
-python3 q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json
-```
+Run: Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-YYYY-MM-DD.json"
 
 Show the output to the founder. This is not optional. If the verdict is not COMPLETE, the founder sees exactly what was missed.
 

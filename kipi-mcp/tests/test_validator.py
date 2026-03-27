@@ -49,18 +49,8 @@ def _build_skeleton(tmp_path: Path) -> tuple[KipiPaths, Path]:
     (agents_dir / "_cadence-config.yaml").write_text("cadence: daily\n")
     (agents_dir / "_auto-fail-checklist.md").write_text("# Checklist\n")
 
-    # Scripts
-    for script in [
-        "audit-morning.py",
-        "verify-schedule.py",
-        "token-guard.py",
-        "verify-bus.py",
-        "verify-orchestrator.py",
-    ]:
-        (qsys / script).write_text("# script\n")
-    scripts_dir = qsys / "scripts"
-    scripts_dir.mkdir()
-    (scripts_dir / "scan-draft.py").write_text("# script\n")
+    # Scripts (only hook scripts remain in q-system/)
+    (qsys / "token-guard.py").write_text("# script\n")
 
     # Canonical files (user data -> config_dir)
     for fname in [

@@ -63,7 +63,7 @@ All paths are resolved at runtime by platformdirs and vary by OS (e.g. `~/.confi
 
 ## Build and Test
 - Build daily schedule: Use the `kipi_build_schedule` MCP tool
-- Audit morning routine: `python3 q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json`
+- Audit morning routine: Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-YYYY-MM-DD.json"
 
 ## Token Discipline (NON-NEGOTIABLE)
 

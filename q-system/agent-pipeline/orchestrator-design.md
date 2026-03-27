@@ -51,7 +51,8 @@ Phase 7: Synthesis (sequential, opus)
 Phase 8: Build + Verify (sequential)
   -> MCP: kipi_build_schedule (builds HTML from JSON)
   -> Agent: 08-visual-verify.md (sonnet)     -> bus/{date}/visual-verify.json
-  -> Bash: audit-morning.py (validates log)
+  -> MCP: kipi_bus_to_log (bridges bus/ to morning-log)
+  -> MCP: kipi_audit_morning (validates log)
 ```
 
 ## Key rules

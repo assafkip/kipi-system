@@ -288,9 +288,7 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 **Every step must write its completion status to `{state_dir}/output/morning-log-YYYY-MM-DD.json`.** This is a file on disk, not context. Even if context rots, the log is accurate. If a step isn't logged, it didn't happen.
 
 **After Step 11 (or whenever the routine ends), run the audit harness:**
-```bash
-python3 q-system/audit-morning.py {state_dir}/output/morning-log-YYYY-MM-DD.json
-```
+Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-YYYY-MM-DD.json".
 Show the audit output to the founder. This is not optional. The founder should always see the completion verdict.
 
 If any MCP server is unavailable or any step fails during `/q-morning`, STOP the entire routine immediately and report what broke. Do NOT continue with partial data. The founder fixes the issue and re-runs. See `preflight.md` for tool manifest and fallback chains, and `commands.md` "Fail-fast mode" section for the halt protocol.

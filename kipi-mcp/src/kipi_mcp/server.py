@@ -17,6 +17,12 @@ from kipi_mcp.loop_tracker import LoopTracker
 from kipi_mcp.template_manager import TemplateManager
 from kipi_mcp.migrator import Migrator
 from kipi_mcp.backup import BackupManager
+from kipi_mcp.schedule_verifier import ScheduleVerifier
+from kipi_mcp.bus_verifier import BusVerifier
+from kipi_mcp.orchestrator_verifier import OrchestratorVerifier
+from kipi_mcp.bus_bridge import BusBridge
+from kipi_mcp.draft_scanner import DraftScanner
+from kipi_mcp.morning_auditor import MorningAuditor
 
 paths = KipiPaths()
 paths.ensure_dirs()
@@ -62,13 +68,24 @@ step_logger = StepLogger(output_dir=paths.output_dir)
 
 loop_tracker = LoopTracker(loop_file=paths.output_dir / "open-loops.json")
 
+schedule_verifier = ScheduleVerifier()
+
 template_manager = TemplateManager(
     templates_dir=paths.templates_dir,
     output_dir=paths.output_dir,
     schedule_template=paths.schedule_template,
+    verify_schedule_fn=schedule_verifier.verify,
 )
 
 backup_manager = BackupManager(paths)
+
+bus_verifier = BusVerifier(bus_dir=paths.bus_dir)
+orchestrator_verifier = OrchestratorVerifier(
+    output_dir=paths.output_dir, bus_dir=paths.bus_dir, step_logger=step_logger,
+)
+bus_bridge = BusBridge(bus_dir=paths.bus_dir, output_dir=paths.output_dir)
+draft_scanner = DraftScanner()
+morning_auditor = MorningAuditor()
 
 try:
     from kipi_mcp.validator import Validator
@@ -711,6 +728,120 @@ def kipi_import(archive_path: str, dry_run: bool = True) -> str:
         raise ToolError(str(e))
     except Exception as e:
         logger.error("kipi_import failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
+# Verification & Audit (6 tools)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_verify_schedule(json_file: str, day: str = "") -> str:
+    """Verify a schedule JSON file before HTML build.
+
+    Checks pipeline follow-ups, day-specific content, section ordering,
+    and energy tags. Blocks HTML build if required sections are missing.
+
+    Args:
+        json_file: Path to the schedule-data JSON file.
+        day: Day of week (monday, tuesday, etc.). Derived from data if omitted.
+    """
+    try:
+        data = json.loads(Path(json_file).read_text())
+        return json.dumps(schedule_verifier.verify(data, day))
+    except Exception as e:
+        logger.error("kipi_verify_schedule failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_verify_bus(date: str, phase: int) -> str:
+    """Verify bus files exist and are valid for a pipeline phase.
+
+    Run between phases to ensure expected JSON outputs were produced.
+
+    Args:
+        date: Date string (YYYY-MM-DD).
+        phase: Pipeline phase number (0-9).
+    """
+    try:
+        return json.dumps(bus_verifier.verify(date, phase))
+    except Exception as e:
+        logger.error("kipi_verify_bus failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_verify_orchestrator(date: str, phase: int, fix: bool = False) -> str:
+    """Verify orchestrator housekeeping between pipeline phases.
+
+    Checks gate logs, session checksums, and action card tracking.
+    Use fix=True to auto-generate missing log entries from bus data.
+
+    Args:
+        date: Date string (YYYY-MM-DD).
+        phase: Pipeline phase number.
+        fix: Auto-fix missing entries if data exists. Default False.
+    """
+    try:
+        return json.dumps(orchestrator_verifier.check_phase(date, phase, fix=fix))
+    except Exception as e:
+        logger.error("kipi_verify_orchestrator failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_bus_to_log(date: str = "") -> str:
+    """Bridge bus JSON files to morning-log.json for the audit harness.
+
+    Maps bus file presence/status to step IDs and writes the morning log.
+
+    Args:
+        date: Date string (YYYY-MM-DD). Defaults to today.
+    """
+    try:
+        return json.dumps(bus_bridge.bridge(date))
+    except Exception as e:
+        logger.error("kipi_bus_to_log failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_scan_draft(json_file: str) -> str:
+    """Scan a bus JSON file for banned AI words and phrases.
+
+    Deterministic anti-AI scanner that greps copy fields for banned words,
+    phrases, emdashes, and hedging density. LLMs miss their own banned
+    words — this script does not.
+
+    Args:
+        json_file: Path to the bus JSON file to scan.
+    """
+    try:
+        data = json.loads(Path(json_file).read_text())
+        return json.dumps(draft_scanner.scan(data))
+    except Exception as e:
+        logger.error("kipi_scan_draft failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_audit_morning(log_file: str) -> str:
+    """Audit a morning routine log for completeness.
+
+    Checks step completion, gate compliance, action cards, state drift,
+    and verification queue. Returns a verdict (COMPLETE, MOSTLY COMPLETE,
+    PARTIAL, or INCOMPLETE).
+
+    Args:
+        log_file: Path to morning-log-YYYY-MM-DD.json.
+    """
+    try:
+        log = json.loads(Path(log_file).read_text())
+        return json.dumps(morning_auditor.audit(log))
+    except Exception as e:
+        logger.error("kipi_audit_morning failed", exc_info=True)
         raise ToolError(str(e))
 
 

@@ -34,6 +34,12 @@ EXPECTED_TOOLS = [
     "kipi_backup",
     "kipi_export",
     "kipi_import",
+    "kipi_verify_schedule",
+    "kipi_verify_bus",
+    "kipi_verify_orchestrator",
+    "kipi_bus_to_log",
+    "kipi_scan_draft",
+    "kipi_audit_morning",
 ]
 
 EXPECTED_RESOURCES = [

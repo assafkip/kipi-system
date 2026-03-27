@@ -63,7 +63,7 @@ Your context window will compact automatically as it approaches limits. Do not s
 - Spawn: 00c-canonical-digest.md (sonnet)
 - This agent reads ALL canonical files (1,536 lines, ~20K tokens) ONCE and produces a 2K JSON digest.
 - All downstream agents read `canonical-digest.json` instead of the full files. This saves 40-60K tokens per run.
-- Verify: `python3 q-system/verify-bus.py {date} 1` (checks canonical-digest.json structure)
+- Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1 (checks canonical-digest.json structure)
 - If the digest is missing or malformed, downstream agents fall back to reading canonical files directly.
 
 ### Phase 1: Data Ingest (4 agents, ALL PARALLEL)
@@ -73,14 +73,14 @@ Launch in ONE message with 4 Agent tool calls:
 - 01-vc-pipeline-pull.md (sonnet) - separate because it's a different API (localhost:5050)
 - 01b-content-metrics.md (sonnet) - Chrome scrapes LinkedIn analytics, writes content-metrics.json + SQLite
 - 01c-copy-diff.md (sonnet) - compares yesterday's hitlist copy vs actual posts (Chrome), writes copy-diffs.json + SQLite
-Verify: `python3 q-system/verify-bus.py {date} 1`
+Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1
 If any fails: log the failure, continue with available data
 
 ### Phase 2: Analysis (2 agents, PARALLEL)
 Launch in ONE message with 2 Agent tool calls:
 - 02-meeting-prep.md (sonnet) - reads calendar.json + notion.json
 - 02-warm-intro-match.md (sonnet) - reads vc-pipeline.json + notion.json
-Verify: `python3 q-system/verify-bus.py {date} 2`
+Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=2
 
 ### Phase 3: LinkedIn (5 agents, SEQUENTIAL - Chrome needs one tab at a time)
 - 03-linkedin-posts.md (sonnet) - writes linkedin-posts.json
@@ -88,7 +88,7 @@ Verify: `python3 q-system/verify-bus.py {date} 2`
 - 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
 - 03c-prospect-activity.md (sonnet) - visits top 10 Hot+Warm prospect profiles, pulls their last 2 posts, writes prospect-activity.json. **ENERGY GATE: skip if energy < 3.** Takes ~6 min Chrome time. Rotates via SQLite (skips anyone checked in last 2 days).
 - 03-dp-pipeline.md (sonnet) - reads notion.json, writes dp-pipeline.json (no Chrome needed, can overlap)
-Verify: `python3 q-system/verify-bus.py {date} 3`
+Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=3
 
 ### Phase 4: Content (2-4 agents, SEQUENTIAL then PARALLEL)
 - 04-signals-content.md (sonnet) - writes signals.json
@@ -107,7 +107,7 @@ After all complete, check leads.json:
 - If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
 - If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).
 - If leads.json has results: proceed.
-Verify: `python3 q-system/verify-bus.py {date} 5` (before hitlist, after parallel agents)
+Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=5 (before hitlist, after parallel agents)
 THEN:
 - 05-engagement-hitlist.md (sonnet) - reads temperature + leads + linkedin-posts + behavioral-signals + prospect-activity + pipeline-followup + loop-review + copy-diffs, writes hitlist.json. Downgraded from Opus to Sonnet (token savings). The behavioral signals and copy learnings provide enough context that Sonnet produces equivalent quality.
 
@@ -124,8 +124,8 @@ Launch in ONE message:
 ### Phase 8: Build + Verify (sequential)
 1. Run: Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-{date}.json" and html_path="output/daily-schedule-{date}.html"
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
-3. Run: `python3 q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
-4. Run: `python3 q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-{date}.json`
+3. Run: Use the `kipi_bus_to_log` MCP tool with date={date} — bridges bus/ files to morning-log.json
+4. Run: Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-{date}.json"
 5. Show audit output to founder
 Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 

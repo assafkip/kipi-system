@@ -180,21 +180,23 @@ class Validator:
             else False,
         )
 
-        # Gate 1.2 - Scripts
-        for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
-            self._check(
-                checks,
-                f"{script} exists",
-                (qsys / script).exists(),
-            )
+        # Gate 1.2 - Scripts (only hook scripts remain in q-system/)
+        self._check(
+            checks,
+            "token-guard.py exists",
+            (qsys / "token-guard.py").exists(),
+        )
 
-        scan_draft_exists = (qsys / "scan-draft.py").exists() or (
-            qsys / "scripts" / "scan-draft.py"
-        ).exists()
-        self._check(checks, "scan-draft.py exists", scan_draft_exists)
-
-        for script in ["verify-bus.py", "verify-orchestrator.py"]:
-            self._check(checks, f"{script} exists", (qsys / script).exists())
+        # Migrated modules live in kipi_mcp package
+        for mod_name in [
+            "schedule_verifier", "bus_verifier", "orchestrator_verifier",
+            "bus_bridge", "draft_scanner", "morning_auditor",
+        ]:
+            try:
+                __import__(f"kipi_mcp.{mod_name}")
+                self._check(checks, f"kipi_mcp.{mod_name} importable", True)
+            except ImportError:
+                self._check(checks, f"kipi_mcp.{mod_name} importable", False)
 
         # Gate 1.3 - Canonical templates
         canonical_dir = self.paths.canonical_dir

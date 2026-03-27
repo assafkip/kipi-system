@@ -1821,9 +1821,7 @@ Use the `log_deliver_cards` MCP tool with date=DATE
 ```
 
 **12c. Run the audit harness:**
-```bash
-python3 q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-DATE.json
-```
+Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-DATE.json"
 **Always show the audit output to the founder.** This is not optional.
 
 **12d. Log Step 12 and update morning-state.md:**
