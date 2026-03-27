@@ -300,26 +300,24 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 `/q-morning` uses a decomposed agent pipeline instead of a monolithic step-by-step flow.
 
 **How it works:**
-1. Read `steps/step-orchestrator.md` for the full phase plan
+1. Read `agent-pipeline/step-orchestrator.md` for the full phase plan
 2. Create `{state_dir}/bus/{date}/` directory for inter-agent communication
 3. Run 8 phases, spawning sub-agents via the Agent tool
 4. Agents communicate through JSON files in the bus directory, not through context
 5. Parallel phases use multiple Agent calls in a single message
 6. Each agent reads only the bus/ files it needs and writes one JSON result
 
-**Agent prompts:** `agent-pipeline/agents/` (19 files)
+**Agent prompts:** `agent-pipeline/agents/` (34 files)
 **Bus directory:** `{state_dir}/bus/{date}/`
 **Design doc:** `agent-pipeline/orchestrator-design.md`
 
 **Model allocation:** Sonnet for all data pulls and checks. Opus for engagement hitlist (05) and synthesis (07) only.
 
-**Full post text rule (ENFORCED):** Agents that read social posts (03-social-posts, 05-lead-sourcing, 05-engagement-hitlist) MUST save actual post text, not summaries. Comments and outreach written from summaries are nonsensical.
+**Full post text rule (ENFORCED):** Agents that read social posts (03-linkedin-posts, 05-lead-sourcing, 05-engagement-hitlist) MUST save actual post text, not summaries. Comments and outreach written from summaries are nonsensical.
 
 **Content review pipeline:** `/q-market-review` runs 4 focused Sonnet agents in sequence (voice, guardrails, anti-AI detection, actionability). Review pipeline pass definitions are in `kipi-mcp/server.py` docstrings.
 
 **Output templates:** `agent-pipeline/templates/` has reusable folder structures for deck, outreach, content, and debrief outputs. `/q-create` and `/q-draft` should use these when the format matches.
-
-**Fallback:** If the agent pipeline fails, the old monolithic steps in `steps/` still work via the `kipi_load_step` MCP tool.
 
 ## Inter-Skill Review Gates (ENFORCED)
 

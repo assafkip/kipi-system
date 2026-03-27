@@ -14,7 +14,6 @@ from kipi_mcp.registry import RegistryManager
 from kipi_mcp.git_ops import GitOps
 from kipi_mcp.step_logger import StepLogger
 from kipi_mcp.loop_tracker import LoopTracker
-from kipi_mcp.step_loader import StepLoader
 from kipi_mcp.template_manager import TemplateManager
 from kipi_mcp.migrator import Migrator
 from kipi_mcp.backup import BackupManager
@@ -37,10 +36,10 @@ mcp = FastMCP(
         "Tool groups: kipi_* (instances, migration, validation), "
         "log_* (morning routine step logging), "
         "loop_* (follow-up loop tracking), "
-        "kipi_load_step / kipi_build_schedule / kipi_create_template (content). "
+        "kipi_build_schedule / kipi_create_template (content). "
         "kipi_backup / kipi_export / kipi_import (data portability). "
         "Resources: kipi://paths, kipi://status, kipi://instances, kipi://loops/open, "
-        "kipi://loops/stats, kipi://steps/{step_id}, kipi://backups. "
+        "kipi://loops/stats, kipi://backups. "
         "Read kipi://status first — if legacy_data_detected is true, prompt the user to migrate "
         "before doing anything else. Read kipi://paths for resolved directory paths."
     ),
@@ -62,11 +61,6 @@ git_ops = GitOps(skeleton_remote=skeleton_remote, skeleton_branch="main")
 step_logger = StepLogger(output_dir=paths.output_dir)
 
 loop_tracker = LoopTracker(loop_file=paths.output_dir / "open-loops.json")
-
-step_loader = StepLoader(
-    steps_dir=paths.steps_dir,
-    commands_file=paths.commands_file,
-)
 
 template_manager = TemplateManager(
     templates_dir=paths.templates_dir,
@@ -146,11 +140,6 @@ def resource_loops_stats() -> str:
     """Summary statistics for open and recently closed loops."""
     return json.dumps(loop_tracker.stats())
 
-
-@mcp.resource("kipi://steps/{step_id}")
-def resource_step(step_id: str) -> str:
-    """Morning routine step definition by ID (e.g. "0a", "3", "5.9b", "11")."""
-    return step_loader.load(step_id)
 
 
 # ============================================================
@@ -623,19 +612,6 @@ def loop_prune(days: int = 30) -> str:
 # Content Tools (3 tools — namespaced)
 # ============================================================
 
-
-@mcp.tool()
-def kipi_load_step(step_id: str) -> str:
-    """Load a morning routine step definition by ID.
-
-    Args:
-        step_id: Step identifier (e.g. "0a", "3", "5.9b", "11").
-    """
-    try:
-        return step_loader.load(step_id)
-    except Exception as e:
-        logger.error("kipi_load_step failed", exc_info=True)
-        raise ToolError(str(e))
 
 
 @mcp.tool()

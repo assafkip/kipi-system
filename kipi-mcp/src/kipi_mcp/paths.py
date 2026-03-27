@@ -152,14 +152,6 @@ class KipiPaths:
         return self.repo_dir / "q-system" / "agent-pipeline" / "agents"
 
     @property
-    def steps_dir(self) -> Path:
-        return self.repo_dir / "q-system" / "steps"
-
-    @property
-    def commands_file(self) -> Path:
-        return self.repo_dir / "q-system" / "commands.md"
-
-    @property
     def templates_dir(self) -> Path:
         return self.repo_dir / "q-system" / "agent-pipeline" / "templates"
 

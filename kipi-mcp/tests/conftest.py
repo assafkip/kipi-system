@@ -88,8 +88,6 @@ def tmp_q_system(tmp_path):
     q = tmp_path / "q-system"
     q.mkdir()
     (q / "output").mkdir()
-    (q / ".q-system").mkdir(parents=True)
-    (q / ".q-system" / "steps").mkdir()
-    (q / ".q-system" / "commands.md").write_text("")
-    (q / ".q-system" / "agent-pipeline" / "templates").mkdir(parents=True)
+    (q / "agent-pipeline" / "agents").mkdir(parents=True)
+    (q / "agent-pipeline" / "templates").mkdir(parents=True)
     return q

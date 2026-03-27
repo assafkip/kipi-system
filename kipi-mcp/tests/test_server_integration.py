@@ -29,7 +29,6 @@ EXPECTED_TOOLS = [
     "loop_escalate",
     "loop_touch",
     "loop_prune",
-    "kipi_load_step",
     "kipi_create_template",
     "kipi_build_schedule",
     "kipi_backup",
