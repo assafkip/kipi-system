@@ -15,6 +15,7 @@ from kipi_mcp.paths import KipiPaths
 
 # Logical prefixes inside the archive — platform-independent
 _ARCHIVE_DIRS = {
+    "global": "global",
     "config": "config",
     "data": "data",
     "state": "state",
@@ -32,6 +33,7 @@ class BackupManager:
     def _source_map(self) -> dict[str, Path]:
         """Map logical archive prefixes to real directories."""
         return {
+            "global": self.paths.global_dir,
             "config": self.paths.config_dir,
             "data": self.paths.data_dir,
             "state": self.paths.state_dir,
@@ -106,6 +108,7 @@ class BackupManager:
             raise FileNotFoundError(f"Archive not found: {archive_path}")
 
         dest_map = {
+            _ARCHIVE_DIRS["global"]: self.paths.global_dir,
             _ARCHIVE_DIRS["config"]: self.paths.config_dir,
             _ARCHIVE_DIRS["data"]: self.paths.data_dir,
             _ARCHIVE_DIRS["state"]: self.paths.state_dir,

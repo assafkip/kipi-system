@@ -4,8 +4,30 @@ from pathlib import Path
 from platformdirs import user_config_path, user_data_path, user_state_path
 
 
+def _detect_instance(repo_dir: Path) -> str:
+    """Resolve instance name from env var, .kipi-instance file, or repo dirname."""
+    env = os.environ.get("KIPI_INSTANCE")
+    if env:
+        return env
+    marker = repo_dir / ".kipi-instance"
+    if marker.exists():
+        name = marker.read_text().strip()
+        if name:
+            return name
+    return repo_dir.name
+
+
 class KipiPaths:
-    """Single source of truth for all kipi directory paths."""
+    """Single source of truth for all kipi directory paths.
+
+    Directory layout:
+      {base}/kipi/
+        global/          ← shared across instances (voice, audhd)
+        instances/{name}/ ← per-instance data
+
+    On macOS all three bases resolve to ~/Library/Application Support/kipi/.
+    On Linux they split to ~/.config/kipi/, ~/.local/share/kipi/, ~/.local/state/kipi/.
+    """
 
     def __init__(
         self,
@@ -13,30 +35,55 @@ class KipiPaths:
         data_dir: Path | None = None,
         state_dir: Path | None = None,
         repo_dir: Path | None = None,
+        instance: str | None = None,
     ):
-        self.config_dir = Path(config_dir or os.environ.get("KIPI_CONFIG_DIR", user_config_path("kipi")))
-        self.data_dir = Path(data_dir or os.environ.get("KIPI_DATA_DIR", user_data_path("kipi")))
-        self.state_dir = Path(state_dir or os.environ.get("KIPI_STATE_DIR", user_state_path("kipi")))
+        self._config_base = Path(config_dir or os.environ.get("KIPI_CONFIG_DIR", user_config_path("kipi")))
+        self._data_base = Path(data_dir or os.environ.get("KIPI_DATA_DIR", user_data_path("kipi")))
+        self._state_base = Path(state_dir or os.environ.get("KIPI_STATE_DIR", user_state_path("kipi")))
         self.repo_dir = Path(repo_dir or os.environ.get("KIPI_HOME", Path(__file__).resolve().parents[3]))
+        self.instance = instance or _detect_instance(self.repo_dir)
 
-    # Config subdirectories
+    # --- Base directories ---
+
+    @property
+    def config_dir(self) -> Path:
+        return self._config_base / "instances" / self.instance
+
+    @property
+    def data_dir(self) -> Path:
+        return self._data_base / "instances" / self.instance
+
+    @property
+    def state_dir(self) -> Path:
+        return self._state_base / "instances" / self.instance
+
+    @property
+    def global_dir(self) -> Path:
+        """Shared config across all instances (voice, audhd)."""
+        return self._config_base / "global"
+
+    # --- Global subdirectories (shared) ---
+
+    @property
+    def voice_dir(self) -> Path:
+        return self.global_dir / "voice"
+
+    @property
+    def audhd_dir(self) -> Path:
+        return self.global_dir / "audhd"
+
+    # --- Per-instance config subdirectories ---
+
     @property
     def canonical_dir(self) -> Path:
         return self.config_dir / "canonical"
 
     @property
-    def voice_dir(self) -> Path:
-        return self.config_dir / "voice"
-
-    @property
-    def audhd_dir(self) -> Path:
-        return self.config_dir / "audhd"
-
-    @property
     def marketing_config_dir(self) -> Path:
         return self.config_dir / "marketing"
 
-    # Data subdirectories
+    # --- Per-instance data subdirectories ---
+
     @property
     def my_project_dir(self) -> Path:
         return self.data_dir / "my-project"
@@ -45,7 +92,8 @@ class KipiPaths:
     def memory_dir(self) -> Path:
         return self.data_dir / "memory"
 
-    # State subdirectories
+    # --- Per-instance state subdirectories ---
+
     @property
     def output_dir(self) -> Path:
         return self.state_dir / "output"
@@ -54,7 +102,8 @@ class KipiPaths:
     def bus_dir(self) -> Path:
         return self.state_dir / "bus"
 
-    # Repo subdirectories (system code, stays in git)
+    # --- Repo subdirectories (system code, stays in git) ---
+
     @property
     def q_system_dir(self) -> Path:
         return self.repo_dir / "q-system"
@@ -87,7 +136,8 @@ class KipiPaths:
     def registry_path(self) -> Path:
         return self.repo_dir / "instance-registry.json"
 
-    # Config files (top-level in config_dir)
+    # --- Config files ---
+
     @property
     def founder_profile(self) -> Path:
         return self.config_dir / "founder-profile.md"
@@ -105,20 +155,25 @@ class KipiPaths:
         return "{{SETUP_NEEDED}}" not in content
 
     def ensure_dirs(self) -> None:
-        """Create all XDG directories if they don't exist."""
+        """Create all directories if they don't exist."""
         for d in [
-            self.config_dir,
-            self.canonical_dir,
+            # Global shared
+            self.global_dir,
             self.voice_dir,
             self.audhd_dir,
+            # Per-instance config
+            self.config_dir,
+            self.canonical_dir,
             self.marketing_config_dir,
             self.marketing_config_dir / "assets",
+            # Per-instance data
             self.data_dir,
             self.my_project_dir,
             self.memory_dir,
             self.memory_dir / "working",
             self.memory_dir / "weekly",
             self.memory_dir / "monthly",
+            # Per-instance state
             self.state_dir,
             self.output_dir,
             self.output_dir / "drafts",

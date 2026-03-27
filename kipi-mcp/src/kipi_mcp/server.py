@@ -93,9 +93,11 @@ except ImportError:
 def resource_paths() -> str:
     """All resolved kipi directory paths (config, data, state, repo)."""
     return json.dumps({
+        "instance": paths.instance,
         "config_dir": str(paths.config_dir),
         "data_dir": str(paths.data_dir),
         "state_dir": str(paths.state_dir),
+        "global_dir": str(paths.global_dir),
         "repo_dir": str(paths.repo_dir),
     })
 
