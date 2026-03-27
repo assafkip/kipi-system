@@ -30,6 +30,9 @@ EXPECTED_TOOLS = [
     "kipi_load_step",
     "kipi_create_template",
     "kipi_build_schedule",
+    "kipi_backup",
+    "kipi_export",
+    "kipi_import",
 ]
 
 EXPECTED_RESOURCES = [
@@ -37,6 +40,7 @@ EXPECTED_RESOURCES = [
     "kipi://instances",
     "kipi://loops/open",
     "kipi://loops/stats",
+    "kipi://backups",
 ]
 
 KIPI_MCP_DIR = "/Users/ike/code/kipi-system/kipi-mcp"

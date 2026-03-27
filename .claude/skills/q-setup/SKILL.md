@@ -126,7 +126,8 @@ Ask:
 2. Ask if anything needs adjusting
 3. Remove `{{SETUP_NEEDED}}` from `founder-profile.md`
 4. Remove `{{SETUP_NEEDED}}` from `enabled-integrations.md`
-5. Tell the user: "You're set. Try `/q-morning` tomorrow to see the full system, or `/q-plan` right now to start prioritizing."
+5. Tell the user where their data lives (read `kipi://paths` resource for actual resolved paths): "Your kipi data lives at **{config_dir}**. Back it up anytime with `kipi_backup`, or export with `kipi_export` to move to another machine. Backups run automatically after each `/q-morning`."
+6. Tell the user: "You're set. Try `/q-morning` tomorrow to see the full system, or `/q-plan` right now to start prioritizing."
 
 ## Output rules
 - Conversational tone, one step at a time

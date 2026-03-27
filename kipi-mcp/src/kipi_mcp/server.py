@@ -17,6 +17,7 @@ from kipi_mcp.loop_tracker import LoopTracker
 from kipi_mcp.step_loader import StepLoader
 from kipi_mcp.template_manager import TemplateManager
 from kipi_mcp.migrator import Migrator
+from kipi_mcp.backup import BackupManager
 
 paths = KipiPaths()
 paths.ensure_dirs()
@@ -37,8 +38,9 @@ mcp = FastMCP(
         "log_* (morning routine step logging), "
         "loop_* (follow-up loop tracking), "
         "kipi_load_step / kipi_build_schedule / kipi_create_template (content). "
+        "kipi_backup / kipi_export / kipi_import (data portability). "
         "Resources: kipi://paths, kipi://instances, kipi://loops/open, "
-        "kipi://loops/stats, kipi://steps/{step_id}. "
+        "kipi://loops/stats, kipi://steps/{step_id}, kipi://backups. "
         "Read kipi://paths first to get resolved directory paths."
     ),
 )
@@ -70,6 +72,8 @@ template_manager = TemplateManager(
     output_dir=paths.output_dir,
     schedule_template=paths.schedule_template,
 )
+
+backup_manager = BackupManager(paths)
 
 try:
     from kipi_mcp.validator import Validator
@@ -577,6 +581,73 @@ def kipi_build_schedule(json_file: str, output_file: str = "") -> str:
         return json.dumps(template_manager.build_schedule(json_file, output_file))
     except Exception as e:
         logger.error("kipi_build_schedule failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
+# Backup & Restore (3 tools + 1 resource)
+# ============================================================
+
+
+@mcp.resource("kipi://backups")
+def resource_backups() -> str:
+    """List all existing backup archives."""
+    return json.dumps(backup_manager.list_backups())
+
+
+@mcp.tool()
+def kipi_backup(output_path: str = "") -> str:
+    """Create a tar.gz backup of all kipi user data (config, data, state).
+
+    Same archive format as kipi_export — can be restored with kipi_import.
+    Runs automatically after /q-morning by default.
+
+    Args:
+        output_path: Where to write the archive. Defaults to output dir with timestamp.
+    """
+    try:
+        p = Path(output_path) if output_path else None
+        return json.dumps(backup_manager.backup(output_path=p))
+    except Exception as e:
+        logger.error("kipi_backup failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_export(output_path: str = "") -> str:
+    """Export all kipi user data as a portable tar.gz archive.
+
+    Same as kipi_backup — use this when moving data to another machine.
+    Restore with kipi_import.
+
+    Args:
+        output_path: Where to write the archive. Defaults to output dir with timestamp.
+    """
+    try:
+        p = Path(output_path) if output_path else None
+        return json.dumps(backup_manager.backup(output_path=p))
+    except Exception as e:
+        logger.error("kipi_export failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_import(archive_path: str, dry_run: bool = True) -> str:
+    """Import/restore kipi user data from a tar.gz archive.
+
+    Archives created by kipi_backup or kipi_export are portable across
+    platforms — paths are resolved to the current platform's directories.
+
+    Args:
+        archive_path: Path to the backup archive to restore from.
+        dry_run: If True, show what would be restored without writing. Default True for safety.
+    """
+    try:
+        return json.dumps(backup_manager.restore(Path(archive_path), dry_run=dry_run))
+    except FileNotFoundError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        logger.error("kipi_import failed", exc_info=True)
         raise ToolError(str(e))
 
 

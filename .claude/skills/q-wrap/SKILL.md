@@ -39,7 +39,8 @@ Read these files:
 3. **Loop review** — Read `kipi://loops/open` resource to surface open loops. Close any that are resolved. Flag stale ones.
 4. **Canonical drift check** — Were canonical files changed today? Do they have proper decision tags?
 5. **Tomorrow preview** — What's on the calendar? What loops are due? What actions were deferred?
-6. **Auto-chain to /q-handoff** — Generate session context note (see `/q-handoff` skill)
+6. **Data location reminder** — Surface the resolved data paths from `kipi://paths` resource. Tell the founder: "Your kipi data lives at {paths}. Back it up with `kipi_backup` or export with `kipi_export` to move to another machine."
+7. **Auto-chain to /q-handoff** — Generate session context note (see `/q-handoff` skill)
 
 ## MCP tools used
 
