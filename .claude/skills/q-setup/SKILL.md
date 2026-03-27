@@ -12,7 +12,16 @@ Read the `kipi://paths` MCP resource to get resolved directories. Key directorie
 
 ## Detection
 
-Read `~/.config/kipi/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, this is a fresh install. Tell the user: "This is a fresh Q Founder OS install. Let's get you set up — I'll ask a few questions, one topic at a time."
+**FIRST:** Read the `kipi://status` MCP resource.
+
+**If `legacy_data_detected` is true:** Tell the user:
+> "I found existing kipi data in the git repo that needs to move to your platform's data directory. Let me show you what will be migrated."
+>
+> Then call `kipi_migrate(dry_run=True)` and show them the file list. Ask: "Ready to migrate? This copies files — nothing is deleted from the repo."
+>
+> On confirmation, call `kipi_migrate(dry_run=False)`. Show the result. Then continue with setup detection below.
+
+**Then:** Read `{config_dir}/founder-profile.md` (path from `kipi://paths`). If it contains `{{SETUP_NEEDED}}`, this is a fresh install. Tell the user: "This is a fresh Q Founder OS install. Let's get you set up — I'll ask a few questions, one topic at a time."
 
 If `{{SETUP_NEEDED}}` is NOT present, ask: "You're already set up. Want to reconfigure something specific, or start fresh?"
 

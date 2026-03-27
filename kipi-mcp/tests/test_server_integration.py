@@ -37,6 +37,7 @@ EXPECTED_TOOLS = [
 
 EXPECTED_RESOURCES = [
     "kipi://paths",
+    "kipi://status",
     "kipi://instances",
     "kipi://loops/open",
     "kipi://loops/stats",

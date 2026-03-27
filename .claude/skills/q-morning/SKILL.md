@@ -4,9 +4,15 @@ The only command you need to start a day. Runs an 8-phase agent pipeline: calend
 
 ## Setup guard
 
-**FIRST:** Read `~/.config/kipi/founder-profile.md`. If it contains `{{SETUP_NEEDED}}`, STOP and tell the user:
+**FIRST:** Read the `kipi://status` MCP resource.
 
-> This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files.
+**If `legacy_data_detected` is true:** STOP and tell the user:
+> "Your kipi data is still in the git repo. Run `/q-setup` to migrate it to your platform's data directory before running the morning routine."
+
+Do not proceed.
+
+**If `setup_needed` is true:** STOP and tell the user:
+> "This system hasn't been configured yet. Run `/q-setup` first to set up your profile, integrations, and canonical files."
 
 Do not proceed with any other steps.
 

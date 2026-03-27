@@ -39,9 +39,10 @@ mcp = FastMCP(
         "loop_* (follow-up loop tracking), "
         "kipi_load_step / kipi_build_schedule / kipi_create_template (content). "
         "kipi_backup / kipi_export / kipi_import (data portability). "
-        "Resources: kipi://paths, kipi://instances, kipi://loops/open, "
+        "Resources: kipi://paths, kipi://status, kipi://instances, kipi://loops/open, "
         "kipi://loops/stats, kipi://steps/{step_id}, kipi://backups. "
-        "Read kipi://paths first to get resolved directory paths."
+        "Read kipi://status first — if legacy_data_detected is true, prompt the user to migrate "
+        "before doing anything else. Read kipi://paths for resolved directory paths."
     ),
 )
 
@@ -96,6 +97,29 @@ def resource_paths() -> str:
         "data_dir": str(paths.data_dir),
         "state_dir": str(paths.state_dir),
         "repo_dir": str(paths.repo_dir),
+    })
+
+
+@mcp.resource("kipi://status")
+def resource_status() -> str:
+    """System status: migration state, setup state, data health.
+
+    IMPORTANT: If legacy_data_detected is true, tell the user their data
+    is still in the git repo and offer to migrate. Show them what will move
+    by calling kipi_migrate(dry_run=True), then ask for confirmation before
+    calling kipi_migrate(dry_run=False).
+    """
+    profile = paths.founder_profile
+    setup_needed = True
+    if profile.exists():
+        setup_needed = "{{SETUP_NEEDED}}" in profile.read_text()
+
+    return json.dumps({
+        "legacy_data_detected": paths.detect_legacy_layout(),
+        "setup_needed": setup_needed,
+        "config_dir_exists": paths.config_dir.exists(),
+        "data_dir_exists": paths.data_dir.exists(),
+        "state_dir_exists": paths.state_dir.exists(),
     })
 
 
