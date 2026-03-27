@@ -1,0 +1,12 @@
+{
+  "model": "opus",
+  "permissions": {
+    "defaultMode": "acceptEdits"
+  },
+  "toolConfigurations": {
+    "mcp__kipi__*": { "autoApprove": ["*"] },
+    "mcp__gmail__*": { "autoApprove": ["*"] },
+    "mcp__google-calendar__*": { "autoApprove": ["*"] },
+    "mcp__apify__*": { "autoApprove": ["*"] }
+  }
+}

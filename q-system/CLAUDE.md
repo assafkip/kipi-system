@@ -2,10 +2,12 @@
 
 ## Path Resolution
 
-All user data lives outside the git repo. Paths are resolved at runtime by platformdirs and vary by OS (e.g. `~/.config/kipi-system/` on Linux, `~/Library/Application Support/kipi-system/` on macOS). Read the `kipi://paths` MCP resource to get resolved directories:
+All user data lives under `${CLAUDE_PLUGIN_DATA}`. Read the `kipi://paths` MCP resource to get resolved directories:
 - `{config_dir}/` — user config (founder-profile, canonical files, voice, marketing config)
 - `{data_dir}/` — persistent data (my-project/, memory/)
 - `{state_dir}/` — runtime output (output/, bus/)
+
+In plugin mode, `{config_dir}`, `{data_dir}`, and `{state_dir}` all resolve to the same instance directory.
 
 ## First-Run Setup
 

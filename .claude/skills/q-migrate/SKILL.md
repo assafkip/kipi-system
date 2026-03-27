@@ -1,8 +1,8 @@
-# /q-migrate — One-time migration from legacy in-repo layout to XDG directories
+# /q-migrate — One-time migration from legacy in-repo layout to plugin directories
 
-Migrates user data (canonical files, project data, memory, marketing config, metrics DB) from the old in-repo `q-system/` layout to platform-standard XDG directories with proper instance naming.
+Migrates user data (canonical files, project data, memory, marketing config, metrics DB) from the old in-repo `q-system/` layout to the `${CLAUDE_PLUGIN_DATA}` directory with proper instance naming.
 
-This is a one-time operation. After migration, data lives outside the git repo and the old files can be cleaned up.
+This is a one-time operation. After migration, data lives under `${CLAUDE_PLUGIN_DATA}/instances/{name}/` and the old files can be cleaned up.
 
 ## Steps
 
@@ -17,10 +17,10 @@ Read the `kipi://status` MCP resource.
 
 The old system had no concept of instances. Every installation now needs a unique instance name (e.g. `acme-spark7`).
 
-Check `has_instance_marker` from the status response:
+Check the status response for an existing instance name:
 
-- If **true**: Instance name is already set. Tell the user which name it is and skip to step 3.
-- If **false**: The user needs to pick one.
+- If an instance name is already set: Tell the user which name it is and skip to step 3.
+- If no instance exists: The user needs to pick one.
 
 Ask: "What's your company or project name?" Then:
 
@@ -60,11 +60,11 @@ Report the result. If any files are missing, tell the user which ones and sugges
 
 Tell the user:
 
-> Migration complete. Your data now lives in XDG directories:
-> - Config: `{config_dir}`
-> - Data: `{data_dir}`
-> - State: `{state_dir}`
+> Migration complete. Your data now lives under `${CLAUDE_PLUGIN_DATA}/instances/{name}/`:
+> - Instance dir: `{base}/instances/{name}/` (founder-profile, canonical/, marketing/, my-project/, memory/, output/, bus/, metrics.db)
+> - Global dir: `{base}/global/` (voice DNA, AUDHD profile)
+> - Registry: `{base}/instance-registry.json`
 >
-> The old files in `q-system/` are still in the repo. You can safely remove them with `git rm` when you're satisfied everything works. They won't be used anymore — the system reads from XDG paths now.
+> The old files in `q-system/` are still in the repo. You can safely remove them with `git rm` when you're satisfied everything works. They won't be used anymore — the system reads from plugin paths now.
 
 Do NOT delete anything automatically. The user decides when to clean up.

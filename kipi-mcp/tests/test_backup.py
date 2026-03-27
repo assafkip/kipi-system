@@ -22,7 +22,7 @@ def backup_mgr(tmp_kipi_paths):
 
 def test_backup_creates_archive(backup_mgr, tmp_kipi_paths):
     result = backup_mgr.backup()
-    assert result["files_count"] == 6
+    assert result["files_count"] == 6  # 1 global + 5 instance files
     assert result["size_bytes"] > 0
     assert Path(result["path"]).exists()
     assert "kipi-backup-" in result["path"]
@@ -50,7 +50,7 @@ def test_backup_archive_structure(backup_mgr):
     with tarfile.open(result["path"], "r:gz") as tar:
         names = [n for n in tar.getnames() if n != MANIFEST_NAME]
         prefixes = {n.split("/")[0] for n in names}
-        assert prefixes == {"global", "config", "data", "state"}
+        assert prefixes == {"global", "instance"}
 
 
 def test_backup_skips_other_backups(backup_mgr, tmp_kipi_paths):
@@ -67,9 +67,7 @@ def test_restore_dry_run(backup_mgr, tmp_path):
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
     new_paths = KipiPaths(
-        config_dir=tmp_path / "new_config",
-        data_dir=tmp_path / "new_data",
-        state_dir=tmp_path / "new_state",
+        base_dir=tmp_path / "new_base",
         repo_dir=tmp_path / "repo",
         instance="restored",
     )
@@ -79,7 +77,6 @@ def test_restore_dry_run(backup_mgr, tmp_path):
     restore_result = new_mgr.restore(Path(result["path"]), dry_run=True)
     assert restore_result["dry_run"] is True
     assert len(restore_result["restored"]) == 6
-    # Files should NOT actually exist
     assert not (new_paths.config_dir / "founder-profile.md").exists()
 
 
@@ -87,9 +84,7 @@ def test_restore_writes_files(backup_mgr, tmp_path):
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
     new_paths = KipiPaths(
-        config_dir=tmp_path / "restored_config",
-        data_dir=tmp_path / "restored_data",
-        state_dir=tmp_path / "restored_state",
+        base_dir=tmp_path / "restored_base",
         repo_dir=tmp_path / "repo",
         instance="restored",
     )
@@ -126,13 +121,11 @@ def test_list_backups_returns_sorted(backup_mgr, tmp_path):
 
 
 def test_roundtrip_preserves_content(backup_mgr, tmp_path):
-    """Full roundtrip: backup → restore to new location → verify identical."""
+    """Full roundtrip: backup -> restore to new location -> verify identical."""
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
     new_paths = KipiPaths(
-        config_dir=tmp_path / "rt_config",
-        data_dir=tmp_path / "rt_data",
-        state_dir=tmp_path / "rt_state",
+        base_dir=tmp_path / "rt_base",
         repo_dir=tmp_path / "repo",
         instance="rt",
     )

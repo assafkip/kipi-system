@@ -24,9 +24,7 @@ def _build_skeleton(tmp_path: Path) -> tuple[KipiPaths, Path]:
     repo_dir.mkdir()
 
     paths = KipiPaths(
-        config_dir=tmp_path / "config",
-        data_dir=tmp_path / "data",
-        state_dir=tmp_path / "state",
+        base_dir=tmp_path / "base",
         repo_dir=repo_dir,
         instance="test",
     )
@@ -161,9 +159,7 @@ class TestPhase0:
         repo_dir.mkdir()
         (repo_dir / "q-system").mkdir()
         paths = KipiPaths(
-            config_dir=tmp_path / "config",
-            data_dir=tmp_path / "data",
-            state_dir=tmp_path / "state",
+            base_dir=tmp_path / "base2",
             repo_dir=repo_dir,
             instance="test",
         )

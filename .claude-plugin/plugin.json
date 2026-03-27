@@ -1,0 +1,12 @@
+{
+  "name": "kipi-system",
+  "description": "Founder OS — strategy, execution, relationships, content, daily routines",
+  "version": "0.0.1",
+  "author": { "name": "Assaf Kipnis", "email": "[REDACTED]" },
+  "repository": "https://github.com/assafkip/kipi-system",
+  "license": "MIT",
+  "userConfig": {
+    "apify_token": { "description": "Apify API token for LinkedIn/Reddit/X scraping", "sensitive": true },
+    "notion_token": { "description": "Notion API token for CRM", "sensitive": true }
+  }
+}

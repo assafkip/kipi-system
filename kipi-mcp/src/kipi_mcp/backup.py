@@ -1,7 +1,8 @@
 """Backup and restore for kipi user data.
 
-Creates portable tar.gz archives that can be imported on any platform,
-regardless of where platformdirs resolves the data directories.
+Creates portable tar.gz archives that can be imported on any platform.
+Archive layout uses logical prefixes (global/, instance/) that are
+mapped back to real directories on restore.
 """
 from __future__ import annotations
 
@@ -16,9 +17,7 @@ from kipi_mcp.paths import KipiPaths
 # Logical prefixes inside the archive — platform-independent
 _ARCHIVE_DIRS = {
     "global": "global",
-    "config": "config",
-    "data": "data",
-    "state": "state",
+    "instance": "instance",
 }
 
 MANIFEST_NAME = "kipi-backup-manifest.json"
@@ -34,9 +33,7 @@ class BackupManager:
         """Map logical archive prefixes to real directories."""
         return {
             "global": self.paths.global_dir,
-            "config": self.paths.config_dir,
-            "data": self.paths.data_dir,
-            "state": self.paths.state_dir,
+            "instance": self.paths.config_dir,
         }
 
     def backup(self, output_path: Path | None = None) -> dict:
@@ -109,9 +106,11 @@ class BackupManager:
 
         dest_map = {
             _ARCHIVE_DIRS["global"]: self.paths.global_dir,
-            _ARCHIVE_DIRS["config"]: self.paths.config_dir,
-            _ARCHIVE_DIRS["data"]: self.paths.data_dir,
-            _ARCHIVE_DIRS["state"]: self.paths.state_dir,
+            _ARCHIVE_DIRS["instance"]: self.paths.config_dir,
+            # Legacy archive compat: map old config/data/state to instance dir
+            "config": self.paths.config_dir,
+            "data": self.paths.data_dir,
+            "state": self.paths.state_dir,
         }
 
         restored = []
