@@ -410,7 +410,7 @@ This step replaces the need to manually run `/q-begin` or `/q-end`. The founder 
   Sources: `memory/morning-state.md` (sync dates), `my-project/relationships.md` (DP counts from Notion query), `canonical/decisions.md` (rule count), `memory/marketing-state.md` (publish date).
 - **0d - Load voice skill:**
   > Log: Use the `log_step` MCP tool with date=DATE, step_id="0d_load_voice", status="done", result="loaded"
-  Read `.agents/skills/assaf-voice/references/voice-dna.md` and `.agents/skills/assaf-voice/references/writing-samples.md`. ALL written output for the rest of the session (posts, comments, DMs, emails, outreach, replies) must pass through the voice skill rules. This is not optional.
+  Read `{config_dir}/voice/voice-dna.md` and `{config_dir}/voice/writing-samples.md`. ALL written output for the rest of the session (posts, comments, DMs, emails, outreach, replies) must pass through the voice skill rules. This is not optional.
 - **0e - Load AUDHD executive function skill:**
   > Log: Use the `log_step` MCP tool with date=DATE, step_id="0e_load_audhd", status="done", result="loaded"
   Read `.claude/skills/audhd-executive-function/SKILL.md` and `.claude/skills/audhd-executive-function/references/assaf-profile.md`. This skill governs how ALL output is structured, especially the daily schedule HTML. Every action item must be copy-paste ready with inline text and a Copy button. No cross-references. No dashboards without actions. No scores without recovery drafts. The system decides what to do, the founder only executes. This is not optional. Every step that produces output for the founder must comply with the actionability rules (A1-A7) and pass the 10-point quality check before being shown.

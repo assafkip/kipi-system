@@ -61,7 +61,7 @@ In Claude Code, enable these plugins:
 - `github@claude-plugins-official`
 
 ### 6. Install marketing skills (optional but recommended)
-Clone https://github.com/coreyhaines31/marketingskills into `.agents/skills/`.
+Install marketing skills from https://github.com/coreyhaines31/marketingskills.
 These provide 32 specialized marketing skills (cold email, copywriting, SEO, CRO, etc.).
 
 ### 7. Start Claude Code in this folder
@@ -110,9 +110,6 @@ q-founder-os/
         references/
           voice-dna.md               # Your voice profile
           writing-samples.md         # Real examples of your writing
-  .agents/
-    product-marketing-context.md     # Marketing foundation
-    skills/                          # Marketing skills (32 skills from Corey Haines)
   q-system/
     CLAUDE.md                        # Full behavioral rules + setup wizard
     commands.md                      # All slash commands defined here

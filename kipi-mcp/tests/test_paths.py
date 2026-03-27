@@ -111,8 +111,6 @@ def test_repo_subdirectories(tmp_path):
     paths = KipiPaths(repo_dir=tmp_path)
     assert paths.q_system_dir == tmp_path / "q-system"
     assert paths.agents_dir == tmp_path / "q-system" / "agent-pipeline" / "agents"
-    assert paths.steps_dir == tmp_path / "q-system" / "steps"
-    assert paths.commands_file == tmp_path / "q-system" / "commands.md"
     assert paths.templates_dir == tmp_path / "q-system" / "agent-pipeline" / "templates"
     assert paths.schedule_template == tmp_path / "q-system" / "marketing" / "templates" / "schedule-template.html"
     assert paths.methodology_dir == tmp_path / "q-system" / "methodology"

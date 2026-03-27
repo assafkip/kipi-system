@@ -142,7 +142,3 @@ At the start of each day (Phase 0), delete bus/ directories older than 3 days:
 find q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
 ```
 
-## Fallback
-
-If the agent pipeline fails catastrophically, fall back to the monolithic step-by-step
-flow using the `kipi_load_step` MCP tool. The old steps still exist in steps/.

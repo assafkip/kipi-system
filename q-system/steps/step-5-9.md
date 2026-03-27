@@ -1,1 +1,0 @@
-- During Step 5.9: when discovering new prospects

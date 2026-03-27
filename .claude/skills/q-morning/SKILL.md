@@ -30,7 +30,7 @@ Read these files FIRST, in this order:
 1. `q-system/preflight.md` — tool manifest, known issues, fallback chains. **MANDATORY before anything else.**
 2. `{config_dir}/enabled-integrations.md` — which tools are available
 3. `{config_dir}/founder-profile.md` — user context and accommodations
-4. `q-system/steps/step-orchestrator.md` — full phase execution plan
+4. `q-system/agent-pipeline/step-orchestrator.md` — full phase execution plan
 5. `{data_dir}/memory/last-handoff.md` — prior session context (if exists)
 
 ## Integration checks
@@ -75,7 +75,7 @@ If any MCP server is unavailable or any step fails during execution, STOP the en
 
 ## MCP tools used
 
-`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `kipi://loops/open` (resource), `kipi://loops/stats` (resource), `kipi_load_step`, `kipi_build_schedule`, `kipi_backup`
+`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `kipi://loops/open` (resource), `kipi://loops/stats` (resource), `kipi_build_schedule`, `kipi_backup`
 
 ## Output rules
 
@@ -84,6 +84,3 @@ If any MCP server is unavailable or any step fails during execution, STOP the en
 - Schedule HTML is generated ONLY via `kipi_build_schedule` MCP tool from JSON data. Claude NEVER writes raw HTML.
 - Full post text rule: agents reading social posts MUST save actual post text, not summaries
 
-## Fallback
-
-If the agent pipeline fails, the old monolithic steps in `steps/` still work via the `kipi_load_step` MCP tool.
