@@ -122,18 +122,24 @@ def resource_status() -> str:
     """System status: migration state, setup state, data health.
 
     IMPORTANT: If legacy_data_detected is true, tell the user their data
-    is still in the git repo and offer to migrate. Show them what will move
-    by calling kipi_migrate(dry_run=True), then ask for confirmation before
-    calling kipi_migrate(dry_run=False).
+    is still in the git repo and offer to migrate. Migration steps:
+    1. Call kipi_suggest_instance_name(company="<their company>") to generate a name.
+    2. Let the user confirm or override the instance name.
+    3. Call kipi_migrate(dry_run=True, instance_name="<name>") to preview.
+    4. Call kipi_migrate(dry_run=False, instance_name="<name>") to execute.
+    The instance_name is REQUIRED for legacy repos (no .kipi-instance file).
     """
     profile = paths.founder_profile
     setup_needed = True
     if profile.exists():
         setup_needed = "{{SETUP_NEEDED}}" in profile.read_text()
 
+    has_marker = (paths.repo_dir / ".kipi-instance").exists()
     return json.dumps({
         "legacy_data_detected": paths.detect_legacy_layout(),
         "setup_needed": setup_needed,
+        "instance_name": paths.instance,
+        "has_instance_marker": has_marker,
         "config_dir_exists": paths.config_dir.exists(),
         "data_dir_exists": paths.data_dir.exists(),
         "state_dir_exists": paths.state_dir.exists(),
@@ -169,15 +175,21 @@ def resource_loops_stats() -> str:
 
 
 @mcp.tool()
-def kipi_migrate(dry_run: bool = True) -> str:
+def kipi_migrate(dry_run: bool = True, instance_name: str | None = None) -> str:
     """Migrate user data from git repo to XDG directories.
+
+    For legacy repos (no .kipi-instance file), you must provide instance_name.
+    Use kipi_suggest_instance_name first to generate one, then let the user confirm.
 
     Args:
         dry_run: If True, report what would happen without copying. Default True for safety.
+        instance_name: Instance name for this repo. Required if no .kipi-instance marker exists.
     """
     try:
-        m = Migrator(paths)
+        m = Migrator(paths, instance_name=instance_name)
         return json.dumps(m.migrate(dry_run=dry_run))
+    except ValueError as e:
+        raise ToolError(str(e))
     except Exception as e:
         logger.error("kipi_migrate failed", exc_info=True)
         raise ToolError(str(e))
