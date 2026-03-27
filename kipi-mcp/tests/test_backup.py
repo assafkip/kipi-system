@@ -13,7 +13,7 @@ def backup_mgr(tmp_kipi_paths):
     # Seed some files
     (tmp_kipi_paths.config_dir / "founder-profile.md").write_text("# Profile\nName: Test")
     (tmp_kipi_paths.canonical_dir / "talk-tracks.md").write_text("# Talk Tracks")
-    (tmp_kipi_paths.voice_dir / "voice-dna.md").write_text("# Voice DNA")
+    (tmp_kipi_paths.voice_dir / "voice-dna.md").write_text("# Voice DNA")  # global
     (tmp_kipi_paths.my_project_dir / "current-state.md").write_text("# State")
     (tmp_kipi_paths.memory_dir / "graph.jsonl").write_text('{"s":"a","p":"knows","o":"b"}')
     (tmp_kipi_paths.output_dir / "morning-log-2026-03-27.json").write_text("{}")
@@ -50,7 +50,7 @@ def test_backup_archive_structure(backup_mgr):
     with tarfile.open(result["path"], "r:gz") as tar:
         names = [n for n in tar.getnames() if n != MANIFEST_NAME]
         prefixes = {n.split("/")[0] for n in names}
-        assert prefixes == {"config", "data", "state"}
+        assert prefixes == {"global", "config", "data", "state"}
 
 
 def test_backup_skips_other_backups(backup_mgr, tmp_kipi_paths):
@@ -65,13 +65,13 @@ def test_backup_skips_other_backups(backup_mgr, tmp_kipi_paths):
 
 def test_restore_dry_run(backup_mgr, tmp_path):
     result = backup_mgr.backup()
-    # Create a fresh manager pointing to new dirs
     from kipi_mcp.paths import KipiPaths
     new_paths = KipiPaths(
         config_dir=tmp_path / "new_config",
         data_dir=tmp_path / "new_data",
         state_dir=tmp_path / "new_state",
         repo_dir=tmp_path / "repo",
+        instance="restored",
     )
     new_paths.ensure_dirs()
     new_mgr = BackupManager(new_paths)
@@ -80,7 +80,7 @@ def test_restore_dry_run(backup_mgr, tmp_path):
     assert restore_result["dry_run"] is True
     assert len(restore_result["restored"]) == 6
     # Files should NOT actually exist
-    assert not (tmp_path / "new_config" / "founder-profile.md").exists()
+    assert not (new_paths.config_dir / "founder-profile.md").exists()
 
 
 def test_restore_writes_files(backup_mgr, tmp_path):
@@ -91,6 +91,7 @@ def test_restore_writes_files(backup_mgr, tmp_path):
         data_dir=tmp_path / "restored_data",
         state_dir=tmp_path / "restored_state",
         repo_dir=tmp_path / "repo",
+        instance="restored",
     )
     new_paths.ensure_dirs()
     new_mgr = BackupManager(new_paths)
@@ -98,8 +99,8 @@ def test_restore_writes_files(backup_mgr, tmp_path):
     restore_result = new_mgr.restore(Path(result["path"]), dry_run=False)
     assert restore_result["dry_run"] is False
     assert len(restore_result["restored"]) == 6
-    assert (tmp_path / "restored_config" / "founder-profile.md").read_text() == "# Profile\nName: Test"
-    assert (tmp_path / "restored_data" / "my-project" / "current-state.md").read_text() == "# State"
+    assert (new_paths.config_dir / "founder-profile.md").read_text() == "# Profile\nName: Test"
+    assert (new_paths.my_project_dir / "current-state.md").read_text() == "# State"
 
 
 def test_restore_missing_archive_raises(backup_mgr):
@@ -133,12 +134,13 @@ def test_roundtrip_preserves_content(backup_mgr, tmp_path):
         data_dir=tmp_path / "rt_data",
         state_dir=tmp_path / "rt_state",
         repo_dir=tmp_path / "repo",
+        instance="rt",
     )
     new_paths.ensure_dirs()
     new_mgr = BackupManager(new_paths)
     new_mgr.restore(Path(result["path"]), dry_run=False)
 
-    assert (tmp_path / "rt_config" / "canonical" / "talk-tracks.md").read_text() == "# Talk Tracks"
-    assert (tmp_path / "rt_config" / "voice" / "voice-dna.md").read_text() == "# Voice DNA"
-    assert (tmp_path / "rt_data" / "memory" / "graph.jsonl").read_text() == '{"s":"a","p":"knows","o":"b"}'
-    assert (tmp_path / "rt_state" / "output" / "morning-log-2026-03-27.json").read_text() == "{}"
+    assert (new_paths.canonical_dir / "talk-tracks.md").read_text() == "# Talk Tracks"
+    assert (new_paths.voice_dir / "voice-dna.md").read_text() == "# Voice DNA"
+    assert (new_paths.memory_dir / "graph.jsonl").read_text() == '{"s":"a","p":"knows","o":"b"}'
+    assert (new_paths.output_dir / "morning-log-2026-03-27.json").read_text() == "{}"

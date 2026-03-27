@@ -12,6 +12,7 @@ def make_paths(tmp_path):
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         state_dir=tmp_path / "state",
+        global_dir=tmp_path / "global",
         repo_dir=tmp_path / "repo",
     )
     paths.ensure_dirs = lambda: None

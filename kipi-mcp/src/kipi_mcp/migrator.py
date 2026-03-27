@@ -22,10 +22,10 @@ FILE_MAP = [
     ("q-system/canonical/pricing-framework.md", "canonical/pricing-framework.md", "config"),
     ("q-system/canonical/verticals.md", "canonical/verticals.md", "config"),
     ("q-system/canonical/content-intelligence.md", "canonical/content-intelligence.md", "config"),
-    # Voice/AUDHD
-    (".claude/skills/founder-voice/references/voice-dna.md", "voice/voice-dna.md", "config"),
-    (".claude/skills/founder-voice/references/writing-samples.md", "voice/writing-samples.md", "config"),
-    (".claude/skills/audhd-executive-function/references/user-profile.md", "audhd/user-profile.md", "config"),
+    # Voice/AUDHD → global (shared across instances)
+    (".claude/skills/founder-voice/references/voice-dna.md", "voice/voice-dna.md", "global"),
+    (".claude/skills/founder-voice/references/writing-samples.md", "voice/writing-samples.md", "global"),
+    (".claude/skills/audhd-executive-function/references/user-profile.md", "audhd/user-profile.md", "global"),
     # Marketing config
     ("q-system/marketing/content-guardrails.md", "marketing/content-guardrails.md", "config"),
     ("q-system/marketing/brand-voice.md", "marketing/brand-voice.md", "config"),
@@ -63,6 +63,8 @@ class Migrator:
             return self.paths.data_dir
         elif base == "state":
             return self.paths.state_dir
+        elif base == "global":
+            return self.paths.global_dir
         raise ValueError(f"Unknown base: {base}")
 
     def _is_template(self, path: Path) -> bool:
