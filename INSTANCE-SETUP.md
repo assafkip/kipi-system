@@ -2,10 +2,7 @@
 
 ## Quick Start
 
-```bash
-# From the kipi-system directory:
-./kipi-new-instance.sh /path/to/my-project my-project-name
-```
+Use the `kipi_new_instance` MCP tool with the target path and project name.
 
 This will:
 1. Create the directory (if needed)
@@ -66,7 +63,7 @@ my-project/
   q-system/           # Kipi skeleton subtree (DO NOT edit directly)
     q-system/          # Core OS (agents, scripts, templates)
     CLAUDE.md          # Skeleton root CLAUDE.md
-    validate-separation.sh
+    kipi-mcp/              # MCP server (validation, updates, instance management)
   CLAUDE.md            # Your instance CLAUDE.md (edit this)
 ```
 

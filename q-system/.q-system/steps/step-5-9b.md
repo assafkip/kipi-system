@@ -2,16 +2,16 @@
 
 > **HARNESS: Action cards.** For every engagement item generated:
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person Name" "Comment text..." "https://linkedin.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C2 x_reply "Person Name" "Reply text..." "https://x.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C3 connection_request "Person Name" "Request note..." "https://linkedin.com/in/person"
-> bash q-system/.q-system/log-step.sh DATE add-card C4 reddit_comment "u/username" "Comment text..." "https://reddit.com/thread-url"
+> Use the `log_add_card` MCP tool with date=DATE, C1 linkedin_comment "Person Name" "Comment text..." "https://linkedin.com/post-url"
+> Use the `log_add_card` MCP tool with date=DATE, C2 x_reply "Person Name" "Reply text..." "https://x.com/post-url"
+> Use the `log_add_card` MCP tool with date=DATE, C3 connection_request "Person Name" "Request note..." "https://linkedin.com/in/person"
+> Use the `log_add_card` MCP tool with date=DATE, C4 reddit_comment "u/username" "Comment text..." "https://reddit.com/thread-url"
 > ```
 > Types: `linkedin_comment`, `x_reply`, `connection_request`, `reddit_comment`, `linkedin_dm`, `email`
 > **URL field is required** - the founder needs the link to navigate to the post.
 > NEVER log to LinkedIn Tracker, Contacts DB, or any state file until `founder_confirmed: true` (next session's Step 0b).
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE 5.9b_engagement_hitlist done "X items across Y types, X action cards"
+> Use the `log_step` MCP tool with date=DATE, step_id="5.9b_engagement_hitlist", status="done", result="X items across Y types, X action cards"
 > ```
 
 This step generates the founder's daily engagement actions with zero searching required. Everything is copy-paste ready. Per AUDHD executive function skill: every hitlist item includes (1) the actual copy-paste text inline, (2) a direct link to the post/tweet/thread, (3) time estimate, (4) energy tag. NEVER output a hitlist item that says "copy-paste from section above." The text must be RIGHT THERE.

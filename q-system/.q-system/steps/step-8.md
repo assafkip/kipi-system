@@ -2,10 +2,10 @@
 
 > **GATE CHECK (mandatory before starting Step 8):**
 > 1. Read the morning log from disk: `cat q-system/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
-> 1b. Check for unresolved level 3 loops: `bash q-system/.q-system/loop-tracker.sh list 3` - if any exist, STOP. Force-close decisions must happen before HTML generation.
+> 1b. Check for unresolved level 3 loops: use the `loop_list` MCP tool with min_level=3 - if any exist, STOP. Force-close decisions must happen before HTML generation.
 > 1c. Verify Deliverables Checklist (see preflight.md Section 5): day-specific content pieces, pipeline follow-ups, loop review items.
-> 2. If missing list is empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""`
-> 3. If missing list is not empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 false "step1,step2"` then STOP and report.
+> 2. If missing list is empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=true
+> 3. If missing list is not empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=false, missing="step1,step2" then STOP and report.
 > Cannot proceed until all prior steps are accounted for.
 
 All output in this step must comply with the AUDHD executive function skill (loaded in Step 0e). Every item shown to the founder must be copy-paste ready or explicitly marked "needs your eyes." No dashboards without actions. No scores without recovery drafts. No cross-references. The briefing is a workbench, not a report.

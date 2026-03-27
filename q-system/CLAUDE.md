@@ -307,11 +307,11 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 
 **Full post text rule (ENFORCED):** Agents that read social posts (03-social-posts, 05-lead-sourcing, 05-engagement-hitlist) MUST save actual post text, not summaries. Comments and outreach written from summaries are nonsensical.
 
-**Content review pipeline:** `/q-market-review` runs 4 focused Sonnet agents in sequence (voice, guardrails, anti-AI detection, actionability). See `.q-system/agent-pipeline/review-pipeline.sh` for pass definitions.
+**Content review pipeline:** `/q-market-review` runs 4 focused Sonnet agents in sequence (voice, guardrails, anti-AI detection, actionability). Review pipeline pass definitions are in `kipi-mcp/server.py` docstrings.
 
 **Output templates:** `.q-system/agent-pipeline/templates/` has reusable folder structures for deck, outreach, content, and debrief outputs. `/q-create` and `/q-draft` should use these when the format matches.
 
-**Fallback:** If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via step-loader.sh.
+**Fallback:** If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `load_step` MCP tool.
 
 ## Inter-Skill Review Gates (ENFORCED)
 

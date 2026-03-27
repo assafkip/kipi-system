@@ -98,14 +98,15 @@ The system walks you through setup. Who you are, what you're building, how you t
 kipi-system/
 ├── .q-system/
 │   ├── commands.md          # 35+ step morning routine and all workflows
-│   ├── loop-tracker.sh      # Opens, escalates, and closes loops
 │   ├── verify-schedule.py   # Blocks HTML build if required sections missing
-│   ├── step-loader.sh       # Re-injects step requirements before execution (EOP)
 │   ├── session-start.py     # Auto-loads context on first use each day
 │   ├── audit-morning.py     # Catches skipped steps and missing content
 │   ├── token-guard.py       # Stops runaway AI token consumption
-│   ├── log-step.sh          # Flight recorder for every step
 │   └── preflight.md         # Tool manifest, known issues, and verification rules
+│   # MCP tools (via kipi-mcp server) replace shell scripts:
+│   #   loop_open/close/escalate/list/stats/touch/prune  (was loop-tracker.sh)
+│   #   load_step                                         (was step-loader.sh)
+│   #   log_init/log_step/log_add_card/log_deliver_cards  (was log-step.sh)
 │
 ├── canonical/               # Source of truth (updates from every conversation)
 │   ├── talk-tracks.md       # What to say, tested and tagged by audience

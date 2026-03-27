@@ -8,7 +8,7 @@
 
 ## Validation Harness
 
-A single script (`validate-separation.sh`) runs after every phase. It checks everything that should be true at that point. The script is additive - Phase 2 checks include Phase 1 checks. If any check fails, STOP.
+The `kipi_validate` MCP tool runs after every phase. It checks everything that should be true at that point. Validation is additive - Phase 2 checks include Phase 1 checks. If any check fails, STOP.
 
 The harness is built FIRST, before any code changes. This way we're testing against known-good state before we break anything.
 
@@ -16,16 +16,14 @@ The harness is built FIRST, before any code changes. This way we're testing agai
 
 ## Pre-Execution: Build the Harness
 
-### Step 0.1: Create `validate-separation.sh`
+### Step 0.1: Create validation harness
 
-Located at `/Users/assafkip/Desktop/kipi-system/validate-separation.sh`
-
-The script takes a phase number argument and runs all checks up to that phase.
+The `kipi_validate` MCP tool takes a phase number argument and runs all checks up to that phase.
 
 ```
-./validate-separation.sh 1   # Run Phase 1 checks
-./validate-separation.sh 2   # Run Phase 1 + 2 checks
-./validate-separation.sh 5   # Run all checks
+Use the `kipi_validate` MCP tool with phase=1   # Run Phase 1 checks
+Use the `kipi_validate` MCP tool with phase=2   # Run Phase 1 + 2 checks
+Use the `kipi_validate` MCP tool with phase=5   # Run all checks
 ```
 
 ### Step 0.2: Create `instance-registry.json`
@@ -149,13 +147,13 @@ Scripts to port:
 - `scan-draft.py` (anti-AI scanner)
 - `verify-bus.py` (bus validation)
 - `verify-orchestrator.py` (orchestrator validation)
-- `build-schedule.sh` (JSON to HTML builder - currently 0 bytes in skeleton)
+- `build_schedule` MCP tool (JSON to HTML builder - replaces build-schedule.sh)
 
 **Validation checks (GATE 1.2):**
 - [ ] `scan-draft.py` exists and runs without error: `python3 scan-draft.py --help` or dry-run
 - [ ] `verify-bus.py` exists and runs without error
 - [ ] `verify-orchestrator.py` exists and runs without error
-- [ ] `build-schedule.sh` is non-empty and executable (chmod +x)
+- [ ] `build_schedule` MCP tool is callable
 - [ ] `verify-schedule.py` exists (already in skeleton)
 - [ ] `audit-morning.py` exists (already in skeleton)
 - [ ] No script contains hardcoded KTLYST paths or references
@@ -192,14 +190,13 @@ Ensure skeleton CLAUDE.md uses `{{}}` placeholders for all instance-specific sec
 - [ ] Anti-misclassification section uses `{{}}` placeholders
 - [ ] Language rules section uses `{{}}` placeholders
 
-### Step 1.6: Port build-schedule.sh
+### Step 1.6: Ensure build_schedule MCP tool works
 
-Copy the working 60-line script from KTLYST.
+The `build_schedule` MCP tool replaces the old build-schedule.sh script.
 
 **Validation checks (GATE 1.6):**
-- [ ] `marketing/templates/build-schedule.sh` is non-empty
-- [ ] Script is executable
-- [ ] Script contains verification gate (calls verify-schedule.py)
+- [ ] `build_schedule` MCP tool is callable
+- [ ] Tool contains verification gate (calls verify-schedule.py)
 
 ### Step 1.7: Clean up
 
@@ -215,7 +212,7 @@ Copy the working 60-line script from KTLYST.
 ### PHASE 1 GATE (all must pass)
 
 ```bash
-./validate-separation.sh 1
+Use the `kipi_validate` MCP tool with phase= 1
 ```
 
 Checks:
@@ -333,13 +330,13 @@ Run a dry-run of the morning routine (or at minimum, the preflight + first 2 ste
 **GATE 2.7:**
 - [ ] `python3 q-system/.q-system/audit-morning.py` runs without import errors
 - [ ] `python3 q-system/.q-system/scripts/scan-draft.py --help` works
-- [ ] `bash q-system/marketing/templates/build-schedule.sh` prints usage (no crash)
+- [ ] `build_schedule` MCP tool responds without error
 - [ ] Agent files are readable and parseable at expected paths
 
 ### PHASE 2 GATE
 
 ```bash
-./validate-separation.sh 2
+Use the `kipi_validate` MCP tool with phase= 2
 ```
 
 All Phase 1 checks still pass (skeleton integrity preserved) PLUS:
@@ -397,7 +394,7 @@ mv /Users/assafkip/Desktop/q-founder-os /Users/assafkip/Desktop/_archived/q-foun
 ### PHASE 3 GATE
 
 ```bash
-./validate-separation.sh 3
+Use the `kipi_validate` MCP tool with phase= 3
 ```
 
 - Plugin directory gone
@@ -456,7 +453,7 @@ git subtree add --prefix=q-system https://github.com/assafkip/kipi-system.git ma
 ### PHASE 4 GATE
 
 ```bash
-./validate-separation.sh 4
+Use the `kipi_validate` MCP tool with phase= 4
 ```
 
 For EACH of the 6 instances:
@@ -476,28 +473,27 @@ For EACH of the 6 instances:
 
 Goal: A working update mechanism and clear docs for creating new instances.
 
-### Step 5.1: Create `kipi-update.sh`
+### Step 5.1: `kipi_update` MCP tool
 
-Propagation script that pulls skeleton updates to all registered instances.
+Propagation tool that pulls skeleton updates to all registered instances.
 
-```bash
-#!/bin/bash
+```
+Use the `kipi_update` MCP tool
 # Reads instance-registry.json, runs git subtree pull for each
 ```
 
 **GATE 5.1:**
-- [ ] Script exists and is executable
-- [ ] Script reads `instance-registry.json`
+- [ ] MCP tool is available and callable
+- [ ] Tool reads `instance-registry.json`
 - [ ] Dry run completes without errors
-- [ ] Script reports success/failure per instance
+- [ ] Tool reports success/failure per instance
 
-### Step 5.2: Create `kipi-new-instance.sh`
+### Step 5.2: `kipi_new_instance` MCP tool
 
-Script to set up a new instance from scratch.
+Tool to set up a new instance from scratch.
 
-```bash
-#!/bin/bash
-# Usage: ./kipi-new-instance.sh <path> <name>
+```
+Use the `kipi_new_instance` MCP tool with path=<path> and name=<name>
 # 1. Creates directory
 # 2. git init
 # 3. git subtree add kipi-system
@@ -507,22 +503,21 @@ Script to set up a new instance from scratch.
 ```
 
 **GATE 5.2:**
-- [ ] Script exists and is executable
+- [ ] MCP tool is available and callable
 - [ ] Running it creates a valid instance (test with a throwaway dir)
 - [ ] New instance passes Phase 4 single-instance checks
 
-### Step 5.3: Create `kipi-push-upstream.sh`
+### Step 5.3: `kipi_push_upstream` MCP tool
 
-Script to push generic improvements from an instance back to skeleton.
+Tool to push generic improvements from an instance back to skeleton.
 
-```bash
-#!/bin/bash
-# Usage: ./kipi-push-upstream.sh
+```
+Use the `kipi_push_upstream` MCP tool
 # Runs git subtree push from current instance to kipi-system
 ```
 
 **GATE 5.3:**
-- [ ] Script exists and is executable
+- [ ] MCP tool is available and callable
 - [ ] Includes safety check: warns if instance-specific content is in subtree prefix
 
 ### Step 5.4: Write documentation
@@ -544,13 +539,13 @@ Run the full harness one last time across everything.
 ### PHASE 5 GATE (FINAL)
 
 ```bash
-./validate-separation.sh 5
+Use the `kipi_validate` MCP tool with phase= 5
 ```
 
 ALL previous phase checks PLUS:
-- [ ] `kipi-update.sh` exists and runs
-- [ ] `kipi-new-instance.sh` exists and runs
-- [ ] `kipi-push-upstream.sh` exists and runs
+- [ ] `kipi_update` MCP tool is callable
+- [ ] `kipi_new_instance` MCP tool is callable
+- [ ] `kipi_push_upstream` MCP tool is callable
 - [ ] All 4 documentation files exist
 - [ ] Every instance in `instance-registry.json` passes all checks
 - [ ] kipi-system skeleton has zero instance-specific content
@@ -558,8 +553,8 @@ ALL previous phase checks PLUS:
 - [ ] q-founder-os is archived
 
 **FOUNDER CHECKPOINT:**
-1. Run `kipi-update.sh` to verify propagation works
-2. Create a test instance with `kipi-new-instance.sh`, verify it works
+1. Use the `kipi_update` MCP tool to verify propagation works
+2. Use the `kipi_new_instance` MCP tool to create a test instance, verify it works
 3. Open KTLYST_strategy, run `/q-morning` (full run or first 3 steps)
 4. Confirm everything is clean
 
@@ -570,7 +565,7 @@ ALL previous phase checks PLUS:
 | Phase | Steps | Key Output | Gate |
 |-------|-------|------------|------|
 | 0 (DONE) | Audit | PHASE-0-AUDIT.md | Founder reviewed |
-| Pre | Build harness | validate-separation.sh, instance-registry.json, snapshots | Harness runs clean |
+| Pre | Build harness | kipi_validate MCP tool, instance-registry.json, snapshots | Harness runs clean |
 | 1 | Update skeleton | 43+ agents, scripts, templates, CLAUDE.md | Zero KTLYST references in skeleton |
 | 2 | KTLYST subtree | q-system/ subtree, instance/ content, wired paths | Morning preflight passes |
 | 3 | Eliminate plugin | Archived plugin + q-founder-os | Zero references remain |

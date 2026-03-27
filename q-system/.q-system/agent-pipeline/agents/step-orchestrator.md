@@ -64,7 +64,7 @@ Your context window will compact automatically as it approaches limits. Do not s
 5. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
 6. When a phase depends on the previous phase's output, wait for completion first
 7. After each phase, verify the expected bus/ JSON files exist before proceeding
-8. Log each phase completion via log-step.sh
+8. Log each phase completion via the `log_step` MCP tool
 9. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
 ## Instance Customization
@@ -146,7 +146,7 @@ Launch in ONE message:
 - This is the most expensive agent. It produces the daily schedule JSON.
 
 ### Phase 8: Build + Verify (sequential)
-1. Run: `bash q-consult/marketing/templates/build-schedule.sh output/schedule-data-{date}.json output/daily-schedule-{date}.html`
+1. Run: Use the `build_schedule` MCP tool with json_path="output/schedule-data-{date}.json" and html_path="output/daily-schedule-{date}.html"
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
 3. Run: `python3 q-consult/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
 4. Run: `python3 q-consult/.q-system/audit-morning.py q-consult/output/morning-log-{date}.json`
@@ -184,4 +184,4 @@ Read Notion IDs from `q-system/my-project/notion-ids.md`. Never hardcode IDs in 
 ## Catastrophic Fallback
 
 If the agent pipeline fails catastrophically, fall back to the monolithic step-by-step
-flow using step-loader.sh. The old steps still exist in steps/.
+flow using the `load_step` MCP tool. The old steps still exist in steps/.

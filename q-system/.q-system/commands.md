@@ -318,43 +318,43 @@ When founder reports an action, the system immediately:
 > **MANDATORY:** Before executing ANY step, read `.q-system/preflight.md`. It contains the tool manifest, known issues, session budget, and step logging format.
 
 > **HARNESS RULE:** Every step must end with a call to the log helper. Replace DATE with today's date in every call.
-> ```bash
-> # Log a completed step:
-> bash q-system/.q-system/log-step.sh DATE step_id done "result summary"
-> # Log a failed step:
-> bash q-system/.q-system/log-step.sh DATE step_id failed "" "error message"
-> # Log a skipped step:
-> bash q-system/.q-system/log-step.sh DATE step_id skipped "" "reason"
-> # Log a partially completed step:
-> bash q-system/.q-system/log-step.sh DATE step_id partial "what completed"
-> # Add an action card (for any founder-facing draft):
-> bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person Name" "Draft text..." "https://url"
-> # Run a gate check (at Steps 8, 9, 11):
-> bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""
-> # Record state checksums:
-> bash q-system/.q-system/log-step.sh DATE checksum-start field_name value
-> bash q-system/.q-system/log-step.sh DATE checksum-end field_name value
-> # Mark all cards as delivered (after Step 11 HTML opens):
-> bash q-system/.q-system/log-step.sh DATE deliver-cards
 > ```
-> **No step is complete until `log-step.sh` runs.** The helper writes to disk. Context rot cannot affect it.
+> # Log a completed step:
+> Use the `log_step` MCP tool with date=DATE, step_id, status="done", result="result summary"
+> # Log a failed step:
+> Use the `log_step` MCP tool with date=DATE, step_id, status="failed", error="error message"
+> # Log a skipped step:
+> Use the `log_step` MCP tool with date=DATE, step_id, status="skipped", error="reason"
+> # Log a partially completed step:
+> Use the `log_step` MCP tool with date=DATE, step_id, status="partial", result="what completed"
+> # Add an action card (for any founder-facing draft):
+> Use the `log_add_card` MCP tool with date=DATE, card_id="C1", card_type="linkedin_comment", target="Person Name", text="Draft text...", url="https://url"
+> # Run a gate check (at Steps 8, 9, 11):
+> Use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=true
+> # Record state checksums:
+> Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name, value
+> Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name, value
+> # Mark all cards as delivered (after Step 11 HTML opens):
+> Use the `log_deliver_cards` MCP tool with date=DATE
+> ```
+> **No step is complete until the log MCP tool runs.** The tool writes to disk. Context rot cannot affect it.
 
 This step replaces the need to manually run `/q-begin` or `/q-end`. The founder only needs `/q-morning`.
 
 - **0f - Server connectivity check (FAIL-FAST, RUNS FIRST):** See preflight.md Section 1 for exact tests. After all checks pass:
-  ```bash
-  bash q-system/.q-system/log-step.sh DATE init
-  bash q-system/.q-system/log-step.sh DATE 0f_connection_check done "7/7 passed"
+  ```
+  Use the `log_init` MCP tool with date=DATE
+  Use the `log_step` MCP tool with date=DATE, step_id="0f_connection_check", status="done", result="7/7 passed"
   ```
   If any critical server fails, still create the log and record the failure:
-  ```bash
-  bash q-system/.q-system/log-step.sh DATE init
-  bash q-system/.q-system/log-step.sh DATE 0f_connection_check failed "" "Notion API: property not found"
+  ```
+  Use the `log_init` MCP tool with date=DATE
+  Use the `log_step` MCP tool with date=DATE, step_id="0f_connection_check", status="failed", error="Notion API: property not found"
   ```
   Then HALT.
 
 - **0a - Checkpoint previous session + clean working memory + check for mid-morning resume + catch missed wraps:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0a_checkpoint done "SUMMARY"` Run a lightweight `/q-checkpoint` (snapshot canonical files, log to progress.md, update checkpoint timestamp). If this is a fresh session with no changes, skip gracefully. Also: delete any files in `memory/working/` older than 48 hours (except predictions.jsonl which is append-only). Read `memory/last-handoff.md` for prior session context - use this to understand what was in progress. **MISSED WRAP DETECTION (A2):** If `memory/last-handoff.md` is missing or older than 24h AND there were canonical file changes yesterday (check mtimes), a wrap was missed. Run a lightweight retroactive wrap: count yesterday's Actions marked complete, note any unfinished items, log to progress.md with "[Auto-recovered from missed wrap]". No guilt, no pressure, just capture what happened. **MID-MORNING RESUME:** If the handoff note says "morning routine split - data collected through Step X", skip Steps 0b-5.9b and jump directly to Step 11 (JSON generation). The handoff note contains all collected data needed for the JSON. This prevents re-running 45 min of data collection.
+  > Log: Use the `log_step` MCP tool with date=DATE, step_id="0a_checkpoint", status="done", result="SUMMARY". Run a lightweight `/q-checkpoint` (snapshot canonical files, log to progress.md, update checkpoint timestamp). If this is a fresh session with no changes, skip gracefully. Also: delete any files in `memory/working/` older than 48 hours (except predictions.jsonl which is append-only). Read `memory/last-handoff.md` for prior session context - use this to understand what was in progress. **MISSED WRAP DETECTION (A2):** If `memory/last-handoff.md` is missing or older than 24h AND there were canonical file changes yesterday (check mtimes), a wrap was missed. Run a lightweight retroactive wrap: count yesterday's Actions marked complete, note any unfinished items, log to progress.md with "[Auto-recovered from missed wrap]". No guilt, no pressure, just capture what happened. **MID-MORNING RESUME:** If the handoff note says "morning routine split - data collected through Step X", skip Steps 0b-5.9b and jump directly to Step 11 (JSON generation). The handoff note contains all collected data needed for the JSON. This prevents re-running 45 min of data collection.
 - **0b - Action card pickup + missed debrief detection:**
   **HARNESS: Check for exported actions JSON FIRST (before asking the founder anything).**
   1. Check `~/Downloads/actions-YYYY-MM-DD.json` (yesterday's date)
@@ -365,54 +365,54 @@ This step replaces the need to manually run `/q-begin` or `/q-end`. The founder 
      - Cards MISSING from the export (present in morning log but not in actions JSON) = founder never opened the HTML or didn't click the button. Only ask about THESE cards.
   4. If no export file exists at all, fall back to the previous behavior: find the most recent morning log (glob `output/morning-log-*.json`, sort by date, take the latest that is NOT today). Read its `action_cards` for any with `founder_confirmed: false`. List them and ask: "Last session I drafted these for you. Which ones did you actually do?"
   For each confirmed (from JSON or verbal): update the card, then update Notion (LinkedIn Tracker, Contacts DB, etc.). List which state files were updated in `logged_to`.
-  For each not done: carry forward by adding to TODAY's action cards via `log-step.sh DATE add-card`.
+  For each not done: carry forward by adding to TODAY's action cards via the `log_add_card` MCP tool.
   **Generate effort string for today's HTML:** From the actions data (JSON export or verbal), build a summary like "8 done, 3 skipped. 5 comments posted, 2 DMs sent, 1 debrief done." Store this in the morning log so Step 11 can read it and set the `effort` field in today's schedule JSON. If no actions data exists (first run or missed day), set effort to null.
   Also check `verification_queue` for unverified claims - re-verify any that are now stale (>48h).
   **Then:** Cross-reference recent calendar events against Notion Interactions DB. Any meeting with an external person that has no matching Interaction = missed debrief. Prompt founder and run `/q-debrief`.
   **Then:** Check recent debriefs in `my-project/progress.md` for practitioner/CISO conversations that have no corresponding follow-up Action in Notion Actions DB. If a debrief happened but no design partner conversion message was sent (no Action with Type = Follow-up Email and the person's name), flag it: "[Person] conversation was debriefed but no conversion message was sent. Want me to generate one now?"
-  ```bash
-  bash q-system/.q-system/log-step.sh DATE 0b_missed_debrief done "X cards confirmed, Y carried forward, Z debriefs found"
+  ```
+  Use the `log_step` MCP tool with date=DATE, step_id="0b_missed_debrief", status="done", result="X cards confirmed, Y carried forward, Z debriefs found"
   ```
 - **0b.5 - Loop escalation and auto-close:**
   Run the loop tracker to escalate all open loops and auto-close any that have evidence of completion.
-  ```bash
+  ```
   # Escalate all loops based on age
-  bash q-system/.q-system/loop-tracker.sh escalate
+  Use the `loop_escalate` MCP tool
   # Check stats
-  bash q-system/.q-system/loop-tracker.sh stats
+  Use the `loop_stats` MCP tool
   # List any loops at level 2+ (need attention)
-  bash q-system/.q-system/loop-tracker.sh list 2
+  Use the `loop_list` MCP tool with min_level=2
   ```
   **Auto-close logic (run during Steps 1 and 3.8):**
-  - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: `bash q-system/.q-system/loop-tracker.sh close <loop_id> "email reply detected" "auto_gmail"`
-  - Step 3.8 (DM check): When detecting DM replies, cross-reference against open `dm_sent` and `dp_offer_sent` loops. When detecting connection accepts, cross-reference against `connection_request_sent` loops. Close matches: `bash q-system/.q-system/loop-tracker.sh close <loop_id> "DM reply detected" "auto_step_3.8"`
+  - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: use the `loop_close` MCP tool with loop_id, resolution="email reply detected", closed_by="auto_gmail"
+  - Step 3.8 (DM check): When detecting DM replies, cross-reference against open `dm_sent` and `dp_offer_sent` loops. When detecting connection accepts, cross-reference against `connection_request_sent` loops. Close matches: use the `loop_close` MCP tool with loop_id, resolution="DM reply detected", closed_by="auto_step_3.8"
   **Loop opening (run during Steps 5.85, 5.9b, 9, and /q-debrief):**
   Every outbound action that expects a response MUST open a loop:
-  ```bash
-  bash q-system/.q-system/loop-tracker.sh open <type> <target> <context> [notion_id] [card_id] [follow_up_text]
+  ```
+  Use the `loop_open` MCP tool with type, target, context, and optional notion_id, card_id, follow_up_text parameters
   ```
   Types: dm_sent, email_sent, materials_sent, comment_posted, action_created, debrief_next_step, dp_offer_sent, connection_request_sent, lead_sourced
-  ```bash
-  bash q-system/.q-system/log-step.sh DATE 0b.5_loop_escalation done "X open loops (L0:X L1:X L2:X L3:X)"
+  ```
+  Use the `log_step` MCP tool with date=DATE, step_id="0b.5_loop_escalation", status="done", result="X open loops (L0:X L1:X L2:X L3:X)"
   ```
 - **0c - Load canonical state + snapshot state checksums:**
   Read all canonical files to load current context into this session. This now includes any updates from Step 0b debriefs.
   **HARNESS: Snapshot state file checksums.** Read these key fields and record each:
-  ```bash
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_calendar_sync "2026-03-13"
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_gmail_sync "2026-03-13"
-  bash q-system/.q-system/log-step.sh DATE checksum-start dp_prospect_count "17"
-  bash q-system/.q-system/log-step.sh DATE checksum-start dp_outreach_count "3"
-  bash q-system/.q-system/log-step.sh DATE checksum-start decisions_rule_count "17"
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_publish_date "2026-03-10"
-  bash q-system/.q-system/log-step.sh DATE 0c_load_canonical done "loaded, 6 checksums captured"
+  ```
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="last_calendar_sync", value="2026-03-13"
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="last_gmail_sync", value="2026-03-13"
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="dp_prospect_count", value="17"
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="dp_outreach_count", value="3"
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="decisions_rule_count", value="17"
+  Use the `log_checksum` MCP tool with date=DATE, phase="start", field_name="last_publish_date", value="2026-03-10"
+  Use the `log_step` MCP tool with date=DATE, step_id="0c_load_canonical", status="done", result="loaded, 6 checksums captured"
   ```
   Sources: `memory/morning-state.md` (sync dates), `my-project/relationships.md` (DP counts from Notion query), `canonical/decisions.md` (rule count), `memory/marketing-state.md` (publish date).
 - **0d - Load voice skill:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0d_load_voice done "loaded"`
+  > Log: Use the `log_step` MCP tool with date=DATE, step_id="0d_load_voice", status="done", result="loaded"
   Read `.agents/skills/assaf-voice/references/voice-dna.md` and `.agents/skills/assaf-voice/references/writing-samples.md`. ALL written output for the rest of the session (posts, comments, DMs, emails, outreach, replies) must pass through the voice skill rules. This is not optional.
 - **0e - Load AUDHD executive function skill:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0e_load_audhd done "loaded"`
+  > Log: Use the `log_step` MCP tool with date=DATE, step_id="0e_load_audhd", status="done", result="loaded"
   Read `.claude/skills/audhd-executive-function/SKILL.md` and `.claude/skills/audhd-executive-function/references/assaf-profile.md`. This skill governs how ALL output is structured, especially the daily schedule HTML. Every action item must be copy-paste ready with inline text and a Copy button. No cross-references. No dashboards without actions. No scores without recovery drafts. The system decides what to do, the founder only executes. This is not optional. Every step that produces output for the founder must comply with the actionability rules (A1-A7) and pass the 10-point quality check before being shown.
 
 - **0f - Server connectivity check (FAIL-FAST, RUNS FIRST before 0a-0e):** This is the VERY FIRST thing `/q-morning` does. Before checkpoint, before debrief detection, before loading skills. Test ALL 7 connections (Calendar, Gmail, Notion API, Chrome, Apify, VC Pipeline API, NotebookLM) using the exact tests defined in the "Fail-fast mode" section below. ALWAYS print the pass/fail table. If ANY critical server fails, STOP the entire routine immediately. See "Fail-fast mode" for the full test table and output format.
@@ -437,7 +437,7 @@ After Step 0, the session is fully initialized. The founder never needs to run `
 - **Email agent:** Search Gmail for last 48 hours (inbox AND sent). Cross-reference sender names against Notion Contacts DB and Interactions DB. Flag emails from known contacts that have no matching interaction logged. **EMAIL CONVERSATION DETECTION (C4):** Also check Gmail sent folder for outbound emails to prospects in the last 48h. For each sent email to a known Contact: check if there's an inbound reply in the inbox. If reply found: auto-update Contact (Last Contact = today), flag as "email reply received" for temperature scoring. If no reply and email was sent 7+ days ago: note as unreturned email for channel death tracking. This removes the need for the founder to report "X replied to my email."
   **LOOP AUTO-CLOSE (Gmail):** After processing emails, read `output/open-loops.json`. For each open loop of type `email_sent` or `materials_sent`, check if the loop's target name appears as a sender in the inbox results. If reply found:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "email reply detected in Gmail" "auto_gmail"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="email reply detected in Gmail", closed_by="auto_gmail"
   ```
 - **Notion agent:** Pull Actions DB for overdue/due-today items (filter by Due date and Priority). Pull Investor Pipeline for upcoming follow-ups. **STALE ACTION CLEANUP (D5):** For any Actions with Due date > 7 days past AND Priority != "Someday": auto-move Priority to "Someday". Surface count quietly in briefing: "[X] stale actions moved to Someday" (no guilt, no list of what was missed). The founder can review Someday items when they have capacity. This prevents open-loop accumulation. **NOTE:** Actions DB has no "Status" property - use Priority (Today/This Week/Next Week/Someday) for filtering. See KI-3 in preflight.md.
 - **VC Pipeline agent:** Fetch `http://localhost:5050/api/pipeline` to pull the full VC Pipeline Manager data (66+ contacts with warm intro paths, statuses, tiers). This data is used in Steps 1.5 and 3.5 for warm intro matching.
@@ -525,7 +525,7 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
   - Did the comment create an opening for a connection request?
 - **LOOP AUTO-CLOSE (LinkedIn comments):** Cross-reference comment replies against open loops of type `comment_posted`. If someone replied to a comment the founder posted:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "reply on comment detected" "auto_step_3"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="reply on comment detected", closed_by="auto_step_3"
   ```
   **IMPORTANT:** Step 3 MUST check the Comments tab (`/recent-activity/comments/`), not just the Posts tab. The step result logged to the morning log must explicitly say "comments tab checked." If only Posts tab was checked, the step is INCOMPLETE per the Deliverables Checklist.
 - **New post opportunities:** Scan founder's feed for trending posts from target contacts that haven't been engaged yet
@@ -629,18 +629,18 @@ Detects content published directly (not through Q) and updates tracking to match
 
 > **HARNESS: Action cards.** For every post/content draft generated in this step:
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE add-card P1 linkedin_publish "Signals post" "Three critical security..." ""
-> bash q-system/.q-system/log-step.sh DATE add-card P2 x_publish "X signals" "SolarWinds WHD has..." ""
+> Use the `log_add_card` MCP tool with date=DATE, card_id="P1", card_type="linkedin_publish", target="Signals post", text="Three critical security...", url=""
+> Use the `log_add_card` MCP tool with date=DATE, card_id="P2", card_type="x_publish", target="X signals", text="SolarWinds WHD has...", url=""
 > ```
 > Never update Content Pipeline DB or marketing-state.md publish log until `founder_confirmed: true`.
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE 4_signals done "3 posts drafted, 3 action cards"
+> Use the `log_step` MCP tool with date=DATE, step_id="4_signals", status="done", result="3 posts drafted, 3 action cards"
 > ```
 
 **CONTEXT-SAVING: Only generate the content type assigned to today.**
 - **Mon/Wed/Fri:** Signals post (LinkedIn + X) + X hot take + X BTS
 - **Tue/Thu:** Thought leadership post (LinkedIn + X). NO signals post.
-- **Weekly (Wednesdays): Kipi System promotion post.** One building-in-public post about the open source repo (https://github.com/assafkip/kipi-system). Follows a 4-week rotation:
+- **Weekly (Wednesdays): Kipi System promotion post.** One building-in-public post about the open source repo ({{KIPI_REPO_URL}}). Follows a 4-week rotation:
   - Week 1: r/ClaudeAI post (architecture, Claude Code build, screenshots)
   - Week 2: r/ADHD post (executive function, no shame language, how it helps)
   - Week 3: LinkedIn series (5 posts Mon-Fri, each showing one thing the system did that day)
@@ -953,18 +953,18 @@ This step ensures existing warm relationships don't go cold while chasing new on
 
 **Loop auto-close (action_created):** When querying Notion Actions DB for overdue items, also check for any actions that have been completed (moved to Someday by the stale action cleanup in Step 1, or manually marked done by founder). Cross-reference against open loops of type `action_created`:
 ```bash
-bash q-system/.q-system/loop-tracker.sh close <loop_id> "action completed in Notion" "auto_notion"
+Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="action completed in Notion", closed_by="auto_notion"
 ```
 
 **Loop opening (REQUIRED for every follow-up generated):**
 Every follow-up email or DM generated in 5.85 MUST open a loop (or update touch_count on existing loop):
 ```bash
 # For email follow-ups:
-bash q-system/.q-system/loop-tracker.sh open email_sent "Person Name" "Follow-up context" "" "E1" "Next follow-up text..."
+Use the `loop_open` MCP tool with type="email_sent", target="Person Name", context="Follow-up context", card_id="E1", follow_up_text="Next follow-up text..."
 # For DM follow-ups:
-bash q-system/.q-system/loop-tracker.sh open dm_sent "Person Name" "Follow-up context" "" "DM1" "Next follow-up text..."
+Use the `loop_open` MCP tool with type="dm_sent", target="Person Name", context="Follow-up context", card_id="DM1", follow_up_text="Next follow-up text..."
 ```
-If the person already has an open loop, `loop-tracker.sh open` will auto-increment touch_count instead of creating a duplicate.
+If the person already has an open loop, `loop_open` will auto-increment touch_count instead of creating a duplicate.
 
 **Rules:**
 - MINIMUM 3 follow-up items per day in the HTML, even if nothing is technically "overdue"
@@ -979,7 +979,7 @@ If the person already has an open loop, `loop-tracker.sh open` will auto-increme
 
 This is the core loop-closing forcing function. It reads all open loops and generates follow-up actions.
 
-1. Run `bash q-system/.q-system/loop-tracker.sh list 1` to get all loops at level 1+ (3+ days old)
+1. Use the `loop_list` MCP tool with min_level=1 to get all loops at level 1+ (3+ days old)
 2. **Level 1 loops (3-6 days):** Generate a copy-paste follow-up message for each. Add as action card in morning log. Show in Pipeline Follow-ups section of HTML with yellow `daysAgo` tag.
 3. **Level 2 loops (7-13 days):** Generate follow-up AND flag prominently. Show at top of Pipeline Follow-ups with red `daysAgo` tag. If touch_count >= 3 on same channel, switch to a different channel.
 4. **Level 3 loops (14+ days):** Present forced choice to founder:
@@ -989,11 +989,11 @@ This is the core loop-closing forcing function. It reads all open loops and gene
    **Step 8 gate BLOCKS if any level 3 loops are unresolved.** The HTML cannot be generated with open level 3 loops.
 5. **For each follow-up generated:** Open or update the loop with new touch_count
    ```bash
-   bash q-system/.q-system/loop-tracker.sh touch <loop_id>
+   Use the `loop_touch` MCP tool with loop_id=<loop_id>
    ```
 6. **Output to HTML:** "Open Loops" section (accent: red, position 2 in section order). Only level 2+ loops show here. Level 0-1 appear as a count in FYI.
 ```bash
-bash q-system/.q-system/log-step.sh DATE 5.86_loop_review done "X loops reviewed, Y follow-ups generated, Z force-closed"
+Use the `log_step` MCP tool with date=DATE, step_id="5.86_loop_review", status="done", result="X loops reviewed, Y follow-ups generated, Z force-closed"
 ```
 
 ---
@@ -1262,17 +1262,17 @@ Each entry includes:
 Every DM, comment, connection request, and X reply generated in 5.9b MUST open a loop:
 ```bash
 # For each LinkedIn comment:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Person Name" "Topic of post" "" "C1"
+Use the `loop_open` MCP tool with type="comment_posted", target="Person Name", context="Topic of post", card_id="C1"
 # For each connection request:
-bash q-system/.q-system/loop-tracker.sh open connection_request_sent "Person Name" "Why connecting" "" "CR1"
+Use the `loop_open` MCP tool with type="connection_request_sent", target="Person Name", context="Why connecting", card_id="CR1"
 # For each DM:
-bash q-system/.q-system/loop-tracker.sh open dm_sent "Person Name" "DM context" "" "DM1" "Follow-up text if no reply..."
+Use the `loop_open` MCP tool with type="dm_sent", target="Person Name", context="DM context", card_id="DM1", follow_up_text="Follow-up text if no reply..."
 # For each X reply:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Person Handle" "X reply topic" "" "X1"
+Use the `loop_open` MCP tool with type="comment_posted", target="Person Handle", context="X reply topic", card_id="X1"
 # For each Reddit comment:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Thread title" "Reddit comment context" "" "R1"
+Use the `loop_open` MCP tool with type="comment_posted", target="Thread title", context="Reddit comment context", card_id="R1"
 ```
-If a loop-tracker.sh open call is missing for any hitlist item, Step 5.9b is INCOMPLETE.
+If a `loop_open` MCP call is missing for any hitlist item, Step 5.9b is INCOMPLETE.
 
 **Prediction logging:** For each Tier A/B prospect, log a prediction to `memory/working/predictions.jsonl`:
 ```jsonl
@@ -1297,7 +1297,7 @@ DISCOVERY (5.9) -> QUALIFY -> CREATE CONTACT -> CREATE TRACKER ENTRY -> ENGAGEME
 5. **Open a loop for each qualified lead** so they don't get forgotten:
    ```bash
    # For Tier A/B leads that got a connection request:
-   bash q-system/.q-system/loop-tracker.sh open lead_sourced "Person Name" "Tier A - pain signal + role fit" "" ""
+   Use the `loop_open` MCP tool with type="lead_sourced", target="Person Name", context="Tier A - pain signal + role fit"
    ```
    The `lead_sourced` loop closes when the lead gets a first touch (connection request accepted + first DM sent, which becomes a `dm_sent` loop).
 6. **Prospect flows automatically into subsequent morning routine steps:**
@@ -1372,16 +1372,16 @@ GitHub (Mondays only):
 
 > **HARNESS: Action cards.** For every engagement item generated:
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person Name" "Comment text..." "https://linkedin.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C2 x_reply "Person Name" "Reply text..." "https://x.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C3 connection_request "Person Name" "Request note..." "https://linkedin.com/in/person"
-> bash q-system/.q-system/log-step.sh DATE add-card C4 reddit_comment "u/username" "Comment text..." "https://reddit.com/thread-url"
+> Use the `log_add_card` MCP tool with date=DATE, card_id="C1", card_type="linkedin_comment", target="Person Name", text="Comment text...", url="https://linkedin.com/post-url"
+> Use the `log_add_card` MCP tool with date=DATE, card_id="C2", card_type="x_reply", target="Person Name", text="Reply text...", url="https://x.com/post-url"
+> Use the `log_add_card` MCP tool with date=DATE, card_id="C3", card_type="connection_request", target="Person Name", text="Request note...", url="https://linkedin.com/in/person"
+> Use the `log_add_card` MCP tool with date=DATE, card_id="C4", card_type="reddit_comment", target="u/username", text="Comment text...", url="https://reddit.com/thread-url"
 > ```
 > Types: `linkedin_comment`, `x_reply`, `connection_request`, `reddit_comment`, `linkedin_dm`, `email`
 > **URL field is required** - the founder needs the link to navigate to the post.
 > NEVER log to LinkedIn Tracker, Contacts DB, or any state file until `founder_confirmed: true` (next session's Step 0b).
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE 5.9b_engagement_hitlist done "X items across Y types, X action cards"
+> Use the `log_step` MCP tool with date=DATE, step_id="5.9b_engagement_hitlist", status="done", result="X items across Y types, X action cards"
 > ```
 
 This step generates the founder's daily engagement actions with zero searching required. Everything is copy-paste ready. Per AUDHD executive function skill: every hitlist item includes (1) the actual copy-paste text inline, (2) a direct link to the post/tweet/thread, (3) time estimate, (4) energy tag. NEVER output a hitlist item that says "copy-paste from section above." The text must be RIGHT THERE.
@@ -1515,10 +1515,10 @@ Catches sessions that ended without `/q-checkpoint` or `/q-end`.
 
 > **GATE CHECK (mandatory before starting Step 8):**
 > 1. Read the morning log from disk: `cat q-system/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
-> 1b. Check for unresolved level 3 loops: `bash q-system/.q-system/loop-tracker.sh list 3` - if any exist, STOP. Force-close decisions must happen before HTML generation.
+> 1b. Check for unresolved level 3 loops: use the `loop_list` MCP tool with min_level=3 - if any exist, STOP. Force-close decisions must happen before HTML generation.
 > 1c. Verify Deliverables Checklist (see preflight.md Section 5): day-specific content pieces, pipeline follow-ups, loop review items.
-> 2. If missing list is empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""`
-> 3. If missing list is not empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 false "step1,step2"` then STOP and report.
+> 2. If missing list is empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=true
+> 3. If missing list is not empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=false, missing="step1,step2" then STOP and report.
 > Cannot proceed until all prior steps are accounted for.
 
 All output in this step must comply with the AUDHD executive function skill (loaded in Step 0e). Every item shown to the founder must be copy-paste ready or explicitly marked "needs your eyes." No dashboards without actions. No scores without recovery drafts. No cross-references. The briefing is a workbench, not a report.
@@ -1670,8 +1670,8 @@ The day label appears in the Start Here section AND at the top of the Daily Acti
 
 > **GATE CHECK (mandatory before starting Step 9):**
 > Re-read morning log from disk (same check as Step 8, plus `8_briefing_output` and `8.5_start_here`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_9 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_9 false "missing_step_ids"` then STOP.
+> Use the `log_gate_check` MCP tool with date=DATE, gate_name="step_9", passed=true
+> If missing steps: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_9", passed=false, missing="missing_step_ids" then STOP.
 
 - If violations or pending propagation found, offer to fix immediately
 - If unlogged emails found, offer to create Notion interactions
@@ -1680,7 +1680,7 @@ The day label appears in the Start Here section AND at the top of the Daily Acti
 - **Marketing actions from Step 4.5:** If stale assets found, create Action "Refresh stale marketing assets" (Energy: Deep Focus, Time: 30 min, Type: Other). If Gamma decks need review, create Action "Review Gamma deck for positioning changes" (Energy: Deep Focus, Time: 15 min). If content is behind cadence, create Action for missing content (Energy: Deep Focus, Time: 15-30 min). If drafts ready for review, create Action "Review [draft name]" (Energy: Quick Win, Time: 5 min).
 - **Loop opening for non-trivial actions:** Every Notion Action created that expects a response or has a deadline MUST open a loop:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh open action_created "Action title" "Context" "" "ACT-XXX"
+  Use the `loop_open` MCP tool with type="action_created", target="Action title", context="Context", card_id="ACT-XXX"
   ```
   Skip loop opening for: meeting prep (completed same day), admin tasks, internal-only items. Open loops for: follow-up emails, debrief next steps, intro requests, research with a deadline.
 
@@ -1750,8 +1750,8 @@ If Notion MCP is down, skip silently and note "Notion sync deferred" in the hand
 
 > **GATE CHECK (mandatory before starting Step 11):**
 > Re-read morning log from disk. Check Steps 0f through 10 all logged (including `9_notion_push` and `10_daily_checklists`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_11 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_11 false "missing_step_ids"` then STOP.
+> Use the `log_gate_check` MCP tool with date=DATE, gate_name="step_11", passed=true
+> If missing steps: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_11", passed=false, missing="missing_step_ids" then STOP.
 > **Recovery:** If the gate fails, list the missing steps and ask the founder: "These steps didn't run: [list]. Options: (1) I go back and run them now, (2) you tell me to skip them and I'll log them as skipped, (3) we end the session and restart fresh." The founder decides. Claude does NOT self-authorize skipping.
 
 **MANDATORY PRE-CHECK: Re-read `.claude/skills/audhd-executive-function/SKILL.md` before generating.** The daily HTML is the founder's external executive function, not a briefing. Apply all rules.
@@ -1760,7 +1760,7 @@ If Notion MCP is down, skip silently and note "Notion sync deferred" in the hand
 
 1. **Read the schema:** `marketing/templates/schedule-data-schema.md` defines the exact JSON format.
 2. **Generate JSON:** Write `output/schedule-data-YYYY-MM-DD.json` conforming to the schema.
-3. **Build HTML:** Run `bash marketing/templates/build-schedule.sh output/schedule-data-YYYY-MM-DD.json output/daily-schedule-YYYY-MM-DD.html`
+3. **Build HTML:** Use the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 4. **Open in browser:** `open output/daily-schedule-YYYY-MM-DD.html` or use Chrome MCP.
 5. **Telegram push (if configured):** Send top 3 actions via Telegram MCP.
 
@@ -1806,18 +1806,18 @@ After Step 11 completes (or whenever the morning routine ends, even if ending ea
 **12a. Snapshot session-end state checksums:**
 Re-read the same key fields from Step 0c:
 ```bash
-bash q-system/.q-system/log-step.sh DATE checksum-end last_calendar_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_gmail_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_prospect_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_outreach_count "3"
-bash q-system/.q-system/log-step.sh DATE checksum-end decisions_rule_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_publish_date "2026-03-14"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_calendar_sync", value="2026-03-14"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_gmail_sync", value="2026-03-14"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="dp_prospect_count", value="17"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="dp_outreach_count", value="3"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="decisions_rule_count", value="17"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_publish_date", value="2026-03-14"
 ```
 The script auto-detects drift between start and end values.
 
 **12b. Mark action cards as delivered:**
 ```bash
-bash q-system/.q-system/log-step.sh DATE deliver-cards
+Use the `log_deliver_cards` MCP tool with date=DATE
 ```
 
 **12c. Run the audit harness:**
@@ -1828,7 +1828,7 @@ python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-DATE.jso
 
 **12d. Log Step 12 and update morning-state.md:**
 ```bash
-bash q-system/.q-system/log-step.sh DATE 12_audit done "VERDICT - X/Y steps"
+Use the `log_step` MCP tool with date=DATE, step_id="12_audit", status="done", result="VERDICT - X/Y steps"
 ```
 Update `memory/morning-state.md` with today's sync dates, audit verdict, and any open items.
 
@@ -1863,12 +1863,12 @@ This step auto-detects DM replies and connection accepts so the founder never ne
   When a debrief_next_step loop exists and the founder has now SENT the follow-up (detected as a new outbound DM/email in this step), close the debrief loop and open the appropriate new loop:
   ```bash
   # If the debrief said "send deck to Bob" and we detect the email was sent:
-  bash q-system/.q-system/loop-tracker.sh close <debrief_loop_id> "next step completed - email sent" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<debrief_loop_id>, resolution="next step completed - email sent", closed_by="auto_step_3.8"
   # The email_sent loop was already opened by Step 9 or 5.85
   ```
   Also: during Step 0b action card confirmation, if the founder confirms a card that matches a debrief_next_step loop's action_card_id, auto-close:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "action card confirmed by founder" "founder"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="action card confirmed by founder", closed_by="founder"
   ```
 
   **Part D - Outbound action detection (auto-detect what the founder DID):**
@@ -1881,11 +1881,11 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 - **LOOP AUTO-CLOSE (Step 3.8):** After detecting replies and accepts, cross-reference against `output/open-loops.json`:
   ```bash
   # For each DM reply detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DM reply detected" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="DM reply detected", closed_by="auto_step_3.8"
   # For each connection accept detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "connection accepted" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="connection accepted", closed_by="auto_step_3.8"
   # For dp_offer_sent loops where target replied via DM:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DP replied to offer" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="DP replied to offer", closed_by="auto_step_3.8"
   ```
   Match by target name. If a loop target name matches a DM reply sender or connection accepter, close it.
 

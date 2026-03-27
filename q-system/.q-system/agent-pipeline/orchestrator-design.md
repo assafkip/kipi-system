@@ -49,7 +49,7 @@ Phase 7: Synthesis (sequential, opus)
   -> Writes: output/schedule-data-{date}.json
 
 Phase 8: Build + Verify (sequential)
-  -> Bash: build-schedule.sh (builds HTML from JSON)
+  -> MCP: build_schedule (builds HTML from JSON)
   -> Agent: 08-visual-verify.md (sonnet)     -> bus/{date}/visual-verify.json
   -> Bash: audit-morning.py (validates log)
 ```

@@ -68,6 +68,18 @@
       "_comment": "Rename to 'playwright' to enable. Browser automation alternative to Chrome MCP.",
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
+    },
+
+    "kipi": {
+      "_comment": "Instance management and morning routine tools. Requires uv installed.",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "$CLAUDE_PROJECT_DIR/kipi-mcp",
+        "run",
+        "python",
+        "src/kipi_mcp/server.py"
+      ]
     }
   },
   "toolConfigurations": {
@@ -88,6 +100,9 @@
       "autoApprove": ["*"]
     },
     "mcp__apify__*": {
+      "autoApprove": ["*"]
+    },
+    "mcp__kipi__*": {
       "autoApprove": ["*"]
     }
   },

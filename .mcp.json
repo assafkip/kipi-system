@@ -22,6 +22,16 @@
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
+    },
+    "kipi": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/ike/code/kipi-system/kipi-mcp",
+        "run",
+        "python",
+        "src/kipi_mcp/server.py"
+      ]
     }
   }
 }

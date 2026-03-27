@@ -2,8 +2,8 @@
 
 > **GATE CHECK (mandatory before starting Step 9):**
 > Re-read morning log from disk (same check as Step 8, plus `8_briefing_output` and `8.5_start_here`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_9 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_9 false "missing_step_ids"` then STOP.
+> Use the `log_gate_check` MCP tool with date=DATE, gate_name="step_9", passed=true
+> If missing steps: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_9", passed=false, missing="missing_step_ids" then STOP.
 
 - If violations or pending propagation found, offer to fix immediately
 - If unlogged emails found, offer to create Notion interactions
