@@ -23,10 +23,9 @@
     {
       "name": "VC_Reachout",
       "path": "/Users/assafkip/Desktop/assafs_qs/VC_Reachout",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": "q-VC-Sourcing",
-      "type": "subtree",
-      "has_git": true
+      "status": "merged_into_KTLYST_strategy",
+      "merged_date": "2026-03-26",
+      "merged_as": "q-ktlyst/vc-sourcing/"
     },
     {
       "name": "car-research",
@@ -42,6 +41,14 @@
       "path": "/Users/assafkip/Desktop/q-education",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "ASK_AI_consultant",
+      "path": "/Users/assafkip/Desktop/ASK_AI_consultant",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-consult",
       "type": "subtree",
       "has_git": true
     }
