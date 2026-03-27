@@ -2,16 +2,44 @@ from pathlib import Path
 
 from platformdirs import user_config_path, user_data_path, user_state_path
 
-from kipi_mcp.paths import KipiPaths, _detect_instance
+from kipi_mcp.paths import APP_NAME, KipiPaths, _detect_instance, _slugify, generate_instance_name
 
 
 def test_default_resolution():
     paths = KipiPaths()
-    # Instance dirs are under instances/{name}/
-    assert paths._config_base == user_config_path("kipi")
-    assert paths._data_base == user_data_path("kipi")
-    assert paths._state_base == user_state_path("kipi")
+    assert paths._config_base == user_config_path(APP_NAME)
+    assert paths._data_base == user_data_path(APP_NAME)
+    assert paths._state_base == user_state_path(APP_NAME)
     assert "instances" in str(paths.config_dir)
+
+
+def test_slugify():
+    assert _slugify("EQbit") == "eqbit"
+    assert _slugify("Some Really Long Company Name Inc") == "some-really-long-com"
+    assert _slugify("hello world!!!") == "hello-world"
+    assert _slugify("  --spaces-- ") == "spaces"
+
+
+def test_generate_instance_name_format():
+    name = generate_instance_name("EQbit")
+    assert name.startswith("eqbit-")
+    parts = name.split("-")
+    assert len(parts) >= 2
+    # Last part is word+digits
+    suffix = parts[-1]
+    assert any(c.isdigit() for c in suffix)
+    assert any(c.isalpha() for c in suffix)
+
+
+def test_generate_instance_name_avoids_existing():
+    existing = set()
+    names = set()
+    for _ in range(10):
+        name = generate_instance_name("test", existing)
+        assert name not in existing
+        existing.add(name)
+        names.add(name)
+    assert len(names) == 10
 
 
 def test_constructor_overrides(tmp_path):

@@ -39,7 +39,14 @@ Ask:
 - What stage are you at? (idea, pre-seed, seed, Series A, growth)
 - Do you have a co-founder? If so, name and role.
 
-**Save to:** `~/.config/kipi/founder-profile.md`
+**After getting the company name**, generate an instance name:
+1. Call `kipi_suggest_instance_name(company=<company_name>)` to get a Discord-style suggestion (e.g. "eqbit-dragon12")
+2. Show the suggestion: "I'll name this instance **eqbit-dragon12**. This is how kipi tracks your data separately from other projects. Want to keep it, or pick something different?"
+3. If they want to change it, let them type a new name. Re-check uniqueness by calling `kipi_suggest_instance_name` again (it returns existing names).
+4. If the name collides with an existing instance, tell them and suggest a new one.
+5. Once confirmed, call `kipi_set_instance_name(name=<chosen_name>)` to write `.kipi-instance`.
+
+**Save to:** `{config_dir}/founder-profile.md`
 
 ### Step 2: Who do you sell to?
 

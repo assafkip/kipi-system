@@ -10,6 +10,8 @@ from kipi_mcp.loop_tracker import LoopTracker
 
 EXPECTED_TOOLS = [
     "kipi_migrate",
+    "kipi_suggest_instance_name",
+    "kipi_set_instance_name",
     "kipi_new_instance",
     "kipi_update",
     "kipi_push_upstream",

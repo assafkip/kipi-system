@@ -9,7 +9,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from kipi_mcp.paths import KipiPaths
+from kipi_mcp.paths import KipiPaths, generate_instance_name
 from kipi_mcp.registry import RegistryManager
 from kipi_mcp.git_ops import GitOps
 from kipi_mcp.step_logger import StepLogger
@@ -171,6 +171,67 @@ def kipi_migrate(dry_run: bool = True) -> str:
     except Exception as e:
         logger.error("kipi_migrate failed", exc_info=True)
         raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_suggest_instance_name(company: str) -> str:
+    """Generate a Discord-style instance name from a company name.
+
+    Returns a suggested name like "eqbit-dragon12". Call this during /q-setup
+    to suggest an instance name, then let the user override.
+
+    Args:
+        company: Company or project name to derive the slug from.
+    """
+    try:
+        existing = _get_existing_instance_names()
+        suggestion = generate_instance_name(company, existing)
+        return json.dumps({"suggested": suggestion, "existing": sorted(existing)})
+    except Exception as e:
+        logger.error("kipi_suggest_instance_name failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_set_instance_name(name: str) -> str:
+    """Set the instance name for the current repo by writing .kipi-instance.
+
+    Validates the name isn't already taken by another instance.
+    After setting, the server must be restarted for the new name to take effect.
+
+    Args:
+        name: The instance name to set (e.g. "eqbit-dragon12").
+    """
+    try:
+        existing = _get_existing_instance_names()
+        if name in existing and name != paths.instance:
+            raise ToolError(
+                f"Instance name '{name}' is already taken. "
+                f"Existing: {sorted(existing)}"
+            )
+        marker = paths.repo_dir / ".kipi-instance"
+        marker.write_text(name + "\n")
+        return json.dumps({"set": True, "name": name, "file": str(marker)})
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("kipi_set_instance_name failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+def _get_existing_instance_names() -> set[str]:
+    """Collect all instance names from registry + instances/ directories."""
+    names: set[str] = set()
+    for inst in registry.list_instances():
+        if "name" in inst:
+            names.add(inst["name"])
+    # Also scan the instances/ directory for names on disk
+    instances_dir = paths._config_base / "instances"
+    if instances_dir.exists():
+        for child in instances_dir.iterdir():
+            if child.is_dir():
+                names.add(child.name)
+    return names
 
 
 @mcp.tool()

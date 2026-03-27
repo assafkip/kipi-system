@@ -1,7 +1,46 @@
 from __future__ import annotations
 import os
+import random
+import re
 from pathlib import Path
 from platformdirs import user_config_path, user_data_path, user_state_path
+
+APP_NAME = "kipi-system"
+
+# Word list for Discord-style instance suffixes
+_SUFFIX_WORDS = [
+    "arrow", "blaze", "comet", "delta", "ember", "frost", "ghost", "haven",
+    "ion", "jade", "kite", "lunar", "maple", "noble", "orbit", "prism",
+    "quasar", "ridge", "spark", "tidal", "unity", "viper", "wave", "xenon",
+    "yeti", "zephyr", "atlas", "bolt", "crest", "drift", "echo", "flare",
+    "grove", "hawk", "iris", "jewel", "karma", "latch", "mist", "nova",
+    "opal", "pulse", "quest", "reef", "sage", "torch", "umbra", "vault",
+    "wisp", "apex", "bass", "crow", "dusk", "fern", "glow", "haze",
+    "iron", "jazz", "kelp", "loom", "moth", "neon", "onyx", "peak",
+]
+
+
+def _slugify(name: str, max_len: int = 20) -> str:
+    """Lowercase, strip non-alphanum, truncate."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug[:max_len]
+
+
+def generate_instance_name(company: str, existing: set[str] | None = None) -> str:
+    """Generate a Discord-style instance name: slug-word##.
+
+    Examples: eqbit-dragon12, acme-frost7
+    Checks against existing names and retries on collision.
+    """
+    existing = existing or set()
+    slug = _slugify(company)
+    for _ in range(50):
+        word = random.choice(_SUFFIX_WORDS)
+        num = random.randint(1, 99)
+        name = f"{slug}-{word}{num}"
+        if name not in existing:
+            return name
+    return f"{slug}-{random.randint(1000, 9999)}"
 
 
 def _detect_instance(repo_dir: Path) -> str:
@@ -37,9 +76,9 @@ class KipiPaths:
         repo_dir: Path | None = None,
         instance: str | None = None,
     ):
-        self._config_base = Path(config_dir or os.environ.get("KIPI_CONFIG_DIR", user_config_path("kipi")))
-        self._data_base = Path(data_dir or os.environ.get("KIPI_DATA_DIR", user_data_path("kipi")))
-        self._state_base = Path(state_dir or os.environ.get("KIPI_STATE_DIR", user_state_path("kipi")))
+        self._config_base = Path(config_dir or os.environ.get("KIPI_CONFIG_DIR", user_config_path(APP_NAME)))
+        self._data_base = Path(data_dir or os.environ.get("KIPI_DATA_DIR", user_data_path(APP_NAME)))
+        self._state_base = Path(state_dir or os.environ.get("KIPI_STATE_DIR", user_state_path(APP_NAME)))
         self.repo_dir = Path(repo_dir or os.environ.get("KIPI_HOME", Path(__file__).resolve().parents[3]))
         self.instance = instance or _detect_instance(self.repo_dir)
 
