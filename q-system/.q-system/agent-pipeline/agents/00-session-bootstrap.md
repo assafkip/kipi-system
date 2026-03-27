@@ -34,8 +34,8 @@ You are a session bootstrap agent. Your ONLY job is to recover state from the pr
 
 ### 3. Loop Escalation
 - Use the `loop_escalate` MCP tool
-- Use the `loop_stats` MCP tool
-- Use the `loop_list` MCP tool with min_level=2
+- Use the `kipi://loops/stats` MCP resource
+- Use the `kipi://loops/open` MCP resource (filter for min_level=2)
 - Capture the stats output and any Level 2+ loops
 
 ### 4. Canonical State Checksums

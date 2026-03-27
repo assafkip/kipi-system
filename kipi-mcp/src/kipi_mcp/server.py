@@ -1,8 +1,10 @@
 import sys
 import json
 import logging
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,15 +21,26 @@ from kipi_mcp.migrator import Migrator
 paths = KipiPaths()
 paths.ensure_dirs()
 
-# Auto-migrate from old repo layout if needed
+# Warn if legacy layout detected — user should call kipi_migrate explicitly
 if paths.detect_legacy_layout():
-    migrator = Migrator(paths)
-    result = migrator.migrate(dry_run=False)
-    logger.info(f"Auto-migrated {len(result['copied'])} files to XDG directories")
+    logger.warning(
+        "Legacy data layout detected (user data in git repo). "
+        "Call the kipi_migrate tool to move data to XDG directories."
+    )
 
 mcp = FastMCP(
     "kipi",
-    instructions="Kipi founder OS instance management and morning routine tools",
+    instructions=(
+        "Kipi founder OS — instance management, morning routine logging, "
+        "follow-up loop tracking, and content/schedule tools. "
+        "Tool groups: kipi_* (instances, migration, validation), "
+        "log_* (morning routine step logging), "
+        "loop_* (follow-up loop tracking), "
+        "kipi_load_step / kipi_build_schedule / kipi_create_template (content). "
+        "Resources: kipi://paths, kipi://instances, kipi://loops/open, "
+        "kipi://loops/stats, kipi://steps/{step_id}. "
+        "Read kipi://paths first to get resolved directory paths."
+    ),
 )
 
 # --- Service instantiation ---
@@ -67,38 +80,52 @@ except ImportError:
 
 
 # ============================================================
-# Instance Management (5 tools)
+# Resources (read-only data)
 # ============================================================
 
 
-@mcp.tool()
-def kipi_list() -> str:
-    """List all kipi instances, excluded projects, and eliminated projects."""
-    try:
-        return json.dumps({
-            "instances": registry.list_instances(),
-            "excluded": registry.list_excluded(),
-            "eliminated": registry.list_eliminated(),
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-def kipi_home() -> str:
-    """Return the KIPI_HOME path."""
-    return json.dumps({"kipi_home": str(paths.repo_dir)})
-
-
-@mcp.tool()
-def kipi_paths_info() -> str:
-    """Return all resolved kipi directory paths (config, data, state, repo)."""
+@mcp.resource("kipi://paths")
+def resource_paths() -> str:
+    """All resolved kipi directory paths (config, data, state, repo)."""
     return json.dumps({
         "config_dir": str(paths.config_dir),
         "data_dir": str(paths.data_dir),
         "state_dir": str(paths.state_dir),
         "repo_dir": str(paths.repo_dir),
     })
+
+
+@mcp.resource("kipi://instances")
+def resource_instances() -> str:
+    """All kipi instances, excluded projects, and eliminated projects."""
+    return json.dumps({
+        "instances": registry.list_instances(),
+        "excluded": registry.list_excluded(),
+        "eliminated": registry.list_eliminated(),
+    })
+
+
+@mcp.resource("kipi://loops/open")
+def resource_loops_open() -> str:
+    """All currently open follow-up loops."""
+    return json.dumps(loop_tracker.list(min_level=0))
+
+
+@mcp.resource("kipi://loops/stats")
+def resource_loops_stats() -> str:
+    """Summary statistics for open and recently closed loops."""
+    return json.dumps(loop_tracker.stats())
+
+
+@mcp.resource("kipi://steps/{step_id}")
+def resource_step(step_id: str) -> str:
+    """Morning routine step definition by ID (e.g. "0a", "3", "5.9b", "11")."""
+    return step_loader.load(step_id)
+
+
+# ============================================================
+# Instance Management (4 tools)
+# ============================================================
 
 
 @mcp.tool()
@@ -112,7 +139,8 @@ def kipi_migrate(dry_run: bool = True) -> str:
         m = Migrator(paths)
         return json.dumps(m.migrate(dry_run=dry_run))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_migrate failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -132,11 +160,11 @@ def kipi_new_instance(path: str, name: str) -> str:
         if not (inst_path / ".git").exists():
             res = git_ops.init_repo(inst_path)
             if not res["success"]:
-                return json.dumps({"error": f"git init failed: {res['stderr']}"})
+                raise ToolError(f"git init failed: {res['stderr']}")
 
         res = git_ops.subtree_add(inst_path, prefix)
         if not res["success"]:
-            return json.dumps({"error": f"subtree add failed: {res['stderr']}"})
+            raise ToolError(f"subtree add failed: {res['stderr']}")
 
         claude_md = inst_path / "CLAUDE.md"
         if not claude_md.exists():
@@ -158,8 +186,11 @@ def kipi_new_instance(path: str, name: str) -> str:
         )
 
         return json.dumps({"created": True, "instance": entry})
+    except ToolError:
+        raise
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_new_instance failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -175,7 +206,7 @@ def kipi_update(dry_run: bool = False, instance_name: str | None = None) -> str:
         if instance_name:
             instances = [i for i in instances if i["name"] == instance_name]
             if not instances:
-                return json.dumps({"error": f"Instance '{instance_name}' not found"})
+                raise ToolError(f"Instance '{instance_name}' not found")
 
         results = {}
         for inst in instances:
@@ -205,8 +236,11 @@ def kipi_update(dry_run: bool = False, instance_name: str | None = None) -> str:
             }
 
         return json.dumps(results)
+    except ToolError:
+        raise
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_update failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -224,7 +258,7 @@ def kipi_push_upstream(instance_path: str) -> str:
         prefix_path = inst_path / prefix
 
         if not prefix_path.is_dir():
-            return json.dumps({"error": f"No {prefix}/ directory at {inst_path}"})
+            raise ToolError(f"No {prefix}/ directory at {inst_path}")
 
         matches = git_ops.check_instance_content(prefix_path)
         if matches:
@@ -240,8 +274,11 @@ def kipi_push_upstream(instance_path: str) -> str:
             "stdout": res["stdout"][:500],
             "stderr": res["stderr"][:500],
         })
+    except ToolError:
+        raise
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_push_upstream failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 # ============================================================
@@ -253,17 +290,23 @@ def kipi_push_upstream(instance_path: str) -> str:
 def kipi_validate(phase: int = 5, verbose: bool = False) -> str:
     """Run the kipi validation suite.
 
+    Phases: 0=registry, 1=skeleton integrity, 2=instance checks,
+    3=eliminated cleanup, 4=instance health, 5=documentation.
+
     Args:
-        phase: Validation phase to run (1-5, default 5 = all).
+        phase: Validation phase to run (0-5, default 5 = all phases).
         verbose: Include detailed output per check.
     """
     if validator is None:
-        return json.dumps({"error": "Validator module not available"})
+        raise ToolError("Validator module not available — check server startup logs")
     try:
         results = validator.run(phase=phase, verbose=verbose)
         return json.dumps(results)
+    except ToolError:
+        raise
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_validate failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 # ============================================================
@@ -281,7 +324,8 @@ def log_init(date: str) -> str:
     try:
         return json.dumps(step_logger.init(date))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_init failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -298,7 +342,8 @@ def log_step(date: str, step_id: str, status: str, result: str = "", error: str 
     try:
         return json.dumps(step_logger.log_step(date, step_id, status, result, error))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_step failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -316,7 +361,8 @@ def log_add_card(date: str, card_id: str, card_type: str, target: str, draft_tex
     try:
         return json.dumps(step_logger.add_card(date, card_id, card_type, target, draft_text, url))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_add_card failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -329,7 +375,8 @@ def log_deliver_cards(date: str) -> str:
     try:
         return json.dumps(step_logger.deliver_cards(date))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_deliver_cards failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -345,7 +392,8 @@ def log_gate_check(date: str, gate_step: str, all_prior_done: bool, missing: str
     try:
         return json.dumps(step_logger.gate_check(date, gate_step, all_prior_done, missing))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_gate_check failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -361,7 +409,8 @@ def log_checksum(date: str, phase: str, key: str, value: str) -> str:
     try:
         return json.dumps(step_logger.checksum(date, phase, key, value))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_checksum failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -378,11 +427,12 @@ def log_verify(date: str, claim: str, source: str, verified: bool, result: str =
     try:
         return json.dumps(step_logger.verify(date, claim, source, verified, result))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("log_verify failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 # ============================================================
-# Loop Tracker (8 tools)
+# Loop Tracker (5 tools — read ops moved to resources)
 # ============================================================
 
 
@@ -401,7 +451,8 @@ def loop_open(loop_type: str, target: str, context: str, notion_id: str = "", ca
     try:
         return json.dumps(loop_tracker.open(loop_type, target, context, notion_id, card_id, follow_up_text))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_open failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -416,7 +467,8 @@ def loop_close(loop_id: str, reason: str, closed_by: str) -> str:
     try:
         return json.dumps(loop_tracker.close(loop_id, reason, closed_by))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_close failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -430,16 +482,22 @@ def loop_force_close(loop_id: str, action: str) -> str:
     try:
         return json.dumps(loop_tracker.force_close(loop_id, action))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_force_close failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
 def loop_escalate() -> str:
-    """Run escalation logic on all open loops based on age. Bumps escalation levels."""
+    """Run escalation logic on all open loops based on age.
+
+    Bumps escalation levels: 0 (new) -> 1 (3+ days) -> 2 (7+ days) -> 3 (14+ days).
+    Higher levels signal need for stronger follow-up action.
+    """
     try:
         return json.dumps(loop_tracker.escalate())
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_escalate failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -452,29 +510,8 @@ def loop_touch(loop_id: str) -> str:
     try:
         return json.dumps(loop_tracker.touch(loop_id))
     except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-def loop_list(min_level: int = 0) -> str:
-    """List open loops, optionally filtered by minimum escalation level.
-
-    Args:
-        min_level: Minimum escalation level to include (0-3, default 0 = all).
-    """
-    try:
-        return json.dumps(loop_tracker.list(min_level))
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool()
-def loop_stats() -> str:
-    """Get summary statistics for open and recently closed loops."""
-    try:
-        return json.dumps(loop_tracker.stats())
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_touch failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
@@ -487,16 +524,17 @@ def loop_prune(days: int = 30) -> str:
     try:
         return json.dumps(loop_tracker.prune(days))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("loop_prune failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 # ============================================================
-# Content Tools (3 tools)
+# Content Tools (3 tools — namespaced)
 # ============================================================
 
 
 @mcp.tool()
-def load_step(step_id: str) -> str:
+def kipi_load_step(step_id: str) -> str:
     """Load a morning routine step definition by ID.
 
     Args:
@@ -505,11 +543,12 @@ def load_step(step_id: str) -> str:
     try:
         return step_loader.load(step_id)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_load_step failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
-def create_from_template(template_name: str, output_name: str) -> str:
+def kipi_create_template(template_name: str, output_name: str) -> str:
     """Create a new output directory from a template.
 
     Args:
@@ -519,22 +558,32 @@ def create_from_template(template_name: str, output_name: str) -> str:
     try:
         return json.dumps(template_manager.create(template_name, output_name))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_create_template failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 @mcp.tool()
-def build_schedule(json_file: str, output_file: str = "") -> str:
+def kipi_build_schedule(json_file: str, output_file: str = "") -> str:
     """Build an HTML schedule from a JSON data file.
+
+    Always provide output_file to write to disk — omitting it returns the full
+    HTML in the response, which can be very large.
 
     Args:
         json_file: Path to the schedule JSON data file.
-        output_file: Optional path for the output HTML file. If empty, returns HTML in response.
+        output_file: Path for the output HTML file. Strongly recommended.
     """
     try:
         return json.dumps(template_manager.build_schedule(json_file, output_file))
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error("kipi_build_schedule failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+def main():
+    """Entry point for the kipi MCP server."""
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    main()

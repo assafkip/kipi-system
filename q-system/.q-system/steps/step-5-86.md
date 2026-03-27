@@ -3,7 +3,7 @@
 
 This is the core loop-closing forcing function. It reads all open loops and generates follow-up actions.
 
-1. Use the `loop_list` MCP tool with min_level=1 to get all loops at level 1+ (3+ days old)
+1. Use the `kipi://loops/open` MCP resource (filter for min_level=1) to get all loops at level 1+ (3+ days old)
 2. **Level 1 loops (3-6 days):** Generate a copy-paste follow-up message for each. Add as action card in morning log. Show in Pipeline Follow-ups section of HTML with yellow `daysAgo` tag.
 3. **Level 2 loops (7-13 days):** Generate follow-up AND flag prominently. Show at top of Pipeline Follow-ups with red `daysAgo` tag. If touch_count >= 3 on same channel, switch to a different channel.
 4. **Level 3 loops (14+ days):** Present forced choice to founder:

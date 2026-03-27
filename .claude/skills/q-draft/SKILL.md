@@ -14,7 +14,7 @@ Do not proceed with any other steps.
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/
@@ -41,14 +41,14 @@ No external integrations required. Works entirely from local files.
 ## Process
 
 1. Identify output type, audience, and context from arguments (ask if unclear)
-2. Check `.q-system/agent-pipeline/templates/` for a matching template — use `create_from_template` MCP tool if one exists
+2. Check `.q-system/agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
 3. Read relevant canonical files and relationship history for the target person
 4. Generate the draft
 5. Save to `~/.local/state/kipi/output/drafts/{date}-{type}-{audience}.md`
 
 ## MCP tools used
 
-`create_from_template`
+`kipi_create_template`
 
 ## Output rules
 

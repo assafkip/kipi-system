@@ -12,7 +12,7 @@ Do not proceed with any other steps.
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/
@@ -38,7 +38,7 @@ Read these files:
 
 ## Process
 
-1. Pull open loops via `loop_list` MCP tool — surface what's pending
+1. Pull open loops via `kipi://loops/open` MCP resource — surface what's pending
 2. Review all relationships — who's active, cooling, stale
 3. Apply lead-lifecycle-rules.md — identify leads to kill, park, or re-engage
 4. Cross-reference objections with proof gaps — where are we weakest?
@@ -50,7 +50,7 @@ Read these files:
 
 ## MCP tools used
 
-`loop_list`, `loop_stats`
+`kipi://loops/open` (resource), `kipi://loops/stats` (resource)
 
 ## Output rules
 

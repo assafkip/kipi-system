@@ -2,7 +2,7 @@
 
 ## Path Resolution
 
-All user data lives outside the git repo in XDG-standard directories. Use the `kipi_paths_info` MCP tool to resolve directory paths at runtime:
+All user data lives outside the git repo in XDG-standard directories. Read the `kipi://paths` MCP resource to resolve directory paths at runtime:
 - `~/.config/kipi/` — user config (founder-profile, canonical files, voice, marketing config)
 - `~/.local/share/kipi/` — persistent data (my-project/, memory/)
 - `~/.local/state/kipi/` — runtime output (output/, bus/)
@@ -319,7 +319,7 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 
 **Output templates:** `.q-system/agent-pipeline/templates/` has reusable folder structures for deck, outreach, content, and debrief outputs. `/q-create` and `/q-draft` should use these when the format matches.
 
-**Fallback:** If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `load_step` MCP tool.
+**Fallback:** If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `kipi_load_step` MCP tool.
 
 ## Inter-Skill Review Gates (ENFORCED)
 

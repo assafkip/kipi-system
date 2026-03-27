@@ -9,10 +9,10 @@ from kipi_mcp.paths import KipiPaths
 def tmp_kipi_paths(tmp_path):
     """Create a KipiPaths with all dirs rooted under tmp_path."""
     paths = KipiPaths(
-        config_override=tmp_path / "config",
-        data_override=tmp_path / "data",
-        state_override=tmp_path / "state",
-        repo_override=tmp_path / "repo",
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        repo_dir=tmp_path / "repo",
     )
     paths.ensure_dirs()
     return paths

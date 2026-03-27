@@ -6,7 +6,7 @@ Copy a template folder, fill the placeholders, run the pipeline.
 ## Usage
 
 ```
-Use the `create_from_template` MCP tool with template_name=<template-name> and output_name=<output-name>
+Use the `kipi_create_template` MCP tool with template_name=<template-name> and output_name=<output-name>
 ```
 
 ## Available Templates

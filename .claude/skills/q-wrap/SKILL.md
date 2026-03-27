@@ -12,7 +12,7 @@ Do not proceed with any other steps.
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/
@@ -36,14 +36,14 @@ Read these files:
 
 1. **Effort log** — Summarize what was accomplished today (track effort, not outcomes)
 2. **Debrief check** — Were there conversations today that weren't debriefed? If so, flag them.
-3. **Loop review** — Call `loop_list` to surface open loops. Close any that are resolved. Flag stale ones.
+3. **Loop review** — Read `kipi://loops/open` resource to surface open loops. Close any that are resolved. Flag stale ones.
 4. **Canonical drift check** — Were canonical files changed today? Do they have proper decision tags?
 5. **Tomorrow preview** — What's on the calendar? What loops are due? What actions were deferred?
 6. **Auto-chain to /q-handoff** — Generate session context note (see `/q-handoff` skill)
 
 ## MCP tools used
 
-`loop_list`, `loop_close`, `loop_stats`, `log_step`
+`kipi://loops/open` (resource), `loop_close`, `kipi://loops/stats` (resource), `log_step`
 
 ## Output rules
 

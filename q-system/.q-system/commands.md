@@ -379,9 +379,9 @@ This step replaces the need to manually run `/q-begin` or `/q-end`. The founder 
   # Escalate all loops based on age
   Use the `loop_escalate` MCP tool
   # Check stats
-  Use the `loop_stats` MCP tool
+  Use the `kipi://loops/stats` MCP resource
   # List any loops at level 2+ (need attention)
-  Use the `loop_list` MCP tool with min_level=2
+  Use the `kipi://loops/open` MCP resource (filter for min_level=2)
   ```
   **Auto-close logic (run during Steps 1 and 3.8):**
   - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: use the `loop_close` MCP tool with loop_id, resolution="email reply detected", closed_by="auto_gmail"
@@ -979,7 +979,7 @@ If the person already has an open loop, `loop_open` will auto-increment touch_co
 
 This is the core loop-closing forcing function. It reads all open loops and generates follow-up actions.
 
-1. Use the `loop_list` MCP tool with min_level=1 to get all loops at level 1+ (3+ days old)
+1. Use the `kipi://loops/open` MCP resource (filter for min_level=1) to get all loops at level 1+ (3+ days old)
 2. **Level 1 loops (3-6 days):** Generate a copy-paste follow-up message for each. Add as action card in morning log. Show in Pipeline Follow-ups section of HTML with yellow `daysAgo` tag.
 3. **Level 2 loops (7-13 days):** Generate follow-up AND flag prominently. Show at top of Pipeline Follow-ups with red `daysAgo` tag. If touch_count >= 3 on same channel, switch to a different channel.
 4. **Level 3 loops (14+ days):** Present forced choice to founder:
@@ -1515,7 +1515,7 @@ Catches sessions that ended without `/q-checkpoint` or `/q-end`.
 
 > **GATE CHECK (mandatory before starting Step 8):**
 > 1. Read the morning log from disk: `cat q-system/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
-> 1b. Check for unresolved level 3 loops: use the `loop_list` MCP tool with min_level=3 - if any exist, STOP. Force-close decisions must happen before HTML generation.
+> 1b. Check for unresolved level 3 loops: use the `kipi://loops/open` MCP resource (filter for min_level=3) - if any exist, STOP. Force-close decisions must happen before HTML generation.
 > 1c. Verify Deliverables Checklist (see preflight.md Section 5): day-specific content pieces, pipeline follow-ups, loop review items.
 > 2. If missing list is empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=true
 > 3. If missing list is not empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=false, missing="step1,step2" then STOP and report.
@@ -1760,7 +1760,7 @@ If Notion MCP is down, skip silently and note "Notion sync deferred" in the hand
 
 1. **Read the schema:** `marketing/templates/schedule-data-schema.md` defines the exact JSON format.
 2. **Generate JSON:** Write `output/schedule-data-YYYY-MM-DD.json` conforming to the schema.
-3. **Build HTML:** Use the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
+3. **Build HTML:** Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 4. **Open in browser:** `open output/daily-schedule-YYYY-MM-DD.html` or use Chrome MCP.
 5. **Telegram push (if configured):** Send top 3 actions via Telegram MCP.
 

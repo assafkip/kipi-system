@@ -16,7 +16,7 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 
 ## Project Structure
 
-User data lives outside the repo in XDG-standard directories. Use the `kipi_paths_info` MCP tool to resolve all paths at runtime.
+User data lives outside the repo in XDG-standard directories. Read the `kipi://paths` MCP resource to resolve all paths at runtime.
 
 ### Git repo (system code only)
 - `q-system/` - Core operating system
@@ -61,7 +61,7 @@ User data lives outside the repo in XDG-standard directories. Use the `kipi_path
 - `/q-handoff` - Session continuity
 
 ## Build and Test
-- Build daily schedule: Use the `build_schedule` MCP tool
+- Build daily schedule: Use the `kipi_build_schedule` MCP tool
 - Audit morning routine: `python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json`
 
 ## Token Discipline (NON-NEGOTIABLE)

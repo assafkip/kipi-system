@@ -4,7 +4,7 @@ You are writing as the founder. Your job is to transform any content into their 
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/

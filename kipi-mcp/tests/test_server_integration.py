@@ -9,9 +9,6 @@ from kipi_mcp.loop_tracker import LoopTracker
 
 
 EXPECTED_TOOLS = [
-    "kipi_list",
-    "kipi_home",
-    "kipi_paths_info",
     "kipi_migrate",
     "kipi_new_instance",
     "kipi_update",
@@ -29,12 +26,17 @@ EXPECTED_TOOLS = [
     "loop_force_close",
     "loop_escalate",
     "loop_touch",
-    "loop_list",
-    "loop_stats",
     "loop_prune",
-    "load_step",
-    "create_from_template",
-    "build_schedule",
+    "kipi_load_step",
+    "kipi_create_template",
+    "kipi_build_schedule",
+]
+
+EXPECTED_RESOURCES = [
+    "kipi://paths",
+    "kipi://instances",
+    "kipi://loops/open",
+    "kipi://loops/stats",
 ]
 
 KIPI_MCP_DIR = "/Users/ike/code/kipi-system/kipi-mcp"
@@ -63,7 +65,6 @@ def test_server_process_starts():
 
     try:
         stdout, stderr = proc.communicate(input=init_msg.encode(), timeout=5)
-        # Server should produce a JSON-RPC response on stdout
         assert proc.returncode is not None
         lines = [l for l in stdout.decode().strip().splitlines() if l.strip()]
         assert len(lines) >= 1, f"Expected JSON-RPC response, got empty stdout. stderr: {stderr.decode()[:500]}"
@@ -77,7 +78,7 @@ def test_server_process_starts():
 
 
 def test_all_tools_registered():
-    """Verify all 26 expected tool names are registered on the FastMCP instance."""
+    """Verify all expected tool names are registered on the FastMCP instance."""
     from kipi_mcp.server import mcp
 
     registered = list(mcp._tool_manager._tools.keys())
@@ -90,24 +91,33 @@ def test_all_tools_registered():
     )
 
 
-def test_kipi_home_returns_valid_path():
-    """Call kipi_home tool function directly and verify it returns a valid JSON path."""
-    from kipi_mcp.server import kipi_home
+def test_all_resources_registered():
+    """Verify all expected resource URIs are registered."""
+    from kipi_mcp.server import mcp
 
-    result = kipi_home()
-    data = json.loads(result)
-    assert "kipi_home" in data
-    assert len(data["kipi_home"]) > 0
+    # Resource manager stores resources by URI
+    resources = list(mcp._resource_manager._resources.keys())
+    for uri in EXPECTED_RESOURCES:
+        assert uri in resources, f"Resource '{uri}' not registered. Found: {resources}"
 
 
-def test_kipi_list_returns_registry_data():
-    """Call kipi_list and verify it returns JSON with 'instances' key."""
-    from kipi_mcp.server import kipi_list
+def test_resource_paths_returns_dirs():
+    """Verify kipi://paths resource returns all 4 directory keys."""
+    from kipi_mcp.server import resource_paths
 
-    result = kipi_list()
-    data = json.loads(result)
-    # Either has "instances" key (success) or "error" key (registry missing, still valid)
-    assert "instances" in data or "error" in data
+    result = json.loads(resource_paths())
+    assert "config_dir" in result
+    assert "data_dir" in result
+    assert "state_dir" in result
+    assert "repo_dir" in result
+
+
+def test_resource_instances_returns_structure():
+    """Verify kipi://instances resource returns expected keys."""
+    from kipi_mcp.server import resource_instances
+
+    result = json.loads(resource_instances())
+    assert "instances" in result or "error" in result
 
 
 def test_log_init_creates_file(tmp_path):
@@ -133,10 +143,15 @@ def test_log_init_creates_file(tmp_path):
 def test_loop_list_empty_when_no_file(tmp_path):
     """Verify loop_list returns empty list when no loops file exists."""
     loop_file = tmp_path / "nonexistent-dir" / "open-loops.json"
-    # Parent dir must exist for _save to work
     loop_file.parent.mkdir(parents=True)
     tracker = LoopTracker(loop_file)
 
     assert not loop_file.exists()
     result = tracker.list(min_level=0)
     assert result == []
+
+
+def test_main_entry_point_exists():
+    """Verify the main() function exists for project.scripts entry point."""
+    from kipi_mcp.server import main
+    assert callable(main)

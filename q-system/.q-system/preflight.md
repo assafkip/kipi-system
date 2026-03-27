@@ -266,7 +266,7 @@ Before Step 8 can proceed, Claude MUST verify these deliverables exist in today'
 **Loop checks (every day):**
 - [ ] Step 0b.5 ran (loop escalation)
 - [ ] Step 5.86 ran (loop review with follow-ups generated)
-- [ ] No level 3 loops remain unresolved (`loop_list` MCP tool with min_level=3 returns empty)
+- [ ] No level 3 loops remain unresolved (`kipi://loops/open` MCP resource (filter for min_level=3) returns empty)
 - [ ] Every action card generated today has a corresponding loop opened in `output/open-loops.json`
 
 **If any deliverable is missing:** Do NOT proceed to Step 8. Go back and generate it. The HTML is useless without copy-paste content.
@@ -281,13 +281,13 @@ Before Step 8 can proceed, Claude MUST verify these deliverables exist in today'
 
 Before executing ANY step, Claude MUST run the step loader to re-inject that step's requirements into context:
 ```
-Use the `load_step` MCP tool with the step number
+Use the `kipi_load_step` MCP tool with the step number
 ```
 This combats "Lost in the Middle" - the research-proven phenomenon where LLMs forget instructions from earlier in the conversation. The step loader extracts the specific step definition from commands.md and prints it fresh. Claude MUST read this output before executing the step. This is NOT optional. Skipping the step loader is equivalent to skipping the step itself.
 
 ### HTML Build Verification (AUTOMATIC)
 
-The `build_schedule` MCP tool automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
+The `kipi_build_schedule` MCP tool automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
 - Pipeline follow-ups section exists with 3+ items with copy-paste text
 - Day-specific content exists (signals Mon/Wed/Fri, TL Tue/Thu, Medium Mon, Kipi Wed)
 - Section ordering is correct (follow-ups before new leads)

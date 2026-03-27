@@ -12,7 +12,7 @@ Do not proceed with any other steps.
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/
@@ -53,7 +53,7 @@ Report what was skipped in the morning briefing summary.
    - Parallel phases: dispatch multiple Agent calls in a single message
    - Each agent reads only the bus/ files it needs and writes one JSON result
 6. **Log each step** via `log_step` MCP tool as phases complete
-7. **Build daily schedule** via `build_schedule` MCP tool
+7. **Build daily schedule** via `kipi_build_schedule` MCP tool
 8. **Run audit harness:** `python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-{date}.json`
 9. **Show audit results** to the founder. This is NOT optional.
 
@@ -68,15 +68,15 @@ If any MCP server is unavailable or any step fails during execution, STOP the en
 
 ## MCP tools used
 
-`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `loop_list`, `loop_stats`, `load_step`, `build_schedule`
+`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`, `loop_escalate`, `kipi://loops/open` (resource), `kipi://loops/stats` (resource), `kipi_load_step`, `kipi_build_schedule`
 
 ## Output rules
 
 - Apply `founder-voice` skill to all written output
 - Apply `audhd-executive-function` skill if enabled in founder-profile.md — this governs ALL output from Step 0e onward
-- Schedule HTML is generated ONLY via `build_schedule` MCP tool from JSON data. Claude NEVER writes raw HTML.
+- Schedule HTML is generated ONLY via `kipi_build_schedule` MCP tool from JSON data. Claude NEVER writes raw HTML.
 - Full post text rule: agents reading social posts MUST save actual post text, not summaries
 
 ## Fallback
 
-If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `load_step` MCP tool.
+If the agent pipeline fails, the old monolithic steps in `.q-system/steps/` still work via the `kipi_load_step` MCP tool.

@@ -6,7 +6,7 @@ Runs BEFORE the HTML build. If verification fails, the build is blocked.
 This is the external executive function for the LLM - it doesn't trust
 self-reported completion. It checks the actual output.
 
-Called by the build_schedule MCP tool automatically.
+Called by the kipi_build_schedule MCP tool automatically.
 Can also be run standalone: python3 verify-schedule.py <json-file> [day_of_week]
 
 Exit codes:

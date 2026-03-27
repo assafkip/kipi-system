@@ -12,7 +12,7 @@
 
 1. **Read the schema:** `marketing/templates/schedule-data-schema.md` defines the exact JSON format.
 2. **Generate JSON:** Write `output/schedule-data-YYYY-MM-DD.json` conforming to the schema.
-3. **Build HTML:** Use the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
+3. **Build HTML:** Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 4. **Open in browser:** `open output/daily-schedule-YYYY-MM-DD.html` or use Chrome MCP.
 5. **Telegram push (if configured):** Send top 3 actions via Telegram MCP.
 

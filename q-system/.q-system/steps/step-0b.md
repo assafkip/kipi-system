@@ -22,9 +22,9 @@
   # Escalate all loops based on age
   Use the `loop_escalate` MCP tool
   # Check stats
-  Use the `loop_stats` MCP tool
+  Use the `kipi://loops/stats` MCP resource
   # List any loops at level 2+ (need attention)
-  Use the `loop_list` MCP tool with min_level=2
+  Use the `kipi://loops/open` MCP resource (filter for min_level=2)
   ```
   **Auto-close logic (run during Steps 1 and 3.8):**
   - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: use the `loop_close` MCP tool with the loop_id, resolution="email reply detected", closed_by="auto_gmail"

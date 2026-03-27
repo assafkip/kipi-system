@@ -5,7 +5,7 @@
 ## How It Works
 
 1. Claude generates a JSON file at `output/schedule-data-YYYY-MM-DD.json`
-2. Build runs via: the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
+2. Build runs via: the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 3. HTML opens in browser
 
 Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.

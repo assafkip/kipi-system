@@ -12,7 +12,7 @@ Do not proceed with any other steps.
 
 ## Path resolution
 
-Call the `kipi_paths_info` MCP tool to get resolved directories. Key directories:
+Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`~/.config/kipi/`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`~/.local/share/kipi/`): my-project/, memory/
 - **State** (`~/.local/state/kipi/`): output/, bus/
@@ -44,7 +44,7 @@ Read these files:
 ## Process
 
 1. Identify the output type and audience from arguments (ask if unclear)
-2. Check `.q-system/agent-pipeline/templates/` for a matching template — use `create_from_template` MCP tool if one exists
+2. Check `.q-system/agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
 3. Read relevant canonical files for source material
 4. Generate the deliverable
 5. Run inter-skill review gate: verify all factual claims against canonical files. Mark unvalidated claims with `{{UNVALIDATED}}`.
@@ -53,7 +53,7 @@ Read these files:
 
 ## MCP tools used
 
-`create_from_template`
+`kipi_create_template`
 
 ## Output rules
 
