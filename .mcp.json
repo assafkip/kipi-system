@@ -2,13 +2,24 @@
   "mcpServers": {
     "kipi": {
       "command": "uv",
-      "args": [
-        "--directory",
-        "/Users/ike/code/kipi-system/kipi-mcp",
-        "run",
-        "python",
-        "src/kipi_mcp/server.py"
-      ]
+      "args": ["--directory", "${CLAUDE_PLUGIN_ROOT}/kipi-mcp", "run", "kipi-mcp"],
+      "env": {
+        "KIPI_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}",
+        "KIPI_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    },
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/gmail-mcp"]
+    },
+    "google-calendar": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/google-calendar-mcp"]
+    },
+    "apify": {
+      "command": "npx",
+      "args": ["-y", "@apify/actors-mcp-server", "--tools", "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"],
+      "env": { "APIFY_TOKEN": "${user_config.apify_token}" }
     }
   }
 }

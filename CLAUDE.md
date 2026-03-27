@@ -16,7 +16,7 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 
 ## Project Structure
 
-User data lives outside the repo in XDG-standard directories. Read the `kipi://paths` MCP resource to resolve all paths at runtime.
+User data lives outside the repo under `${CLAUDE_PLUGIN_DATA}` (provided by Claude Code plugin system). Read the `kipi://paths` MCP resource to resolve all paths at runtime.
 
 ### Git repo (system code only)
 - `q-system/` - Core operating system
@@ -26,8 +26,8 @@ User data lives outside the repo in XDG-standard directories. Read the `kipi://p
     - `orchestrator-design.md` - Phase execution plan
     - `templates/` - Reusable folder structures for repeatable outputs
 - `kipi-mcp/` - Python MCP server package (schedule builder, step logger, loop tracker, template creator, validation, instance management)
-  - `paths.py` - XDG path resolution for all user data directories
-  - `migrator.py` - Migration tool from legacy in-repo layout to XDG directories
+  - `paths.py` - Path resolution for all user data directories
+  - `migrator.py` - Migration tool from legacy in-repo layout to plugin directories
   - `canonical/` - Default/template canonical files
   - `marketing/` - Content pipeline, templates, assets, guardrails
   - `methodology/` - Debrief template and workflows
@@ -35,11 +35,11 @@ User data lives outside the repo in XDG-standard directories. Read the `kipi://p
 - `.claude/rules/` - Security, coding standards, content output rules
 
 ### User data directories
-All paths are resolved at runtime by platformdirs and vary by OS (e.g. `~/.config/kipi-system/` on Linux, `~/Library/Application Support/kipi-system/` on macOS). Read the `kipi://paths` MCP resource for actual resolved paths.
+All user data lives under `${CLAUDE_PLUGIN_DATA}` (provided by Claude Code plugin system). Read the `kipi://paths` MCP resource for resolved paths.
 
-- **Config** (`{config_dir}/`): founder-profile, canonical files, voice, marketing config
-- **Data** (`{data_dir}/`): my-project/, memory/
-- **State** (`{state_dir}/`): output/, bus/
+- **Global** (`{base}/global/`): voice DNA, AUDHD profile (shared across instances)
+- **Per-instance** (`{base}/instances/{name}/`): founder-profile, canonical/, marketing/, my-project/, memory/, output/, bus/, metrics.db
+- **Registry** (`{base}/instance-registry.json`): maps instances to metadata
 
 ## Conventions
 - Never produce fluff - every sentence must carry information or enable action

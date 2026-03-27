@@ -61,18 +61,15 @@ STATE_DIRS = [
 
 
 class Migrator:
-    def __init__(self, paths, instance_name: str | None = None):
+    def __init__(self, paths, instance_name: str):
         """paths is a KipiPaths instance or duck-type with config_dir, data_dir, state_dir, repo_dir.
 
         Args:
-            instance_name: If provided, overrides the instance name on paths and
-                writes a .kipi-instance marker during migrate(). Required when
-                migrating from a legacy layout that has no .kipi-instance file.
+            instance_name: The instance name for this migration. Always required
+                in plugin mode — the caller (server.py or the skill) provides it.
         """
         self.paths = paths
-        self._instance_override = instance_name
-        if instance_name:
-            self.paths.instance = instance_name
+        self.paths.instance = instance_name
 
     def _target_dir(self, base: str) -> Path:
         if base == "config":
@@ -84,11 +81,6 @@ class Migrator:
         elif base == "global":
             return self.paths.global_dir
         raise ValueError(f"Unknown base: {base}")
-
-    def _has_instance_marker(self) -> bool:
-        """Check if .kipi-instance marker exists in the repo."""
-        marker = self.paths.repo_dir / ".kipi-instance"
-        return marker.exists() and bool(marker.read_text().strip())
 
     def _find_legacy_db(self) -> Path | None:
         """Find metrics.db in old repo locations."""
@@ -144,47 +136,21 @@ class Migrator:
         elif legacy_db and db_dest.exists():
             already_migrated.append(str(legacy_db.relative_to(self.paths.repo_dir)))
 
-        has_marker = self._has_instance_marker()
         return {
             "needs_migration": needs_migration,
             "already_migrated": already_migrated,
             "templates_skipped": templates,
             "instance_name": self.paths.instance,
-            "has_instance_marker": has_marker,
-            "instance_name_is_fallback": not has_marker and not self._instance_override,
         }
 
     def migrate(self, dry_run: bool = False) -> dict:
-        """Copy files from old repo locations to XDG directories.
-
-        Raises ValueError if legacy layout is detected but no instance_name
-        was provided and no .kipi-instance marker exists.
-        """
-        if not self._has_instance_marker() and not self._instance_override:
-            raise ValueError(
-                "Legacy layout detected but no instance name set. "
-                "Pass instance_name to Migrator or call kipi_set_instance_name first. "
-                "Use kipi_suggest_instance_name to generate one from your company name."
-            )
-
+        """Copy files from old repo locations to plugin data directory."""
         if not dry_run:
             self.paths.ensure_dirs()
 
         copied = []
         skipped = []
         errors = []
-
-        # Write .kipi-instance marker if we're setting a new instance name
-        if self._instance_override:
-            marker = self.paths.repo_dir / ".kipi-instance"
-            if dry_run:
-                copied.append({"from": "(generated)", "to": str(marker), "note": f"instance={self._instance_override}"})
-            else:
-                try:
-                    marker.write_text(self._instance_override + "\n")
-                    copied.append({"from": "(generated)", "to": str(marker), "note": f"instance={self._instance_override}"})
-                except Exception as e:
-                    errors.append({"file": ".kipi-instance", "error": str(e)})
 
         # Migrate individual files
         for old_rel, new_rel, base in FILE_MAP:

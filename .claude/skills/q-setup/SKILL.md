@@ -4,11 +4,13 @@ Run this on first use or to reconfigure integrations. Walks through setup one st
 
 ## Path resolution
 
-Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
+All user data lives under `${CLAUDE_PLUGIN_DATA}` (provided by Claude Code plugin system). Read the `kipi://paths` MCP resource to get resolved directories. Key directories:
 - **Config** (`{config_dir}`): founder-profile, enabled-integrations, canonical/, voice/, marketing/
 - **Data** (`{data_dir}`): my-project/, memory/
 - **State** (`{state_dir}`): output/, bus/
 - **Repo**: system code (agents, templates, steps) stays in the git repo
+
+In plugin mode, `{config_dir}`, `{data_dir}`, and `{state_dir}` all resolve to the same instance directory under `${CLAUDE_PLUGIN_DATA}/instances/{name}/`.
 
 ## Detection
 
@@ -42,7 +44,7 @@ Ask:
 2. Show the suggestion: "I'll name this instance **eqbit-dragon12**. This is how kipi tracks your data separately from other projects. Want to keep it, or pick something different?"
 3. If they want to change it, let them type a new name. Re-check uniqueness by calling `kipi_suggest_instance_name` again (it returns existing names).
 4. If the name collides with an existing instance, tell them and suggest a new one.
-5. Once confirmed, call `kipi_set_instance_name(name=<chosen_name>)` to write `.kipi-instance`.
+5. Once confirmed, call `kipi_set_instance_name(name=<chosen_name>)` to register the instance.
 
 **Save to:** `{config_dir}/founder-profile.md`
 

@@ -5,7 +5,6 @@ description = "MCP server for kipi founder OS instance management"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
-    "platformdirs>=4.9.4",
 ]
 
 [project.optional-dependencies]

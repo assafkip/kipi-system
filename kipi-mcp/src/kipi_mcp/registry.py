@@ -9,6 +9,8 @@ class RegistryManager:
         self.registry_path = registry_path
 
     def load(self) -> dict:
+        if not self.registry_path.exists():
+            return {"instances": [], "excluded": [], "eliminated": []}
         with open(self.registry_path) as f:
             return json.load(f)
 

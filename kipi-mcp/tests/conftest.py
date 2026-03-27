@@ -9,9 +9,7 @@ from kipi_mcp.paths import KipiPaths
 def tmp_kipi_paths(tmp_path):
     """Create a KipiPaths with all dirs rooted under tmp_path."""
     paths = KipiPaths(
-        config_dir=tmp_path / "config",
-        data_dir=tmp_path / "data",
-        state_dir=tmp_path / "state",
+        base_dir=tmp_path / "base",
         repo_dir=tmp_path / "repo",
         instance="test-instance",
     )

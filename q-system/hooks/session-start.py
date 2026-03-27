@@ -19,23 +19,23 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-try:
-    from kipi_mcp.paths import KipiPaths
-    _paths = KipiPaths()
-except ImportError:
-    try:
-        from types import SimpleNamespace
-        from platformdirs import user_data_path, user_state_path
-        _paths = SimpleNamespace(
-            memory_dir=user_data_path("kipi") / "memory",
-            output_dir=user_state_path("kipi") / "output",
-        )
-    except ImportError:
-        from types import SimpleNamespace
-        _paths = SimpleNamespace(
-            memory_dir=Path.home() / ".local" / "share" / "kipi" / "memory",
-            output_dir=Path.home() / ".local" / "state" / "kipi" / "output",
-        )
+import os
+from types import SimpleNamespace
+
+_plugin_data = os.environ.get("KIPI_PLUGIN_DATA")
+if _plugin_data:
+    _base = Path(_plugin_data)
+    _instance = os.environ.get("KIPI_INSTANCE", "default")
+    _inst_dir = _base / "instances" / _instance
+    _paths = SimpleNamespace(
+        memory_dir=_inst_dir / "memory",
+        output_dir=_inst_dir / "output",
+    )
+else:
+    _paths = SimpleNamespace(
+        memory_dir=Path.home() / ".kipi-system" / "instances" / "default" / "memory",
+        output_dir=Path.home() / ".kipi-system" / "instances" / "default" / "output",
+    )
 
 
 def get_sentinel_path():
