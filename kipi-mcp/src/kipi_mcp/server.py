@@ -78,7 +78,7 @@ backup_manager = BackupManager(paths)
 
 try:
     from kipi_mcp.validator import Validator
-    validator = Validator(kipi_home=paths.repo_dir, registry=registry)
+    validator = Validator(paths=paths, registry=registry)
 except ImportError:
     validator = None
     logger.info("Validator module not available, kipi_validate tool will be disabled")

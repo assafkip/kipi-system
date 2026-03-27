@@ -1,6 +1,6 @@
 ---
 paths:
-  - "q-system/output/**"
+  - "~/.local/state/kipi/output/**"
   - "q-system/marketing/**"
 ---
 

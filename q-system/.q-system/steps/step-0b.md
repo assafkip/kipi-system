@@ -1,7 +1,7 @@
 - **0b - Action card pickup + missed debrief detection:**
   **HARNESS: Check for exported actions JSON FIRST (before asking the founder anything).**
   1. Check `~/Downloads/actions-YYYY-MM-DD.json` (yesterday's date)
-  2. Also check `q-system/output/actions-YYYY-MM-DD.json` (backup location)
+  2. Also check `{{STATE_DIR}}/output/actions-YYYY-MM-DD.json` (backup location)
   3. If found, parse it:
      - `"done"` items = founder confirmed they did it. Update state files (LinkedIn Tracker, Contacts DB, engagement log, lead signals). No need to ask.
      - `"skipped"` items = founder chose not to. No follow-up needed. Don't surface these again.

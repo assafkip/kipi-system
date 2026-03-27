@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from kipi_mcp.paths import KipiPaths
     from kipi_mcp.registry import RegistryManager
 
 KTLYST_PATTERNS = [r"KTLYST", r"ktlyst", r"q-ktlyst", r"re-breach", r"re\.breach"]
@@ -33,8 +34,9 @@ DOC_FILES = ["SETUP.md", "UPDATE.md", "CONTRIBUTE.md", "ARCHITECTURE.md"]
 
 
 class Validator:
-    def __init__(self, kipi_home: Path, registry: RegistryManager):
-        self.kipi_home = kipi_home
+    def __init__(self, paths: KipiPaths, registry: RegistryManager):
+        self.paths = paths
+        self.repo_dir = paths.repo_dir
         self.registry = registry
 
     def run(self, phase: int = 5, verbose: bool = False) -> dict:
@@ -85,7 +87,7 @@ class Validator:
         self._check(
             checks,
             "q-system/ directory exists in skeleton",
-            (self.kipi_home / "q-system").is_dir(),
+            (self.repo_dir / "q-system").is_dir(),
         )
         for inst in self.registry.list_instances():
             p = Path(inst["path"])
@@ -98,9 +100,9 @@ class Validator:
 
     def _phase_1(self, checks: list, verbose: bool = False) -> None:
         agents_dir = (
-            self.kipi_home / "q-system" / ".q-system" / "agent-pipeline" / "agents"
+            self.repo_dir / "q-system" / ".q-system" / "agent-pipeline" / "agents"
         )
-        qsys = self.kipi_home / "q-system" / ".q-system"
+        qsys = self.repo_dir / "q-system" / ".q-system"
 
         # Gate 1.1 - Agent files
         self._check(checks, "Agent directory exists", agents_dir.is_dir())
@@ -195,7 +197,7 @@ class Validator:
             self._check(checks, f"{script} exists", (qsys / script).exists())
 
         # Gate 1.3 - Canonical templates
-        canonical_dir = self.kipi_home / "q-system" / "canonical"
+        canonical_dir = self.paths.canonical_dir
         for fname in CANONICAL_FILES:
             self._check(
                 checks,
@@ -203,7 +205,7 @@ class Validator:
                 (canonical_dir / fname).exists(),
             )
 
-        profile = self.kipi_home / "q-system" / "my-project" / "founder-profile.md"
+        profile = self.paths.founder_profile
         self._check(checks, "founder-profile.md exists", profile.exists())
         if profile.exists():
             content = profile.read_text(errors="replace")
@@ -214,7 +216,7 @@ class Validator:
             )
 
         # Gate 1.4 - Voice skill
-        voice_dir = self.kipi_home / ".claude" / "skills" / "founder-voice"
+        voice_dir = self.repo_dir / ".claude" / "skills" / "founder-voice"
         self._check(
             checks,
             "founder-voice/SKILL.md exists",
@@ -239,8 +241,8 @@ class Validator:
             )
 
         # Gate 1.5 - CLAUDE.md
-        root_claude = self.kipi_home / "CLAUDE.md"
-        q_claude = self.kipi_home / "q-system" / "CLAUDE.md"
+        root_claude = self.repo_dir / "CLAUDE.md"
+        q_claude = self.repo_dir / "q-system" / "CLAUDE.md"
         self._check(checks, "Root CLAUDE.md exists", root_claude.exists())
         self._check(checks, "q-system/CLAUDE.md exists", q_claude.exists())
         if q_claude.exists():
@@ -256,7 +258,7 @@ class Validator:
             )
 
         # Full skeleton sweep
-        q_system_dir = self.kipi_home / "q-system"
+        q_system_dir = self.repo_dir / "q-system"
         if q_system_dir.is_dir():
             all_patterns = KTLYST_PATTERNS + HARDCODED_PATH_PATTERNS
             sweep_hits = self._grep_dir(
@@ -382,11 +384,11 @@ class Validator:
             self._check(
                 checks,
                 f"Documentation: {fname} exists",
-                (self.kipi_home / fname).exists(),
+                (self.repo_dir / fname).exists(),
             )
 
         for fname in DOC_FILES:
-            fpath = self.kipi_home / fname
+            fpath = self.repo_dir / fname
             if fpath.exists():
                 hits = self._grep_dir(fpath.parent, KTLYST_PATTERNS)
                 doc_hits = [h for h in hits if Path(h).name == fname]

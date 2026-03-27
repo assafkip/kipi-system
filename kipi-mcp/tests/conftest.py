@@ -13,6 +13,7 @@ def tmp_kipi_paths(tmp_path):
         data_dir=tmp_path / "data",
         state_dir=tmp_path / "state",
         repo_dir=tmp_path / "repo",
+        instance="test-instance",
     )
     paths.ensure_dirs()
     return paths

@@ -125,7 +125,7 @@ Launch in ONE message:
 1. Run: Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-{date}.json" and html_path="output/daily-schedule-{date}.html"
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
 3. Run: `python3 q-system/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
-4. Run: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-{date}.json`
+4. Run: `python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-{date}.json`
 5. Show audit output to founder
 Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 

@@ -274,7 +274,7 @@ def audit(log_path):
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("Usage: python3 audit-morning.py <morning-log-YYYY-MM-DD.json>")
-        print("Example: python3 audit-morning.py q-system/output/morning-log-2026-03-13.json")
+        print("Example: python3 audit-morning.py ~/.local/state/kipi/output/morning-log-2026-03-13.json")
         sys.exit(1)
     verdict = audit(sys.argv[1])
     sys.exit(0 if verdict == "COMPLETE" else 1)

@@ -16,7 +16,7 @@ Use the `log_deliver_cards` MCP tool with date=DATE
 
 **12c. Run the audit harness:**
 ```bash
-python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-DATE.json
+python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-DATE.json
 ```
 **Always show the audit output to the founder.** This is not optional.
 

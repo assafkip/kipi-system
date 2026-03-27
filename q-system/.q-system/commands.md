@@ -358,7 +358,7 @@ This step replaces the need to manually run `/q-begin` or `/q-end`. The founder 
 - **0b - Action card pickup + missed debrief detection:**
   **HARNESS: Check for exported actions JSON FIRST (before asking the founder anything).**
   1. Check `~/Downloads/actions-YYYY-MM-DD.json` (yesterday's date)
-  2. Also check `q-system/output/actions-YYYY-MM-DD.json` (backup location)
+  2. Also check `{{STATE_DIR}}/output/actions-YYYY-MM-DD.json` (backup location)
   3. If found, parse it:
      - `"done"` items = founder confirmed they did it. Update state files (LinkedIn Tracker, Contacts DB, engagement log, lead signals). No need to ask.
      - `"skipped"` items = founder chose not to. No follow-up needed. Don't surface these again.
@@ -1514,7 +1514,7 @@ Catches sessions that ended without `/q-checkpoint` or `/q-end`.
 **Step 8 — Output morning briefing (AUDHD executive function rules apply):**
 
 > **GATE CHECK (mandatory before starting Step 8):**
-> 1. Read the morning log from disk: `cat q-system/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
+> 1. Read the morning log from disk: `cat ~/.local/state/kipi/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
 > 1b. Check for unresolved level 3 loops: use the `kipi://loops/open` MCP resource (filter for min_level=3) - if any exist, STOP. Force-close decisions must happen before HTML generation.
 > 1c. Verify Deliverables Checklist (see preflight.md Section 5): day-specific content pieces, pipeline follow-ups, loop review items.
 > 2. If missing list is empty: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_8", passed=true
@@ -1822,7 +1822,7 @@ Use the `log_deliver_cards` MCP tool with date=DATE
 
 **12c. Run the audit harness:**
 ```bash
-python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-DATE.json
+python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-DATE.json
 ```
 **Always show the audit output to the founder.** This is not optional.
 

@@ -136,7 +136,7 @@ The morning routine is too large for one context window. Plan for splits.
 
 ## 4. Step Completion Log
 
-Every step writes to `output/morning-log-YYYY-MM-DD.json` as it completes. This is the flight recorder.
+Every step writes to `{{STATE_DIR}}/output/morning-log-YYYY-MM-DD.json` as it completes. This is the flight recorder.
 
 ### Log Format
 
@@ -502,7 +502,7 @@ The audit script (`q-system/.q-system/audit-morning.py`) checks:
 
 Run:
 ```bash
-python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json
+python3 q-system/.q-system/audit-morning.py ~/.local/state/kipi/output/morning-log-YYYY-MM-DD.json
 ```
 
 Show the output to the founder. This is not optional. If the verdict is not COMPLETE, the founder sees exactly what was missed.
