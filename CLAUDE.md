@@ -22,7 +22,7 @@ User data lives outside the repo in XDG-standard directories. Read the `kipi://p
 - `q-system/` - Core operating system
   - Commands, preflight, audit harness
   - `agent-pipeline/` - Decomposed agent architecture for morning routine
-    - `agents/` - 34 agent prompt files (one per task)
+    - `agents/` - 49 agent prompt files (one per task)
     - `orchestrator-design.md` - Phase execution plan
     - `templates/` - Reusable folder structures for repeatable outputs
 - `kipi-mcp/` - Python MCP server package (schedule builder, step logger, loop tracker, template creator, validation, instance management)
@@ -49,7 +49,7 @@ All paths are resolved at runtime by platformdirs and vary by OS (e.g. `~/.confi
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 
 ## Commands
-- `/q-morning` - Full morning briefing (agent pipeline: 8 phases, 34 sub-agents). Reads orchestrator from `agent-pipeline/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
+- `/q-morning` - Full morning briefing (agent pipeline: 9 phases, 49 sub-agents). Reads orchestrator from `agent-pipeline/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
 - `/q-create` - Generate specific output. Use templates from `agent-pipeline/templates/` for repeatable outputs (deck, outreach, content, debrief).

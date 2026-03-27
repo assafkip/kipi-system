@@ -55,6 +55,37 @@ See schedule-data-schema.md "Post Visuals" section for the full schema. Every po
 - {{DATA_DIR}}/my-project/relationships.md (for meeting context)
 - {{CONFIG_DIR}}/canonical/objections.md (for meeting prep)
 
+## "Start Here" Task Selection (ENFORCED)
+
+Before building the schedule JSON, pick ONE task for the top of the briefing. This removes the "what do I do first" decision. Selection priority (first match wins):
+
+1. **Missed debrief** (from session-bootstrap data) — memory decays fast, do it now. Pre-fill `/q-debrief [Name]`.
+2. **Hot prospect responded** — DM reply or email from someone with temperature score 8+. Pre-fill the reply draft.
+3. **Meeting in the next 2 hours** that needs prep — link to meeting prep section.
+4. **Day-specific content task** (see cadence below) — include copy-paste-ready draft.
+5. **Quick Win action** with highest impact (value drop to Hot prospect, or warm intro ask) — pre-fill message.
+
+If nothing urgent, pick the easiest Quick Win to build momentum. Never pick a Deep Focus task as Start Here.
+
+**TODAY'S FOCUS (CT1):** After Start Here, select the next 3-5 most impactful items across ALL sections. This is the "if you only have 30 minutes" list:
+- Mix of Quick Wins + at most 1 Deep Focus
+- Include hot prospect responses, meeting prep due today, time-sensitive content
+- Include total time estimate
+
+**Day-specific content cadence:**
+
+| Day | Task |
+|-----|------|
+| Monday | Sourcing day + content intel |
+| Tuesday | TL post (LinkedIn carousel + X card) |
+| Wednesday | X visual post idea |
+| Thursday | TL post (LinkedIn carousel + X card) |
+| Friday | Medium article draft |
+| Saturday | Substack newsletter draft |
+| Sunday | Publish Medium + Substack |
+
+Include the day label in Start Here AND at the top of Daily Actions.
+
 ## Investor Update Check (embedded -- no separate agent)
 
 Before writing the final schedule JSON:

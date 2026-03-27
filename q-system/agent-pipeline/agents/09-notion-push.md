@@ -14,6 +14,8 @@ You are a write-back agent. Your ONLY job is to push today's action items to the
 - `{{BUS_DIR}}/value-routing.json` - value-drop actions
 - `{{BUS_DIR}}/pipeline-followup.json` - follow-up actions (if exists)
 - `{{BUS_DIR}}/loop-review.json` - loop closures to apply (if exists)
+- `{{BUS_DIR}}/outbound-actions.json` - auto-detected outbound actions to log to LinkedIn Tracker + loops to close (if exists)
+- `{{BUS_DIR}}/utm-tracking.json` - prospect engagement data to update Contact records (if exists, Mondays)
 - `{{DATA_DIR}}/my-project/notion-ids.md` - database IDs and data_source_ids
 
 ## Writes

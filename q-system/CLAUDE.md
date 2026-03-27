@@ -305,7 +305,7 @@ If any MCP server is unavailable or any step fails during `/q-morning`, STOP the
 5. Parallel phases use multiple Agent calls in a single message
 6. Each agent reads only the bus/ files it needs and writes one JSON result
 
-**Agent prompts:** `agent-pipeline/agents/` (34 files)
+**Agent prompts:** `agent-pipeline/agents/` (49 files)
 **Bus directory:** `{state_dir}/bus/{date}/`
 **Design doc:** `agent-pipeline/orchestrator-design.md`
 

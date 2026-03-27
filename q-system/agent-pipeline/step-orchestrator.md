@@ -34,9 +34,9 @@ Your context window will compact automatically as it approaches limits. Do not s
 7. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 8. **Tool permissions per agent** (principle of least privilege):
    - **Read-only agents** (analysis, scoring, compliance): Read, Glob, Grep only. No Edit, Write, Bash, or MCP writes.
-     - Applies to: 02-meeting-prep, 02-warm-intro-match, 05-temperature-scoring, 05-loop-review, 06-compliance-check, 06-positioning-check
+     - Applies to: 02-meeting-prep, 02-warm-intro-match, 05-temperature-scoring, 05-loop-review, 06-compliance-check, 06-positioning-check, 00g-monthly-checks, 00h-memory-review, 01d-graph-kb
    - **Read + bus-write agents** (data pulls, content gen): Read, Glob, Grep, Write (bus/ only). MCP reads allowed.
-     - Applies to: 00-preflight, 00b-energy-check, 01-*, 03-*, 04-*, 05-lead-sourcing, 05-pipeline-followup, 05-engagement-hitlist
+     - Applies to: 00-preflight, 00b-energy-check, 01-*, 03-*, 04-*, 05-lead-sourcing, 05-pipeline-followup, 05-engagement-hitlist, 03d-outbound-detection, 05a-site-metrics, 05b-utm-tracking
    - **Full access agents** (synthesis, build, Notion push): All tools including Bash and MCP writes.
      - Applies to: 07-synthesize, 08-visual-verify, 09-notion-push, 10-daily-checklists
    - When spawning an Agent, do NOT pass disallowed tools. If an agent attempts a write outside its scope, the orchestrator should flag it in the audit log.
@@ -59,6 +59,13 @@ Your context window will compact automatically as it approaches limits. Do not s
 - ALL downstream agents that produce actionable output MUST read energy.json and respect compression limits
 - Key consumers: 05-engagement-hitlist.md, 07-synthesize.md
 
+### Phase 0.6: Monthly Checks + Memory Review (conditional, PARALLEL where applicable)
+- IF 1st of month: Spawn 00g-monthly-checks.md (sonnet) — decision origin audit, memory promotion, prediction calibration, outreach A/B
+- IF Monday: Spawn 00h-memory-review.md (sonnet) — reviews weekly/ files, recommends promote/archive/keep
+- If both conditions match (Monday the 1st), launch both in ONE message (parallel)
+- If neither condition matches, skip entirely
+- Verify: bus/{date}/monthly-checks.json and/or bus/{date}/memory-review.json exist (check skipped field)
+
 ### Phase 0.7: Canonical Digest (1 agent, sequential, MUST COMPLETE)
 - Spawn: 00c-canonical-digest.md (sonnet)
 - This agent reads ALL canonical files (1,536 lines, ~20K tokens) ONCE and produces a 2K JSON digest.
@@ -66,15 +73,17 @@ Your context window will compact automatically as it approaches limits. Do not s
 - Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1 (checks canonical-digest.json structure)
 - If the digest is missing or malformed, downstream agents fall back to reading canonical files directly.
 
-### Phase 1: Data Ingest (4 agents, ALL PARALLEL)
+### Phase 1: Data Ingest (5 agents, ALL PARALLEL)
 Before spawning: check if bus/{date}/ already contains calendar.json, gmail.json, notion.json from a pre-fetch run. If all exist and are < 2 hours old, skip Phase 1 and log "pre-fetched."
-Launch in ONE message with 4 Agent tool calls:
+Launch in ONE message with 5 Agent tool calls:
 - 01-data-ingest.md (sonnet) - MERGED agent: pulls Calendar + Gmail + Notion in one agent. Writes calendar.json, gmail.json, notion.json. Has built-in verification gate. Saves ~15-20K tokens vs 3 separate agents.
 - 01-vc-pipeline-pull.md (sonnet) - separate because it's a different API (localhost:5050)
 - 01b-content-metrics.md (sonnet) - Chrome scrapes LinkedIn analytics, writes content-metrics.json + persists to `ktlyst_*` MCP tools
 - 01c-copy-diff.md (sonnet) - compares yesterday's hitlist copy vs actual posts (Chrome), writes copy-diffs.json + persists to `ktlyst_*` MCP tools
+- 01d-graph-kb.md (sonnet) - queries graph.jsonl for meeting attendees and pipeline contacts, writes graph-digest.json. Depends on calendar.json + notion.json so may need to run AFTER the merged ingest agent if those aren't pre-fetched.
 Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1
 If any fails: log the failure, continue with available data
+Note: 01d-graph-kb reads calendar.json + notion.json. If running from pre-fetch, launch all 5 parallel. If not, launch the first 4 parallel, then 01d-graph-kb after calendar+notion complete.
 
 ### Phase 2: Analysis (2 agents, PARALLEL)
 Launch in ONE message with 2 Agent tool calls:
@@ -87,6 +96,7 @@ Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=2
 - 03b-linkedin-notifications.md (sonnet) - scrapes linkedin.com/notifications for likes/views/comments/shares, writes behavioral-signals.json + persists to `ktlyst_*` MCP tools
 - 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
 - 03c-prospect-activity.md (sonnet) - visits top 10 Hot+Warm prospect profiles, pulls their last 2 posts, writes prospect-activity.json. **ENERGY GATE: skip if energy < 3.** Takes ~6 min Chrome time. Rotates via `ktlyst_*` MCP tools (skips anyone checked in last 2 days).
+- 03d-outbound-detection.md (sonnet) - auto-detects founder's posted comments, sent DMs, sent CRs via Chrome + bus data. Writes outbound-actions.json. Also detects loop auto-close candidates and stage advancement signals.
 - 03-dp-pipeline.md (sonnet) - reads notion.json, writes dp-pipeline.json (no Chrome needed, can overlap)
 Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=3
 
@@ -97,12 +107,14 @@ Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=3
   - 04-post-visuals.md (sonnet) - reads signals.json (+ kipi-promo.json if Wednesday), generates Gamma social cards + carousels, writes post-visuals.json
   - IF Wednesday: 04-kipi-promo.md (sonnet) - writes kipi-promo.json. NOTE: If Wednesday, run kipi-promo BEFORE post-visuals so visuals agent can read both drafts. Sequence: signals -> kipi-promo -> [value-routing + post-visuals] in parallel.
 
-### Phase 5: Pipeline (4 parallel, then conditional, then 1 sequential)
+### Phase 5: Pipeline (4-6 parallel, then conditional, then 1 sequential)
 Launch in ONE message:
 - 05-temperature-scoring.md (sonnet) - reads all bus/ files, writes temperature.json
 - 05-lead-sourcing.md (sonnet) - runs Apify, writes leads.json
 - 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json
 - 05-loop-review.md (sonnet) - reads notion.json + dp-pipeline.json, writes loop-review.json
+- IF Monday: 05a-site-metrics.md (sonnet) - pulls GA4 weekly metrics via Chrome, writes site-metrics.json
+- IF Monday (after site-metrics): 05b-utm-tracking.md (sonnet) - cross-refs GA4 UTM data with Notion contacts, writes utm-tracking.json. Depends on site-metrics.json, so run AFTER 05a completes. Launch the other 4 in parallel, then 05a, then 05b.
 After all complete, check leads.json:
 - If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
 - If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).

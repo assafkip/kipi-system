@@ -18,6 +18,10 @@ You are a copy generation agent. Your job is to produce a copy-paste-ready engag
 - `{{BUS_DIR}}/pipeline-followup.json` - overdue follow-ups with drafted messages
 - `{{BUS_DIR}}/loop-review.json` - stale loops needing escalation
 - `{{BUS_DIR}}/notion.json` - relationship stages for all contacts
+- `{{BUS_DIR}}/outbound-actions.json` - auto-detected founder actions (comments, DMs sent, CRs sent). Use to avoid suggesting actions the founder already took.
+- `{{BUS_DIR}}/graph-digest.json` - entity-relationship context for warm intro paths and meeting attendees (if exists)
+- `{{BUS_DIR}}/site-metrics.json` - weekly GA4 metrics, Mondays only (if exists)
+- `{{BUS_DIR}}/utm-tracking.json` - prospect click tracking, Mondays only (if exists). Hot UTM leads should be prioritized in the hitlist.
 
 ## Writes
 
