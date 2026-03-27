@@ -29,18 +29,18 @@ This step ensures existing warm relationships don't go cold while chasing new on
 
 **Loop auto-close (action_created):** When querying Notion Actions DB for overdue items, also check for any actions that have been completed (moved to Someday by the stale action cleanup in Step 1, or manually marked done by founder). Cross-reference against open loops of type `action_created`:
 ```bash
-bash q-system/.q-system/loop-tracker.sh close <loop_id> "action completed in Notion" "auto_notion"
+Use the `loop_close` MCP tool with loop_id=<loop_id>, resolution="action completed in Notion", closed_by="auto_notion"
 ```
 
 **Loop opening (REQUIRED for every follow-up generated):**
 Every follow-up email or DM generated in 5.85 MUST open a loop (or update touch_count on existing loop):
-```bash
-# For email follow-ups:
-bash q-system/.q-system/loop-tracker.sh open email_sent "Person Name" "Follow-up context" "" "E1" "Next follow-up text..."
-# For DM follow-ups:
-bash q-system/.q-system/loop-tracker.sh open dm_sent "Person Name" "Follow-up context" "" "DM1" "Next follow-up text..."
 ```
-If the person already has an open loop, `loop-tracker.sh open` will auto-increment touch_count instead of creating a duplicate.
+# For email follow-ups:
+Use the `loop_open` MCP tool with type="email_sent", target="Person Name", context="Follow-up context", card_id="E1", follow_up_text="Next follow-up text..."
+# For DM follow-ups:
+Use the `loop_open` MCP tool with type="dm_sent", target="Person Name", context="Follow-up context", card_id="DM1", follow_up_text="Next follow-up text..."
+```
+If the person already has an open loop, `loop_open` will auto-increment touch_count instead of creating a duplicate.
 
 **Rules:**
 - MINIMUM 3 follow-up items per day in the HTML, even if nothing is technically "overdue"

@@ -21,7 +21,7 @@ Benefits:
 agent-pipeline/
   README.md              - this file
   orchestrator-design.md - phase execution plan (reference doc)
-  review-pipeline.sh     - content review pass definitions (reference, run via Agent tool)
+  (review pipeline pass definitions are in kipi-mcp/server.py docstrings, run via /q-market-review)
   bus/                   - inter-agent data exchange (JSON files, per-date subdirectories)
   agents/                - agent prompt files (one per task)
   templates/             - reusable folder structures for repeatable outputs

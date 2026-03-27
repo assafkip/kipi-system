@@ -119,7 +119,6 @@ q-founder-os/
       commands.md                    # All slash commands defined here
       preflight.md                   # Tool manifest + fail-fast protocol
       audit-morning.py               # Post-morning audit harness
-      log-step.sh                    # Step completion logger
       state-model.md                 # Progress tracking model
     canonical/                       # Your positioning knowledge base
       objections.md                  # Pushback heard + responses
@@ -146,8 +145,7 @@ q-founder-os/
       brand-voice.md                 # Channel-specific voice rules
       templates/
         daily-schedule-template.html # The daily HTML workbench (LOCKED)
-        build-schedule.sh            # JSON to HTML builder
-        schedule-data-schema.md      # JSON schema for daily data
+        schedule-data-schema.md      # JSON schema for daily data (build via `build_schedule` MCP tool)
         linkedin-thought-leadership.md
         outreach-email.md
         follow-up-email.md

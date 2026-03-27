@@ -24,10 +24,14 @@ Use this ONLY when the data exists but the log call was skipped.
 import json
 import os
 import sys
-from datetime import datetime
+from pathlib import Path
 
 # Resolve QROOT relative to this script's location (../ from .q-system/)
 QROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Import StepLogger from kipi-mcp package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "kipi-mcp", "src"))
+from kipi_mcp.step_logger import StepLogger
 
 
 def load_log(date):
@@ -46,18 +50,19 @@ def load_bus(date, filename):
         return json.load(f)
 
 
-def log_step_script():
-    return os.path.join(QROOT, ".q-system", "log-step.sh")
+def get_logger():
+    return StepLogger(Path(os.path.join(QROOT, "output")))
 
 
 def check_phase(date, phase, fix=False):
     log = load_log(date)
     if not log:
-        print(f"  [FAIL] Morning log not found. Run: bash {log_step_script()} {date} init")
+        print(f"  [FAIL] Morning log not found. Use the `log_init` MCP tool with date={date}")
         return False
 
     issues = []
     fixes_applied = []
+    logger = get_logger() if fix else None
 
     # -- Phase 0: Session-start checksums --
     if phase == 0:
@@ -65,22 +70,15 @@ def check_phase(date, phase, fix=False):
         if not checksums:
             issues.append("No session-start checksums recorded")
             if fix:
-                # Auto-generate checksums from current state
-                import subprocess
                 checks = {}
-                # Count canonical files
                 canonical_dir = os.path.join(QROOT, "canonical")
                 if os.path.isdir(canonical_dir):
                     checks["canonical_file_count"] = str(len(os.listdir(canonical_dir)))
-                # Count bus files
                 bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
                 if os.path.isdir(bus_dir):
                     checks["bus_file_count"] = str(len([f for f in os.listdir(bus_dir) if f.endswith('.json')]))
                 for key, val in checks.items():
-                    subprocess.run([
-                        "bash", log_step_script(),
-                        date, "checksum-start", key, val
-                    ], capture_output=True)
+                    logger.checksum(date, "start", key, val)
                 fixes_applied.append(f"Recorded {len(checks)} session-start checksums")
 
     # -- All phases: Gate check after verify-bus --
@@ -88,19 +86,11 @@ def check_phase(date, phase, fix=False):
         gates = log.get("gates_checked", {})
         gate_name = f"phase_{phase}"
         if gate_name not in gates:
-            # Check if verify-bus was run (bus files exist for this phase)
             bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
-            phase_complete = os.path.isdir(bus_dir)  # simplified check
+            phase_complete = os.path.isdir(bus_dir)
             issues.append(f"Gate check not logged for phase {phase}")
             if fix and phase_complete:
-                import subprocess
-                # Determine what steps ran
-                steps = log.get("steps", {})
-                step_keys = list(steps.keys())
-                subprocess.run([
-                    "bash", log_step_script(),
-                    date, "gate-check", gate_name, "true", ""
-                ], capture_output=True)
+                logger.gate_check(date, gate_name, True, "")
                 fixes_applied.append(f"Logged gate check for phase {phase}")
 
     # -- Phase 5 (after hitlist): Action cards --
@@ -111,20 +101,15 @@ def check_phase(date, phase, fix=False):
             actions = hitlist["actions"]
             issues.append(f"Hitlist has {len(actions)} actions but 0 action cards logged")
             if fix:
-                import subprocess
                 for action in actions:
                     rank = action.get("rank", 0)
                     action_type = action.get("action_type", "unknown")
                     contact = action.get("contact_name", "unknown")
                     copy_text = action.get("copy", "")[:200]
                     post_url = action.get("post_url") or action.get("profile_url") or ""
-                    # Map action type to card ID prefix
                     prefix = {"comment": "C", "DM": "DM", "connection_request": "CR"}.get(action_type, "A")
                     card_id = f"{prefix}{rank}"
-                    subprocess.run([
-                        "bash", log_step_script(),
-                        date, "add-card", card_id, action_type, contact, copy_text, post_url
-                    ], capture_output=True)
+                    logger.add_card(date, card_id, action_type, contact, copy_text, post_url)
                 fixes_applied.append(f"Logged {len(actions)} action cards from hitlist")
 
     # -- Phase 5: Connection request minimum --
@@ -138,7 +123,6 @@ def check_phase(date, phase, fix=False):
                 has_tier_a = any(l.get("tier") == "A" for l in leads["qualified_leads"])
             if cr_count == 0 and has_tier_a:
                 issues.append("Hitlist has 0 connection requests despite Tier A leads available")
-                # Don't auto-fix this one -- the hitlist agent needs to regenerate
 
     # -- Report --
     if fixes_applied:

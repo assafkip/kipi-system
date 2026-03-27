@@ -14,7 +14,7 @@ The skeleton contains everything that's generic across all instances:
 - **Marketing templates**: Channel structure, guardrails framework, review pipeline
 - **Voice skill framework**: Layer loading matrix, anti-AI rules, quality checks (no actual voice content)
 - **CLAUDE.md**: Behavioral rules, operating modes, memory architecture, setup wizard
-- **Validation harness**: `validate-separation.sh` verifies skeleton integrity and instance health
+- **Validation harness**: the `kipi_validate` MCP tool verifies skeleton integrity and instance health
 
 The skeleton lives at `https://github.com/assafkip/kipi-system.git`.
 
@@ -44,7 +44,7 @@ instance-root/
       my-project/              # Template files ({{SETUP_NEEDED}})
       marketing/               # Template structure
     CLAUDE.md                  # Skeleton root
-    validate-separation.sh     # Validation harness
+    kipi-mcp/                  # MCP server (validation, updates, instance management)
   instance-content/            # Project-specific (varies by instance)
     canonical/                 # Populated positioning, objections, etc.
     my-project/                # Real founder data
@@ -58,7 +58,7 @@ The exact location of instance content varies. Some instances use a dedicated di
 
 | Type | How skeleton arrives | How it updates |
 |------|---------------------|----------------|
-| subtree | `git subtree add` | `git subtree pull` or `kipi-update.sh` |
+| subtree | `git subtree add` | `git subtree pull` or `kipi_update` MCP tool |
 | direct-clone | `git clone` of kipi-system | `git pull` |
 
 ## Propagation
@@ -73,9 +73,9 @@ Skeleton (kipi-system)
   |-- git pull ---------->  car-research (direct clone)
 ```
 
-`kipi-update.sh` automates this for all registered instances.
+The `kipi_update` MCP tool automates this for all registered instances.
 
-`kipi-push-upstream.sh` pushes generic improvements from an instance back to the skeleton.
+The `kipi_push_upstream` MCP tool pushes generic improvements from an instance back to the skeleton.
 
 ## Instance Registry
 
@@ -86,4 +86,4 @@ Skeleton (kipi-system)
 
 ## Key Constraint
 
-**Never put instance-specific content in `q-system/`.** The subtree is read-only from the instance's perspective. Changes go upstream through `kipi-push-upstream.sh`, not by editing files in the subtree directly.
+**Never put instance-specific content in `q-system/`.** The subtree is read-only from the instance's perspective. Changes go upstream through the `kipi_push_upstream` MCP tool, not by editing files in the subtree directly.

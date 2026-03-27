@@ -39,7 +39,7 @@
 
 | Issue | Severity | Fix |
 |-------|----------|-----|
-| `marketing/templates/build-schedule.sh` is 0 bytes | Minor | Port from KTLYST or remove |
+| `build_schedule` MCP tool replaces old build-schedule.sh | Minor | Verify MCP tool works |
 | `my-project/progress.md` only 7 lines | Minor | Add session log schema |
 | Agent files diverged from KTLYST (different naming, missing newer agents) | Major | Phase 1 reconciliation needed |
 
@@ -91,7 +91,8 @@ The skeleton has been independently developed in some areas:
 | Item | Notes |
 |------|-------|
 | Agent pipeline agents (structure) | Generic job descriptions, bus I/O, token budgets |
-| `orchestrator.sh`, `review-pipeline.sh` | Generic pipeline execution |
+| orchestrator (deleted, was deprecated) | Generic pipeline execution (now handled by agent pipeline) |
+| review-pipeline (deleted, content moved to server.py docstrings) | Content review pipeline |
 | `bus-to-log.py`, `session-start.py` | Generic utilities |
 | `scan-draft.py` | Generic anti-AI scanner (checks for banned phrases, not KTLYST-specific) |
 | `verify-bus.py`, `verify-orchestrator.py` | Generic verification harnesses |
@@ -125,11 +126,11 @@ The skeleton has been independently developed in some areas:
 | `skills/q-debrief` | Already in kipi-system `.claude/commands/` |
 | `skills/q-wrap` | Already in kipi-system `.claude/commands/` |
 | `scripts/audit-morning.py` | Already in kipi-system `.q-system/` |
-| `scripts/build-schedule.sh` | Empty in skeleton (needs port) |
+| `build_schedule` MCP tool | Replaces old build-schedule.sh script |
 
 The plugin adds zero unique value. It's a packaging layer with symlinks. Every capability already exists in the instance or skeleton.
 
-**One thing to port:** `build-schedule.sh` from the plugin scripts to the skeleton (if it's non-empty there).
+**One thing to port:** `build_schedule` functionality is now in the kipi-mcp server as the `build_schedule` MCP tool.
 
 ---
 
@@ -224,7 +225,7 @@ Manual `git subtree pull` per instance is error-prone and will be forgotten. Ins
 
 ```bash
 #!/bin/bash
-# kipi-update.sh - Run from any directory
+# kipi_update MCP tool - replaces kipi-update.sh
 # Pulls latest kipi-system skeleton into all registered instances
 
 SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
@@ -248,7 +249,7 @@ done
 
 **Workflow:**
 1. Make improvement in kipi-system skeleton, commit + push
-2. Run `kipi-update.sh` to pull into all instances
+2. Use the `kipi_update` MCP tool to pull into all instances
 3. If conflicts arise (instance modified a skeleton file), resolve per-instance
 4. To push a generic improvement FROM an instance back to skeleton: `git subtree push --prefix=q-system https://github.com/assafkip/kipi-system.git main`
 
@@ -395,4 +396,4 @@ Phase 5: Document and verify
 
 5. **Subtree prefix for KTLYST:** Use `q-ktlyst/` as the subtree prefix (matching current directory name), or rename to `q-system/` for consistency?
 
-6. **build-schedule.sh:** The skeleton version is 0 bytes. Is there a working version in KTLYST or the plugin to port?
+6. **build_schedule:** Now implemented as the `build_schedule` MCP tool in kipi-mcp. The old shell script is no longer needed.

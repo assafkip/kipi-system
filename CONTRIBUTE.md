@@ -4,27 +4,24 @@
 
 If you make a generic improvement in an instance (new agent, script fix, template enhancement) that would benefit all instances:
 
-```bash
-cd /path/to/my-instance
-/path/to/kipi-system/kipi-push-upstream.sh
-```
+Use the `kipi_push_upstream` MCP tool from within your instance.
 
-The script:
+The tool:
 1. Checks for instance-specific content in the subtree (blocks if found)
 2. Pushes the subtree changes to the kipi-system remote
 
 ## Safety Rules
 
 - Never put instance-specific content in `q-system/` (canonical files, my-project data, voice samples)
-- The push script checks for common leaks (company names, personal info, hardcoded paths)
+- The push tool checks for common leaks (company names, personal info, hardcoded paths)
 - If the safety check fails, clean the instance content out first
 
 ## Workflow
 
 1. Make the improvement in your instance's `q-system/` directory
 2. Test it works
-3. Run `kipi-push-upstream.sh` to push to skeleton
-4. Run `kipi-update.sh` to propagate to other instances
+3. Use the `kipi_push_upstream` MCP tool to push to skeleton
+4. Use the `kipi_update` MCP tool to propagate to other instances
 
 ## What Belongs in the Skeleton
 

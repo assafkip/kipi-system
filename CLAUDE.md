@@ -21,8 +21,8 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
     - `agents/` - 19 agent prompt files (one per task)
     - `bus/` - Inter-agent JSON data exchange (per-date directories)
     - `orchestrator-design.md` - Phase execution plan
-    - `review-pipeline.sh` - Multi-pass content review definitions (4 Sonnet agents)
     - `templates/` - Reusable folder structures for repeatable outputs
+- `kipi-mcp/` - Python MCP server package (schedule builder, step logger, loop tracker, template creator, validation, instance management)
   - `canonical/` - Source of truth files (positioning, objections, talk tracks)
   - `marketing/` - Content pipeline, templates, assets, guardrails
   - `methodology/` - Debrief template and workflows
@@ -49,13 +49,13 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-market-review` - Content review runs 4 Sonnet passes (voice, guardrails, anti-AI, actionability) via Agent tool. See `.q-system/agent-pipeline/review-pipeline.sh` for pass definitions.
+- `/q-market-review` - Content review runs 4 Sonnet passes (voice, guardrails, anti-AI, actionability) via Agent tool. Review pipeline pass definitions are in `kipi-mcp/server.py` docstrings.
 - `/q-draft` - Ad-hoc output generation. Use templates from `.q-system/agent-pipeline/templates/` when format matches.
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 
 ## Build and Test
-- Build daily schedule: `bash q-system/marketing/templates/build-schedule.sh <json> <html>`
+- Build daily schedule: Use the `build_schedule` MCP tool
 - Audit morning routine: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json`
 
 ## Token Discipline (NON-NEGOTIABLE)

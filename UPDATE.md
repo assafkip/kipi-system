@@ -2,15 +2,7 @@
 
 ## Pull Skeleton Updates to All Instances
 
-```bash
-# From the kipi-system directory:
-./kipi-update.sh
-
-# Dry run (see what would happen without making changes):
-./kipi-update.sh --dry-run
-```
-
-The script reads `instance-registry.json` and runs `git subtree pull` for each registered instance.
+Use the `kipi_update` MCP tool, which reads `instance-registry.json` and runs `git subtree pull` for each registered instance. Pass `dry_run=true` to preview changes without applying them.
 
 ## Update a Single Instance
 
@@ -34,4 +26,4 @@ Instance content outside `q-system/` will never conflict. Only modify skeleton f
 
 ## Direct-Clone Instances
 
-Some instances (like car-research) are direct clones of kipi-system rather than subtrees. These update with `git pull` instead of `git subtree pull`. The update script handles this automatically based on the `type` field in `instance-registry.json`.
+Some instances (like car-research) are direct clones of kipi-system rather than subtrees. These update with `git pull` instead of `git subtree pull`. The `kipi_update` MCP tool handles this automatically based on the `type` field in `instance-registry.json`.

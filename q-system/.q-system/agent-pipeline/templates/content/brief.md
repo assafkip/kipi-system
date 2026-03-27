@@ -21,4 +21,4 @@
 - CTA:
 
 ## Review pipeline
-Run after drafting: `bash ../../review-pipeline.sh drafts/v1.md review/`
+Run after drafting: use `/q-market-review` command (review pipeline pass definitions are in `kipi-mcp/server.py` docstrings)

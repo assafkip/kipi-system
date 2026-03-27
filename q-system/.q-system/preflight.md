@@ -198,36 +198,32 @@ Every step writes to `output/morning-log-YYYY-MM-DD.json` as it completes. This 
 
 ### How to Write the Log
 
-All logging uses the helper script `.q-system/log-step.sh`. One-liners, no python required:
+All logging uses MCP tools. No shell scripts required:
 
-```bash
+```
 # Create the log at session start:
-bash q-system/.q-system/log-step.sh DATE init
+Use the `log_init` MCP tool with date parameter
 
 # Log a step (done/failed/skipped/partial):
-bash q-system/.q-system/log-step.sh DATE step_id done "result summary"
-bash q-system/.q-system/log-step.sh DATE step_id failed "" "error message"
-bash q-system/.q-system/log-step.sh DATE step_id skipped "" "reason"
+Use the `log_step` MCP tool with date, step_id, status, result, and error parameters
 
 # Add an action card (for any founder-facing draft):
-bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person" "Text..." "https://url"
+Use the `log_add_card` MCP tool with date, card_id, card_type, target, text, and url parameters
 
 # Gate check (before Steps 8, 9, 11):
-bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""
-bash q-system/.q-system/log-step.sh DATE gate-check step_11 false "missing_step1,missing_step2"
+Use the `log_gate_check` MCP tool with date, gate_name, passed, and missing parameters
 
 # State checksums:
-bash q-system/.q-system/log-step.sh DATE checksum-start field_name value
-bash q-system/.q-system/log-step.sh DATE checksum-end field_name value
+Use the `log_checksum` MCP tool with date, phase (start/end), field_name, and value parameters
 
 # Mark cards as delivered (after HTML opens):
-bash q-system/.q-system/log-step.sh DATE deliver-cards
+Use the `log_deliver_cards` MCP tool with date parameter
 
 # Verification queue:
-bash q-system/.q-system/log-step.sh DATE verify "claim text" "source file" true "confirmed"
+Use the `log_verify` MCP tool with date, claim, source_file, verified, and result parameters
 ```
 
-Every command writes directly to disk. Context rot cannot affect it.
+Every tool call writes directly to disk. Context rot cannot affect it.
 
 ---
 
@@ -270,7 +266,7 @@ Before Step 8 can proceed, Claude MUST verify these deliverables exist in today'
 **Loop checks (every day):**
 - [ ] Step 0b.5 ran (loop escalation)
 - [ ] Step 5.86 ran (loop review with follow-ups generated)
-- [ ] No level 3 loops remain unresolved (`bash q-system/.q-system/loop-tracker.sh list 3` returns empty)
+- [ ] No level 3 loops remain unresolved (`loop_list` MCP tool with min_level=3 returns empty)
 - [ ] Every action card generated today has a corresponding loop opened in `output/open-loops.json`
 
 **If any deliverable is missing:** Do NOT proceed to Step 8. Go back and generate it. The HTML is useless without copy-paste content.
@@ -284,14 +280,14 @@ Before Step 8 can proceed, Claude MUST verify these deliverables exist in today'
 ### Echo of Prompt (REQUIRED before every step)
 
 Before executing ANY step, Claude MUST run the step loader to re-inject that step's requirements into context:
-```bash
-bash q-system/.q-system/step-loader.sh <step_number>
+```
+Use the `load_step` MCP tool with the step number
 ```
 This combats "Lost in the Middle" - the research-proven phenomenon where LLMs forget instructions from earlier in the conversation. The step loader extracts the specific step definition from commands.md and prints it fresh. Claude MUST read this output before executing the step. This is NOT optional. Skipping the step loader is equivalent to skipping the step itself.
 
 ### HTML Build Verification (AUTOMATIC)
 
-The build script (`build-schedule.sh`) automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
+The `build_schedule` MCP tool automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
 - Pipeline follow-ups section exists with 3+ items with copy-paste text
 - Day-specific content exists (signals Mon/Wed/Fri, TL Tue/Thu, Medium Mon, Kipi Wed)
 - Section ordering is correct (follow-ups before new leads)

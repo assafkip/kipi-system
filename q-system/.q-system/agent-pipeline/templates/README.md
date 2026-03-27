@@ -5,8 +5,8 @@ Copy a template folder, fill the placeholders, run the pipeline.
 
 ## Usage
 
-```bash
-bash q-system/.q-system/agent-pipeline/templates/create-from-template.sh <template-name> <output-name>
+```
+Use the `create_from_template` MCP tool with template_name=<template-name> and output_name=<output-name>
 ```
 
 ## Available Templates

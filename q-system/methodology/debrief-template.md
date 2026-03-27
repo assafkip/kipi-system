@@ -311,8 +311,8 @@ After completing the template and implications analysis, route insights to canon
   - [ ] Copy-paste message drafted and shown to founder
   - [ ] Follow-up Action created in Notion Actions DB (Energy: People, Time: 15 min, due in 5 days)
 - [ ] **Loop opened for every outbound action from this debrief:**
-  - [ ] If next step involves sending something (deck, email, DM): `bash q-system/.q-system/loop-tracker.sh open <materials_sent|email_sent|dm_sent> "Person" "What was sent" "" "" "Follow-up text..."`
-  - [ ] If next step involves waiting for their response: `bash q-system/.q-system/loop-tracker.sh open debrief_next_step "Person" "What we're waiting for"`
-  - [ ] If design partner conversion message was sent: `bash q-system/.q-system/loop-tracker.sh open dp_offer_sent "Person" "DP offer context" "" "" "Follow-up if no reply..."`
+  - [ ] If next step involves sending something (deck, email, DM): use the `loop_open` MCP tool with type=<materials_sent|email_sent|dm_sent>, target="Person", context="What was sent", follow_up_text="Follow-up text..."
+  - [ ] If next step involves waiting for their response: use the `loop_open` MCP tool with type="debrief_next_step", target="Person", context="What we're waiting for"
+  - [ ] If design partner conversion message was sent: use the `loop_open` MCP tool with type="dp_offer_sent", target="Person", context="DP offer context", follow_up_text="Follow-up if no reply..."
   - [ ] Debrief is NOT complete until all outbound actions have corresponding loops opened
   - [ ] If VC-only conversation: marked "N/A - VC conversation"

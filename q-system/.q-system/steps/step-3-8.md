@@ -24,12 +24,12 @@ This step auto-detects DM replies and connection accepts so the founder never ne
   When a debrief_next_step loop exists and the founder has now SENT the follow-up (detected as a new outbound DM/email in this step), close the debrief loop and open the appropriate new loop:
   ```bash
   # If the debrief said "send deck to Bob" and we detect the email was sent:
-  bash q-system/.q-system/loop-tracker.sh close <debrief_loop_id> "next step completed - email sent" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<debrief_loop_id>, resolution="next step completed - email sent", closed_by="auto_step_3.8"
   # The email_sent loop was already opened by Step 9 or 5.85
   ```
   Also: during Step 0b action card confirmation, if the founder confirms a card that matches a debrief_next_step loop's action_card_id, auto-close:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "action card confirmed by founder" "founder"
+  Use the `loop_close` MCP tool with loop_id=<loop_id> "action card confirmed by founder" "founder"
   ```
 
   **Part D - Outbound action detection (auto-detect what the founder DID):**
@@ -42,11 +42,11 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 - **LOOP AUTO-CLOSE (Step 3.8):** After detecting replies and accepts, cross-reference against `output/open-loops.json`:
   ```bash
   # For each DM reply detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DM reply detected" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id> "DM reply detected" "auto_step_3.8"
   # For each connection accept detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "connection accepted" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id> "connection accepted" "auto_step_3.8"
   # For dp_offer_sent loops where target replied via DM:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DP replied to offer" "auto_step_3.8"
+  Use the `loop_close` MCP tool with loop_id=<loop_id> "DP replied to offer" "auto_step_3.8"
   ```
   Match by target name. If a loop target name matches a DM reply sender or connection accepter, close it.
 

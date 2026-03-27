@@ -1,17 +1,17 @@
 Re-read the same key fields from Step 0c:
-```bash
-bash q-system/.q-system/log-step.sh DATE checksum-end last_calendar_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_gmail_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_prospect_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_outreach_count "3"
-bash q-system/.q-system/log-step.sh DATE checksum-end decisions_rule_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_publish_date "2026-03-14"
 ```
-The script auto-detects drift between start and end values.
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_calendar_sync", value="2026-03-14"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_gmail_sync", value="2026-03-14"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="dp_prospect_count", value="17"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="dp_outreach_count", value="3"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="decisions_rule_count", value="17"
+Use the `log_checksum` MCP tool with date=DATE, phase="end", field_name="last_publish_date", value="2026-03-14"
+```
+The tool auto-detects drift between start and end values.
 
 **12b. Mark action cards as delivered:**
-```bash
-bash q-system/.q-system/log-step.sh DATE deliver-cards
+```
+Use the `log_deliver_cards` MCP tool with date=DATE
 ```
 
 **12c. Run the audit harness:**
@@ -21,8 +21,8 @@ python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-DATE.jso
 **Always show the audit output to the founder.** This is not optional.
 
 **12d. Log Step 12 and update morning-state.md:**
-```bash
-bash q-system/.q-system/log-step.sh DATE 12_audit done "VERDICT - X/Y steps"
+```
+Use the `log_step` MCP tool with date=DATE, step_id="12_audit", status="done", result="VERDICT - X/Y steps"
 ```
 Update `memory/morning-state.md` with today's sync dates, audit verdict, and any open items.
 

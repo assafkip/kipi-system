@@ -3,7 +3,7 @@
 Split commands.md into individual step files.
 
 Reads the monolithic commands.md and extracts each step into its own file
-in the steps/ directory. The step-loader.sh then reads from these individual
+in the steps/ directory. The `load_step` MCP tool then reads from these individual
 files instead of parsing the 2000+ line monolith each time.
 
 Also generates a steps/INDEX.md that maps step IDs to files.

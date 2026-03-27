@@ -5,7 +5,7 @@
 ## How It Works
 
 1. Claude generates a JSON file at `output/schedule-data-YYYY-MM-DD.json`
-2. Build script runs: `bash marketing/templates/build-schedule.sh output/schedule-data-YYYY-MM-DD.json output/daily-schedule-YYYY-MM-DD.html`
+2. Build runs via: the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 3. HTML opens in browser
 
 Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
@@ -131,7 +131,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | YES | Unique item ID. MUST match the action card ID used in `log-step.sh add-card` (e.g., C1, C2, DM1). This is the join key between the HTML, localStorage, the exported JSON, and the morning log. Used for checkbox/skip persistence and next-morning pickup. |
+| `id` | string | YES | Unique item ID. MUST match the action card ID used in `log_add_card` MCP tool (e.g., C1, C2, DM1). This is the join key between the HTML, localStorage, the exported JSON, and the morning log. Used for checkbox/skip persistence and next-morning pickup. |
 | `title` | string | YES | Action title. Keep concise |
 | `energy` | string | YES | `quickwin`, `deepfocus`, `people`, or `admin` |
 | `time` | string | YES | Estimated time: `2 min`, `5 min`, `10 min`, `15 min`, `30 min` |

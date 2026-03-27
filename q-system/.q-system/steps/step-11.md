@@ -2,8 +2,8 @@
 
 > **GATE CHECK (mandatory before starting Step 11):**
 > Re-read morning log from disk. Check Steps 0f through 10 all logged (including `9_notion_push` and `10_daily_checklists`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_11 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_11 false "missing_step_ids"` then STOP.
+> Use the `log_gate_check` MCP tool with date=DATE, gate_name="step_11", passed=true
+> If missing steps: use the `log_gate_check` MCP tool with date=DATE, gate_name="step_11", passed=false, missing="missing_step_ids" then STOP.
 > **Recovery:** If the gate fails, list the missing steps and ask the founder: "These steps didn't run: [list]. Options: (1) I go back and run them now, (2) you tell me to skip them and I'll log them as skipped, (3) we end the session and restart fresh." The founder decides. Claude does NOT self-authorize skipping.
 
 **MANDATORY PRE-CHECK: Re-read `.claude/skills/audhd-executive-function/SKILL.md` before generating.** The daily HTML is the founder's external executive function, not a briefing. Apply all rules.
@@ -12,7 +12,7 @@
 
 1. **Read the schema:** `marketing/templates/schedule-data-schema.md` defines the exact JSON format.
 2. **Generate JSON:** Write `output/schedule-data-YYYY-MM-DD.json` conforming to the schema.
-3. **Build HTML:** Run `bash marketing/templates/build-schedule.sh output/schedule-data-YYYY-MM-DD.json output/daily-schedule-YYYY-MM-DD.html`
+3. **Build HTML:** Use the `build_schedule` MCP tool with json_path="output/schedule-data-YYYY-MM-DD.json" and html_path="output/daily-schedule-YYYY-MM-DD.html"
 4. **Open in browser:** `open output/daily-schedule-YYYY-MM-DD.html` or use Chrome MCP.
 5. **Telegram push (if configured):** Send top 3 actions via Telegram MCP.
 

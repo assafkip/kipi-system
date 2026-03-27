@@ -33,9 +33,9 @@ You are a session bootstrap agent. Your ONLY job is to recover state from the pr
 - List each missed debrief with the person name
 
 ### 3. Loop Escalation
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh escalate`
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh stats`
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh list 2`
+- Use the `loop_escalate` MCP tool
+- Use the `loop_stats` MCP tool
+- Use the `loop_list` MCP tool with min_level=2
 - Capture the stats output and any Level 2+ loops
 
 ### 4. Canonical State Checksums
