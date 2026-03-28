@@ -47,6 +47,7 @@ Run 4 review passes IN SEQUENCE using Agent tool (Sonnet model for all):
 
 ### Pass 2: Guardrails
 - Check content against `{config_dir}/marketing/content-guardrails.md`
+- Load the relevant marketing guide with `kipi_guide(topic)` for channel-specific rules (e.g., `kipi_guide('copywriting')`, `kipi_guide('social-content')`)
 - Verify claims against canonical files
 - Check for overclaiming, misclassification language
 - PASS/FAIL with specific fixes

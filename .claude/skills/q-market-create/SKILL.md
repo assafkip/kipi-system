@@ -47,11 +47,17 @@ Read these files:
 
 1. Identify content type and topic from arguments (ask if unclear)
 2. Check current theme rotation in content-themes.md — align if possible
-3. Read relevant canonical files and marketing assets
-4. Generate content following brand-voice.md rules for the target channel
-5. Run content through content-guardrails.md validation
-6. For decks/one-pagers with Gamma: generate via Gamma MCP
-7. Output the content ready for review or publishing
+3. **Load the relevant marketing guide** with `kipi_guide(topic)` before generating content. Examples:
+   - `kipi_guide('copywriting')` for page copy
+   - `kipi_guide('social-content')` for social posts
+   - `kipi_guide('cold-email')` for outreach emails
+   - `kipi_guide('content-strategy')` for content planning
+   - `kipi_guide('ad-creative')` for ad copy
+4. Read relevant canonical files and marketing assets
+5. Generate content following brand-voice.md rules for the target channel
+6. Run content through content-guardrails.md validation
+7. For decks/one-pagers with Gamma: generate via Gamma MCP
+8. Output the content ready for review or publishing
 
 ## Output rules
 

@@ -54,6 +54,7 @@ When user shares a post screenshot or URL:
 
 ## Output rules
 
+- Load `kipi_guide('social-content')` for platform-specific engagement patterns before generating comments
 - Apply `founder-voice` skill to all comments and DMs
 - Apply `audhd-executive-function` skill if enabled — comments should be copy-paste ready
 - System decides comment style, not the user (decision elimination)

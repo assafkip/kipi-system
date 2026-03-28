@@ -25,6 +25,7 @@ from kipi_mcp.bus_bridge import BusBridge
 from kipi_mcp.draft_scanner import DraftScanner
 from kipi_mcp.morning_auditor import MorningAuditor
 from kipi_mcp.metrics_store import MetricsStore
+from kipi_mcp.guide_loader import GuideLoader
 
 paths = KipiPaths()
 paths.ensure_dirs()
@@ -76,6 +77,8 @@ draft_scanner = DraftScanner()
 morning_auditor = MorningAuditor()
 metrics_store = MetricsStore(db_path=paths.metrics_db)
 metrics_store.init_db()
+
+guide_loader = GuideLoader(guides_dir=paths.repo_dir / "guides")
 
 try:
     from kipi_mcp.validator import Validator
@@ -885,6 +888,45 @@ def ktlyst_monthly_learnings(days: int = 30) -> str:
     except Exception as e:
         logger.error("ktlyst_monthly_learnings failed", exc_info=True)
         raise ToolError(str(e))
+
+
+# ============================================================
+# Guide System (on-demand methodology loading)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_guide(topic: str, section: str = "full") -> str:
+    """Load a marketing/growth methodology guide on demand.
+
+    Instead of loading all 32 marketing skills into context, call this
+    to fetch only the guide you need. Use section="methodology" for just
+    the core process, or a specific reference name for templates/examples.
+
+    Args:
+        topic: Guide name. Available: copywriting, copy-editing, seo-audit,
+            programmatic-seo, site-architecture, schema-markup, ai-seo,
+            analytics-tracking, page-cro, form-cro, signup-flow-cro,
+            onboarding-cro, popup-cro, paywall-upgrade-cro, pricing-strategy,
+            launch-strategy, content-strategy, marketing-psychology,
+            marketing-ideas, free-tool-strategy, social-content,
+            competitor-alternatives, cold-email, email-sequence, paid-ads,
+            ad-creative, churn-prevention, referral-program, revops,
+            sales-enablement, product-marketing-context, ab-test-setup
+        section: "full" (methodology + all references), "methodology" (core only),
+            or a specific reference file name (e.g. "scoring-models", "platform-specs")
+    """
+    try:
+        return guide_loader.load(topic, section)
+    except FileNotFoundError as e:
+        raise ToolError(str(e))
+
+
+@mcp.resource("kipi://guides")
+def resource_guides() -> str:
+    """List all available marketing/growth methodology guides."""
+    topics = guide_loader.list_topics()
+    return json.dumps({"guides": topics, "count": len(topics)})
 
 
 def main():

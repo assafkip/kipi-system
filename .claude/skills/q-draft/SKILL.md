@@ -42,8 +42,9 @@ No external integrations required. Works entirely from local files.
 
 1. Identify output type, audience, and context from arguments (ask if unclear)
 2. Check `agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
-3. Read relevant canonical files and relationship history for the target person
-4. Generate the draft
+3. **Load the relevant marketing guide** with `kipi_guide(topic)` for the draft type. Examples: `kipi_guide('cold-email')` for outreach, `kipi_guide('social-content')` for social posts, `kipi_guide('copywriting')` for general copy.
+4. Read relevant canonical files and relationship history for the target person
+5. Generate the draft
 5. Save to `{state_dir}/output/drafts/{date}-{type}-{audience}.md`
 
 ## MCP tools used

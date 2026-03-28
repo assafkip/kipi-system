@@ -9,6 +9,7 @@ from kipi_mcp.loop_tracker import LoopTracker
 
 
 EXPECTED_TOOLS = [
+    "kipi_guide",
     "kipi_migrate",
     "kipi_suggest_instance_name",
     "kipi_set_instance_name",
@@ -54,6 +55,7 @@ EXPECTED_RESOURCES = [
     "kipi://loops/open",
     "kipi://loops/stats",
     "kipi://backups",
+    "kipi://guides",
 ]
 
 KIPI_MCP_DIR = "/Users/ike/code/kipi-system/kipi-mcp"

@@ -61,6 +61,12 @@ All user data lives under `${CLAUDE_PLUGIN_DATA}` (provided by Claude Code plugi
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 
+## Marketing & Growth Guides
+
+Marketing and growth methodology guides are served on demand via the `kipi_guide(topic, section)` MCP tool. Load the relevant guide before generating any marketing content, outreach, or growth-related output. The `founder-voice` and `audhd-executive-function` skills remain as `.claude/skills/` and are not served via `kipi_guide()`.
+
+Available topics: copywriting, seo-audit, cold-email, pricing-strategy, page-cro, revops, analytics-tracking, email-sequence, ab-test-setup, schema-markup, churn-prevention, ad-creative, paid-ads, site-architecture, competitor-alternatives, social-content, copy-editing, programmatic-seo, form-cro, signup-flow-cro, onboarding-cro, popup-cro, paywall-upgrade-cro, launch-strategy, content-strategy, marketing-psychology, marketing-ideas, free-tool-strategy, referral-program, ai-seo, sales-enablement, product-marketing-context.
+
 ## Build and Test
 - Build daily schedule: Use the `kipi_build_schedule` MCP tool
 - Audit morning routine: Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-YYYY-MM-DD.json"

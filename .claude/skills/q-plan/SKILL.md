@@ -40,7 +40,7 @@ Read these files:
 
 1. Pull open loops via `kipi://loops/open` MCP resource — surface what's pending
 2. Review all relationships — who's active, cooling, stale
-3. Apply lead-lifecycle-rules.md — identify leads to kill, park, or re-engage
+3. Apply lead-lifecycle-rules.md — identify leads to kill, park, or re-engage. For lead scoring methodology, call `kipi_guide('revops', section='scoring-models')`.
 4. Cross-reference objections with proof gaps — where are we weakest?
 5. Propose prioritized actions:
    - Each action has: who, what, why, estimated effort

@@ -220,6 +220,8 @@ No exceptions. If the output is text that another person will read, it goes thro
 
 A full marketing automation system lives in `marketing/`. See `marketing/README.md` for overview.
 
+**Marketing guides are served on demand via `kipi_guide(topic, section)`.** Load the relevant guide before generating any marketing content. For example: `kipi_guide('copywriting')` for page copy, `kipi_guide('social-content')` for social posts, `kipi_guide('cold-email')` for outreach. The `founder-voice` and `audhd-executive-function` skills remain in `.claude/skills/` and are NOT served via `kipi_guide()`.
+
 **Key rules for marketing content:**
 - All content must pass `marketing/content-guardrails.md` before publishing
 - Voice rules per channel in `marketing/brand-voice.md`

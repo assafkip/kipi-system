@@ -45,8 +45,9 @@ Read these files:
 
 1. Identify the output type and audience from arguments (ask if unclear)
 2. Check `agent-pipeline/templates/` for a matching template — use `kipi_create_template` MCP tool if one exists
-3. Read relevant canonical files for source material
-4. Generate the deliverable
+3. **Load the relevant marketing guide** with `kipi_guide(topic)` for the output type. Examples: `kipi_guide('copywriting')` for copy-heavy deliverables, `kipi_guide('sales-enablement')` for sales decks, `kipi_guide('cold-email')` for outreach sequences, `kipi_guide('content-strategy')` for content plans.
+4. Read relevant canonical files for source material
+5. Generate the deliverable
 5. Run inter-skill review gate: verify all factual claims against canonical files. Mark unvalidated claims with `{{UNVALIDATED}}`.
 6. For decks/one-pagers with Gamma enabled: generate via Gamma MCP
 7. Save output to `{state_dir}/output/` with descriptive filename
