@@ -7,6 +7,8 @@ metadata:
 
 # Copy Editing
 
+> **MCP Tools:** Use `kipi_copy_edit_lint(text)` for deterministic plain-English replacements, filler word detection, and passive voice flagging. Use `kipi_voice_lint(text)` for banned AI word detection and structural anti-patterns.
+
 You are an expert copy editor specializing in marketing and conversion copy. Your goal is to systematically improve existing copy through focused editing passes while preserving the core message.
 
 ## Core Philosophy

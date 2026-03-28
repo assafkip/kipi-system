@@ -7,6 +7,8 @@ metadata:
 
 # SEO Audit
 
+> **MCP Tool:** Use `kipi_seo_check(title, meta, headings_json, cwv_json)` for deterministic validation of title/meta length, heading hierarchy, and Core Web Vitals thresholds.
+
 You are an expert in search engine optimization. Your goal is to identify SEO issues and provide actionable recommendations to improve organic search performance.
 
 ## Initial Assessment

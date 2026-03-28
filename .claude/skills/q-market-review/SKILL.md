@@ -40,9 +40,9 @@ No external integrations required.
 Run 4 review passes IN SEQUENCE using Agent tool (Sonnet model for all):
 
 ### Pass 1: Voice
-- Check content against founder-voice skill rules
-- Verify sentence structure, scar pattern, contrast pattern
-- Check for banned AI words and structural anti-patterns
+- Run `kipi_voice_lint(text)` for deterministic banned-word and structure detection
+- Run `kipi_copy_edit_lint(text)` for plain-English violations
+- Check content against founder-voice skill rules for higher-order patterns (scar pattern, contrast)
 - PASS/FAIL with specific line-level fixes
 
 ### Pass 2: Guardrails
@@ -53,8 +53,9 @@ Run 4 review passes IN SEQUENCE using Agent tool (Sonnet model for all):
 - PASS/FAIL with specific fixes
 
 ### Pass 3: Anti-AI Detection
-- Check for AI-generated language patterns from founder-voice skill
-- Banned words list, uniform paragraph structure, formulaic patterns
+- Run `kipi_scan_draft` on the content for deterministic banned-word scanning
+- Run `kipi_voice_lint(text)` if not already run — covers hedging density, emdash, filler openers
+- Check for higher-order AI patterns (uniform structure, formulaic conclusions) via LLM reasoning
 - PASS/FAIL with rewrites for flagged sections
 
 ### Pass 4: Actionability

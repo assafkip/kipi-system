@@ -26,6 +26,9 @@ from kipi_mcp.draft_scanner import DraftScanner
 from kipi_mcp.morning_auditor import MorningAuditor
 from kipi_mcp.metrics_store import MetricsStore
 from kipi_mcp.guide_loader import GuideLoader
+from kipi_mcp.linter import Linter
+from kipi_mcp.scorer import Scorer
+from kipi_mcp.schema_gen import SchemaGenerator
 
 paths = KipiPaths()
 paths.ensure_dirs()
@@ -36,11 +39,14 @@ mcp = FastMCP(
     "kipi",
     instructions=(
         "Kipi founder OS — instance management, morning routine logging, "
-        "follow-up loop tracking, and content/schedule tools. "
-        "Tool groups: kipi_* (instances, migration, validation), "
+        "follow-up loop tracking, content/schedule tools, and deterministic linters/scorers. "
+        "Tool groups: kipi_* (instances, migration, validation, linting, scoring, schema), "
         "log_* (morning routine step logging), "
         "loop_* (follow-up loop tracking), "
         "kipi_build_schedule / kipi_create_template (content). "
+        "kipi_voice_lint / kipi_copy_edit_lint / kipi_validate_* (deterministic text validation). "
+        "kipi_score_lead / kipi_ab_test_calc / kipi_churn_health_score / kipi_cancel_flow_offer / kipi_crack_detect (scoring). "
+        "kipi_generate_schema (JSON-LD structured data). "
         "kipi_backup / kipi_export / kipi_import (data portability). "
         "Resources: kipi://paths, kipi://status, kipi://instances, kipi://loops/open, "
         "kipi://loops/stats, kipi://backups. "
@@ -79,6 +85,9 @@ metrics_store = MetricsStore(db_path=paths.metrics_db)
 metrics_store.init_db()
 
 guide_loader = GuideLoader(guides_dir=paths.repo_dir / "guides")
+linter = Linter()
+scorer = Scorer()
+schema_generator = SchemaGenerator()
 
 try:
     from kipi_mcp.validator import Validator
@@ -927,6 +936,265 @@ def resource_guides() -> str:
     """List all available marketing/growth methodology guides."""
     topics = guide_loader.list_topics()
     return json.dumps({"guides": topics, "count": len(topics)})
+
+
+# ============================================================
+# Linter Tools (6 tools — deterministic text validation)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_voice_lint(text: str) -> str:
+    """Lint text for AI writing patterns, banned words, and voice violations.
+
+    Deterministic check — catches banned words LLMs miss in their own output.
+    Run on all draft copy before publishing.
+
+    Args:
+        text: The text to lint.
+    """
+    try:
+        return json.dumps(linter.voice_lint(text))
+    except Exception as e:
+        logger.error("kipi_voice_lint failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_validate_schedule(sections_json: str, day: str = "") -> str:
+    """Validate a morning schedule for AUDHD compliance and content rules.
+
+    Checks section ordering, pipeline follow-up quality, day-specific content,
+    energy tags, and quick wins presence.
+
+    Args:
+        sections_json: JSON array of schedule sections.
+        day: Lowercase weekday name (monday-sunday). Derived from schedule if omitted.
+    """
+    try:
+        sections = json.loads(sections_json)
+        return json.dumps(linter.validate_schedule(sections, day))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("kipi_validate_schedule failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_validate_ad_copy(platform: str, headlines_json: str, descriptions_json: str) -> str:
+    """Validate ad copy against platform character limits.
+
+    Platforms: google, meta, linkedin, twitter, tiktok.
+
+    Args:
+        platform: Ad platform name.
+        headlines_json: JSON array of headline strings.
+        descriptions_json: JSON array of description strings.
+    """
+    try:
+        headlines = json.loads(headlines_json)
+        descriptions = json.loads(descriptions_json)
+        return json.dumps(linter.validate_ad_copy(platform, headlines, descriptions))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("kipi_validate_ad_copy failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_seo_check(
+    title: str = "", meta: str = "",
+    headings_json: str = "[]", cwv_json: str = "{}",
+) -> str:
+    """Check SEO basics: title/meta length, heading hierarchy, Core Web Vitals.
+
+    Args:
+        title: Page title tag text.
+        meta: Meta description text.
+        headings_json: JSON array of {"level": int, "text": str} objects.
+        cwv_json: JSON object with optional lcp (seconds), inp (ms), cls (score).
+    """
+    try:
+        headings = json.loads(headings_json) if headings_json else []
+        cwv = json.loads(cwv_json) if cwv_json else {}
+        return json.dumps(linter.seo_check(title, meta, headings or None, cwv or None))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("kipi_seo_check failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_validate_cold_email(subject: str, body: str) -> str:
+    """Validate a cold email for deliverability and response rate best practices.
+
+    Checks subject line length/words, body length, reading level, AI patterns,
+    and CTA count.
+
+    Args:
+        subject: Email subject line.
+        body: Email body text.
+    """
+    try:
+        return json.dumps(linter.validate_cold_email(subject, body))
+    except Exception as e:
+        logger.error("kipi_validate_cold_email failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_copy_edit_lint(text: str) -> str:
+    """Lint text for plain English: complex words, filler, passive voice.
+
+    Returns suggested replacements and flagged patterns.
+
+    Args:
+        text: The text to lint.
+    """
+    try:
+        return json.dumps(linter.copy_edit_lint(text))
+    except Exception as e:
+        logger.error("kipi_copy_edit_lint failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
+# Scorer Tools (5 tools — deterministic scoring and calculation)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_score_lead(attributes_json: str, signals_json: str, model: str = "hybrid") -> str:
+    """Score a lead using fit + engagement + negative scoring with decay.
+
+    Models: plg (30/70 fit/engage, MQL 60), enterprise (60/40, MQL 75),
+    hybrid (50/50, MQL 65).
+
+    Args:
+        attributes_json: JSON object with company_size, industry, revenue, title,
+            department, role, tech, negatives (list of negative signal names).
+        signals_json: JSON array of {"type": str, "age_days": int} objects.
+        model: Scoring model name (plg, enterprise, hybrid).
+    """
+    try:
+        attributes = json.loads(attributes_json)
+        signals = json.loads(signals_json)
+        return json.dumps(scorer.score_lead(attributes, signals, model))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        logger.error("kipi_score_lead failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_ab_test_calc(baseline: float, mde: float, traffic: int, variants: int = 2) -> str:
+    """Calculate A/B test sample size, duration, and feasibility.
+
+    Args:
+        baseline: Current conversion rate (e.g. 0.03 for 3%).
+        mde: Minimum detectable effect as relative lift (e.g. 0.1 for 10% lift).
+        traffic: Daily traffic (visitors per day).
+        variants: Number of test variants (default 2).
+    """
+    try:
+        return json.dumps(scorer.ab_test_calc(baseline, mde, traffic, variants))
+    except Exception as e:
+        logger.error("kipi_ab_test_calc failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_churn_health_score(signals_json: str) -> str:
+    """Calculate customer health score (0-100) with tier and risk flags.
+
+    Args:
+        signals_json: JSON object with component scores (0-100): login_frequency,
+            feature_usage, support_sentiment, billing_health, engagement. Optional
+            boolean flags: login_drop_50pct, feature_usage_stopped,
+            support_spike_then_stop, billing_page_visits, seats_removed,
+            data_export, nps_below_6.
+    """
+    try:
+        signals = json.loads(signals_json)
+        return json.dumps(scorer.churn_health_score(signals))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("kipi_churn_health_score failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_cancel_flow_offer(reason: str, mrr: float = 0) -> str:
+    """Map a cancel reason to the best save offer and MRR-based routing.
+
+    Reasons: too_expensive, not_using, missing_feature, switching_competitor,
+    technical_issues, temporary, business_closed.
+
+    Args:
+        reason: Cancel reason key.
+        mrr: Monthly recurring revenue of the account (for routing tier).
+    """
+    try:
+        return json.dumps(scorer.cancel_flow_offer(reason, mrr))
+    except Exception as e:
+        logger.error("kipi_cancel_flow_offer failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_crack_detect(contacts_json: str, loops_json: str = "[]") -> str:
+    """Detect follow-up gaps: overdue contacts, stalled deals, stale loops.
+
+    Args:
+        contacts_json: JSON array of {"name": str, "last_contact_days": int,
+            "touches": int, "status": str} objects.
+        loops_json: Optional JSON array of {"id": str, "age_days": int,
+            "status": str} objects.
+    """
+    try:
+        contacts = json.loads(contacts_json)
+        loops = json.loads(loops_json) if loops_json else []
+        return json.dumps(scorer.crack_detect(contacts, loops or None))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except Exception as e:
+        logger.error("kipi_crack_detect failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
+# Schema Generator (1 tool — JSON-LD structured data)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_generate_schema(page_type: str, data_json: str) -> str:
+    """Generate JSON-LD structured data for a page type.
+
+    Page types: organization, website, article, blog_posting, product,
+    software_application, faq, howto, breadcrumb, local_business, event.
+
+    Args:
+        page_type: Schema type to generate.
+        data_json: JSON object with required and optional fields for the type.
+    """
+    try:
+        data = json.loads(data_json)
+        return json.dumps(schema_generator.generate(page_type, data))
+    except json.JSONDecodeError as e:
+        raise ToolError(f"Invalid JSON: {e}")
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        logger.error("kipi_generate_schema failed", exc_info=True)
+        raise ToolError(str(e))
 
 
 def main():

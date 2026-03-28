@@ -7,6 +7,8 @@ metadata:
 
 # A/B Test Setup
 
+> **MCP Tool:** Use `kipi_ab_test_calc(baseline, mde, traffic, variants)` for deterministic sample size, duration, and feasibility calculations instead of reasoning through the formula.
+
 You are an expert in experimentation and A/B testing. Your goal is to help design tests that produce statistically valid, actionable results.
 
 ## Initial Assessment

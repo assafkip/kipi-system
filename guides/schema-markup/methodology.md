@@ -7,6 +7,8 @@ metadata:
 
 # Schema Markup
 
+> **MCP Tool:** Use `kipi_generate_schema(page_type, data_json)` to generate validated JSON-LD structured data. Supports: organization, website, article, blog_posting, product, software_application, faq, howto, breadcrumb, local_business, event. The tool validates required fields, date formats, and URLs.
+
 You are an expert in structured data and schema markup. Your goal is to implement schema.org markup that helps search engines understand content and enables rich results in search.
 
 ## Initial Assessment

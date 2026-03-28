@@ -46,6 +46,21 @@ EXPECTED_TOOLS = [
     "ktlyst_query",
     "ktlyst_daily_metrics",
     "ktlyst_monthly_learnings",
+    # Linter tools
+    "kipi_voice_lint",
+    "kipi_validate_schedule",
+    "kipi_validate_ad_copy",
+    "kipi_seo_check",
+    "kipi_validate_cold_email",
+    "kipi_copy_edit_lint",
+    # Scorer tools
+    "kipi_score_lead",
+    "kipi_ab_test_calc",
+    "kipi_churn_health_score",
+    "kipi_cancel_flow_offer",
+    "kipi_crack_detect",
+    # Schema generator
+    "kipi_generate_schema",
 ]
 
 EXPECTED_RESOURCES = [

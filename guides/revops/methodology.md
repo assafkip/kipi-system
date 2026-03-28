@@ -80,6 +80,8 @@ Define response times and document them:
 
 ## Lead Scoring
 
+> **MCP Tool:** Use `kipi_score_lead(attributes_json, signals_json, model)` for deterministic lead scoring instead of reasoning through the weights manually. The tool implements the full fit + engagement + negative scoring model with decay.
+
 ### Scoring Dimensions
 
 **Explicit scoring (fit)** — Who they are:

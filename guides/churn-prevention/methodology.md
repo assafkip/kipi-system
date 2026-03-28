@@ -58,6 +58,8 @@ This skill supports three modes:
 2. **Optimize an existing flow** — Analyze cancel data and improve save rates
 3. **Set up dunning** — Failed payment recovery with retries and email sequences
 
+> **MCP Tools:** Use `kipi_churn_health_score(signals_json)` for deterministic health scoring and `kipi_cancel_flow_offer(reason, mrr)` for cancel reason to save offer mapping. These encode the formulas and lookup tables below.
+
 ---
 
 ## Cancel Flow Design
