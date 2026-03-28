@@ -5,8 +5,10 @@
   "author": { "name": "Assaf Kipnis", "email": "assafkip@gmail.com" },
   "repository": "https://github.com/assafkip/kipi-system",
   "license": "MIT",
+  "skills": "./.claude/skills/",
+  "mcpServers": "./.mcp.json",
   "userConfig": {
-    "apify_token": { "description": "Apify API token for LinkedIn/Reddit/X scraping", "sensitive": true },
-    "notion_token": { "description": "Notion API token for CRM", "sensitive": true }
+    "apify_token": { "title": "Apify Token", "description": "Apify API token for LinkedIn/Reddit/X scraping", "type": "string", "sensitive": true },
+    "notion_token": { "title": "Notion Token", "description": "Notion API token for CRM", "type": "string", "sensitive": true }
   }
 }

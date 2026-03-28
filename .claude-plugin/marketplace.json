@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "kipi-local",
+  "description": "Local marketplace for kipi-system plugin development",
+  "owner": {
+    "name": "Assaf Kipnis",
+    "email": "assafkip@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "kipi-system",
+      "description": "Founder OS — strategy, execution, relationships, content, daily routines",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/assafkip/kipi-system.git"
+      },
+      "category": "productivity"
+    }
+  ]
+}
