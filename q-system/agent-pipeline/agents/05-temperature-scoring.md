@@ -11,10 +11,10 @@ You are a scoring agent. Your ONLY job is to consolidate engagement signals per 
 
 ## Reads
 
-- `{{BUS_DIR}}/linkedin-dms.json` - DM activity (replies, new messages)
-- `{{BUS_DIR}}/linkedin-posts.json` - post interactions (likes, comments on your posts)
-- `{{BUS_DIR}}/gmail.json` - email activity (replies, opens if tracked)
-- `{{BUS_DIR}}/notion.json` - prospect records (relationship stage, last interaction, link click data)
+- Harvest data: `kipi_get_harvest("linkedin-dms", days=2, include_body=true)` - DM activity (replies, new messages)
+- Harvest data: `kipi_get_harvest("linkedin-feed", days=2, include_body=true)` - post interactions (likes, comments on your posts)
+- Harvest data: `kipi_get_harvest("gmail", days=2)` - email activity (replies, opens if tracked)
+- Harvest data: `kipi_get_harvest("notion-contacts", days=1)` - prospect records (relationship stage, last interaction)
 
 ## Writes
 
@@ -22,7 +22,7 @@ You are a scoring agent. Your ONLY job is to consolidate engagement signals per 
 
 ## Instructions
 
-1. Load all four bus files. If a file is missing, log it and continue with available data.
+1. Call `kipi_get_harvest` MCP tool for each source listed above. If a source returns 0 records, log it and continue with available data.
 2. For each unique prospect across all files, accumulate signals:
 
 Signal weights (additive):

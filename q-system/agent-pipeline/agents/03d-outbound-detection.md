@@ -47,7 +47,7 @@ For each detected action, check if it triggers a relationship stage advancement:
 - Connection request sent → advance to Connection Requested stage
 
 ### 5. Loop Auto-Close
-Read open loops from `{{BUS_DIR}}/notion.json` or the `loop_open` MCP data (if available).
+Read open loops from the `kipi://loops/open` MCP resource or `loop_open` MCP data.
 For each detected DM reply or connection accept that matches an open loop target name:
 - Mark the loop for closure with reason "auto-detected: DM reply" or "auto-detected: connection accepted"
 - For `debrief_next_step` loops where the founder has now sent the follow-up, mark for closure: "next step completed"

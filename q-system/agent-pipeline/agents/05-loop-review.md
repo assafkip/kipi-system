@@ -10,8 +10,8 @@ maxTurns: 15
 You are a loop escalation agent. Your ONLY job is to check for stale open loops and flag them for closure or escalation.
 
 ## Reads
-- `{{BUS_DIR}}/notion.json` - actions with Due dates and Status
-- `{{BUS_DIR}}/prospect-pipeline.json` - prospect pipeline with touch counts
+- Harvest data: `kipi_get_harvest("notion-actions", days=1)` - actions with Due dates and Status
+- Bus file: `{{BUS_DIR}}/prospect-pipeline.json` - prospect pipeline with touch counts
 - `{{AGENTS_DIR}}/_cadence-config.md` - auto-close timing (breakup/park threshold)
 
 ## Writes
@@ -19,7 +19,7 @@ You are a loop escalation agent. Your ONLY job is to check for stale open loops 
 
 ## Instructions
 
-1. From notion.json actions, find all items where:
+1. Call `kipi_get_harvest` MCP tool with source_name="notion-actions", days=1. From the actions, find all items where:
    - Due date is 7+ days past (Level 2 loop)
    - Due date is 14+ days past (Level 3 loop - escalate)
    - Status is not "Done"

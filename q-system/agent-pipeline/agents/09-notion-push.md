@@ -10,12 +10,12 @@ maxTurns: 15
 You are a write-back agent. Your ONLY job is to push today's action items to the Notion Actions DB.
 
 ## Reads
-- `{{BUS_DIR}}/hitlist.json` - engagement actions with copy
-- `{{BUS_DIR}}/value-routing.json` - value-drop actions
-- `{{BUS_DIR}}/pipeline-followup.json` - follow-up actions (if exists)
-- `{{BUS_DIR}}/loop-review.json` - loop closures to apply (if exists)
-- `{{BUS_DIR}}/outbound-actions.json` - auto-detected outbound actions to log to LinkedIn Tracker + loops to close (if exists)
-- `{{BUS_DIR}}/utm-tracking.json` - prospect engagement data to update Contact records (if exists, Mondays)
+- Bus file: `{{BUS_DIR}}/hitlist.json` - engagement actions with copy
+- Bus file: `{{BUS_DIR}}/value-routing.json` - value-drop actions
+- Bus file: `{{BUS_DIR}}/pipeline-followup.json` - follow-up actions (if exists)
+- Bus file: `{{BUS_DIR}}/loop-review.json` - loop closures to apply (if exists)
+- Bus file: `{{BUS_DIR}}/outbound-actions.json` - auto-detected outbound actions to log to LinkedIn Tracker + loops to close (if exists)
+- Harvest data: `kipi_get_harvest("ga4-utm", days=7)` - prospect engagement data to update Contact records (Mondays, if exists)
 - `{{DATA_DIR}}/my-project/notion-ids.md` - database IDs and data_source_ids
 
 ## Writes
