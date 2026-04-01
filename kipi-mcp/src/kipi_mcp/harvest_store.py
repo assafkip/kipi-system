@@ -299,6 +299,39 @@ class HarvestStore:
         finally:
             conn.close()
 
+    def complete_source_run(self, run_id: str, source_name: str, records: int) -> dict:
+        """Mark a source_run as complete. If all sources done, mark run complete."""
+        conn = self._connect()
+        try:
+            now = datetime.now().isoformat()
+            conn.execute(
+                "UPDATE source_runs SET status='complete', records=?, completed_at=? "
+                "WHERE run_id=? AND source_name=? AND status IN ('pending', 'running')",
+                (records, now, run_id, source_name),
+            )
+            conn.commit()
+
+            if self.check_run_complete(run_id):
+                self.update_run(run_id, "complete", completed_at=now)
+
+            return {"source": source_name, "status": "complete", "records": records}
+        finally:
+            conn.close()
+
+    def check_run_complete(self, run_id: str) -> bool:
+        """Check if all source_runs for a run are complete."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as total, "
+                "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) as done "
+                "FROM source_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            return row["total"] > 0 and row["total"] == row["done"]
+        finally:
+            conn.close()
+
     def cleanup(self, days: int = 7) -> dict:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         conn = self._connect()

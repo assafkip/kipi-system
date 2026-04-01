@@ -302,3 +302,36 @@ def test_harvest_summary_counts(tmp_harvest_store):
     summary = tmp_harvest_store.harvest_summary(run["run_id"])
     assert summary["linkedin"] == 3
     assert summary["twitter"] == 2
+
+
+def test_complete_source_run(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    sr = tmp_harvest_store.create_source_run(run["run_id"], "linkedin", "chrome")
+    # Source starts as "running"
+    assert sr["status"] == "running"
+    # Complete it
+    result = tmp_harvest_store.complete_source_run(run["run_id"], "linkedin", 5)
+    assert result["status"] == "complete"
+    assert result["records"] == 5
+
+
+def test_check_run_complete_all_done(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    tmp_harvest_store.create_source_run(run["run_id"], "src-a", "http")
+    tmp_harvest_store.create_source_run(run["run_id"], "src-b", "mcp")
+    # Complete both
+    tmp_harvest_store.complete_source_run(run["run_id"], "src-a", 3)
+    tmp_harvest_store.complete_source_run(run["run_id"], "src-b", 2)
+    assert tmp_harvest_store.check_run_complete(run["run_id"]) is True
+    # Run should be auto-marked complete
+    r = tmp_harvest_store.get_run(run["run_id"])
+    assert r["status"] == "complete"
+
+
+def test_check_run_complete_partial(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    tmp_harvest_store.create_source_run(run["run_id"], "src-a", "http")
+    tmp_harvest_store.create_source_run(run["run_id"], "src-b", "chrome")
+    # Only complete one
+    tmp_harvest_store.complete_source_run(run["run_id"], "src-a", 3)
+    assert tmp_harvest_store.check_run_complete(run["run_id"]) is False

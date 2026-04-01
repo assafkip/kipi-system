@@ -1209,6 +1209,10 @@ def kipi_store_harvest(source_name: str, records_json: str, run_id: str = "") ->
                 deduped += 1
             else:
                 stored += 1
+        # Mark source_run complete if run_id provided
+        if run_id:
+            harvest_store.complete_source_run(run_id, source_name, stored)
+
         return json.dumps({"stored": stored, "deduped": deduped, "source": source_name})
     except json.JSONDecodeError as e:
         raise ToolError(f"Invalid JSON: {e}")
@@ -1390,7 +1394,7 @@ def kipi_morning_init(energy_level: int = 3) -> str:
     """
     try:
         from kipi_mcp.morning_init import morning_init
-        return json.dumps(morning_init(paths, energy_level))
+        return json.dumps(morning_init(paths, energy_level, harvest_store=harvest_store))
     except Exception as e:
         logger.error("kipi_morning_init failed", exc_info=True)
         raise ToolError(str(e))

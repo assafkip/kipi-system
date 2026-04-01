@@ -186,6 +186,38 @@ class TestCanonicalDigest:
 
 
 class TestMorningInit:
+    def test_cleanup_runs_on_init(self, paths):
+        from kipi_mcp.harvest_store import HarvestStore
+        store = HarvestStore(db_path=paths.output_dir / "test.db")
+        store.init_db()
+        # Create an old run
+        import sqlite3
+        conn = sqlite3.connect(str(store.db_path))
+        conn.execute(
+            "INSERT INTO harvest_runs (run_id, started_at, mode, status) VALUES (?, ?, ?, ?)",
+            ("old-run", "2026-01-01T00:00:00", "incremental", "complete"),
+        )
+        conn.commit()
+        conn.close()
+        _create_file(paths.canonical_dir / "talk-tracks.md")
+        _create_file(paths.canonical_dir / "objections.md")
+        _create_file(paths.my_project_dir / "relationships.md")
+        result = morning_init(paths, energy_level=3, harvest_store=store)
+        assert result["cleanup"]["deleted_runs"] >= 1
+
+    def test_old_files_cleaned(self, paths):
+        import os, time
+        _create_file(paths.canonical_dir / "talk-tracks.md")
+        _create_file(paths.canonical_dir / "objections.md")
+        _create_file(paths.my_project_dir / "relationships.md")
+        # Create an old morning log (backdate mtime)
+        old_log = paths.output_dir / "morning-log-2025-01-01.json"
+        old_log.write_text("{}")
+        old_time = time.time() - (15 * 86400)  # 15 days ago
+        os.utime(old_log, (old_time, old_time))
+        morning_init(paths, energy_level=3)
+        assert not old_log.exists()
+
     def test_returns_complete_bundle(self, paths):
         _create_file(paths.canonical_dir / "talk-tracks.md", "# Metaphor\nTest.")
         _create_file(paths.canonical_dir / "objections.md", "# Obj\nResp.")

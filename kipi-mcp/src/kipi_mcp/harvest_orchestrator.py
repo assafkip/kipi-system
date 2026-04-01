@@ -56,11 +56,18 @@ class HarvestOrchestrator:
     ) -> HarvestResult:
         env = env or {}
 
-        # Resume: find partial sources from latest run and re-run them
-        if mode == "resume":
+        # Full mode: always start fresh
+        if mode == "full":
+            run_info = self.store.create_run("full")
+        elif mode == "resume":
             return await self._resume(sources, methods, energy_level, env)
-
-        run_info = self.store.create_run(mode)
+        else:
+            # Smart default: if latest run is partial/running, auto-resume
+            latest = self.store.get_latest_run()
+            if latest and latest.get("status") in ("partial", "running"):
+                logger.info("Latest run %s is %s, auto-resuming", latest["run_id"], latest["status"])
+                return await self._resume(sources, methods, energy_level, env)
+            run_info = self.store.create_run("incremental")
         run_id = run_info["run_id"]
 
         # Build last_harvest_times for schedule filtering

@@ -167,12 +167,20 @@ def canonical_digest(paths) -> dict:
     return digest
 
 
-def morning_init(paths, energy_level: int) -> dict:
-    """Combined init: preflight + bootstrap + digest + bus setup + energy.
+def morning_init(paths, energy_level: int, harvest_store=None) -> dict:
+    """Combined init: preflight + bootstrap + digest + cleanup + energy.
 
     THE one call that replaces phases 0-0.7 of the old orchestrator.
     """
     date = datetime.now().strftime("%Y-%m-%d")
+
+    # Auto-cleanup transient data
+    cleanup_result = {}
+    if harvest_store:
+        cleanup_result = harvest_store.cleanup(days=7)
+    _clean_old_files(paths.output_dir, "morning-log-*.json", days=10)
+    _clean_old_files(paths.output_dir, "schedule-data-*.json", days=10)
+    _clean_old_files(paths.output_dir, "daily-schedule-*.html", days=10)
 
     return {
         "date": date,
@@ -180,6 +188,7 @@ def morning_init(paths, energy_level: int) -> dict:
         "bootstrap": session_bootstrap(paths),
         "canonical_digest": canonical_digest(paths),
         "energy": _energy_table(energy_level),
+        "cleanup": cleanup_result,
     }
 
 
@@ -295,6 +304,20 @@ _ENERGY_TABLES = {
 
 def _energy_table(level: int) -> dict:
     return _ENERGY_TABLES.get(max(1, min(5, level)), _ENERGY_TABLES[3])
+
+
+def _clean_old_files(directory: Path, pattern: str, days: int = 10):
+    """Delete files matching glob pattern older than N days."""
+    if not directory.exists():
+        return
+    cutoff = datetime.now() - timedelta(days=days)
+    for f in directory.glob(pattern):
+        try:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime)
+            if mtime < cutoff:
+                f.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 def _clean_old_bus(bus_dir: Path, days: int = 3):
