@@ -59,10 +59,33 @@ registry = RegistryManager(paths.registry_path)
 step_logger = StepLogger(output_dir=paths.output_dir)
 
 loop_tracker = LoopTracker(
-    db_path=paths.metrics_db,
+    db_path=paths.system_db,
     legacy_json_path=paths.output_dir / "open-loops.json",
 )
 loop_tracker.init_db()
+
+# Migrate loops from old metrics.db to system.db if needed
+if paths.metrics_db.exists() and paths.system_db != paths.metrics_db:
+    try:
+        import sqlite3 as _sql
+        _old = _sql.connect(str(paths.metrics_db))
+        _tables = [r[0] for r in _old.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "loops" in _tables:
+            _rows = _old.execute("SELECT * FROM loops").fetchall()
+            if _rows:
+                _cols = [d[0] for d in _old.execute("SELECT * FROM loops LIMIT 1").description]
+                _new = _sql.connect(str(paths.system_db))
+                for _r in _rows:
+                    _placeholders = ",".join("?" * len(_cols))
+                    _new.execute(f"INSERT OR IGNORE INTO loops ({','.join(_cols)}) VALUES ({_placeholders})", tuple(_r))
+                _new.commit()
+                _new.close()
+                _old.execute("DROP TABLE loops")
+                _old.commit()
+                logger.info("Migrated %d loops from metrics.db to system.db", len(_rows))
+        _old.close()
+    except Exception as _e:
+        logger.warning("Loop migration from metrics.db failed: %s", _e)
 
 schedule_verifier = ScheduleVerifier()
 

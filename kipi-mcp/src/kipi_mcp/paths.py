@@ -154,6 +154,14 @@ class KipiPaths:
     def metrics_db(self) -> Path:
         return self._instance_dir / "metrics.db"
 
+    @property
+    def harvest_db(self) -> Path:
+        return self._instance_dir / "harvest.db"
+
+    @property
+    def system_db(self) -> Path:
+        return self._instance_dir / "system.db"
+
     # --- Repo subdirectories (system code, stays in git) ---
 
     @property
@@ -189,10 +197,6 @@ class KipiPaths:
     def instance_sources_dir(self) -> Path:
         """User-level source YAML overrides (per instance)."""
         return self._instance_dir / "sources"
-
-    @property
-    def harvest_db(self) -> Path:
-        return self._instance_dir / "metrics.db"
 
     # --- Config files ---
 

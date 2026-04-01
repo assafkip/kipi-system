@@ -265,8 +265,12 @@ def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=No
     _clean_old_files(paths.output_dir, "schedule-data-*.json", days=10)
     _clean_old_files(paths.output_dir, "daily-schedule-*.html", days=10)
 
-    # DB integrity check
-    db_integrity = _check_db_integrity(paths.metrics_db)
+    # DB integrity check (all three databases)
+    db_integrity = {
+        "metrics": _check_db_integrity(paths.metrics_db),
+        "harvest": _check_db_integrity(paths.harvest_db),
+        "system": _check_db_integrity(paths.system_db),
+    }
 
     # Auto-backup with rotation (after all other init)
     backup_result = {}
