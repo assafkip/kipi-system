@@ -1,7 +1,7 @@
 {
   "name": "kipi-system",
   "description": "Founder OS — strategy, execution, relationships, content, daily routines",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": { "name": "Assaf Kipnis", "email": "[REDACTED]" },
   "repository": "https://github.com/assafkip/kipi-system",
   "license": "MIT",
