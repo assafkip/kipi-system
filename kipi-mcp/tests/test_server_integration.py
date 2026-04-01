@@ -67,6 +67,10 @@ EXPECTED_TOOLS = [
     "kipi_harvest_summary",
     "kipi_harvest_cleanup",
     "kipi_approve_apify_budget",
+    "kipi_preflight",
+    "kipi_session_bootstrap",
+    "kipi_canonical_digest",
+    "kipi_morning_init",
 ]
 
 EXPECTED_RESOURCES = [

@@ -1324,6 +1324,78 @@ def kipi_approve_apify_budget(month: str, extra: float) -> str:
         raise ToolError(str(e))
 
 
+# ============================================================
+# Morning Init Tools (4 tools — deterministic Python)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_preflight() -> str:
+    """Check system readiness: required files exist, system is configured.
+
+    Replaces the 00-preflight agent with deterministic Python checks.
+    Returns file existence status and overall ready flag.
+    """
+    try:
+        from kipi_mcp.morning_init import preflight
+        return json.dumps(preflight(paths))
+    except Exception as e:
+        logger.error("kipi_preflight failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_session_bootstrap() -> str:
+    """Recover state from previous session.
+
+    Replaces the 00-session-bootstrap agent. Recovers unconfirmed action
+    cards, computes loop stats, detects stalls (>14 days no contact),
+    and checksums canonical files.
+    """
+    try:
+        from kipi_mcp.morning_init import session_bootstrap
+        return json.dumps(session_bootstrap(paths))
+    except Exception as e:
+        logger.error("kipi_session_bootstrap failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_canonical_digest() -> str:
+    """Parse canonical markdown files into structured JSON digest.
+
+    Replaces the 00c-canonical-digest agent. Reads talk-tracks, objections,
+    current-state, discovery, and decisions files. Extracts key fields and
+    runs a 7-point validation gate. Saves ~40-60K tokens vs agents reading
+    full canonical files.
+    """
+    try:
+        from kipi_mcp.morning_init import canonical_digest
+        return json.dumps(canonical_digest(paths))
+    except Exception as e:
+        logger.error("kipi_canonical_digest failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_morning_init(energy_level: int = 3) -> str:
+    """Combined morning initialization: preflight + bootstrap + digest + bus setup.
+
+    THE one call that replaces phases 0-0.7 of the old orchestrator.
+    Creates today's bus directory, cleans old ones, runs all init checks,
+    and returns the complete init bundle.
+
+    Args:
+        energy_level: Founder's energy level (1-5). Governs downstream compression.
+    """
+    try:
+        from kipi_mcp.morning_init import morning_init
+        return json.dumps(morning_init(paths, energy_level))
+    except Exception as e:
+        logger.error("kipi_morning_init failed", exc_info=True)
+        raise ToolError(str(e))
+
+
 def main():
     """Entry point for the kipi MCP server."""
     mcp.run(transport="stdio")

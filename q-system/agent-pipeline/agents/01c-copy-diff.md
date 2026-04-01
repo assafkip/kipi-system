@@ -10,8 +10,8 @@ maxTurns: 15
 You are a learning agent. Your ONLY job is to compare yesterday's generated copy against what the founder actually posted, and log the edits.
 
 ## Reads
-- Previous day's bus files: `{state_dir}/bus/{yesterday}/hitlist.json` (generated copy)
-- Chrome MCP: founder's actual LinkedIn activity (what was posted/sent)
+- Previous day's hitlist: `{state_dir}/output/` or `{state_dir}/bus/{yesterday}/hitlist.json` (generated copy)
+- Harvest data: `kipi_get_harvest("linkedin-publish-recon", days=2, include_body=true)` (what was actually posted)
 
 ## Writes
 - `{state_dir}/bus/{date}/copy-diffs.json`
@@ -24,12 +24,12 @@ Calculate yesterday's date. Read `{state_dir}/bus/{yesterday}/hitlist.json`. If 
 
 ### Step 2: Check what was actually posted
 
-Use Chrome MCP to navigate to https://www.linkedin.com/in/me/recent-activity/all/
+Call `kipi_get_harvest` MCP tool with source_name="linkedin-publish-recon", days=2, include_body=true to get the founder's recent LinkedIn activity (posts, comments, DMs sent).
 
 For each action in yesterday's hitlist:
-- **Comments:** Check if a comment was posted on the target post URL. Compare generated text vs actual comment text.
-- **DMs:** Navigate to LinkedIn messaging. Check if a DM was sent to the target contact. Compare generated vs actual.
-- **Connection requests:** Check sent invitations page for the target contact.
+- **Comments:** Check if a matching comment appears in the harvest data for the target post URL. Compare generated text vs actual comment text.
+- **DMs:** Check if a DM was sent to the target contact in the harvest data. Compare generated vs actual.
+- **Connection requests:** Check if a connection request was sent to the target contact.
 
 ### Step 3: Classify each action
 
@@ -81,6 +81,6 @@ If there are 5+ edits in SQLite (across multiple days), query for patterns using
 
 Add a `patterns` field to copy-diffs.json with any recurring edits (e.g. "founder consistently shortens DMs", "founder always removes hedging language").
 
-## If Chrome fails after 2 attempts, write minimal output and exit. Do NOT block.
+## If harvest returns 0 records, write minimal output and exit. Do NOT block.
 
 ## Token budget: <3K tokens output

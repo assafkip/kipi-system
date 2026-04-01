@@ -10,25 +10,25 @@ maxTurns: 15
 You are a graph query agent. Your job is to read the entity-relationship graph and produce a digest of relevant connections for today's meetings, pipeline, and warm intro matching.
 
 ## Reads
-- `{{DATA_DIR}}/memory/graph.jsonl`
-- `{{BUS_DIR}}/calendar.json` (for today's meeting attendees)
-- `{{BUS_DIR}}/notion.json` (for active pipeline contacts)
+- Harvest data: `kipi_get_harvest("graph-kb", days=1, include_body=true)` (graph triples)
+- Harvest data: `kipi_get_harvest("calendar", days=1)` (today's meeting attendees)
+- Harvest data: `kipi_get_harvest("notion-contacts", days=1)` (active pipeline contacts)
 
 ## Writes
 - `{{BUS_DIR}}/graph-digest.json`
 
 ## Instructions
 
-1. Read `{{DATA_DIR}}/memory/graph.jsonl`. Each line is a JSON triple:
+1. Call `kipi_get_harvest` MCP tool with source_name="graph-kb", days=1, include_body=true. Each record's body_text is a JSON triple:
    ```jsonl
    {"s":"Person A","p":"works_at","o":"Company X","t":"2026-03-12"}
    {"s":"Person B","p":"introduced","o":"Person A","t":"2026-03-12"}
    {"s":"Person C","p":"cares_about","o":"identity_security","t":"2026-03-11"}
    ```
 
-2. Read `{{BUS_DIR}}/calendar.json` and extract all attendee names from today's meetings.
+2. Call `kipi_get_harvest` with source_name="calendar", days=1. Extract all attendee names from today's meetings.
 
-3. Read `{{BUS_DIR}}/notion.json` and extract names of contacts with active pipeline status (Hot, Warm, Active).
+3. Call `kipi_get_harvest` with source_name="notion-contacts", days=1. Extract names of contacts with active pipeline status (Hot, Warm, Active).
 
 4. For each meeting attendee, query the graph:
    - Who else at their company have we talked to? (`works_at` triples)
