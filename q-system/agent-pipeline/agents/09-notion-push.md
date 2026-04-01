@@ -60,4 +60,11 @@ For loop-review force-close items:
 
 4. If any Notion write fails, log the error and continue with the next item. Do not halt.
 
+## Known Notion Issues (MUST follow)
+
+- **Two MCP servers:** `mcp__notion_api__*` is CORRECT for CRM data. `mcp__claude_ai_Notion__*` connects to a different workspace - do NOT use for CRM.
+- **API-patch-page only updates title.** Cannot update Role, Company, Status, or any other field. For full property updates, try `mcp__claude_ai_Notion__notion-update-page`. If 404, output manual update instructions.
+- **Actions DB properties:** Action (title), Priority, Due, Type, Energy, Time Est, Contact, Notes, Action ID, Created. NO "Status" property - filter by Priority or Due.
+- **Pipeline DB properties:** Fund (title), Stage, Thesis Fit, Next Date, Next Step, Key Quote, Pass Reason, Check Size, Contact, Investor Type, Deal ID, Updated. Filter by "Stage" NOT "Status".
+
 ## Token budget: <3K tokens output

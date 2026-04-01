@@ -11,6 +11,8 @@ from kipi_mcp.morning_init import (
     session_bootstrap,
     canonical_digest,
     morning_init,
+    gate_check,
+    deliverables_check,
 )
 
 
@@ -228,3 +230,116 @@ class TestMorningInit:
         result = morning_init(paths, energy_level=5)
         assert result["energy"]["max_hitlist"] == 999
         assert result["energy"]["skip_deep_focus"] is False
+
+
+# ── Gate Check ──
+
+
+class TestGateCheck:
+    def test_no_log_file(self, paths):
+        result = gate_check(paths, phase=6, date="2026-04-01")
+        assert result["passed"] is False
+        assert "not found" in result["error"]
+
+    def test_all_prior_phases_done(self, paths):
+        date = "2026-04-01"
+        log = {
+            "date": date,
+            "steps": {
+                "phase_0_init": {"status": "done"},
+                "phase_1_harvest": {"status": "done"},
+                "phase_2_analysis": {"status": "done"},
+                "phase_3_content": {"status": "done"},
+                "phase_4_pipeline": {"status": "done"},
+                "phase_5_compliance": {"status": "done"},
+            },
+        }
+        log_path = paths.output_dir / f"morning-log-{date}.json"
+        log_path.write_text(json.dumps(log))
+        result = gate_check(paths, phase=6, date=date)
+        assert result["passed"] is True
+        assert result["missing"] == []
+
+    def test_missing_phase(self, paths):
+        date = "2026-04-01"
+        log = {
+            "date": date,
+            "steps": {
+                "phase_0_init": {"status": "done"},
+                "phase_1_harvest": {"status": "done"},
+                # phase_2_analysis missing
+                "phase_3_content": {"status": "done"},
+                "phase_4_pipeline": {"status": "done"},
+                "phase_5_compliance": {"status": "done"},
+            },
+        }
+        log_path = paths.output_dir / f"morning-log-{date}.json"
+        log_path.write_text(json.dumps(log))
+        result = gate_check(paths, phase=6, date=date)
+        assert result["passed"] is False
+        assert "phase_2_analysis" in result["missing"]
+
+    def test_skipped_counts_as_done(self, paths):
+        date = "2026-04-01"
+        log = {
+            "date": date,
+            "steps": {
+                "phase_0_init": {"status": "done"},
+                "phase_1_harvest": {"status": "done"},
+                "phase_2_analysis": {"status": "skipped"},
+                "phase_3_content": {"status": "done"},
+                "phase_4_pipeline": {"status": "done"},
+                "phase_5_compliance": {"status": "done"},
+            },
+        }
+        log_path = paths.output_dir / f"morning-log-{date}.json"
+        log_path.write_text(json.dumps(log))
+        result = gate_check(paths, phase=6, date=date)
+        assert result["passed"] is True
+
+
+# ── Deliverables Check ──
+
+
+class TestDeliverablesCheck:
+    def test_all_present(self, paths):
+        date = datetime.now().strftime("%Y-%m-%d")
+        bus = paths.bus_dir / date
+        bus.mkdir(parents=True, exist_ok=True)
+        (bus / "pipeline-followup.json").write_text("{}")
+        (bus / "hitlist.json").write_text('{"actions": [1]}')
+        (bus / "outbound-actions.json").write_text("{}")
+        (bus / "loop-review.json").write_text("{}")
+        (bus / "signals.json").write_text("{}")
+        (bus / "value-routing.json").write_text("{}")
+        result = deliverables_check(paths, date=date)
+        assert result["passed"] is True
+        assert len(result["missing"]) == 0
+
+    def test_missing_hitlist(self, paths):
+        date = datetime.now().strftime("%Y-%m-%d")
+        bus = paths.bus_dir / date
+        bus.mkdir(parents=True, exist_ok=True)
+        (bus / "pipeline-followup.json").write_text("{}")
+        # hitlist missing
+        (bus / "outbound-actions.json").write_text("{}")
+        (bus / "loop-review.json").write_text("{}")
+        (bus / "signals.json").write_text("{}")
+        (bus / "value-routing.json").write_text("{}")
+        result = deliverables_check(paths, date=date)
+        assert result["passed"] is False
+        assert any("hitlist" in m for m in result["missing"])
+
+    def test_empty_hitlist_actions(self, paths):
+        date = datetime.now().strftime("%Y-%m-%d")
+        bus = paths.bus_dir / date
+        bus.mkdir(parents=True, exist_ok=True)
+        (bus / "pipeline-followup.json").write_text("{}")
+        (bus / "hitlist.json").write_text('{"actions": []}')  # empty
+        (bus / "outbound-actions.json").write_text("{}")
+        (bus / "loop-review.json").write_text("{}")
+        (bus / "signals.json").write_text("{}")
+        (bus / "value-routing.json").write_text("{}")
+        result = deliverables_check(paths, date=date)
+        assert result["passed"] is False
+        assert any("empty" in m for m in result["missing"])

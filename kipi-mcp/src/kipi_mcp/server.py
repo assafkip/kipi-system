@@ -1396,6 +1396,43 @@ def kipi_morning_init(energy_level: int = 3) -> str:
         raise ToolError(str(e))
 
 
+@mcp.tool()
+def kipi_gate_check(phase: int, date: str = "") -> str:
+    """Check if all prior phases are logged before a gate phase.
+
+    Call this before Phases 6, 7, or 8. Reads the morning log and
+    verifies every prior phase is logged as done or skipped.
+
+    Args:
+        phase: The gate phase number (6, 7, or 8).
+        date: Date in YYYY-MM-DD format. Defaults to today.
+    """
+    try:
+        from kipi_mcp.morning_init import gate_check
+        return json.dumps(gate_check(paths, phase, date))
+    except Exception as e:
+        logger.error("kipi_gate_check failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_deliverables_check(date: str = "") -> str:
+    """Check that required deliverables exist for today.
+
+    Verifies bus files contain expected outputs based on day of week.
+    Call this before synthesis (Phase 6) to catch missing work.
+
+    Args:
+        date: Date in YYYY-MM-DD format. Defaults to today.
+    """
+    try:
+        from kipi_mcp.morning_init import deliverables_check
+        return json.dumps(deliverables_check(paths, date))
+    except Exception as e:
+        logger.error("kipi_deliverables_check failed", exc_info=True)
+        raise ToolError(str(e))
+
+
 def main():
     """Entry point for the kipi MCP server."""
     mcp.run(transport="stdio")

@@ -121,12 +121,15 @@ Log: `log_step(date, "phase_4_pipeline", "done")`
 Log: `log_step(date, "phase_5_compliance", "done")`
 
 ### Phase 6: Synthesis + Queue (sequential)
+**GATE:** Call `kipi_gate_check` MCP tool with phase=6. If passed=false, STOP and report missing phases.
+**DELIVERABLES:** Call `kipi_deliverables_check` MCP tool. If passed=false, go back and generate missing work.
 - 07-synthesize.md (OPUS) -- reads ALL bus/ files + harvest data, writes schedule-data-{date}.json
 - 07b-outreach-queue.md (sonnet) -- merges hitlist + value-routing + pipeline-followup
 
 Log: `log_step(date, "phase_6_synthesis", "done")`
 
 ### Phase 7: Build + Verify (sequential)
+**GATE:** Call `kipi_gate_check` with phase=7. If passed=false, STOP.
 1. `kipi_build_schedule` MCP tool -- generates HTML from schedule JSON
 2. 08-visual-verify.md (sonnet) -- opens HTML in Chrome, checks layout
 3. `kipi_bus_to_log` MCP tool -- bridges bus/ to morning-log.json
@@ -136,10 +139,29 @@ Log: `log_step(date, "phase_6_synthesis", "done")`
 Log: `log_step(date, "phase_7_build", "done")`
 
 ### Phase 8: Notion Write-back (2 agents, PARALLEL)
+**GATE:** Call `kipi_gate_check` with phase=8. If passed=false, STOP.
 - 09-notion-push.md (sonnet) -- pushes actions to Notion
 - 10-daily-checklists.md (sonnet) -- updates Daily Actions/Posts pages
 
 Log: `log_step(date, "phase_8_notion", "done")`
+
+## Session Budget
+
+The morning routine may exceed one context window.
+
+- **Session 1 (Phases 0-4):** Expected 60-80% context. Exit trigger: context > 70% OR Phase 4 complete. Write handoff: `output/morning-handoff-{date}.json` with `{date, phases_completed, harvest_run_id}`.
+- **Session 2 (Phases 5-8):** Read handoff, skip completed phases. Expected 20-40% context.
+- **Detection:** If handoff file exists for today, skip Phases 0-4.
+- **Context rule:** Never hold raw harvest data in context. Call `kipi_get_harvest` each time.
+
+## Skip Rules
+
+**Claude cannot self-authorize skipping a required phase. EVER.** The default is ALWAYS run, never skip. A phase can only be skipped if:
+- It's day-conditional and today isn't the right day
+- A dependency failed AND the founder explicitly approves the skip
+- The founder says "skip it"
+
+Skipping without asking is flagged in the audit.
 
 ## Post-Pipeline
 - Call `kipi_backup` MCP tool

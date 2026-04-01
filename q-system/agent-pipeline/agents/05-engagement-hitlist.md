@@ -108,4 +108,6 @@ Write to `{{BUS_DIR}}/hitlist.json`:
 
 Do NOT update Notion. Do NOT post anything. Just generate and write.
 
+**Action card rule:** Every action in the hitlist is a DRAFT, not a completed action. The founder must confirm they actually did it before any state files are updated. Never mark a comment/DM/email as "sent" or "posted" based on this output.
+
 ## Token budget: <8K tokens output

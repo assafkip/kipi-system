@@ -71,6 +71,8 @@ EXPECTED_TOOLS = [
     "kipi_session_bootstrap",
     "kipi_canonical_digest",
     "kipi_morning_init",
+    "kipi_gate_check",
+    "kipi_deliverables_check",
 ]
 
 EXPECTED_RESOURCES = [

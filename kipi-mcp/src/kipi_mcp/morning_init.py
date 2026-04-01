@@ -186,6 +186,112 @@ def morning_init(paths, energy_level: int) -> dict:
     }
 
 
+def gate_check(paths, phase: int, date: str = "") -> dict:
+    """Check if all prior phases are logged before a gate phase.
+
+    Reads the morning log and verifies every phase before the gate
+    is logged as done or skipped.
+    """
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    log_file = paths.output_dir / f"morning-log-{date}.json"
+    if not log_file.exists():
+        return {"passed": False, "error": "morning log not found", "missing": []}
+
+    try:
+        log = json.loads(log_file.read_text())
+    except json.JSONDecodeError:
+        return {"passed": False, "error": "morning log invalid JSON", "missing": []}
+
+    steps = log.get("steps", {})
+
+    expected_phases = {
+        6: ["phase_0_init", "phase_1_harvest", "phase_2_analysis",
+            "phase_3_content", "phase_4_pipeline", "phase_5_compliance"],
+        7: ["phase_0_init", "phase_1_harvest", "phase_2_analysis",
+            "phase_3_content", "phase_4_pipeline", "phase_5_compliance",
+            "phase_6_synthesis"],
+        8: ["phase_0_init", "phase_1_harvest", "phase_2_analysis",
+            "phase_3_content", "phase_4_pipeline", "phase_5_compliance",
+            "phase_6_synthesis", "phase_7_build"],
+    }
+
+    required = expected_phases.get(phase, [])
+    missing = []
+    for step_id in required:
+        step = steps.get(step_id)
+        if not step or step.get("status") not in ("done", "skipped"):
+            missing.append(step_id)
+
+    return {
+        "passed": len(missing) == 0,
+        "gate_phase": phase,
+        "missing": missing,
+        "phases_checked": len(required),
+    }
+
+
+def deliverables_check(paths, date: str = "") -> dict:
+    """Check that required deliverables exist for the day.
+
+    Inspects bus files for expected outputs based on day of week.
+    Returns pass/fail with details on what's missing.
+    """
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    bus_dir = paths.bus_dir / date
+    day_of_week = datetime.strptime(date, "%Y-%m-%d").strftime("%A").lower()
+
+    result = {
+        "date": date,
+        "day": day_of_week,
+        "passed": True,
+        "missing": [],
+        "checked": [],
+    }
+
+    def _check_bus_file(name: str, required_field: str | None = None, label: str = ""):
+        fpath = bus_dir / name
+        desc = label or name
+        if not fpath.exists():
+            result["missing"].append(desc)
+            result["passed"] = False
+            return
+        if required_field:
+            try:
+                data = json.loads(fpath.read_text())
+                if not data.get(required_field):
+                    result["missing"].append(f"{desc} (empty {required_field})")
+                    result["passed"] = False
+                    return
+            except (json.JSONDecodeError, KeyError):
+                result["missing"].append(f"{desc} (invalid JSON)")
+                result["passed"] = False
+                return
+        result["checked"].append(desc)
+
+    # Day-invariant deliverables
+    _check_bus_file("pipeline-followup.json", label="pipeline follow-ups")
+    _check_bus_file("hitlist.json", "actions", label="engagement hitlist")
+    _check_bus_file("outbound-actions.json", label="outbound detection")
+    _check_bus_file("loop-review.json", label="loop review")
+
+    # Content deliverables by day
+    if day_of_week in ("monday", "wednesday", "friday"):
+        _check_bus_file("signals.json", label="signals content (Mon/Wed/Fri)")
+    if day_of_week in ("tuesday", "thursday"):
+        _check_bus_file("signals.json", label="TL content (Tue/Thu)")
+    if day_of_week == "monday":
+        _check_bus_file("content-intel.json", label="content intelligence (Monday)")
+
+    # Value routing
+    _check_bus_file("value-routing.json", label="value routing")
+
+    return result
+
+
 # ── Helpers ──
 
 

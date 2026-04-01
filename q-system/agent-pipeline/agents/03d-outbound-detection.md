@@ -102,4 +102,9 @@ For each detected DM reply or connection accept that matches an open loop target
 }
 ```
 
+## Verification Staleness Rules
+- Comments/DMs: only trust data < 24h old
+- Connection accepts: only trust data < 48h old
+- If a claim is older than its threshold, flag as "UNVERIFIED" instead of confirming
+
 ## Token budget: 2-3K tokens output

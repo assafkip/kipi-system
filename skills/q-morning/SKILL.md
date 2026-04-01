@@ -15,10 +15,6 @@ If `setup_needed` is true: STOP. Tell the user to run `/q-setup` first.
 
 Read the `kipi://paths` MCP resource to get resolved directories.
 
-## Preconditions
-
-Read `q-system/agent-pipeline/preflight.md` for known issues, gates, session budget, and deliverables checklist. This is MANDATORY before starting.
-
 ## Process
 
 1. **Ask energy level.** "Energy check before we start. 1-5?" Wait for response.
@@ -63,6 +59,7 @@ Read `q-system/agent-pipeline/preflight.md` for known issues, gates, session bud
 ## MCP tools used
 
 `kipi_morning_init`, `kipi_harvest`, `kipi_get_harvest`, `kipi_store_harvest`, `kipi_harvest_summary`,
-`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_gate_check`, `log_checksum`, `log_verify`,
+`kipi_gate_check`, `kipi_deliverables_check`,
+`log_init`, `log_step`, `log_add_card`, `log_deliver_cards`, `log_checksum`, `log_verify`,
 `loop_escalate`, `kipi://loops/open`, `kipi://loops/stats`,
 `kipi_build_schedule`, `kipi_bus_to_log`, `kipi_audit_morning`, `kipi_backup`
