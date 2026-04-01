@@ -1,7 +1,7 @@
 ---
 name: 05-engagement-hitlist
 description: "Copy generation agent for engagement hitlist. Produces copy-paste-ready actions."
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
