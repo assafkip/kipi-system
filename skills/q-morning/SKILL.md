@@ -15,6 +15,10 @@ If `setup_needed` is true: STOP. Tell the user to run `/q-setup` first.
 
 Read the `kipi://paths` MCP resource to get resolved directories.
 
+## Preconditions
+
+Read `q-system/agent-pipeline/preflight.md` for known issues, gates, session budget, and deliverables checklist. This is MANDATORY before starting.
+
 ## Process
 
 1. **Ask energy level.** "Energy check before we start. 1-5?" Wait for response.
