@@ -156,6 +156,8 @@ Log: `log_step(date, "phase_5_compliance", "done")`
 - 07b-outreach-queue.md (haiku) -- merges engagement-hitlist + value-routing + pipeline-followup into single deduplicated queue. MUST run first.
 - THEN: 07-synthesize.md (OPUS) -- reads outreach-queue + all other agent data, writes schedule-data-{date}.json
 
+**ACTION CARDS:** Call `kipi_register_action_cards` MCP tool. This auto-scans agent outputs (hitlist, signals, value-routing, pipeline-followup) and registers all copy-paste actions in the morning log for next-morning confirmation tracking.
+
 Log: `log_step(date, "phase_6_synthesis", "done")`
 
 ### Phase 7: Build + Verify (sequential)
