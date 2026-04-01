@@ -108,6 +108,8 @@ Write to `{{BUS_DIR}}/hitlist.json`:
 }
 ```
 
+**Voice lint:** After generating all copy, call `kipi_voice_lint` MCP tool on each action's copy field. If violations found, rewrite the flagged copy to fix them, then re-lint (max 2 rewrites per action).
+
 Do NOT update Notion. Do NOT post anything. Just generate and write.
 
 **Action card rule:** Every action in the hitlist is a DRAFT, not a completed action. The founder must confirm they actually did it before any state files are updated. Never mark a comment/DM/email as "sent" or "posted" based on this output.

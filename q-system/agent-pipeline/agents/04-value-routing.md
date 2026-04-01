@@ -68,6 +68,7 @@ You are a matching agent. Your ONLY job is to match today's signals to active pr
 }
 ```
 
-8. Do NOT send any messages. Do NOT update Notion. Just match and write.
+8. **Voice lint:** Call `kipi_voice_lint` MCP tool on each value-drop message. If violations found, rewrite to fix, then re-lint (max 2 rewrites).
+9. Do NOT send any messages. Do NOT update Notion. Just match and write.
 
 ## Token budget: <3K tokens output

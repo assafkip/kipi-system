@@ -96,8 +96,6 @@ Log: `log_step(date, "phase_2_analysis", "done")`
   - 04-marketing-health.md (haiku) -- checks asset freshness, cadence progress
   - IF Wednesday: 04-founder-brand-post.md (sonnet) -- weekly founder brand post
 
-After content agents complete, run `kipi_voice_lint` MCP tool on each drafted post in signals.json and founder-brand-post.json. If violations found, log them but don't block — the founder sees violations in the schedule.
-
 Log: `log_step(date, "phase_3_content", "done")`
 
 ### Phase 4: Pipeline (5-7 parallel, then 1 sequential)
@@ -112,8 +110,6 @@ Launch parallel:
 
 THEN sequential:
 - 05-engagement-hitlist.md (opus) -- reads all Phase 4 outputs + harvest data, writes hitlist.json
-
-After hitlist completes, run `kipi_voice_lint` on each copy block in hitlist.json. Log violations.
 
 Log: `log_step(date, "phase_4_pipeline", "done")`
 

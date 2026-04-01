@@ -43,4 +43,6 @@ This agent runs on Wednesdays only. Read `{{AGENTS_DIR}}/_cadence-config.md` to 
 }
 ```
 
+**Voice lint:** Before writing output, call `kipi_voice_lint` MCP tool on the linkedin_draft. If violations found, rewrite to fix them, then re-lint (max 2 rewrites).
+
 ## Token budget: <1K tokens output

@@ -90,6 +90,7 @@ Pick the single most actionable signal for today's posts.
 ```
 
 5. Before writing, re-check all drafts against `{{AGENTS_DIR}}/_auto-fail-checklist.md`. Read that file. Verify zero auto-fail and zero warn violations in your output.
-6. Do NOT analyze strategy. Do NOT update any files except the bus output. Just draft and write.
+6. **Voice lint:** Call `kipi_voice_lint` MCP tool on each draft (linkedin_draft, x_draft, reddit_draft). If violations found, rewrite the flagged text to fix them, then re-lint. Repeat until clean (max 2 rewrites).
+7. Do NOT analyze strategy. Do NOT update any files except the bus output. Just draft and write.
 
 ## Token budget: <3K tokens output

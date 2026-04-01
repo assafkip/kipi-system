@@ -88,6 +88,7 @@ For each surfaced connection, draft a DM:
 }
 ```
 
-6. Do NOT send DMs. Do NOT update Notion. Just identify and draft.
+6. **Voice lint:** Call `kipi_voice_lint` MCP tool on each draft_dm and connection request note. If violations found, rewrite to fix, then re-lint (max 2 rewrites).
+7. Do NOT send DMs. Do NOT update Notion. Just identify and draft.
 
 ## Token budget: <3K tokens output
