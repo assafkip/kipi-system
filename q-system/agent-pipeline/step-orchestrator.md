@@ -1,159 +1,122 @@
 # Agent Pipeline Orchestrator
 
-This step replaces the monolithic morning routine with a phased agent pipeline.
-Each phase spawns sub-agents via the Agent tool. Agents communicate through
-JSON files in the bus/ directory.
+Phased morning pipeline. Phase 0 is deterministic Python (zero tokens). Phases 1-5 spawn agents.
+Agents read harvest data via `kipi_get_harvest` MCP tool. Analysis agents write to bus/ for downstream consumption.
 
 ## Setup
 
-```bash
-DATE=$(date +%Y-%m-%d)
-BUS_DIR="${STATE_DIR}/bus/${DATE}"
+```
 AGENTS_DIR="q-system/agent-pipeline/agents"
-mkdir -p "${BUS_DIR}"
 ```
 
-## Context Management
-Your context window will compact automatically as it approaches limits. Do not skip steps or phases to save context. If context runs low, tell the founder what phase you're in and what remains. Never self-authorize skipping.
+Paths, bus directory creation, and cleanup are handled by `kipi_morning_init`.
 
 ## Execution Rules
 
-1. **Read each agent's .md file from AGENTS_DIR before spawning it. This is NON-NEGOTIABLE.**
-   - Use the Read tool to load the file
-   - Extract the body (everything after the YAML frontmatter closing `---`)
-   - Replace template variables: {{DATE}}, {{BUS_DIR}}, {{CONFIG_DIR}}, {{DATA_DIR}}, {{STATE_DIR}}, {{AGENTS_DIR}}
-   - Pass the substituted body as the Agent tool's `prompt` parameter
-   - NEVER paraphrase, summarize, or rewrite agent instructions from memory
-   - Read on-demand (when about to spawn), not upfront. File content falls out of context after launch.
-   - Why: The Agent tool prompt is the ONLY channel to sub-agents. They inherit nothing from the orchestrator. Whatever you write IS their entire world. Paraphrasing causes silent failures.
-2. **Model allocation — use the `model` field from each agent's YAML frontmatter.** Summary:
-   - **haiku**: data pulls, simple checks, API calls (00-preflight, 00b-energy-check, 01-calendar/gmail/notion/vc-pipeline-pull, 01b-content-metrics, 02-x-activity, 03-linkedin-dms/posts, 03-prospect-pipeline, 03-publish-reconciliation, 03b-linkedin-notifications, 03c-prospect-activity, 04-marketing-health, 05-loop-review, 05a-site-metrics, 05b-utm-tracking, 06-client-deliverables, 07b-outreach-queue, 08-visual-verify, 09-notion-push, 10-daily-checklists)
-   - **sonnet**: analysis, copy generation, cross-referencing (00-session-bootstrap, 00c-canonical-digest, 00g-monthly-checks, 00h-memory-review, 01c-copy-diff, 01d-graph-kb, 02-meeting-prep, 02-warm-intro-match, 03-content-intel, 03d-outbound-detection, 04-founder-brand-post, 04-post-visuals, 04-signals-content, 04-value-routing, 05-connection-mining, 05-lead-sourcing, 05-lead-sourcing-chrome, 05-pipeline-followup, 05-temperature-scoring, 06-compliance-check, 06-positioning-check)
-   - **opus**: core copy + synthesis only (05-engagement-hitlist, 07-synthesize)
-3. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
-4. When a phase depends on the previous phase's output, wait for completion first
-5. After each phase, verify the expected bus/ JSON files exist before proceeding
-6. Log each phase completion via the `log_step` MCP tool
-7. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
-8. **Tool permissions per agent** (principle of least privilege):
-   - **Read-only agents** (analysis, scoring, compliance): Read, Glob, Grep only. No Edit, Write, Bash, or MCP writes.
-     - Applies to: 02-meeting-prep, 02-warm-intro-match, 05-temperature-scoring, 05-loop-review, 06-compliance-check, 06-positioning-check, 00g-monthly-checks, 00h-memory-review, 01d-graph-kb
-   - **Read + bus-write agents** (data pulls, content gen): Read, Glob, Grep, Write (bus/ only). MCP reads allowed.
-     - Applies to: 00-preflight, 00b-energy-check, 01-*, 03-*, 04-*, 05-lead-sourcing, 05-pipeline-followup, 05-engagement-hitlist, 03d-outbound-detection, 05a-site-metrics, 05b-utm-tracking
-   - **Full access agents** (synthesis, build, Notion push): All tools including Bash and MCP writes.
-     - Applies to: 07-synthesize, 08-visual-verify, 09-notion-push, 10-daily-checklists
-   - When spawning an Agent, do NOT pass disallowed tools. If an agent attempts a write outside its scope, the orchestrator should flag it in the audit log.
+1. **Read each agent's .md file before spawning.** Use Read tool, extract body after YAML `---`, replace template variables ({{DATE}}, {{BUS_DIR}}, {{CONFIG_DIR}}, {{DATA_DIR}}, {{STATE_DIR}}, {{AGENTS_DIR}}), pass as Agent prompt. Never paraphrase.
+2. **Model allocation** — use the `model` field from YAML frontmatter:
+   - **haiku**: harvest agents (chrome/mcp prompts), simple checks (00b-energy-check, 03-publish-reconciliation, 04-marketing-health, 05-loop-review, 06-client-deliverables, 07b-outreach-queue, 08-visual-verify, 09-notion-push, 10-daily-checklists)
+   - **sonnet**: analysis + content (01c-copy-diff, 01d-graph-kb, 02-x-activity, 02-meeting-prep, 02-warm-intro-match, 03-content-intel, 03d-outbound-detection, 04-founder-brand-post, 04-post-visuals, 04-signals-content, 04-value-routing, 05-connection-mining, 05-lead-sourcing, 05-pipeline-followup, 05-temperature-scoring, 06-compliance-check, 06-positioning-check, 00g-monthly-checks, 00h-memory-review)
+   - **opus**: synthesis only (05-engagement-hitlist, 07-synthesize)
+3. Launch independent agents in ONE message (parallel). Wait when phase depends on previous output.
+4. Log each phase via `log_step` MCP tool.
 
 ## Phase Sequence
 
-### Phase 0: Preflight (1 agent, sequential, MUST PASS)
-- Spawn: 00-preflight.md (sonnet)
-- Verify: bus/{date}/preflight.json exists and ready=true
-- If ready=false: HALT. Report which tools failed. Do not continue.
+### Phase 0: Init (deterministic Python — zero tokens)
 
-### Phase 0.5: Energy Check-in (1 agent, sequential, MUST PASS)
-- Spawn: 00b-energy-check.md (sonnet)
-- This agent asks the founder "Energy check before we start. 1-5?" and waits for a response
-- Verify: bus/{date}/energy.json exists
-- The compression table in energy.json governs the rest of the routine:
-  - Level 1-2: Hitlist capped at 3-5 actions, Deep Focus tasks skipped, quick wins only
-  - Level 3: Normal load, moderate hitlist (10 actions)
-  - Level 4-5: Full routine, no compression
-- ALL downstream agents that produce actionable output MUST read energy.json and respect compression limits
-- Key consumers: 05-engagement-hitlist.md, 07-synthesize.md
+1. Ask the founder: **"Energy check before we start. 1-5?"** Wait for response.
+2. Call `kipi_morning_init` MCP tool with the energy level.
+   This single call does ALL of:
+   - Creates today's bus directory, cleans old ones (>3 days)
+   - Preflight file checks (canonical files, relationships)
+   - Session bootstrap (recover action cards, loop stats, stall detection, checksums)
+   - Canonical digest (parses all canonical files into structured JSON)
+   - Energy compression table
+3. Check `result.preflight.ready`. If false → **HALT**. Report which files are missing.
+4. Quick MCP tool checks — call `gcal_list_events` and `gmail_search_messages` to verify Google MCP servers respond. If either fails → **HALT**.
+5. Store the result. Key fields for downstream agents:
+   - `result.canonical_digest` — replaces canonical-digest.json (pass to agents that need it)
+   - `result.bootstrap` — action cards, stalls, loop stats
+   - `result.energy` — compression table (max_hitlist, skip_deep_focus)
 
-### Phase 0.6: Monthly Checks + Memory Review (conditional, PARALLEL where applicable)
-- IF 1st of month: Spawn 00g-monthly-checks.md (sonnet) — decision origin audit, memory promotion, prediction calibration, outreach A/B
-- IF Monday: Spawn 00h-memory-review.md (sonnet) — reviews weekly/ files, recommends promote/archive/keep
-- If both conditions match (Monday the 1st), launch both in ONE message (parallel)
-- If neither condition matches, skip entirely
-- Verify: bus/{date}/monthly-checks.json and/or bus/{date}/memory-review.json exist (check skipped field)
+### Phase 0.5: Energy Gate Already Done
+Energy is captured in Phase 0. No separate agent needed.
 
-### Phase 0.7: Canonical Digest (1 agent, sequential, MUST COMPLETE)
-- Spawn: 00c-canonical-digest.md (sonnet)
-- This agent reads ALL canonical files (1,536 lines, ~20K tokens) ONCE and produces a 2K JSON digest.
-- All downstream agents read `canonical-digest.json` instead of the full files. This saves 40-60K tokens per run.
-- Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1 (checks canonical-digest.json structure)
-- If the digest is missing or malformed, downstream agents fall back to reading canonical files directly.
+### Phase 0.6: Monthly Checks + Memory Review (conditional)
+- IF 1st of month: Spawn 00g-monthly-checks.md (sonnet)
+- IF Monday: Spawn 00h-memory-review.md (sonnet)
+- If both: launch in ONE message. If neither: skip.
 
-### Phase 1: Data Ingest (5 agents, ALL PARALLEL)
-Before spawning: check if bus/{date}/ already contains calendar.json, gmail.json, notion.json from a pre-fetch run. If all exist and are < 2 hours old, skip Phase 1 and log "pre-fetched."
-Launch in ONE message with 5 Agent tool calls:
-- 01-data-ingest.md (sonnet) - MERGED agent: pulls Calendar + Gmail + Notion in one agent. Writes calendar.json, gmail.json, notion.json. Has built-in verification gate. Saves ~15-20K tokens vs 3 separate agents.
-- 01-vc-pipeline-pull.md (sonnet) - separate because it's a different API (localhost:5050)
-- 01b-content-metrics.md (sonnet) - Chrome scrapes LinkedIn analytics, writes content-metrics.json + persists to `kipi_*` MCP tools
-- 01c-copy-diff.md (sonnet) - compares yesterday's hitlist copy vs actual posts (Chrome), writes copy-diffs.json + persists to `kipi_*` MCP tools
-- 01d-graph-kb.md (sonnet) - queries graph.jsonl for meeting attendees and pipeline contacts, writes graph-digest.json. Depends on calendar.json + notion.json so may need to run AFTER the merged ingest agent if those aren't pre-fetched.
-Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=1
-If any fails: log the failure, continue with available data
-Note: 01d-graph-kb reads calendar.json + notion.json. If running from pre-fetch, launch all 5 parallel. If not, launch the first 4 parallel, then 01d-graph-kb after calendar+notion complete.
+### Phase 1: Data Harvest (1 MCP call + 2 agents, PARALLEL)
 
-### Phase 2: Analysis (2 agents, PARALLEL)
-Launch in ONE message with 2 Agent tool calls:
-- 02-meeting-prep.md (sonnet) - reads calendar.json + notion.json
-- 02-warm-intro-match.md (sonnet) - reads vc-pipeline.json + notion.json
-Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=2
+1. Call `kipi_harvest` MCP tool with mode="incremental".
+   Returns:
+   - `python_results`: HTTP/Apify/local sources already fetched and stored in SQLite
+   - `chrome_agent_prompt`: prompt for Chrome harvest agent (if chrome sources exist)
+   - `mcp_agent_prompt`: prompt for MCP harvest agent (if MCP sources exist)
+   - `run_id`: harvest run ID
 
-### Phase 3: LinkedIn (5 agents, SEQUENTIAL - Chrome needs one tab at a time)
-- 03-linkedin-posts.md (sonnet) - writes linkedin-posts.json
-- 03b-linkedin-notifications.md (sonnet) - scrapes linkedin.com/notifications for likes/views/comments/shares, writes behavioral-signals.json + persists to `kipi_*` MCP tools
-- 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
-- 03c-prospect-activity.md (sonnet) - visits top 10 Hot+Warm prospect profiles, pulls their last 2 posts, writes prospect-activity.json. **ENERGY GATE: skip if energy < 3.** Takes ~6 min Chrome time. Rotates via `kipi_*` MCP tools (skips anyone checked in last 2 days).
-- 03d-outbound-detection.md (sonnet) - auto-detects founder's posted comments, sent DMs, sent CRs via Chrome + bus data. Writes outbound-actions.json. Also detects loop auto-close candidates and stage advancement signals.
-- 03-dp-pipeline.md (sonnet) - reads notion.json, writes dp-pipeline.json (no Chrome needed, can overlap)
-Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=3
+2. Spawn harvest agents in ONE message (parallel):
+   - IF `chrome_agent_prompt` is not null: Spawn Agent with that prompt (haiku, 30 turns)
+   - IF `mcp_agent_prompt` is not null: Spawn Agent with that prompt (haiku, 15 turns)
+   - Both agents call `kipi_store_harvest` to persist results to SQLite
 
-### Phase 4: Content (2-4 agents, SEQUENTIAL then PARALLEL)
-- 04-signals-content.md (sonnet) - writes signals.json
-- THEN in PARALLEL:
-  - 04-value-routing.md (sonnet) - reads signals.json + notion.json, writes value-routing.json
-  - 04-post-visuals.md (sonnet) - reads signals.json (+ kipi-promo.json if Wednesday), generates Gamma social cards + carousels, writes post-visuals.json
-  - IF Wednesday: 04-kipi-promo.md (sonnet) - writes kipi-promo.json. NOTE: If Wednesday, run kipi-promo BEFORE post-visuals so visuals agent can read both drafts. Sequence: signals -> kipi-promo -> [value-routing + post-visuals] in parallel.
+3. After agents complete, call `kipi_harvest_summary` to verify record counts.
+   Log: "Harvest complete: {source}: {count} records" for each source.
 
-### Phase 5: Pipeline (4-6 parallel, then conditional, then 1 sequential)
-Launch in ONE message:
-- 05-temperature-scoring.md (sonnet) - reads all bus/ files, writes temperature.json
-- 05-lead-sourcing.md (sonnet) - runs Apify, writes leads.json
-- 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json
-- 05-loop-review.md (sonnet) - reads notion.json + dp-pipeline.json, writes loop-review.json
-- IF Monday: 05a-site-metrics.md (sonnet) - pulls GA4 weekly metrics via Chrome, writes site-metrics.json
-- IF Monday (after site-metrics): 05b-utm-tracking.md (sonnet) - cross-refs GA4 UTM data with Notion contacts, writes utm-tracking.json. Depends on site-metrics.json, so run AFTER 05a completes. Launch the other 4 in parallel, then 05a, then 05b.
-After all complete, check leads.json:
-- If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
-- If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).
-- If leads.json has results: proceed.
-Verify: Use the `kipi_verify_bus` MCP tool with date={date}, phase=5 (before hitlist, after parallel agents)
-THEN:
-- 05-engagement-hitlist.md (sonnet) - reads temperature + leads + linkedin-posts + behavioral-signals + prospect-activity + pipeline-followup + loop-review + copy-diffs, writes hitlist.json. Downgraded from Opus to Sonnet (token savings). The behavioral signals and copy learnings provide enough context that Sonnet produces equivalent quality.
+### Phase 2: Analysis (5-7 agents, mixed parallel/sequential)
 
-### Phase 6: Compliance (2 agents, PARALLEL)
-Launch in ONE message:
-- 06-compliance-check.md (sonnet) - reads bus/ content + canonical files, writes compliance.json
-- 06-positioning-check.md (sonnet) - reads canonical files, writes positioning.json
+These agents read from `kipi_get_harvest` and write analysis results to bus/:
 
-### Phase 7: Synthesis + Queue (sequential)
-- 07-synthesize.md (OPUS) - reads ALL bus/{date}/*.json, writes schedule-data-{date}.json
-- This is the most expensive agent. It produces the daily schedule JSON.
-- THEN: 07b-outreach-queue.md (sonnet) - merges hitlist + value-routing + pipeline-followup into single outreach-queue.json. Deduplicates by contact. This feeds Phase 9 Notion push.
+**Parallel batch 1:**
+- 01c-copy-diff.md (sonnet) — compares harvest data vs yesterday's hitlist
+- 01d-graph-kb.md (sonnet) — queries relationships from harvest graph data
+- 02-x-activity.md (haiku) — ranks X posts from harvest data
+- 03d-outbound-detection.md (sonnet) — detects actions from harvest linkedin-outbound
+- 03-publish-reconciliation.md (haiku) — matches harvest posts vs pipeline drafts
 
-### Phase 8: Build + Verify (sequential)
-1. Run: Use the `kipi_build_schedule` MCP tool with json_path="output/schedule-data-{date}.json" and html_path="output/daily-schedule-{date}.html"
-2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
-3. Run: Use the `kipi_bus_to_log` MCP tool with date={date} — bridges bus/ files to morning-log.json
-4. Run: Use the `kipi_audit_morning` MCP tool with log_file="{state_dir}/output/morning-log-{date}.json"
-5. Show audit output to founder
-Steps 3-4 are NON-OPTIONAL. A hook enforces this - see hooks/hooks.json.
+**Parallel batch 2** (after batch 1 completes — these read batch 1 outputs):
+- 02-meeting-prep.md (sonnet) — reads harvest calendar + notion + graph-digest
+- 02-warm-intro-match.md (sonnet) — reads harvest vc-pipeline + notion + graph-digest
 
-### Phase 9: Notion Write-back (2 agents, PARALLEL)
-Launch in ONE message:
-- 09-notion-push.md (sonnet) - pushes actions to Notion Actions DB, writes notion-push.json
-- 10-daily-checklists.md (sonnet) - updates Daily Actions + Daily Posts pages, writes daily-checklists.json
-These are the final agents. If either fails, log the error - do not retry.
+### Phase 3: Content (2-4 agents, SEQUENTIAL then PARALLEL)
+- 04-signals-content.md (sonnet) — writes signals.json
+- THEN parallel:
+  - 04-value-routing.md (sonnet) — reads signals + harvest notion data
+  - 04-post-visuals.md (sonnet) — reads signals, generates visuals
+  - IF Wednesday: 04-kipi-promo.md first, THEN post-visuals
 
-## Bus Cleanup
+### Phase 4: Pipeline (4+ parallel, then 1 sequential)
+Launch parallel:
+- 05-temperature-scoring.md (sonnet) — reads all bus/ + harvest data
+- 05-lead-sourcing.md (sonnet) — reads harvest x-lead-search + reddit-leads, scores leads
+- 05-pipeline-followup.md (sonnet) — reads harvest notion + gmail data
+- 05-loop-review.md (sonnet) — reads harvest notion data
+- IF Monday: 03-content-intel.md (sonnet) — reads harvest data for 5 platforms
 
-At the start of each day (Phase 0), delete bus/ directories older than 3 days:
-```bash
-find "${STATE_DIR}/bus/" -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
-```
+THEN sequential:
+- 05-engagement-hitlist.md (sonnet) — reads all Phase 4 outputs + harvest data, writes hitlist.json
 
+### Phase 5: Compliance (2 agents, PARALLEL)
+- 06-compliance-check.md (sonnet) — reads bus/ content + canonical digest
+- 06-positioning-check.md (sonnet) — reads canonical digest
+
+### Phase 6: Synthesis + Queue (sequential)
+- 07-synthesize.md (OPUS) — reads ALL bus/ files + harvest data, writes schedule-data-{date}.json
+- 07b-outreach-queue.md (sonnet) — merges hitlist + value-routing + pipeline-followup
+
+### Phase 7: Build + Verify (sequential)
+1. `kipi_build_schedule` MCP tool → generates HTML from schedule JSON
+2. 08-visual-verify.md (sonnet) — opens HTML in Chrome, checks layout
+3. `kipi_bus_to_log` MCP tool — bridges bus/ to morning-log.json
+4. `kipi_audit_morning` MCP tool — audits the morning log
+5. Show audit results to founder. NON-OPTIONAL.
+
+### Phase 8: Notion Write-back (2 agents, PARALLEL)
+- 09-notion-push.md (sonnet) — pushes actions to Notion
+- 10-daily-checklists.md (sonnet) — updates Daily Actions/Posts pages
+
+## Post-Pipeline
+- Call `kipi_backup` MCP tool
+- Report backup path to founder
