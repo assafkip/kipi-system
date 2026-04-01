@@ -169,16 +169,16 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 
 Sections MUST appear in this order (skip empty ones):
 
-1. **Quick Wins** (`green`) - scheduling replies, short DMs, comments (2-3 min each)
-2. **Open Loops** (`red`) - loops at level 2+ (7+ days old). Force-close items have skip=park UX. HIGHEST PRIORITY after quick wins.
-3. **Pipeline Follow-ups** (`purple`) - existing warm prospects, overdue actions, DP follow-ups. BEFORE new leads.
-4. **LinkedIn Engagement** (`blue`) - comments on prospect posts
-5. **New Leads** (`yellow`) - connection requests, X replies
-5. **Special Outreach** (`pink`) - RSA, events, batch campaigns (only when applicable)
-6. **Posts** (`green`/`yellow`) - social content to publish (collapsed if already published)
-7. **Emails** (`purple`) - longer follow-ups
-8. **Meeting Prep** (`purple`, collapsed) - upcoming call prep
-9. **FYI** (`gray`, collapsed) - pipeline, signals, info-only
+1. **Quick Wins** (`green`, id=`quick-wins`) - scheduling replies, short DMs, comments (2-3 min each)
+2. **Open Loops** (`red`, id=`open-loops`) - loops at level 2+ (7+ days old). Force-close items have skip=park UX. HIGHEST PRIORITY after quick wins.
+3. **Pipeline Follow-ups** (`purple`, id=`pipeline-followups`) - **REQUIRED.** Must have 3+ items with copy-paste text. Existing warm prospects, overdue actions, DP follow-ups. MUST come BEFORE new leads.
+4. **LinkedIn Engagement** (`blue`, id=`linkedin-engagement`) - comments on prospect posts
+5. **New Leads** (`yellow`, id=`new-leads`) - connection requests, X replies
+6. **Special Outreach** (`pink`, id=`special-outreach`) - RSA, events, batch campaigns (only when applicable)
+7. **Posts** (`green`/`yellow`, id=`posts`) - social content to publish (collapsed if already published)
+8. **Emails** (`purple`, id=`emails`) - longer follow-ups
+9. **Meeting Prep** (`purple`, collapsed, id=`meeting-prep`) - upcoming call prep. Also uses top-level `meetingPrep` array for meeting prep boxes.
+10. **FYI** (`gray`, collapsed, id=`fyi`) - pipeline, signals, info-only
 
 ## Item Ordering Within Sections (ENFORCED)
 

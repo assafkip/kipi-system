@@ -36,9 +36,9 @@ class ScheduleVerifier:
         pf = self._get_section(data, "pipeline-followups")
         if not pf:
             errors.append(
-                "MISSING SECTION: 'pipeline-followups'. Step 5.85 was not completed. "
-                "Must query Notion for warm/active contacts with Last Contact > 7 days "
-                "and generate follow-up copy for at least 3."
+                "MISSING SECTION: 'pipeline-followups' is REQUIRED. "
+                "Phase 4 pipeline-followup agent must generate follow-up copy "
+                "for at least 3 warm/active contacts."
             )
             return
 

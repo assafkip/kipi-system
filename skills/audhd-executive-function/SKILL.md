@@ -52,13 +52,16 @@ Items sorted by friction, lowest first. 2-minute scheduling replies before 5-min
 
 ## Structure Rules
 
-### Section Order (matches energy curve)
+### Section Order (matches energy curve, see schedule-data-schema.md for exact IDs)
 1. **Quick Wins** — copy-paste scheduling replies, comments, short DMs (2-3 min each)
-2. **Messages** — longer DMs, connection requests, follow-up emails (3-5 min each)
-3. **Posts** — social content to publish (copy into composer)
-4. **Emails** — longer follow-ups, value-adds
-5. **Deep Focus** — meeting prep, research, writing (only if energy allows)
-6. **FYI** (collapsed) — auto-closed contacts, pipeline health, effort summary
+2. **Open Loops** — stale loops needing closure/escalation
+3. **Pipeline Follow-ups** — existing warm prospects, overdue actions
+4. **LinkedIn Engagement** — comments on prospect posts
+5. **New Leads** — connection requests, X replies
+6. **Posts** — social content to publish (copy into composer)
+7. **Emails** — longer follow-ups, value-adds
+8. **Meeting Prep** (collapsed) — upcoming call prep (only if energy allows)
+9. **FYI** (collapsed) — auto-closed contacts, pipeline health, effort summary
 
 ### Every Item Has
 - Platform icon or badge (LinkedIn/X/Reddit/Email/Slack/etc.)
