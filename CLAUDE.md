@@ -21,7 +21,6 @@ Data flows: External sources → `kipi_harvest` (Python) → SQLite → agents r
 - **HarvestStore** (`harvest_store.py`): `_connect()` with WAL mode + Row factory + foreign_keys, try/finally conn.close(). All methods return dicts.
 - **Source Registry** (`source_registry.py`): YAML configs in `kipi-mcp/sources/`, Pydantic models, variable resolution via `${VAR}`.
 - **Agent naming**: harvest sources use plain names (`linkedin-feed`), agent outputs use `agent:` prefix (`agent:signals-content`).
-- **No bus files**: all inter-agent data goes through SQLite ledger.
 
 ## Development
 
@@ -99,10 +98,9 @@ uv run pytest tests/ --ignore=tests/test_git_ops.py -v
 
 ## What NOT to Do
 
-- Don't add bus/ file references. All data goes through SQLite.
+- All data goes through SQLite.
 - Don't hardcode API keys or tokens. Use `${VAR}` in YAMLs, `os.environ` in Python.
 - Don't use f-strings for SQL queries.
 - Don't use innerHTML without sanitizeHTML() in the HTML template.
 - Don't add agents that are pure data-pull. Use the harvest layer (source YAMLs + Python executors).
 - Don't load full canonical files in agents. Use `kipi_canonical_digest` or `kipi_get_harvest`.
-- Don't modify preflight.md — it's deleted. Rules live in agents or Python.
