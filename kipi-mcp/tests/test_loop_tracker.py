@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import datetime, timedelta
 
 import pytest
@@ -8,15 +9,33 @@ from kipi_mcp.loop_tracker import LoopTracker
 
 @pytest.fixture
 def tracker(tmp_path):
-    return LoopTracker(tmp_path / "open-loops.json")
+    db = tmp_path / "test.db"
+    t = LoopTracker(db)
+    t.init_db()
+    return t
 
 
-def test_init_creates_file(tracker):
-    tracker.open("email_sent", "Alice", "intro email")
-    assert tracker._path.exists()
-    data = json.loads(tracker._path.read_text())
-    assert data["schema_version"] == 1
-    assert len(data["loops"]) == 1
+def test_init_db_creates_table(tracker):
+    conn = sqlite3.connect(str(tracker.db_path))
+    conn.row_factory = sqlite3.Row
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='loops'"
+    ).fetchall()
+    conn.close()
+    assert len(tables) == 1
+
+
+def test_init_db_idempotent(tmp_path):
+    db = tmp_path / "test.db"
+    t = LoopTracker(db)
+    t.init_db()
+    t.init_db()  # should not raise
+    conn = sqlite3.connect(str(db))
+    tables = conn.execute(
+        "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='loops'"
+    ).fetchone()
+    conn.close()
+    assert tables[0] == 1
 
 
 def test_open_new_loop(tracker):
@@ -30,9 +49,11 @@ def test_open_duplicate_updates(tracker):
     result = tracker.open("email_sent", "Carol", "second touch", follow_up_text="ping again")
     assert result["action"] == "updated"
     assert result["touch_count"] == 2
-    data = json.loads(tracker._path.read_text())
-    loop = data["loops"][0]
-    assert loop["follow_up_text"] == "ping again"
+    conn = sqlite3.connect(str(tracker.db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT follow_up_text FROM loops WHERE target='Carol'").fetchone()
+    conn.close()
+    assert row["follow_up_text"] == "ping again"
 
 
 def test_close_loop(tracker):
@@ -40,9 +61,11 @@ def test_close_loop(tracker):
     result = tracker.close(opened["loop_id"], "replied", "system")
     assert result["closed"] is True
     assert result["loop_id"] == opened["loop_id"]
-    data = json.loads(tracker._path.read_text())
-    loop = data["loops"][0]
-    assert loop["status"] == "closed"
+    conn = sqlite3.connect(str(tracker.db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT status FROM loops WHERE id=?", (opened["loop_id"],)).fetchone()
+    conn.close()
+    assert row["status"] == "closed"
 
 
 def test_close_nonexistent(tracker):
@@ -55,29 +78,39 @@ def test_force_close_park(tracker):
     opened = tracker.open("linkedin_sent", "Eve", "dm")
     result = tracker.force_close(opened["loop_id"], "park")
     assert result["force_closed"] is True
-    data = json.loads(tracker._path.read_text())
-    assert data["loops"][0]["status"] == "parked"
+    conn = sqlite3.connect(str(tracker.db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT status FROM loops WHERE id=?", (opened["loop_id"],)).fetchone()
+    conn.close()
+    assert row["status"] == "parked"
 
 
 def test_force_close_kill(tracker):
     opened = tracker.open("linkedin_sent", "Frank", "dm")
     result = tracker.force_close(opened["loop_id"], "kill")
     assert result["force_closed"] is True
-    data = json.loads(tracker._path.read_text())
-    assert data["loops"][0]["status"] == "killed"
+    conn = sqlite3.connect(str(tracker.db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT status FROM loops WHERE id=?", (opened["loop_id"],)).fetchone()
+    conn.close()
+    assert row["status"] == "killed"
 
 
 def test_escalate(tracker):
     tracker.open("email_sent", "Grace", "old loop")
-    data = json.loads(tracker._path.read_text())
-    # Set opened date to 15 days ago
-    data["loops"][0]["opened"] = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
-    tracker._path.write_text(json.dumps(data, indent=2))
+    # Backdate Grace to 15 days ago
+    conn = sqlite3.connect(str(tracker.db_path))
+    old_date = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+    conn.execute("UPDATE loops SET opened=? WHERE target='Grace'", (old_date,))
+    conn.commit()
+    conn.close()
 
     tracker.open("email_sent", "Hank", "medium loop")
-    data = json.loads(tracker._path.read_text())
-    data["loops"][1]["opened"] = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
-    tracker._path.write_text(json.dumps(data, indent=2))
+    conn = sqlite3.connect(str(tracker.db_path))
+    mid_date = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
+    conn.execute("UPDATE loops SET opened=? WHERE target='Hank'", (mid_date,))
+    conn.commit()
+    conn.close()
 
     tracker.open("email_sent", "Ivy", "new loop")
 
@@ -99,9 +132,13 @@ def test_touch(tracker):
 def test_list_filters_by_level(tracker):
     tracker.open("email_sent", "Kate", "loop1")
     tracker.open("email_sent", "Leo", "loop2")
-    data = json.loads(tracker._path.read_text())
-    data["loops"][0]["opened"] = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
-    tracker._path.write_text(json.dumps(data, indent=2))
+
+    conn = sqlite3.connect(str(tracker.db_path))
+    old_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    conn.execute("UPDATE loops SET opened=? WHERE target='Kate'", (old_date,))
+    conn.commit()
+    conn.close()
+
     tracker.escalate()
 
     all_loops = tracker.list(min_level=0)
@@ -129,14 +166,88 @@ def test_prune(tracker):
     opened = tracker.open("email_sent", "Quinn", "recent closed")
     tracker.open("email_sent", "Rose", "still open")
 
-    # Close Pat's loop and backdate it
-    data = json.loads(tracker._path.read_text())
-    data["loops"][0]["status"] = "closed"
-    data["loops"][0]["closed"] = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
-    tracker._path.write_text(json.dumps(data, indent=2))
+    # Close and backdate Pat's loop
+    conn = sqlite3.connect(str(tracker.db_path))
+    old_date = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
+    conn.execute(
+        "UPDATE loops SET status='closed', closed=? WHERE target='Pat'",
+        (old_date,),
+    )
+    conn.commit()
+    conn.close()
 
     tracker.close(opened["loop_id"], "done", "system")
 
     result = tracker.prune(days=30)
     assert result["pruned"] == 1
     assert result["remaining"] == 2
+
+
+def test_migration_from_json(tmp_path):
+    json_path = tmp_path / "open-loops.json"
+    legacy_data = {
+        "schema_version": 1,
+        "loops": [
+            {
+                "id": "L-2025-01-01-001",
+                "type": "email_sent",
+                "target": "Alice",
+                "target_notion_id": None,
+                "opened": "2025-01-01",
+                "opened_by": "morning_routine",
+                "action_card_id": None,
+                "context": "intro email",
+                "channel": "email",
+                "touch_count": 2,
+                "follow_up_text": None,
+                "escalation_level": 1,
+                "last_escalated": "2025-01-04",
+                "status": "open",
+                "closed": None,
+                "closed_by": None,
+                "closed_reason": None,
+            },
+            {
+                "id": "L-2025-01-01-002",
+                "type": "linkedin_sent",
+                "target": "Bob",
+                "target_notion_id": "abc123",
+                "opened": "2025-01-01",
+                "opened_by": "morning_routine",
+                "action_card_id": "card-1",
+                "context": "linkedin dm",
+                "channel": "linkedin",
+                "touch_count": 1,
+                "follow_up_text": "follow up",
+                "escalation_level": 0,
+                "last_escalated": None,
+                "status": "closed",
+                "closed": "2025-01-05",
+                "closed_by": "system",
+                "closed_reason": "replied",
+            },
+        ],
+    }
+    json_path.write_text(json.dumps(legacy_data))
+
+    db = tmp_path / "test.db"
+    t = LoopTracker(db, legacy_json_path=json_path)
+    t.init_db()
+
+    # JSON should be renamed
+    assert not json_path.exists()
+    assert (tmp_path / "open-loops.json.bak").exists()
+
+    # Data should be in SQLite
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM loops ORDER BY id").fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    assert rows[0]["id"] == "L-2025-01-01-001"
+    assert rows[0]["target"] == "Alice"
+    assert rows[0]["touch_count"] == 2
+    assert rows[1]["id"] == "L-2025-01-01-002"
+    assert rows[1]["status"] == "closed"
+    assert rows[1]["closed_reason"] == "replied"

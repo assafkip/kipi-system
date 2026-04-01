@@ -118,6 +118,22 @@ def session_bootstrap(paths) -> dict:
                 path.read_text().encode()
             ).hexdigest()[:16]
 
+    # Cross-session drift detection
+    drift = []
+    logs = sorted(paths.output_dir.glob("morning-log-*.json"), reverse=True)
+    if logs:
+        try:
+            prev_log = json.loads(logs[0].read_text())
+            prev_checksums = prev_log.get("state_checksums", {}).get("session_end", {})
+            if prev_checksums:
+                for name, current_hash in result["checksums"].items():
+                    prev_hash = prev_checksums.get(name)
+                    if prev_hash and prev_hash != current_hash:
+                        drift.append({"file": name, "previous": prev_hash, "current": current_hash})
+        except (json.JSONDecodeError, KeyError):
+            pass
+    result["canonical_drift"] = drift
+
     return result
 
 
@@ -167,7 +183,32 @@ def canonical_digest(paths) -> dict:
     return digest
 
 
-def morning_init(paths, energy_level: int, harvest_store=None) -> dict:
+def _check_db_integrity(db_path: Path) -> dict:
+    """Run PRAGMA integrity_check on SQLite database."""
+    import sqlite3
+    if not db_path.exists():
+        return {"status": "no_db"}
+    conn = sqlite3.connect(str(db_path))
+    try:
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        return {"status": "ok" if result == "ok" else "corrupted", "detail": result}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+    finally:
+        conn.close()
+
+
+def auto_backup(backup_manager, max_backups: int = 5) -> dict:
+    """Create a backup and rotate old ones."""
+    try:
+        result = backup_manager.backup()
+        rotate_result = backup_manager.rotate(max_backups)
+        return {"backup": result, "rotation": rotate_result}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=None) -> dict:
     """Combined init: preflight + bootstrap + digest + cleanup + energy.
 
     THE one call that replaces phases 0-0.7 of the old orchestrator.
@@ -182,6 +223,14 @@ def morning_init(paths, energy_level: int, harvest_store=None) -> dict:
     _clean_old_files(paths.output_dir, "schedule-data-*.json", days=10)
     _clean_old_files(paths.output_dir, "daily-schedule-*.html", days=10)
 
+    # DB integrity check
+    db_integrity = _check_db_integrity(paths.metrics_db)
+
+    # Auto-backup with rotation (after all other init)
+    backup_result = {}
+    if backup_manager:
+        backup_result = auto_backup(backup_manager)
+
     return {
         "date": date,
         "preflight": preflight(paths),
@@ -189,6 +238,8 @@ def morning_init(paths, energy_level: int, harvest_store=None) -> dict:
         "canonical_digest": canonical_digest(paths),
         "energy": _energy_table(energy_level),
         "cleanup": cleanup_result,
+        "db_integrity": db_integrity,
+        "backup": backup_result,
     }
 
 

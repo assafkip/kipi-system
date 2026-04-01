@@ -13,6 +13,8 @@ from kipi_mcp.morning_init import (
     morning_init,
     gate_check,
     deliverables_check,
+    _check_db_integrity,
+    auto_backup,
 )
 
 
@@ -358,3 +360,50 @@ class TestDeliverablesCheck:
         result = deliverables_check(paths, harvest_store=None)
         assert result["passed"] is False
         assert len(result["missing"]) > 0
+
+
+# ── DB Integrity ──
+
+
+class TestDbIntegrity:
+    def test_db_integrity_check_ok(self, tmp_path):
+        import sqlite3
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE t (id INTEGER)")
+        conn.close()
+        result = _check_db_integrity(db_path)
+        assert result["status"] == "ok"
+        assert result["detail"] == "ok"
+
+    def test_db_integrity_check_no_db(self, tmp_path):
+        result = _check_db_integrity(tmp_path / "nonexistent.db")
+        assert result["status"] == "no_db"
+
+
+# ── Auto Backup ──
+
+
+class TestAutoBackup:
+    @pytest.fixture
+    def backup_mgr(self, paths):
+        from kipi_mcp.backup import BackupManager
+        _create_file(paths.canonical_dir / "talk-tracks.md", "# TT")
+        return BackupManager(paths)
+
+    def test_auto_backup_creates_archive(self, backup_mgr):
+        result = auto_backup(backup_mgr)
+        assert "backup" in result
+        assert result["backup"]["files_count"] >= 1
+        assert Path(result["backup"]["path"]).exists()
+
+    def test_auto_backup_rotation_keeps_5(self, backup_mgr, paths):
+        out = paths.output_dir
+        for i in range(7):
+            backup_mgr.backup(output_path=out / f"kipi-backup-2026010{i}-000000.tar.gz")
+        assert len(backup_mgr.list_backups()) == 7
+        result = auto_backup(backup_mgr, max_backups=5)
+        assert result["rotation"]["kept"] == 5
+        assert len(result["rotation"]["deleted"]) >= 2
+        # 7 + 1 new = 8, rotate keeps 5
+        assert len(backup_mgr.list_backups()) == 5

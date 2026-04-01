@@ -120,6 +120,29 @@ def test_list_backups_returns_sorted(backup_mgr, tmp_path):
     assert len(backups) >= 2
 
 
+def test_rotate_keeps_max(backup_mgr, tmp_kipi_paths):
+    """Create 7 backups, rotate(5), verify only 5 remain."""
+    out = tmp_kipi_paths.output_dir
+    for i in range(7):
+        backup_mgr.backup(output_path=out / f"kipi-backup-2026010{i}-000000.tar.gz")
+    assert len(backup_mgr.list_backups()) == 7
+    result = backup_mgr.rotate(5)
+    assert result["kept"] == 5
+    assert len(result["deleted"]) == 2
+    assert len(backup_mgr.list_backups()) == 5
+
+
+def test_rotate_nothing_to_delete(backup_mgr, tmp_kipi_paths):
+    """Create 3 backups, rotate(5), verify all 3 remain."""
+    out = tmp_kipi_paths.output_dir
+    for i in range(3):
+        backup_mgr.backup(output_path=out / f"kipi-backup-2026010{i}-000000.tar.gz")
+    result = backup_mgr.rotate(5)
+    assert result["kept"] == 3
+    assert result["deleted"] == []
+    assert len(backup_mgr.list_backups()) == 3
+
+
 def test_roundtrip_preserves_content(backup_mgr, tmp_path):
     """Full roundtrip: backup -> restore to new location -> verify identical."""
     result = backup_mgr.backup()

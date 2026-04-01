@@ -58,7 +58,11 @@ registry = RegistryManager(paths.registry_path)
 
 step_logger = StepLogger(output_dir=paths.output_dir)
 
-loop_tracker = LoopTracker(loop_file=paths.output_dir / "open-loops.json")
+loop_tracker = LoopTracker(
+    db_path=paths.metrics_db,
+    legacy_json_path=paths.output_dir / "open-loops.json",
+)
+loop_tracker.init_db()
 
 schedule_verifier = ScheduleVerifier()
 
@@ -1394,7 +1398,7 @@ def kipi_morning_init(energy_level: int = 3) -> str:
     """
     try:
         from kipi_mcp.morning_init import morning_init
-        return json.dumps(morning_init(paths, energy_level, harvest_store=harvest_store))
+        return json.dumps(morning_init(paths, energy_level, harvest_store=harvest_store, backup_manager=backup_manager))
     except Exception as e:
         logger.error("kipi_morning_init failed", exc_info=True)
         raise ToolError(str(e))

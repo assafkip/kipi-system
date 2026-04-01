@@ -185,13 +185,12 @@ def test_log_init_creates_file(tmp_path):
     assert "session_start" in data
 
 
-def test_loop_list_empty_when_no_file(tmp_path):
-    """Verify loop_list returns empty list when no loops file exists."""
-    loop_file = tmp_path / "nonexistent-dir" / "open-loops.json"
-    loop_file.parent.mkdir(parents=True)
-    tracker = LoopTracker(loop_file)
+def test_loop_list_empty_when_fresh_db(tmp_path):
+    """Verify loop_list returns empty list on fresh database."""
+    db_path = tmp_path / "test.db"
+    tracker = LoopTracker(db_path=db_path)
+    tracker.init_db()
 
-    assert not loop_file.exists()
     result = tracker.list(min_level=0)
     assert result == []
 
