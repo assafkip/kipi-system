@@ -13,6 +13,7 @@ from kipi_mcp.morning_init import (
     morning_init,
     gate_check,
     deliverables_check,
+    retry_notion_queue,
     _check_db_integrity,
     auto_backup,
 )
@@ -36,38 +37,57 @@ def _create_file(path: Path, content: str = "test"):
 
 class TestPreflight:
     def test_all_files_exist(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         _create_file(paths.memory_dir / "last-handoff.md")
         result = preflight(paths)
         assert result["ready"] is True
         assert all(v is True for v in result["files"].values())
 
     def test_missing_required_file(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
         # objections.md missing
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         result = preflight(paths)
         assert result["ready"] is False
         assert result["files"]["objections"] is False
         assert result["files"]["talk_tracks"] is True
 
     def test_optional_missing_still_ready(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         # handoff missing (optional)
         result = preflight(paths)
         assert result["ready"] is True
         assert result["files"]["handoff"] is False
 
     def test_returns_date(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         result = preflight(paths)
         assert "date" in result
+
+    def test_empty_file_rejected(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", "tiny")  # 4 bytes < 50
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
+        result = preflight(paths)
+        assert result["ready"] is False
+        assert result["files"]["talk_tracks"] == "empty"
+        assert len(result["content_warnings"]) >= 1
+        assert "talk_tracks" in result["content_warnings"][0]
+
+    def test_valid_content_passes(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
+        result = preflight(paths)
+        assert result["ready"] is True
+        assert result["content_warnings"] == []
+        assert all(v is True for k, v in result["files"].items() if k != "handoff")
 
 
 # ── Bootstrap ──
@@ -121,6 +141,18 @@ class TestBootstrap:
         result = session_bootstrap(paths)
         expected = hashlib.sha256(content.encode()).hexdigest()[:16]
         assert result["checksums"]["talk_tracks"] == expected
+
+    def test_bootstrap_includes_recently_closed_loops(self, paths):
+        from kipi_mcp.loop_tracker import LoopTracker
+        lt = LoopTracker(db_path=paths.metrics_db)
+        lt.init_db()
+        opened = lt.open("email_sent", "TestTarget", "intro")
+        lt.close(opened["loop_id"], "replied", "system")
+        result = session_bootstrap(paths)
+        assert "recently_closed_loops" in result
+        assert len(result["recently_closed_loops"]) >= 1
+        assert result["recently_closed_loops"][0]["target"] == "TestTarget"
+        assert "recently_closed" in result["loop_stats"]
 
 
 # ── Canonical Digest ──
@@ -201,17 +233,17 @@ class TestMorningInit:
         )
         conn.commit()
         conn.close()
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         result = morning_init(paths, energy_level=3, harvest_store=store)
         assert result["cleanup"]["deleted_runs"] >= 1
 
     def test_old_files_cleaned(self, paths):
         import os, time
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         # Create an old morning log (backdate mtime)
         old_log = paths.output_dir / "morning-log-2025-01-01.json"
         old_log.write_text("{}")
@@ -221,9 +253,9 @@ class TestMorningInit:
         assert not old_log.exists()
 
     def test_returns_complete_bundle(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md", "# Metaphor\nTest.")
-        _create_file(paths.canonical_dir / "objections.md", "# Obj\nResp.")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "# Metaphor\nTest." + "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "# Obj\nResp." + "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         _create_file(paths.my_project_dir / "current-state.md", "# What Works Today\n- X\n")
         _create_file(paths.canonical_dir / "discovery.md", "# Questions\n- Q\n")
         _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
@@ -235,9 +267,9 @@ class TestMorningInit:
         assert "date" in result
 
     def test_energy_compression(self, paths):
-        _create_file(paths.canonical_dir / "talk-tracks.md")
-        _create_file(paths.canonical_dir / "objections.md")
-        _create_file(paths.my_project_dir / "relationships.md")
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
         result = morning_init(paths, energy_level=2)
         assert result["energy"]["max_hitlist"] == 5
         assert result["energy"]["skip_deep_focus"] is True

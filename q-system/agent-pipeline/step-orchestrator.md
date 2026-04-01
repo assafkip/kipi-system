@@ -40,12 +40,21 @@ Paths, bus directory creation, and cleanup are handled by `kipi_morning_init`.
    - Session bootstrap (recover action cards, loop stats, stall detection, checksums)
    - Canonical digest (parses all canonical files into structured JSON)
    - Energy compression table
-3. Check `result.preflight.ready`. If false: **HALT**. Report which files are missing.
-4. Quick MCP tool checks -- call `gcal_list_events` and `gmail_search_messages` to verify Google MCP servers respond. If either fails: **HALT**.
-5. Log: `log_step(date, "phase_0_init", "done", result_summary)`
-6. Store the result. Key fields for downstream agents:
+3. Check `result.preflight.ready`. If false: **HALT**. Report which files are missing and any `content_warnings`.
+   - If content_warnings exist: "These files appear empty: {list}. Run /q-setup to fix."
+4. **Show the founder loop status** from `result.bootstrap`:
+   - "{open_loops} open loops ({level_2} at 7+ days, {level_3} at 14+ days)"
+   - "{stalls} stalled contacts (no touch in 14+ days)"
+   - If `recently_closed_loops` is not empty: "Auto-closed since last session: {list with target + reason}"
+   - If `notion_queue.pending > 0`: "{N} Notion writes from yesterday still pending. Will retry."
+   - Recovered action cards from previous session (if any)
+5. Quick MCP tool checks:
+   - Call `gcal_list_events`. If fails: **HALT** with "Google Calendar MCP not connected. Install: `claude mcp add google-calendar -- npx -y @anthropic/google-calendar-mcp`"
+   - Call `gmail_search_messages`. If fails: **HALT** with "Gmail MCP not connected. Install: `claude mcp add gmail -- npx -y @anthropic/gmail-mcp`"
+6. Log: `log_step(date, "phase_0_init", "done", result_summary)`
+7. Store the result. Key fields for downstream agents:
    - `result.canonical_digest` -- structured JSON replacing canonical-digest.json
-   - `result.bootstrap` -- action cards, stalls, loop stats
+   - `result.bootstrap` -- action cards, stalls, loop stats, recently closed loops
    - `result.energy` -- compression table (max_hitlist, skip_deep_focus)
 
 ### Phase 0.6: Monthly Checks + Memory Review (conditional)
@@ -68,8 +77,11 @@ Paths, bus directory creation, and cleanup are handled by `kipi_morning_init`.
    - IF `mcp_agent_prompt` is not null: Spawn Agent with that prompt (haiku, 15 turns)
    - Both agents call `kipi_store_harvest` to persist results to SQLite
 
-3. After agents complete, call `kipi_harvest_summary` to verify record counts.
-4. Log: `log_step(date, "phase_1_harvest", "done", "{source}: {count} records")`
+3. After agents complete, call `kipi_harvest_health` MCP tool (with the run_id).
+   - **Show the founder** the harvest summary: "Harvested: linkedin-feed (12), gmail (8)... Failed: [list]. Pending: [list]"
+   - If `healthy=false` or warnings exist: Show warnings to the founder. Ask: "Harvest has gaps. Continue with available data or retry?"
+   - If the founder says continue, proceed. If retry, re-run `kipi_harvest`.
+4. Log: `log_step(date, "phase_1_harvest", "done", "{total_records} records from {sources_complete} sources")`
 
 ### Phase 2: Analysis (5-7 agents, mixed parallel/sequential)
 

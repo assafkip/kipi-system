@@ -260,6 +260,21 @@ class LoopTracker:
         finally:
             conn.close()
 
+    def recently_closed(self, days: int = 2) -> list[dict]:
+        """Get loops closed in the last N days (for transparency display)."""
+        conn = self._connect()
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            rows = conn.execute(
+                "SELECT id, type, target, closed, closed_by, closed_reason "
+                "FROM loops WHERE status != 'open' AND closed >= ? "
+                "ORDER BY closed DESC",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def stats(self) -> dict:
         conn = self._connect()
         try:
@@ -283,7 +298,14 @@ class LoopTracker:
                 elif row["closed"] == today:
                     closed_today += 1
 
-            return {"open": open_count, "closed_today": closed_today, "levels": levels, "oldest_days": oldest_days}
+            recently_closed = len(self.recently_closed(days=2))
+            return {
+                "open": open_count,
+                "closed_today": closed_today,
+                "levels": levels,
+                "oldest_days": oldest_days,
+                "recently_closed": recently_closed,
+            }
         finally:
             conn.close()
 

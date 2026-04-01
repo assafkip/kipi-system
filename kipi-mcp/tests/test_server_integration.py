@@ -73,6 +73,9 @@ EXPECTED_TOOLS = [
     "kipi_morning_init",
     "kipi_gate_check",
     "kipi_deliverables_check",
+    "kipi_harvest_health",
+    "kipi_queue_notion_write",
+    "kipi_get_notion_queue",
 ]
 
 EXPECTED_RESOURCES = [

@@ -13,10 +13,11 @@ def test_init_creates_all_tables(tmp_path):
     db = tmp_path / "harvest.db"
     s = HarvestStore(db_path=db)
     tables = s.init_db()
-    assert len(tables) == 6
+    assert len(tables) == 7
     expected = {
         "harvest_runs", "source_runs", "harvest_records",
         "harvest_bodies", "source_cursors", "apify_budget",
+        "notion_write_queue",
     }
     assert set(tables) == expected
 
@@ -335,3 +336,98 @@ def test_check_run_complete_partial(tmp_harvest_store):
     # Only complete one
     tmp_harvest_store.complete_source_run(run["run_id"], "src-a", 3)
     assert tmp_harvest_store.check_run_complete(run["run_id"]) is False
+
+
+# ============================================================
+# Harvest health tests
+# ============================================================
+
+
+def test_harvest_health_complete_run(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    tmp_harvest_store.create_source_run(run["run_id"], "linkedin", "chrome")
+    tmp_harvest_store.create_source_run(run["run_id"], "twitter", "api")
+    tmp_harvest_store.complete_source_run(run["run_id"], "linkedin", 20)
+    tmp_harvest_store.complete_source_run(run["run_id"], "twitter", 15)
+
+    health = tmp_harvest_store.harvest_health(run["run_id"])
+    assert health["healthy"] is True
+    assert health["total_records"] == 35
+    assert set(health["sources_complete"]) == {"linkedin", "twitter"}
+    assert health["sources_failed"] == []
+    assert health["sources_pending"] == []
+    assert health["warnings"] == []
+
+
+def test_harvest_health_with_failures(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    tmp_harvest_store.create_source_run(run["run_id"], "linkedin", "chrome")
+    tmp_harvest_store.create_source_run(run["run_id"], "twitter", "api")
+    tmp_harvest_store.complete_source_run(run["run_id"], "linkedin", 20)
+    tmp_harvest_store.update_source_run(
+        tmp_harvest_store.create_source_run(run["run_id"], "broken", "api")["id"],
+        status="error", error="timeout",
+    )
+
+    health = tmp_harvest_store.harvest_health(run["run_id"])
+    assert "linkedin" in health["sources_complete"]
+    assert len(health["sources_failed"]) == 1
+    assert health["sources_failed"][0]["source"] == "broken"
+    assert health["sources_failed"][0]["error"] == "timeout"
+
+
+def test_harvest_health_low_records_warning(tmp_harvest_store):
+    run = tmp_harvest_store.create_run("incremental")
+    tmp_harvest_store.create_source_run(run["run_id"], "linkedin", "chrome")
+    tmp_harvest_store.complete_source_run(run["run_id"], "linkedin", 3)
+
+    health = tmp_harvest_store.harvest_health(run["run_id"])
+    assert health["healthy"] is False
+    assert any("Very few records" in w for w in health["warnings"])
+
+
+# ============================================================
+# Notion write queue tests
+# ============================================================
+
+
+def test_queue_notion_write(tmp_harvest_store):
+    result = tmp_harvest_store.queue_notion_write('{"action": "create_page"}', "09-notion-push")
+    assert "id" in result
+    assert result["status"] == "pending"
+    assert result["created_at"]
+
+
+def test_get_pending_notion_writes(tmp_harvest_store):
+    tmp_harvest_store.queue_notion_write('{"a": 1}', "agent-a")
+    tmp_harvest_store.queue_notion_write('{"a": 2}', "agent-b")
+    pending = tmp_harvest_store.get_pending_notion_writes()
+    assert len(pending) == 2
+    assert pending[0]["source_agent"] == "agent-a"
+    assert pending[1]["source_agent"] == "agent-b"
+
+
+def test_update_notion_write_complete(tmp_harvest_store):
+    queued = tmp_harvest_store.queue_notion_write('{"a": 1}', "agent-a")
+    updated = tmp_harvest_store.update_notion_write(queued["id"], "complete")
+    assert updated["status"] == "complete"
+    assert updated["completed_at"] is not None
+    # Should no longer appear in pending
+    assert len(tmp_harvest_store.get_pending_notion_writes()) == 0
+
+
+def test_fail_stale_notion_writes(tmp_harvest_store):
+    q1 = tmp_harvest_store.queue_notion_write('{"a": 1}', "agent-a")
+    # Simulate 3 failed attempts
+    for _ in range(3):
+        tmp_harvest_store.update_notion_write(q1["id"], "failed", error="api_error")
+    # Reset to pending so fail_stale can pick it up
+    conn = sqlite3.connect(str(tmp_harvest_store.db_path))
+    conn.execute("UPDATE notion_write_queue SET status='pending' WHERE id=?", (q1["id"],))
+    conn.commit()
+    conn.close()
+
+    result = tmp_harvest_store.fail_stale_notion_writes(max_attempts=3)
+    assert result["marked_failed"] == 1
+    # Should no longer be pending
+    assert len(tmp_harvest_store.get_pending_notion_writes()) == 0

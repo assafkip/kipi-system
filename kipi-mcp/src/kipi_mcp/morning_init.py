@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def preflight(paths) -> dict:
-    """Check file existence and system readiness. Replaces 00-preflight agent."""
+    """Check file existence and content validity. Replaces 00-preflight agent."""
     required = {
         "talk_tracks": paths.canonical_dir / "talk-tracks.md",
         "objections": paths.canonical_dir / "objections.md",
@@ -26,16 +26,29 @@ def preflight(paths) -> dict:
     }
 
     files = {}
+    content_warnings = []
     ready = True
+
     for name, path in required.items():
-        exists = path.exists()
-        files[name] = exists
-        if not exists:
+        if not path.exists():
+            files[name] = False
             ready = False
+        elif path.stat().st_size < 50:
+            files[name] = "empty"
+            content_warnings.append(f"{name} exists but appears empty ({path.stat().st_size} bytes). Re-run /q-setup.")
+            ready = False
+        else:
+            files[name] = True
+
     for name, path in optional.items():
         files[name] = path.exists()
 
-    return {"files": files, "ready": ready, "date": datetime.now().strftime("%Y-%m-%d")}
+    return {
+        "files": files,
+        "ready": ready,
+        "content_warnings": content_warnings,
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    }
 
 
 def session_bootstrap(paths) -> dict:
@@ -134,6 +147,21 @@ def session_bootstrap(paths) -> dict:
             pass
     result["canonical_drift"] = drift
 
+    # Recently closed loops for transparency
+    try:
+        from kipi_mcp.loop_tracker import LoopTracker
+        lt = LoopTracker(db_path=paths.metrics_db)
+        lt.init_db()
+        recent = lt.recently_closed(days=2)
+        result["recently_closed_loops"] = recent
+        stats = lt.stats()
+        if stats.get("open", 0) > 0 or stats.get("recently_closed", 0) > 0:
+            result["loop_stats"] = stats
+        else:
+            result["loop_stats"]["recently_closed"] = stats.get("recently_closed", 0)
+    except Exception:
+        result["recently_closed_loops"] = []
+
     return result
 
 
@@ -208,6 +236,20 @@ def auto_backup(backup_manager, max_backups: int = 5) -> dict:
         return {"error": str(e)}
 
 
+def retry_notion_queue(harvest_store) -> dict:
+    """Check for pending Notion writes from previous failed runs."""
+    if harvest_store is None:
+        return {"pending": 0}
+    try:
+        pending = harvest_store.get_pending_notion_writes()
+    except (AttributeError, Exception):
+        return {"pending": 0}
+    return {
+        "pending": len(pending),
+        "items": [{"id": p["id"], "agent": p["source_agent"], "attempts": p["attempts"]} for p in pending],
+    }
+
+
 def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=None) -> dict:
     """Combined init: preflight + bootstrap + digest + cleanup + energy.
 
@@ -240,6 +282,7 @@ def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=No
         "cleanup": cleanup_result,
         "db_integrity": db_integrity,
         "backup": backup_result,
+        "notion_queue": retry_notion_queue(harvest_store),
     }
 
 

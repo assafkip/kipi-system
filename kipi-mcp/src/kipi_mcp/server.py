@@ -1194,6 +1194,23 @@ def kipi_store_harvest(source_name: str, records_json: str, run_id: str = "") ->
     """
     try:
         records = json.loads(records_json)
+
+        # Validate records have usable content
+        if not records:
+            return json.dumps({"stored": 0, "deduped": 0, "source": source_name, "warning": "empty_records"})
+
+        valid_records = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if source_name.startswith("agent:"):
+                has_key = any(record.get(k) for k in ("id", "url", "name", "title", "contact_name", "action"))
+                if not has_key:
+                    logger.warning("Skipping record with no identifiable key from %s", source_name)
+                    continue
+            valid_records.append(record)
+        records = valid_records
+
         stored = 0
         deduped = 0
         for record in records:
@@ -1329,6 +1346,55 @@ def kipi_approve_apify_budget(month: str, extra: float) -> str:
         return json.dumps(harvest_store.approve_extra(month, extra))
     except Exception as e:
         logger.error("kipi_approve_apify_budget failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_harvest_health(run_id: str = "") -> str:
+    """Check harvest completeness. Shows sources complete/failed/pending.
+
+    Call after Phase 1 harvest to verify data quality before processing.
+
+    Args:
+        run_id: Harvest run ID. If empty, uses latest run.
+    """
+    try:
+        if not run_id:
+            latest = harvest_store.get_latest_run()
+            if not latest:
+                return json.dumps({"error": "no_runs_found"})
+            run_id = latest["run_id"]
+        return json.dumps(harvest_store.harvest_health(run_id))
+    except Exception as e:
+        logger.error("kipi_harvest_health failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_queue_notion_write(action_json: str, source_agent: str) -> str:
+    """Queue a Notion write that failed for retry on next morning.
+
+    Called by 09-notion-push when a Notion API write fails.
+
+    Args:
+        action_json: JSON of the action that failed to write.
+        source_agent: Which agent produced this action.
+    """
+    try:
+        return json.dumps(harvest_store.queue_notion_write(action_json, source_agent))
+    except Exception as e:
+        logger.error("kipi_queue_notion_write failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_get_notion_queue() -> str:
+    """Get all pending Notion writes awaiting retry."""
+    try:
+        pending = harvest_store.get_pending_notion_writes()
+        return json.dumps({"pending": pending, "count": len(pending)})
+    except Exception as e:
+        logger.error("kipi_get_notion_queue failed", exc_info=True)
         raise ToolError(str(e))
 
 

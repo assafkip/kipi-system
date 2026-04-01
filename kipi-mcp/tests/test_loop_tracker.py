@@ -183,6 +183,37 @@ def test_prune(tracker):
     assert result["remaining"] == 2
 
 
+def test_recently_closed_returns_recent(tracker):
+    opened = tracker.open("email_sent", "Zara", "intro")
+    tracker.close(opened["loop_id"], "replied", "system")
+    recent = tracker.recently_closed(days=2)
+    assert len(recent) == 1
+    assert recent[0]["target"] == "Zara"
+    assert recent[0]["closed_reason"] == "replied"
+
+
+def test_recently_closed_excludes_old(tracker):
+    opened = tracker.open("email_sent", "Yuki", "old close")
+    tracker.close(opened["loop_id"], "replied", "system")
+    # Backdate closed to 10 days ago
+    conn = sqlite3.connect(str(tracker.db_path))
+    old_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    conn.execute("UPDATE loops SET closed=? WHERE target='Yuki'", (old_date,))
+    conn.commit()
+    conn.close()
+    recent = tracker.recently_closed(days=2)
+    assert len(recent) == 0
+
+
+def test_stats_includes_recently_closed(tracker):
+    opened = tracker.open("email_sent", "Wes", "intro")
+    tracker.close(opened["loop_id"], "done", "system")
+    tracker.open("email_sent", "Vera", "still open")
+    result = tracker.stats()
+    assert "recently_closed" in result
+    assert result["recently_closed"] >= 1
+
+
 def test_migration_from_json(tmp_path):
     json_path = tmp_path / "open-loops.json"
     legacy_data = {

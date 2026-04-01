@@ -58,7 +58,11 @@ For loop-review force-close items:
 }
 ```
 
-4. If any Notion write fails, log the error and continue with the next item. Do not halt.
+4. If any Notion write fails:
+   - Call `kipi_queue_notion_write` MCP tool with the failed action JSON and source_agent="09-notion-push"
+   - This queues the write for automatic retry on the next morning
+   - Log the error and continue with the next item. Do not halt.
+   - The queued writes will be retried at the start of the next /q-morning (shown in Phase 0 init).
 
 ## Known Notion Issues (MUST follow)
 

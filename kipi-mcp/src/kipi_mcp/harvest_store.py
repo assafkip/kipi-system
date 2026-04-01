@@ -65,11 +65,22 @@ _SCHEMA = [
         approved_extra REAL NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS notion_write_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action_json TEXT NOT NULL,
+        source_agent TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER DEFAULT 0,
+        last_error TEXT,
+        completed_at TEXT
+    )""",
 ]
 
 _TABLE_NAMES = [
     "harvest_runs", "source_runs", "harvest_records",
     "harvest_bodies", "source_cursors", "apify_budget",
+    "notion_write_queue",
 ]
 
 
@@ -456,5 +467,108 @@ class HarvestStore:
                 (run_id,),
             ).fetchall()
             return {row["source_name"]: row["cnt"] for row in rows}
+        finally:
+            conn.close()
+
+    def harvest_health(self, run_id: str) -> dict:
+        """Check harvest completeness for a run."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT source_name, method, status, records, error "
+                "FROM source_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+
+            total_records = sum(r["records"] or 0 for r in rows)
+            sources_complete = [r["source_name"] for r in rows if r["status"] == "complete"]
+            sources_failed = [
+                {"source": r["source_name"], "error": r["error"]}
+                for r in rows if r["status"] in ("error", "failed")
+            ]
+            sources_pending = [r["source_name"] for r in rows if r["status"] == "pending"]
+            sources_skipped = [r["source_name"] for r in rows if r["status"] == "skipped"]
+
+            warnings = []
+            if total_records < 10:
+                warnings.append(f"Very few records harvested ({total_records}). Data may be incomplete.")
+            if len(sources_failed) > 3:
+                warnings.append(f"{len(sources_failed)} sources failed. Schedule will be incomplete.")
+
+            return {
+                "run_id": run_id,
+                "total_records": total_records,
+                "sources_complete": sources_complete,
+                "sources_failed": sources_failed,
+                "sources_pending": sources_pending,
+                "sources_skipped": sources_skipped,
+                "warnings": warnings,
+                "healthy": len(warnings) == 0,
+            }
+        finally:
+            conn.close()
+
+    def queue_notion_write(self, action_json: str, source_agent: str) -> dict:
+        """Queue a failed Notion write for retry."""
+        conn = self._connect()
+        try:
+            now = datetime.now().isoformat()
+            cur = conn.execute(
+                "INSERT INTO notion_write_queue (action_json, source_agent, created_at, status) "
+                "VALUES (?, ?, ?, 'pending')",
+                (action_json, source_agent, now),
+            )
+            conn.commit()
+            return {"id": cur.lastrowid, "status": "pending", "created_at": now}
+        finally:
+            conn.close()
+
+    def get_pending_notion_writes(self) -> list[dict]:
+        """Get all pending Notion writes."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM notion_write_queue WHERE status='pending' ORDER BY created_at ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def update_notion_write(self, id: int, status: str, error: str = "") -> dict:
+        """Update a queued write status (complete/failed)."""
+        conn = self._connect()
+        try:
+            now = datetime.now().isoformat()
+            if status == "failed":
+                conn.execute(
+                    "UPDATE notion_write_queue SET status=?, last_error=?, attempts=attempts+1 "
+                    "WHERE id=?",
+                    (status, error, id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE notion_write_queue SET status=?, completed_at=? WHERE id=?",
+                    (status, now, id),
+                )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM notion_write_queue WHERE id=?", (id,)
+            ).fetchone()
+            return dict(row) if row else {}
+        finally:
+            conn.close()
+
+    def fail_stale_notion_writes(self, max_attempts: int = 3) -> dict:
+        """Mark writes with 3+ failed attempts as permanently failed."""
+        conn = self._connect()
+        try:
+            now = datetime.now().isoformat()
+            cur = conn.execute(
+                "UPDATE notion_write_queue SET status='permanently_failed', completed_at=? "
+                "WHERE status IN ('pending', 'failed') AND attempts >= ?",
+                (now, max_attempts),
+            )
+            conn.commit()
+            return {"marked_failed": cur.rowcount}
         finally:
             conn.close()
