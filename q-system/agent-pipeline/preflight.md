@@ -1,47 +1,31 @@
 # Morning Routine Preflight & Execution Harness
 
-> This file is the single source of truth for what tools are available, what's broken, how to recover, and whether the routine actually completed. Read this BEFORE the step-orchestrator on every `/q-morning` run.
+> This file is the single source of truth for known issues, session management, gates, and audit rules. Read this BEFORE the step-orchestrator on every `/q-morning` run.
 
 ---
 
 ## 1. Tool Manifest
 
-Every tool the morning routine depends on, its exact test, known limitations, and what to do when it fails.
+### Deterministic Python (handled by `kipi_morning_init` + `kipi_harvest`)
 
-### Critical (halt if unavailable)
+These are no longer checked by agents — Python handles them automatically:
+- **File existence** — `kipi_preflight` checks canonical files, relationships, handoff
+- **Data harvest** — `kipi_harvest` runs HTTP/Apify/local sources in Python, generates Chrome/MCP agent prompts
+- **Apify** — managed by the harvest layer's `apify_executor.py` with budget enforcement
+- **GA4, Notion (reads), VC Pipeline, Medium, Substack, Reddit** — all managed by harvest
 
-| Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
-|------|-------------|---------------|-------------------|----------|
-| **Google Calendar** | `mcp__claude_ai_Google_Calendar__gcal_list_events` with `timeMin=today 00:00`, `timeMax=today+7 23:59` | Returns `events` array (even if empty) | None known | None. Halt. |
-| **Gmail** | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns `messages` array | None known | None. Halt. |
-| **Notion API** | `mcp__notion_api__API-post-database-query` on Contacts DB `cabba10d-cd5d-4cff-b042-3241a2be18b5` with `page_size: 1` | Returns `results` array | **`API-patch-page` only updates `title` property.** Cannot update Role, Company, Status, DP Status, Last Contact, What They Care About, Strategic Value, Follow-up Action, Pushback, Email, or any other field. For full property updates, use `mcp__claude_ai_Notion__notion-update-page` IF the workspace matches (see known issues). | None for reads. For writes, see Known Issues #1. |
-| **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. Avoid triggering them. | None. Halt. |
-| **Apify** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. REST API always works. Token in settings.json: `YOUR_APIFY_TOKEN` | **REST API fallback.** All actors callable via `curl -X POST "https://api.apify.com/v2/acts/ACTOR_ID/runs?token=$APIFY_TOKEN&waitForFinish=120"`. Confirmed working actors listed below. |
+### MCP Tools (checked at Phase 0 by the orchestrator)
 
-### Non-Critical (ask founder before proceeding without)
+| Tool | Quick Test | Fallback |
+|------|-----------|----------|
+| **Google Calendar** | `gcal_list_events` | Halt |
+| **Gmail** | `gmail_search_messages` | Halt |
+| **Chrome** | `tabs_context_mcp` | Halt (needed for LinkedIn harvest) |
+| **Notion (writes)** | Tested during Phase 8 Notion push | Skip push, note in briefing |
 
-| Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
-|------|-------------|---------------|-------------------|----------|
-| **VC Pipeline API** | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON with pipeline data | Must be running locally. Founder needs to start the local pipeline server. | Skip Steps 1.5 (warm intro matching). Note in briefing. |
-| **NotebookLM** | `mcp__notebooklm__list_notebooks` | Returns notebook list | Session-based, may need re-auth. | Skip deep research in Step 2. Use Apify for profile data instead. |
+### Harvest Source Configuration
 
-### Confirmed Working Apify Actors (validated Mar 10-11, 2026)
-
-| Actor | Input Format | Notes |
-|-------|-------------|-------|
-| `supreme_coder~linkedin-post` | `{"urls": ["https://www.linkedin.com/search/results/content/?keywords=ENCODED_QUERY&sortBy=date_posted"], "deepScrape": false, "maxItems": 10}` | Field is `urls` NOT `searchUrl`. `sortBy=date_posted` no quotes around value. |
-| `trudax~reddit-scraper-lite` | `{"startUrls": [{"url": "https://www.reddit.com/r/SUBREDDIT/search/?q=QUERY&sort=new&restrict_sr=on&t=month"}], "maxItems": 10}` | `restrict_sr=on` REQUIRED. Auth: Bearer token header, NOT query param. |
-| `apidojo~tweet-scraper` | Profile mode: pull recent tweets from handles. Search mode: works but limited. | Monitored handles: @BushidoToken, @clintgibler, @RyanGCox_, @obadiahbridges |
-| `apify~google-search-scraper` | `{"queries": "site:medium.com SEARCH_TERMS 2025 OR 2026", "maxPagesPerQuery": 1, "resultsPerPage": 10}` | For Medium scraping. Returns `organicResults` array. |
-
-### DO NOT USE (broken actors)
-
-| Actor | Why |
-|-------|-----|
-| `harvestapi~linkedin-post-search` | Returns 0 results |
-| `trudax~reddit-scraper` | Requires paid rental |
-| `cloud9_ai~medium-article-scraper` | Returns garbage |
-| `ivanvs~medium-scraper` | Requires paid rental |
+Data sources are configured as YAML files in `kipi-mcp/sources/`. To add a new source, create a YAML file — no code changes needed. See `source_registry.py` for the schema.
 
 ---
 
