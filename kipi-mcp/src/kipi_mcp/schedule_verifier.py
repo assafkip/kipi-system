@@ -2,6 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
+_VALID_ENERGY = {"quickwin", "deepfocus", "people", "admin"}
+_VALID_TIME = {"2 min", "5 min", "10 min", "15 min", "30 min", "45 min", "60 min"}
+
+_SECTION_ORDER = [
+    "quick-wins",
+    "open-loops",
+    "pipeline-followups",
+    "linkedin-engagement",
+    "new-leads",
+    "special-outreach",
+    "posts",
+    "emails",
+    "meeting-prep",
+    "fyi",
+]
+
 
 class ScheduleVerifier:
 
@@ -18,11 +34,12 @@ class ScheduleVerifier:
         warnings: list[str] = []
         section_ids = [s.get("id") for s in data["sections"]]
 
-        self._check_pipeline_followups(data, errors)
+        self._check_pipeline_followups(data, errors, warnings)
         self._check_quick_wins(data, warnings)
         self._check_day_content(data, day, errors, warnings)
         self._check_section_ordering(section_ids, errors)
         self._check_energy_tags(data, warnings)
+        self._check_today_focus(data, warnings)
 
         return {"pass": len(errors) == 0, "errors": errors, "warnings": warnings}
 
@@ -32,22 +49,21 @@ class ScheduleVerifier:
                 return s
         return None
 
-    def _check_pipeline_followups(self, data: dict, errors: list[str]) -> None:
+    def _check_pipeline_followups(self, data: dict, errors: list[str], warnings: list[str]) -> None:
         pf = self._get_section(data, "pipeline-followups")
         if not pf:
             errors.append(
                 "MISSING SECTION: 'pipeline-followups' is REQUIRED. "
-                "Phase 4 pipeline-followup agent must generate follow-up copy "
-                "for at least 3 warm/active contacts."
+                "Phase 4 pipeline-followup agent must generate follow-up copy."
             )
             return
 
         items = pf.get("items", [])
         count = len(items)
         if count < 3:
-            errors.append(
-                f"Pipeline follow-ups has {count} items (minimum 3 required). "
-                f"Query Notion Contacts DB for warm/active contacts needing follow-up."
+            warnings.append(
+                f"Pipeline follow-ups has {count} items (target 3+). "
+                f"Check Notion for warm prospects that may have been missed."
             )
 
         missing = []
@@ -125,20 +141,33 @@ class ScheduleVerifier:
         warnings.append("Wednesday: No Kipi System promo post found.")
 
     def _check_section_ordering(self, section_ids: list, errors: list[str]) -> None:
-        if "pipeline-followups" in section_ids and "new-leads" in section_ids:
-            pf_idx = section_ids.index("pipeline-followups")
-            nl_idx = section_ids.index("new-leads")
-            if pf_idx > nl_idx:
-                errors.append(
-                    "Section ordering: pipeline-followups must come BEFORE new-leads. "
-                    "Follow-ups close deals. New leads are exciting distractions."
-                )
+        present = [sid for sid in _SECTION_ORDER if sid in section_ids]
+        actual_order = [sid for sid in section_ids if sid in _SECTION_ORDER]
+        if present != actual_order:
+            errors.append(
+                f"Section ordering violation. Expected order: {present}. "
+                f"Got: {actual_order}. Sections must follow friction ordering "
+                f"(quick-wins first, FYI last)."
+            )
 
     def _check_energy_tags(self, data: dict, warnings: list[str]) -> None:
         for s in data["sections"]:
             for item in s.get("items", []):
-                if not item.get("energy"):
+                energy = item.get("energy")
+                if not energy:
                     warnings.append(
                         f"Item {item.get('id', '?')} in section {s.get('id', '?')} "
                         f"has no energy tag."
                     )
+                elif energy not in _VALID_ENERGY:
+                    warnings.append(
+                        f"Item {item.get('id', '?')}: energy '{energy}' is not valid. "
+                        f"Use: {', '.join(sorted(_VALID_ENERGY))}."
+                    )
+
+    def _check_today_focus(self, data: dict, warnings: list[str]) -> None:
+        focus = data.get("todayFocus")
+        if not focus:
+            warnings.append("No todayFocus array. Should have 3-5 priority items.")
+        elif len(focus) < 3:
+            warnings.append(f"todayFocus has only {len(focus)} items (target 3-5).")

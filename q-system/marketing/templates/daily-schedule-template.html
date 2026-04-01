@@ -335,7 +335,11 @@ function copyText(textEl, btn) {
   navigator.clipboard.writeText(textEl.innerText).then(() => {
     btn.textContent = 'Copied';
     btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1000);
+  }).catch(() => {
+    btn.textContent = 'Failed';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
   });
 }
 
@@ -350,15 +354,15 @@ function renderCopyBlock(block) {
 }
 
 function renderItem(item, sectionIdx, itemIdx) {
-  const id = `cb-${sectionIdx}-${itemIdx}`;
+  const id = item.id ? `cb-${item.id}` : `cb-${sectionIdx}-${itemIdx}`;
   const wrapper = el('div', { class: 'action-item', 'data-energy': item.energy || 'quickwin' });
 
   // Top row: checkbox + title + tags
   const cb = el('input', { type: 'checkbox', id: id });
-  const titleEl = el('div', { class: 'action-title' });
-  titleEl.textContent = item.title;
-  if (item.badge === 'WIN') titleEl.appendChild(el('span', { class: 'tag-win', style: { marginLeft: '6px' } }, ' WIN'));
-  if (item.badge === 'KEY') titleEl.appendChild(el('span', { class: 'tag-key', style: { marginLeft: '6px' } }, ' KEY'));
+  const labelEl = el('label', { for: id, class: 'action-title' });
+  labelEl.textContent = item.title;
+  if (item.badge === 'WIN') labelEl.appendChild(el('span', { class: 'tag-win', style: { marginLeft: '6px' } }, ' WIN'));
+  if (item.badge === 'KEY') labelEl.appendChild(el('span', { class: 'tag-key', style: { marginLeft: '6px' } }, ' KEY'));
 
   const tags = el('div', { class: 'action-tags' });
   if (item.energy) tags.appendChild(el('span', { class: 'tag ' + (ENERGY_TAG_CLASS[item.energy] || 'tag-qw') }, ENERGY_LABELS[item.energy] || item.energy));
@@ -371,7 +375,7 @@ function renderItem(item, sectionIdx, itemIdx) {
   });
   if (item.daysAgo) tags.appendChild(el('span', { class: 'tag-days' }, item.daysAgo));
 
-  const content = el('div', { class: 'action-content' }, titleEl, tags);
+  const content = el('div', { class: 'action-content' }, labelEl, tags);
   const top = el('div', { class: 'action-top' }, cb, content);
   wrapper.appendChild(top);
 
@@ -408,7 +412,11 @@ function renderSection(section, sectionIdx) {
     section.title));
   if (section.meta) header.appendChild(el('div', { class: 'section-meta' }, section.meta));
   header.appendChild(el('div', { class: 'section-chevron', html: '&#9660;' }));
-  header.addEventListener('click', () => div.classList.toggle('collapsed'));
+  header.setAttribute('tabindex', '0');
+  header.setAttribute('role', 'button');
+  header.setAttribute('aria-expanded', section.collapsed ? 'false' : 'true');
+  header.addEventListener('click', () => { div.classList.toggle('collapsed'); header.setAttribute('aria-expanded', div.classList.contains('collapsed') ? 'false' : 'true'); });
+  header.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.click(); } });
   div.appendChild(header);
 
   const body = el('div', { class: 'section-body' });

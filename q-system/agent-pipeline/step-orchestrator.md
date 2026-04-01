@@ -123,8 +123,8 @@ Log: `log_step(date, "phase_5_compliance", "done")`
 ### Phase 6: Synthesis + Queue (sequential)
 **GATE:** Call `kipi_gate_check` MCP tool with phase=6. If passed=false, STOP and report missing phases.
 **DELIVERABLES:** Call `kipi_deliverables_check` MCP tool. If passed=false, go back and generate missing work.
-- 07-synthesize.md (OPUS) -- reads ALL bus/ files + harvest data, writes schedule-data-{date}.json
-- 07b-outreach-queue.md (sonnet) -- merges hitlist + value-routing + pipeline-followup
+- 07b-outreach-queue.md (haiku) -- merges engagement-hitlist + value-routing + pipeline-followup into single deduplicated queue. MUST run first.
+- THEN: 07-synthesize.md (OPUS) -- reads outreach-queue + all other agent data, writes schedule-data-{date}.json
 
 Log: `log_step(date, "phase_6_synthesis", "done")`
 

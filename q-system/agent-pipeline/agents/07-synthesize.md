@@ -73,15 +73,57 @@ Use EXACTLY these section IDs. The HTML build verifier will reject the JSON if t
 ## Building the Schedule
 
 5. Build the JSON following the schema. Key rules:
-   - **outreach-queue is your primary action source.** It's already deduplicated and prioritized. Map each action to the right section based on action_type.
-   - **pipeline-followups section**: Pull from outreach-queue where source="pipeline_followup". MUST have 3+ items.
-   - **Quick Wins**: Items with energy="quickwin" and time <= "5 min"
-   - **Open Loops**: From agent:loop-review level 2+ items
-   - **Posts**: From agent:signals-content + agent:founder-brand drafts. Attach visuals from agent:post-visuals.
-   - **Call Banners**: From calendar data, today's meetings
-   - **Meeting Prep**: From agent:meeting-prep, use top-level `meetingPrep` array
-   - **FYI**: Pipeline grid from agent:prospect-pipeline, info notes from compliance/positioning
-   - **Today's Focus**: Pick top 3-5 items across all sections (most impactful)
+
+### Action Items (from outreach-queue)
+- **outreach-queue is your primary action source.** Already deduplicated and prioritized.
+- Map each action to the right section based on action_type:
+  - source="pipeline_followup" → `pipeline-followups` section (MUST have 3+ items)
+  - action_type="comment" → `linkedin-engagement` section
+  - action_type="connection_request" → `new-leads` section
+  - action_type="dm" → `quick-wins` (if ≤5 min) or `linkedin-engagement`
+  - source="value_routing" → `quick-wins` or appropriate section by energy
+
+### Quick Wins
+- Items with energy="quickwin" and time ≤ "5 min"
+- Includes: scheduling replies, short DMs, copy-paste comments
+
+### Open Loops
+- From agent:loop-review, level 2+ items
+- Each gets a force-close/park/escalate action with copy text
+
+### Posts
+- From agent:signals-content + agent:founder-brand drafts
+- Attach visuals from agent:post-visuals for every post item
+- If no visuals, add `needsEyes: "Visual generation needed"`
+
+### Call Banners (REQUIRED if meetings exist)
+- Call `kipi_get_harvest("calendar", days=1)` for today's meetings
+- For each meeting today, build a callBanner:
+  ```json
+  {"time": "2:00pm PT", "info": "<strong>Name</strong> - Meeting Title (duration)", "detail": "Meeting link"}
+  ```
+
+### Meeting Prep (top-level array, NOT a section)
+- From agent:meeting-prep data
+- Use the top-level `meetingPrep` array, NOT a separate section
+- Each prep box: `{"title": "PREP: Name - time", "items": ["<strong>Context:</strong> ...", "<strong>Goal:</strong> ..."]}`
+- Do NOT duplicate in a meeting-prep section
+
+### FYI Section (collapsed)
+- Pipeline grid from agent:prospect-pipeline counts
+- Info notes from agent:compliance + agent:positioning results
+- Asset freshness from agent:marketing-health
+
+### todayFocus (REQUIRED)
+- Build the `todayFocus` top-level array with 3-5 items
+- Algorithm: pick the single most impactful action from each of:
+  1. Quick Wins (fastest momentum builder)
+  2. Pipeline Follow-ups (highest-value relationship)
+  3. Open Loops (longest overdue)
+  4. Posts (if content day)
+  5. Engagement (hottest prospect)
+- Each item: `{"text": "Reply to X about Y", "time": "2 min", "energy": "quickwin"}`
+- This appears at the top of the HTML as "Start Here"
 
 6. Write output to: {{STATE_DIR}}/output/schedule-data-{{DATE}}.json
 7. Call `kipi_store_harvest("agent:briefing", briefing_json, "{{RUN_ID}}")` with a 10-15 line morning briefing.
