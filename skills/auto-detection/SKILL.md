@@ -7,7 +7,7 @@ paths:
 
 # Auto-Detection Rules
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `auto-detection` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `auto-detection` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 These triggers fire automatically — no command needed.

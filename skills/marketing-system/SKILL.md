@@ -8,7 +8,7 @@ paths:
 
 # Marketing System
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `marketing-system` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `marketing-system` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 ## Content Rules

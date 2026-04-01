@@ -8,7 +8,7 @@ paths:
 
 # Memory Architecture
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `memory-architecture` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `memory-architecture` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 Time-stratified memory in `{data_dir}/memory/`:

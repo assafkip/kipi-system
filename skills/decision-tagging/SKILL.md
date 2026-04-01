@@ -8,7 +8,7 @@ paths:
 
 # Decision Origin Tagging (ENFORCED)
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `decision-tagging` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `decision-tagging` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 Every decision logged to `{config_dir}/canonical/decisions.md` MUST include an origin tag:

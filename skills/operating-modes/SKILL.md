@@ -7,7 +7,7 @@ paths:
 
 # Operating Modes
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `operating-modes` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `operating-modes` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 This system operates in 4 modes (not stages). The founder switches freely between them.
