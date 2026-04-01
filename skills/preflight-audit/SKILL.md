@@ -8,6 +8,9 @@ paths:
 
 # Execution Harness (ENFORCED)
 
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `preflight-audit` is NOT explicitly set to `true`, SKIP this rule file.
+
+
 Every phase must log completion via `log_step` MCP tool. The morning log at `{state_dir}/output/morning-log-YYYY-MM-DD.json` is a file on disk, not context. Even if context rots, the log is accurate. If a phase isn't logged, it didn't happen.
 
 Before gate phases (6, 7, 8), call `kipi_gate_check` MCP tool. If it returns passed=false, STOP and report missing phases.

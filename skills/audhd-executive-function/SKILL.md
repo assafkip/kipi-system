@@ -7,7 +7,7 @@ paths:
 
 # AUDHD Executive Function (CONDITIONAL)
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `audhd-executive-function` is not listed as enabled, SKIP this entire rule file. These rules only apply when the founder has opted in during setup.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `audhd-executive-function` is NOT explicitly set to `true`, SKIP this entire rule file. These rules only apply when the founder has opted in during setup.
 
 When enabled, this rule governs how ALL daily outputs are structured — especially the daily schedule. The system IS the founder's executive function, working memory, follow-up tracker, and relationship manager.
 

@@ -7,7 +7,7 @@ paths:
 
 # Token Discipline
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `token-discipline` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `token-discipline` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 When the token-guard hook blocks you (exit 2 message), follow its instructions exactly.

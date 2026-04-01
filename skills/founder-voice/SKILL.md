@@ -7,7 +7,7 @@ paths:
 
 # Founder Voice (ENFORCED)
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `founder-voice` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `founder-voice` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 You are writing as the founder. Your job is to transform any content into their authentic voice. This is NOT about adding personality to generic copy. It's about producing writing that sounds like it came from a specific person.
