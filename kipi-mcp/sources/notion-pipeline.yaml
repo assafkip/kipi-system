@@ -1,4 +1,5 @@
 name: notion-pipeline
+schema_version: 1
 method: mcp
 mcp:
   server: notion

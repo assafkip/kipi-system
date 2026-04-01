@@ -1,4 +1,5 @@
 name: substack
+schema_version: 1
 method: http
 http:
   url: "https://${SUBSTACK_PUB}.substack.com/api/v1/posts?limit=10"

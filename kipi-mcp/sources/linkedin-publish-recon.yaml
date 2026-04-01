@@ -1,4 +1,5 @@
 name: linkedin-publish-recon
+schema_version: 1
 method: chrome
 chrome:
   actions_file: linkedin-publish-recon.md

@@ -13,11 +13,11 @@ def test_init_creates_all_tables(tmp_path):
     db = tmp_path / "harvest.db"
     s = HarvestStore(db_path=db)
     tables = s.init_db()
-    assert len(tables) == 7
+    assert len(tables) == 9
     expected = {
         "harvest_runs", "source_runs", "harvest_records",
         "harvest_bodies", "source_cursors", "apify_budget",
-        "notion_write_queue",
+        "notion_write_queue", "agent_metrics", "session_handoffs",
     }
     assert set(tables) == expected
 
@@ -431,3 +431,72 @@ def test_fail_stale_notion_writes(tmp_harvest_store):
     assert result["marked_failed"] == 1
     # Should no longer be pending
     assert len(tmp_harvest_store.get_pending_notion_writes()) == 0
+
+
+# ============================================================
+# Agent metrics tests
+# ============================================================
+
+
+def test_log_agent_metric(tmp_harvest_store):
+    result = tmp_harvest_store.log_agent_metric(
+        date="2026-03-31",
+        agent_name="01-harvest",
+        phase="phase_1",
+        model="haiku",
+        started_at="2026-03-31T08:00:00",
+        completed_at="2026-03-31T08:01:30",
+        duration_seconds=90.5,
+        records_read=20,
+        records_written=15,
+        status="done",
+    )
+    assert "id" in result
+    assert result["agent_name"] == "01-harvest"
+    assert result["phase"] == "phase_1"
+    assert result["status"] == "done"
+
+
+def test_query_agent_metrics_averages(tmp_harvest_store):
+    today = datetime.now().strftime("%Y-%m-%d")
+    for dur in [10.0, 20.0, 30.0]:
+        tmp_harvest_store.log_agent_metric(
+            date=today, agent_name="03-content", phase="phase_3",
+            model="sonnet", duration_seconds=dur,
+            records_read=5, records_written=2,
+        )
+    result = tmp_harvest_store.query_agent_metrics(days=7)
+    assert result["days"] == 7
+    assert len(result["agents"]) == 1
+    agent = result["agents"][0]
+    assert agent["agent_name"] == "03-content"
+    assert agent["avg_duration"] == 20.0
+    assert agent["total_runs"] == 3
+    assert agent["total_read"] == 15
+    assert agent["total_written"] == 6
+
+
+# ============================================================
+# Session handoff tests
+# ============================================================
+
+
+def test_save_and_get_handoff(tmp_harvest_store):
+    result = tmp_harvest_store.save_handoff(
+        date="2026-03-31", run_id="2026-03-31-001",
+        phases_completed="phase_0,phase_1,phase_2",
+        notes="Stopped at content generation",
+    )
+    assert "id" in result
+    assert result["run_id"] == "2026-03-31-001"
+
+    handoff = tmp_harvest_store.get_handoff("2026-03-31")
+    assert handoff is not None
+    assert handoff["run_id"] == "2026-03-31-001"
+    assert handoff["phases_completed"] == "phase_0,phase_1,phase_2"
+    assert handoff["notes"] == "Stopped at content generation"
+
+
+def test_get_handoff_no_data(tmp_harvest_store):
+    handoff = tmp_harvest_store.get_handoff("2026-12-25")
+    assert handoff is None

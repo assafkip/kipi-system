@@ -273,6 +273,16 @@ def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=No
     if backup_manager:
         backup_result = auto_backup(backup_manager)
 
+    # Check for today's handoff (session resume)
+    resume_from = None
+    if harvest_store:
+        try:
+            handoff = harvest_store.get_handoff(date)
+            if handoff:
+                resume_from = handoff
+        except (AttributeError, Exception):
+            pass
+
     return {
         "date": date,
         "preflight": preflight(paths),
@@ -283,6 +293,7 @@ def morning_init(paths, energy_level: int, harvest_store=None, backup_manager=No
         "db_integrity": db_integrity,
         "backup": backup_result,
         "notion_queue": retry_notion_queue(harvest_store),
+        "resume_from": resume_from,
     }
 
 
