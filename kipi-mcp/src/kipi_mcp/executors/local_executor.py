@@ -6,10 +6,25 @@ from kipi_mcp.executors import ExecutorResult
 logger = logging.getLogger(__name__)
 
 
-def execute(config: dict) -> ExecutorResult:
-    """Read records from a local file."""
-    file_path = Path(config.get("file_path", ""))
+def execute(config: dict, allowed_base: Path | None = None) -> ExecutorResult:
+    """Read records from a local file.
+
+    Args:
+        config: Source config with file_path and format.
+        allowed_base: If set, file_path must be within this directory.
+    """
+    file_path = Path(config.get("file_path", "")).resolve()
     fmt = config.get("format", "json")
+
+    # Path traversal protection
+    if allowed_base is not None:
+        allowed = allowed_base.resolve()
+        try:
+            file_path.relative_to(allowed)
+        except ValueError:
+            return ExecutorResult(
+                error=f"Path traversal blocked: {file_path} is outside {allowed}"
+            )
 
     try:
         if not file_path.exists():

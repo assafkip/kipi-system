@@ -73,11 +73,20 @@ if paths.metrics_db.exists() and paths.system_db != paths.metrics_db:
         if "loops" in _tables:
             _rows = _old.execute("SELECT * FROM loops").fetchall()
             if _rows:
-                _cols = [d[0] for d in _old.execute("SELECT * FROM loops LIMIT 1").description]
+                _ALLOWED_LOOP_COLS = {
+                    "id", "type", "target", "target_notion_id", "opened",
+                    "opened_by", "action_card_id", "context", "channel",
+                    "touch_count", "follow_up_text", "escalation_level",
+                    "last_escalated", "status", "closed", "closed_by", "closed_reason",
+                }
+                _raw_cols = [d[0] for d in _old.execute("SELECT * FROM loops LIMIT 1").description]
+                _cols = [c for c in _raw_cols if c in _ALLOWED_LOOP_COLS]
+                _col_indices = [i for i, c in enumerate(_raw_cols) if c in _ALLOWED_LOOP_COLS]
                 _new = _sql.connect(str(paths.system_db))
                 for _r in _rows:
+                    _vals = tuple(_r[i] for i in _col_indices)
                     _placeholders = ",".join("?" * len(_cols))
-                    _new.execute(f"INSERT OR IGNORE INTO loops ({','.join(_cols)}) VALUES ({_placeholders})", tuple(_r))
+                    _new.execute(f"INSERT OR IGNORE INTO loops ({','.join(_cols)}) VALUES ({_placeholders})", _vals)
                 _new.commit()
                 _new.close()
                 _old.execute("DROP TABLE loops")

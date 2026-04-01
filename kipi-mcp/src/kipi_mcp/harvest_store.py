@@ -206,12 +206,19 @@ class HarvestStore:
         finally:
             conn.close()
 
+    _ALLOWED_SOURCE_RUN_COLS = frozenset({
+        "status", "records", "cursor_before", "cursor_after",
+        "bus_file", "error", "completed_at", "apify_cost",
+    })
+
     def update_source_run(self, id: int, **kwargs) -> dict:
         conn = self._connect()
         try:
             sets = []
             vals = []
             for k, v in kwargs.items():
+                if k not in self._ALLOWED_SOURCE_RUN_COLS:
+                    raise ValueError(f"Invalid column: {k}")
                 sets.append(f"{k} = ?")
                 vals.append(v)
             vals.append(id)

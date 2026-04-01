@@ -304,11 +304,20 @@ const SCHEDULE_DATA = __SCHEDULE_DATA__;
 // ===== RENDERER =====
 const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+function sanitizeHTML(html) {
+  // Strip script tags, event handlers, and dangerous attributes
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/\bon\w+\s*=\s*["'][^"']*["']/gi, '')
+    .replace(/\bon\w+\s*=\s*[^\s>]*/gi, '')
+    .replace(/javascript\s*:/gi, 'blocked:')
+    .replace(/<iframe\b[^>]*>/gi, '');
+}
 const el = (tag, attrs, ...children) => {
   const e = document.createElement(tag);
   if (attrs) Object.entries(attrs).forEach(([k, v]) => {
     if (k === 'class') e.className = v;
-    else if (k === 'html') e.innerHTML = v;
+    else if (k === 'html') e.innerHTML = sanitizeHTML(v);
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
     else e.setAttribute(k, v);
