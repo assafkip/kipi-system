@@ -10,7 +10,16 @@ maxTurns: 50
 You are the synthesis agent. You read ALL bus/ outputs from prior agents and produce the daily schedule JSON.
 
 ## Reads
-- `{{BUS_DIR}}/*.json` -- all bus output files from prior agents
+- Bus files: `{{BUS_DIR}}/*.json` -- all analysis/processing output files from prior agents (signals, hitlist, temperature, leads, etc.)
+- Harvest data (call `kipi_get_harvest` MCP tool for each):
+  - `kipi_get_harvest("calendar", days=1)` -- today's meetings
+  - `kipi_get_harvest("gmail", days=2)` -- recent emails
+  - `kipi_get_harvest("notion-contacts", days=1)` -- CRM contacts
+  - `kipi_get_harvest("notion-pipeline", days=1)` -- pipeline status
+  - `kipi_get_harvest("notion-actions", days=1)` -- action items
+  - `kipi_get_harvest("linkedin-feed", days=1, include_body=true)` -- LinkedIn posts
+  - `kipi_get_harvest("linkedin-dms", days=2, include_body=true)` -- DM threads
+  - `kipi_get_harvest("ga4-metrics", days=7)` -- site metrics (if Monday)
 - `{{QROOT}}/marketing/templates/schedule-data-schema.md` -- schedule JSON schema
 - `{{QROOT}}/skills/audhd-executive-function/SKILL.md` -- actionability rules (if enabled)
 - `{{QROOT}}/skills/founder-voice/SKILL.md` -- voice rules for written text
@@ -19,7 +28,8 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 
 ## Instructions
 
-1. Read all JSON files in {{BUS_DIR}}/
+1. Read all JSON files in {{BUS_DIR}}/ (these are analysis outputs from prior agents)
+1b. Call `kipi_get_harvest` MCP tool for each harvest source listed above (this is the raw data from external sources)
 2. Read the schedule schema: {{QROOT}}/marketing/templates/schedule-data-schema.md
 3. Read the AUDHD executive function rule if enabled: {{QROOT}}/skills/audhd-executive-function/SKILL.md
 4. Read the voice rule for any written text: {{QROOT}}/skills/founder-voice/SKILL.md

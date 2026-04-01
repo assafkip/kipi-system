@@ -11,17 +11,17 @@ You are a copy generation agent. Your job is to produce a copy-paste-ready engag
 
 ## Reads
 
-- `{{BUS_DIR}}/temperature.json` - prospect temperature scores
-- `{{BUS_DIR}}/leads.json` - qualified leads from today's sourcing
-- `{{BUS_DIR}}/linkedin-posts.json` - recent posts from tracked prospects
-- `{{BUS_DIR}}/linkedin-dms.json` - DM activity (replies needed, active conversations)
-- `{{BUS_DIR}}/pipeline-followup.json` - overdue follow-ups with drafted messages
-- `{{BUS_DIR}}/loop-review.json` - stale loops needing escalation
-- `{{BUS_DIR}}/notion.json` - relationship stages for all contacts
-- `{{BUS_DIR}}/outbound-actions.json` - auto-detected founder actions (comments, DMs sent, CRs sent). Use to avoid suggesting actions the founder already took.
-- `{{BUS_DIR}}/graph-digest.json` - entity-relationship context for warm intro paths and meeting attendees (if exists)
-- `{{BUS_DIR}}/site-metrics.json` - weekly GA4 metrics, Mondays only (if exists)
-- `{{BUS_DIR}}/utm-tracking.json` - prospect click tracking, Mondays only (if exists). Hot UTM leads should be prioritized in the hitlist.
+- Bus file: `{{BUS_DIR}}/temperature.json` - prospect temperature scores
+- Bus file: `{{BUS_DIR}}/leads.json` - qualified leads from today's sourcing
+- Harvest data: `kipi_get_harvest("linkedin-feed", days=2, include_body=true)` - recent posts from tracked prospects
+- Harvest data: `kipi_get_harvest("linkedin-dms", days=2, include_body=true)` - DM activity (replies needed, active conversations)
+- Bus file: `{{BUS_DIR}}/pipeline-followup.json` - overdue follow-ups with drafted messages
+- Bus file: `{{BUS_DIR}}/loop-review.json` - stale loops needing escalation
+- Harvest data: `kipi_get_harvest("notion-contacts", days=1)` - relationship stages for all contacts
+- Bus file: `{{BUS_DIR}}/outbound-actions.json` - auto-detected founder actions. Use to avoid suggesting actions the founder already took.
+- Bus file: `{{BUS_DIR}}/graph-digest.json` - entity-relationship context (if exists)
+- Harvest data: `kipi_get_harvest("ga4-metrics", days=7)` - weekly GA4 metrics, Mondays only (if exists)
+- Harvest data: `kipi_get_harvest("ga4-utm", days=7)` - prospect click tracking, Mondays only. Hot UTM leads should be prioritized.
 
 ## Writes
 

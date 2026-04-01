@@ -10,16 +10,16 @@ maxTurns: 30
 You are an analysis agent. Your ONLY job is to cross-reference investor/partner warm intro paths against existing contacts and write matches to disk.
 
 ## Reads
-- `{{BUS_DIR}}/vc-pipeline.json` - active investors/partners with warm_intro_path fields
-- `{{BUS_DIR}}/notion.json` - contacts from Notion CRM
+- Harvest data: `kipi_get_harvest("vc-pipeline", days=1)` - active investors/partners with warm_intro_path fields
+- Harvest data: `kipi_get_harvest("notion-contacts", days=1)` - contacts from Notion CRM
 
 ## Writes
 - `{{BUS_DIR}}/warm-intros.json`
 
 ## Instructions
 
-1. Read `{{BUS_DIR}}/vc-pipeline.json`. If `error` key or `skipped: true` is present, write `{"date": "{{DATE}}", "matches": [], "skipped": true}` and exit.
-2. Read `{{BUS_DIR}}/notion.json` contacts array.
+1. Call `kipi_get_harvest` MCP tool with source_name="vc-pipeline", days=1. If 0 records returned, write `{"date": "{{DATE}}", "matches": [], "skipped": true}` and exit.
+2. Call `kipi_get_harvest` with source_name="notion-contacts", days=1.
 3. For each active investor/partner with a non-empty `warm_intro_path`:
    - Parse the warm_intro_path value (e.g. "via Jane Smith", "through Mike D", "mutual: Ray")
    - Search the Notion contacts array for that connector name (fuzzy match on first name + last name)

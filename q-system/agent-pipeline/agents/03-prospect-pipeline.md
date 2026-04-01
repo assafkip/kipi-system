@@ -11,11 +11,12 @@ You are a data analysis agent. Your ONLY job is to read Notion pipeline data, co
 
 ## Reads
 
-- `{{BUS_DIR}}/notion.json` - pipeline records from Notion
+- Harvest data: `kipi_get_harvest("notion-pipeline", days=1)` - pipeline records
+- Harvest data: `kipi_get_harvest("notion-contacts", days=1)` - contact records with pipeline status
 
 ## Instructions
 
-1. Parse `{{BUS_DIR}}/notion.json` and extract all records from the pipeline array
+1. Call `kipi_get_harvest` MCP tool with source_name="notion-pipeline", days=1. Also call with source_name="notion-contacts" for contact-level data. Extract all pipeline records.
 2. Count by status bucket: Active, Warm, Cooling, Passed
 3. For each record, compute days since last touch (use `last_touch` field or most recent interaction date)
 4. Read `{{AGENTS_DIR}}/_cadence-config.md` for auto-close timing. Apply the breakup/park threshold from cadence config.
