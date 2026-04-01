@@ -8,6 +8,9 @@ paths:
 
 # Memory Architecture
 
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `memory-architecture` is `false`, SKIP this rule file.
+
+
 Time-stratified memory in `{data_dir}/memory/`:
 
 - `working/` — session-scoped, ephemeral (<48h). Auto-cleaned during `/q-morning` Step 0a.

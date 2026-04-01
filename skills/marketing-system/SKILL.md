@@ -1,5 +1,5 @@
 ---
-description: "Marketing system — content guardrails, brand voice, theme rotation, tool preferences"
+description: "Marketing system — content guardrails, brand voice, theme rotation"
 user-invocable: false
 paths:
   - "**/marketing/**"
@@ -7,6 +7,9 @@ paths:
 ---
 
 # Marketing System
+
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `marketing-system` is `false`, SKIP this rule file.
+
 
 ## Content Rules
 
@@ -16,9 +19,6 @@ paths:
 - Reusable assets in `marketing/assets/` (boilerplate, bios, stats, proof points, competitive one-liners)
 - State tracked in `{data_dir}/memory/marketing-state.md`
 
-## Tool Preferences
+## Data Sources
 
-- Use project-scoped Notion API server for CRM (not workspace-wide plugins)
-- Use Apify for data scraping, Chrome for interactive/DMs only
-- Gamma for decks and one-pagers (if configured)
-- NotebookLM for research-grounded content (if configured)
+Content metrics and engagement data are harvested automatically via `kipi_harvest`. Use `kipi_get_harvest` to query content performance across platforms.
