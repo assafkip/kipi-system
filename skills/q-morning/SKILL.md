@@ -6,6 +6,11 @@ description: "Daily morning briefing — deterministic init + harvest + agent pi
 
 Runs the morning pipeline: deterministic Python init, data harvest, analysis agents, synthesis, and schedule build.
 
+## Arguments
+
+- `/q-morning` — normal run (incremental harvest, auto-resumes partial runs)
+- `/q-morning full` — full re-harvest ignoring all cursors (use after first install, config changes, or to refresh all data)
+
 ## Setup guard
 
 **FIRST:** Read the `kipi://status` MCP resource.
@@ -28,7 +33,7 @@ Read the `kipi://paths` MCP resource to get resolved directories.
 
 4. **Read step-orchestrator.md** — `q-system/agent-pipeline/step-orchestrator.md`. Follow Phase 1 onward.
 
-5. **Call `kipi_harvest`** MCP tool. This runs all Python data sources (HTTP, Apify, local) and returns prompts for Chrome + MCP harvest agents.
+5. **Call `kipi_harvest`** MCP tool. If the user said `/q-morning full`, pass `mode="full"`. Otherwise pass `mode="incremental"` (default — auto-resumes partial runs, uses cursors for incremental data). This runs all Python data sources and returns prompts for Chrome + MCP harvest agents.
 
 6. **Spawn harvest agents** from the prompts returned by `kipi_harvest` (parallel, haiku).
 
@@ -47,7 +52,7 @@ Read the `kipi://paths` MCP resource to get resolved directories.
 - **Zero tokens:** Preflight, bootstrap, canonical digest, data harvest (Python sources)
 - **Haiku:** Harvest agents (Chrome + MCP), simple processing agents
 - **Sonnet:** Analysis, content generation, compliance
-- **Opus:** Engagement hitlist + synthesis ONLY
+- **Opus:** Synthesis ONLY (07-synthesize)
 
 ## Output rules
 
