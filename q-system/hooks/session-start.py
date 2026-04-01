@@ -35,9 +35,10 @@ if _plugin_data:
         output_dir=_inst_dir / "output",
     )
 else:
+    _inst_dir = Path.home() / ".kipi-system" / "instances" / "default"
     _paths = SimpleNamespace(
-        memory_dir=Path.home() / ".kipi-system" / "instances" / "default" / "memory",
-        output_dir=Path.home() / ".kipi-system" / "instances" / "default" / "output",
+        memory_dir=_inst_dir / "memory",
+        output_dir=_inst_dir / "output",
     )
 
 
@@ -92,7 +93,36 @@ def load_yesterday_cards():
 
 
 def load_open_loops():
-    """Read open-loops.json for loop state summary."""
+    """Read loop state from system.db (SQLite), fallback to legacy JSON."""
+    import sqlite3
+
+    # Try SQLite first (new system)
+    system_db = _inst_dir / "system.db" if _plugin_data else (
+        Path.home() / ".kipi-system" / "instances" / "default" / "system.db"
+    )
+    if system_db.exists():
+        try:
+            conn = sqlite3.connect(str(system_db))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT target, escalation_level FROM loops WHERE status = 'open'"
+            ).fetchall()
+            conn.close()
+            if not rows:
+                return None
+            counts = {0: 0, 1: 0, 2: 0, 3: 0}
+            force_close = []
+            for r in rows:
+                level = r["escalation_level"]
+                counts[min(level, 3)] = counts.get(min(level, 3), 0) + 1
+                if level >= 3:
+                    force_close.append(r["target"])
+            summary = f"{len(rows)} open (L0:{counts[0]} L1:{counts[1]} L2:{counts[2]} L3:{counts[3]})"
+            return summary, force_close
+        except Exception:
+            pass
+
+    # Fallback to legacy JSON
     loops_path = _paths.output_dir / "open-loops.json"
     if not loops_path.exists():
         return None
