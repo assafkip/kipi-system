@@ -8,7 +8,7 @@ paths:
 
 # File Authority
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `file-authority` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `file-authority` is NOT explicitly set to `true`, SKIP this rule file.
 
 
 These files are the source of truth. Route new information to the correct file.

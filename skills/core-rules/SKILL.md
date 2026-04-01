@@ -7,7 +7,7 @@ paths:
 
 # Core Rules
 
-**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `core-rules` is `false`, SKIP this rule file.
+**Gate check:** Read `{config_dir}/enabled-integrations.md`. If `core-rules` is NOT explicitly set to `true`, SKIP this rule file.
 
 ## Every output must be actionable
 No dashboards without actions. No scores without drafts. No summaries without next steps. If the founder can't copy-paste it, click it, or check it off, it doesn't belong.
