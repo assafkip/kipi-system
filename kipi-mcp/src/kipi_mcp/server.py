@@ -1567,7 +1567,17 @@ def kipi_morning_init(energy_level: int = 3) -> str:
     """
     try:
         from kipi_mcp.morning_init import morning_init
-        return json.dumps(morning_init(paths, energy_level, harvest_store=harvest_store, backup_manager=backup_manager))
+        result = morning_init(paths, energy_level, harvest_store=harvest_store, backup_manager=backup_manager)
+        # Auto-log checksums to morning log
+        date = result.get("date", datetime.now().strftime("%Y-%m-%d"))
+        try:
+            step_logger.init(date)
+            checksums = result.get("bootstrap", {}).get("checksums", {})
+            for key, value in checksums.items():
+                step_logger.checksum(date, "start", key, value)
+        except Exception:
+            pass  # Non-blocking
+        return json.dumps(result)
     except Exception as e:
         logger.error("kipi_morning_init failed", exc_info=True)
         raise ToolError(str(e))
@@ -1586,7 +1596,19 @@ def kipi_gate_check(phase: int, date: str = "") -> str:
     """
     try:
         from kipi_mcp.morning_init import gate_check
-        return json.dumps(gate_check(paths, phase, date))
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+        result = gate_check(paths, phase, date)
+        # Auto-log the gate check to morning log
+        try:
+            step_logger.gate_check(
+                date, f"phase_{phase}",
+                result["passed"],
+                ",".join(result.get("missing", [])),
+            )
+        except FileNotFoundError:
+            pass  # Morning log not initialized yet
+        return json.dumps(result)
     except Exception as e:
         logger.error("kipi_gate_check failed", exc_info=True)
         raise ToolError(str(e))
@@ -1607,6 +1629,56 @@ def kipi_deliverables_check(date: str = "") -> str:
         return json.dumps(deliverables_check(paths, date, harvest_store=harvest_store))
     except Exception as e:
         logger.error("kipi_deliverables_check failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_register_action_cards(date: str = "") -> str:
+    """Auto-register action cards from agent outputs into the morning log.
+
+    Scans harvest records for agent:engagement-hitlist, agent:signals-content,
+    agent:value-routing, and agent:pipeline-followup. Extracts items with
+    copy blocks and registers them as action cards in the morning log.
+
+    Call this after Phase 6 synthesis completes to ensure all actions are
+    tracked for next-morning confirmation.
+
+    Args:
+        date: Date in YYYY-MM-DD format. Defaults to today.
+    """
+    try:
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        sources = [
+            ("agent:engagement-hitlist", "engagement"),
+            ("agent:signals-content", "post"),
+            ("agent:value-routing", "value_drop"),
+            ("agent:pipeline-followup", "followup"),
+        ]
+
+        registered = 0
+        for source_name, card_type in sources:
+            records = harvest_store.get_records(source_name=source_name, days=1, limit=50)
+            for record in records:
+                summary = json.loads(record.get("summary_json", "{}"))
+                # Extract items with copy/actions
+                items = summary.get("actions", summary.get("routes", summary.get("followups", [])))
+                if isinstance(items, list):
+                    for item in items:
+                        target = item.get("contact_name") or item.get("prospect_name") or item.get("name") or item.get("title", "")
+                        copy = item.get("copy") or item.get("message") or item.get("linkedin_draft") or item.get("draft_text", "")
+                        card_id = item.get("id") or item.get("rank") or f"{card_type}-{registered+1}"
+                        if target and copy:
+                            try:
+                                step_logger.add_card(date, str(card_id), card_type, str(target), str(copy)[:200])
+                                registered += 1
+                            except FileNotFoundError:
+                                pass
+
+        return json.dumps({"registered": registered, "date": date})
+    except Exception as e:
+        logger.error("kipi_register_action_cards failed", exc_info=True)
         raise ToolError(str(e))
 
 

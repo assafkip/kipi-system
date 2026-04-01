@@ -79,6 +79,7 @@ EXPECTED_TOOLS = [
     "kipi_log_agent_metric",
     "kipi_agent_metrics",
     "kipi_session_handoff",
+    "kipi_register_action_cards",
 ]
 
 EXPECTED_RESOURCES = [
