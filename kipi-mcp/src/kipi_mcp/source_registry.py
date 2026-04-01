@@ -76,6 +76,8 @@ class OutputConfig(BaseModel):
 class SourceManifest(BaseModel):
     name: str
     enabled: bool = True
+    schema_version: int = 1
+    version_mismatch: bool = False
     method: str
 
     http: HttpConfig | None = None
@@ -161,19 +163,27 @@ class SourceRegistry:
         self.plugin_dir = plugin_sources_dir
         self.instance_dir = instance_sources_dir
 
-    def _load_yamls(self, directory: Path) -> dict[str, SourceManifest]:
-        manifests: dict[str, SourceManifest] = {}
+    def _load_yamls_raw(self, directory: Path) -> dict[str, dict]:
+        raw_map: dict[str, dict] = {}
         if not directory.exists():
-            return manifests
+            return raw_map
         for fp in sorted(directory.glob("*.yaml")):
             try:
                 raw = yaml.safe_load(fp.read_text())
                 if raw is None:
                     continue
-                m = SourceManifest(**raw)
-                manifests[m.name] = m
+                raw_map[raw["name"]] = raw
             except Exception:
                 log.warning("Failed to load source manifest: %s", fp, exc_info=True)
+        return raw_map
+
+    def _load_yamls(self, directory: Path) -> dict[str, SourceManifest]:
+        manifests: dict[str, SourceManifest] = {}
+        for name, raw in self._load_yamls_raw(directory).items():
+            try:
+                manifests[name] = SourceManifest(**raw)
+            except Exception:
+                log.warning("Failed to parse source manifest: %s", name, exc_info=True)
         return manifests
 
     def load_all(
@@ -183,10 +193,32 @@ class SourceRegistry:
         energy_level: int | None = None,
         last_harvest_times: dict[str, str] | None = None,
     ) -> list[SourceManifest]:
-        manifests = self._load_yamls(self.plugin_dir)
+        plugin_raw = self._load_yamls_raw(self.plugin_dir)
+        manifests: dict[str, SourceManifest] = {}
+        for name, raw in plugin_raw.items():
+            try:
+                manifests[name] = SourceManifest(**raw)
+            except Exception:
+                log.warning("Failed to parse source manifest: %s", name, exc_info=True)
+
         if self.instance_dir:
-            instance_manifests = self._load_yamls(self.instance_dir)
-            manifests.update(instance_manifests)
+            instance_raw = self._load_yamls_raw(self.instance_dir)
+            for name, raw in instance_raw.items():
+                try:
+                    m = SourceManifest(**raw)
+                    if name in plugin_raw:
+                        plugin_ver = plugin_raw[name].get("schema_version", 1)
+                        instance_ver = raw.get("schema_version", 1)
+                        if plugin_ver != instance_ver:
+                            log.warning(
+                                "Source %s: instance override has schema_version %d, "
+                                "plugin default has %d. Review your customization.",
+                                name, instance_ver, plugin_ver,
+                            )
+                            m.version_mismatch = True
+                    manifests[name] = m
+                except Exception:
+                    log.warning("Failed to parse source manifest: %s", name, exc_info=True)
 
         results: list[SourceManifest] = []
         for m in manifests.values():

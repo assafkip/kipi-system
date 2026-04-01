@@ -1,4 +1,5 @@
 name: x-lead-search
+schema_version: 1
 method: apify
 apify:
   actor_id: apidojo/tweet-scraper

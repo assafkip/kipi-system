@@ -1,4 +1,5 @@
 name: reddit-leads
+schema_version: 1
 method: mcp
 mcp:
   server: reddit

@@ -1,4 +1,5 @@
 name: notion-actions
+schema_version: 1
 method: mcp
 mcp:
   server: notion

@@ -1,4 +1,5 @@
 name: vc-pipeline
+schema_version: 1
 method: http
 http:
   url: "${VC_PIPELINE_URL}"

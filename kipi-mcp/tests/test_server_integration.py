@@ -76,6 +76,9 @@ EXPECTED_TOOLS = [
     "kipi_harvest_health",
     "kipi_queue_notion_write",
     "kipi_get_notion_queue",
+    "kipi_log_agent_metric",
+    "kipi_agent_metrics",
+    "kipi_session_handoff",
 ]
 
 EXPECTED_RESOURCES = [

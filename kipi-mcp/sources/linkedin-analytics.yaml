@@ -1,4 +1,5 @@
 name: linkedin-analytics
+schema_version: 1
 method: chrome
 chrome:
   actions_file: linkedin-analytics.md

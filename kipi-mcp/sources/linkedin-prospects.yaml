@@ -1,4 +1,5 @@
 name: linkedin-prospects
+schema_version: 1
 method: chrome
 chrome:
   actions_file: linkedin-prospects.md

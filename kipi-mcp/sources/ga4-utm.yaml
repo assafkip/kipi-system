@@ -1,4 +1,5 @@
 name: ga4-utm
+schema_version: 1
 method: http
 http:
   url: "https://analyticsdata.googleapis.com/v1beta/properties/${GA4_PROPERTY_ID}:runReport"

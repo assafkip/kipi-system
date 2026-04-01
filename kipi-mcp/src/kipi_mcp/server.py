@@ -1399,6 +1399,77 @@ def kipi_get_notion_queue() -> str:
 
 
 # ============================================================
+# Agent Metrics & Session Handoff (3 tools)
+# ============================================================
+
+
+@mcp.tool()
+def kipi_log_agent_metric(
+    agent_name: str, phase: str, model: str = "",
+    started_at: str = "", completed_at: str = "",
+    duration_seconds: float = 0, status: str = "done",
+    records_read: int = 0, records_written: int = 0,
+) -> str:
+    """Log agent execution timing for performance analysis.
+
+    Args:
+        agent_name: Name of the agent (e.g. "01-harvest", "03-content").
+        phase: Pipeline phase (e.g. "phase_1", "phase_3").
+        model: Model used (e.g. "haiku", "sonnet").
+        started_at: ISO timestamp when agent started.
+        completed_at: ISO timestamp when agent finished.
+        duration_seconds: Wall-clock seconds for the run.
+        status: Outcome (done, failed, skipped).
+        records_read: Number of records consumed.
+        records_written: Number of records produced.
+    """
+    try:
+        date = datetime.now().strftime("%Y-%m-%d")
+        result = harvest_store.log_agent_metric(
+            date=date, agent_name=agent_name, phase=phase, model=model,
+            started_at=started_at, completed_at=completed_at,
+            duration_seconds=duration_seconds, status=status,
+            records_read=records_read, records_written=records_written,
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error("kipi_log_agent_metric failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_agent_metrics(days: int = 7) -> str:
+    """Query per-agent performance averages over N days.
+
+    Args:
+        days: Number of days to look back (default 7).
+    """
+    try:
+        return json.dumps(harvest_store.query_agent_metrics(days))
+    except Exception as e:
+        logger.error("kipi_agent_metrics failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_session_handoff(run_id: str, phases_completed: str, notes: str = "") -> str:
+    """Save a session handoff for resume. Called when context is running low.
+
+    Args:
+        run_id: Current harvest run ID.
+        phases_completed: Comma-separated list of completed phases.
+        notes: Free-text notes for the next session.
+    """
+    try:
+        date = datetime.now().strftime("%Y-%m-%d")
+        result = harvest_store.save_handoff(date, run_id, phases_completed, notes)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error("kipi_session_handoff failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+# ============================================================
 # Morning Init Tools (4 tools — deterministic Python)
 # ============================================================
 

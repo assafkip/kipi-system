@@ -278,6 +278,24 @@ class TestMorningInit:
         assert result["energy"]["max_hitlist"] == 999
         assert result["energy"]["skip_deep_focus"] is False
 
+    def test_morning_init_detects_handoff(self, paths):
+        from kipi_mcp.harvest_store import HarvestStore
+        store = HarvestStore(db_path=paths.output_dir / "test.db")
+        store.init_db()
+        today = datetime.now().strftime("%Y-%m-%d")
+        store.save_handoff(
+            date=today, run_id=f"{today}-001",
+            phases_completed="phase_0,phase_1",
+            notes="Stopped mid-harvest",
+        )
+        _create_file(paths.canonical_dir / "talk-tracks.md", "x" * 100)
+        _create_file(paths.canonical_dir / "objections.md", "x" * 100)
+        _create_file(paths.my_project_dir / "relationships.md", "x" * 100)
+        result = morning_init(paths, energy_level=3, harvest_store=store)
+        assert result["resume_from"] is not None
+        assert result["resume_from"]["phases_completed"] == "phase_0,phase_1"
+        assert result["resume_from"]["notes"] == "Stopped mid-harvest"
+
 
 # ── Gate Check ──
 

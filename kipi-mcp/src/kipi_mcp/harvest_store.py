@@ -75,12 +75,34 @@ _SCHEMA = [
         last_error TEXT,
         completed_at TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS agent_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        run_id TEXT,
+        agent_name TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        model TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        duration_seconds REAL,
+        records_read INTEGER DEFAULT 0,
+        records_written INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'running'
+    )""",
+    """CREATE TABLE IF NOT EXISTS session_handoffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        phases_completed TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL
+    )""",
 ]
 
 _TABLE_NAMES = [
     "harvest_runs", "source_runs", "harvest_records",
     "harvest_bodies", "source_cursors", "apify_budget",
-    "notion_write_queue",
+    "notion_write_queue", "agent_metrics", "session_handoffs",
 ]
 
 
@@ -570,5 +592,107 @@ class HarvestStore:
             )
             conn.commit()
             return {"marked_failed": cur.rowcount}
+        finally:
+            conn.close()
+
+    # ── Agent Metrics ──
+
+    def log_agent_metric(
+        self, date: str, agent_name: str, phase: str, model: str = "",
+        started_at: str = "", completed_at: str = "", duration_seconds: float = 0,
+        records_read: int = 0, records_written: int = 0, status: str = "done",
+        run_id: str = "",
+    ) -> dict:
+        """Log a single agent execution metric."""
+        conn = self._connect()
+        try:
+            if not started_at:
+                started_at = datetime.now().isoformat()
+            cur = conn.execute(
+                "INSERT INTO agent_metrics "
+                "(date, run_id, agent_name, phase, model, started_at, completed_at, "
+                "duration_seconds, records_read, records_written, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (date, run_id, agent_name, phase, model, started_at, completed_at,
+                 duration_seconds, records_read, records_written, status),
+            )
+            conn.commit()
+            return {
+                "id": cur.lastrowid,
+                "agent_name": agent_name,
+                "phase": phase,
+                "status": status,
+            }
+        finally:
+            conn.close()
+
+    def query_agent_metrics(self, days: int = 7) -> dict:
+        """Query agent metrics for the last N days.
+
+        Returns per-agent averages: avg_duration, total_runs, model, phase.
+        """
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT agent_name, phase, model, "
+                "AVG(duration_seconds) as avg_duration, "
+                "COUNT(*) as total_runs, "
+                "SUM(records_read) as total_read, "
+                "SUM(records_written) as total_written "
+                "FROM agent_metrics WHERE date >= ? "
+                "GROUP BY agent_name",
+                (cutoff,),
+            ).fetchall()
+            return {
+                "days": days,
+                "agents": [
+                    {
+                        "agent_name": r["agent_name"],
+                        "phase": r["phase"],
+                        "model": r["model"],
+                        "avg_duration": round(r["avg_duration"] or 0, 2),
+                        "total_runs": r["total_runs"],
+                        "total_read": r["total_read"] or 0,
+                        "total_written": r["total_written"] or 0,
+                    }
+                    for r in rows
+                ],
+            }
+        finally:
+            conn.close()
+
+    # ── Session Handoffs ──
+
+    def save_handoff(self, date: str, run_id: str, phases_completed: str, notes: str = "") -> dict:
+        """Save a session handoff for resume."""
+        conn = self._connect()
+        try:
+            now = datetime.now().isoformat()
+            cur = conn.execute(
+                "INSERT INTO session_handoffs (date, run_id, phases_completed, notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (date, run_id, phases_completed, notes, now),
+            )
+            conn.commit()
+            return {
+                "id": cur.lastrowid,
+                "date": date,
+                "run_id": run_id,
+                "phases_completed": phases_completed,
+                "created_at": now,
+            }
+        finally:
+            conn.close()
+
+    def get_handoff(self, date: str) -> dict | None:
+        """Get today's handoff if exists."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM session_handoffs WHERE date = ? ORDER BY created_at DESC LIMIT 1",
+                (date,),
+            ).fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()

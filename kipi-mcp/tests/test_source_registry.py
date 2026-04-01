@@ -306,3 +306,61 @@ class TestVariableResolution:
         m = SourceManifest(**data)
         resolved = registry.resolve_variables(m, env={})
         assert resolved.http.headers["Authorization"] == "Bearer "
+
+
+# ---------------------------------------------------------------------------
+# Schema versioning
+# ---------------------------------------------------------------------------
+
+class TestSchemaVersioning:
+    def test_schema_version_defaults_to_1(self):
+        data = _http_yaml()
+        m = SourceManifest(**data)
+        assert m.schema_version == 1
+        assert m.version_mismatch is False
+
+    def test_version_mismatch_flagged(self, tmp_path):
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        plugin_data = _http_yaml()
+        plugin_data["schema_version"] = 2
+        _write_yaml(plugin_dir / "linkedin.yaml", plugin_data)
+
+        instance_data = _http_yaml()
+        instance_data["schema_version"] = 1
+        _write_yaml(instance_dir / "linkedin.yaml", instance_data)
+
+        registry = SourceRegistry(
+            plugin_sources_dir=plugin_dir,
+            instance_sources_dir=instance_dir,
+        )
+        sources = registry.load_all()
+        assert len(sources) == 1
+        assert sources[0].version_mismatch is True
+
+    def test_same_version_no_flag(self, tmp_path):
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        plugin_data = _http_yaml()
+        plugin_data["schema_version"] = 1
+        _write_yaml(plugin_dir / "linkedin.yaml", plugin_data)
+
+        instance_data = _http_yaml()
+        instance_data["schema_version"] = 1
+        instance_data["schedule"] = {"frequency": "monday"}
+        _write_yaml(instance_dir / "linkedin.yaml", instance_data)
+
+        registry = SourceRegistry(
+            plugin_sources_dir=plugin_dir,
+            instance_sources_dir=instance_dir,
+        )
+        sources = registry.load_all()
+        assert len(sources) == 1
+        assert sources[0].version_mismatch is False
+        assert sources[0].schedule.frequency == "monday"
