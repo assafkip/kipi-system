@@ -14,6 +14,7 @@ Read `{{AGENTS_DIR}}/_cadence-config.md` for posting frequency. Only draft conte
 
 ## Reads
 
+- `{{QROOT}}/skills/founder-voice/SKILL.md` -- voice rules for all drafted copy (READ FIRST)
 - Web search results (fetch live)
 - `{{CONFIG_DIR}}/canonical/market-intelligence.md` - buyer language, category signals (read before drafting)
 

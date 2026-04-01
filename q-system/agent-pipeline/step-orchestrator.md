@@ -15,8 +15,8 @@ Paths, bus directory creation, and cleanup are handled by `kipi_morning_init`.
 
 1. **Read each agent's .md file before spawning.** Use Read tool, extract body after YAML `---`, replace template variables ({{DATE}}, {{BUS_DIR}}, {{CONFIG_DIR}}, {{DATA_DIR}}, {{STATE_DIR}}, {{AGENTS_DIR}}), pass as Agent prompt. Never paraphrase.
 2. **Model allocation** -- use the `model` field from YAML frontmatter:
-   - **haiku**: harvest agents (chrome/mcp prompts), simple checks (03-publish-reconciliation, 03-prospect-pipeline, 04-marketing-health, 05-loop-review, 06-client-deliverables, 07b-outreach-queue, 08-visual-verify, 09-notion-push, 10-daily-checklists)
-   - **sonnet**: analysis + content (01c-copy-diff, 01d-graph-kb, 02-x-activity, 02-meeting-prep, 02-warm-intro-match, 03-content-intel, 03d-outbound-detection, 04-founder-brand-post, 04-post-visuals, 04-signals-content, 04-value-routing, 05-connection-mining, 05-lead-sourcing, 05-pipeline-followup, 05-temperature-scoring, 06-compliance-check, 06-positioning-check, 00g-monthly-checks, 00h-memory-review)
+   - **haiku**: harvest agents (chrome/mcp prompts), simple checks (03-publish-reconciliation, 03-prospect-pipeline, 04-marketing-health, 05-loop-review, 05-temperature-scoring, 06-client-deliverables, 07b-outreach-queue, 08-visual-verify, 09-notion-push, 10-daily-checklists)
+   - **sonnet**: analysis + content (01c-copy-diff, 01d-graph-kb, 02-x-activity, 02-meeting-prep, 02-warm-intro-match, 03-content-intel, 03d-outbound-detection, 04-founder-brand-post, 04-post-visuals, 04-signals-content, 04-value-routing, 05-connection-mining, 05-lead-sourcing, 05-pipeline-followup, 06-compliance-check, 06-positioning-check, 00g-monthly-checks, 00h-memory-review)
    - **opus**: synthesis only (05-engagement-hitlist, 07-synthesize)
 3. Launch independent agents in ONE message (parallel). Wait when phase depends on previous output.
 4. Log each phase completion via `log_step` MCP tool with step_id format: `phase_N_description`.
@@ -96,6 +96,8 @@ Log: `log_step(date, "phase_2_analysis", "done")`
   - 04-marketing-health.md (haiku) -- checks asset freshness, cadence progress
   - IF Wednesday: 04-founder-brand-post.md (sonnet) -- weekly founder brand post
 
+After content agents complete, run `kipi_voice_lint` MCP tool on each drafted post in signals.json and founder-brand-post.json. If violations found, log them but don't block — the founder sees violations in the schedule.
+
 Log: `log_step(date, "phase_3_content", "done")`
 
 ### Phase 4: Pipeline (5-7 parallel, then 1 sequential)
@@ -110,6 +112,8 @@ Launch parallel:
 
 THEN sequential:
 - 05-engagement-hitlist.md (opus) -- reads all Phase 4 outputs + harvest data, writes hitlist.json
+
+After hitlist completes, run `kipi_voice_lint` on each copy block in hitlist.json. Log violations.
 
 Log: `log_step(date, "phase_4_pipeline", "done")`
 

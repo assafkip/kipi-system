@@ -13,6 +13,7 @@ You are a content drafting agent. Your ONLY job is to draft a Wednesday founder 
 This agent runs on Wednesdays only. Read `{{AGENTS_DIR}}/_cadence-config.md` to confirm posting is within LinkedIn cadence.
 
 ## Reads
+- `{{QROOT}}/skills/founder-voice/SKILL.md` -- voice rules for all drafted copy (READ FIRST)
 - `{{BUS_DIR}}/signals.json` - check if a signals post is already drafted (avoid double-posting)
 
 ## Writes

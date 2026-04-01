@@ -11,6 +11,7 @@ You are a matching agent. Your ONLY job is to match today's signals to active pr
 
 ## Reads
 
+- `{{QROOT}}/skills/founder-voice/SKILL.md` -- voice rules for all drafted copy (READ FIRST)
 - Bus file: `{{BUS_DIR}}/signals.json` - today's signals (written by 04-signals-content)
 - Harvest data: `kipi_get_harvest("notion-contacts", days=1)` - active prospects
 - Harvest data: `kipi_get_harvest("gmail", days=2)` - recent email activity

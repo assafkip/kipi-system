@@ -1,8 +1,8 @@
 ---
 name: 05-temperature-scoring
 description: "Pipeline/scoring agent for the morning pipeline"
-model: sonnet
-maxTurns: 50
+model: haiku
+maxTurns: 15
 ---
 
 # Agent: Temperature Scoring

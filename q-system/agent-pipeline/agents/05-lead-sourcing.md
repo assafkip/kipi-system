@@ -11,6 +11,7 @@ You are a lead sourcing agent. Your ONLY job is to run Apify actors across 4 pla
 
 ## Reads
 
+- `{{CONFIG_DIR}}/voice/voice-dna.md` -- founder's voice profile (for pain language matching)
 - Harvest data: `kipi_get_harvest("x-lead-search", days=1, include_body=true)` (X/Twitter lead search results)
 - Harvest data: `kipi_get_harvest("reddit-leads", days=1, include_body=true)` (Reddit lead search results)
 - `{{DATA_DIR}}/my-project/current-state.md` - your target buyer personas and pain categories

@@ -11,6 +11,8 @@ You are a copy generation agent. Your job is to produce a copy-paste-ready engag
 
 ## Reads
 
+- `{{QROOT}}/skills/founder-voice/SKILL.md` -- voice rules for all drafted copy (READ FIRST)
+- `{{QROOT}}/skills/audhd-executive-function/SKILL.md` -- friction-ordering, copy-paste-only, energy tags (READ FIRST)
 - Bus file: `{{BUS_DIR}}/temperature.json` - prospect temperature scores
 - Bus file: `{{BUS_DIR}}/leads.json` - qualified leads from today's sourcing
 - Harvest data: `kipi_get_harvest("linkedin-feed", days=2, include_body=true)` - recent posts from tracked prospects
