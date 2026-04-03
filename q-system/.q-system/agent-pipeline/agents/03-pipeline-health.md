@@ -1,7 +1,7 @@
 ---
 name: 03-pipeline-health
 description: "Analyze pipeline state from Notion data and flag stale or at-risk relationships"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

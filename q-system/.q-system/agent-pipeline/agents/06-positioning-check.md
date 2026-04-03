@@ -1,7 +1,7 @@
 ---
 name: 06-positioning-check
 description: "Audit talk track freshness, objection signal counts, and detect canonical file drift"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

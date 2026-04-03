@@ -1,7 +1,7 @@
 ---
 name: 00-session-bootstrap
 description: "Recover state from previous session including action cards, missed debriefs, and loop escalation"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 

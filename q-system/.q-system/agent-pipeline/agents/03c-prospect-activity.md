@@ -1,7 +1,7 @@
 ---
 name: 03c-prospect-activity
 description: "Check top prospects' recent LinkedIn activity, write to disk"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

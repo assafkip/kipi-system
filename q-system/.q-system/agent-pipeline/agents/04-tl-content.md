@@ -1,7 +1,7 @@
 ---
 name: 04-tl-content
 description: "Draft standalone thought leadership LinkedIn post and X companion (Tue/Thu only)"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

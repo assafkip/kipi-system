@@ -1,7 +1,7 @@
 ---
 name: 01-data-ingest
 description: "Fetch Calendar, Gmail, and Notion data in one agent, write all three to disk"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: 09-notion-push
 description: "Push today's action items, value-drops, and loop closures to Notion Actions DB"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

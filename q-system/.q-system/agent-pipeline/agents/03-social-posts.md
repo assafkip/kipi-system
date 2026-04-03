@@ -1,7 +1,7 @@
 ---
 name: 03-social-posts
 description: "Monitor social feeds and save full post data to disk"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

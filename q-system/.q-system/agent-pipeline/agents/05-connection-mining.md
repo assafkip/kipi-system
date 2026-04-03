@@ -1,7 +1,7 @@
 ---
 name: 05-connection-mining
 description: "Scan LinkedIn 1st-degree connections for ICP matches and draft outreach DMs"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

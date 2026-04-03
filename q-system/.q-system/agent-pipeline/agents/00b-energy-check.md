@@ -1,7 +1,7 @@
 ---
 name: 00b-energy-check
 description: "Ask founder for energy level 1-5, write compression settings to bus"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

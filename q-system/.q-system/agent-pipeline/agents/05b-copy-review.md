@@ -1,7 +1,7 @@
 ---
 name: 05b-copy-review
 description: "Adversarial cold-read of engagement copy, flag AI-generated or generic language"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

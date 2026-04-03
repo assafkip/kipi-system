@@ -1,7 +1,7 @@
 ---
 name: 03-dp-pipeline
 description: "Read Notion pipeline data, count design partners by status, flag auto-close candidates"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

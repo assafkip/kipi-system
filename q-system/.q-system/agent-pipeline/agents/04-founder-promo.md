@@ -1,7 +1,7 @@
 ---
 name: 04-founder-promo
 description: "Draft a weekly promo post about building in public with AI (Wednesday only)"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

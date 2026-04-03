@@ -1,7 +1,7 @@
 ---
 name: 04-founder-brand-post
 description: "Draft a Wednesday founder brand post about building in public as an AI-native founder"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: 03-prospect-pipeline
 description: "Count prospects by status, compute touch recency, and flag auto-close candidates"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

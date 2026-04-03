@@ -1,7 +1,7 @@
 ---
 name: 03-social-dms
 description: "Read direct messages and connection accepts from social platforms"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

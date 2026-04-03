@@ -4,6 +4,11 @@
 
 > This file is populated during first-run setup. The presence of {{SETUP_NEEDED}} triggers the setup wizard.
 
+## Archetype
+- **Type:** (gtm-founder / product-founder / content-creator / operator / minimal)
+- **Label:**
+- **Detected:** (date)
+
 ## Identity
 - **Name:**
 - **Role:**
@@ -22,6 +27,14 @@
 - **Writing style:** (direct, casual, academic, etc.)
 - **Neurodivergent accommodations:** (ADHD, ASD, AUDHD, none)
 - **AUDHD mode enabled:** false
+
+## Connected Tools
+- **Notion:** not connected
+- **Google Calendar:** not connected
+- **Gmail:** not connected
+- **Apify:** not connected
+- **Chrome/LinkedIn:** not connected
+- **Gamma:** not connected
 
 ## Preferences
 - **Timezone:**

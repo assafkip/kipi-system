@@ -51,6 +51,14 @@
       "instance_q_dir": "q-consult",
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "ktlyst-website",
+      "path": "/Users/assafkip/Desktop/ktlyst-website",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "excluded": [

@@ -1,7 +1,7 @@
 ---
 name: 02-meeting-prep
 description: "Prepare context and talk points for today's meetings using calendar and CRM data"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

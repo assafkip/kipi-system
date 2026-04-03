@@ -1,7 +1,7 @@
 ---
 name: 01b-content-metrics
 description: "Scrape LinkedIn analytics for recent posts, write metrics to disk"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

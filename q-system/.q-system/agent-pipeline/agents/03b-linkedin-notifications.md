@@ -1,7 +1,7 @@
 ---
 name: 03b-linkedin-notifications
 description: "Scrape LinkedIn notifications for behavioral signals, write to disk"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: 01-gmail-pull
 description: "Fetch and flag recent emails from the last 48 hours via Gmail MCP"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: 03-content-intel
 description: "Weekly multi-platform content engagement analysis and pattern extraction (Mondays only)"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

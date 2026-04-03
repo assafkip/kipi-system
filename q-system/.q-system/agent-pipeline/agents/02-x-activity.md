@@ -1,7 +1,7 @@
 ---
 name: 02-x-activity
 description: "Pull founder X/Twitter posts, engagement metrics, and scan monitored accounts for reply opportunities"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

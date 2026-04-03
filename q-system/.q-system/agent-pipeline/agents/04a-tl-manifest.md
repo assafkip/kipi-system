@@ -1,7 +1,7 @@
 ---
 name: 04a-tl-manifest
 description: "Generate manifest of what to write for TL content, present to founder for approval before drafting"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

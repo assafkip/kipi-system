@@ -29,5 +29,11 @@ q-system/memory/working/*
 !q-system/memory/working/.gitkeep
 !q-system/memory/working/predictions.jsonl
 
+# Generated sites
+sites/
+
+# Bus data (daily pipeline, ephemeral)
+q-system/.q-system/agent-pipeline/bus/
+
 # Node
 node_modules/

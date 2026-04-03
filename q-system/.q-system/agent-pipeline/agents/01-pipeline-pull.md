@@ -1,7 +1,7 @@
 ---
 name: 01-pipeline-pull
 description: "Fetch data from external pipeline API and write to disk"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

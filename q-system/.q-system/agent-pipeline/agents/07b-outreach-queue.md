@@ -1,7 +1,7 @@
 ---
 name: 07b-outreach-queue
 description: "Merge all pending outreach into a single prioritized, deduplicated queue"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
