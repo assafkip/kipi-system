@@ -23,7 +23,6 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - `.claude/agents/` - Custom agent definitions (preflight, data-ingest, synthesizer, etc.)
 - `.claude/output-styles/` - Founder OS output style (always-on voice baseline)
 - `.claude/rules/` - Path-scoped instruction files (13 rules)
-- `.claude/skills/` - Empty (skills distributed via marketplace plugins)
 - `q-system/` - Core operating system
   - `.q-system/agent-pipeline/` - 9-phase morning routine (50+ agent prompts)
   - `canonical/` - Source of truth files (positioning, objections, talk tracks)

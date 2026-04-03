@@ -11,9 +11,20 @@ This project follows a strict directory layout aligned with Claude Code document
 ```
 kipi-system/                          # Project root (skeleton/template repo + marketplace)
 ├── CLAUDE.md                         # Root instructions
+├── README.md                         # Project overview
+├── INSTANCE-SETUP.md                 # Setup guide for new instances
+├── ARCHITECTURE.md                   # System architecture overview
+├── SETUP.md                          # Detailed setup reference
+├── CONTRIBUTE.md                     # Contribution guidelines
+├── UPDATE.md                         # Update instructions for instances
 ├── .mcp.json                         # MCP server config (project scope)
 ├── .gitignore                        # Standard ignores
 ├── kipi                              # CLI entry point (bash)
+├── kipi-new-instance.sh              # Creates new instances (used by kipi new)
+├── kipi-update.sh                    # Pulls updates to instances (used by kipi update)
+├── kipi-push-upstream.sh             # Pushes generic changes back (used by kipi push)
+├── build-template-repo.sh            # Builds clean template for GitHub fork users
+├── validate-separation.sh            # Validation harness (used by kipi check)
 ├── instance-registry.json            # Registered project instances
 ├── skill-manifest.json               # Plugin group assignments per instance
 ├── settings-template.json            # Template for new instances
@@ -39,6 +50,9 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │           ├── brand/
 │           └── design/
 │
+├── memory/
+│   └── MEMORY.md                     # Auto-memory index (first 200 lines load at session start)
+│
 ├── .claude/                          # Claude Code configuration
 │   ├── settings.json                 # Shared settings (committed)
 │   ├── settings.local.json           # Personal overrides (GITIGNORED)
@@ -59,9 +73,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │        folder-structure, marketing-system, morning-pipeline,
 │   │        security, sycophancy, token-discipline, voice-enforcement)
 │   │
-│   ├── skills/                       # Empty (skills in plugins/)
-│   │
-│   └── plans/                        # Plan mode output (auto-created)
+│   └── plans/                        # Plan mode output (auto-created, GITIGNORED)
 │       └── *.md
 │
 ├── q-system/                         # Core operating system
@@ -159,9 +171,13 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │       │   └── validators/           # Live connection tests
 │       │
 │       └── agent-pipeline/           # Morning routine agents
+│           ├── BUS-PROTOCOL.md       # Bus envelope, naming, validation, versioning
 │           ├── orchestrator-design.md
 │           ├── orchestrator.sh
 │           ├── review-pipeline.sh
+│           ├── schemas/              # JSON Schema files for bus contracts (18 files)
+│           │   ├── _bus-envelope.schema.json
+│           │   └── <bus-file>.schema.json
 │           ├── agents/               # Agent prompt files (52+)
 │           │   ├── _auto-fail-checklist.md
 │           │   ├── _cadence-config.md

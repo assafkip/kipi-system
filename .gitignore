@@ -26,8 +26,9 @@ q-system/output/marketing/linkedin/*
 # SQLite databases (generated at runtime)
 *.db
 
-# Generated sites
+# Generated sites and build output
 sites/
+template-repo/
 
 # Bus data (daily pipeline, ephemeral)
 q-system/.q-system/agent-pipeline/bus/
