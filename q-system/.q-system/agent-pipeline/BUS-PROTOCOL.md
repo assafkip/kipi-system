@@ -60,7 +60,7 @@ bus/
 | Phase | Agent | Writes | Reads |
 |-------|-------|--------|-------|
 | 0 | 00-preflight | preflight.json | (tools only) |
-| 0 | 00b-energy-check | energy.json | (founder input) |
+| 0 | (energy check moved to session-bootstrap) | - | - |
 | 0 | 00-session-bootstrap | bootstrap.json | last-handoff.md |
 | 0 | canonical-digest.py | canonical-digest.json | canonical/ files |
 | 1 | 01-calendar-pull | calendar.json | (Calendar API) |
@@ -68,8 +68,8 @@ bus/
 | 1 | 01-notion-pull | notion.json | (Notion API) |
 | 2 | 02-meeting-prep | meeting-prep.json | calendar.json, notion.json |
 | 2 | 02-warm-intro-match | warm-intros.json | vc-pipeline.json, notion.json |
-| 3 | 03-linkedin-posts | linkedin-posts.json | (Chrome/Apify) |
-| 3 | 03-linkedin-dms | linkedin-dms.json | (Chrome/Apify) |
+| 3 | 03-linkedin-posts | linkedin-posts.json | (Chrome) |
+| 3 | 03-linkedin-dms | linkedin-dms.json | (Chrome) |
 | 3 | 03-prospect-pipeline | prospect-pipeline.json | notion.json |
 | 4 | 04-signals-content | signals.json | linkedin-posts.json, x-activity.json |
 | 5 | temperature-scoring.py | temperature.json | notion.json, linkedin-*, gmail.json |

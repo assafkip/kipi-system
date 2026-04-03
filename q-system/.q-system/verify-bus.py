@@ -298,6 +298,9 @@ def verify(date, phase):
                 data = json.load(fh)
             if "error" in data:
                 results.append(f"  WARN [required] {f}: has error key ({data['error']})")
+            elif "platform_errors" in data and data["platform_errors"]:
+                platforms = ", ".join(data["platform_errors"].keys())
+                results.append(f"  WARN [required] {f}: platform_errors for {platforms}")
             elif f in checks and not checks[f](data):
                 results.append(f"  FAIL [required] {f}: structure check failed")
                 all_pass = False

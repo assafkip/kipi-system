@@ -64,7 +64,7 @@ Same as CLI - full local access. Friendlier UI than terminal.
 
 **Fallback for unavailable servers:**
 - If Notion MCP isn't available as built-in and custom server fails: use local files for CRM
-- If Apify fails: skip automated research, manual LinkedIn lookup
+- If Apify fails: skip X/Twitter scraping, Chrome fallback available
 - If any server fails: the system works without it, just with reduced functionality
 
 ### Scenario 2: Admin Pre-Configures (before handoff)

@@ -14,7 +14,6 @@ Exit 1 = error
 
 import json
 import os
-import re
 import sys
 from datetime import datetime, timedelta
 
@@ -59,26 +58,25 @@ def read_bus_file(bus_dir, filename):
 
 
 def parse_cadence_config():
-    """Parse auto-close and timeout thresholds from _cadence-config.md."""
+    """Parse auto-close and timeout thresholds from _cadence-config.json (structured).
+    Falls back to hardcoded defaults if file missing."""
     config = {
         "dm_timeout_days": 14,
         "auto_close_days": 21,
         "auto_close_touches": 3,
     }
-    path = os.path.join(AGENTS_DIR, "_cadence-config.md")
+    json_path = os.path.join(AGENTS_DIR, "_cadence-config.json")
     try:
-        with open(path) as f:
-            content = f.read()
-        # DM follow-up timeout
-        m = re.search(r'DM follow-up timeout.*?(\d+)\s*days', content, re.IGNORECASE)
-        if m:
-            config["dm_timeout_days"] = int(m.group(1))
-        # Auto-close
-        m = re.search(r'Auto-close.*?(\d+)\s*days.*?(\d+)\+?\s*touches', content, re.IGNORECASE)
-        if m:
-            config["auto_close_days"] = int(m.group(1))
-            config["auto_close_touches"] = int(m.group(2))
-    except FileNotFoundError:
+        with open(json_path) as f:
+            data = json.load(f)
+        limits = data.get("platform_limits", {})
+        if "auto_cooling_days" in limits:
+            config["dm_timeout_days"] = limits["auto_cooling_days"]
+        if "auto_pass_days" in limits:
+            config["auto_close_days"] = limits["auto_pass_days"]
+        if "auto_pass_min_touches" in limits:
+            config["auto_close_touches"] = limits["auto_pass_min_touches"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass
     return config
 

@@ -6,7 +6,12 @@ set -euo pipefail
 # Exit 0 always
 
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-.}"
-OUTPUT_DIR="$PROJ_DIR/q-system/output"
+# Auto-detect: subtree instances have q-system/q-system/, skeleton has q-system/
+if [ -d "$PROJ_DIR/q-system/q-system/output" ] || [ -d "$PROJ_DIR/q-system/q-system/canonical" ]; then
+  OUTPUT_DIR="$PROJ_DIR/q-system/q-system/output"
+else
+  OUTPUT_DIR="$PROJ_DIR/q-system/output"
+fi
 TODAY=$(date '+%Y-%m-%d')
 LOG_FILE="$OUTPUT_DIR/session-effort-${TODAY}.log"
 

@@ -18,25 +18,38 @@ This file lives at the root of the user's project directory. It tells Claude Cod
 **Add servers one at a time** as the user connects each integration. Never write all servers at once - only add what's been successfully connected and tested.
 
 #### Notion
+
+**Preferred (claude.ai/code users):** Connect Notion via Claude.ai integrations panel. No `.mcp.json` entry needed -- the cloud integration provides `mcp__claude_ai_Notion__*` tools with full read/write support.
+
+**CLI-only fallback** (if cloud integration unavailable):
 ```json
 "notion_api": {
-  "command": "notion-mcp-server",
-  "args": [],
+  "command": "npx",
+  "args": ["-y", "@notionhq/notion-mcp-server"],
   "env": {
     "NOTION_TOKEN": "[user's token]"
   }
 }
 ```
-**Prerequisite:** `npm install -g notion-mcp-server`
+**Prerequisite:** Node.js + npm installed. Get token from https://www.notion.so/my-integrations
 
-#### Apify
+#### Reddit MCP (no auth needed)
+```json
+"reddit": {
+  "command": "uvx",
+  "args": ["reddit-no-auth-mcp-server"]
+}
+```
+**Prerequisite:** Python + uv installed (`pip install uv` or `brew install uv`)
+
+#### Apify (X/Twitter only)
 ```json
 "apify": {
   "command": "npx",
   "args": ["-y", "@apify/actors-mcp-server@0.9.10"],
   "env": {
     "APIFY_TOKEN": "[user's token]",
-    "TOOLS": "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"
+    "TOOLS": "actors,curious_coder/twitter-scraper"
   }
 }
 ```
@@ -69,7 +82,9 @@ This file lives at the root of the user's project directory. It tells Claude Cod
 ```
 **Prerequisite:** `npm install -g google-calendar-mcp` + Google Cloud project with Calendar API + OAuth credentials file
 
-#### Reddit
+#### Reddit (alternative)
+
+**Note:** The primary Reddit config is the no-auth server above (via uvx). This is an alternative if uvx is not available:
 ```json
 "reddit": {
   "command": "npx",
@@ -121,45 +136,35 @@ For these, walk the user through the Claude.ai settings UI. No code or JSON need
 
 ### 3. `my-project/notion-ids.md` (Notion database IDs)
 
-After CRM setup, save all database IDs:
+After CRM setup, save database IDs. Which databases exist depends on archetype (see setup-flow.md Step 7):
 
 ```markdown
 # Notion Database IDs
 
-## CRM
+## CRM (GTM founders / operators)
 - Contacts: [database_id]
 - Interactions: [database_id]
 - Actions: [database_id]
 - Pipeline: [database_id]
-
-## Content
 - Content Pipeline: [database_id]
-- Editorial Calendar: [database_id]
-- Asset Library: [database_id]
 
-## Other
-- LinkedIn Tracker: [database_id]
+## CRM (product founders)
+- Contacts: [database_id]
+- Interactions: [database_id]
+- Actions: [database_id]
+- Content Pipeline: [database_id]
+
+## CRM (content creators)
+- Contacts: [database_id]
+- Content Pipeline: [database_id]
+- Actions: [database_id]
 ```
 
-### 4. `my-project/connected-tools.md` (connection status tracker)
+Only include sections for databases that were actually created. Delete unused sections.
 
-Create this file during setup and update it whenever a tool is connected or disconnected:
+### 4. Connection status tracking
 
-```markdown
-# Connected Tools
-
-Last updated: [date]
-
-## Connected
-- [tool]: connected [date], status: active
-
-## Not Connected
-- [tool]: skipped during setup, reason: [user choice / not needed for archetype]
-
-## Connection History
-- [date]: Connected [tool]
-- [date]: Skipped [tool] (user chose to skip)
-```
+Connection status is tracked in `my-project/founder-profile.md` under the `## Connected Tools` section. Update that section when tools are connected or disconnected. Do NOT create a separate `connected-tools.md` file.
 
 ## How to Write .mcp.json
 
@@ -177,11 +182,15 @@ Same approach - write `.mcp.json` to the project root. Claude Code CLI reads it 
 
 ### Environment Variables vs. Hardcoded Tokens
 
-**Preferred approach:** Store tokens directly in `.mcp.json` for simplicity. The file is in the user's private repo.
+**Preferred approach:** Use `${ENV_VAR}` references in `.mcp.json` and store actual tokens in environment variables or `.env` files that are gitignored. This follows the project's security rules (see `.claude/rules/security.md`).
 
-**More secure approach:** Use `${ENV_VAR}` references and tell the user to set environment variables. Only recommend this if the user asks about security or if the repo might become public.
+Tell the user:
 
-> "Your access codes are stored in your project settings. Since this is your private repo, they're safe there. If you ever make this repo public, let me know and we'll move them to a more secure location."
+> "I'll save your connection settings so they load automatically. Your access codes will be stored separately from the project files so they don't accidentally get shared."
+
+**For CLI/Desktop users:** Store tokens in `~/.zshrc`, `~/.bashrc`, or a `.env` file in the project root (already gitignored).
+
+**For claude.ai/code users:** Tokens in `.mcp.json` are stored in the user's private project. This is acceptable since the file is not committed to a shared repo. But if the repo might become public, use `${ENV_VAR}` references.
 
 ## Build Order
 
@@ -189,8 +198,8 @@ When connecting multiple tools, always build in this order:
 1. Notion (CRM depends on it)
 2. Google Calendar (morning routine needs it)
 3. Gmail (follow-ups need it)
-4. Apify (research needs it)
-5. Chrome/LinkedIn (engagement needs Apify data first)
+4. Chrome/LinkedIn (engagement, profiles, posts, DMs)
+5. Apify (X/Twitter scraping, optional)
 6. Gamma (nice to have, always last)
 
 ## Validation After Building
@@ -199,11 +208,11 @@ After writing any config file:
 1. Ask Claude Code to reload MCP servers (may require reopening the project)
 2. Run the matching validator from `validators/`
 3. If validation fails, check the config for typos or missing fields
-4. If validation passes, update `connected-tools.md`
+4. If validation passes, update `my-project/founder-profile.md` Connected Tools section
 
 ## Recovery
 
 If the user's config gets corrupted:
-- Read `connected-tools.md` for what should be connected
+- Read `my-project/founder-profile.md` Connected Tools section for what should be connected
 - Rebuild `.mcp.json` from scratch using the saved tokens
 - Re-run validators for each connected tool

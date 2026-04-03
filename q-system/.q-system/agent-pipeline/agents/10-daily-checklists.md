@@ -22,12 +22,12 @@ You are a Notion update agent. Your ONLY job is to refresh the Daily Actions and
 
 Read `q-system/my-project/notion-ids.md` to get the page IDs for Daily Actions and Daily Posts pages.
 
-Use `mcp__notion_api__*` tools.
+Use `mcp__claude_ai_Notion__*` tools.
 
 ### Daily Actions page (page_id from notion-ids.md: Daily Actions page)
 
-1. Use `mcp__notion_api__API-get-block-children` to read current blocks
-2. Use `mcp__notion_api__API-patch-block-children` to append today's action items as to_do blocks
+1. Use `mcp__claude_ai_Notion__notion-fetch` with the page URL to read current blocks
+2. Use `mcp__claude_ai_Notion__notion-update-page` to append today's action items as to_do blocks
 3. Each to_do block: `{"type": "to_do", "to_do": {"rich_text": [{"text": {"content": "ACTION TEXT"}}], "checked": false}}`
 4. Group by section: Quick Wins, Engagement, Connection Requests, Follow-ups
 

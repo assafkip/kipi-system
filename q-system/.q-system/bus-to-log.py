@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Bridge bus/ JSON files to morning-log.json for the audit harness."""
-import json, glob, os, sys
+import json, os, sys
 from datetime import datetime
 
+QROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
 date = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime("%Y-%m-%d")
-bus_dir = f"q-system/.q-system/agent-pipeline/bus/{date}"
-log_path = f"q-system/output/morning-log-{date}.json"
+bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
+log_path = os.path.join(QROOT, "output", f"morning-log-{date}.json")
+day_of_week = datetime.strptime(date, "%Y-%m-%d").strftime("%A").lower()
 
 if not os.path.isdir(bus_dir):
     print(f"No bus directory for {date}")
@@ -21,8 +24,8 @@ bus_to_steps = {
     "meeting-prep.json": [],
     "linkedin-posts.json": ["3_linkedin_activity"],
     "linkedin-dms.json": ["3.8_dm_check"],
-    "dp-pipeline.json": ["3.5_dp_pipeline"],
-    "signals.json": ["4_signals_linkedin", "4_x_signals", "4_x_hot_take", "4_x_bts"],
+    "prospect-pipeline.json": ["3.5_dp_pipeline"],
+    "signals.json": [],  # Day-aware mapping added below
     "value-routing.json": ["4.1_value_drops"],
     "temperature.json": ["5.8_temperature_scoring"],
     "leads.json": ["5.9_lead_sourcing"],
@@ -33,16 +36,23 @@ bus_to_steps = {
     "pipeline-followup.json": ["5.85_pipeline_followup"],
     "notion-push.json": ["9_notion_push"],
     "daily-checklists.json": ["10_daily_checklists"],
-    "kipi-promo.json": ["4_kipi_promo"],
     # Canonical digest
     "canonical-digest.json": ["0c_canonical_digest"],
-    # New agents (Sprint 1-3)
-    "content-metrics.json": ["1b_content_metrics"],
+    # Phase 1 scripts
     "copy-diffs.json": ["1c_copy_diff"],
-    "behavioral-signals.json": ["3b_behavioral_signals"],
-    "prospect-activity.json": ["3c_prospect_activity"],
-    "outreach-queue.json": ["7b_outreach_queue"],
+    # Phase 3 (Monday only)
+    "content-intel.json": ["3.7_content_intel"],
+    # Phase 6
+    "sycophancy-audit.json": ["6_sycophancy_audit"],
 }
+
+# Day-aware content step mapping for signals.json
+if day_of_week in ("monday", "wednesday", "friday"):
+    bus_to_steps["signals.json"] = ["4_signals_linkedin", "4_x_signals", "4_x_hot_take", "4_x_bts"]
+elif day_of_week in ("tuesday", "thursday"):
+    bus_to_steps["signals.json"] = ["4_tl_linkedin", "4_tl_x"]
+if day_of_week == "monday":
+    bus_to_steps["signals.json"].append("4_medium_draft")
 
 steps = {}
 now = datetime.now().strftime("%H:%M")
@@ -70,8 +80,8 @@ for bus_file, step_ids in bus_to_steps.items():
         }
 
 # Add build steps
-schedule_path = f"q-system/output/schedule-data-{date}.json"
-html_path = f"q-system/output/daily-schedule-{date}.html"
+schedule_path = os.path.join(QROOT, "output", f"schedule-data-{date}.json")
+html_path = os.path.join(QROOT, "output", f"daily-schedule-{date}.html")
 
 steps["8_briefing_output"] = {
     "status": "done" if os.path.isfile(schedule_path) else "skipped",

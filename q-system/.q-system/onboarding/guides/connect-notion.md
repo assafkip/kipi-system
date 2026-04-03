@@ -11,9 +11,9 @@ Connects your Notion workspace so Kipi can manage your contacts, pipeline, actio
 
 Before starting, determine how the user is running Kipi:
 
-**If claude.ai/code:** Check if Notion is available as a built-in Claude.ai integration first. If yes, use the Built-in path (much simpler). If not, fall back to the Token path.
+**If claude.ai/code (PREFERRED):** Use the Built-in path. This connects via `mcp__claude_ai_Notion__*` tools with full read/write support, no local server needed.
 
-**If CLI or Desktop:** Use the Token path.
+**If CLI or Desktop:** Use the Token path. This runs a local `notion-mcp-server` via `.mcp.json`.
 
 ### Built-in Path (claude.ai/code only)
 

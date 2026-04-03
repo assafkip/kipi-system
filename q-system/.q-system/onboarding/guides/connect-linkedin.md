@@ -61,7 +61,7 @@ Say:
 ## When to Recommend This
 
 - For `gtm-founder` and `content-creator` archetypes
-- Only after Apify is already connected (Apify finds the posts, Chrome engages)
+- Chrome is the primary tool for all LinkedIn data (profiles, posts, DMs, engagement)
 - Not during initial setup for `minimal` or `product-founder`
 
 ## Guardrails

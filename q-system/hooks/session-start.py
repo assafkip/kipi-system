@@ -2,11 +2,11 @@
 """
 Session Start Hook for Q Instance.
 
-Runs on the first tool use of each day (via PreToolUse hook).
+Runs on SessionStart (once per session, with daily sentinel to avoid repeats).
 Loads critical context that would otherwise be forgotten:
 1. Last session handoff (what was in progress)
 2. Yesterday's unconfirmed action cards (what was drafted but not confirmed)
-3. Overdue follow-ups from Notion state
+3. Open follow-up loops and their escalation state
 
 Uses a sentinel file to ensure it only runs once per day.
 Output goes to stdout and appears in the conversation as context.
@@ -24,6 +24,14 @@ from pathlib import Path
 def get_project_dir():
     """Find the project directory from environment or fallback."""
     return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+
+
+def get_qroot(project_dir):
+    """Auto-detect q-system root. Subtree instances have q-system/q-system/."""
+    nested = Path(project_dir) / "q-system" / "q-system" / "canonical"
+    if nested.exists():
+        return Path(project_dir) / "q-system" / "q-system"
+    return Path(project_dir) / "q-system"
 
 
 def get_sentinel_path():
@@ -46,7 +54,8 @@ def mark_ran():
 
 def load_handoff(project_dir):
     """Read last-handoff.md for prior session context."""
-    handoff_path = Path(project_dir) / "q-system" / "memory" / "last-handoff.md"
+    qroot = get_qroot(project_dir)
+    handoff_path = qroot / "memory" / "last-handoff.md"
     if not handoff_path.exists():
         return None
     content = handoff_path.read_text().strip()
@@ -57,8 +66,9 @@ def load_handoff(project_dir):
 
 def load_yesterday_cards(project_dir):
     """Read yesterday's morning log for unconfirmed action cards."""
+    qroot = get_qroot(project_dir)
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    log_path = Path(project_dir) / "q-system" / "output" / f"morning-log-{yesterday}.json"
+    log_path = qroot / "output" / f"morning-log-{yesterday}.json"
     if not log_path.exists():
         return None, yesterday
 
@@ -78,7 +88,8 @@ def load_yesterday_cards(project_dir):
 
 def load_open_loops(project_dir):
     """Read open-loops.json for loop state summary."""
-    loops_path = Path(project_dir) / "q-system" / "output" / "open-loops.json"
+    qroot = get_qroot(project_dir)
+    loops_path = qroot / "output" / "open-loops.json"
     if not loops_path.exists():
         return None
     try:
@@ -102,8 +113,9 @@ def load_open_loops(project_dir):
 
 def load_today_log(project_dir):
     """Check if today's morning routine already ran."""
+    qroot = get_qroot(project_dir)
     today = datetime.now().strftime("%Y-%m-%d")
-    log_path = Path(project_dir) / "q-system" / "output" / f"morning-log-{today}.json"
+    log_path = qroot / "output" / f"morning-log-{today}.json"
     if not log_path.exists():
         return None
     try:

@@ -53,8 +53,8 @@ if [ ! -f CLAUDE.md ]; then
 ## About
 {{DESCRIPTION}}
 
-## Founder OS (Skeleton)
-@q-system/q-system/CLAUDE.md
+## Founder OS
+@q-system/CLAUDE.md
 
 ## Conventions
 - Never produce fluff - every sentence must carry information or enable action
@@ -64,9 +64,31 @@ CLAUDE_EOF
   echo "  Created template CLAUDE.md"
 fi
 
+# Set up .claude/ directory (hooks, rules, agents, output style)
+echo "  Setting up .claude/ configuration..."
+mkdir -p .claude/agents .claude/output-styles .claude/rules
+cp "$SCRIPT_DIR/settings-template.json" .claude/settings.json
+
+# Fix hook paths: subtree nests the repo under q-system/, so q-system/hooks/ becomes q-system/q-system/hooks/
+sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' .claude/settings.json
+sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' .claude/settings.json
+
+cp "$SCRIPT_DIR"/.claude/agents/*.md .claude/agents/ 2>/dev/null || true
+cp "$SCRIPT_DIR"/.claude/output-styles/*.md .claude/output-styles/ 2>/dev/null || true
+cp "$SCRIPT_DIR"/.claude/rules/*.md .claude/rules/ 2>/dev/null || true
+
+# Set up marketplace plugins
+cp -R "$SCRIPT_DIR/.claude-plugin" .claude-plugin 2>/dev/null || true
+cp -R "$SCRIPT_DIR/plugins" plugins 2>/dev/null || true
+
+# Set up .gitignore
+cp "$SCRIPT_DIR/.gitignore" .gitignore 2>/dev/null || true
+
+echo "  .claude/ configured with hooks, rules, agents, and plugins"
+
 # Commit
 git add -A
-git commit -m "Add kipi-system skeleton as subtree"
+git commit -m "Add kipi-system skeleton as subtree with .claude config"
 
 # Register in instance-registry.json
 echo "  Registering in instance-registry.json..."

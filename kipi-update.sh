@@ -71,8 +71,11 @@ done < <(python3 -c "
 import json
 d = json.load(open('$REGISTRY'))
 for i in d['instances']:
+    if 'status' in i and i['status'].startswith('merged'):
+        continue
     t = i.get('type', 'subtree')
-    print(i['name'] + '|' + i['path'] + '|' + i['subtree_prefix'] + '|' + t)
+    prefix = i.get('subtree_prefix', 'q-system')
+    print(i['name'] + '|' + i['path'] + '|' + prefix + '|' + t)
 ")
 
 echo "=== Summary ==="
