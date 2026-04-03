@@ -49,6 +49,7 @@
   },
   "effortLevel": "thorough",
   "autoMemoryEnabled": true,
+  "cleanupPeriodDays": 30,
   "worktree": {
     "symlinkDirectories": ["node_modules", ".cache", "q-system/output"]
   },
