@@ -31,7 +31,7 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
   - `methodology/` - Debrief template and workflows
   - `output/` - Generated content, schedules, logs
   - `my-project/` - Current state, relationships, progress
-  - `memory/` - Time-stratified memory (working/weekly/monthly)
+  - `memory/` - Session state (last-handoff.md, sycophancy-log.json)
   - `hooks/` - Session lifecycle scripts (context injection, compaction recovery, effort logging)
 - `kipi` - CLI for instance management
 - `skill-manifest.json` - Plugin group assignments per instance

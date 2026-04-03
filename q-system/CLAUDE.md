@@ -99,7 +99,7 @@ Before outputting ANY factual claim about {{YOUR_PRODUCT}}:
 
 Read `memory/last-handoff.md` for prior session context. Run `/q-wrap` at end of day (auto-chains into `/q-handoff`). `/q-morning` auto-detects missed wraps.
 
-The SessionStart hook auto-injects last handoff and founder context. The PostCompact hook re-injects mode, loop count, and voice reminders after context compaction.
+The SessionStart hook auto-injects last handoff and founder context. The PostCompact hook re-injects mode, loop count, canonical positioning snapshot (current-state + talk-tracks), and voice reminders after context compaction.
 
 ## Skills and Plugins
 

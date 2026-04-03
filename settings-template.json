@@ -12,6 +12,7 @@
   },
   "outputStyle": "Founder OS",
   "autoMemoryEnabled": true,
+  "cleanupPeriodDays": 30,
   "permissions": {
     "allow": [],
     "deny": [],
