@@ -60,11 +60,11 @@ Your context window will compact automatically as it approaches limits. Do not s
 1. Read each agent's prompt file from AGENTS_DIR
 2. Replace {{DATE}} with today's date, {{BUS_DIR}} with the bus path, {{QROOT}} with project root, {{AGENTS_DIR}} with the agents directory path
 3. Spawn agents using the Agent tool with the prompt
-4. Model allocation: haiku for data pulls (00-preflight, 00-session-bootstrap, 01-*, 03b-linkedin-notifications), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
+4. Model allocation: haiku for data pulls (00-preflight, 00-session-bootstrap, 01-*), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
 5. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
 6. When a phase depends on the previous phase's output, wait for completion first
 7. After each phase, verify the expected bus/ JSON files exist before proceeding
-8. Log each phase completion via log-step.sh
+8. Log each phase completion via log-step.py
 9. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
 ## Instance Customization
@@ -128,14 +128,22 @@ THEN (can run after posts + x-activity are done):
 ### Phase 5: Pipeline (1 script + 4 agents parallel, then conditional, then 1 sequential)
 Run SCRIPT first: `python3 {{QROOT}}/.q-system/scripts/temperature-scoring.py {date}` - writes temperature.json
 THEN launch in ONE message:
-- 05-lead-sourcing.md (sonnet) - runs Apify, writes leads.json
+- 05-lead-sourcing.md (sonnet) - runs Chrome (LinkedIn) + Reddit MCP + RSS (Medium) + Apify (X only), writes leads.json
 - 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json (includes warming ladder stage advancement)
 - 05-loop-review.md (sonnet) - reads notion.json + prospect-pipeline.json, writes loop-review.json
 - 05-connection-mining.md (sonnet) - scans LinkedIn 1st-degree connections for ICP matches, writes connection-mining.json
+
+**NOTE:** lead-sourcing uses Chrome ONLY for LinkedIn search (not Reddit - Reddit uses its own MCP). connection-mining also uses Chrome for LinkedIn People Search. Both use Chrome but at different times within their own execution. The Agent tool runs them as independent sub-agents, each making sequential Chrome calls within their own flow. This is safe as long as Chrome calls don't literally overlap. If Chrome contention occurs, the orchestrator will detect it via errors in leads.json or connection-mining.json and log it.
+
 After all complete, check leads.json:
-- If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
-- If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).
-- If leads.json has results: proceed.
+- Read the `platform_errors` object (if present). Each key is a platform that failed.
+  - `linkedin` error (Chrome failed): Log failure, proceed without LinkedIn leads. Do NOT fall back to Chrome agent (Chrome was already primary).
+  - `reddit` error (Reddit MCP failed): Skip Reddit leads. Do NOT fall back to Chrome for Reddit. Log: "Reddit MCP failed, skipping Reddit leads."
+  - `medium` error (RSS failed): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet) for Medium only. Log: "RSS failed for Medium, running Chrome fallback."
+  - `x` error (Apify failed): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet) for X only. Log: "Apify failed, running Chrome fallback for X."
+- If `platform_errors` is absent or empty: all platforms succeeded, proceed.
+- If Chrome fallback also fails: proceed with whatever leads were collected from other platforms.
+- The Chrome fallback agent MERGES its results into the existing leads.json (append to qualified_leads, update run_summary counts, remove the fixed platforms from platform_errors).
 THEN:
 - 05-engagement-hitlist.md (OPUS) - reads temperature + leads + linkedin-posts + pipeline-followup + loop-review, writes hitlist.json
 
@@ -163,10 +171,10 @@ The harness independently parses decisions.md to verify the agent's pi calculati
 - This is the most expensive agent. It produces the daily schedule JSON.
 
 ### Phase 8: Build + Verify (sequential)
-1. Run: `bash q-system/marketing/templates/build-schedule.sh output/schedule-data-{date}.json output/daily-schedule-{date}.html`
+1. Run: `python3 {{QROOT}}/marketing/templates/build-schedule.py {{QROOT}}/output/schedule-data-{date}.json {{QROOT}}/output/daily-schedule-{date}.html`
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
-3. Run: `python3 q-system/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
-4. Run: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-{date}.json`
+3. Run: `python3 {{QROOT}}/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
+4. Run: `python3 {{QROOT}}/.q-system/audit-morning.py {{QROOT}}/output/morning-log-{date}.json`
 5. Show audit output to founder
 Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 
@@ -187,10 +195,12 @@ find q-system/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec 
 
 | Tool fails | Auto-fallback | Founder approval? |
 |------------|---------------|-------------------|
-| Apify | Chrome scraping (see Phase 5 lead-sourcing-chrome) | No -- auto, just log it |
-| Chrome | STOP and report | Yes |
-| Notion `mcp__notion_api__*` | curl with API token | No -- auto, just log it |
-| `mcp__claude_ai_Notion__*` | **NEVER USE for ASK data** -- wrong workspace | N/A |
+| Chrome (LinkedIn lead sourcing) | Skip LinkedIn leads. No fallback. | No -- just log it |
+| Reddit MCP | Skip Reddit scraping. No Chrome fallback. | No -- just log it |
+| RSS feeds (Medium) | Chrome scraping via 05-lead-sourcing-chrome | No -- auto, just log it |
+| Apify (X/Twitter only) | Chrome scraping via 05-lead-sourcing-chrome | No -- auto, just log it |
+| Chrome (DMs, interactive) | STOP and report | Yes |
+| Notion `mcp__claude_ai_Notion__*` | STOP and report | Yes |
 | Gmail | Skip email-dependent steps | Note in briefing |
 | Calendar | Skip meeting prep | Note in briefing |
 
@@ -200,5 +210,5 @@ Read Notion IDs from `q-system/my-project/notion-ids.md`. Never hardcode IDs in 
 
 ## Catastrophic Fallback
 
-If the agent pipeline fails catastrophically, fall back to the monolithic step-by-step
-flow using step-loader.sh. The old steps still exist in steps/.
+If the agent pipeline fails catastrophically, stop and report diagnostics to the founder.
+Include which phase failed, the bus files written so far, and the error message.

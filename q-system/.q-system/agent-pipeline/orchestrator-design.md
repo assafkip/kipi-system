@@ -1,5 +1,7 @@
 # Morning Orchestrator - Agent Tool Design
 
+> **Note:** This is the original design document. Some agents listed here were later replaced by deterministic Python scripts or consolidated into other agents. See `step-orchestrator.md` for the current execution plan.
+
 ## How it works
 
 The orchestrator is a set of instructions that Claude Code follows using its native
@@ -49,7 +51,7 @@ Phase 7: Synthesis (sequential, opus)
   -> Writes: output/schedule-data-{date}.json
 
 Phase 8: Build + Verify (sequential)
-  -> Bash: build-schedule.sh (builds HTML from JSON)
+  -> Bash: build-schedule.py (builds HTML from JSON)
   -> Agent: 08-visual-verify.md (sonnet)     -> bus/{date}/visual-verify.json
   -> Bash: audit-morning.py (validates log)
 ```

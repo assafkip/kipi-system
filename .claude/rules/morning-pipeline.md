@@ -26,10 +26,10 @@ If any MCP server is unavailable or any step fails, STOP immediately and report.
 
 # Agent Pipeline
 
-Read `.q-system/steps/step-orchestrator.md` for the full phase plan. Agents communicate through JSON files in `bus/{date}/`, not context. Model allocation: Haiku for data pulls, Sonnet for analysis, Opus for engagement hitlist and synthesis only.
+Read `.q-system/agent-pipeline/agents/step-orchestrator.md` for the full phase plan. Agents communicate through JSON files in `bus/{date}/`, not context. Model allocation: Haiku for data pulls, Sonnet for analysis, Opus for engagement hitlist and synthesis only.
 
 **Full post text rule (ENFORCED):** Agents reading social posts MUST save actual post text, not summaries.
 
-**Content review pipeline:** `/q-market-review` runs 4 Sonnet passes. See `.q-system/agent-pipeline/review-pipeline.sh`.
+**Content review pipeline:** `/q-market-review` runs 4 Sonnet passes via the content-reviewer agent.
 
-**Fallback:** If agent pipeline fails, legacy steps in `.q-system/steps/` work via step-loader.sh.
+**Fallback:** If agent pipeline fails, report to founder with diagnostics. Do not attempt monolithic fallback.

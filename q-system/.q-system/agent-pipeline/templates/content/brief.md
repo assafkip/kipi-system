@@ -21,4 +21,4 @@
 - CTA:
 
 ## Review pipeline
-Run after drafting: `bash ../../review-pipeline.sh drafts/v1.md review/`
+Run after drafting: use the content-reviewer agent on `drafts/v1.md`

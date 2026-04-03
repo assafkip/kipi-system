@@ -21,11 +21,11 @@ Benefits:
 agent-pipeline/
   README.md              - this file
   orchestrator-design.md - phase execution plan (reference doc)
-  review-pipeline.sh     - content review pass definitions (reference, run via Agent tool)
+  (review passes defined in .claude/agents/content-reviewer.md)
   bus/                   - inter-agent data exchange (JSON files, per-date subdirectories)
   agents/                - agent prompt files (one per task)
   templates/             - reusable folder structures for repeatable outputs
-  ../steps/step-orchestrator.md - execution instructions for Claude Code
+  agents/step-orchestrator.md  - execution instructions for Claude Code
 ```
 
 ## Key Design Decisions
@@ -35,7 +35,7 @@ agent-pipeline/
 3. Sonnet for data pulls and checks (cheap, focused). Opus for synthesis and copy generation.
 4. `claude -p` subprocess approach does NOT work inside Claude Code (hangs). Use native Agent tool.
 5. Bus directories auto-cleaned after 3 days during Phase 0.
-6. Old monolithic steps in steps/ are fallback if pipeline fails.
+6. If pipeline fails, report diagnostics to founder.
 
 ## Placeholders
 

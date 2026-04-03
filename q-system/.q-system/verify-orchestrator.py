@@ -47,13 +47,13 @@ def load_bus(date, filename):
 
 
 def log_step_script():
-    return os.path.join(QROOT, ".q-system", "log-step.sh")
+    return os.path.join(QROOT, ".q-system", "log-step.py")
 
 
 def check_phase(date, phase, fix=False):
     log = load_log(date)
     if not log:
-        print(f"  [FAIL] Morning log not found. Run: bash {log_step_script()} {date} init")
+        print(f"  [FAIL] Morning log not found. Run: python3 {log_step_script()} {date} init")
         return False
 
     issues = []
@@ -78,15 +78,16 @@ def check_phase(date, phase, fix=False):
                     checks["bus_file_count"] = str(len([f for f in os.listdir(bus_dir) if f.endswith('.json')]))
                 for key, val in checks.items():
                     subprocess.run([
-                        "bash", log_step_script(),
+                        "python3", log_step_script(),
                         date, "checksum-start", key, val
                     ], capture_output=True)
                 fixes_applied.append(f"Recorded {len(checks)} session-start checksums")
 
     # -- All phases: Gate check after verify-bus --
+    # Gate names must match audit-morning.py expectations: step_8, step_9, step_11
     if phase >= 1:
         gates = log.get("gates_checked", {})
-        gate_name = f"phase_{phase}"
+        gate_name = f"step_{phase}"
         if gate_name not in gates:
             # Check if verify-bus was run (bus files exist for this phase)
             bus_dir = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus", date)
@@ -98,7 +99,7 @@ def check_phase(date, phase, fix=False):
                 steps = log.get("steps", {})
                 step_keys = list(steps.keys())
                 subprocess.run([
-                    "bash", log_step_script(),
+                    "python3", log_step_script(),
                     date, "gate-check", gate_name, "true", ""
                 ], capture_output=True)
                 fixes_applied.append(f"Logged gate check for phase {phase}")
@@ -122,7 +123,7 @@ def check_phase(date, phase, fix=False):
                     prefix = {"comment": "C", "DM": "DM", "connection_request": "CR"}.get(action_type, "A")
                     card_id = f"{prefix}{rank}"
                     subprocess.run([
-                        "bash", log_step_script(),
+                        "python3", log_step_script(),
                         date, "add-card", card_id, action_type, contact, copy_text, post_url
                     ], capture_output=True)
                 fixes_applied.append(f"Logged {len(actions)} action cards from hitlist")

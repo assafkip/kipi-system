@@ -10,7 +10,12 @@ set -euo pipefail
 # Exit 0 always (never blocks)
 
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-.}"
-QROOT="$PROJ_DIR/q-system"
+# Auto-detect QROOT: subtree instances have q-system/q-system/, skeleton has q-system/
+if [ -d "$PROJ_DIR/q-system/q-system/canonical" ]; then
+  QROOT="$PROJ_DIR/q-system/q-system"
+else
+  QROOT="$PROJ_DIR/q-system"
+fi
 
 echo "=== Post-Compact Context Recovery ==="
 
@@ -22,9 +27,9 @@ if [ -f "$PROGRESS" ]; then
 fi
 
 # 2. Open loops
-LOOP_SCRIPT="$QROOT/.q-system/loop-tracker.sh"
+LOOP_SCRIPT="$QROOT/.q-system/loop-tracker.py"
 if [ -f "$LOOP_SCRIPT" ]; then
-  STATS=$(bash "$LOOP_SCRIPT" stats 2>/dev/null || true)
+  STATS=$(python3 "$LOOP_SCRIPT" stats 2>/dev/null || true)
   [ -n "$STATS" ] && echo "Loops: $STATS"
 fi
 

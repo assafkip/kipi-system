@@ -49,8 +49,8 @@ Tools you might connect:
 - **Notion** - for tracking contacts, pipeline, and actions
 - **Google Calendar** - so Kipi can prep you for meetings
 - **Gmail** - for drafting follow-up emails
-- **Apify** - for researching people and finding social media posts
-- **LinkedIn** (via Chrome) - for engaging with posts and sending DMs
+- **LinkedIn** (via Chrome) - for profiles, posts, DMs, and engagement
+- **Apify** - for X/Twitter scraping (optional, Chrome fallback available)
 - **Gamma** - for creating pitch decks and one-pagers
 
 You can skip any tool during setup and connect it later by saying "connect my [tool name]".
@@ -118,7 +118,7 @@ Open the project in Claude Code. The skeleton's setup wizard will detect `{{SETU
 
 ### Marketplace Plugins
 
-Your instance automatically registers the kipi marketplace via `settings-template.json`. The core plugin (AUDHD + voice) is enabled by default. To enable additional plugins, add them to your `.claude/settings.json`:
+Your instance automatically registers the kipi marketplace via `settings-template.json`. The core plugin (AUDHD + voice + research mode) is enabled by default. To enable additional plugins, add them to your `.claude/settings.json`:
 
 ```json
 {
@@ -131,9 +131,11 @@ Your instance automatically registers the kipi marketplace via `settings-templat
 ```
 
 Available plugins:
-- **kipi-core** - AUDHD executive function + founder voice (recommended for all)
+- **kipi-core** - AUDHD executive function + founder voice + research mode (recommended for all)
 - **kipi-ops** - Council debates + customer fit reviews (for GTM/sales work)
 - **kipi-design** - UI/UX, brand identity, visual assets (for design/website work)
+
+Research mode (`/research <topic>`) is included in kipi-core. No extra install needed.
 
 The "Founder OS" output style is set by default in `settings-template.json` and enforces voice rules on all responses.
 
@@ -148,7 +150,7 @@ my-project/
   q-system/           # Kipi skeleton subtree (DO NOT edit directly)
     q-system/          # Core OS (agents, scripts, templates)
     CLAUDE.md          # Skeleton root CLAUDE.md
-    validate-separation.sh
+    validate-separation.py
   CLAUDE.md            # Your instance CLAUDE.md (edit this)
 ```
 

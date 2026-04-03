@@ -10,19 +10,21 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - Marketplace-distributed plugins (kipi-core, kipi-ops, kipi-design)
 - Notion API for CRM and task management (optional)
 - Google Calendar + Gmail for scheduling and email (optional)
-- Apify for data scraping - LinkedIn, Reddit, Medium, X (optional)
-- Chrome automation for LinkedIn DMs and engagement (optional)
+- Apify for X/Twitter scraping only (optional)
+- Reddit MCP for Reddit data (no auth needed)
+- Chrome automation for LinkedIn (profiles, posts, DMs, engagement) (optional)
+- RSS feeds for Medium, Substack content (free, no auth needed)
 - Gamma API for deck/one-pager generation (optional)
 
 ## Project Structure
 - `.claude-plugin/marketplace.json` - Marketplace manifest (distributes plugins to instances)
 - `plugins/` - Marketplace plugin groups
-  - `kipi-core/` - AUDHD executive function + founder voice (every instance)
+  - `kipi-core/` - AUDHD executive function + founder voice + research mode (every instance)
   - `kipi-ops/` - Council debates + customer fit reviews (GTM instances)
   - `kipi-design/` - UI/UX, brand identity, visual assets (design instances)
 - `.claude/agents/` - Custom agent definitions (preflight, data-ingest, synthesizer, etc.)
 - `.claude/output-styles/` - Founder OS output style (always-on voice baseline)
-- `.claude/rules/` - Path-scoped instruction files (13 rules)
+- `.claude/rules/` - Path-scoped instruction files (14 rules)
 - `q-system/` - Core operating system
   - `.q-system/agent-pipeline/` - 9-phase morning routine (50+ agent prompts)
   - `canonical/` - Source of truth files (positioning, objections, talk tracks)
@@ -55,15 +57,17 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - `/q-draft` - Ad-hoc output generation
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
+- `/q-research` - Anti-hallucination research mode (citation-enforced, token-budgeted)
 
 ## Hooks
 - **SessionStart** - Injects date, last handoff, founder context
+- **UserPromptSubmit** - Resets token guard per-message counters
 - **PreToolUse** - Token guard circuit breaker (retry limits, volume ceiling, agent limits)
 - **PostCompact** - Re-injects mode, loop count, voice reminders after compaction
 - **Stop** - Async session effort logging
 
 ## Build and Test
-- Build daily schedule: `bash q-system/marketing/templates/build-schedule.sh <json> <html>`
+- Build daily schedule: `python3 q-system/marketing/templates/build-schedule.py <json> <html>`
 - Audit morning routine: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json`
 - Develop with plugins: `kipi dev` (loads all 3 plugin groups)
 
@@ -79,5 +83,5 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 
 ## Tool Preferences
 - Use project-scoped Notion API server for CRM (not workspace-wide plugins)
-- Use Apify for data scraping, Chrome for interactive/DMs only
+- Use Chrome for all LinkedIn data (profiles, posts, DMs, engagement). Use Reddit MCP for Reddit. Use Apify for X/Twitter only. Use RSS feeds (WebFetch) for Medium, Substack.
 - Gamma for decks and one-pagers (if configured)

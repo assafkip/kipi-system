@@ -24,10 +24,15 @@ kipi-system/                          # Project root (skeleton/template repo + m
 ├── kipi-update.sh                    # Pulls updates to instances (used by kipi update)
 ├── kipi-push-upstream.sh             # Pushes generic changes back (used by kipi push)
 ├── build-template-repo.sh            # Builds clean template for GitHub fork users
-├── validate-separation.sh            # Validation harness (used by kipi check)
+├── validate-separation.py            # Validation harness (used by kipi check)
 ├── instance-registry.json            # Registered project instances
 ├── skill-manifest.json               # Plugin group assignments per instance
 ├── settings-template.json            # Template for new instances
+│
+├── sites/                            # Vercel-deployed skill landing pages (GITIGNORED content)
+│   ├── index.html
+│   ├── vercel.json
+│   └── <skill-name>/                # One subdir per published skill page
 │
 ├── .claude-plugin/                   # Marketplace manifest
 │   └── marketplace.json              # Lists kipi-core, kipi-ops, kipi-design plugins
@@ -37,7 +42,8 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── .claude-plugin/plugin.json
 │   │   └── skills/
 │   │       ├── audhd-executive-function/
-│   │       └── founder-voice/
+│   │       ├── founder-voice/
+│   │       └── research-mode/
 │   ├── kipi-ops/                     # Operations (GTM instances)
 │   │   ├── .claude-plugin/plugin.json
 │   │   └── skills/
@@ -68,10 +74,11 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   └── founder.md                # Founder OS voice baseline
 │   │
 │   ├── rules/                        # Path-scoped instruction files
-│   │   └── (13 files: anti-misclassification, audhd, auto-detection,
+│   │   └── (14 files: anti-misclassification, audhd, auto-detection,
 │   │        coding-standards, content-output, design-auto-invoke,
-│   │        folder-structure, marketing-system, morning-pipeline,
-│   │        security, sycophancy, token-discipline, voice-enforcement)
+│   │        dev-skills-auto-invoke, folder-structure, marketing-system,
+│   │        morning-pipeline, security, sycophancy, token-discipline,
+│   │        voice-enforcement)
 │   │
 │   └── plans/                        # Plan mode output (auto-created, GITIGNORED)
 │       └── *.md
@@ -83,6 +90,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── decisions.md
 │   │   ├── discovery.md
 │   │   ├── engagement-playbook.md
+│   │   ├── content-intelligence.md
 │   │   ├── lead-lifecycle-rules.md
 │   │   ├── market-intelligence.md
 │   │   ├── objections.md
@@ -92,10 +100,12 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │
 │   ├── my-project/                   # Instance-specific state
 │   │   ├── current-state.md
-│   │   ├── founder-profile.md
+│   │   ├── founder-profile.md        # Identity, platform handles, connected tools
 │   │   ├── relationships.md
 │   │   ├── competitive-landscape.md
-│   │   └── notion-ids.md
+│   │   ├── lead-sources.md           # Reddit subreddits, Medium tags, X accounts to monitor
+│   │   ├── notion-ids.md
+│   │   └── progress.md
 │   │
 │   ├── marketing/                    # Content pipeline
 │   │   ├── README.md
@@ -112,14 +122,20 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │
 │   ├── memory/                       # Session state (lightweight)
 │   │   ├── last-handoff.md           # Session continuity (written by /q-handoff)
-│   │   └── sycophancy-log.json       # Rolling bias audit log
+│   │   ├── morning-state.md          # Checkpoint state (written by /q-checkpoint)
+│   │   ├── marketing-state.md        # Publish log + cadence actuals
+│   │   ├── sycophancy-log.json       # Rolling bias audit log
+│   │   ├── working/                  # Working memory (current session)
+│   │   ├── weekly/                   # Weekly memory rollups
+│   │   └── monthly/                  # Monthly memory rollups
 │   │
 │   ├── hooks/                        # Session lifecycle scripts
-│   │   ├── session-start.py          # Once-daily context injection (PreToolUse sentinel)
+│   │   ├── session-start.py          # Once-daily context injection (SessionStart hook)
 │   │   ├── session-context.sh        # SessionStart hook (date, handoff, energy)
 │   │   ├── post-compact.sh           # PostCompact hook (mode, loops, voice reminder)
 │   │   ├── stop-logger.sh            # Stop hook (async effort logging)
-│   │   └── statusline.sh             # StatusLine display script
+│   │   ├── statusline.sh             # StatusLine display script
+│   │   └── auto-update.sh            # Auto-update hook
 │   │
 │   ├── output/                       # Generated artifacts (GITIGNORED)
 │   │   ├── morning-log-*.json
@@ -140,13 +156,11 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │       │   ├── verify-bus.py         # Bus file structure checks
 │       │   ├── verify-orchestrator.py
 │       │   ├── verify-schedule.py
-│       │   ├── bus-to-log.py         # Bus -> morning-log bridge
-│       │   └── split-commands.py     # Command routing
+│       │   └── bus-to-log.py         # Bus -> morning-log bridge
 │       │
 │       ├── [Shell scripts]
-│       │   ├── log-step.sh
-│       │   ├── loop-tracker.sh
-│       │   └── step-loader.sh
+│       │   ├── log-step.py
+│       │   └── loop-tracker.py
 │       │
 │       ├── scripts/                  # Deterministic replacements for LLM agents
 │       │   ├── canonical-digest.py
@@ -161,9 +175,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │       │   ├── db-query.py
 │       │   └── monthly-learnings.py
 │       │
-│       ├── steps/                    # Legacy monolithic steps (fallback)
-│       │   └── *.md
-│       │
+│
 │       ├── onboarding/               # First-run setup
 │       │   ├── setup-flow.md
 │       │   ├── archetypes.md
@@ -173,8 +185,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │       └── agent-pipeline/           # Morning routine agents
 │           ├── BUS-PROTOCOL.md       # Bus envelope, naming, validation, versioning
 │           ├── orchestrator-design.md
-│           ├── orchestrator.sh
-│           ├── review-pipeline.sh
+│           ├── README.md
 │           ├── schemas/              # JSON Schema files for bus contracts (18 files)
 │           │   ├── _bus-envelope.schema.json
 │           │   └── <bus-file>.schema.json
@@ -213,7 +224,8 @@ kipi-system/                          # Project root (skeleton/template repo + m
 | Agents | `NN-kebab-name.md` | `05-engagement-hitlist.md` |
 | Config agents | `_kebab-name.md` | `_cadence-config.md` |
 | Python scripts | snake_case or kebab-case.py | `canonical-digest.py` |
-| Shell scripts | kebab-case.sh | `log-step.sh` |
+| Shell scripts | kebab-case.sh | `session-context.sh` |
+| Python scripts | kebab-case.py | `log-step.py` |
 | Bus files | kebab-case.json | `linkedin-posts.json` |
 | Output files | `type-YYYY-MM-DD.ext` | `morning-log-2026-04-02.json` |
 

@@ -12,6 +12,7 @@ A persistent founder operating system that runs inside Claude Code. It manages y
 - **Lead sourcing** across LinkedIn, Reddit, X, and Medium with personalized outreach generation
 - **Voice engine** that makes everything sound like you, not AI
 - **AUDHD executive function mode** (optional) for neurodivergent founders
+- **Research mode** that forces citation-backed answers and eliminates hallucinations
 - **Security hardening** with deny rules, PreToolUse hooks, and path-scoped rules
 
 ## Quick Start
@@ -29,15 +30,13 @@ cd q-founder-os
 The system uses environment variable references for secrets. Set these in your shell profile:
 
 ```bash
-# Required (if using Notion CRM)
-export NOTION_TOKEN="your-notion-token"
-
-# Recommended (for lead sourcing)
+# Optional (for X/Twitter scraping only - LinkedIn uses Chrome, Reddit uses Reddit MCP, Medium uses RSS)
 export APIFY_TOKEN="your-apify-token"
 ```
 
-Get your Notion token at https://www.notion.so/my-integrations
-Get your Apify token at https://apify.com (Account > Integrations)
+Get your Apify token at https://apify.com (Account > Integrations). Only needed if you want Apify for X/Twitter. All other platforms use Chrome or RSS feeds.
+
+> **Notion:** Connect via Claude.ai integrations panel (preferred) or set NOTION_TOKEN for CLI-only usage. See `q-system/.q-system/onboarding/guides/connect-notion.md`.
 
 ### 4. Configure Claude Code global settings
 Copy `settings-template.json` to `~/.claude/settings.json` (or merge into your existing settings). This configures MCP servers in your global settings.
@@ -50,7 +49,7 @@ The project already ships with:
 **Claude.ai MCP servers (configured in the Claude.ai web interface, not settings.json):**
 - Google Calendar
 - Gmail
-- Chrome (for LinkedIn DMs, GA4)
+- Chrome (primary for ALL LinkedIn data: profiles, posts, DMs, engagement, plus GA4)
 - Gamma (for slide decks)
 - NotebookLM (for research notebooks)
 
@@ -59,10 +58,10 @@ In Claude Code, enable these plugins:
 - `document-skills@anthropic-agent-skills`
 - `Notion@claude-plugins-official`
 - `github@claude-plugins-official`
+- Research mode is built into kipi-core. Use `/research <topic>` to force citations and source grounding.
 
 ### 6. Install marketing skills (optional but recommended)
-Clone https://github.com/coreyhaines31/marketingskills into `.agents/skills/`.
-These provide 32 specialized marketing skills (cold email, copywriting, SEO, CRO, etc.).
+Marketing skills are available as a Claude Code plugin. Enable in Claude Code plugin manager or install manually into `plugins/` directory.
 
 ### 7. Start Claude Code in this folder
 ```bash
@@ -76,9 +75,10 @@ The system will detect `{{SETUP_NEEDED}}` in `founder-profile.md` and walk you t
 2. **Who do you sell to?** (buyer, pain, alternatives)
 3. **What's your positioning?** (one-liner, metaphors, misclassifications, objections)
 4. **Your voice** (writing style, words you use/avoid, samples)
-5. **Your tools** (which MCP servers to configure)
-6. **Your CRM** (Notion database setup or local-only mode)
-7. **Your network** (top 10 contacts to seed the system)
+5. **Your platforms** (LinkedIn, X, Medium, Reddit, Substack, GitHub handles)
+6. **Your tools** (which MCP servers to configure)
+7. **Your CRM** (Notion database setup or local-only mode)
+8. **Your network** (top 10 contacts to seed the system)
 
 ### 8. Run your first morning
 ```
@@ -110,6 +110,12 @@ q-founder-os/
         references/
           voice-dna.md               # Your voice profile
           writing-samples.md         # Real examples of your writing
+      research-mode/                 # Anti-hallucination research mode
+        SKILL.md
+        commands/
+          q-research.md              # /q-research slash command
+        references/
+          anthropic-reduce-hallucinations.md  # Source techniques
   .agents/
     product-marketing-context.md     # Marketing foundation
     skills/                          # Marketing skills (32 skills from Corey Haines)
@@ -119,7 +125,7 @@ q-founder-os/
       commands.md                    # All slash commands defined here
       preflight.md                   # Tool manifest + fail-fast protocol
       audit-morning.py               # Post-morning audit harness
-      log-step.sh                    # Step completion logger
+      log-step.py                    # Step completion logger
       state-model.md                 # Progress tracking model
     canonical/                       # Your positioning knowledge base
       objections.md                  # Pushback heard + responses
@@ -135,6 +141,7 @@ q-founder-os/
       current-state.md               # What works today vs. vision
       relationships.md               # All contacts + conversation history
       competitive-landscape.md       # Alternatives and substitutes
+      lead-sources.md                # Reddit subreddits, Medium tags, X accounts to monitor
       progress.md                    # Session log
       notion-ids.md                  # Notion database IDs
     methodology/
@@ -146,7 +153,7 @@ q-founder-os/
       brand-voice.md                 # Channel-specific voice rules
       templates/
         daily-schedule-template.html # The daily HTML workbench (LOCKED)
-        build-schedule.sh            # JSON to HTML builder
+        build-schedule.py            # JSON to HTML builder
         schedule-data-schema.md      # JSON schema for daily data
         linkedin-thought-leadership.md
         outreach-email.md

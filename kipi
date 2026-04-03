@@ -46,7 +46,7 @@ case "${1:-help}" in
   check)
     shift || true
     cd "$KIPI_HOME"
-    bash validate-separation.sh "${1:-5}"
+    python3 validate-separation.py "${1:-5}"
     ;;
   list)
     python3 -c "

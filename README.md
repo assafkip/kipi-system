@@ -98,13 +98,13 @@ The system walks you through setup. Who you are, what you're building, how you t
 kipi-system/
 ├── .q-system/
 │   ├── commands.md          # 35+ step morning routine and all workflows
-│   ├── loop-tracker.sh      # Opens, escalates, and closes loops
+│   ├── loop-tracker.py      # Opens, escalates, and closes loops
 │   ├── verify-schedule.py   # Blocks HTML build if required sections missing
-│   ├── step-loader.sh       # Re-injects step requirements before execution (EOP)
+│   ├── agent-pipeline/      # Decomposed morning routine agents and bus protocol
 │   ├── session-start.py     # Auto-loads context on first use each day
 │   ├── audit-morning.py     # Catches skipped steps and missing content
 │   ├── token-guard.py       # Stops runaway AI token consumption
-│   ├── log-step.sh          # Flight recorder for every step
+│   ├── log-step.py          # Flight recorder for every step
 │   └── preflight.md         # Tool manifest, known issues, and verification rules
 │
 ├── canonical/               # Source of truth (updates from every conversation)
@@ -148,6 +148,7 @@ kipi-system/
 | Stress-test your positioning | `/q-reality-check` |
 | End-of-day health check | `/q-wrap` |
 | Save context for next session | `/q-handoff` |
+| Research with citations only | `/q-research <topic>` |
 
 ---
 
@@ -160,9 +161,15 @@ Works standalone with local files. Each integration adds capability:
 | Notion | CRM, pipeline, relationship tracking |
 | Google Calendar | Meeting detection, auto-prep |
 | Gmail | Email monitoring, loop auto-close on reply |
-| Apify | LinkedIn/X/Reddit scraping for lead sourcing |
-| Chrome | LinkedIn DMs, analytics, interactive browsing |
+| Apify | X/Twitter scraping only (lead sourcing, activity) |
+| Reddit MCP | Reddit search, posts, comments (no auth needed) |
+| Chrome | LinkedIn (profiles, posts, DMs, engagement), analytics |
+| RSS feeds | Medium, Substack content (via WebFetch) |
 | Slack | Notifications, approval workflows |
+
+### Research mode
+
+Built into the kipi-core plugin. Say `/research <topic>` to force citation-backed answers. Every claim needs a source -- local files, web results, or named papers. If it can't find one, it says "I don't know" instead of guessing. Also available as a [standalone plugin](https://github.com/assafkip/research-mode) for non-kipi projects.
 
 ---
 

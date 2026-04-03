@@ -24,10 +24,9 @@ rm -f "$TEMPLATE_DIR/.claude/settings.local.json"
 # Replace settings.json with template version
 cp "$SCRIPT_DIR/settings-template.json" "$TEMPLATE_DIR/.claude/settings.json"
 
-# 3. Copy .agents if exists
-if [ -d "$SCRIPT_DIR/.agents" ]; then
-  cp -R "$SCRIPT_DIR/.agents" "$TEMPLATE_DIR/.agents"
-fi
+# 3. Copy marketplace manifest and plugins
+cp -R "$SCRIPT_DIR/.claude-plugin" "$TEMPLATE_DIR/.claude-plugin"
+cp -R "$SCRIPT_DIR/plugins" "$TEMPLATE_DIR/plugins"
 
 # 4. Copy memory directory structure (empty)
 mkdir -p "$TEMPLATE_DIR/memory"
@@ -60,15 +59,7 @@ cp "$SCRIPT_DIR/.gitignore" "$TEMPLATE_DIR/.gitignore"
 # 8. Create the user-facing README
 cp "$SCRIPT_DIR/q-system/.q-system/onboarding/GETTING-STARTED.md" "$TEMPLATE_DIR/README.md"
 
-# 9. Remove files that don't belong in a user's repo
-# Admin/skeleton management files
-rm -f "$TEMPLATE_DIR/q-system/.q-system/bus-to-log.py"
-rm -f "$TEMPLATE_DIR/q-system/.q-system/split-commands.py"
-rm -f "$TEMPLATE_DIR/q-system/.q-system/verify-orchestrator.py"
-rm -f "$TEMPLATE_DIR/q-system/.q-system/verify-bus.py"
-rm -f "$TEMPLATE_DIR/q-system/.q-system/verify-schedule.py"
-
-# 10. Clean any .DS_Store files
+# 9. Clean any .DS_Store files
 find "$TEMPLATE_DIR" -name ".DS_Store" -delete
 
 # 11. Ensure output directories exist with .gitkeep

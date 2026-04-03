@@ -27,36 +27,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\"",
-            "timeout": 15,
-            "statusMessage": "Checking for kipi updates..."
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\" 2>/dev/null || true",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\" 2>/dev/null || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\" 2>/dev/null || true",
+            "timeout": 10
           }
         ]
       }
     ],
-    "PostCompact": [
+    "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\"",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\"",
-            "async": true
           }
         ]
       }
@@ -67,11 +60,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\""
-          },
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\" 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\" 2>/dev/null || true",
+            "async": true
           }
         ]
       }
@@ -96,15 +108,14 @@
         "-y",
         "@apify/actors-mcp-server",
         "--tools",
-        "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"
+        "actors,curious_coder/twitter-scraper"
       ],
       "env": {
         "APIFY_TOKEN": "YOUR_APIFY_TOKEN"
       }
     },
 
-    "_reddit": {
-      "_comment": "Rename to 'reddit' to enable. No API key needed.",
+    "reddit": {
       "command": "uvx",
       "args": ["reddit-no-auth-mcp-server"]
     },
@@ -135,20 +146,12 @@
     "Write": {
       "autoApprove": ["**/*"]
     },
-    "mcp__notion__*": {
-      "autoApprove": ["*"]
-    },
-    "mcp__notion_api__*": {
+    "mcp__claude_ai_Notion__*": {
       "autoApprove": ["*"]
     },
     "mcp__apify__*": {
       "autoApprove": ["*"]
     }
   },
-  "enabledPlugins": {
-    "_INSTRUCTIONS_": "These are recommended plugins. Enable them in Claude Code with the plugin manager.",
-    "document-skills@anthropic-agent-skills": true,
-    "Notion@claude-plugins-official": true,
-    "github@claude-plugins-official": true
-  }
+  "_recommended_plugins": "Enable these in Claude Code plugin manager: document-skills@anthropic-agent-skills, Notion@claude-plugins-official, github@claude-plugins-official"
 }

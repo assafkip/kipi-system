@@ -14,7 +14,7 @@ The skeleton contains everything that's generic across all instances:
 - **Marketing templates**: Channel structure, guardrails framework, review pipeline
 - **Voice skill framework**: Layer loading matrix, anti-AI rules, quality checks (no actual voice content)
 - **CLAUDE.md**: Behavioral rules, operating modes, memory architecture, setup wizard
-- **Validation harness**: `validate-separation.sh` verifies skeleton integrity and instance health
+- **Validation harness**: `validate-separation.py` verifies skeleton integrity and instance health
 
 The skeleton lives at `https://github.com/assafkip/kipi-system.git`.
 
@@ -44,7 +44,7 @@ instance-root/
       my-project/              # Template files ({{SETUP_NEEDED}})
       marketing/               # Template structure
     CLAUDE.md                  # Skeleton root
-    validate-separation.sh     # Validation harness
+    validate-separation.py     # Validation harness
   instance-content/            # Project-specific (varies by instance)
     canonical/                 # Populated positioning, objections, etc.
     my-project/                # Real founder data

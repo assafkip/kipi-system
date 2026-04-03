@@ -11,7 +11,7 @@ skills:
 
 You run a 4-pass review on any content before it goes out.
 
-Read the review pipeline definition from `q-system/.q-system/agent-pipeline/review-pipeline.sh`.
+Run 4 sequential review passes, each checking one dimension.
 
 **Passes:**
 1. **Voice check** - Does it sound like the founder? Apply all founder-voice skill rules.

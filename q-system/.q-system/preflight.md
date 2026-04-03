@@ -14,34 +14,73 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 |------|-------------|---------------|-------------------|----------|
 | **Google Calendar** | `mcp__claude_ai_Google_Calendar__gcal_list_events` with `timeMin=today 00:00`, `timeMax=today+7 23:59` | Returns `events` array (even if empty) | None known | None. Halt. |
 | **Gmail** | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns `messages` array | None known | None. Halt. |
-| **Notion API** | `mcp__notion_api__API-post-database-query` on Contacts DB `cabba10d-cd5d-4cff-b042-3241a2be18b5` with `page_size: 1` | Returns `results` array | **`API-patch-page` only updates `title` property.** Cannot update Role, Company, Status, DP Status, Last Contact, What They Care About, Strategic Value, Follow-up Action, Pushback, Email, or any other field. For full property updates, use `mcp__claude_ai_Notion__notion-update-page` IF the workspace matches (see known issues). | None for reads. For writes, see Known Issues #1. |
+| **Notion API** | `mcp__claude_ai_Notion__notion-search` with query "Contacts" | Returns matching databases/pages | Cloud Notion integration -- full read/write support via `notion-fetch`, `notion-create-pages`, `notion-update-page` | None. Halt. |
 | **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. Avoid triggering them. | None. Halt. |
-| **Apify** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. REST API always works. Token in settings.json: `YOUR_APIFY_TOKEN` | **REST API fallback.** All actors callable via `curl -X POST "https://api.apify.com/v2/acts/ACTOR_ID/runs?token=$APIFY_TOKEN&waitForFinish=120"`. Confirmed working actors listed below. |
+| **Apify (X/Twitter ONLY)** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. Apify is used ONLY for X/Twitter scraping. | **REST API fallback** (X/Twitter only). If Apify is down, fall back to Chrome for X. |
+| **Reddit MCP** | `ToolSearch("+reddit")` then call `mcp__reddit__search` with query "test" | Returns structured post data | No auth needed. Zero-config. Runs via `uvx reddit-no-auth-mcp-server`. | Skip Reddit scraping. Do NOT use Chrome for Reddit. |
+| **RSS Feeds (Medium/Substack)** | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | WebFetch processes via model, not raw XML. Medium/Substack only (Reddit uses its own MCP). | Chrome browser navigation. |
 
 ### Non-Critical (ask founder before proceeding without)
 
 | Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
 |------|-------------|---------------|-------------------|----------|
 | **VC Pipeline API** | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON with pipeline data | Must be running locally. Founder needs to start the local pipeline server. | Skip Steps 1.5 (warm intro matching). Note in briefing. |
-| **NotebookLM** | `mcp__notebooklm__list_notebooks` | Returns notebook list | Session-based, may need re-auth. | Skip deep research in Step 2. Use Apify for profile data instead. |
 
-### Confirmed Working Apify Actors (validated Mar 10-11, 2026)
+### Confirmed Working Apify Actors (X/Twitter only)
 
 | Actor | Input Format | Notes |
 |-------|-------------|-------|
-| `supreme_coder~linkedin-post` | `{"urls": ["https://www.linkedin.com/search/results/content/?keywords=ENCODED_QUERY&sortBy=date_posted"], "deepScrape": false, "maxItems": 10}` | Field is `urls` NOT `searchUrl`. `sortBy=date_posted` no quotes around value. |
-| `trudax~reddit-scraper-lite` | `{"startUrls": [{"url": "https://www.reddit.com/r/SUBREDDIT/search/?q=QUERY&sort=new&restrict_sr=on&t=month"}], "maxItems": 10}` | `restrict_sr=on` REQUIRED. Auth: Bearer token header, NOT query param. |
 | `apidojo~tweet-scraper` | Profile mode: pull recent tweets from handles. Search mode: works but limited. | Monitored handles: @BushidoToken, @clintgibler, @RyanGCox_, @obadiahbridges |
-| `apify~google-search-scraper` | `{"queries": "site:medium.com SEARCH_TERMS 2025 OR 2026", "maxPagesPerQuery": 1, "resultsPerPage": 10}` | For Medium scraping. Returns `organicResults` array. |
 
-### DO NOT USE (broken actors)
+### Reddit MCP Tools (validated Apr 2026)
+
+Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). No API key needed. Returns structured data with full post text.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `mcp__reddit__search` | query, limit, sort (relevance/hot/top/new/comments) | Posts with title, URL, author, content, score |
+| `mcp__reddit__search_subreddit` | subreddit, query, limit, sort | Posts scoped to one subreddit |
+| `mcp__reddit__get_post` | permalink | Full post content + nested comment tree |
+| `mcp__reddit__get_subreddit_posts` | subreddit, limit, category (hot/top/new/rising), time_filter | Subreddit listing |
+| `mcp__reddit__get_user` | username, limit | User's recent activity |
+| `mcp__reddit__get_user_posts` | username, limit, category, time_filter | User's submitted posts |
+
+**Subreddits and search terms come from** `my-project/lead-sources.md`.
+
+### RSS Feed Endpoints - Medium/Substack only (validated Apr 2026)
+
+**How WebFetch works:** WebFetch takes a URL + a prompt. It fetches the content, converts it, and runs the prompt against it via a small model. You get structured text back, NOT raw XML.
+
+| Platform | URL Pattern | Tool | WebFetch Prompt |
+|----------|------------|------|----------------|
+| Medium tag | `https://medium.com/feed/tag/TAG` | WebFetch | "Extract all articles: title, URL, author, date, first 300 chars of content" |
+| Medium user | `https://medium.com/feed/@HANDLE` | WebFetch | "Extract all articles: title, URL, date, claps/responses if shown" |
+| Substack | `https://NEWSLETTER.substack.com/feed` | WebFetch | "Extract all posts: title, URL, date, content summary" |
+
+**Handles come from** `my-project/founder-profile.md` Platform Handles section. **Medium tags come from** `my-project/lead-sources.md`.
+
+**RSS feed limitations (Medium/Substack only):**
+- Medium RSS does NOT include claps/responses/read ratio. Use Chrome to visit article pages for engagement data.
+- Medium RSS returns only the latest 10 articles per feed. Paywalled articles show abstract only.
+- Substack RSS does NOT include open rates. Use Chrome on Substack dashboard if needed.
+- WebFetch may summarize long content. For full article text, use Chrome on the article URL as a second pass.
+
+### DO NOT USE (broken or replaced actors)
 
 | Actor | Why |
 |-------|-----|
+| `supreme_coder~linkedin-post` | Replaced by Chrome direct scraping. Uses your cookies on datacenter IPs. |
+| `trudax~reddit-scraper-lite` | Replaced by Reddit MCP server (free, no auth, full content). |
+| `apify~google-search-scraper` | Replaced by Medium RSS feeds + WebSearch. |
 | `harvestapi~linkedin-post-search` | Returns 0 results |
 | `trudax~reddit-scraper` | Requires paid rental |
 | `cloud9_ai~medium-article-scraper` | Returns garbage |
 | `ivanvs~medium-scraper` | Requires paid rental |
+| `apify/linkedin-profile-scraper` | Replaced by Chrome. Account safety risk. |
+| `apify/linkedin-posts-scraper` | Replaced by Chrome. Account safety risk. |
+| `apify/linkedin-connections-scraper` | Replaced by Chrome. Account safety risk. |
+| `apify/reddit-scraper` | Replaced by Reddit MCP server. |
+| `apify/web-scraper` | Replaced by RSS feeds (Medium, Substack). |
 
 ---
 
@@ -49,38 +88,29 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 
 Things we've hit before. Never re-discover these.
 
-### KI-1: Notion has two MCP servers connected to different workspaces
-- `mcp__notion_api__*` connects to the founder's Notion workspace (CRM) - CORRECT for reads
-- `mcp__claude_ai_Notion__*` connects to a different workspace - WRONG for CRM data
-- **Rule:** Use `mcp__notion_api__*` for all database queries. Use `mcp__claude_ai_Notion__notion-update-page` ONLY if the page is accessible (test first with a read). If 404, fall back to manual update instructions.
-
-### KI-2: Notion API-patch-page only updates title
-- `mcp__notion_api__API-patch-page` accepts only `title` in its properties schema
-- Cannot update: Role, Company, Status, DP Status, Last Contact, What They Care About, Strategic Value, Follow-up Action, Pushback, Email, LinkedIn, Priority, or any other field
-- **Workaround:** For full property updates, try `mcp__claude_ai_Notion__notion-update-page` first. If 404 (wrong workspace), output the exact values the founder should update manually in Notion.
-
-### KI-3: Notion Actions DB property names
-- The Actions DB (`0718ee69-d9d0-473d-8182-732d21c60491`) does NOT have a property called "Status" (the standard Notion status property)
+### KI-1: Notion Actions DB property names
+- The Actions DB (ID in `my-project/notion-ids.md`) does NOT have a property called "Status" (the standard Notion status property)
 - Known properties: Action (title), Priority, Due, Type, Energy, Time Est, Contact, Notes, Action ID, Created
 - **Rule:** Do not filter by "Status" on Actions DB. Filter by Priority or Due instead.
 
-### KI-4: Notion Investor Pipeline DB property names
-- The Investor Pipeline DB (`fd92016f-7890-40c3-abe9-154c864e05b3`) does NOT have a property called "Status"
+### KI-2: Notion Investor Pipeline DB property names
+- The Investor Pipeline DB (ID in `my-project/notion-ids.md`) does NOT have a property called "Status"
 - Known properties: Fund (title), Stage, Thesis Fit, Next Date, Next Step, Key Quote, Pass Reason, Check Size, Contact, Investor Type, Deal ID, Updated
 - **Rule:** Filter by "Stage" not "Status" on Pipeline DB.
 
-### KI-5: Apify MCP tools may not load
+### KI-3: Apify MCP tools may not load (X/Twitter only)
 - The Apify MCP server (`@apify/actors-mcp-server`) sometimes doesn't register its tools as deferred tools
 - When this happens, `ToolSearch` for "apify" returns nothing
-- **Rule:** Always test Apify MCP first via ToolSearch. If unavailable, immediately switch to **Chrome browser automation** fallback (navigate to LinkedIn/Reddit/X directly via `mcp__claude-in-chrome__*`). Do NOT use REST API curl. Do NOT waste tokens retrying MCP.
+- Apify is now used ONLY for X/Twitter (`apidojo~tweet-scraper`). LinkedIn uses Chrome. Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). Medium/Substack use RSS feeds via WebFetch.
+- **Rule:** Test Apify MCP via ToolSearch. If unavailable, only X/Twitter scraping is affected. Fall back to Chrome for X. LinkedIn, Reddit, and Medium are unaffected (they don't use Apify).
 
-### KI-6: VC Pipeline API requires local server
+### KI-4: VC Pipeline API requires local server
 - `http://localhost:5050/api/pipeline` only works if the Python app is running
 - Location: configured in `my-project/founder-profile.md` or local project directory
 - `WebFetch` returns "Invalid URL" for localhost URLs
 - **Rule:** Use `curl` via Bash tool, not WebFetch. If server is down, ask founder to start it or proceed without warm intro matching.
 
-### KI-7: Emdash ban
+### KI-5: Emdash ban
 - NEVER use emdashes in any output. Use commas, periods, or hyphens instead.
 - This applies to JSON data, copy blocks, and all written content.
 
@@ -88,49 +118,36 @@ Things we've hit before. Never re-discover these.
 
 ## 3. Session Budget & Hard Splits
 
-The morning routine is too large for one context window. Plan for splits.
+The morning routine runs in a single session using the agent pipeline.
+Agents communicate via bus/ JSON files, not context. If context runs low,
+the PostCompact hook re-injects critical state.
 
-### Session 1: Data Collection (Steps 0f through 5.9b)
-- **Expected context usage:** 60-80%
-- **Primary deliverable:** Structured data for all steps
-- **Exit trigger:** Context > 70% OR Step 5.9b complete, whichever comes first
-- **On exit:** Write `output/morning-handoff-YYYY-MM-DD.json` with all collected data, then tell founder to start Session 2
-
-### Session 2: HTML Generation (Step 11)
-- **Input:** Read `output/morning-handoff-YYYY-MM-DD.json`
-- **Primary deliverable:** `output/schedule-data-YYYY-MM-DD.json` + built HTML
-- **Expected context usage:** 10-20%
-- **Detection:** If handoff file exists and is from today, skip all data collection steps
-
-### Handoff File Format
-
-```json
-{
-  "date": "2026-03-13",
-  "session": 1,
-  "steps_completed": ["0f", "1", "1.5", "2", "3", "3.5", "3.8", "4", "5.9", "5.9b"],
-  "steps_skipped": [],
-  "steps_failed": [],
-  "calendar": { "events": [...] },
-  "gmail": { "highlights": [...] },
-  "notion": { "actions": [...], "pipeline": [...], "dp_contacts": [...] },
-  "meeting_prep": [...],
-  "signals": [...],
-  "lead_sourcing": { "qualified": [...], "tier_a": [...] },
-  "engagement_hitlist": [...],
-  "content_drafts": { "linkedin": "...", "x": "...", "medium_topic": "..." },
-  "pipeline_status": { "dp_prospects": 17, "outreach_sent": 3 },
-  "fyi_notes": [...]
-}
-```
-
-### Context-Saving Rules (from commands.md, repeated here for visibility)
-- Never hold raw Apify results in context. Save to `output/lead-gen/` immediately.
+### Context-Saving Rules
+- Never hold raw scrape results (Chrome, RSS, Apify) in context. Save to bus/ or `output/lead-gen/` immediately.
 - Never generate content for the wrong day (Tue=TL, Fri=Medium).
 - Step 5.9 Phase 2: score in batches of 10. Discard sub-10 immediately.
 - Step 5.9b: cap at 10 engagement targets.
 - Meeting prep: only today's meetings get full prep.
 - Steps 6-7: skip if context < 40%.
+
+---
+
+## 3b. Phase-to-Step ID Mapping
+
+The orchestrator runs phases 0-9. The logging/audit system uses step IDs. `bus-to-log.py` bridges between them.
+
+| Phase | Agents | Step IDs (for logging) |
+|-------|--------|----------------------|
+| 0: Preflight | 00-preflight, 00-session-bootstrap, canonical-digest.py | 0f_connection_check, 0a_checkpoint, 0b_missed_debrief, 0b.5_loop_escalation, 0c_load_canonical, 0c_canonical_digest, 0d_load_voice, 0e_load_audhd |
+| 1: Data Ingest | 01-calendar-pull, 01-gmail-pull, 01-notion-pull, 01-vc-pipeline-pull, copy-diff.py | 1_calendar, 1_gmail, 1_notion_actions, 1_notion_pipeline, 1_vc_pipeline, 1c_copy_diff |
+| 2: Analysis | 02-meeting-prep, 02-warm-intro-match, 02-x-activity | 2_meeting_prep, 1.5_warm_intro, 2.5_x_activity |
+| 3: LinkedIn | 03-linkedin-posts, 03-linkedin-dms, 03-prospect-pipeline, 03-content-intel | 3_linkedin_activity, 3.8_dm_check, 3.5_dp_pipeline, 3.7_content_intel |
+| 4: Content | 04-signals-content, 04-value-routing, 04-post-visuals, 04-founder-brand-post | 4_signals_linkedin, 4_x_signals, 4_x_hot_take, 4_x_bts, 4.1_value_drops |
+| 5: Pipeline | temperature-scoring.py, 05-lead-sourcing, 05-pipeline-followup, 05-loop-review, 05-connection-mining, 05-engagement-hitlist | 5.8_temperature_scoring, 5.9_lead_sourcing, 5.85_pipeline_followup, 5.86_loop_review, 5.9b_engagement_hitlist |
+| 6: Compliance | compliance-check.py, 06-positioning-check, 06-client-deliverables, 04-marketing-health, 06-sycophancy-audit | 6_decision_compliance, 7_positioning_freshness, 4.5_marketing_health |
+| 7: Synthesis | 07-synthesize | 8_briefing_output, 8.5_start_here |
+| 8: Build | build-schedule.py, 08-visual-verify, bus-to-log.py, audit-morning.py | 11_html_output |
+| 9: Notion | 09-notion-push, 10-daily-checklists | 9_notion_push, 10_daily_checklists |
 
 ---
 
@@ -198,33 +215,33 @@ Every step writes to `output/morning-log-YYYY-MM-DD.json` as it completes. This 
 
 ### How to Write the Log
 
-All logging uses the helper script `.q-system/log-step.sh`. One-liners, no python required:
+All logging uses the helper script `.q-system/log-step.py`. One-liners, no python required:
 
 ```bash
 # Create the log at session start:
-bash q-system/.q-system/log-step.sh DATE init
+python3 q-system/.q-system/log-step.py DATE init
 
 # Log a step (done/failed/skipped/partial):
-bash q-system/.q-system/log-step.sh DATE step_id done "result summary"
-bash q-system/.q-system/log-step.sh DATE step_id failed "" "error message"
-bash q-system/.q-system/log-step.sh DATE step_id skipped "" "reason"
+python3 q-system/.q-system/log-step.py DATE step_id done "result summary"
+python3 q-system/.q-system/log-step.py DATE step_id failed "" "error message"
+python3 q-system/.q-system/log-step.py DATE step_id skipped "" "reason"
 
 # Add an action card (for any founder-facing draft):
-bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person" "Text..." "https://url"
+python3 q-system/.q-system/log-step.py DATE add-card C1 linkedin_comment "Person" "Text..." "https://url"
 
 # Gate check (before Steps 8, 9, 11):
-bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""
-bash q-system/.q-system/log-step.sh DATE gate-check step_11 false "missing_step1,missing_step2"
+python3 q-system/.q-system/log-step.py DATE gate-check step_8 true ""
+python3 q-system/.q-system/log-step.py DATE gate-check step_11 false "missing_step1,missing_step2"
 
 # State checksums:
-bash q-system/.q-system/log-step.sh DATE checksum-start field_name value
-bash q-system/.q-system/log-step.sh DATE checksum-end field_name value
+python3 q-system/.q-system/log-step.py DATE checksum-start field_name value
+python3 q-system/.q-system/log-step.py DATE checksum-end field_name value
 
 # Mark cards as delivered (after HTML opens):
-bash q-system/.q-system/log-step.sh DATE deliver-cards
+python3 q-system/.q-system/log-step.py DATE deliver-cards
 
 # Verification queue:
-bash q-system/.q-system/log-step.sh DATE verify "claim text" "source file" true "confirmed"
+python3 q-system/.q-system/log-step.py DATE verify "claim text" "source file" true "confirmed"
 ```
 
 Every command writes directly to disk. Context rot cannot affect it.
@@ -237,61 +254,57 @@ Certain steps MUST NOT start until all prior steps are done or explicitly skippe
 
 ### Gate Definitions
 
-| Gate Step | Cannot Start Until | Why |
-|-----------|-------------------|-----|
-| **Step 8 (briefing output)** | Steps 1 through 5.9b all logged as done/skipped | Briefing must reflect ALL collected data, not partial |
-| **Step 9 (Notion push)** | Steps 1-8 done/skipped | Can't push actions that weren't generated |
-| **Step 11 (HTML output)** | Steps 1-10 all done/skipped | HTML is the final deliverable, must include everything |
+| Gate | Phase | Step ID | Cannot Start Until | Why |
+|------|-------|---------|-------------------|-----|
+| **Synthesis** | Phase 7 | 8_briefing_output | Phases 0-6 all logged as done/skipped | Briefing must reflect ALL collected data, not partial |
+| **Notion push** | Phase 9 | 9_notion_push | Phases 0-8 done/skipped | Can't push actions that weren't generated |
+| **HTML build** | Phase 8 | 11_html_output | Phases 0-7 done/skipped | HTML is the final deliverable, must include everything |
 
-### Deliverables Checklist (ENFORCED at Step 8 gate)
+### Deliverables Checklist (ENFORCED at Phase 7 gate)
 
-Before Step 8 can proceed, Claude MUST verify these deliverables exist in today's action cards or output files. Not "step logged" but "output produced."
+Before Phase 7 (synthesis) can proceed, Claude MUST verify these deliverables exist in bus/ JSON files. Not "step logged" but "output produced."
 
 **Day-invariant (every day):**
-- [ ] At least 3 pipeline follow-up items (Step 5.85) with copy-paste text. This means: Notion Contacts DB queried for warm/active contacts with Last Contact > 7 days, follow-up DMs/emails drafted for each, added to HTML. Checking who replied to YESTERDAY's messages is NOT the same as following up with the existing pipeline.
-- [ ] LinkedIn engagement comments with copy-paste text (Step 5.9b)
-- [ ] Connection requests with copy-paste notes (Step 5.9b)
-- [ ] LinkedIn Comments tab was checked (Step 3) - log must say "comments tab" not just "posts"
+- [ ] At least 3 pipeline follow-up items -- Phase 5, pipeline-followup.json (step ID: 5.85_pipeline_followup) -- with copy-paste text. Notion Contacts DB queried for warm/active contacts with Last Contact > 7 days, follow-up DMs/emails drafted for each.
+- [ ] LinkedIn engagement comments with copy-paste text -- Phase 5, hitlist.json (step ID: 5.9b_engagement_hitlist)
+- [ ] Connection requests with copy-paste notes -- Phase 5, hitlist.json (step ID: 5.9b_engagement_hitlist)
+- [ ] LinkedIn Comments tab was checked -- Phase 3, linkedin-posts.json (step ID: 3_linkedin_activity) -- log must say "comments tab" not just "posts"
 
 **Mon/Wed/Fri:**
-- [ ] Signals LinkedIn post with copy-paste text (Step 4)
-- [ ] X signals post, 280 char max (Step 4)
-- [ ] X hot take (Step 4)
-- [ ] X BTS post (Step 4)
+- [ ] Signals LinkedIn post with copy-paste text -- Phase 4, signals.json (step ID: 4_signals_linkedin)
+- [ ] X signals post, 280 char max -- Phase 4, signals.json (step ID: 4_x_signals)
+- [ ] X hot take -- Phase 4, signals.json (step ID: 4_x_hot_take)
+- [ ] X BTS post -- Phase 4, signals.json (step ID: 4_x_bts)
 
 **Monday additional:**
-- [ ] Medium draft, 800+ words (Step 4)
-- [ ] Content intelligence baselines updated (Step 3.7)
+- [ ] Medium draft, 800+ words -- Phase 4 (step ID: 4_medium_draft)
+- [ ] Content intelligence baselines updated -- Phase 3, content-intel.json (step ID: 3.7_content_intel)
 
 **Tue/Thu:**
-- [ ] TL LinkedIn post with copy-paste text (Step 4)
-- [ ] TL X post (Step 4)
+- [ ] TL LinkedIn post with copy-paste text -- Phase 4 (step ID: 4_tl_linkedin)
+- [ ] TL X post -- Phase 4 (step ID: 4_tl_x)
 
 **Loop checks (every day):**
-- [ ] Step 0b.5 ran (loop escalation)
-- [ ] Step 5.86 ran (loop review with follow-ups generated)
-- [ ] No level 3 loops remain unresolved (`bash q-system/.q-system/loop-tracker.sh list 3` returns empty)
+- [ ] Phase 0 loop escalation ran (step ID: 0b.5_loop_escalation)
+- [ ] Phase 5 loop review ran with follow-ups -- loop-review.json (step ID: 5.86_loop_review)
+- [ ] No level 3 loops remain unresolved (`python3 q-system/.q-system/loop-tracker.py list 3` returns empty)
 - [ ] Every action card generated today has a corresponding loop opened in `output/open-loops.json`
 
-**If any deliverable is missing:** Do NOT proceed to Step 8. Go back and generate it. The HTML is useless without copy-paste content.
+**If any deliverable is missing:** Do NOT proceed to Phase 7 (synthesis). Go back and generate it. The HTML is useless without copy-paste content.
 
-**Step 4.1 value drops:** REQUIRED (moved from optional). If today's signals match any active prospect by industry/role/tools, a personalized value-drop message MUST be generated. If no signals match any prospect, log "no matches" with the reason.
+**Phase 4 value drops (step ID: 4.1_value_drops):** REQUIRED. If today's signals match any active prospect by industry/role/tools, a personalized value-drop message MUST be generated. If no signals match any prospect, log "no matches" with the reason.
 
-**Step 3 LinkedIn Comments tab:** The step result must explicitly mention "comments tab checked" or it fails the deliverables check. Checking only the Posts tab is incomplete.
+**Phase 3 LinkedIn Comments tab:** The linkedin-posts.json result must explicitly mention "comments tab checked" or it fails the deliverables check. Checking only the Posts tab is incomplete.
 
 ---
 
-### Echo of Prompt (REQUIRED before every step)
+### Agent Prompt Loading (REQUIRED before every phase)
 
-Before executing ANY step, Claude MUST run the step loader to re-inject that step's requirements into context:
-```bash
-bash q-system/.q-system/step-loader.sh <step_number>
-```
-This combats "Lost in the Middle" - the research-proven phenomenon where LLMs forget instructions from earlier in the conversation. The step loader extracts the specific step definition from commands.md and prints it fresh. Claude MUST read this output before executing the step. This is NOT optional. Skipping the step loader is equivalent to skipping the step itself.
+Before executing ANY phase, Claude MUST read the agent prompt file from `.q-system/agent-pipeline/agents/` to load that phase's requirements into context. Each agent prompt is a standalone file with its own bus reads/writes, model allocation, and deliverables. This combats "Lost in the Middle" by keeping each agent's context fresh and focused.
 
 ### HTML Build Verification (AUTOMATIC)
 
-The build script (`build-schedule.sh`) automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
+The build script (`build-schedule.py`) automatically runs `verify-schedule.py` before generating HTML. If verification fails, the HTML is NOT built. Claude cannot bypass this. The verification checks:
 - Pipeline follow-ups section exists with 3+ items with copy-paste text
 - Day-specific content exists (signals Mon/Wed/Fri, TL Tue/Thu, Medium Mon, Kipi Wed)
 - Section ordering is correct (follow-ups before new leads)
@@ -453,7 +466,7 @@ Claims that cross sessions get verified. Q does not trust data older than 48 hou
 
 | Claim Type | How to Verify | Staleness Threshold |
 |------------|--------------|-------------------|
-| "Commented on [person]'s post" | Check LinkedIn via Chrome (Comments tab) or Apify | 24h |
+| "Commented on [person]'s post" | Check LinkedIn via Chrome (Comments tab) | 24h |
 | "Sent DM to [person]" | Check LinkedIn messaging via Chrome | 24h |
 | "[Person] accepted connection" | Check invitation-manager via Chrome | 48h |
 | "Email sent to [person]" | Check Gmail sent folder | 48h |
