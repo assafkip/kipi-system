@@ -98,14 +98,9 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── modes.md
 │   │   └── reference.md
 │   │
-│   ├── memory/                       # Time-stratified memory
-│   │   ├── working/                  # Ephemeral <48h (GITIGNORED except .gitkeep)
-│   │   ├── weekly/                   # 7-day rolling
-│   │   ├── monthly/                  # Persistent insights
-│   │   ├── graph.jsonl               # Entity-relationship triples
-│   │   ├── last-handoff.md           # Session continuity
-│   │   ├── marketing-state.md        # Content pipeline state
-│   │   └── sycophancy-log.json       # Rolling audit log
+│   ├── memory/                       # Session state (lightweight)
+│   │   ├── last-handoff.md           # Session continuity (written by /q-handoff)
+│   │   └── sycophancy-log.json       # Rolling bias audit log
 │   │
 │   ├── hooks/                        # Session lifecycle scripts
 │   │   ├── session-start.py          # Once-daily context injection (PreToolUse sentinel)

@@ -22,12 +22,9 @@ q-system/output/marketing/linkedin/*
 
 # Session transcripts
 *.jsonl
-!q-system/memory/graph.jsonl
 
-# Working memory (ephemeral, don't commit)
-q-system/memory/working/*
-!q-system/memory/working/.gitkeep
-!q-system/memory/working/predictions.jsonl
+# SQLite databases (generated at runtime)
+*.db
 
 # Generated sites
 sites/
