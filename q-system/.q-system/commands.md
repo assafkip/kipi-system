@@ -11,7 +11,7 @@
 | `/q-debrief [person]` | Enter Debrief mode. Use the structured debrief template to process a conversation. Includes 12 strategic implications lenses, market intelligence routing, and **Design Partner Conversion** (mandatory for practitioner/CISO calls - produces copy-paste message to convert conversation into trial). **Highest-priority workflow.** | DEBRIEF |
 | `/q-plan` | Enter Plan mode. Review relationships, objections, and proof gaps. Propose prioritized next actions. | PLAN |
 | `/q-draft [type] [audience]` | Generate an ad-hoc output to `output/drafts/`. For one-off emails, DMs, talking points. Ephemeral. | CREATE |
-| `/q-ingest-feedback [file]` | Process a feedback file from `seed-materials/`. Extract objections, resonance phrases, competitive intel, market intelligence, and contact context into canonical files. Also evaluates for market intelligence (problem language, category signals, objection previews, competitive intel, buyer process, narrative validation) and routes to `canonical/market-intelligence.md`. | CALIBRATE |
+| `/q-ingest-feedback [file]` | Process a feedback file from `q-system/output/`. Extract objections, resonance phrases, competitive intel, market intelligence, and contact context into canonical files. Also evaluates for market intelligence (problem language, category signals, objection previews, competitive intel, buyer process, narrative validation) and routes to `canonical/market-intelligence.md`. | CALIBRATE |
 | `/q-checkpoint` | Save current canonical state. Verify all files are consistent. Log to `my-project/progress.md`. Update `memory/morning-state.md` checkpoint timestamp. | — |
 | `/q-end` | End session. Auto-runs `/q-checkpoint` first, then summarizes all changes. | — |
 | `/q-sync-notion` | Sync local files ↔ Notion CRM. Push new contacts/interactions/pipeline changes to Notion. Pull follow-up date changes and status updates from Notion back to local files. | CALIBRATE |
@@ -35,7 +35,7 @@
 - **Debriefs happen automatically.** Paste a conversation transcript and Claude auto-runs `/q-debrief`. No command needed. If you forget, `/q-morning` catches missed debriefs the next day.
 - `/q-begin`, `/q-end`, and `/q-checkpoint` still work if you want to use them manually, but they're no longer required.
 - **`/q-draft` vs `/q-create`:** Use `/q-create` for structured deliverables (talk tracks, workflow packs). Use `/q-draft` for one-off outputs (specific email, DM, talking points for a meeting).
-- **`/q-ingest-feedback [file]`** expects a file in `seed-materials/`. Place the file there first.
+- **`/q-ingest-feedback [file]`** expects a file in `q-system/output/`. Place the file there first.
 - **Modes are not sequential.** Switch freely. You can `/q-debrief` then immediately `/q-plan` then `/q-create`.
 
 ## Example Flows
