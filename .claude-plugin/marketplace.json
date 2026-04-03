@@ -7,7 +7,7 @@
     {
       "name": "kipi-core",
       "source": "./plugins/kipi-core",
-      "description": "AUDHD executive function + founder voice enforcement",
+      "description": "AUDHD executive function, founder voice enforcement, and research mode",
       "version": "1.0.0"
     },
     {

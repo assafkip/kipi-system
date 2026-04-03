@@ -3,7 +3,7 @@
     "core": {
       "description": "Every project gets these",
       "plugin": "kipi-core",
-      "skills": ["audhd-executive-function", "founder-voice"]
+      "skills": ["audhd-executive-function", "founder-voice", "research-mode"]
     },
     "founder-ops": {
       "description": "Projects that run GTM, pipeline, relationships",

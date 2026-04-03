@@ -14,6 +14,7 @@
 - [ ] Does NOT misclassify the product
 - [ ] Uses approved language from talk-tracks.md
 - [ ] No overclaiming ({{UNVALIDATED}} markers respected)
+- [ ] Factual claims backed by canonical files or sources (use `/q-research` for verification)
 
 ### 3. Anti-AI Check
 - [ ] No "Furthermore/Moreover/Additionally" paragraph openers

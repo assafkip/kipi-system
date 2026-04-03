@@ -26,8 +26,9 @@ Fill these in during setup. The orchestrator substitutes them at runtime.
 | `{{CANONICAL_DIR}}` | `q-system/canonical` | Canonical source-of-truth files |
 | `{{OUTPUT_DIR}}` | `q-system/output` | Generated output directory |
 | `{{MEMORY_DIR}}` | `q-system/memory` | Time-stratified memory directory |
-| `{{VOICE_SKILL_PATH}}` | `.claude/skills/founder-voice/SKILL.md` | Voice consistency skill |
-| `{{AUDHD_SKILL_PATH}}` | `.claude/skills/audhd-executive-function/SKILL.md` | Actionability skill |
+| `{{VOICE_SKILL_PATH}}` | `plugins/kipi-core/skills/founder-voice/SKILL.md` | Voice consistency skill |
+| `{{AUDHD_SKILL_PATH}}` | `plugins/kipi-core/skills/audhd-executive-function/SKILL.md` | Actionability skill |
+| `{{RESEARCH_SKILL_PATH}}` | `plugins/kipi-core/skills/research-mode/SKILL.md` | Citation-enforced research mode |
 | `{{SCHEDULE_SCHEMA_PATH}}` | `q-system/marketing/templates/schedule-data-schema.md` | Daily schedule JSON schema |
 
 ## External APIs (fill if using these integrations)

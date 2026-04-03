@@ -24,7 +24,7 @@
 
 **On-demand connections:** After setup, users can say "connect my [tool]" at any time and get walked through the matching guide from `guides/`.
 
-**Resume interrupted setup:** If `{{SETUP_NEEDED}}` is present but founder-profile.md has partial data, resume from where they left off.
+**Resume interrupted setup:** If `{{SETUP_NEEDED}}` is present but founder-profile.md has actual filled-in data (not blank template fields), resume from where they left off. **Only check the file itself** - do not infer setup state from global CLAUDE.md, system prompts, or other context. If the fields are blank/templated, it's a fresh install regardless of what you know about the user.
 
 ---
 
@@ -104,7 +104,7 @@ The SessionStart hook auto-injects last handoff and founder context. The PostCom
 ## Skills and Plugins
 
 Skills are distributed via the kipi marketplace (`.claude-plugin/marketplace.json`), not `.claude/skills/`:
-- **kipi-core** - audhd-executive-function, founder-voice (every instance)
+- **kipi-core** - audhd-executive-function, founder-voice, research-mode (every instance)
 - **kipi-ops** - council, customer-fit-review (GTM instances)
 - **kipi-design** - ui-ux-pro-max, brand, design (design instances)
 
@@ -142,3 +142,4 @@ These rules auto-load based on which files you're working with:
 - `auto-detection.md` - transcript/screenshot/council auto-triggers
 - `sycophancy.md` - anti-sycophancy + decision tagging (loads for pipeline/decisions files)
 - `morning-pipeline.md` - preflight, audit harness, agent pipeline (loads for .q-system files)
+- `dev-skills-auto-invoke.md` - skill/MCP/plugin/hook dev skills (loads for plugins/skills/agent files)

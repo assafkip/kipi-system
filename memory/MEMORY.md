@@ -40,3 +40,4 @@
 - AUDHD: friction-ordered, copy-paste-ready, no shame/pressure language
 - Anti-misclassification: never describe product as something it's not
 - Token discipline: diagnose before retry, 10-call checkpoint, no brute force
+- Research mode: `/q-research` toggles citation enforcement, every claim needs a source
