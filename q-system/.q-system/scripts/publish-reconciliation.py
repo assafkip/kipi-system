@@ -100,17 +100,18 @@ def extract_drafts(notion_data):
     return drafts
 
 
-def parse_marketing_state(path):
-    """Parse weekly targets from marketing-state.md."""
-    targets = {"linkedin": 0, "x": 0}
+def parse_posting_targets():
+    """Read weekly posting targets from _cadence-config.md or use defaults.
+    Defaults from cadence config: LinkedIn 3-5/week, X 15-25/week."""
+    targets = {"linkedin": 4, "x": 20}
+    cadence_path = os.path.join(QROOT, ".q-system", "agent-pipeline", "agents", "_cadence-config.md")
     try:
-        with open(path) as f:
+        with open(cadence_path) as f:
             content = f.read()
-        # Look for target lines like "LinkedIn: target 3/week"
-        m = re.search(r'LinkedIn.*?(\d+)/week', content, re.IGNORECASE)
+        m = re.search(r'LinkedIn\s*\|\s*(\d+)', content)
         if m:
             targets["linkedin"] = int(m.group(1))
-        m = re.search(r'X.*?(\d+)/week', content, re.IGNORECASE)
+        m = re.search(r'\|\s*X\s*\|\s*(\d+)', content)
         if m:
             targets["x"] = int(m.group(1))
     except FileNotFoundError:
@@ -139,8 +140,7 @@ def main():
     founder_posts = extract_founder_posts(linkedin_data) + extract_x_posts(x_data)
     drafts = extract_drafts(notion_data)
 
-    marketing_state_path = os.path.join(QROOT, "memory", "marketing-state.md")
-    targets = parse_marketing_state(marketing_state_path)
+    targets = parse_posting_targets()
 
     # Reconcile
     reconciled = []

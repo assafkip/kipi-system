@@ -21,22 +21,27 @@
     },
     "tools": {
       "type": "object",
-      "required": ["calendar", "gmail", "notion"],
+      "required": ["calendar", "gmail", "notion", "chrome"],
       "properties": {
         "calendar": { "type": "boolean" },
         "gmail": { "type": "boolean" },
         "notion": { "type": "boolean" },
+        "chrome": { "type": "boolean" },
+        "apify": { "type": ["boolean", "string"], "description": "true, false, or 'fallback_chrome'. X/Twitter only." },
+        "reddit_mcp": { "type": ["boolean", "string"], "description": "true, false, or 'skipped'. Reddit MCP server. No Chrome fallback." },
+        "rss_feeds": { "type": ["boolean", "string"], "description": "true, false, or 'fallback_chrome'. Medium/Substack only." },
         "vc_pipeline": { "type": ["boolean", "string"] }
       }
     },
     "files": {
       "type": "object",
-      "required": ["handoff", "talk_tracks", "objections", "relationships"],
+      "required": ["handoff", "talk_tracks", "objections", "relationships", "lead_sources"],
       "properties": {
         "handoff": { "type": "boolean" },
         "talk_tracks": { "type": "boolean" },
         "objections": { "type": "boolean" },
-        "relationships": { "type": "boolean" }
+        "relationships": { "type": "boolean" },
+        "lead_sources": { "type": "boolean" }
       }
     }
   }

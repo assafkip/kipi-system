@@ -109,8 +109,8 @@ During setup, Kipi will ask about connecting your tools. Here's a preview of wha
 | **Notion** | Tracks your contacts, pipeline, and actions | Recommended if you use Notion |
 | **Google Calendar** | Lets Kipi see your meetings and prep you | Recommended |
 | **Gmail** | Draft follow-up emails, track threads | Recommended |
-| **Apify** | Research people, find LinkedIn posts | Optional, great for sales/outreach |
-| **LinkedIn** | Engage with posts, send DMs via Chrome | Optional, for active LinkedIn users |
+| **LinkedIn (Chrome)** | See profiles, posts, DMs, engage on LinkedIn | Recommended for active LinkedIn users |
+| **Apify** | X/Twitter scraping for engagement and leads | Optional |
 | **Gamma** | Create pitch decks and one-pagers | Optional |
 
 **You don't need any of these to start.** Kipi works with zero tools connected. You can add them one at a time whenever you're ready.

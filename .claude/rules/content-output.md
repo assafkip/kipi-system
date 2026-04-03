@@ -1,4 +1,5 @@
 ---
+description: Output format rules for generated content and marketing assets
 paths:
   - "q-system/output/**"
   - "q-system/marketing/**"

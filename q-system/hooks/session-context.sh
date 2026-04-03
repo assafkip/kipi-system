@@ -6,19 +6,19 @@ set -euo pipefail
 # Exit 0 always (never blocks)
 
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-.}"
-QROOT="$PROJ_DIR/q-system"
+# Auto-detect QROOT: subtree instances have q-system/q-system/, skeleton has q-system/
+if [ -d "$PROJ_DIR/q-system/q-system/canonical" ]; then
+  QROOT="$PROJ_DIR/q-system/q-system"
+else
+  QROOT="$PROJ_DIR/q-system"
+fi
 
 echo "=== Session Context ==="
 echo "Date: $(date '+%Y-%m-%d %A')"
 echo ""
 
-# Last handoff (first 50 lines)
-HANDOFF="$QROOT/memory/last-handoff.md"
-if [ -f "$HANDOFF" ] && [ -s "$HANDOFF" ]; then
-  echo "--- Last Session Handoff ---"
-  head -50 "$HANDOFF"
-  echo ""
-fi
+# Last handoff is loaded by session-start.py (richer context with cards + loops).
+# Skip here to avoid duplicate output.
 
 # Energy mode from founder profile
 PROFILE="$QROOT/my-project/founder-profile.md"

@@ -41,7 +41,7 @@ REQUIRED_DIRS = [
     "q-system/.q-system",
     "q-system/.q-system/scripts",
     "q-system/.q-system/data",
-    "q-system/.q-system/steps",
+    "q-system/.q-system/agent-pipeline/schemas",
     "q-system/.q-system/onboarding",
     "q-system/.q-system/agent-pipeline",
     "q-system/.q-system/agent-pipeline/agents",
@@ -278,7 +278,7 @@ def main():
     if os.path.isdir(commands_dir):
         cmd_files = [f for f in os.listdir(commands_dir) if f.endswith(".md")]
         if cmd_files:
-            warnings.append(f".claude/commands/ has {len(cmd_files)} files - migrate to .claude/skills/")
+            warnings.append(f".claude/commands/ has {len(cmd_files)} files - migrate to plugins/<group>/skills/")
 
     # Output
     result = {

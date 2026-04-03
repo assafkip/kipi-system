@@ -1,7 +1,8 @@
-# Secrets (local settings with real tokens)
+# Secrets and local overrides
 .env
 *.env
 .claude/settings.local.json
+CLAUDE.local.md
 
 # OS
 .DS_Store

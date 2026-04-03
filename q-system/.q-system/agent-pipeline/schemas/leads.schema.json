@@ -16,6 +16,16 @@
     "generated_by": {
       "type": "string"
     },
+    "platform_errors": {
+      "type": "object",
+      "description": "Per-platform error tracking. Only present if a platform failed. Orchestrator reads this to decide which fallback to trigger.",
+      "properties": {
+        "linkedin": { "type": "string", "description": "Chrome failed for LinkedIn" },
+        "reddit": { "type": "string", "description": "Reddit MCP failed" },
+        "medium": { "type": "string", "description": "RSS/WebSearch failed for Medium" },
+        "x": { "type": "string", "description": "Apify failed for X/Twitter" }
+      }
+    },
     "run_summary": {
       "type": "object",
       "required": ["linkedin_fetched", "reddit_fetched", "medium_fetched", "x_fetched", "tier_a", "tier_b", "tier_c", "discarded"],

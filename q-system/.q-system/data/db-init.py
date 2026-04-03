@@ -46,12 +46,14 @@ CREATE TABLE IF NOT EXISTS outreach_log (
 -- Copy edit tracking
 CREATE TABLE IF NOT EXISTS copy_edits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    contact_name TEXT NOT NULL,
+    action_type TEXT,
+    original TEXT NOT NULL,
+    edited TEXT NOT NULL DEFAULT '',
+    edit_summary TEXT,
     outreach_log_id INTEGER REFERENCES outreach_log(id),
-    original_text TEXT NOT NULL,
-    edited_text TEXT NOT NULL,
-    edit_date TEXT NOT NULL,
-    diff_summary TEXT,
-    context TEXT
+    UNIQUE(date, contact_name, action_type)
 );
 
 -- Behavioral signals from LinkedIn

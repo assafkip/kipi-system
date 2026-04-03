@@ -5,8 +5,8 @@ Read by agents that generate content or manage prospect touchpoints.
 Updated when strategy changes - not by agents, only by the founder.
 
 ## Sources
-- `.agents/skills/social-content/references/platforms.md` (platform-specific cadence)
-- `.agents/skills/cold-email/references/follow-up-sequences.md` (outreach timing)
+- `q-system/marketing/content-themes.md` (platform-specific cadence)
+- `q-system/canonical/engagement-playbook.md` (outreach timing)
 - LinkedIn limits research: LinkedSDR, PhantomBuster, Evaboot (2025-2026)
 - B2B outreach cadence: SalesBread, Callbox, Martal (2025-2026)
 - Reddit B2B: Syndr, influencers-time (2025)

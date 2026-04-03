@@ -16,21 +16,24 @@ You are a data-pull agent. Your ONLY job is to fetch Notion CRM data and write i
 
 Read `q-system/my-project/notion-ids.md` first to get all database IDs and data_source_ids.
 
-Use Notion MCP tools: `mcp__notion_api__API-query-data-source` with the `data_source_id` parameter (full UUID). Do NOT use `mcp__notion__*` or `mcp__claude_ai_Notion__*` - those are wrong prefixes. Do NOT use database_id for queries - the API needs data_source_id.
+Use cloud Notion MCP tools (`mcp__claude_ai_Notion__*`). Read database IDs from `q-system/my-project/notion-ids.md`.
 
-1. **Contacts DB** (data_source_id from notion-ids.md: Contacts data_source_id)
+1. **Contacts DB** (ID from notion-ids.md)
+   - Use `mcp__claude_ai_Notion__notion-fetch` with the database URL
    - Filter: Type = "Prospect" OR Type = "Customer" OR Type = "Partner" (adjust to your contact types)
    - Fields: Name, Type, Company, Role, Last Contact, Stage, LinkedIn URL
 
-2. **Actions DB** (data_source_id from notion-ids.md: Actions data_source_id)
+2. **Actions DB** (ID from notion-ids.md)
+   - Use `mcp__claude_ai_Notion__notion-fetch` with the database URL
    - Filter: Priority = "Today" or "This Week"
    - Fields: Action (title), Priority, Type, Energy, Time Est, Due, Contact, Status, Notes
 
-3. **Pipeline DB** (data_source_id from notion-ids.md: Pipeline data_source_id)
+3. **Pipeline DB** (ID from notion-ids.md)
+   - Use `mcp__claude_ai_Notion__notion-fetch` with the database URL
    - Filter: Stage NOT "Passed" and NOT "Closed Lost"
    - Fields: Name (title), Stage, Fit, Next Step, Next Date
 
-4. **LinkedIn Tracker DB** - search for it first using `mcp__notion_api__API-post-search` with query "LinkedIn Tracker" and filter `{"property": "object", "value": "data_source"}`. Then query with the returned data_source_id.
+4. **LinkedIn Tracker DB** - use `mcp__claude_ai_Notion__notion-search` with query "LinkedIn Tracker" to find the database, then fetch with its URL.
    - Filter: last 7 days
    - Fields: Contact, Type, Date, Status
 

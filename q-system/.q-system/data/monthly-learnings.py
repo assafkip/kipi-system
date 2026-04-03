@@ -19,8 +19,8 @@ def analyze_edits(days=30):
     since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     edits = db.execute(
-        "SELECT original_text, edited_text, diff_summary, context, edit_date "
-        "FROM copy_edits WHERE edit_date >= ? ORDER BY edit_date DESC",
+        "SELECT original, edited, edit_summary, action_type, date "
+        "FROM copy_edits WHERE date >= ? ORDER BY date DESC",
         (since,)
     ).fetchall()
 
@@ -30,12 +30,12 @@ def analyze_edits(days=30):
         return
 
     # Analyze patterns
-    context_counts = Counter()
+    action_type_counts = Counter()
     summary_words = Counter()
     length_changes = []
 
-    for orig, edited, summary, context, date in edits:
-        context_counts[context] += 1
+    for orig, edited, summary, action_type, date in edits:
+        action_type_counts[action_type or "unknown"] += 1
         if summary:
             for word in summary.lower().split():
                 summary_words[word] += 1
@@ -56,9 +56,9 @@ def analyze_edits(days=30):
 - Period: last {days} days (since {since})
 - Average length change: {avg_length_change}% (negative = shorter)
 
-## Edit frequency by context
+## Edit frequency by action type
 """
-    for ctx, count in context_counts.most_common():
+    for ctx, count in action_type_counts.most_common():
         report += f"- {ctx}: {count} edits\n"
 
     report += "\n## Common edit patterns\n"

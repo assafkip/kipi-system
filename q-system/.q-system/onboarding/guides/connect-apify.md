@@ -1,7 +1,7 @@
 # Connect Apify
 
 ## What This Does
-Apify lets Kipi look up LinkedIn profiles, find relevant posts, scrape public data from social media, and research prospects. It's the research engine behind lead sourcing and engagement features.
+Apify lets Kipi scrape X/Twitter posts and engagement data. It's used only for X/Twitter in this system. LinkedIn uses Chrome browser, Reddit uses its own MCP server, Medium uses RSS feeds.
 
 ## What the User Needs
 - An Apify account (free tier gives ~$5/month of credits, enough for light use)
@@ -13,13 +13,12 @@ Apify lets Kipi look up LinkedIn profiles, find relevant posts, scrape public da
 
 Say:
 
-> "Let's connect Apify - this is your research engine. It lets me:
-> - Look up LinkedIn profiles for people you're meeting
-> - Find relevant LinkedIn posts for engagement
-> - Research prospects and companies
-> - Scan Reddit, Twitter, and the web for relevant conversations
+> "Let's connect Apify - this handles X/Twitter data for me. It lets me:
+> - Pull your X/Twitter posts with engagement metrics
+> - Search X for relevant conversations and reply opportunities
+> - Monitor key accounts on X for engagement targets
 >
-> Apify has a free tier that's enough to get started. You only pay more if you use it heavily."
+> Apify has a free tier that's enough to get started. LinkedIn, Reddit, and Medium don't need Apify at all."
 
 ### Part 2: Create Account
 
@@ -49,22 +48,22 @@ Save to `.mcp.json`:
       "args": ["-y", "@apify/actors-mcp-server@0.9.10"],
       "env": {
         "APIFY_TOKEN": "[their token]",
-        "TOOLS": "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"
+        "TOOLS": "actors,curious_coder/twitter-scraper"
       }
     }
   }
 }
 ```
 
-> "Connected! I can now research people and find social media posts for you."
+> "Connected! I can now pull X/Twitter posts and engagement data for you."
 
 ### Part 4: Brief on Costs
 
 > "Quick heads up on costs:
 > - Apify gives you about $5 free every month
-> - Looking up a LinkedIn profile uses about $0.01-0.05
-> - Scraping a batch of posts costs a bit more
-> - For normal daily use, you'll probably spend $5-15/month
+> - We only use Apify for X/Twitter scraping now (not LinkedIn or Reddit)
+> - A typical daily run costs less than $0.50
+> - For normal use, you'll probably spend $2-5/month
 >
 > If you want to set a spending limit, go to **Settings > Billing** on apify.com."
 
@@ -75,4 +74,4 @@ Save to `.mcp.json`:
 | "I can't find the API token" | "Go to apify.com, click your profile icon (top right), then Settings, then Integrations. The token is right there." |
 | "It says I need to verify my email" | "Check your inbox for a verification email from Apify. Click the link, then come back and try again." |
 | "I don't want to pay for anything" | "The free tier works fine for light use. If you go over, Apify just pauses until next month. No surprise charges unless you add a payment method." |
-| "Is this legal? Scraping LinkedIn?" | "Apify uses LinkedIn's public data, similar to what anyone can see by visiting a profile. It's a widely used service by sales and marketing teams." |
+| "Is this legal? Scraping X/Twitter?" | "Apify reads publicly available tweets. It's a widely used service by sales and marketing teams. We don't use Apify for LinkedIn - that uses your own browser." |

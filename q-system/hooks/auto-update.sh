@@ -7,7 +7,12 @@ set -euo pipefail
 # Exit 0 always (never blocks session start).
 
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-.}"
-SENTINEL_DIR="$PROJ_DIR/q-system/output"
+# Auto-detect: subtree instances have q-system/q-system/, skeleton has q-system/
+if [ -d "$PROJ_DIR/q-system/q-system/canonical" ]; then
+  SENTINEL_DIR="$PROJ_DIR/q-system/q-system/output"
+else
+  SENTINEL_DIR="$PROJ_DIR/q-system/output"
+fi
 TODAY=$(date '+%Y-%m-%d')
 SENTINEL="$SENTINEL_DIR/.update-check-$TODAY"
 
@@ -42,6 +47,13 @@ if git cat-file -e "$REMOTE_HEAD" 2>/dev/null; then
   exit 0
 fi
 
+# Check for clean working tree before attempting pull
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  # Dirty tree - skip silently (don't pollute session start with noise)
+  touch "$SENTINEL"
+  exit 0
+fi
+
 # Updates available - pull subtree
 echo "=== Kipi Update Available ==="
 echo "Pulling latest skeleton into q-system/..."
@@ -49,7 +61,7 @@ echo "Pulling latest skeleton into q-system/..."
 if git subtree pull --prefix=q-system "$REMOTE" main --squash -m "chore: auto-update kipi skeleton $(date '+%Y-%m-%d')" 2>&1; then
   echo "Updated successfully."
 else
-  echo "Update failed (likely uncommitted changes). Run 'kipi update' manually."
+  echo "Update failed. Run 'kipi update' manually."
 fi
 
 touch "$SENTINEL"

@@ -1,4 +1,5 @@
 ---
+description: Security rules for secrets, credentials, and dangerous operations
 paths:
   - "**/*"
 ---
