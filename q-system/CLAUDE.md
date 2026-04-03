@@ -2,84 +2,29 @@
 
 ## First-Run Setup
 
-**If `q-system/my-project/founder-profile.md` contains `{{SETUP_NEEDED}}`, this is a fresh install. Run the setup wizard before doing anything else.**
+**If `q-system/my-project/founder-profile.md` contains `{{SETUP_NEEDED}}`, this is a fresh install. Run the onboarding flow before doing anything else.**
 
-When the user starts their first session, walk them through setup step by step. Do NOT dump all questions at once. Ask one category at a time, confirm, move to the next. Use a conversational tone.
+**Read `.q-system/onboarding/setup-flow.md` and follow it exactly.** The onboarding flow:
 
-### Setup Wizard Flow
+1. Detects the user's archetype (what kind of user they are)
+2. Walks them through connecting only the tools relevant to their archetype
+3. Collects their identity, positioning, voice, and network info
+4. Sets up their CRM (Notion or local files)
+5. Tests every connection live and confirms everything works
+6. Handles errors gracefully - skip and come back later, never block
 
-**Step 1: Who are you?**
-Ask:
-- What's your name?
-- What's your role? (founder, operator, executive, etc.)
-- What's your company/project name?
-- What do you sell / what are you building? (one sentence)
-- What stage are you at? (idea, pre-seed, seed, Series A, growth)
-- Do you have a co-founder? If so, name and role.
+**Key files for onboarding:**
+- `.q-system/onboarding/setup-flow.md` - The full step-by-step flow (READ THIS FIRST)
+- `.q-system/onboarding/archetypes.md` - User types and which integrations each needs
+- `.q-system/onboarding/guides/connect-*.md` - Per-integration walk-throughs (non-technical language)
+- `.q-system/onboarding/validators/test-*.md` - Live connection tests
+- `.q-system/onboarding/settings-builder.md` - How to assemble .mcp.json and config files
 
-Save answers to `q-system/my-project/founder-profile.md`.
+**Tone:** Talk like a helpful friend. Never say "MCP server," "API key," "environment variable," or "JSON." Say "connect your Notion," "your personal access code," "settings." One question at a time. Celebrate each connection.
 
-**Step 2: Who do you sell to?**
-Ask:
-- Who is your target buyer? (title, department, company size)
-- What industry/vertical?
-- What's the pain you solve? (in the buyer's words, not yours)
-- What do they use today instead of you? (competitors or manual process)
-- What's your price point or deal size? (if known)
+**On-demand connections:** After setup, users can say "connect my [tool]" at any time and get walked through the matching guide from `guides/`.
 
-Save answers to `q-system/my-project/current-state.md` and `q-system/canonical/discovery.md`.
-
-**Step 3: What's your positioning?**
-Ask:
-- Do you have a one-liner? ("We help [who] do [what] by [how]")
-- Any metaphors or analogies that have landed in conversations?
-- What are you NOT? (common misclassifications)
-- What are the top 3 objections you hear?
-
-Save to `q-system/canonical/talk-tracks.md`, `q-system/canonical/objections.md`.
-
-**Step 4: Your voice**
-Ask:
-- How would you describe your writing style? (direct, casual, academic, etc.)
-- Any words or phrases you naturally use?
-- Any words or phrases you hate? (buzzwords, corporate speak, etc.)
-- What language/communication patterns should I know about? (ESL, neurodivergent, etc.)
-- Share 2-3 examples of messages or posts you've written that sound like you (paste or link)
-
-Save to `.claude/skills/founder-voice/references/voice-dna.md` and `writing-samples.md`.
-
-**Step 5: Your tools**
-Walk them through MCP server setup:
-- "Do you use Notion? If so, let's set up the Notion MCP server."
-- "Do you use Google Calendar? Gmail?"
-- "Do you have a LinkedIn account you want to manage from here?"
-- "Do you have an Apify account for data scraping? (optional but powerful)"
-
-For each tool they want, provide the exact `settings.json` snippet to add. Show them how to edit `~/.claude/settings.json`.
-
-**Step 6: Your CRM**
-If they have Notion:
-- Create the database structure (Contacts, Interactions, Actions, Pipeline, LinkedIn Tracker, Content Pipeline)
-- Walk them through connecting each DB
-- Save all database IDs to `q-system/my-project/notion-ids.md`
-
-If no Notion:
-- The system works with local files only. Relationships.md becomes the canonical CRM.
-
-**Step 7: Your network**
-Ask:
-- Who are your top 10 contacts right now? (name, role, company, relationship status)
-- Any investors you're talking to?
-- Any design partners or early customers?
-- Any advisors or connectors?
-
-Populate `q-system/my-project/relationships.md`.
-
-**Step 8: Confirmation**
-Show a summary of everything configured. Ask if anything needs adjusting. Then:
-- Remove `{{SETUP_NEEDED}}` from founder-profile.md
-- Run `/q-begin` to verify everything loads
-- Suggest running `/q-morning` tomorrow to see the system in action
+**Resume interrupted setup:** If `{{SETUP_NEEDED}}` is present but founder-profile.md has partial data, resume from where they left off.
 
 ---
 
@@ -158,6 +103,7 @@ This system operates in **4 modes** (not stages). The founder switches freely be
 - `my-project/competitive-landscape.md` = substitute buckets
 - `canonical/lead-lifecycle-rules.md` = when to kill/park/re-engage leads (ENFORCED in morning routine + hitlist generation)
 - `canonical/engagement-playbook.md` = social engagement rules + comment strategy
+- `canonical/decisions.md` = decision log with origin tags (includes `[COUNCIL-DEBATED]` for council-reviewed decisions)
 - `canonical/market-intelligence.md` = buyer language, category signals, competitive intel, and narrative validation from external content (LinkedIn, Reddit, Medium, X). Auto-populated during lead sourcing and engagement. Read before generating any marketing content or outreach.
 
 ## Language Rules
@@ -206,6 +152,22 @@ Read `.claude/skills/founder-voice/references/voice-dna.md` and `.claude/skills/
 
 No exceptions. If the output is text that another person will read, it goes through the voice skill.
 
+## Design Skill Auto-Invocation (ENFORCED)
+
+When building any webpage, landing page, UI component, or visual output, the design skills fire automatically:
+
+| Trigger | Skill | What it does |
+|---------|-------|-------------|
+| Building ANY webpage, landing page, UI, or HTML | `ui-ux-pro-max` | Generates design system (pattern, style, colors, typography) BEFORE code |
+| Styling with Tailwind, shadcn/ui, or CSS | `ui-styling` | Component styling rules + accessibility |
+| Creating design tokens or component specs | `design-system` | Token architecture, spacing/type scales |
+| Brand-related output (logo, identity, guidelines) | `brand` | Brand voice, visual identity, messaging |
+| Banners, social images, ad creatives | `banner-design` | Platform-specific sizing + art direction |
+| HTML presentations or slide decks | `slides` | Chart.js, design tokens, slide strategy |
+| Comprehensive design (identity + tokens + all) | `design` | Orchestrates all design sub-skills |
+
+**Rule:** ALWAYS run `ui-ux-pro-max` first to generate the design system BEFORE writing any HTML/CSS/JS. The design system output becomes the spec for the build. Do not skip this.
+
 ## Marketing System
 
 A full marketing automation system lives in `marketing/`. See `marketing/README.md` for overview.
@@ -241,6 +203,34 @@ When the founder pastes or uploads a conversation transcript, meeting notes, voi
 ### Social post screenshot shared
 Already handled by `/q-engage` reactive mode (see commands.md). Evaluates post content for market intelligence first (6 lenses), then generates 1 best comment (not 2-3 options). System picks the style. Founder can ask for alternatives if needed.
 
+### Council auto-trigger (no command needed)
+The `council` skill fires automatically in these situations:
+
+**During `/q-calibrate`:** Before writing ANY change to a canonical file, run a Quick Council check. The 4 personas (Operator, Buyer, Investor, Contrarian) weigh in on the proposed change. If 2+ personas object, surface the dissent before writing. The founder decides, but they see the tension first.
+
+**During `/q-debrief` with conflicting signals:** If the debrief surfaces information that contradicts an existing canonical file entry (e.g., a buyer says the opposite of what talk-tracks.md claims), auto-run a Quick Council: "Is this new signal or noise?" Log the result.
+
+**Design partner feature requests:** If a debrief or conversation contains a feature request that doesn't map to anything in `q-system/my-project/current-state.md` (current or planned), auto-run a Quick Council: "Build it / Park it / Counter-offer." The Operator checks feasibility, Buyer checks demand, Investor checks narrative fit, Contrarian checks if it pulls off-wedge.
+
+**Competitive moves:** If morning routine or debrief surfaces a competitor action (new feature, funding round, positioning change), auto-run a Quick Council: "Respond / Ignore / Reposition."
+
+**Rules:**
+- Always use Quick mode for auto-triggers. Never auto-trigger a full Debate -- that's founder-initiated only.
+- If the canonical files are still templates (contain `{{PLACEHOLDER}}`), skip the council -- personas have nothing to ground in.
+- Log every auto-triggered council result to `q-system/canonical/decisions.md` with `[COUNCIL-DEBATED]` origin tag.
+
+## Sycophancy Awareness (ENFORCED)
+
+This system is structurally sycophantic. RLHF training creates an incentive to validate the founder's beliefs, even when presenting only true information. Research proves this causes belief drift even in ideal Bayesian reasoners (Chandra et al. 2026, arXiv:2602.19141). Every morning routine is a round in this feedback loop: founder expresses positioning -> system selects validating signals -> founder updates confidence -> cycle repeats.
+
+**Rules:**
+1. When the sycophancy audit agent runs (Phase 6), its output is verified by a deterministic Python harness (`sycophancy-harness.py`). If the harness disagrees with the agent, the harness wins. The agent cannot override the harness.
+2. If `sycophancy-audit.json` shows `overall: "alert"`, the synthesizer MUST surface it as a dedicated section, not an FYI line. No exceptions.
+3. Contradicting signals are the most valuable data in the system. Never filter them out, soften them, or bury them in synthesis.
+4. A belief that has only been confirmed and never challenged is suspect, not validated.
+5. The founder's rubber-stamping of recommendations is structural (per the paper), not personal. Never shame. Always frame as "the system might be filtering."
+6. Residual risk is permanent. Passing the sycophancy audit does not mean the system is unbiased. Periodic conversations with people who disagree is the only true fix.
+
 ## Decision Origin Tagging (ENFORCED)
 
 Every decision logged to `canonical/decisions.md` MUST include an origin tag:
@@ -249,8 +239,11 @@ Every decision logged to `canonical/decisions.md` MUST include an origin tag:
 - `[CLAUDE-RECOMMENDED -> MODIFIED]` - Claude suggested, founder changed it
 - `[CLAUDE-RECOMMENDED -> REJECTED]` - Claude suggested, founder rejected
 - `[SYSTEM-INFERRED]` - Claude made this autonomously based on existing rules
+- `[COUNCIL-DEBATED]` - Council skill auto-triggered or manually invoked; includes convergence/dissent summary
 
 Monthly audit on the 1st: check if >60% are rubber-stamped approvals. Surface in morning briefing if so.
+
+The sycophancy audit agent calculates a pi metric from these tags daily: `pi = approved / (approved + modified + rejected)`. If pi >= 0.7, the system flags high sycophancy risk. The deterministic harness (`sycophancy-harness.py`) independently verifies this count by parsing decisions.md itself, because the agent calculating its own sycophancy rate is itself subject to sycophancy.
 
 ## Memory Architecture
 
@@ -283,6 +276,12 @@ Run `/q-wrap` at end of day for a 10-minute health check (effort log, debrief ch
 ```bash
 python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json
 ```
+
+**After the sycophancy audit (Phase 6), run the sycophancy harness:**
+```bash
+python3 q-system/.q-system/sycophancy-harness.py YYYY-MM-DD
+```
+If exit code = 1 (alert), the synthesizer MUST surface the harness override prominently. The harness independently verifies the agent's claims and can override the agent's verdict upward. See `sycophancy-harness.py` for the five deterministic checks.
 Show the audit output to the founder. This is not optional. The founder should always see the completion verdict.
 
 If any MCP server is unavailable or any step fails during `/q-morning`, STOP the entire routine immediately and report what broke. Do NOT continue with partial data. The founder fixes the issue and re-runs. See `.q-system/preflight.md` for tool manifest and fallback chains, and `commands.md` "Fail-fast mode" section for the halt protocol.

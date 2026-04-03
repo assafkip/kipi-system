@@ -134,12 +134,24 @@ After all complete, check leads.json:
 THEN:
 - 05-engagement-hitlist.md (OPUS) - reads temperature + leads + linkedin-posts + pipeline-followup + loop-review, writes hitlist.json
 
-### Phase 6: Compliance + Health (4 agents, PARALLEL)
+### Phase 6: Compliance + Health + Sycophancy (5 agents, PARALLEL)
 Launch in ONE message:
 - 06-compliance-check.md (sonnet) - reads bus/ content + canonical files, writes compliance.json
 - 06-positioning-check.md (sonnet) - reads canonical files + drift detection, writes positioning.json
 - 06-client-deliverables.md (sonnet) - checks client commitments for overdue/upcoming, writes client-deliverables.json
 - 04-marketing-health.md (sonnet) - asset freshness, cadence progress, stale drafts, writes marketing-health.json
+- 06-sycophancy-audit.md (sonnet) - anti-sycophancy check (Chandra et al. 2026). Reads all bus/ + decisions.md + sycophancy-log.json. Writes sycophancy-audit.json. If verdict is "watch" or "alert", synthesizer surfaces it in the schedule. **SKIP CONDITION:** If `my-project/founder-profile.md` contains `sycophancy_audit_enabled: false`, do NOT spawn this agent. Log: "Sycophancy audit: disabled by founder preference."
+
+**Post-phase sycophancy gate (MANDATORY, after verify-bus):**
+After Phase 6 verify-bus passes, run the deterministic sycophancy harness:
+```bash
+python3 {{QROOT}}/.q-system/sycophancy-harness.py {date}
+```
+- Exit 0: proceed to Phase 7 normally
+- Exit 1: proceed to Phase 7, BUT the synthesizer MUST treat sycophancy-audit.json as "alert" regardless of what the agent wrote (harness overrode the agent's verdict in the file)
+- Exit 2: log error, proceed (harness failure should not block the pipeline)
+
+The harness independently parses decisions.md to verify the agent's pi calculation. If the agent was sycophantic about its own sycophancy audit, the harness catches it and amends sycophancy-audit.json with a `harness_override` field. The synthesizer reads the amended file.
 
 ### Phase 7: Synthesis (1 agent, sequential, OPUS)
 - 07-synthesize.md (OPUS) - reads ALL bus/{date}/*.json, writes schedule-data-{date}.json

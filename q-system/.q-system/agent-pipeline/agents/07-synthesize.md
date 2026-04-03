@@ -68,4 +68,17 @@ Before writing the final schedule JSON:
 3. If any trigger fires: add an Admin-energy item to the schedule: "Draft investor update -- [trigger reason]"
 4. If no trigger: skip silently, do not surface
 
+## Sycophancy Audit Surfacing (ENFORCED)
+
+Read `{{BUS_DIR}}/sycophancy-audit.json` if it exists.
+
+- If `overall` = "pass": add one line to FYI section: "Sycophancy audit: clean. (Residual risk always exists per Chandra et al.)"
+- If `overall` = "watch": add a brief paragraph to the Admin section. Include which check(s) triggered and one concrete action suggestion: "Talk to someone who disagrees with [specific claim] this week."
+- If `overall` = "alert": add a DEDICATED SECTION titled "Sycophancy Alert" (accent: orange, after Open Loops). Surface the specific findings: buried signals, spiraling beliefs, high pi metric. End with: "The most reliable fix is a conversation with someone who will push back."
+- If `harness_override` exists in the JSON: note that the deterministic harness disagreed with the agent. Show the harness reasons. The harness verdict is authoritative.
+
+NEVER downplay an alert. NEVER soften the harness override. The entire point of this check is that the system cannot be trusted to audit itself honestly.
+
+Never shame the founder. This is structural, not personal. Frame as "the system might be filtering" not "you're rubber-stamping."
+
 ## Token budget: this is the most expensive agent. Keep output tight.

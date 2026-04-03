@@ -77,8 +77,10 @@ def verify(date, phase):
         },
         6: {
             "required": ["compliance.json", "positioning.json"],
+            "optional": ["sycophancy-audit.json", "client-deliverables.json", "marketing-health.json"],
             "checks": {
                 "compliance.json": lambda d: "overall_pass" in d or "items_checked" in d,
+                "sycophancy-audit.json": lambda d: d.get("overall") in ("pass", "watch", "alert") and d.get("residual_risk_acknowledged") == True,
             }
         },
         7: {
