@@ -24,7 +24,9 @@ You are a data analysis agent. Your ONLY job is to read Notion pipeline data, co
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "03-prospect-pipeline",
   "counts": {
     "active": 0,
     "warm": 0,

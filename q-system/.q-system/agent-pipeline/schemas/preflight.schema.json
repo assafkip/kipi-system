@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Preflight Check",
+  "description": "Phase 0 preflight verification of tools and files",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "ready", "tools", "files"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "ready": {
+      "type": "boolean"
+    },
+    "tools": {
+      "type": "object",
+      "required": ["calendar", "gmail", "notion"],
+      "properties": {
+        "calendar": { "type": "boolean" },
+        "gmail": { "type": "boolean" },
+        "notion": { "type": "boolean" },
+        "vc_pipeline": { "type": ["boolean", "string"] }
+      }
+    },
+    "files": {
+      "type": "object",
+      "required": ["handoff", "talk_tracks", "objections", "relationships"],
+      "properties": {
+        "handoff": { "type": "boolean" },
+        "talk_tracks": { "type": "boolean" },
+        "objections": { "type": "boolean" },
+        "relationships": { "type": "boolean" }
+      }
+    }
+  }
+}

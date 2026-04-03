@@ -53,7 +53,9 @@ Write to `{{BUS_DIR}}/positioning.json`:
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "06-positioning-check",
   "talk_tracks": {
     "overall_fresh": true,
     "issues": [

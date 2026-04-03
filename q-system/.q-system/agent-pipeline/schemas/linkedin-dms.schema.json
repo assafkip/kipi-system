@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LinkedIn DMs",
+  "description": "Phase 3 LinkedIn DMs and connection accepts",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "dms"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "dms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contact_name", "contact_url", "needs_reply"],
+        "properties": {
+          "contact_name": { "type": "string" },
+          "contact_title": { "type": "string" },
+          "contact_url": { "type": "string" },
+          "last_message_date": { "type": "string" },
+          "last_message_text": { "type": "string" },
+          "needs_reply": { "type": "boolean" },
+          "thread_summary": { "type": "string" }
+        }
+      }
+    },
+    "connection_accepts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contact_name", "contact_url", "accept_date"],
+        "properties": {
+          "contact_name": { "type": "string" },
+          "contact_title": { "type": "string" },
+          "contact_url": { "type": "string" },
+          "accept_date": { "type": "string" },
+          "connection_request_context": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

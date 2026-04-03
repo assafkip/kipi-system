@@ -64,7 +64,9 @@ Pick the single most actionable signal for today's posts.
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "04-signals-content",
   "signals_found": [
     {
       "title": "...",

@@ -20,7 +20,9 @@ You are a data-pull agent. Your ONLY job is to fetch calendar data and write it 
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "01-calendar-pull",
   "today": [
     {"title": "...", "time": "...", "attendees": ["..."], "link": "..."}
   ],

@@ -33,7 +33,9 @@ If the founder gives a word instead of a number, map it:
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "00b-energy-check",
   "level": <1-5>,
   "label": "<wiped|low|okay|good|locked_in>",
   "notes": "<any context the founder volunteered, or null>",

@@ -22,7 +22,9 @@ You are a data-pull agent. Your ONLY job is to fetch recent emails and write str
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "01-gmail-pull",
   "emails": [
     {
       "subject": "...",

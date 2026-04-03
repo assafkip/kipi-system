@@ -80,7 +80,9 @@ Write to `{{BUS_DIR}}/hitlist.json`:
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "05-engagement-hitlist",
   "total_actions": 0,
   "connection_requests_count": 0,
   "actions": [

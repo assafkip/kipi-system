@@ -38,7 +38,9 @@ Write results to {{BUS_DIR}}/notion.json:
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "01-notion-pull",
   "contacts": [],
   "actions": [],
   "pipeline": [],

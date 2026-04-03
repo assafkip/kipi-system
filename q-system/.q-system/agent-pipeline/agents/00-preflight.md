@@ -33,7 +33,9 @@ You are a preflight agent for the morning routine. Your job is to verify all too
 3. Write results to {{BUS_DIR}}/preflight.json:
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "00-preflight",
   "tools": {
     "calendar": true,
     "gmail": true,

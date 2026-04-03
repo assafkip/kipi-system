@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Compliance Check",
+  "description": "Phase 6 deterministic compliance check results",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "overall_pass", "items_checked", "violations"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "overall_pass": {
+      "type": "boolean"
+    },
+    "items_checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "rule", "file"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["auto-fail", "warn"]
+          },
+          "rule": { "type": "string" },
+          "file": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "passed_items": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "promotion_candidates": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

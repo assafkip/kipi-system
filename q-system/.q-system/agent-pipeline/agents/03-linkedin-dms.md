@@ -34,7 +34,9 @@ You are a data-pull agent. Your ONLY job is to read LinkedIn DMs and connection 
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "03-linkedin-dms",
   "dms": [
     {
       "contact_name": "...",
