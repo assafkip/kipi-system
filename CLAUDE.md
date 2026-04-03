@@ -7,32 +7,35 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 
 ## Tech Stack
 - Claude Code with MCP server integrations
+- Marketplace-distributed plugins (kipi-core, kipi-ops, kipi-design)
 - Notion API for CRM and task management (optional)
 - Google Calendar + Gmail for scheduling and email (optional)
 - Apify for data scraping - LinkedIn, Reddit, Medium, X (optional)
 - Chrome automation for LinkedIn DMs and engagement (optional)
 - Gamma API for deck/one-pager generation (optional)
-- NotebookLM for research content (optional)
 
 ## Project Structure
+- `.claude-plugin/marketplace.json` - Marketplace manifest (distributes plugins to instances)
+- `plugins/` - Marketplace plugin groups
+  - `kipi-core/` - AUDHD executive function + founder voice (every instance)
+  - `kipi-ops/` - Council debates + customer fit reviews (GTM instances)
+  - `kipi-design/` - UI/UX, brand identity, visual assets (design instances)
+- `.claude/agents/` - Custom agent definitions (preflight, data-ingest, synthesizer, etc.)
+- `.claude/output-styles/` - Founder OS output style (always-on voice baseline)
+- `.claude/rules/` - Path-scoped instruction files (13 rules)
+- `.claude/skills/` - Empty (skills distributed via marketplace plugins)
 - `q-system/` - Core operating system
-  - `.q-system/` - Commands, preflight, audit harness
-  - `.q-system/agent-pipeline/` - Decomposed agent architecture for morning routine
-    - `agents/` - 19 agent prompt files (one per task)
-    - `bus/` - Inter-agent JSON data exchange (per-date directories)
-    - `orchestrator-design.md` - Phase execution plan
-    - `review-pipeline.sh` - Multi-pass content review definitions (4 Sonnet agents)
-    - `templates/` - Reusable folder structures for repeatable outputs
+  - `.q-system/agent-pipeline/` - 9-phase morning routine (50+ agent prompts)
   - `canonical/` - Source of truth files (positioning, objections, talk tracks)
-  - `marketing/` - Content pipeline, templates, assets, guardrails
+  - `marketing/` - Content pipeline, templates, assets
   - `methodology/` - Debrief template and workflows
-  - `output/` - Generated content, drafts, lead gen results
+  - `output/` - Generated content, schedules, logs
   - `my-project/` - Current state, relationships, progress
   - `memory/` - Time-stratified memory (working/weekly/monthly)
-- `.agents/` - Product marketing context
-- `.claude/skills/` - AUDHD executive function + founder voice skills
-- `.claude/rules/` - Security, coding standards, content output rules
-- `memory/` - Session memory (MEMORY.md index + topic files)
+  - `hooks/` - Session lifecycle scripts (context injection, compaction recovery, effort logging)
+- `kipi` - CLI for instance management
+- `skill-manifest.json` - Plugin group assignments per instance
+- `settings-template.json` - Template for new instances (marketplace + plugins + output style)
 
 ## Conventions
 - Never produce fluff - every sentence must carry information or enable action
@@ -42,21 +45,28 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 
 ## Commands
-- `/q-morning` - Full morning briefing (agent pipeline: 8 phases, 19 sub-agents). Reads orchestrator from `.q-system/steps/step-orchestrator.md`, spawns agents per phase, communicates through `bus/` JSON files.
+- `/q-morning` - Full morning briefing (9-phase agent pipeline, 50+ sub-agents)
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
-- `/q-create` - Generate specific output. Use templates from `.q-system/agent-pipeline/templates/` for repeatable outputs (deck, outreach, content, debrief).
+- `/q-create` - Generate specific output (talk tracks, emails, slides, decks)
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-market-review` - Content review runs 4 Sonnet passes (voice, guardrails, anti-AI, actionability) via Agent tool. See `.q-system/agent-pipeline/review-pipeline.sh` for pass definitions.
-- `/q-draft` - Ad-hoc output generation. Use templates from `.q-system/agent-pipeline/templates/` when format matches.
+- `/q-market-review` - Content review (4 Sonnet passes via content-reviewer agent)
+- `/q-draft` - Ad-hoc output generation
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
+
+## Hooks
+- **SessionStart** - Injects date, last handoff, founder context
+- **PreToolUse** - Token guard circuit breaker (retry limits, volume ceiling, agent limits)
+- **PostCompact** - Re-injects mode, loop count, voice reminders after compaction
+- **Stop** - Async session effort logging
 
 ## Build and Test
 - Build daily schedule: `bash q-system/marketing/templates/build-schedule.sh <json> <html>`
 - Audit morning routine: `python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-YYYY-MM-DD.json`
+- Develop with plugins: `kipi dev` (loads all 3 plugin groups)
 
 ## Token Discipline (NON-NEGOTIABLE)
 

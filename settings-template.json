@@ -1,4 +1,17 @@
 {
+  "extraKnownMarketplaces": {
+    "kipi": {
+      "source": {
+        "source": "github",
+        "repo": "assafkip/kipi-system"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "kipi-core@kipi": true
+  },
+  "outputStyle": "Founder OS",
+  "autoMemoryEnabled": true,
   "permissions": {
     "allow": [],
     "deny": [],
@@ -7,6 +20,46 @@
   },
   "model": "opus",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking for kipi updates..."
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\"",
+            "async": true
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
@@ -50,9 +103,9 @@
     },
 
     "_reddit": {
-      "_comment": "Rename to 'reddit' to enable",
-      "command": "npx",
-      "args": ["reddit-mcp-buddy"]
+      "_comment": "Rename to 'reddit' to enable. No API key needed.",
+      "command": "uvx",
+      "args": ["reddit-no-auth-mcp-server"]
     },
 
     "_telegram": {

@@ -1,0 +1,26 @@
+{
+  "skill_groups": {
+    "core": {
+      "description": "Every project gets these",
+      "plugin": "kipi-core",
+      "skills": ["audhd-executive-function", "founder-voice"]
+    },
+    "founder-ops": {
+      "description": "Projects that run GTM, pipeline, relationships",
+      "plugin": "kipi-ops",
+      "skills": ["council", "customer-fit-review"]
+    },
+    "design": {
+      "description": "Projects that build websites, UIs, or visual output",
+      "plugin": "kipi-design",
+      "skills": ["ui-ux-pro-max", "brand", "design"]
+    }
+  },
+  "project_skills": {
+    "KTLYST_strategy": ["core", "founder-ops", "design"],
+    "ktlyst": ["core", "design"],
+    "q-education": ["core"],
+    "ASK_AI_consultant": ["core", "founder-ops", "design"],
+    "car-research": []
+  }
+}

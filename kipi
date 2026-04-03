@@ -10,6 +10,7 @@ usage() {
   echo "  kipi update --dry    Show what would happen without changing anything"
   echo "  kipi new <path> <name>   Create a new project with the skeleton"
   echo "  kipi push            Push generic improvements back to skeleton (run from a project)"
+  echo "  kipi dev             Launch Claude Code with all kipi plugins loaded"
   echo "  kipi check [phase]   Run validation harness (default: all phases)"
   echo "  kipi list            Show all registered projects"
   echo "  kipi home            Print the skeleton path"
@@ -28,6 +29,16 @@ case "${1:-help}" in
   new)
     shift
     bash "$KIPI_HOME/kipi-new-instance.sh" "$@"
+    ;;
+  dev)
+    claude --plugin-dir "$KIPI_HOME/plugins/kipi-core" \
+           --plugin-dir "$KIPI_HOME/plugins/kipi-ops" \
+           --plugin-dir "$KIPI_HOME/plugins/kipi-design"
+    ;;
+  sync-skills)
+    echo "DEPRECATED: Skills are now distributed via marketplace plugins."
+    echo "Instances use extraKnownMarketplaces + enabledPlugins in .claude/settings.json"
+    echo "See plugins/ directory for kipi-core, kipi-ops, kipi-design"
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"

@@ -1,0 +1,26 @@
+{
+  "name": "kipi",
+  "owner": {
+    "name": "Assaf Kipnis"
+  },
+  "plugins": [
+    {
+      "name": "kipi-core",
+      "source": "./plugins/kipi-core",
+      "description": "AUDHD executive function + founder voice enforcement",
+      "version": "1.0.0"
+    },
+    {
+      "name": "kipi-ops",
+      "source": "./plugins/kipi-ops",
+      "description": "Council debates + customer fit reviews",
+      "version": "1.0.0"
+    },
+    {
+      "name": "kipi-design",
+      "source": "./plugins/kipi-design",
+      "description": "UI/UX, brand identity, visual asset creation",
+      "version": "1.0.0"
+    }
+  ]
+}

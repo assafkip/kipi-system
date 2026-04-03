@@ -48,7 +48,27 @@
     "defaultMode": "acceptEdits"
   },
   "effortLevel": "thorough",
+  "autoMemoryEnabled": true,
+  "worktree": {
+    "symlinkDirectories": ["node_modules", ".cache", "q-system/output"]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/statusline.sh\""
+  },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
@@ -56,6 +76,28 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\"",
+            "async": true
           }
         ]
       }

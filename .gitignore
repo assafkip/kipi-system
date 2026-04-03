@@ -9,11 +9,16 @@ Thumbs.db
 
 # Output (generated daily, don't commit)
 q-system/output/*.html
+q-system/output/*.json
+q-system/output/*.log
 q-system/output/drafts/*
 q-system/output/lead-gen/*
 q-system/output/design-partner/*
 q-system/output/marketing/linkedin/*
 !**/.gitkeep
+
+# Plans (auto-created by Claude Code)
+.claude/plans/
 
 # Session transcripts
 *.jsonl
