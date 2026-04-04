@@ -5,9 +5,9 @@
 
 ## Targets
 
-| Name | Role | Company | Channel | Hook | Status |
-|------|------|---------|---------|------|--------|
-|      |      |         | DM / Email / Connection Request |      | Draft / Sent / Replied |
+| Name | Role | Company | Profile URL | Channel | Hook | Status |
+|------|------|---------|-------------|---------|------|--------|
+|      |      |         |             | DM / Email / Connection Request |      | Draft / Sent / Replied |
 
 ## Rules
 - Max 5 connection requests/day
@@ -15,3 +15,4 @@
 - No pitch in first touch
 - All copy through voice skill
 - Reference specific post text, never summaries
+- Profile URL is required for every target (LinkedIn, X, or email)
