@@ -103,7 +103,9 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── founder-profile.md        # Identity, platform handles, connected tools
 │   │   ├── relationships.md
 │   │   ├── competitive-landscape.md
-│   │   ├── lead-sources.md           # Reddit subreddits, Medium tags, X accounts to monitor
+│   │   ├── icp.md                    # Structured ICP definition (buyer, pain, language)
+│   │   ├── icp-signals.md            # Platform-specific discovery signals (hashtags, creators, keywords)
+│   │   ├── lead-sources.md           # Reddit subreddits, Medium tags, X accounts, IG/TikTok sources
 │   │   ├── notion-ids.md
 │   │   └── progress.md
 │   │
