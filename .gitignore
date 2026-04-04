@@ -34,5 +34,8 @@ template-repo/
 # Bus data (daily pipeline, ephemeral)
 q-system/.q-system/agent-pipeline/bus/
 
+# Pruned markdown archives (historical, not loaded in context)
+q-system/memory/archives/
+
 # Node
 node_modules/
