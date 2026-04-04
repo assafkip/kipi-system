@@ -38,6 +38,8 @@
 - **Reddit username:** (used by Reddit MCP: `mcp__reddit__get_user_posts`)
 - **Substack:** (newsletter name, used for RSS: name.substack.com/feed)
 - **GitHub username:**
+- **Instagram:** <!-- @handle or blank -->
+- **TikTok:** <!-- @handle or blank -->
 
 ## Connected Tools
 - **Notion:** not connected
