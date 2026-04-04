@@ -23,7 +23,9 @@
         "linkedin": { "type": "string", "description": "Chrome failed for LinkedIn" },
         "reddit": { "type": "string", "description": "Reddit MCP failed" },
         "medium": { "type": "string", "description": "RSS/WebSearch failed for Medium" },
-        "x": { "type": "string", "description": "Apify failed for X/Twitter" }
+        "x": { "type": "string", "description": "Apify failed for X/Twitter" },
+        "instagram": { "type": "string", "description": "Apify failed for Instagram" },
+        "tiktok": { "type": "string", "description": "Apify failed for TikTok" }
       }
     },
     "run_summary": {
@@ -34,6 +36,8 @@
         "reddit_fetched": { "type": "integer" },
         "medium_fetched": { "type": "integer" },
         "x_fetched": { "type": "integer" },
+        "instagram_fetched": { "type": "integer" },
+        "tiktok_fetched": { "type": "integer" },
         "tier_a": { "type": "integer" },
         "tier_b": { "type": "integer" },
         "tier_c": { "type": "integer" },
@@ -52,7 +56,7 @@
           },
           "platform": {
             "type": "string",
-            "enum": ["LinkedIn", "Reddit", "Medium", "X"]
+            "enum": ["LinkedIn", "Reddit", "Medium", "X", "Instagram", "TikTok"]
           },
           "author_name": { "type": "string" },
           "author_title": { "type": "string" },
