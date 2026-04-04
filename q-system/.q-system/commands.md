@@ -1,6 +1,6 @@
 # Q Instance Commands
 
-> These are conventions for interacting with the Q Founder OS. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
+> These are conventions for interacting with the Q Entrepreneur OS. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
 
 | Command | Purpose | Mode |
 |---------|---------|------|
