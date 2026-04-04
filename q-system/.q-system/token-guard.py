@@ -25,7 +25,7 @@ import time
 RETRY_LIMIT = 3            # Same tool+input N times = block
 VOLUME_CEILING = 50         # Tool calls since last user message = block
 VOLUME_WARNING = 35         # Tool calls since last user message = warn
-AGENT_CEILING = 25          # Agent spawns per user message = block (morning routine needs ~20)
+AGENT_CEILING = 30          # Agent spawns per user message = block (morning routine needs ~25)
 MCP_RATE_WINDOW = 60        # Seconds
 MCP_RATE_LIMIT = 30         # MCP calls in window = block
 READ_SPIRAL_LIMIT = 15      # Consecutive reads without write = warn
