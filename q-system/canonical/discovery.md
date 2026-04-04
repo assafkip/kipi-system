@@ -2,7 +2,7 @@
 
 > Questions asked by prospects, investors, and partners. Answers refined over time.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### Q: "[Question as asked]"

@@ -2,7 +2,7 @@
 
 > Every objection heard, with a response. Updated by `/q-debrief`. Tagged by persona.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### "[Objection as they say it]"

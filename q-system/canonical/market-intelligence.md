@@ -6,7 +6,7 @@
 
 ---
 
-## How This File Gets Updated
+## How This File Gets Updated <!-- pin -->
 
 Every time the system reads external content (LinkedIn posts, Reddit threads, Medium articles, GitHub discussions), it evaluates the content through these lenses BEFORE generating engagement copy. If the content has canonical value, it gets logged here first, then engagement copy is generated.
 

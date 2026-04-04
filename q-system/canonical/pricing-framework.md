@@ -2,7 +2,7 @@
 
 > Pricing model, packaging tiers, and budget conversation guidance. Updated through debriefs and calibration.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### Tier: [Tier Name]
@@ -14,7 +14,7 @@
 - **Source:** [Person] - [Date]
 ```
 
-## Pricing Tiers
+## Pricing Tiers <!-- pin -->
 
 (populated through debriefs and calibration)
 

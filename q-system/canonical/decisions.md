@@ -2,7 +2,7 @@
 
 > Active rules governing system behavior. Referenced during morning routine and pipeline management.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### RULE-XXX: [Name]
@@ -15,7 +15,7 @@
 
 Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-stamped approvals, flag for review.
 
-## Starter Rules
+## Starter Rules <!-- pin -->
 
 ### RULE-001: Warm Intro Beats Cold
 - **Decision:** If a warm intro path exists, use it. Do not cold-DM someone you can reach through a connector.

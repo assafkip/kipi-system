@@ -2,7 +2,7 @@
 
 > Proven language that works. Phrases that resonated. Organized by audience.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### [Talk Track Name]
@@ -13,7 +13,7 @@
 - **Source:** [Person] - [Date]
 ```
 
-## Core Positioning
+## Core Positioning <!-- pin -->
 
 ### One-liner
 > (filled during setup)

@@ -2,7 +2,7 @@
 
 > Rules for commenting, DMs, and relationship building on social platforms.
 
-## Core Rules
+## Core Rules <!-- pin -->
 
 1. **Never pitch your product in comments** unless directly asked
 2. **Max 3-4 sentences** per comment
@@ -24,7 +24,7 @@ Bridge their idea to someone else's work or a related trend. "This connects to w
 ### Question Style
 Ask a genuine question that advances the conversation. Not "great post!" but a question that shows you engaged with the content.
 
-## DM Rules
+## DM Rules <!-- pin -->
 
 - Start with "I" not their name (never "Hey Sarah, been thinking...")
 - One ask OR one question. Never both.
