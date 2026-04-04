@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Collection Gate",
+  "description": "Per-source skip/collect verdicts for incremental data collection",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "gate_timestamp", "verdicts", "summary"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "gate_timestamp": {
+      "type": "string"
+    },
+    "verdicts": {
+      "type": "object",
+      "properties": {
+        "calendar": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "gmail": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "notion": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "x-activity": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "linkedin-posts": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "linkedin-dms": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        },
+        "lead-sourcing": {
+          "type": "object",
+          "required": ["verdict", "reason", "threshold_hours"],
+          "properties": {
+            "verdict": { "type": "string", "enum": ["skip", "collect"] },
+            "reason": { "type": "string" },
+            "threshold_hours": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["skip_count", "collect_count"],
+      "properties": {
+        "skip_count": { "type": "integer", "minimum": 0 },
+        "collect_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
