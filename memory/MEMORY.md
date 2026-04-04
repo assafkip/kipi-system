@@ -1,4 +1,4 @@
-# Q Founder OS Memory Index
+# Q Entrepreneur OS Memory Index
 
 > First 200 lines load at session start. This is the map to everything the system knows.
 
