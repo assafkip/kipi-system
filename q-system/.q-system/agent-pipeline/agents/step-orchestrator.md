@@ -89,8 +89,21 @@ Some instances may cut agents to save tokens. If an agent was cut for this insta
      - "Did you build anything since last session?"
 3. Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/canonical-digest.py {date}`
    - Verify: bus/{date}/canonical-digest.json exists
+4. Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/collection-gate.py {date}`
+   - Verify: bus/{date}/collection-gate.json exists
+   - This does NOT block the pipeline. All verdicts are advisory.
+   - Log the summary (skip/collect counts) for the founder.
 
 ### Phase 1: Data Ingest (4 agents + 1 script, PARALLEL agents then script)
+
+**Incremental collection:** Before spawning Phase 1 agents, read bus/{date}/collection-gate.json. For each data-pull agent, append the relevant verdict to its prompt:
+```
+\n\n## Collection Gate Verdict\n<JSON verdict object for this source>
+```
+Source keys: calendar -> 01-calendar-pull, gmail -> 01-gmail-pull, notion -> 01-notion-pull.
+Same injection for Phase 2 (x-activity -> 02-x-activity), Phase 3 (linkedin-posts -> 03-linkedin-posts, linkedin-dms -> 03-linkedin-dms), Phase 5 (lead-sourcing -> 05-lead-sourcing).
+If collection-gate.json is missing or unreadable, skip injection and let agents collect normally.
+
 Launch in ONE message with 4 Agent tool calls:
 - 01-calendar-pull.md (haiku)
 - 01-gmail-pull.md (haiku)

@@ -63,3 +63,23 @@ You are a data-pull agent. Your ONLY job is to read LinkedIn DMs and connection 
 7. Do NOT generate reply copy or first DM drafts. Just pull and structure the raw data.
 
 ## Token budget: 2-3K tokens output
+
+## Collection Gate (Incremental Collection)
+
+If a `## Collection Gate Verdict` section appears above with verdict data:
+
+1. If `verdict` is `"skip"`:
+   - Verify `{{BUS_DIR}}/linkedin-dms.json` exists and is valid JSON
+   - If valid: log "LinkedIn DMs: reusing existing bus file" and EXIT successfully
+   - If file is missing or corrupt: proceed with fresh collection (ignore skip)
+
+2. If `verdict` is `"collect"`:
+   - Proceed with normal Chrome-based collection (no incremental filter available)
+
+3. After successful write of linkedin-dms.json, update collection state:
+   - Read `{{QROOT}}/memory/collection-state.json`
+   - Set `sources.linkedin-dms.last_collected` to current UTC ISO timestamp
+   - Set `sources.linkedin-dms.last_bus_date` to `{{DATE}}`
+   - Write the file back
+
+If no Collection Gate Verdict section is present, collect normally (backward compatible).

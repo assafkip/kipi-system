@@ -37,6 +37,7 @@ bus/
     ├── energy.json              # Phase 0
     ├── bootstrap.json           # Phase 0
     ├── canonical-digest.json    # Phase 0 (script)
+    ├── collection-gate.json     # Phase 0 (script)
     ├── calendar.json            # Phase 1
     ├── gmail.json               # Phase 1
     ├── notion.json              # Phase 1
@@ -63,6 +64,7 @@ bus/
 | 0 | (energy check moved to session-bootstrap) | - | - |
 | 0 | 00-session-bootstrap | bootstrap.json | last-handoff.md |
 | 0 | canonical-digest.py | canonical-digest.json | canonical/ files |
+| 0 | collection-gate.py | collection-gate.json | memory/collection-state.json |
 | 1 | 01-calendar-pull | calendar.json | (Calendar API) |
 | 1 | 01-gmail-pull | gmail.json | (Gmail API) |
 | 1 | 01-notion-pull | notion.json | (Notion API) |

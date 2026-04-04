@@ -60,3 +60,24 @@ You are a data-pull agent. Your ONLY job is to read LinkedIn activity and write 
 8. Do NOT generate comments or outreach copy. Just pull and structure the raw data.
 
 ## Token budget: 3-5K tokens output
+
+## Collection Gate (Incremental Collection)
+
+If a `## Collection Gate Verdict` section appears above with verdict data:
+
+1. If `verdict` is `"skip"`:
+   - Verify `{{BUS_DIR}}/linkedin-posts.json` exists and is valid JSON
+   - If valid: log "LinkedIn posts: reusing existing bus file" and EXIT successfully
+   - If file is missing or corrupt: proceed with fresh collection (ignore skip)
+
+2. If `verdict` is `"collect"`:
+   - Proceed with normal Chrome-based collection
+   - LinkedIn has no "since" API filter; always scrape the feed and filter to last 5 days as usual
+
+3. After successful write of linkedin-posts.json, update collection state:
+   - Read `{{QROOT}}/memory/collection-state.json`
+   - Set `sources.linkedin-posts.last_collected` to current UTC ISO timestamp
+   - Set `sources.linkedin-posts.last_bus_date` to `{{DATE}}`
+   - Write the file back
+
+If no Collection Gate Verdict section is present, collect normally (backward compatible).

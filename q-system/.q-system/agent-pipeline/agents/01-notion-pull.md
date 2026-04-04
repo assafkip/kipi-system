@@ -54,3 +54,23 @@ Write results to {{BUS_DIR}}/notion.json:
 Do NOT analyze or prioritize. Just pull and structure.
 
 ## Token budget: <3K tokens output
+
+## Collection Gate (Incremental Collection)
+
+If a `## Collection Gate Verdict` section appears above with verdict data:
+
+1. If `verdict` is `"skip"`:
+   - Verify `{{BUS_DIR}}/notion.json` exists and is valid JSON
+   - If valid: log "Notion: reusing existing bus file" and EXIT successfully
+   - If file is missing or corrupt: proceed with fresh collection (ignore skip)
+
+2. If `verdict` is `"collect"`:
+   - Proceed with normal full collection (Notion APIs do not support incremental fetch for these queries)
+
+3. After successful write of notion.json, update collection state:
+   - Read `{{QROOT}}/memory/collection-state.json`
+   - Set `sources.notion.last_collected` to current UTC ISO timestamp
+   - Set `sources.notion.last_bus_date` to `{{DATE}}`
+   - Write the file back
+
+If no Collection Gate Verdict section is present, collect normally (backward compatible).

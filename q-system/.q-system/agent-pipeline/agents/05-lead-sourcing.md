@@ -156,3 +156,24 @@ Do NOT generate outreach copy in this agent. That is done in 05-engagement-hitli
 Do NOT update Notion. Just run actors, score, and write.
 
 ## Token budget: <5K tokens output
+
+## Collection Gate (Incremental Collection)
+
+If a `## Collection Gate Verdict` section appears above with verdict data:
+
+1. If `verdict` is `"skip"`:
+   - Verify `{{BUS_DIR}}/leads.json` exists and is valid JSON
+   - If valid: log "Lead sourcing: reusing existing bus file" and EXIT successfully
+   - If file is missing or corrupt: proceed with fresh collection (ignore skip)
+
+2. If `verdict` is `"collect"`:
+   - Proceed with normal multi-platform collection
+   - If `since` is not null, narrow search windows per platform where possible (Reddit `sort=new` already filters recent; Apify X scraper supports date range)
+
+3. After successful write of leads.json, update collection state:
+   - Read `{{QROOT}}/memory/collection-state.json`
+   - Set `sources.lead-sourcing.last_collected` to current UTC ISO timestamp
+   - Set `sources.lead-sourcing.last_bus_date` to `{{DATE}}`
+   - Write the file back
+
+If no Collection Gate Verdict section is present, collect normally (backward compatible).
