@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "calendar": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "calendar.json"
+    },
+    "gmail": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "gmail.json"
+    },
+    "notion": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "notion.json"
+    },
+    "x-activity": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "x-activity.json"
+    },
+    "linkedin-posts": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "linkedin-posts.json"
+    },
+    "linkedin-dms": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "linkedin-dms.json"
+    },
+    "lead-sourcing": {
+      "last_collected": null,
+      "last_bus_date": null,
+      "bus_file": "leads.json"
+    }
+  }
+}
