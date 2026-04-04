@@ -1,4 +1,18 @@
 {
+  "extraKnownMarketplaces": {
+    "kipi": {
+      "source": {
+        "source": "github",
+        "repo": "assafkip/kipi-system"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "kipi-core@kipi": true
+  },
+  "outputStyle": "Founder OS",
+  "autoMemoryEnabled": true,
+  "cleanupPeriodDays": 30,
   "permissions": {
     "allow": [],
     "deny": [],
@@ -7,15 +21,35 @@
   },
   "model": "opus",
   "hooks": {
-    "UserPromptSubmit": [
+    "SessionStart": [
       {
-        "matcher": "/q-morning|/q-scope|/q-plan",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/.q-system/diagnose-tools.sh\" 2>/dev/null | head -50",
-            "timeout": 15000,
-            "statusMessage": "Checking tool availability..."
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\" 2>/dev/null || true",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\" 2>/dev/null || true",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\" 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true",
+            "timeout": 5
           }
         ]
       }
@@ -26,23 +60,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true",
+            "timeout": 5
           }
         ]
       }
     ],
-    "PostToolUse": [
+    "PostCompact": [
       {
-        "matcher": "Agent|Bash|WebSearch|WebFetch",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/.q-system/tool-counter.sh\" 2>/dev/null || true",
-            "timeout": 5000
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\" 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\" 2>/dev/null || true",
+            "async": true
           }
         ]
       }
@@ -67,17 +108,16 @@
         "-y",
         "@apify/actors-mcp-server",
         "--tools",
-        "actors,apify/linkedin-profile-scraper,apify/linkedin-posts-scraper,apify/linkedin-connections-scraper,curious_coder/twitter-scraper,apify/reddit-scraper,apify/web-scraper"
+        "actors,curious_coder/twitter-scraper"
       ],
       "env": {
         "APIFY_TOKEN": "YOUR_APIFY_TOKEN"
       }
     },
 
-    "_reddit": {
-      "_comment": "Rename to 'reddit' to enable",
-      "command": "npx",
-      "args": ["reddit-mcp-buddy"]
+    "reddit": {
+      "command": "uvx",
+      "args": ["reddit-no-auth-mcp-server"]
     },
 
     "_telegram": {
@@ -93,22 +133,6 @@
       "_comment": "Rename to 'playwright' to enable. Browser automation alternative to Chrome MCP.",
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
-    },
-
-    "_threat-intel": {
-      "_comment": "Rename to 'threat-intel' to enable. Threat intelligence feeds (VirusTotal, AbuseIPDB, OTX, etc). Requires server.py from your threat-intel-mcp repo.",
-      "command": "uv",
-      "args": ["run", "/path/to/threat-intel-mcp/server.py"],
-      "env": {
-        "VIRUSTOTAL_API_KEY": "YOUR_VIRUSTOTAL_KEY",
-        "ABUSECH_AUTH_KEY": "YOUR_ABUSECH_KEY"
-      }
-    },
-
-    "_osint-infra": {
-      "_comment": "Rename to 'osint-infra' to enable. OSINT infrastructure lookup (WHOIS, DNS, cert transparency, Shodan). Requires server.py from your osint-infra-mcp repo.",
-      "command": "uv",
-      "args": ["run", "--with", "fastmcp>=2.0.0", "--with", "httpx>=0.27.0", "/path/to/osint-infra-mcp/server.py"]
     }
   },
   "toolConfigurations": {
@@ -122,26 +146,12 @@
     "Write": {
       "autoApprove": ["**/*"]
     },
-    "mcp__notion__*": {
-      "autoApprove": ["*"]
-    },
-    "mcp__notion_api__*": {
+    "mcp__claude_ai_Notion__*": {
       "autoApprove": ["*"]
     },
     "mcp__apify__*": {
       "autoApprove": ["*"]
-    },
-    "mcp__threat-intel__*": {
-      "autoApprove": ["*"]
-    },
-    "mcp__osint-infra__*": {
-      "autoApprove": ["*"]
     }
   },
-  "enabledPlugins": {
-    "_INSTRUCTIONS_": "These are recommended plugins. Enable them in Claude Code with the plugin manager.",
-    "document-skills@anthropic-agent-skills": true,
-    "Notion@claude-plugins-official": true,
-    "github@claude-plugins-official": true
-  }
+  "_recommended_plugins": "Enable these in Claude Code plugin manager: document-skills@anthropic-agent-skills, Notion@claude-plugins-official, github@claude-plugins-official"
 }

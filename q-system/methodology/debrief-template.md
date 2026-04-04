@@ -1,6 +1,6 @@
 # Conversation Debrief Template
 
-This template is the **primary workflow** of the Q Instance. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
+This template is the **primary workflow** of the Q Founder OS. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
 
 ## How to Trigger
 
@@ -262,7 +262,7 @@ After completing the template and implications analysis, route insights to canon
   {"s":"Person Name","p":"works_at","o":"Company","t":"2026-03-12"}
   {"s":"Person Name","p":"cares_about","o":"cross-silo coordination","t":"2026-03-12"}
   {"s":"Person Name","p":"objected_to","o":"why not just use Claude","t":"2026-03-12"}
-  {"s":"Person Name","p":"resonated_with","o":"{{YOUR_METAPHOR}}","t":"YYYY-MM-DD"}
+  {"s":"Person Name","p":"resonated_with","o":"nervous system metaphor","t":"2026-03-12"}
   {"s":"Connector Name","p":"introduced","o":"Person Name","t":"2026-03-12"}
   ```
 
@@ -296,7 +296,7 @@ After completing the template and implications analysis, route insights to canon
 - [ ] Resonance phrases are verbatim (their words)
 - [ ] Objections have a proposed response (even if imperfect)
 - [ ] Next step is concrete (not "follow up" - specify what, when, via what channel)
-- [ ] Misclassification risk is assessed even if none detected ("None - they understood the category framing")
+- [ ] Misclassification risk is assessed even if none detected ("None - they understood SLCP framing")
 - [ ] Signal quality check completed with signal level assigned
 - [ ] If "thesis nod" only: noted, no over-investment in follow-up
 - [ ] If "pain confirmed" or higher: switching friction questions queued for next conversation
@@ -311,8 +311,8 @@ After completing the template and implications analysis, route insights to canon
   - [ ] Copy-paste message drafted and shown to founder
   - [ ] Follow-up Action created in Notion Actions DB (Energy: People, Time: 15 min, due in 5 days)
 - [ ] **Loop opened for every outbound action from this debrief:**
-  - [ ] If next step involves sending something (deck, email, DM): `bash q-system/.q-system/loop-tracker.sh open <materials_sent|email_sent|dm_sent> "Person" "What was sent" "" "" "Follow-up text..."`
-  - [ ] If next step involves waiting for their response: `bash q-system/.q-system/loop-tracker.sh open debrief_next_step "Person" "What we're waiting for"`
-  - [ ] If design partner conversion message was sent: `bash q-system/.q-system/loop-tracker.sh open dp_offer_sent "Person" "DP offer context" "" "" "Follow-up if no reply..."`
+  - [ ] If next step involves sending something (deck, email, DM): `python3 q-system/.q-system/loop-tracker.py open <materials_sent|email_sent|dm_sent> "Person" "What was sent" "" "" "Follow-up text..."`
+  - [ ] If next step involves waiting for their response: `python3 q-system/.q-system/loop-tracker.py open debrief_next_step "Person" "What we're waiting for"`
+  - [ ] If design partner conversion message was sent: `python3 q-system/.q-system/loop-tracker.py open dp_offer_sent "Person" "DP offer context" "" "" "Follow-up if no reply..."`
   - [ ] Debrief is NOT complete until all outbound actions have corresponding loops opened
   - [ ] If VC-only conversation: marked "N/A - VC conversation"

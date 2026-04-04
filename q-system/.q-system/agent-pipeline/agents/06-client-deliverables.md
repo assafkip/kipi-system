@@ -1,7 +1,7 @@
 ---
 name: 06-client-deliverables
 description: "Check for upcoming and overdue client commitments and surface them for the daily briefing"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

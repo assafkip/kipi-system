@@ -1,7 +1,7 @@
 ---
 name: 00-session-bootstrap
 description: "Recover state from previous session including action cards, missed debriefs, and loop escalation"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 
@@ -33,9 +33,9 @@ You are a session bootstrap agent. Your ONLY job is to recover state from the pr
 - List each missed debrief with the person name
 
 ### 3. Loop Escalation
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh escalate`
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh stats`
-- Run: `bash {{QROOT}}/.q-system/loop-tracker.sh list 2`
+- Run: `python3 {{QROOT}}/.q-system/loop-tracker.py escalate`
+- Run: `python3 {{QROOT}}/.q-system/loop-tracker.py stats`
+- Run: `python3 {{QROOT}}/.q-system/loop-tracker.py list 2`
 - Capture the stats output and any Level 2+ loops
 
 ### 4. Canonical State Checksums

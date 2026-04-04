@@ -1,7 +1,7 @@
 ---
 name: 01-vc-pipeline-pull
 description: "Fetch active investor pipeline data from external API (optional, degrades gracefully)"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 

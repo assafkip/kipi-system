@@ -1,7 +1,7 @@
 ---
 name: 04-signals-content
 description: "Find today's relevant industry signals and draft social posts for all platforms"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -64,7 +64,9 @@ Pick the single most actionable signal for today's posts.
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "04-signals-content",
   "signals_found": [
     {
       "title": "...",

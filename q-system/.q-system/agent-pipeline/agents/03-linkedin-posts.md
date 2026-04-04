@@ -1,7 +1,7 @@
 ---
 name: 03-linkedin-posts
 description: "Scrape LinkedIn feed posts from target contacts and flag re-engagement opportunities"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -30,7 +30,9 @@ You are a data-pull agent. Your ONLY job is to read LinkedIn activity and write 
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "03-linkedin-posts",
   "posts": [
     {
       "author_name": "...",

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "day_rules": {
+    "monday": {
+      "3": ["content-intel.json"]
+    },
+    "tuesday": {
+      "4": ["tl-content.json"]
+    },
+    "thursday": {
+      "4": ["tl-content.json"]
+    }
+  },
+  "weekly_rules": {
+    "brand_day": {
+      "agent": "04-founder-brand-post",
+      "bus_file": "founder-brand-post.json",
+      "default_day": "wednesday"
+    }
+  },
+  "monthly_rules": {
+    "first_of_month": {
+      "agent": "00-session-bootstrap",
+      "extra_checks": ["monthly_audit", "decision_tag_coverage"]
+    }
+  },
+  "platform_limits": {
+    "connection_requests_per_day": 15,
+    "connection_requests_per_week": 80,
+    "comments_per_day": 10,
+    "hitlist_actions_max": 15,
+    "cooldown_days_between_touches": 5,
+    "auto_cooling_days": 14,
+    "auto_pass_days": 21,
+    "auto_pass_min_touches": 3
+  }
+}

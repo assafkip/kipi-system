@@ -1,7 +1,8 @@
-# Secrets (local settings with real tokens)
+# Secrets and local overrides
 .env
 *.env
 .claude/settings.local.json
+CLAUDE.local.md
 
 # OS
 .DS_Store
@@ -9,20 +10,29 @@ Thumbs.db
 
 # Output (generated daily, don't commit)
 q-system/output/*.html
+q-system/output/*.json
+q-system/output/*.log
 q-system/output/drafts/*
 q-system/output/lead-gen/*
 q-system/output/design-partner/*
 q-system/output/marketing/linkedin/*
 !**/.gitkeep
 
+# Plans (auto-created by Claude Code)
+.claude/plans/
+
 # Session transcripts
 *.jsonl
-!q-system/memory/graph.jsonl
 
-# Working memory (ephemeral, don't commit)
-q-system/memory/working/*
-!q-system/memory/working/.gitkeep
-!q-system/memory/working/predictions.jsonl
+# SQLite databases (generated at runtime)
+*.db
+
+# Generated sites and build output
+sites/
+template-repo/
+
+# Bus data (daily pipeline, ephemeral)
+q-system/.q-system/agent-pipeline/bus/
 
 # Node
 node_modules/

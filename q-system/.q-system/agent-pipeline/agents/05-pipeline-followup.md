@@ -1,7 +1,7 @@
 ---
 name: 05-pipeline-followup
 description: "Identify overdue warm/active contacts and generate follow-up copy with stage advancement checks"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

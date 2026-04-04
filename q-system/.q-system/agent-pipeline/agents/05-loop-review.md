@@ -1,7 +1,7 @@
 ---
 name: 05-loop-review
 description: "Check for stale open loops and flag them for closure or escalation"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

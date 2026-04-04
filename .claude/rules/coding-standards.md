@@ -1,4 +1,5 @@
 ---
+description: Code style and naming conventions for Python, JS, Shell, and JSON
 paths:
   - "**/*.js"
   - "**/*.py"

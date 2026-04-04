@@ -1,7 +1,7 @@
 ---
 name: 04-value-routing
 description: "Match today's signals to active prospects and generate personalized value-drop messages"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

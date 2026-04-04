@@ -1,0 +1,11 @@
+[
+  {
+    "date": "2026-04-02",
+    "pi": 0.4,
+    "bias_verdict": "clean",
+    "co_rumination": "clean",
+    "contradicting_signals": 1,
+    "monotonically_rising_claims": 0,
+    "harness_override": false
+  }
+]

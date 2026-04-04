@@ -1,7 +1,7 @@
 ---
 name: 09-notion-push
 description: "Push today's action items, value-drops, and loop closures to Notion Actions DB"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -23,12 +23,12 @@ You are a write-back agent. Your ONLY job is to push today's action items to the
 
 Read `q-system/my-project/notion-ids.md` first to get all database IDs.
 
-Use `mcp__notion_api__API-post-page` to create new Actions in Notion.
+Use `mcp__claude_ai_Notion__notion-create-pages` to create new Actions in Notion.
 
 **IMPORTANT - Notion ID rules:**
-- For CREATING pages (`API-post-page`): parent uses `database_id` from notion-ids.md Actions database_id. Format: `{"type": "database_id", "database_id": "FULL-UUID-HERE"}`
-- For QUERYING (`API-query-data-source`): use `data_source_id` from notion-ids.md Actions data_source_id
-- For UPDATING pages (`API-patch-page`): use the page_id returned from the query
+- For CREATING pages: use `mcp__claude_ai_Notion__notion-create-pages` with the Actions database ID from notion-ids.md
+- For QUERYING: use `mcp__claude_ai_Notion__notion-fetch` with the database URL
+- For UPDATING pages: use `mcp__claude_ai_Notion__notion-update-page` with the page URL
 - NEVER use truncated IDs. Always full UUID.
 
 For each action from bus files:
@@ -43,7 +43,7 @@ For each action from bus files:
 2. If a Contact match exists in the Contacts DB, link via the Contact relation field
 
 For loop-review force-close items:
-- Use `mcp__notion_api__API-patch-page` to update the Status to "Passed" with reason in Notes
+- Use `mcp__claude_ai_Notion__notion-update-page` to update the Status to "Passed" with reason in Notes
 
 3. Write a log to `{{BUS_DIR}}/notion-push.json`:
 

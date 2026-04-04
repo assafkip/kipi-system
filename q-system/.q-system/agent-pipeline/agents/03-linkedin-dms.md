@@ -1,7 +1,7 @@
 ---
 name: 03-linkedin-dms
 description: "Read LinkedIn DMs and connection accepts via Chrome and write structured data to disk"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -34,7 +34,9 @@ You are a data-pull agent. Your ONLY job is to read LinkedIn DMs and connection 
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "03-linkedin-dms",
   "dms": [
     {
       "contact_name": "...",

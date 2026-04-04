@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Prospect Pipeline",
+  "description": "Phase 3 prospect counts, pipeline health, and auto-close candidates",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "counts", "all_prospects", "auto_close_candidates"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "counts": {
+      "type": "object",
+      "required": ["active", "warm", "cooling", "passed"],
+      "properties": {
+        "active": { "type": "integer" },
+        "warm": { "type": "integer" },
+        "cooling": { "type": "integer" },
+        "passed": { "type": "integer" }
+      }
+    },
+    "pipeline_below_target": {
+      "type": "boolean"
+    },
+    "target": {
+      "type": "integer"
+    },
+    "auto_close_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "days_since_last_touch", "recommend_passed"],
+        "properties": {
+          "name": { "type": "string" },
+          "notion_id": { "type": "string" },
+          "touches": { "type": "integer" },
+          "days_since_last_touch": { "type": "integer" },
+          "current_status": { "type": "string" },
+          "recommend_passed": { "type": "boolean" },
+          "rule": { "type": "string" }
+        }
+      }
+    },
+    "all_prospects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "notion_id": { "type": "string" },
+          "status": { "type": "string" },
+          "touches": { "type": "integer" },
+          "days_since_last_touch": { "type": "integer" },
+          "last_touch": { "type": "string" }
+        }
+      }
+    }
+  }
+}

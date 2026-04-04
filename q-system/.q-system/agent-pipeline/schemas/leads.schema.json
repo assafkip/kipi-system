@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lead Sourcing",
+  "description": "Phase 5 qualified leads from multi-platform sourcing",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "qualified_leads", "run_summary"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "platform_errors": {
+      "type": "object",
+      "description": "Per-platform error tracking. Only present if a platform failed. Orchestrator reads this to decide which fallback to trigger.",
+      "properties": {
+        "linkedin": { "type": "string", "description": "Chrome failed for LinkedIn" },
+        "reddit": { "type": "string", "description": "Reddit MCP failed" },
+        "medium": { "type": "string", "description": "RSS/WebSearch failed for Medium" },
+        "x": { "type": "string", "description": "Apify failed for X/Twitter" }
+      }
+    },
+    "run_summary": {
+      "type": "object",
+      "required": ["linkedin_fetched", "reddit_fetched", "medium_fetched", "x_fetched", "tier_a", "tier_b", "tier_c", "discarded"],
+      "properties": {
+        "linkedin_fetched": { "type": "integer" },
+        "reddit_fetched": { "type": "integer" },
+        "medium_fetched": { "type": "integer" },
+        "x_fetched": { "type": "integer" },
+        "tier_a": { "type": "integer" },
+        "tier_b": { "type": "integer" },
+        "tier_c": { "type": "integer" },
+        "discarded": { "type": "integer" }
+      }
+    },
+    "qualified_leads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tier", "platform", "author_name", "post_url", "post_full_text", "scores", "budget_qualified"],
+        "properties": {
+          "tier": {
+            "type": "string",
+            "enum": ["A", "B", "C"]
+          },
+          "platform": {
+            "type": "string",
+            "enum": ["LinkedIn", "Reddit", "Medium", "X"]
+          },
+          "author_name": { "type": "string" },
+          "author_title": { "type": "string" },
+          "author_profile_url": { "type": "string" },
+          "post_url": { "type": "string" },
+          "post_full_text": { "type": "string" },
+          "post_date": { "type": "string" },
+          "engagement_count": { "type": "integer" },
+          "scores": {
+            "type": "object",
+            "required": ["pain_signal", "first_person_proof", "role_fit", "budget_signal", "engagement_opportunity", "multi_team_pain", "total"],
+            "properties": {
+              "pain_signal": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "first_person_proof": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "role_fit": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "budget_signal": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "engagement_opportunity": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "multi_team_pain": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "total": { "type": "integer" }
+            }
+          },
+          "budget_qualified": { "type": "boolean" },
+          "budget_evidence": { "type": "string" },
+          "service_line": { "type": "string" },
+          "pain_category": { "type": "string" },
+          "score_rationale": { "type": "string" }
+        }
+      }
+    }
+  }
+}

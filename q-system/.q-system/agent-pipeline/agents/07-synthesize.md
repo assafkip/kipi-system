@@ -12,8 +12,9 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 ## Reads
 - `{{BUS_DIR}}/*.json` -- all bus output files from prior agents
 - `{{QROOT}}/marketing/templates/schedule-data-schema.md` -- schedule JSON schema
-- `{{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md` -- actionability rules (if present)
-- `{{QROOT}}/.agents/skills/founder-voice/SKILL.md` -- voice rules for written text (if present)
+- `plugins/kipi-core/skills/audhd-executive-function/SKILL.md` -- actionability rules (if present)
+- `plugins/kipi-core/skills/founder-voice/SKILL.md` -- voice rules for written text (if present)
+- `plugins/kipi-core/skills/research-mode/SKILL.md` -- citation rules for factual claims (if present)
 - `{{BUS_DIR}}/post-visuals.json` -- visual assets for drafted posts
 - `{{QROOT}}/memory/morning-state.md` -- investor update tracker (if present)
 
@@ -21,8 +22,8 @@ You are the synthesis agent. You read ALL bus/ outputs from prior agents and pro
 
 1. Read all JSON files in {{BUS_DIR}}/
 2. Read the schedule schema: {{QROOT}}/marketing/templates/schedule-data-schema.md
-3. Read the AUDHD executive function skill if present: {{QROOT}}/.claude/skills/audhd-executive-function/SKILL.md
-4. Read the voice skill for any written text if present: {{QROOT}}/.agents/skills/founder-voice/SKILL.md
+3. Read the AUDHD executive function skill if present: plugins/kipi-core/skills/audhd-executive-function/SKILL.md
+4. Read the voice skill for any written text if present: plugins/kipi-core/skills/founder-voice/SKILL.md
    - If these skill files don't exist, apply the core principles: every item must be copy-paste ready, have a next physical action, and an energy tag.
 
 5. Synthesize everything into a single schedule-data JSON file following the schema exactly.
@@ -67,5 +68,18 @@ Before writing the final schedule JSON:
    - 30+ days since last investor update
 3. If any trigger fires: add an Admin-energy item to the schedule: "Draft investor update -- [trigger reason]"
 4. If no trigger: skip silently, do not surface
+
+## Sycophancy Audit Surfacing (ENFORCED)
+
+Read `{{BUS_DIR}}/sycophancy-audit.json` if it exists.
+
+- If `overall` = "pass": add one line to FYI section: "Sycophancy audit: clean. (Residual risk always exists per Chandra et al.)"
+- If `overall` = "watch": add a brief paragraph to the Admin section. Include which check(s) triggered and one concrete action suggestion: "Talk to someone who disagrees with [specific claim] this week."
+- If `overall` = "alert": add a DEDICATED SECTION titled "Sycophancy Alert" (accent: orange, after Open Loops). Surface the specific findings: buried signals, spiraling beliefs, high pi metric. End with: "The most reliable fix is a conversation with someone who will push back."
+- If `harness_override` exists in the JSON: note that the deterministic harness disagreed with the agent. Show the harness reasons. The harness verdict is authoritative.
+
+NEVER downplay an alert. NEVER soften the harness override. The entire point of this check is that the system cannot be trusted to audit itself honestly.
+
+Never shame the founder. This is structural, not personal. Frame as "the system might be filtering" not "you're rubber-stamping."
 
 ## Token budget: this is the most expensive agent. Keep output tight.
