@@ -38,6 +38,24 @@ while IFS='|' read -r name path prefix itype; do
   if [ "$DRY_RUN" != "--dry-run" ]; then
     cd "$path"
 
+    # Clean up stale git lock files from crashed processes
+    for lockfile in "$path/.git/HEAD.lock" "$path/.git/index.lock"; do
+      if [ -f "$lockfile" ]; then
+        echo "  Removing stale lock: $lockfile"
+        rm -f "$lockfile"
+      fi
+    done
+
+    # Abort any zombie rebase/merge/cherry-pick
+    if [ -d "$path/.git/rebase-merge" ] || [ -d "$path/.git/rebase-apply" ]; then
+      echo "  Aborting zombie rebase..."
+      git rebase --abort 2>/dev/null || true
+    fi
+    if [ -f "$path/.git/MERGE_HEAD" ]; then
+      echo "  Aborting zombie merge..."
+      git merge --abort 2>/dev/null || true
+    fi
+
     # Auto-stash dirty working tree
     STASHED=false
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
