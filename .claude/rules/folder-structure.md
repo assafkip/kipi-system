@@ -71,7 +71,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   └── content-reviewer.md       # Sonnet - 4-pass content review
 │   │
 │   ├── output-styles/                # Custom output styles
-│   │   └── founder.md                # Founder OS voice baseline
+│   │   └── founder.md                # Entrepreneur OS voice baseline
 │   │
 │   ├── rules/                        # Path-scoped instruction files
 │   │   └── (15 files: anti-misclassification, audhd, auto-detection,
