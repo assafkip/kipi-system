@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Session Bootstrap",
+  "description": "Phase 0 session bootstrap with handoff cards, missed debriefs, and loop stats",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "confirmed_cards", "unconfirmed_cards", "missed_debriefs", "loop_stats"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "confirmed_cards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "target": { "type": "string" },
+          "type": { "type": "string" }
+        }
+      }
+    },
+    "unconfirmed_cards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "target": { "type": "string" },
+          "type": { "type": "string" }
+        }
+      }
+    },
+    "missed_debriefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "meeting_date"],
+        "properties": {
+          "name": { "type": "string" },
+          "meeting_date": { "type": "string" }
+        }
+      }
+    },
+    "loop_stats": {
+      "type": "object",
+      "required": ["open"],
+      "properties": {
+        "open": { "type": "integer" },
+        "L0": { "type": "integer" },
+        "L1": { "type": "integer" },
+        "L2": { "type": "integer" },
+        "L3": { "type": "integer" }
+      }
+    },
+    "level2_loops": { "type": "array" },
+    "checksums": { "type": "object" },
+    "monthly_audit": {},
+    "stale_pending_items": { "type": "array" }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Marketing Health",
+  "description": "Phase 4/6 marketing pipeline health check",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "overall_health"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "stale_assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "asset": { "type": "string" },
+          "last_refreshed": { "type": "string" },
+          "days_stale": { "type": "integer" }
+        }
+      }
+    },
+    "cadence": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "target": { "type": "integer" },
+          "actual": { "type": "integer" },
+          "pct": { "type": "number" }
+        }
+      }
+    },
+    "stale_drafts": { "type": "array" },
+    "overdue_scheduled": { "type": "array" },
+    "current_theme": { "type": "string" },
+    "theme_content_exists": { "type": "boolean" },
+    "overall_health": { "type": "string", "enum": ["GREEN", "YELLOW", "RED"] }
+  }
+}

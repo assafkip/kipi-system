@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Founder Brand Post",
+  "description": "Phase 4 brand-building post draft (conditional, runs on brand days)",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "linkedin_draft", "theme", "angle"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "is_secondary": { "type": "boolean" },
+    "linkedin_draft": { "type": "string" },
+    "theme": { "type": "string" },
+    "angle": { "type": "string" }
+  }
+}

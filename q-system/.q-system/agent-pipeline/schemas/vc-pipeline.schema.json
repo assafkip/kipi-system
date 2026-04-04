@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VC Pipeline Pull",
+  "description": "Phase 1 VC pipeline data pull (optional)",
+  "type": "object",
+  "oneOf": [
+    {
+      "required": ["bus_version", "date", "generated_by", "active_count", "vcs"],
+      "properties": {
+        "bus_version": { "type": "integer", "const": 1 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "generated_by": { "type": "string" },
+        "active_count": { "type": "integer" },
+        "vcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "firm", "status"],
+            "properties": {
+              "name": { "type": "string" },
+              "firm": { "type": "string" },
+              "tier": { "type": "string" },
+              "status": { "type": "string" },
+              "warm_intro_path": { "type": "string" },
+              "last_contact": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "required": ["skipped", "reason", "date"],
+      "properties": {
+        "skipped": { "type": "boolean", "const": true },
+        "reason": { "type": "string" },
+        "date": { "type": "string" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Copy Diffs",
+  "description": "Phase 1 comparison of yesterday's hitlist actions vs actual usage",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "yesterday", "actions_checked", "diffs", "stats"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "yesterday": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "actions_checked": { "type": "integer" },
+    "diffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_rank", "contact_name", "action_type", "status"],
+        "properties": {
+          "action_rank": { "type": "integer" },
+          "contact_name": { "type": "string" },
+          "action_type": { "type": "string" },
+          "status": { "type": "string", "enum": ["used_as_is", "edited", "skipped", "unknown"] },
+          "edit_summary": { "type": "string" }
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "used_as_is": { "type": "integer" },
+        "edited": { "type": "integer" },
+        "skipped": { "type": "integer" },
+        "unknown": { "type": "integer" }
+      }
+    },
+    "persisted_to_sqlite": { "type": "boolean" }
+  }
+}

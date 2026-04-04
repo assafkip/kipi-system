@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Loop Review",
+  "description": "Phase 5 stale follow-up loop audit and recommendations",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "stale_loops", "summary"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "stale_loops": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_title", "due_date", "days_overdue", "recommendation"],
+        "properties": {
+          "action_title": { "type": "string" },
+          "due_date": { "type": "string" },
+          "days_overdue": { "type": "integer" },
+          "level": { "type": "integer" },
+          "recommendation": { "type": "string", "enum": ["close", "park", "escalate", "force-close"] },
+          "rule": { "type": ["string", "null"] },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "level_2": { "type": "integer" },
+        "level_3": { "type": "integer" },
+        "force_close_candidates": { "type": "integer" }
+      }
+    }
+  }
+}
