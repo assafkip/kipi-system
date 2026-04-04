@@ -19,7 +19,6 @@
       "Bash(git push:*)",
       "Bash(git stash:*)",
       "Bash(git merge:*)",
-      "Bash(git rebase:*)",
       "Bash(gh:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
@@ -34,6 +33,7 @@
       "Bash(sudo*)",
       "Bash(git push --force*)",
       "Bash(git reset --hard*)",
+      "Bash(git rebase*)",
       "Bash(chmod 777*)",
       "Bash(curl * | bash*)",
       "Bash(wget * | bash*)",
@@ -75,18 +75,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\"",
-            "timeout": 5
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/git-health-check.sh\"",
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\"",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\"",
-            "timeout": 10
           }
         ]
       }
@@ -121,17 +116,6 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\"",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\"",
-            "async": true
           }
         ]
       }
