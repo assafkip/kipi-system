@@ -1,7 +1,7 @@
 ---
 name: 03-linkedin-posts
 description: "Scrape LinkedIn feed posts from target contacts and flag re-engagement opportunities"
-model: sonnet
+model: haiku
 maxTurns: 30
 ---
 

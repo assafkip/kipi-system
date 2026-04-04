@@ -1,7 +1,7 @@
 ---
 name: 10-daily-checklists
 description: "Refresh Notion Daily Actions and Daily Posts pages with today's items"
-model: sonnet
+model: haiku
 maxTurns: 30
 ---
 

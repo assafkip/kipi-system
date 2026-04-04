@@ -1,7 +1,7 @@
 ---
 name: 03-linkedin-dms
 description: "Read LinkedIn DMs and connection accepts via Chrome and write structured data to disk"
-model: sonnet
+model: haiku
 maxTurns: 30
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: 08-visual-verify
 description: "Open daily HTML schedule in Chrome, screenshot it, and verify layout correctness"
-model: sonnet
+model: haiku
 maxTurns: 30
 ---
 

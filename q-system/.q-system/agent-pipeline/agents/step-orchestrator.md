@@ -60,7 +60,7 @@ Your context window will compact automatically as it approaches limits. Do not s
 1. Read each agent's prompt file from AGENTS_DIR
 2. Replace {{DATE}} with today's date, {{BUS_DIR}} with the bus path, {{QROOT}} with project root, {{AGENTS_DIR}} with the agents directory path
 3. Spawn agents using the Agent tool with the prompt
-4. Model allocation: haiku for data pulls (00-preflight, 00-session-bootstrap, 01-*), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
+4. Model allocation: haiku for data pulls and simple writes (00-*, 01-*, 03-linkedin-posts, 03-linkedin-dms, 08-visual-verify, 09-notion-push, 10-daily-checklists), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
 5. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
 6. When a phase depends on the previous phase's output, wait for completion first
 7. After each phase, verify the expected bus/ JSON files exist before proceeding
@@ -124,8 +124,8 @@ Verify: meeting-prep.json, warm-intros.json, x-activity.json
 
 ### Phase 3: LinkedIn + Reconciliation (4 agents, SEQUENTIAL for Chrome, then 1 parallel)
 Chrome agents (SEQUENTIAL -- one tab at a time):
-- 03-linkedin-posts.md (sonnet) - writes linkedin-posts.json
-- 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
+- 03-linkedin-posts.md (haiku) - writes linkedin-posts.json
+- 03-linkedin-dms.md (haiku) - writes linkedin-dms.json
 - 03-prospect-pipeline.md (sonnet) - reads notion.json, writes prospect-pipeline.json
 THEN (can run after posts + x-activity are done):
 - Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/publish-reconciliation.py {date}` - fuzzy-matches published posts against Content Pipeline, writes publish-reconciliation.json
@@ -185,7 +185,7 @@ The harness independently parses decisions.md to verify the agent's pi calculati
 
 ### Phase 8: Build + Verify (sequential)
 1. Run: `python3 {{QROOT}}/marketing/templates/build-schedule.py {{QROOT}}/output/schedule-data-{date}.json {{QROOT}}/output/daily-schedule-{date}.html`
-2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
+2. Spawn: 08-visual-verify.md (haiku) - opens HTML in Chrome, checks layout
 3. Run: `python3 {{QROOT}}/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
 4. Run: `python3 {{QROOT}}/.q-system/audit-morning.py {{QROOT}}/output/morning-log-{date}.json`
 5. Show audit output to founder
@@ -193,8 +193,8 @@ Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 
 ### Phase 9: Notion Write-back (2 agents, PARALLEL)
 Launch in ONE message:
-- 09-notion-push.md (sonnet) - pushes actions to Notion Actions DB, writes notion-push.json
-- 10-daily-checklists.md (sonnet) - updates Daily Actions + Daily Posts pages, writes daily-checklists.json
+- 09-notion-push.md (haiku) - pushes actions to Notion Actions DB, writes notion-push.json
+- 10-daily-checklists.md (haiku) - updates Daily Actions + Daily Posts pages, writes daily-checklists.json
 These are the final agents. If either fails, log the error - do not retry.
 
 ## Bus Cleanup
