@@ -37,8 +37,8 @@ BUDGETS = {
     "my-project/lead-sources.md": 100,
 }
 
-# Target: prune down to this percentage of budget
-PRUNE_TARGET = 0.75
+# Target: prune down to budget minus this many lines (buffer before next trigger)
+PRUNE_BUFFER = 20
 
 
 def get_qroot():
@@ -114,14 +114,12 @@ def prune_file(qroot, rel_path, budget):
     if len(sections) <= 1:
         return False, f"  WARN: {rel_path} is {line_count} lines (budget {budget}) but has no ## sections to split"
 
-    # Calculate target line count
-    target = int(budget * PRUNE_TARGET)
+    # Calculate target line count (budget minus buffer)
+    target = budget - PRUNE_BUFFER
 
     # Separate pinned vs unpinned sections
     # Pinned sections (contain <!-- pin -->) are never archived
     # Always keep the first section if it has no header (preamble/title)
-    keep = []
-    archive_candidates = []
     running_lines = 0
 
     # Preserve preamble (content before first ## header)
@@ -132,61 +130,63 @@ def prune_file(qroot, rel_path, budget):
         preamble_lines = preamble[1].count("\n") + 1
         running_lines += preamble_lines
 
-    # Split into pinned (always keep) and unpinned (archive candidates)
-    pinned = []
-    unpinned = []
-    for section in working_sections:
+    # Tag each section with its original index and whether it's pinned
+    indexed = []
+    for i, section in enumerate(working_sections):
         header_str = section[0] or ""
         body_str = section[1] or ""
-        if "<!-- pin -->" in header_str or "<!-- pin -->" in body_str:
-            pinned.append(section)
-        else:
-            unpinned.append(section)
-
-    # Pinned sections always stay, count their lines
-    for section in pinned:
+        is_pinned = "<!-- pin -->" in header_str or "<!-- pin -->" in body_str
         section_lines = (section[1].count("\n") + 1)
         if section[0]:
             section_lines += 1
-        running_lines += section_lines
+        indexed.append({
+            "idx": i,
+            "section": section,
+            "pinned": is_pinned,
+            "lines": section_lines,
+        })
+
+    # Count pinned lines (always kept)
+    for entry in indexed:
+        if entry["pinned"]:
+            running_lines += entry["lines"]
 
     # Walk unpinned from end (newest first), keep until target
-    keep_from_end = []
-    archive_from_start = []
-    for section in reversed(unpinned):
-        section_lines = (section[1].count("\n") + 1)
-        if section[0]:
-            section_lines += 1  # header line
-        if running_lines + section_lines <= target:
-            keep_from_end.insert(0, section)
-            running_lines += section_lines
+    unpinned = [e for e in indexed if not e["pinned"]]
+    keep_indices = set()
+    archive_entries = []
+
+    for entry in reversed(unpinned):
+        if running_lines + entry["lines"] <= target:
+            keep_indices.add(entry["idx"])
+            running_lines += entry["lines"]
         else:
-            archive_from_start.insert(0, section)
+            archive_entries.insert(0, entry)
 
     # If nothing to archive, skip
-    if not archive_from_start:
+    if not archive_entries:
         return False, None
 
     # Archive old sections
-    archive_path = archive_sections(qroot, rel_path, archive_from_start)
+    archive_path = archive_sections(
+        qroot, rel_path, [e["section"] for e in archive_entries]
+    )
 
-    # Rebuild file: preamble + pinned (original order) + kept unpinned (newest)
-    # Pinned sections go first (they're foundational), then recent unpinned
+    # Rebuild file preserving original document order
+    # Keep: preamble, all pinned sections, kept unpinned sections
     rebuilt = ""
     if preamble:
         rebuilt += preamble[1].rstrip() + "\n\n"
-    for section_header, section_body in pinned:
-        if section_header:
-            rebuilt += f"{section_header}\n"
-        rebuilt += section_body.rstrip() + "\n\n"
-    for section_header, section_body in keep_from_end:
-        if section_header:
-            rebuilt += f"{section_header}\n"
-        rebuilt += section_body.rstrip() + "\n\n"
+    for entry in indexed:
+        if entry["pinned"] or entry["idx"] in keep_indices:
+            section_header, section_body = entry["section"]
+            if section_header:
+                rebuilt += f"{section_header}\n"
+            rebuilt += section_body.rstrip() + "\n\n"
 
     file_path.write_text(rebuilt.rstrip() + "\n")
 
-    archived_count = len(archive_from_start)
+    archived_count = len(archive_entries)
     new_lines = rebuilt.count("\n") + 1
     return True, f"  PRUNED: {rel_path} ({line_count} -> {new_lines} lines, {archived_count} sections archived to {archive_path.name})"
 
