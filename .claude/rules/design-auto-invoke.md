@@ -19,6 +19,8 @@ Invoke design skills ONLY when creating new pages, components, or landing pages 
 
 **Rule:** Run `ui-ux-pro-max` first to generate the design system BEFORE writing new pages/components.
 
+**Gate check:** The globs above are a file-scope filter, NOT a trigger. Before invoking any design skill, verify: "Am I creating a NEW page or component from scratch?" If editing an existing file, skip this rule entirely, even if the glob matches.
+
 **Do NOT invoke for:**
 - Editing existing HTML/CSS (typo fixes, content updates, minor tweaks)
 - Template files, config files, or build output
