@@ -1,18 +1,29 @@
-# Cold Outreach Templates
+# Template: Cold Outreach
 
-## Connection Request (300 char max)
+> Used by `/q-market-create outreach [contact]` and `/q-engage`
+> LinkedIn connection requests, first DMs, value drops
+
+---
+
+## Pre-Generation Steps
+
+1. **Pull contact from CRM** (if exists) - history, pool, what they care about
+2. **Check relationships.md** for any prior context
+3. **Find their recent post or content** - need a specific hook, not a generic opener
+4. **Gather links:**
+   - Target profile: `{{TARGET_PROFILE_URL}}`
+   - Their post to reference: `{{TARGET_POST_URL}}`
+   - Resource for value drop: `{{VALUE_DROP_URL}}`
+
+## Structure
+
+### Connection Request (300 char max)
 
 ```
 [X] mutuals. I [credibility hook]. Would be good to connect.
 ```
 
-Rules:
-- Under 300 characters
-- Reference mutual connection count
-- One credibility signal (not a resume list)
-- "Would be good to connect" not "I'd love to connect"
-
-## First DM (after connection accept)
+### First DM (after connection accept)
 
 ```
 I [noticed/saw/been thinking about] [something specific about them].
@@ -20,22 +31,33 @@ I [noticed/saw/been thinking about] [something specific about them].
 [One question about their experience, not a pitch].
 ```
 
-Rules:
-- Start with "I" not their name
-- Reference something specific (their post, their role, their company's challenge)
-- Ask a genuine question
-- No pitch, no product mention
-- Under 500 characters
-
-## Follow-up Value Drop (7-10 days after no reply)
+### Follow-up Value Drop (7-10 days after no reply)
 
 ```
 [Saw/Found] [relevant signal/article/report].
 Given your work on [their specific thing], thought worth flagging: [link]
 ```
 
-Rules:
-- Lead with value, not "following up"
+## Rules
+
+- Connection request: under 300 characters
+- First DM: under 500 characters
+- Value drop: under 300 characters
+- Reference mutual connection count in connection requests
+- One credibility signal, not a resume list
+- "Would be good to connect" not "I'd love to connect"
+- Start DMs with "I" not their name
+- Reference something specific (their post, role, company challenge)
+- Ask a genuine question in first DM, no pitch, no product mention
+- Value drop: lead with value, not "following up"
+- No mention of previous message in value drop
 - Link to something genuinely useful to them
-- No mention of your previous message
-- Under 300 characters
+
+## Output Format
+
+Save to: `output/marketing/outreach/cold-[contact-name]-YYYY-MM-DD.md`
+
+## Post-Generation
+
+1. All copy through voice skill
+2. Log outreach in CRM (if connected)

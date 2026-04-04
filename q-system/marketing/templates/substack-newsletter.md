@@ -1,7 +1,10 @@
-# Substack Newsletter Template
+# Template: Substack Newsletter
 
+> Used by `/q-market-create substack [topic]`
 > More personal voice than Medium. Direct address to subscribers.
 > Can repurpose/expand the week's Medium article or be original content.
+
+---
 
 ## Pre-Generation Steps
 
@@ -10,7 +13,7 @@
 3. Read `canonical/talk-tracks.md` for current positioning language
 4. Query NotebookLM for research grounding if topic benefits from it
 
-## Newsletter Structure
+## Structure
 
 ### Subject Line
 - Under 50 characters
@@ -49,12 +52,28 @@
 - "Reply and tell me [specific question]. I read every response."
 - "Subscribe if you haven't - I publish weekly on [topic]."
 
-## Voice Rules
+## Imagery
+
+See `04-post-visuals.md` for full decision matrix.
+
+- **Header image:** Nano Banana (16:9, editorial style, matches newsletter theme)
+- **Reuse option:** If this week's LinkedIn post already has a hero image, reuse it for visual consistency
+- **Keep consistent:** Same visual identity across weekly issues builds recognition
+
+## Rules
+
 - More personal than Medium. This is a letter, not an article.
 - First person throughout
 - Show thinking-in-progress, not finished arguments
 - No product pitch unless it's a company announcement
+- No banned AI words
+- Mark vision claims `{{UNVALIDATED}}` if unbuilt
 
 ## Output Format
 
 Save to: `output/marketing/substack/substack-YYYY-MM-DD-[slug].md`
+
+## Post-Generation
+
+1. Run `/q-market-review` against the draft
+2. Create Content Pipeline DB entry (Status: Drafted)

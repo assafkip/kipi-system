@@ -29,6 +29,15 @@
 Full breakdown: {{YOUR_SIGNALS_URL}}
 ```
 
+## Imagery
+
+See `04-post-visuals.md` for full decision matrix.
+
+- **Format:** Hero image (breaking news needs attention-grabbing visuals)
+- **Tool:** Nano Banana (16:9, dark background, data-viz / breaking-news style)
+- **Prompt hint:** Reference the lead signal's topic. Abstract, urgent feel. No text overlay.
+- **Fallback:** Gamma social card (headline = lead signal stat or fact)
+
 ## Rules
 
 - 100-200 words

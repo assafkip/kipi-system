@@ -30,6 +30,15 @@ TWEET 5 (optional):
 [Link to longer form content if applicable]
 ```
 
+## Imagery
+
+See `04-post-visuals.md` for full decision matrix.
+
+- **Optional:** Gamma quote card (1:1, single insight, dark background)
+- X threads often perform better without images
+- If thread is data-heavy: consider a single chart or stat card via Gamma
+- Do NOT generate images for every thread. Use only when the visual adds signal.
+
 ## Rules
 
 - Each tweet: 280 char max

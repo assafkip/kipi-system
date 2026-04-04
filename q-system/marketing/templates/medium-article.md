@@ -38,6 +38,15 @@
 [100-200 words. Forward-looking. End with a question or reflection.]
 ```
 
+## Imagery
+
+See `04-post-visuals.md` for full decision matrix.
+
+- **Hero image:** Nano Banana (16:9, editorial quality, matches article theme)
+- **In-article images:** Optional Gamma diagrams for data-heavy sections or process flows
+- **Prompt hint:** Abstract, conceptual. Matches the article's core metaphor. No stock photo look.
+- **Medium-specific:** Hero image appears as thumbnail in feeds. Make it attention-grabbing at small sizes.
+
 ## Rules
 
 - 800-1500 words (hard range)
