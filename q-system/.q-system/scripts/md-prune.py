@@ -190,6 +190,16 @@ def prune_file(qroot, rel_path, budget):
     return True, f"  PRUNED: {rel_path} ({line_count} -> {new_lines} lines, {archived_count} sections archived to {archive_path.name})"
 
 
+def write_prune_log(qroot, messages):
+    """Append prune events to persistent log file."""
+    log_path = qroot / "memory" / "archives" / "prune-log.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with open(log_path, "a") as f:
+        for msg in messages:
+            f.write(f"[{today}] {msg.strip()}\n")
+
+
 def main():
     qroot = get_qroot()
     pruned_any = False
@@ -207,7 +217,9 @@ def main():
         for msg in messages:
             print(msg)
         if pruned_any:
+            write_prune_log(qroot, [m for m in messages if "PRUNED:" in m])
             print("  Old sections moved to memory/archives/. Review with: ls q-system/memory/archives/")
+            print("  Prune history: q-system/memory/archives/prune-log.txt")
         print("")
 
     sys.exit(0)
