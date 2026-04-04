@@ -39,11 +39,14 @@ def audit(log_path):
         "5.9_lead_sourcing", "5.9b_engagement_hitlist",
         "6_decision_compliance", "7_positioning_freshness",
         "8_briefing_output", "8.5_start_here",
-        "9_notion_push", "10_daily_checklists", "11_html_output"
+        "9_notion_push", "10_daily_checklists", "11_html_output",
+        # Script-generated steps
+        "0c_canonical_digest",
+        "6_sycophancy_audit"
     }
 
     if day_of_week == 'monday':
-        expected.update({"3.7_content_intel", "5_site_metrics", "5.5_prospect_tracking"})
+        expected.add("3.7_content_intel")
 
     # Day-specific content sub-steps (replaces monolithic 4_signals / 4_content)
     # Mon/Wed/Fri: signals LinkedIn, X signals, X hot take, X BTS
@@ -63,7 +66,7 @@ def audit(log_path):
             "4_tl_x",
         })
     if day_of_week == 'wednesday':
-        expected.add("4_kipi_promo")
+        pass  # No Wednesday-only required steps currently
     if day_of_week == 'monday':
         expected.add("4_medium_draft")
 
@@ -79,7 +82,11 @@ def audit(log_path):
         "1_vc_pipeline", "1.5_warm_intro", "2.5_x_activity",
         "3.2_publish_reconciliation", "4.5_marketing_health",
         "0g_monthly_checks", "9.5_investor_update_check", "7.5_checkpoint_drift",
-        "2_meeting_prep"
+        "2_meeting_prep",
+        # Script-generated (may not run every day)
+        "1c_copy_diff",
+        # Legacy steps without agent equivalents (Monday-only, not yet migrated)
+        "5_site_metrics", "5.5_prospect_tracking"
     }
 
     completed = {k for k, v in steps.items() if v.get('status') == 'done'}

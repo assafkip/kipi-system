@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LinkedIn Posts",
+  "description": "Phase 3 LinkedIn feed posts from target contacts",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "posts"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "posts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["author_name", "full_post_text", "post_url"],
+        "properties": {
+          "author_name": { "type": "string" },
+          "author_title": { "type": "string" },
+          "author_url": { "type": "string" },
+          "post_date": { "type": "string" },
+          "full_post_text": { "type": "string" },
+          "like_count": { "type": "integer" },
+          "comment_count": { "type": "integer" },
+          "post_url": { "type": "string" },
+          "re_engage": { "type": "boolean" }
+        }
+      }
+    },
+    "re_engage_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["author_name", "post_url", "last_comment_date", "reason"],
+        "properties": {
+          "author_name": { "type": "string" },
+          "post_url": { "type": "string" },
+          "last_comment_date": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

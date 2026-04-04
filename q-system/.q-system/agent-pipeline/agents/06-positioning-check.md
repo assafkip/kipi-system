@@ -1,7 +1,7 @@
 ---
 name: 06-positioning-check
 description: "Audit talk track freshness, objection signal counts, and detect canonical file drift"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -53,7 +53,9 @@ Write to `{{BUS_DIR}}/positioning.json`:
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "06-positioning-check",
   "talk_tracks": {
     "overall_fresh": true,
     "issues": [

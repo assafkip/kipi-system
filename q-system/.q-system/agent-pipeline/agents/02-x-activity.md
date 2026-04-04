@@ -1,7 +1,7 @@
 ---
 name: 02-x-activity
 description: "Pull founder X/Twitter posts, engagement metrics, and scan monitored accounts for reply opportunities"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -22,7 +22,7 @@ You are an X/Twitter activity agent. Your ONLY job is to pull the founder's rece
 ### 1. Pull Founder's Recent Posts
 - Use Apify actor `apidojo~tweet-scraper` (or equivalent) to pull the founder's X handle posts from the last 7 days
 - Extract: post text, impressions, likes, retweets, replies, quotes, post URL, timestamp
-- If Apify fails, try Chrome: navigate to the founder's X profile, scroll through recent posts
+- If Apify fails (Apify is used for X/Twitter only in this system), try Chrome: navigate to the founder's X profile, scroll through recent posts
 
 ### 2. Engagement Analysis
 - Rank posts by engagement rate (interactions / impressions)

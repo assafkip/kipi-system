@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Schedule Data",
+  "description": "Phase 7 daily schedule JSON for HTML template injection",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "dateDisplay", "generated", "sections"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "dateDisplay": {
+      "type": "string"
+    },
+    "generated": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string"
+    },
+    "todayFocus": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "time", "energy"],
+        "properties": {
+          "text": { "type": "string" },
+          "time": { "type": "string" },
+          "energy": { "type": "string" }
+        }
+      }
+    },
+    "callBanners": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["time", "info"],
+        "properties": {
+          "time": { "type": "string" },
+          "info": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "meetingPrep": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "items"],
+        "properties": {
+          "title": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "accent"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "accent": { "type": "string" },
+          "meta": { "type": "string" },
+          "collapsed": { "type": "boolean" },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "title", "energy", "time"],
+              "properties": {
+                "id": { "type": "string" },
+                "title": { "type": "string" },
+                "energy": {
+                  "type": "string",
+                  "enum": ["quickwin", "deepfocus", "people", "admin"]
+                },
+                "time": { "type": "string" },
+                "platform": { "type": "string" },
+                "badge": {
+                  "type": ["string", "null"],
+                  "enum": ["WIN", "KEY", null]
+                },
+                "extraTags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["text", "color"],
+                    "properties": {
+                      "text": { "type": "string" },
+                      "color": { "type": "string" }
+                    }
+                  }
+                },
+                "daysAgo": { "type": ["string", "null"] },
+                "context": { "type": "string" },
+                "links": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["text", "url"],
+                    "properties": {
+                      "text": { "type": "string" },
+                      "url": { "type": "string" }
+                    }
+                  }
+                },
+                "copyBlocks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["label", "text"],
+                    "properties": {
+                      "label": { "type": "string" },
+                      "text": { "type": "string" }
+                    }
+                  }
+                },
+                "needsEyes": { "type": ["string", "null"] }
+              }
+            }
+          },
+          "infoNotes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "pipeline": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["value", "label"],
+              "properties": {
+                "value": { "type": "integer" },
+                "label": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

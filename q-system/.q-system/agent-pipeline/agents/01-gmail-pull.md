@@ -1,7 +1,7 @@
 ---
 name: 01-gmail-pull
 description: "Fetch and flag recent emails from the last 48 hours via Gmail MCP"
-model: opus
+model: haiku
 maxTurns: 30
 ---
 
@@ -22,7 +22,9 @@ You are a data-pull agent. Your ONLY job is to fetch recent emails and write str
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "01-gmail-pull",
   "emails": [
     {
       "subject": "...",

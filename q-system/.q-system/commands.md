@@ -1,6 +1,6 @@
 # Q Instance Commands
 
-> These are conventions for interacting with the Q Instance. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
+> These are conventions for interacting with the Q Founder OS. Use them as natural language triggers — they tell Claude which mode to enter and what to do.
 
 | Command | Purpose | Mode |
 |---------|---------|------|
@@ -11,13 +11,13 @@
 | `/q-debrief [person]` | Enter Debrief mode. Use the structured debrief template to process a conversation. Includes 12 strategic implications lenses, market intelligence routing, and **Design Partner Conversion** (mandatory for practitioner/CISO calls - produces copy-paste message to convert conversation into trial). **Highest-priority workflow.** | DEBRIEF |
 | `/q-plan` | Enter Plan mode. Review relationships, objections, and proof gaps. Propose prioritized next actions. | PLAN |
 | `/q-draft [type] [audience]` | Generate an ad-hoc output to `output/drafts/`. For one-off emails, DMs, talking points. Ephemeral. | CREATE |
-| `/q-ingest-feedback [file]` | Process a feedback file from `seed-materials/`. Extract objections, resonance phrases, competitive intel, market intelligence, and contact context into canonical files. Also evaluates for market intelligence (problem language, category signals, objection previews, competitive intel, buyer process, narrative validation) and routes to `canonical/market-intelligence.md`. | CALIBRATE |
+| `/q-ingest-feedback [file]` | Process a feedback file from `q-system/output/`. Extract objections, resonance phrases, competitive intel, market intelligence, and contact context into canonical files. Also evaluates for market intelligence (problem language, category signals, objection previews, competitive intel, buyer process, narrative validation) and routes to `canonical/market-intelligence.md`. | CALIBRATE |
 | `/q-checkpoint` | Save current canonical state. Verify all files are consistent. Log to `my-project/progress.md`. Update `memory/morning-state.md` checkpoint timestamp. | — |
 | `/q-end` | End session. Auto-runs `/q-checkpoint` first, then summarizes all changes. | — |
 | `/q-sync-notion` | Sync local files ↔ Notion CRM. Push new contacts/interactions/pipeline changes to Notion. Pull follow-up date changes and status updates from Notion back to local files. | CALIBRATE |
 | `/q-morning` | Morning briefing. Runs calendar + email + Notion checks in parallel, surfaces unlogged interactions, checks decision rule compliance, flags stale positioning. See workflow below. | — |
 | `/q-engage` | LinkedIn engagement mode. Proactive: generate daily hitlist from Notion targets. Reactive: user shares post screenshot → comment suggestions + auto-log to Notion. See workflow below. | CREATE |
-| `/q-content-intel` | Content intelligence. Scrape own content across all platforms via Apify. Analyze what works vs. doesn't. Update `canonical/content-intelligence.md`. Cross-reference themes against `canonical/market-intelligence.md` to check if our content topics align with what the market is discussing. Score drafts before publishing. | CALIBRATE |
+| `/q-content-intel` | Content intelligence. Scrape own content across all platforms (Chrome for LinkedIn, Reddit MCP for Reddit, RSS for Medium/Substack, Apify for X only). Analyze what works vs. doesn't. Update `canonical/content-intelligence.md`. Cross-reference themes against `canonical/market-intelligence.md` to check if our content topics align with what the market is discussing. Score drafts before publishing. | CALIBRATE |
 | `/q-investor-update` | Draft a milestone-triggered investor update email for the full VC list. Pulls pipeline, recent wins, metrics. Batch send-ready. | CREATE |
 | `/q-market-plan` | Weekly content planning. Reads theme rotation + editorial calendar. Generates this week's plan. Creates Notion entries in Content Pipeline + Editorial Calendar DBs. | CREATE |
 | `/q-market-create [type] [topic]` | Generate marketing content. Types: linkedin, x, medium, one-pager, outreach, deck, follow-up. Reads canonical files + templates + NotebookLM. Runs guardrails. For deck/one-pager, generates via Gamma MCP. See workflow below. | CREATE |
@@ -28,6 +28,7 @@
 | `/q-wrap` | Evening wrap. 10-min end-of-day system health check. Closes open loops, catches missed debriefs, previews tomorrow. | — |
 | `/q-handoff` | Session handoff. Generates context note for next session. Run before ending or when context is running low. | — |
 | `/q-reality-check` | Challenger mode. Stress-tests current positioning, claims, and assumptions against evidence. | — |
+| `/q-research [topic]` | Anti-hallucination research mode. Every claim must cite a source (local file, web search snippet, named paper). Uses a 4-level cascade: local files first, then search snippets, then full page fetch, then Scholar Gateway. Token-budgeted (5 searches, 3 fetches max per question). Say "exit research mode" to return to normal. | — |
 
 ## Usage Notes
 
@@ -35,7 +36,7 @@
 - **Debriefs happen automatically.** Paste a conversation transcript and Claude auto-runs `/q-debrief`. No command needed. If you forget, `/q-morning` catches missed debriefs the next day.
 - `/q-begin`, `/q-end`, and `/q-checkpoint` still work if you want to use them manually, but they're no longer required.
 - **`/q-draft` vs `/q-create`:** Use `/q-create` for structured deliverables (talk tracks, workflow packs). Use `/q-draft` for one-off outputs (specific email, DM, talking points for a meeting).
-- **`/q-ingest-feedback [file]`** expects a file in `seed-materials/`. Place the file there first.
+- **`/q-ingest-feedback [file]`** expects a file in `q-system/output/`. Place the file there first.
 - **Modes are not sequential.** Switch freely. You can `/q-debrief` then immediately `/q-plan` then `/q-create`.
 
 ## Example Flows
@@ -65,7 +66,7 @@
 
 **Proactive mode (`/q-engage`):**
 1. Pull Contacts DB for Type = VC, Design Partner, CISO, Advisor, Connector with Status = Active or Warm or Design Partner Status = Prospect
-2. For each target: Use Apify LinkedIn Posts Scraper actor to pull their last 7 days of posts. Run in parallel batches of 5. Fall back to Chrome only if Apify fails.
+2. For each target: Use Chrome browser to navigate to each target's LinkedIn profile and read their recent posts (last 7 days). Process sequentially (one browser tab).
 3. Cross-reference with Notion LinkedIn Tracker (last comment date - enforce 1 comment/person/week rule)
 4. Filter to contacts who posted in last 48h AND haven't been engaged in 7+ days
 5. For each post: evaluate for **market intelligence** first (same lenses as Step 2.5 in lead sourcing - problem language, category signal, objection preview, competitive intel, buyer process, narrative check). If the post has canonical value, log to `canonical/market-intelligence.md` before generating engagement copy. This applies to ALL posts read, not just ones we comment on.
@@ -94,7 +95,7 @@
 **Design Partner outreach mode (`/q-engage dp-outreach`):**
 
 For prospects with DP Status = Prospect who have NOT been contacted yet:
-1. **Research** (parallel via Apify): Use LinkedIn Profile Scraper + LinkedIn Posts Scraper actors to pull each prospect's profile data AND recent posts/activity in parallel. This replaces Chrome browser automation and runs faster at lower cost. Extract:
+1. **Research** (via Chrome): Navigate to each prospect's LinkedIn profile via Chrome browser. Read their profile data AND recent posts/activity. Extract:
    - What they post/comment about (topics, themes, pain points)
    - Specific recent posts (quotes, subjects)
    - Professional focus areas and what they care about
@@ -102,7 +103,7 @@ For prospects with DP Status = Prospect who have NOT been contacted yet:
 2. **Personalize** using the `cold-email` marketing skill: For each prospect, craft:
    - Touch 1 comment (if they have recent posts to comment on)
    - Connection request (under 300 chars) referencing something specific from their activity
-   - Follow-up DM (under 500 chars) referencing their specific work, asking a genuine question, with UTM-tagged demo link as async CTA (e.g., `{{YOUR_DEMO_URL}}?utm_source=linkedin&utm_medium=dm&utm_campaign=cold-outreach&utm_content=[prospect-slug]`)
+   - Follow-up DM (under 500 chars) referencing their specific work, asking a genuine question, with UTM-tagged demo link as async CTA (e.g., `demo.{{YOUR_DOMAIN}}?utm_source=linkedin&utm_medium=dm&utm_campaign=cold-outreach&utm_content=[prospect-slug]`)
 3. **Save** all messages to `output/design-partner/personalized-outreach-YYYY-MM-DD.md`
 4. **Update Notion** contacts with research findings (What They Care About, Follow-up Action, Strategic Value)
 5. **Output** execution sequence (who to contact first, Touch 1 vs Touch 2)
@@ -110,7 +111,7 @@ For prospects with DP Status = Prospect who have NOT been contacted yet:
 **Rules for DP outreach personalization (MANDATORY):**
 - Every message MUST reference something specific the person wrote, shared, spoke about, or cares about
 - Generic templates with only name/company swapped are NOT acceptable
-- Use Apify LinkedIn Profile + Posts Scraper actors for research (parallel, cheaper than Chrome). Fall back to Chrome only if Apify fails.
+- Use Chrome browser for all LinkedIn research. Navigate to each prospect's profile to read their activity and posts.
 - The `cold-email` marketing skill must be invoked for message generation
 - Playbook details in `output/design-partner/cold-prospecting-playbook.md`
 
@@ -320,41 +321,41 @@ When founder reports an action, the system immediately:
 > **HARNESS RULE:** Every step must end with a call to the log helper. Replace DATE with today's date in every call.
 > ```bash
 > # Log a completed step:
-> bash q-system/.q-system/log-step.sh DATE step_id done "result summary"
+> python3 q-system/.q-system/log-step.py DATE step_id done "result summary"
 > # Log a failed step:
-> bash q-system/.q-system/log-step.sh DATE step_id failed "" "error message"
+> python3 q-system/.q-system/log-step.py DATE step_id failed "" "error message"
 > # Log a skipped step:
-> bash q-system/.q-system/log-step.sh DATE step_id skipped "" "reason"
+> python3 q-system/.q-system/log-step.py DATE step_id skipped "" "reason"
 > # Log a partially completed step:
-> bash q-system/.q-system/log-step.sh DATE step_id partial "what completed"
+> python3 q-system/.q-system/log-step.py DATE step_id partial "what completed"
 > # Add an action card (for any founder-facing draft):
-> bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person Name" "Draft text..." "https://url"
+> python3 q-system/.q-system/log-step.py DATE add-card C1 linkedin_comment "Person Name" "Draft text..." "https://url"
 > # Run a gate check (at Steps 8, 9, 11):
-> bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""
+> python3 q-system/.q-system/log-step.py DATE gate-check step_8 true ""
 > # Record state checksums:
-> bash q-system/.q-system/log-step.sh DATE checksum-start field_name value
-> bash q-system/.q-system/log-step.sh DATE checksum-end field_name value
+> python3 q-system/.q-system/log-step.py DATE checksum-start field_name value
+> python3 q-system/.q-system/log-step.py DATE checksum-end field_name value
 > # Mark all cards as delivered (after Step 11 HTML opens):
-> bash q-system/.q-system/log-step.sh DATE deliver-cards
+> python3 q-system/.q-system/log-step.py DATE deliver-cards
 > ```
-> **No step is complete until `log-step.sh` runs.** The helper writes to disk. Context rot cannot affect it.
+> **No step is complete until `log-step.py` runs.** The helper writes to disk. Context rot cannot affect it.
 
 This step replaces the need to manually run `/q-begin` or `/q-end`. The founder only needs `/q-morning`.
 
 - **0f - Server connectivity check (FAIL-FAST, RUNS FIRST):** See preflight.md Section 1 for exact tests. After all checks pass:
   ```bash
-  bash q-system/.q-system/log-step.sh DATE init
-  bash q-system/.q-system/log-step.sh DATE 0f_connection_check done "7/7 passed"
+  python3 q-system/.q-system/log-step.py DATE init
+  python3 q-system/.q-system/log-step.py DATE 0f_connection_check done "7/7 passed"
   ```
   If any critical server fails, still create the log and record the failure:
   ```bash
-  bash q-system/.q-system/log-step.sh DATE init
-  bash q-system/.q-system/log-step.sh DATE 0f_connection_check failed "" "Notion API: property not found"
+  python3 q-system/.q-system/log-step.py DATE init
+  python3 q-system/.q-system/log-step.py DATE 0f_connection_check failed "" "Notion API: property not found"
   ```
   Then HALT.
 
 - **0a - Checkpoint previous session + clean working memory + check for mid-morning resume + catch missed wraps:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0a_checkpoint done "SUMMARY"` Run a lightweight `/q-checkpoint` (snapshot canonical files, log to progress.md, update checkpoint timestamp). If this is a fresh session with no changes, skip gracefully. Also: delete any files in `memory/working/` older than 48 hours (except predictions.jsonl which is append-only). Read `memory/last-handoff.md` for prior session context - use this to understand what was in progress. **MISSED WRAP DETECTION (A2):** If `memory/last-handoff.md` is missing or older than 24h AND there were canonical file changes yesterday (check mtimes), a wrap was missed. Run a lightweight retroactive wrap: count yesterday's Actions marked complete, note any unfinished items, log to progress.md with "[Auto-recovered from missed wrap]". No guilt, no pressure, just capture what happened. **MID-MORNING RESUME:** If the handoff note says "morning routine split - data collected through Step X", skip Steps 0b-5.9b and jump directly to Step 11 (JSON generation). The handoff note contains all collected data needed for the JSON. This prevents re-running 45 min of data collection.
+  > Log: `python3 q-system/.q-system/log-step.py DATE 0a_checkpoint done "SUMMARY"` Run a lightweight `/q-checkpoint` (snapshot canonical files, log to progress.md, update checkpoint timestamp). If this is a fresh session with no changes, skip gracefully. Also: delete any files in `memory/working/` older than 48 hours (except predictions.jsonl which is append-only). Read `memory/last-handoff.md` for prior session context - use this to understand what was in progress. **MISSED WRAP DETECTION (A2):** If `memory/last-handoff.md` is missing or older than 24h AND there were canonical file changes yesterday (check mtimes), a wrap was missed. Run a lightweight retroactive wrap: count yesterday's Actions marked complete, note any unfinished items, log to progress.md with "[Auto-recovered from missed wrap]". No guilt, no pressure, just capture what happened. **MID-MORNING RESUME:** If the handoff note says "morning routine split - data collected through Step X", skip Steps 0b-5.9b and jump directly to Step 11 (JSON generation). The handoff note contains all collected data needed for the JSON. This prevents re-running 45 min of data collection.
 - **0b - Action card pickup + missed debrief detection:**
   **HARNESS: Check for exported actions JSON FIRST (before asking the founder anything).**
   1. Check `~/Downloads/actions-YYYY-MM-DD.json` (yesterday's date)
@@ -365,63 +366,63 @@ This step replaces the need to manually run `/q-begin` or `/q-end`. The founder 
      - Cards MISSING from the export (present in morning log but not in actions JSON) = founder never opened the HTML or didn't click the button. Only ask about THESE cards.
   4. If no export file exists at all, fall back to the previous behavior: find the most recent morning log (glob `output/morning-log-*.json`, sort by date, take the latest that is NOT today). Read its `action_cards` for any with `founder_confirmed: false`. List them and ask: "Last session I drafted these for you. Which ones did you actually do?"
   For each confirmed (from JSON or verbal): update the card, then update Notion (LinkedIn Tracker, Contacts DB, etc.). List which state files were updated in `logged_to`.
-  For each not done: carry forward by adding to TODAY's action cards via `log-step.sh DATE add-card`.
+  For each not done: carry forward by adding to TODAY's action cards via `log-step.py DATE add-card`.
   **Generate effort string for today's HTML:** From the actions data (JSON export or verbal), build a summary like "8 done, 3 skipped. 5 comments posted, 2 DMs sent, 1 debrief done." Store this in the morning log so Step 11 can read it and set the `effort` field in today's schedule JSON. If no actions data exists (first run or missed day), set effort to null.
   Also check `verification_queue` for unverified claims - re-verify any that are now stale (>48h).
   **Then:** Cross-reference recent calendar events against Notion Interactions DB. Any meeting with an external person that has no matching Interaction = missed debrief. Prompt founder and run `/q-debrief`.
   **Then:** Check recent debriefs in `my-project/progress.md` for practitioner/CISO conversations that have no corresponding follow-up Action in Notion Actions DB. If a debrief happened but no design partner conversion message was sent (no Action with Type = Follow-up Email and the person's name), flag it: "[Person] conversation was debriefed but no conversion message was sent. Want me to generate one now?"
   ```bash
-  bash q-system/.q-system/log-step.sh DATE 0b_missed_debrief done "X cards confirmed, Y carried forward, Z debriefs found"
+  python3 q-system/.q-system/log-step.py DATE 0b_missed_debrief done "X cards confirmed, Y carried forward, Z debriefs found"
   ```
 - **0b.5 - Loop escalation and auto-close:**
   Run the loop tracker to escalate all open loops and auto-close any that have evidence of completion.
   ```bash
   # Escalate all loops based on age
-  bash q-system/.q-system/loop-tracker.sh escalate
+  python3 q-system/.q-system/loop-tracker.py escalate
   # Check stats
-  bash q-system/.q-system/loop-tracker.sh stats
+  python3 q-system/.q-system/loop-tracker.py stats
   # List any loops at level 2+ (need attention)
-  bash q-system/.q-system/loop-tracker.sh list 2
+  python3 q-system/.q-system/loop-tracker.py list 2
   ```
   **Auto-close logic (run during Steps 1 and 3.8):**
-  - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: `bash q-system/.q-system/loop-tracker.sh close <loop_id> "email reply detected" "auto_gmail"`
-  - Step 3.8 (DM check): When detecting DM replies, cross-reference against open `dm_sent` and `dp_offer_sent` loops. When detecting connection accepts, cross-reference against `connection_request_sent` loops. Close matches: `bash q-system/.q-system/loop-tracker.sh close <loop_id> "DM reply detected" "auto_step_3.8"`
+  - Step 1 (Gmail): When scanning emails, cross-reference senders against open loops of type `email_sent` or `materials_sent`. If reply found: `python3 q-system/.q-system/loop-tracker.py close <loop_id> "email reply detected" "auto_gmail"`
+  - Step 3.8 (DM check): When detecting DM replies, cross-reference against open `dm_sent` and `dp_offer_sent` loops. When detecting connection accepts, cross-reference against `connection_request_sent` loops. Close matches: `python3 q-system/.q-system/loop-tracker.py close <loop_id> "DM reply detected" "auto_step_3.8"`
   **Loop opening (run during Steps 5.85, 5.9b, 9, and /q-debrief):**
   Every outbound action that expects a response MUST open a loop:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh open <type> <target> <context> [notion_id] [card_id] [follow_up_text]
+  python3 q-system/.q-system/loop-tracker.py open <type> <target> <context> [notion_id] [card_id] [follow_up_text]
   ```
   Types: dm_sent, email_sent, materials_sent, comment_posted, action_created, debrief_next_step, dp_offer_sent, connection_request_sent, lead_sourced
   ```bash
-  bash q-system/.q-system/log-step.sh DATE 0b.5_loop_escalation done "X open loops (L0:X L1:X L2:X L3:X)"
+  python3 q-system/.q-system/log-step.py DATE 0b.5_loop_escalation done "X open loops (L0:X L1:X L2:X L3:X)"
   ```
 - **0c - Load canonical state + snapshot state checksums:**
   Read all canonical files to load current context into this session. This now includes any updates from Step 0b debriefs.
   **HARNESS: Snapshot state file checksums.** Read these key fields and record each:
   ```bash
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_calendar_sync "2026-03-13"
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_gmail_sync "2026-03-13"
-  bash q-system/.q-system/log-step.sh DATE checksum-start dp_prospect_count "17"
-  bash q-system/.q-system/log-step.sh DATE checksum-start dp_outreach_count "3"
-  bash q-system/.q-system/log-step.sh DATE checksum-start decisions_rule_count "17"
-  bash q-system/.q-system/log-step.sh DATE checksum-start last_publish_date "2026-03-10"
-  bash q-system/.q-system/log-step.sh DATE 0c_load_canonical done "loaded, 6 checksums captured"
+  python3 q-system/.q-system/log-step.py DATE checksum-start last_calendar_sync "2026-03-13"
+  python3 q-system/.q-system/log-step.py DATE checksum-start last_gmail_sync "2026-03-13"
+  python3 q-system/.q-system/log-step.py DATE checksum-start dp_prospect_count "17"
+  python3 q-system/.q-system/log-step.py DATE checksum-start dp_outreach_count "3"
+  python3 q-system/.q-system/log-step.py DATE checksum-start decisions_rule_count "17"
+  python3 q-system/.q-system/log-step.py DATE checksum-start last_publish_date "2026-03-10"
+  python3 q-system/.q-system/log-step.py DATE 0c_load_canonical done "loaded, 6 checksums captured"
   ```
   Sources: `memory/morning-state.md` (sync dates), `my-project/relationships.md` (DP counts from Notion query), `canonical/decisions.md` (rule count), `memory/marketing-state.md` (publish date).
 - **0d - Load voice skill:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0d_load_voice done "loaded"`
-  Read `.agents/skills/founder-voice/references/voice-dna.md` and `.agents/skills/founder-voice/references/writing-samples.md`. ALL written output for the rest of the session (posts, comments, DMs, emails, outreach, replies) must pass through the voice skill rules. This is not optional.
+  > Log: `python3 q-system/.q-system/log-step.py DATE 0d_load_voice done "loaded"`
+  Read `plugins/kipi-core/skills/founder-voice/references/voice-dna.md` and `plugins/kipi-core/skills/founder-voice/references/writing-samples.md`. ALL written output for the rest of the session (posts, comments, DMs, emails, outreach, replies) must pass through the voice skill rules. This is not optional.
 - **0e - Load AUDHD executive function skill:**
-  > Log: `bash q-system/.q-system/log-step.sh DATE 0e_load_audhd done "loaded"`
-  Read `.claude/skills/audhd-executive-function/SKILL.md` and `.claude/skills/audhd-executive-function/references/founder-profile.md`. This skill governs how ALL output is structured, especially the daily schedule HTML. Every action item must be copy-paste ready with inline text and a Copy button. No cross-references. No dashboards without actions. No scores without recovery drafts. The system decides what to do, the founder only executes. This is not optional. Every step that produces output for the founder must comply with the actionability rules (A1-A7) and pass the 10-point quality check before being shown.
+  > Log: `python3 q-system/.q-system/log-step.py DATE 0e_load_audhd done "loaded"`
+  Read `plugins/kipi-core/skills/audhd-executive-function/SKILL.md`. Check `my-project/founder-profile.md` for AUDHD preferences. This skill governs how ALL output is structured, especially the daily schedule HTML. Every action item must be copy-paste ready with inline text and a Copy button. No cross-references. No dashboards without actions. No scores without recovery drafts. The system decides what to do, the founder only executes. This is not optional. Every step that produces output for the founder must comply with the actionability rules (A1-A7) and pass the 10-point quality check before being shown.
 
-- **0f - Server connectivity check (FAIL-FAST, RUNS FIRST before 0a-0e):** This is the VERY FIRST thing `/q-morning` does. Before checkpoint, before debrief detection, before loading skills. Test ALL 7 connections (Calendar, Gmail, Notion API, Chrome, Apify, VC Pipeline API, NotebookLM) using the exact tests defined in the "Fail-fast mode" section below. ALWAYS print the pass/fail table. If ANY critical server fails, STOP the entire routine immediately. See "Fail-fast mode" for the full test table and output format.
+- **0f - Server connectivity check (FAIL-FAST, RUNS FIRST before 0a-0e):** This is the VERY FIRST thing `/q-morning` does. Before checkpoint, before debrief detection, before loading skills. Test ALL 9 connections (Calendar, Gmail, Notion API, Chrome, Apify [X only], Reddit MCP, RSS feeds [Medium/Substack], VC Pipeline API, NotebookLM) using the exact tests defined in the "Fail-fast mode" section below. ALWAYS print the pass/fail table. If ANY critical server fails (Calendar, Gmail, Notion, Chrome), STOP the entire routine immediately. Apify and RSS failures are non-critical (Chrome fallback available). See "Fail-fast mode" for the full test table and output format.
 - **0g - Monthly checks (1st of month only):** (1) Decision origin audit: count tags in decisions.md, flag if >60% rubber-stamped. (2) Review `memory/monthly/` files, promote proven patterns to canonical, delete invalidated ones. (3) Prediction calibration: analyze `memory/working/predictions.jsonl` for last 30 days, calculate accuracy, save to `memory/monthly/prediction-calibration-YYYY-MM.md`. (4) Outreach A/B analysis: group outcomes by style code, calculate reply rates per style, save to `memory/monthly/outreach-ab-YYYY-MM.md`.
 
 - **0h - Context budget strategy:** The morning routine is split into two halves. If context is running low after Step 5.9b, auto-run `/q-handoff` and tell the founder: "Context is getting tight. Running handoff. Start a new session and run `/q-morning` again - it will pick up from the handoff note and skip to Step 11 (HTML generation)." The handoff note must include all data collected so far (calendar, actions, hitlist items, lead sourcing results) as structured data so the next session can build the JSON without re-running Steps 1-5.
 
 **Context-saving rules (ENFORCED across all steps):**
-- **Never hold raw Apify results in context.** Save to `output/lead-gen/` files immediately. Read back only the qualified subset.
+- **Never hold raw scrape results (Chrome, Reddit MCP, RSS, Apify) in context.** Save to bus/ or `output/lead-gen/` files immediately. Read back only the qualified subset.
 - **Never generate content for the wrong day.** Tuesday = TL post only. Friday = Medium only. Don't generate signals + TL + hot take + BTS all on the same day unless it's Monday.
 - **Step 5.9 Phase 2: score in batches.** Read 10 results, score, discard sub-10 scores immediately. Don't hold all 50 raw results in context simultaneously.
 - **Step 5.9b: cap at 10 engagement targets.** If 15 targets are eligible, pick the top 10 by priority. Fewer better comments > more rushed ones.
@@ -437,7 +438,7 @@ After Step 0, the session is fully initialized. The founder never needs to run `
 - **Email agent:** Search Gmail for last 48 hours (inbox AND sent). Cross-reference sender names against Notion Contacts DB and Interactions DB. Flag emails from known contacts that have no matching interaction logged. **EMAIL CONVERSATION DETECTION (C4):** Also check Gmail sent folder for outbound emails to prospects in the last 48h. For each sent email to a known Contact: check if there's an inbound reply in the inbox. If reply found: auto-update Contact (Last Contact = today), flag as "email reply received" for temperature scoring. If no reply and email was sent 7+ days ago: note as unreturned email for channel death tracking. This removes the need for the founder to report "X replied to my email."
   **LOOP AUTO-CLOSE (Gmail):** After processing emails, read `output/open-loops.json`. For each open loop of type `email_sent` or `materials_sent`, check if the loop's target name appears as a sender in the inbox results. If reply found:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "email reply detected in Gmail" "auto_gmail"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "email reply detected in Gmail" "auto_gmail"
   ```
 - **Notion agent:** Pull Actions DB for overdue/due-today items (filter by Due date and Priority). Pull Investor Pipeline for upcoming follow-ups. **STALE ACTION CLEANUP (D5):** For any Actions with Due date > 7 days past AND Priority != "Someday": auto-move Priority to "Someday". Surface count quietly in briefing: "[X] stale actions moved to Someday" (no guilt, no list of what was missed). The founder can review Someday items when they have capacity. This prevents open-loop accumulation. **NOTE:** Actions DB has no "Status" property - use Priority (Today/This Week/Next Week/Someday) for filtering. See KI-3 in preflight.md.
 - **VC Pipeline agent:** Fetch `http://localhost:5050/api/pipeline` to pull the full VC Pipeline Manager data (66+ contacts with warm intro paths, statuses, tiers). This data is used in Steps 1.5 and 3.5 for warm intro matching.
@@ -451,7 +452,7 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
 - **For new DP prospects** (added since last morning check): Cross-reference each prospect against:
   1. **VC Pipeline warm paths** (`http://localhost:5050/api/pipeline`): 20+ contacts have mapped warm intro paths with named connectors (e.g., "Via Guy Rosen (Meta CISO)", "Via Prabhath Karanth", "Via Limor Elbaz (1st degree, CONFIRMED)"). Check if any VC pipeline connector ALSO knows the DP prospect (same company, same industry, mutual connections).
   2. **Notion Contacts DB** (82+ contacts): Search for existing contacts at the prospect's company, in their industry, or with overlapping LinkedIn networks. Anyone with Type = Connector, Advisor, or Operational who works in the same space.
-  3. **Apify mutual connections** (if available): Pull the prospect's LinkedIn profile. Note mutual connection count with founder. Flag any mutuals who are already in Notion Contacts DB or VC Pipeline.
+  3. **Chrome mutual connections** (if visible on profile page): Navigate to the prospect's LinkedIn profile via Chrome. Note mutual connection count with founder. Flag any mutuals who are already in Notion Contacts DB or VC Pipeline.
 - **Output appended to morning briefing:**
   ```
   WARM INTRO OPPORTUNITIES
@@ -464,9 +465,8 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
 **Step 2 — Meeting prep (TODAY's meetings get full prep, this-week gets one-line note):**
 > **HARNESS:** Log as `2_meeting_prep` when done. Result = count of meetings prepped.
 
-**CONTEXT-SAVING:** Full research + Apify + NotebookLM + VC prep brief = only for TODAY's meetings. Meetings later this week get a one-line entry in the FYI section ("Wed: Call with X, prep needed tomorrow"). Meetings next week get nothing. This prevents 3-person meeting prep from consuming 30% of context.
-- **Apify** (`mcp__apify__*`): Use LinkedIn Profile Scraper actor to pull attendee's profile data (role, company, headline, summary, experience). Use LinkedIn Posts Scraper actor to pull their recent posts and engagement. For multiple attendees, run actors in parallel. This is cheaper and faster than Chrome browser automation.
-- **Fallback to Chrome** (`mcp__claude-in-chrome__*`): Only use Chrome for LinkedIn data if Apify actors fail or if you need to see visual content (images, carousels) that Apify can't extract.
+**CONTEXT-SAVING:** Full research + Chrome + NotebookLM + VC prep brief = only for TODAY's meetings. Meetings later this week get a one-line entry in the FYI section ("Wed: Call with X, prep needed tomorrow"). Meetings next week get nothing. This prevents 3-person meeting prep from consuming 30% of context.
+- **Chrome browser** (`mcp__claude-in-chrome__*`): Navigate to attendee's LinkedIn profile. Read their role, company, headline, summary, recent posts, and engagement. Process attendees sequentially (one browser tab). Chrome is the primary tool for all LinkedIn profile/post data.
 - **Notion CRM**: Cross-reference attendee name against Contacts + Interactions DB — pull all past conversations, what was discussed, open items, last follow-up.
 - **NotebookLM** (`mcp__notebooklm__*`): For high-priority meetings (VCs, design partners), create or update a research notebook per person/company. Enables pre-call Q&A like "what does this person care about?"
 - **VC call prep brief (for VC/investor meetings only):**
@@ -479,7 +479,7 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
   - Review `canonical/talk-tracks.md` "Fundability Framework" section
   - Prep stage anchoring opener for this specific investor
   - Prep dominant risk framing with evidence
-  - Prep causal "why now" ({{YOUR_WHY_NOW}})
+  - Prep causal "why now" (detection eng discipline + regulation + re-breach data)
   - Prep self-audit answers (what's biggest risk, what changed in 60 days, smallest experiment, metric to raise faster)
   - Check: does our prep lead with multi-output proof, not detection-only?
   - Check: are milestones framed as risk-removal, not activities?
@@ -493,11 +493,11 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
   ```
 
 **Step 2.5 — X activity review:**
-- **Apify** (`mcp__apify__*`): Use Twitter/X Scraper actor to pull @{{YOUR_X_HANDLE}} recent posts with engagement metrics (impressions, likes, retweets, replies, quotes). Also scrape recent posts from target accounts ({{MONITORED_HANDLE_1}}, {{MONITORED_HANDLE_2}}, {{MONITORED_HANDLE_3}}, {{MONITORED_HANDLE_4}}) for QT/reply targets.
-- **Chrome browser** (`mcp__claude-in-chrome__*`): Use ONLY for checking notifications (new followers, DMs) and posting replies, since Apify can't interact with X, only read.
+- **Apify** (`mcp__apify__*`): Use `apidojo~tweet-scraper` actor to pull {{YOUR_X_HANDLE}} recent posts with engagement metrics (impressions, likes, retweets, replies, quotes). Also scrape recent posts from target accounts for QT/reply targets. Apify is used ONLY for X/Twitter in this system.
+- **Chrome browser** (`mcp__claude-in-chrome__*`): Use for checking notifications (new followers, DMs), posting replies, and as fallback if Apify fails.
 - **Engagement opportunities:** Flag accounts that engaged with your posts for DM follow-up (warm leads)
 - **Reply to comments:** If any posts from yesterday have replies, draft quick responses (first 30 min engagement matters)
-- **Weekly metrics (Mondays only):** Pull from Apify scrape data: impressions, engagement rate, follower count, top/bottom 3 posts. Compare to prior week. Update `canonical/content-intelligence.md` X baselines.
+- **Weekly metrics (Mondays only):** Pull from Apify/Chrome scrape data: impressions, engagement rate, follower count, top/bottom 3 posts. Compare to prior week. Update `canonical/content-intelligence.md` X baselines.
 - **Output:**
   ```
   X ACTIVITY
@@ -515,8 +515,7 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
 **Step 3 — LinkedIn activity review:**
 > **HARNESS:** Log as `3_linkedin_activity` when done. Result = re-engage count + new opportunities.
 
-- **Apify** (`mcp__apify__*`): Use LinkedIn Posts Scraper actor to pull founder's recent LinkedIn posts with engagement data (impressions, likes, comments, reposts). This replaces manual Chrome navigation and is faster + cheaper.
-- **Chrome browser** (`mcp__claude-in-chrome__*`): Use ONLY for checking Comments tab (`/recent-activity/comments/`) since Apify can't scrape comment-on-comment engagement. Also use Chrome for any interactive actions (posting comments, replying).
+- **Chrome browser** (`mcp__claude-in-chrome__*`): Navigate to founder's LinkedIn profile to read recent posts with engagement data (impressions, likes, comments, reposts). Also check Comments tab (`/recent-activity/comments/`) for comment-on-comment engagement. Use Chrome for all interactive actions (posting comments, replying). Chrome is the primary tool for ALL LinkedIn data.
 - **Posts analysis:** Check own posts for impressions, comments, reposts since last check. Feed engagement data into `canonical/content-intelligence.md`.
 - **Market intelligence from replies:** Evaluate replies and comments on founder's posts for canonical value. Someone replying "we have this exact problem, we use X today" or "I tried building this internally and it failed because..." is market signal. Apply the 6 market intelligence lenses (problem language, category signal, objection preview, competitive intel, buyer process, narrative check). Log to `canonical/market-intelligence.md` if new signal.
 - **Re-engagement opportunities:** For each comment with new replies or high traction:
@@ -525,7 +524,7 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
   - Did the comment create an opening for a connection request?
 - **LOOP AUTO-CLOSE (LinkedIn comments):** Cross-reference comment replies against open loops of type `comment_posted`. If someone replied to a comment the founder posted:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "reply on comment detected" "auto_step_3"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "reply on comment detected" "auto_step_3"
   ```
   **IMPORTANT:** Step 3 MUST check the Comments tab (`/recent-activity/comments/`), not just the Posts tab. The step result logged to the morning log must explicitly say "comments tab checked." If only Posts tab was checked, the step is INCOMPLETE per the Deliverables Checklist.
 - **New post opportunities:** Scan founder's feed for trending posts from target contacts that haven't been engaged yet
@@ -547,8 +546,8 @@ Uses VC Pipeline data from Step 1 + Notion Contacts DB to find warm intro paths 
 
 Detects content published directly (not through Q) and updates tracking to match reality.
 
-- **Compare Apify LinkedIn data (from Step 3) against Content Pipeline DB:**
-  - Pull all posts from the Apify LinkedIn scrape (Step 3 already has this data)
+- **Compare Chrome LinkedIn data (from Step 3) against Content Pipeline DB:**
+  - Pull all posts from the Chrome LinkedIn scrape (Step 3 already has this data)
   - Pull all entries from Content Pipeline DB with Status = Drafted or Reviewed (these are Q-generated drafts)
   - For each LinkedIn post from the last 7 days:
     1. **Fuzzy match** the post text against drafted content (check first 50 chars, hashtags, or key phrases)
@@ -561,7 +560,7 @@ Detects content published directly (not through Q) and updates tracking to match
        - This was published outside Q (direct post, not from a draft)
        - Create a Content Pipeline DB entry retroactively (Type: LinkedIn Post, Status: Published, Published Date: post date, Notes: "Published directly, not through Q")
        - Log: "Direct publish detected: [post summary] on [date]"
-- **Also check X/Twitter** (from Step 2.5 Apify data): Same reconciliation for tweets. Match against Content Pipeline DB entries with Type = X Post.
+- **Also check X/Twitter** (from Step 2.5 Apify/Chrome data): Same reconciliation for tweets. Match against Content Pipeline DB entries with Type = X Post.
 - **Output appended to morning briefing (only if changes found):**
   ```
   PUBLISH RECONCILIATION
@@ -595,12 +594,12 @@ Detects content published directly (not through Q) and updates tracking to match
 - **If prospects need personalization:** Offer to run `/q-engage dp-outreach` for those contacts
 
 **Step 3.7 — Content intelligence pull (weekly, Mondays):**
-- **Apify scrape own content** across all platforms:
-  - LinkedIn: Use LinkedIn Posts Scraper on founder's profile URL to pull all posts from last 7 days with engagement metrics
-  - X: Use Twitter/X Scraper on @{{YOUR_X_HANDLE}} to pull all tweets from last 7 days with impressions, likes, retweets, replies
-  - Medium: Use Web Scraper actor on {{YOUR_MEDIUM_PROFILE}} to pull article stats (reads, claps, read ratio)
-  - Reddit: Use Reddit Scraper actor to pull posts by founder from last 7 days with upvotes, comments
-  - Substack: Use Web Scraper actor on {{YOUR_SUBSTACK_PROFILE}} to pull newsletter stats
+- **Scrape own content** across all platforms using Chrome (LinkedIn), Reddit MCP, Apify (X only), and RSS feeds (Medium, Substack):
+  - LinkedIn: Navigate to founder's profile via Chrome, read all posts from last 7 days with engagement metrics
+  - X: Use Apify `apidojo~tweet-scraper` on {{YOUR_X_HANDLE}} to pull all tweets from last 7 days with impressions, likes, retweets, replies
+  - Medium: Pass 1: `WebFetch(url="https://medium.com/feed/@{{YOUR_MEDIUM_HANDLE}}", prompt="Extract all articles: title, URL, author, date, content text. Return as numbered list.")`. Pass 2: Navigate to each article via Chrome to get claps, responses, read ratio (RSS doesn't have engagement metrics).
+  - Reddit: Use Reddit MCP `mcp__reddit__get_user_posts` with `username={{YOUR_REDDIT_USERNAME}}`, `limit=20`. Returns posts with title, score (upvotes), comments, subreddit, full content. No two-pass needed.
+  - Substack: `WebFetch(url="https://{{YOUR_SUBSTACK}}.substack.com/feed", prompt="Extract all posts: title, URL, date, content text. Return as numbered list.")`. Open rate requires Substack dashboard via Chrome.
 - **Analyze patterns:**
   - Rank all posts by engagement rate (not raw numbers)
   - Identify top 3 and bottom 3 performers
@@ -629,18 +628,18 @@ Detects content published directly (not through Q) and updates tracking to match
 
 > **HARNESS: Action cards.** For every post/content draft generated in this step:
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE add-card P1 linkedin_publish "Signals post" "Three critical security..." ""
-> bash q-system/.q-system/log-step.sh DATE add-card P2 x_publish "X signals" "SolarWinds WHD has..." ""
+> python3 q-system/.q-system/log-step.py DATE add-card P1 linkedin_publish "Signals post" "Three critical security..." ""
+> python3 q-system/.q-system/log-step.py DATE add-card P2 x_publish "X signals" "SolarWinds WHD has..." ""
 > ```
 > Never update Content Pipeline DB or marketing-state.md publish log until `founder_confirmed: true`.
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE 4_signals done "3 posts drafted, 3 action cards"
+> python3 q-system/.q-system/log-step.py DATE 4_signals done "3 posts drafted, 3 action cards"
 > ```
 
 **CONTEXT-SAVING: Only generate the content type assigned to today.**
 - **Mon/Wed/Fri:** Signals post (LinkedIn + X) + X hot take + X BTS
 - **Tue/Thu:** Thought leadership post (LinkedIn + X). NO signals post.
-- **Weekly (Wednesdays): Kipi System promotion post.** One building-in-public post about the open source repo (https://github.com/{{YOUR_GITHUB}}/kipi-system). Follows a 4-week rotation:
+- **Weekly (Wednesdays): Kipi System promotion post.** One building-in-public post about the open source repo (https://github.com/assafkip/kipi-system). Follows a 4-week rotation:
   - Week 1: r/ClaudeAI post (architecture, Claude Code build, screenshots)
   - Week 2: r/ADHD post (executive function, no shame language, how it helps)
   - Week 3: LinkedIn series (5 posts Mon-Fri, each showing one thing the system did that day)
@@ -652,12 +651,12 @@ Detects content published directly (not through Q) and updates tracking to match
 - **Never generate all content types on the same day.** This is the single biggest context waster in Step 4.
 
 - **Before generating any content:** Read `canonical/content-intelligence.md` for current patterns. Use high-performing language/formats. Avoid low-performing patterns. Score each draft against the Content Scoring Model before finalizing.
-- **Fetch {{YOUR_DOMAIN}}/signals (Mon/Wed/Fri only):** Use `WebFetch` to pull the latest signals from the {{YOUR_PRODUCT}} Signals page
+- **Fetch {{YOUR_DOMAIN}}/signals (Mon/Wed/Fri only):** Use `WebFetch` to pull the latest signals from the signals page
 - **Pick 2-4 top signals** that are: (a) breaking news, high severity, actively exploited, or big-name brands, (b) trending or viral potential (data leaks, source code dumps, major CVEs), (c) interesting to security and fraud practitioners
 - **Generate LinkedIn post:** Breaking news roundup format. Lead with the most attention-grabbing signal. List 2-4 signals with key facts (numbers, affected products, what happened). End with link to {{YOUR_DOMAIN}}/signals and total signals analyzed. Goal: drive traffic to the signals page, NOT thought leadership or {{YOUR_PRODUCT}} positioning.
 - **Generate X signals post:** 1-2 sentences or a thread hook (280 char max for the lead). Punchier, headline-style. End with link to {{YOUR_DOMAIN}}/signals.
-- **Generate X hot take:** Scan security news (from signals + trending X topics) for something to react to. One tweet, no thread. Sharp, opinionated, practitioner voice. Connect to your product metaphor without naming {{YOUR_PRODUCT}}. Examples:
-  - Vendor announces "AI-powered detection" -> {{YOUR_HOT_TAKE_EXAMPLE}}
+- **Generate X hot take:** Scan security news (from signals + trending X topics) for something to react to. One tweet, no thread. Sharp, opinionated, practitioner voice. Connect to institutional memory, learning failure, or nervous system framing without naming {{YOUR_PRODUCT}}. Examples:
+  - Vendor announces "AI-powered detection" -> "You can't prompt-engineer a nervous system."
   - Major breach -> Connect to institutional memory failure
   - VC posts security thesis -> Engage with practitioner perspective
   - Industry report -> Contrarian take on what the data actually means
@@ -678,7 +677,7 @@ Detects content published directly (not through Q) and updates tracking to match
   [1 tweet, opinionated, practitioner voice]
   Topic: [what triggered it]
   ```
-- **Rules:** No "AI-powered" or "cutting-edge." No {{YOUR_PRODUCT}} pitch or positioning angle. This is a BREAKING NEWS post. Founder sharing signals to drive traffic to {{YOUR_DOMAIN}}/signals, not thought leadership. Write like a practitioner sharing news, not a vendor framing narratives. NEVER use emdashes in posts. Hot takes can reference your product metaphor but should NOT name {{YOUR_PRODUCT}} directly. Hot takes should aim for under 100 characters when possible.
+- **Rules:** No "AI-powered" or "cutting-edge." No {{YOUR_PRODUCT}} pitch or positioning angle. This is a BREAKING NEWS post. Founder sharing signals to drive traffic to {{YOUR_DOMAIN}}/signals, not thought leadership. Write like a practitioner sharing news, not a vendor framing narratives. NEVER use emdashes in posts. Hot takes can reference the nervous system metaphor but should NOT name {{YOUR_PRODUCT}} directly. Hot takes should aim for under 100 characters when possible.
 - **Generate X behind-the-scenes post (Mon/Wed/Fri):** Building-in-public content. One tweet about the founder journey, a decision made, something learned from a CISO conversation (anonymized), or a challenge being faced. Vulnerable, honest, specific. Use Pratfall Effect - showing imperfection makes you more relatable.
 - **Generate X visual post idea (Wed):** Suggest a visual to create - screenshot of demo output, simple diagram, breach timeline. Founder creates the visual, Claude drafts the caption. Images stop the scroll; text delivers value.
 - **Generate Gamma visual for signals post:** Call `mcp__gamma__generate_gamma` with format "social", inputText = top signal headline + key stat (e.g., "3.4M patients exposed - Cognizant TriZetto breach"). Use brand kit colors (dark bg, indigo accent). Save Gamma URL in the signals post file. This image gets posted alongside the LinkedIn and X signals posts.
@@ -706,7 +705,7 @@ Send today's signals directly to people who would be AFFECTED by them. Not prosp
   - Fetch the signals page, identify the individual report URLs, use those in messages.
   - If no individual URL exists for a signal, link to the signals page with an anchor or the closest match.
 
-- **MESSAGE FORMAT (copy-paste ready, run through /founder-voice):**
+- **MESSAGE FORMAT (copy-paste ready, run through founder-voice skill):**
   - LinkedIn DM and email versions for each.
   - Reference the specific signal and WHY it matters to THEM.
   - Link to the specific report.
@@ -747,10 +746,10 @@ Send today's signals directly to people who would be AFFECTED by them. Not prosp
   - NO {{YOUR_PRODUCT}} pitch. Zero. This is a practitioner sharing intel with their network.
   - Max 1 per person per week (don't spam)
   - The signal must be genuinely relevant to their specific situation. "Would their Tuesday change?" If no, don't send.
-  - All copy goes through /founder-voice before output. Casual, direct, helpful.
+  - All copy goes through founder-voice skill before output. Casual, direct, helpful.
   - Log to Notion LinkedIn Tracker DB after sending (Type: Outreach DM, note: "Intel drop - [signal topic]", UTM link)
   - After 3 intel drops with no response AND no link clicks in GA, stop. They're not reading them.
-  - **Email sign-off:** just "{{FOUNDER_FIRST_NAME}}" (no Best/Cheers/Regards)
+  - **Email sign-off:** just "Assaf" (no Best/Cheers/Regards)
 
 - **Create Actions** for each intel drop: (Energy: Quick Win, Time: 2 min, Priority: Today, Type: LinkedIn or Follow-up Email)
 
@@ -953,18 +952,18 @@ This step ensures existing warm relationships don't go cold while chasing new on
 
 **Loop auto-close (action_created):** When querying Notion Actions DB for overdue items, also check for any actions that have been completed (moved to Someday by the stale action cleanup in Step 1, or manually marked done by founder). Cross-reference against open loops of type `action_created`:
 ```bash
-bash q-system/.q-system/loop-tracker.sh close <loop_id> "action completed in Notion" "auto_notion"
+python3 q-system/.q-system/loop-tracker.py close <loop_id> "action completed in Notion" "auto_notion"
 ```
 
 **Loop opening (REQUIRED for every follow-up generated):**
 Every follow-up email or DM generated in 5.85 MUST open a loop (or update touch_count on existing loop):
 ```bash
 # For email follow-ups:
-bash q-system/.q-system/loop-tracker.sh open email_sent "Person Name" "Follow-up context" "" "E1" "Next follow-up text..."
+python3 q-system/.q-system/loop-tracker.py open email_sent "Person Name" "Follow-up context" "" "E1" "Next follow-up text..."
 # For DM follow-ups:
-bash q-system/.q-system/loop-tracker.sh open dm_sent "Person Name" "Follow-up context" "" "DM1" "Next follow-up text..."
+python3 q-system/.q-system/loop-tracker.py open dm_sent "Person Name" "Follow-up context" "" "DM1" "Next follow-up text..."
 ```
-If the person already has an open loop, `loop-tracker.sh open` will auto-increment touch_count instead of creating a duplicate.
+If the person already has an open loop, `loop-tracker.py open` will auto-increment touch_count instead of creating a duplicate.
 
 **Rules:**
 - MINIMUM 3 follow-up items per day in the HTML, even if nothing is technically "overdue"
@@ -979,7 +978,7 @@ If the person already has an open loop, `loop-tracker.sh open` will auto-increme
 
 This is the core loop-closing forcing function. It reads all open loops and generates follow-up actions.
 
-1. Run `bash q-system/.q-system/loop-tracker.sh list 1` to get all loops at level 1+ (3+ days old)
+1. Run `python3 q-system/.q-system/loop-tracker.py list 1` to get all loops at level 1+ (3+ days old)
 2. **Level 1 loops (3-6 days):** Generate a copy-paste follow-up message for each. Add as action card in morning log. Show in Pipeline Follow-ups section of HTML with yellow `daysAgo` tag.
 3. **Level 2 loops (7-13 days):** Generate follow-up AND flag prominently. Show at top of Pipeline Follow-ups with red `daysAgo` tag. If touch_count >= 3 on same channel, switch to a different channel.
 4. **Level 3 loops (14+ days):** Present forced choice to founder:
@@ -989,11 +988,11 @@ This is the core loop-closing forcing function. It reads all open loops and gene
    **Step 8 gate BLOCKS if any level 3 loops are unresolved.** The HTML cannot be generated with open level 3 loops.
 5. **For each follow-up generated:** Open or update the loop with new touch_count
    ```bash
-   bash q-system/.q-system/loop-tracker.sh touch <loop_id>
+   python3 q-system/.q-system/loop-tracker.py touch <loop_id>
    ```
 6. **Output to HTML:** "Open Loops" section (accent: red, position 2 in section order). Only level 2+ loops show here. Level 0-1 appear as a count in FYI.
 ```bash
-bash q-system/.q-system/log-step.sh DATE 5.86_loop_review done "X loops reviewed, Y follow-ups generated, Z force-closed"
+python3 q-system/.q-system/log-step.py DATE 5.86_loop_review done "X loops reviewed, Y follow-ups generated, Z force-closed"
 ```
 
 ---
@@ -1001,51 +1000,54 @@ bash q-system/.q-system/log-step.sh DATE 5.86_loop_review done "X loops reviewed
 **Step 5.9 - Lead sourcing: find people screaming about the problem we solve (daily):**
 > **HARNESS:** Log as `5.9_lead_sourcing`. Result = query count + platform count + qualified prospect count. Must include ALL platforms (LinkedIn, Reddit, X, Medium). If any platform was skipped, log as `partial` with reason. Save raw results to `output/lead-gen/` immediately (context-saving rule). Create action cards for each Tier A/B prospect's outreach message.
 
-This step finds practitioners and leaders who are actively feeling the pain {{YOUR_PRODUCT}} solves. The goal is to produce 5-10 qualified prospects per day with copy-paste-ready, personalized outreach.
+This step finds practitioners and leaders who are actively feeling the pain {{YOUR_PRODUCT}} solves. The goal is to produce 5-10 qualified prospects per day with copy-paste-ready, personalized outreach - like the Mar 9 run that found Paul Hutelmyer (built Detect Hub at Target), Chris Long (created DetectionLab), and Aaron Martin ("Detection engineering doesn't scale just because you write more rules").
 
 **THIS STEP HAS 4 PHASES. DO NOT SKIP ANY. DO NOT REPLACE CLAUDE QUALIFICATION WITH A KEYWORD FILTER.**
 
 ---
 
-**PHASE 1 - COLLECT (automated, Apify actors, 2-3 min):**
+**PHASE 1 - COLLECT (Chrome + Reddit MCP + RSS + Apify[X only], 3-5 min):**
 
-Run Apify actors to gather raw posts. Save all raw results to `output/lead-gen/[platform]-YYYY-MM-DD-raw.json`.
+Run Chrome (LinkedIn), Reddit MCP, RSS feeds via WebFetch (Medium), and Apify (X only) to gather raw posts. Save all raw results to `output/lead-gen/[platform]-YYYY-MM-DD-raw.json`.
 
-**1a. LinkedIn post search** via `supreme_coder~linkedin-post`:
-- Input format: `{"urls": ["https://www.linkedin.com/search/results/content/?keywords=ENCODED_QUERY&sortBy=date_posted"], "deepScrape": false, "maxItems": 10}`
-- NOTE: `sortBy=date_posted` (no quotes). `deepScrape: false` is faster and sufficient for search results. `maxItems: 10` per query to avoid noise.
+**1a. LinkedIn post search** via Chrome browser:
+- Navigate to `https://www.linkedin.com/search/results/content/?keywords=ENCODED_QUERY&sortBy=date_posted` via `mcp__claude-in-chrome__navigate`
+- Use `mcp__claude-in-chrome__read_page` or `mcp__claude-in-chrome__get_page_text` to extract the first 10 results
 - Sort by DATE (not relevance) to get recent posts from people actively feeling pain NOW
-- Backup actor: `apimaestro~linkedin-posts-search-scraper-no-cookies`
-- DO NOT USE `harvestapi~linkedin-post-search` (returns 0 results)
+- If Chrome fails for LinkedIn: skip LinkedIn leads for this run. No Apify fallback.
 - Run 4 queries per day from the ROTATION below. **USE THE EXACT ROTATION QUERIES, NOT GENERIC SUBSTITUTES.** The rotation queries use quoted first-person phrases ("we built", "our detections") that filter for practitioners describing their own pain. Generic queries ("who owns detection", "lessons learned incident response") return educational content and vendor posts. If the rotation says Day 2 = "we built" detection pipeline, the LinkedIn search URL must contain exactly `%22we%20built%22%20detection%20pipeline`.
 
-**1b. Reddit search:**
-- **PRIMARY: Apify `trudax~reddit-scraper-lite`** with `restrict_sr=on` in the URL. This parameter is REQUIRED - without it the actor ignores the subreddit and returns random results.
-  - Input: `{"startUrls": [{"url": "https://www.reddit.com/r/blueteamsec/search/?q=detection+engineering&sort=new&restrict_sr=on&t=month"}], "maxItems": 20}`
-  - Auth: use Bearer token header, NOT query param
-  - The `restrict_sr=on` is what limits results to the target subreddit. DO NOT OMIT IT.
-- **FALLBACK: Chrome browser** if Apify fails or returns wrong subreddits despite restrict_sr
+**1b. Reddit search** via Reddit MCP (`mcp__reddit__*`):
+- **PRIMARY: Reddit MCP** - Use `mcp__reddit__search_subreddit` with `subreddit=SUBREDDIT`, `query=SEARCH_TERMS`, `limit=10`, `sort="new"`.
+  - Returns structured data: title, URL, author, full content text, score (upvotes), comment count.
+  - No two-pass needed. Full post text and engagement data included in MCP response.
+  - For high-scoring leads that need deeper context, call `mcp__reddit__get_post` with the permalink to get the full comment tree.
+- **NO FALLBACK:** If Reddit MCP fails, skip Reddit leads for this run. Do NOT use Chrome for Reddit.
 - Rotate 2 subreddits per day: Mon/Wed/Fri = r/cybersecurity + r/netsec, Tue/Thu = r/blueteamsec + r/AskNetsec
 - Use Reddit-specific queries from the REDDIT QUERY section below (tool-seeker queries work best on Reddit)
 - Pull last 30 days (not 7 - security threads stay relevant longer)
-- **VALIDATION:** After results return, check that ALL results come from the target subreddits. If any result is from an unrelated subreddit, the scrape failed. Switch to the other method (Chrome or Apify fallback).
+- **VALIDATION:** After results return, check that ALL results come from the target subreddits.
 
-**1c. X/Twitter search** via `apidojo~tweet-scraper`:
+**1c. X/Twitter search** via Apify `apidojo~tweet-scraper`:
 - **Two modes, run both:**
   - **Search mode:** 2 queries from Tool-seeker category. Save raw results.
-  - **Profile mode:** Pull last 48h tweets from monitored handles: {{MONITORED_HANDLE_1}}, {{MONITORED_HANDLE_2}}, {{MONITORED_HANDLE_3}}, {{MONITORED_HANDLE_4}}. These are the X equivalent of LinkedIn post scraping - gives you real tweets to reply to.
+  - **Profile mode:** Pull last 48h tweets from monitored handles: @BushidoToken, @clintgibler, @RyanGCox_, @obadiahbridges. These are the X equivalent of LinkedIn post scraping - gives you real tweets to reply to.
 - DO NOT USE: `quacker~twitter-scraper` (untested, use `apidojo~tweet-scraper` which is confirmed working)
-- If actor fails, note "X scrape failed - [actor name] - [error]" in the hitlist. Do NOT substitute with template replies to handles you haven't actually scraped.
+- If Apify fails, fall back to Chrome: navigate to `https://x.com/search?q=SEARCH_TERMS&f=live`, read first 10 results.
+- If both fail, note "X scrape failed - [error]" in the hitlist. Do NOT substitute with template replies to handles you haven't actually scraped.
 
-**1d. Medium search** via `apify~google-search-scraper` with `site:medium.com`:
-- Input format: `{"queries": "site:medium.com SEARCH_TERMS 2025 OR 2026", "maxPagesPerQuery": 1, "resultsPerPage": 10}`
+**1d. Medium search** via RSS feeds + WebSearch:
+- **PRIMARY: RSS feeds** via WebFetch on `https://medium.com/feed/tag/TAG` for relevant tags from market-intelligence.md
+- **SUPPLEMENT: WebSearch** for `site:medium.com SEARCH_TERMS 2025 OR 2026`
 - Run 2 queries per day rotating across pain categories. Examples:
-  - CAT1: `site:medium.com "detection engineering" broken management 2025 OR 2026`
-  - CAT4: `site:medium.com "incident response" "lessons learned" security operations 2025 OR 2026`
-  - CAT6: `site:medium.com "compliance theater" security 2025 OR 2026`
-  - CROSS: `site:medium.com "security silos" teams 2025 OR 2026`
+  - CAT1: tag `detection-engineering` RSS + WebSearch `site:medium.com "detection engineering" broken management 2025 OR 2026`
+  - CAT4: tag `incident-response` RSS + WebSearch `site:medium.com "incident response" "lessons learned" security operations 2025 OR 2026`
+  - CAT6: WebSearch `site:medium.com "compliance theater" security 2025 OR 2026`
+  - CROSS: WebSearch `site:medium.com "security silos" teams 2025 OR 2026`
 - Target: first-person practitioner articles, not vendor content or tutorials
-- Output has `organicResults` array with title, url, description per result
+- WebFetch prompt for RSS: "Extract all articles. For each return: title, article URL, author name, date, and first 300 characters of content. Return as a numbered list."
+- WebFetch returns structured text (NOT raw XML). Score results directly from the response.
+- **FALLBACK: Chrome** if both RSS and WebSearch fail - navigate to Google search with the same `site:medium.com` query
 - NOTE: This finds articles, not people directly. Extract author names from Medium URLs/titles, then cross-reference on LinkedIn for engagement.
 
 **1e. GitHub search** (Mondays only, via GitHub API or Chrome):
@@ -1057,7 +1059,7 @@ Run Apify actors to gather raw posts. Save all raw results to `output/lead-gen/[
 
 **QUERY LIBRARY (6 pain categories matching the 6 teams in demo2):**
 
-**CRITICAL:** {{YOUR_PRODUCT}} is NOT [your common misclassification]. Queries MUST span all pain surfaces defined in `my-project/current-state.md`. Comments MUST match the person's actual pain - never steer the conversation toward only one of your artifact types.
+**CRITICAL:** {{YOUR_PRODUCT}} is NOT a single-use tool. Queries MUST span all pain surfaces defined in `my-project/current-state.md`, not just one vertical. Comments MUST match the person's actual pain - never steer toward one area if they posted about a different one.
 
 **CATEGORY 1 - SOC / Detection Engineering:**
 - `"built internally" detection management` OR `"built our own" detection`
@@ -1103,7 +1105,7 @@ Run Apify actors to gather raw posts. Save all raw results to `output/lead-gen/[
 - `"left security" burnout` OR `"quit" CISO` OR `"career change" cybersecurity`
 - `"what's the point" security` OR `"nothing changes" security operations`
 
-**Why this category matters:** These people are the internal champions who would push for {{YOUR_PRODUCT}} bottom-up. They see the pattern, can't fix it structurally, and are posting about their frustration. They're also the people the founder was. Highest authenticity for engagement because the founder lived this.
+**Why this category matters:** These people are the internal champions who would push for {{YOUR_PRODUCT}} bottom-up. They see the pattern, can't fix it structurally, and are posting about their frustration. Highest authenticity for engagement because the founder lived this.
 
 **CROSS-CATEGORY (highest signal - spans multiple teams):**
 - `"security silos"` OR `"teams don't talk"` OR `"nobody connects"`
@@ -1134,10 +1136,10 @@ Run Apify actors to gather raw posts. Save all raw results to `output/lead-gen/[
 - `"same incident" "again"` OR `"fighting fires" security` OR `"nothing changes"`
 - `"career change" cybersecurity` OR `"leaving security"` OR `"burnt out" SOC`
 
-**Medium-specific searches (new platform):**
-- Search via Apify for Medium articles about: security operations pain, detection engineering challenges, IR process failures, compliance automation gaps, security team silos
+**Medium-specific searches:**
+- Search via RSS feeds (WebFetch on `medium.com/feed/tag/TAG`) + WebSearch (`site:medium.com`) for Medium articles about: security operations pain, detection engineering challenges, IR process failures, compliance automation gaps, security team silos
 - Target authors who write from first-person practitioner experience (not vendors)
-- Actor: use `apidojo~medium-scraper` or equivalent
+- Fallback: Chrome Google search with `site:medium.com` queries
 
 **GitHub-specific searches (Mondays):**
 - `"detection engineering" framework` OR `management` OR `lifecycle` (sort by recently updated)
@@ -1172,7 +1174,7 @@ Discard immediately if ANY of these are true:
 | **First-person proof** | "We built" / "Our team" / names their company | "I've seen" / "In my experience" | Third-person or hypothetical |
 | **Role fit** | Security leader/practitioner at enterprise (CISO, Dir SecOps, Det Eng Lead, IR Manager, GRC Lead) | Security IC or adjacent role (SOC analyst, compliance analyst, AppSec) | Non-security role tangentially discussing security |
 | **Engagement opportunity** | Post has a question or open problem we can genuinely add value to | Post has a take we can build on with a thoughtful comment | Post is closed/declarative, hard to add value without pitching |
-| **Multi-team pain** | Describes cross-silo problem (exactly {{YOUR_PRODUCT}}'s value prop) | Describes single-team problem {{YOUR_PRODUCT}} solves | Single-tool problem |
+| **Multi-team pain** | Describes cross-silo problem (exactly {{YOUR_PRODUCT}}'s value prop) | Describes single-team problem {{YOUR_PRODUCT}} solves (detection OR IR OR compliance etc.) | Single-tool problem (e.g., "how do I write a Splunk query") |
 
 **Composite score = sum of 5 dimensions (max 25)**
 
@@ -1262,17 +1264,17 @@ Each entry includes:
 Every DM, comment, connection request, and X reply generated in 5.9b MUST open a loop:
 ```bash
 # For each LinkedIn comment:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Person Name" "Topic of post" "" "C1"
+python3 q-system/.q-system/loop-tracker.py open comment_posted "Person Name" "Topic of post" "" "C1"
 # For each connection request:
-bash q-system/.q-system/loop-tracker.sh open connection_request_sent "Person Name" "Why connecting" "" "CR1"
+python3 q-system/.q-system/loop-tracker.py open connection_request_sent "Person Name" "Why connecting" "" "CR1"
 # For each DM:
-bash q-system/.q-system/loop-tracker.sh open dm_sent "Person Name" "DM context" "" "DM1" "Follow-up text if no reply..."
+python3 q-system/.q-system/loop-tracker.py open dm_sent "Person Name" "DM context" "" "DM1" "Follow-up text if no reply..."
 # For each X reply:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Person Handle" "X reply topic" "" "X1"
+python3 q-system/.q-system/loop-tracker.py open comment_posted "Person Handle" "X reply topic" "" "X1"
 # For each Reddit comment:
-bash q-system/.q-system/loop-tracker.sh open comment_posted "Thread title" "Reddit comment context" "" "R1"
+python3 q-system/.q-system/loop-tracker.py open comment_posted "Thread title" "Reddit comment context" "" "R1"
 ```
-If a loop-tracker.sh open call is missing for any hitlist item, Step 5.9b is INCOMPLETE.
+If a loop-tracker.py open call is missing for any hitlist item, Step 5.9b is INCOMPLETE.
 
 **Prediction logging:** For each Tier A/B prospect, log a prediction to `memory/working/predictions.jsonl`:
 ```jsonl
@@ -1290,14 +1292,14 @@ Every qualified prospect (score 3+) enters the unified pipeline:
 DISCOVERY (5.9) -> QUALIFY -> CREATE CONTACT -> CREATE TRACKER ENTRY -> ENGAGEMENT HITLIST (5.9b) -> DM/ACCEPT DETECTION (3.8) -> RELATIONSHIP PROGRESSION
 ```
 
-1. **Check Notion Contacts DB** (see `my-project/notion-ids.md` for DB ID) - skip if they already exist
+1. **Check Notion Contacts DB** (DB cabba10d-cd5d-4cff-b042-3241a2be18b5) - skip if they already exist
 2. **Create Notion Contact** (Type: Design Partner, DP Status: Prospect, Source: Problem-Language Search, Notes: post URL + problem category + signal score + date found)
 3. **Create Notion LinkedIn Tracker entry** (Type: Connection Request, Status: Pending, Date: today, linked to Contact)
 4. **Create Notion Action** (Type: LinkedIn, Energy: Quick Win, Time: 5 min, Priority: Today for Tier A / This Week for Tier B)
 5. **Open a loop for each qualified lead** so they don't get forgotten:
    ```bash
    # For Tier A/B leads that got a connection request:
-   bash q-system/.q-system/loop-tracker.sh open lead_sourced "Person Name" "Tier A - pain signal + role fit" "" ""
+   python3 q-system/.q-system/loop-tracker.py open lead_sourced "Person Name" "Tier A - pain signal + role fit" "" ""
    ```
    The `lead_sourced` loop closes when the lead gets a first touch (connection request accepted + first DM sent, which becomes a `dm_sent` loop).
 6. **Prospect flows automatically into subsequent morning routine steps:**
@@ -1309,7 +1311,7 @@ DISCOVERY (5.9) -> QUALIFY -> CREATE CONTACT -> CREATE TRACKER ENTRY -> ENGAGEME
    - On timeout (10 days no accept): deprioritized
 
 **Re-engagement for existing contacts:**
-If someone already in Contacts DB posts about a {{YOUR_PRODUCT}}-shaped problem:
+If someone already in Contacts DB posts about a {{YOUR_PRODUCT}} problem:
 1. Update Contact notes with new post URL + date
 2. Flag in morning briefing: "[Name] just posted about [topic] - they're feeling the pain right now"
 3. Add to Step 5.9b engagement hitlist as TOP PRIORITY
@@ -1317,7 +1319,7 @@ If someone already in Contacts DB posts about a {{YOUR_PRODUCT}}-shaped problem:
 
 **Activity tracking (14-day window):**
 For prospects found in the last 14 days (Status: Prospect or Outreach Sent):
-1. Use Apify to pull their latest LinkedIn posts (last 48h)
+1. Use Chrome to navigate to their LinkedIn profile and check latest posts (last 48h)
 2. If they posted again about the problem: boost priority ("posting repeatedly")
 3. If they engaged with founder's content: flag as WARM SIGNAL
 4. Track in LinkedIn Tracker notes
@@ -1328,10 +1330,10 @@ For prospects found in the last 14 days (Status: Prospect or Outreach Sent):
 - Max 5 new connection requests per day from this step (LinkedIn jail prevention)
 - Connection requests reference THEIR words, not {{YOUR_PRODUCT}}. No pitch.
 - Reddit comments must be genuinely helpful. No pitch. Share experience.
-- **Full post text required:** During Phase 2 qualification, pull and save the FULL text of every qualified prospect's post. Outreach copy in Phase 3 must be written against the actual post, never a summary. If the Apify result doesn't include full text, re-fetch the specific post URL.
-- **No resume name-dropping:** Never list company names or years of experience in outreach copy. Use "everywhere I've worked" instead.
+- **Full post text required:** During Phase 2 qualification, pull and save the FULL text of every qualified prospect's post. Outreach copy in Phase 3 must be written against the actual post, never a summary. If Chrome doesn't show full text, click into the post to expand and read full content.
+- **No resume name-dropping:** Never list company names (Google, Meta, ElevenLabs) or years of experience in outreach copy. Use "everywhere I've worked" instead.
 - Track daily search rotation in memory/morning-state.md
-- If Apify fails: try backup actor, then fall back to Chrome
+- If Chrome fails for LinkedIn: skip. If Reddit MCP fails: skip Reddit (no Chrome fallback). If RSS fails for Medium: try Chrome. If Apify fails for X: try Chrome.
 - Save raw results to `output/lead-gen/` for trend analysis
 - **On days when Phase 1 returns zero qualified results after Phase 2 filtering:** That's fine. Better 0 real prospects than 5 fake ones. Log "no qualified prospects today" and move on.
 
@@ -1372,16 +1374,16 @@ GitHub (Mondays only):
 
 > **HARNESS: Action cards.** For every engagement item generated:
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE add-card C1 linkedin_comment "Person Name" "Comment text..." "https://linkedin.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C2 x_reply "Person Name" "Reply text..." "https://x.com/post-url"
-> bash q-system/.q-system/log-step.sh DATE add-card C3 connection_request "Person Name" "Request note..." "https://linkedin.com/in/person"
-> bash q-system/.q-system/log-step.sh DATE add-card C4 reddit_comment "u/username" "Comment text..." "https://reddit.com/thread-url"
+> python3 q-system/.q-system/log-step.py DATE add-card C1 linkedin_comment "Person Name" "Comment text..." "https://linkedin.com/post-url"
+> python3 q-system/.q-system/log-step.py DATE add-card C2 x_reply "Person Name" "Reply text..." "https://x.com/post-url"
+> python3 q-system/.q-system/log-step.py DATE add-card C3 connection_request "Person Name" "Request note..." "https://linkedin.com/in/person"
+> python3 q-system/.q-system/log-step.py DATE add-card C4 reddit_comment "u/username" "Comment text..." "https://reddit.com/thread-url"
 > ```
 > Types: `linkedin_comment`, `x_reply`, `connection_request`, `reddit_comment`, `linkedin_dm`, `email`
 > **URL field is required** - the founder needs the link to navigate to the post.
 > NEVER log to LinkedIn Tracker, Contacts DB, or any state file until `founder_confirmed: true` (next session's Step 0b).
 > ```bash
-> bash q-system/.q-system/log-step.sh DATE 5.9b_engagement_hitlist done "X items across Y types, X action cards"
+> python3 q-system/.q-system/log-step.py DATE 5.9b_engagement_hitlist done "X items across Y types, X action cards"
 > ```
 
 This step generates the founder's daily engagement actions with zero searching required. Everything is copy-paste ready. Per AUDHD executive function skill: every hitlist item includes (1) the actual copy-paste text inline, (2) a direct link to the post/tweet/thread, (3) time estimate, (4) energy tag. NEVER output a hitlist item that says "copy-paste from section above." The text must be RIGHT THERE.
@@ -1392,9 +1394,9 @@ This step generates the founder's daily engagement actions with zero searching r
   - Cross-reference Notion LinkedIn Tracker DB: exclude anyone engaged in the last 7 days (1 comment/person/week rule)
   - Prioritize: (1) Hot prospects from Step 5.8, (2) Design Partner prospects not yet connected, (3) Connectors/influencers, (4) VCs with upcoming meetings, (5) Everyone else
 
-- **Scrape recent posts via Apify** (use `harvestapi~linkedin-profile-posts`):
+- **Scrape recent posts via Chrome** (navigate to each target's LinkedIn profile):
   - **CONTEXT-SAVING: Cap at 10 targets** (not 15). Pick the 10 highest-priority from the filtered list.
-  - Pull last 48h posts for top 10 engagement targets (parallel batches of 5)
+  - Navigate to each target's profile via Chrome, read last 48h posts (process sequentially)
   - Extract: post text, post URL, engagement count, topic
   - Skip reposts/shares (only original content worth commenting on)
 
@@ -1403,10 +1405,10 @@ This step generates the founder's daily engagement actions with zero searching r
   - 2-3 sentences max, no {{YOUR_PRODUCT}} pitch
   - Reference something specific from their post (not generic "great insights")
   - Must pass test: "Does this comment add value to the conversation?"
-  - **VOICE RULE: Stay on the person's topic. Do NOT steer every comment toward {{YOUR_WEDGE_TOPIC}}.** The goal is to be a thoughtful practitioner voice on THEIR topic, not to position yourself as an expert in only one area of your product. Only reference your product's angle if THEY raised it.
+  - **VOICE RULE: Stay on the person's topic. Do NOT steer every comment toward detection engineering.** The founder's credibility is 12 years of security operations leadership (Google, Meta, ElevenLabs), not "detection engineering" specifically. If someone posts about ownership gaps, comment about ownership gaps. If someone posts about governance, comment about governance. If someone posts about silos, comment about silos. Only mention detection if THEY mentioned detection. The goal is to be a thoughtful practitioner voice on THEIR topic, not to position yourself as a detection expert. Detection is the wedge artifact, not the founder's identity.
 
 - **Also pull X/Twitter activity** for contacts with X handles:
-  - Use Apify Twitter scraper for last 48h tweets from key handles
+  - Use Apify `apidojo~tweet-scraper` for last 48h tweets from key handles (Apify is X-only)
   - Generate copy-paste replies (1-2 sentences, sharper than LinkedIn)
   - Same voice rule: reply to what THEY said. Don't pivot to detection.
 
@@ -1458,8 +1460,8 @@ This step generates the founder's daily engagement actions with zero searching r
 
 - **VALIDATION CHECKPOINT (MANDATORY before proceeding to Step 6):**
   The engagement hitlist MUST attempt all 4 content types. Before moving on, verify:
-  - [ ] LinkedIn comments: Apify post scrape ran for top 15 targets. If 0 posts found, state "0 posts found in last 48h for [N] targets scraped" - do NOT silently skip.
-  - [ ] X/Twitter replies: Apify tweet scrape ran for contacts with X handles. If 0 tweets found or no contacts have X handles, state the reason.
+  - [ ] LinkedIn comments: Chrome post scrape ran for top 10 targets. If 0 posts found, state "0 posts found in last 48h for [N] targets scraped" - do NOT silently skip.
+  - [ ] X/Twitter replies: Apify tweet scrape (or Chrome fallback) ran for contacts with X handles. If 0 tweets found or no contacts have X handles, state the reason.
   - [ ] Connection requests: Generated from Step 5.9 qualified prospects + LinkedIn Tracker "Connect" stage contacts.
   - [ ] Reddit comments: Pulled from today's subreddit rotation (Step 5.9). If 0 relevant threads, state which subreddits were checked.
   If ANY type was skipped without explanation, the hitlist is INCOMPLETE. Go back and run the missing scrapes.
@@ -1515,10 +1517,10 @@ Catches sessions that ended without `/q-checkpoint` or `/q-end`.
 
 > **GATE CHECK (mandatory before starting Step 8):**
 > 1. Read the morning log from disk: `cat q-system/output/morning-log-DATE.json | python3 -c "import json,sys; steps=json.load(sys.stdin)['steps']; missing=[s for s in ['0f_connection_check','0a_checkpoint','0b_missed_debrief','0b.5_loop_escalation','0c_load_canonical','0d_load_voice','0e_load_audhd','1_calendar','1_gmail','1_notion_actions','1_notion_pipeline','3_linkedin_activity','3.5_dp_pipeline','3.8_dm_check','4.1_value_drops','5.8_temperature_scoring','5.85_pipeline_followup','5.86_loop_review','5.9_lead_sourcing','5.9b_engagement_hitlist','6_decision_compliance','7_positioning_freshness'] if s not in steps]; print(f'Missing: {missing}' if missing else 'All prior steps logged')"`
-> 1b. Check for unresolved level 3 loops: `bash q-system/.q-system/loop-tracker.sh list 3` - if any exist, STOP. Force-close decisions must happen before HTML generation.
+> 1b. Check for unresolved level 3 loops: `python3 q-system/.q-system/loop-tracker.py list 3` - if any exist, STOP. Force-close decisions must happen before HTML generation.
 > 1c. Verify Deliverables Checklist (see preflight.md Section 5): day-specific content pieces, pipeline follow-ups, loop review items.
-> 2. If missing list is empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 true ""`
-> 3. If missing list is not empty: `bash q-system/.q-system/log-step.sh DATE gate-check step_8 false "step1,step2"` then STOP and report.
+> 2. If missing list is empty: `python3 q-system/.q-system/log-step.py DATE gate-check step_8 true ""`
+> 3. If missing list is not empty: `python3 q-system/.q-system/log-step.py DATE gate-check step_8 false "step1,step2"` then STOP and report.
 > Cannot proceed until all prior steps are accounted for.
 
 All output in this step must comply with the AUDHD executive function skill (loaded in Step 0e). Every item shown to the founder must be copy-paste ready or explicitly marked "needs your eyes." No dashboards without actions. No scores without recovery drafts. No cross-references. The briefing is a workbench, not a report.
@@ -1670,17 +1672,17 @@ The day label appears in the Start Here section AND at the top of the Daily Acti
 
 > **GATE CHECK (mandatory before starting Step 9):**
 > Re-read morning log from disk (same check as Step 8, plus `8_briefing_output` and `8.5_start_here`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_9 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_9 false "missing_step_ids"` then STOP.
+> `python3 q-system/.q-system/log-step.py DATE gate-check step_9 true ""`
+> If missing steps: `python3 q-system/.q-system/log-step.py DATE gate-check step_9 false "missing_step_ids"` then STOP.
 
 - If violations or pending propagation found, offer to fix immediately
 - If unlogged emails found, offer to create Notion interactions
 - If LinkedIn follow-ups overdue, offer to generate comment suggestions
-- **ALWAYS create Notion Actions** for every actionable item surfaced in the briefing (meeting prep, follow-ups due, emails to send, debriefs to run, LinkedIn re-engagements). Use Actions DB (see `my-project/notion-ids.md` for DB ID). Set Energy, Time Est, Priority, Type, Due date, and Contact link for each.
+- **ALWAYS create Notion Actions** for every actionable item surfaced in the briefing (meeting prep, follow-ups due, emails to send, debriefs to run, LinkedIn re-engagements). Use Actions DB (DB 0718ee69-d9d0-473d-8182-732d21c60491). Set Energy, Time Est, Priority, Type, Due date, and Contact link for each.
 - **Marketing actions from Step 4.5:** If stale assets found, create Action "Refresh stale marketing assets" (Energy: Deep Focus, Time: 30 min, Type: Other). If Gamma decks need review, create Action "Review Gamma deck for positioning changes" (Energy: Deep Focus, Time: 15 min). If content is behind cadence, create Action for missing content (Energy: Deep Focus, Time: 15-30 min). If drafts ready for review, create Action "Review [draft name]" (Energy: Quick Win, Time: 5 min).
 - **Loop opening for non-trivial actions:** Every Notion Action created that expects a response or has a deadline MUST open a loop:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh open action_created "Action title" "Context" "" "ACT-XXX"
+  python3 q-system/.q-system/loop-tracker.py open action_created "Action title" "Context" "" "ACT-XXX"
   ```
   Skip loop opening for: meeting prep (completed same day), admin tasks, internal-only items. Open loops for: follow-up emails, debrief next steps, intro requests, research with a deadline.
 
@@ -1712,8 +1714,8 @@ Check if it's time to send an investor update by reading `memory/morning-state.m
 
 **Step 10 — Update Notion Daily Checklists:**
 > **HARNESS:** Log as `10_daily_checklists` when done.
-- **Daily Actions page** (ID from `my-project/notion-ids.md`): Replace full content with today's actions as to-do checkboxes (`- [ ]`). Organized by: Today Quick Wins → Today Deep Focus → This Week Deep Focus → This Week Quick Wins → Completed Today. Include time estimates and due dates. Pull from both the Actions DB and any new items surfaced in Steps 1-9.
-- **Daily Posts page** (ID from `my-project/notion-ids.md`): Replace full content with today's social posts as to-do checkboxes. Include:
+- **Daily Actions page** (316bf98c-0529-814c-9d9c-f9940d8758ad): Replace full content with today's actions as to-do checkboxes (`- [ ]`). Organized by: Today Quick Wins → Today Deep Focus → This Week Deep Focus → This Week Quick Wins → Completed Today. Include time estimates and due dates. Pull from both the Actions DB and any new items surfaced in Steps 1-9.
+- **Daily Posts page** (316bf98c-0529-8116-81d3-fbf023232749): Replace full content with today's social posts as to-do checkboxes. Include:
   - LinkedIn signal post draft (from Step 4)
   - X signals post draft (from Step 4)
   - X hot take draft (from Step 4 - daily, aim under 100 chars)
@@ -1750,17 +1752,17 @@ If Notion MCP is down, skip silently and note "Notion sync deferred" in the hand
 
 > **GATE CHECK (mandatory before starting Step 11):**
 > Re-read morning log from disk. Check Steps 0f through 10 all logged (including `9_notion_push` and `10_daily_checklists`).
-> `bash q-system/.q-system/log-step.sh DATE gate-check step_11 true ""`
-> If missing steps: `bash q-system/.q-system/log-step.sh DATE gate-check step_11 false "missing_step_ids"` then STOP.
+> `python3 q-system/.q-system/log-step.py DATE gate-check step_11 true ""`
+> If missing steps: `python3 q-system/.q-system/log-step.py DATE gate-check step_11 false "missing_step_ids"` then STOP.
 > **Recovery:** If the gate fails, list the missing steps and ask the founder: "These steps didn't run: [list]. Options: (1) I go back and run them now, (2) you tell me to skip them and I'll log them as skipped, (3) we end the session and restart fresh." The founder decides. Claude does NOT self-authorize skipping.
 
-**MANDATORY PRE-CHECK: Re-read `.claude/skills/audhd-executive-function/SKILL.md` before generating.** The daily HTML is the founder's external executive function, not a briefing. Apply all rules.
+**MANDATORY PRE-CHECK: Re-read `plugins/kipi-core/skills/audhd-executive-function/SKILL.md` before generating.** The daily HTML is the founder's external executive function, not a briefing. Apply all rules.
 
 **HOW IT WORKS:** Claude writes a JSON data file. A build script injects it into a locked-down HTML template. Claude NEVER writes raw HTML.
 
 1. **Read the schema:** `marketing/templates/schedule-data-schema.md` defines the exact JSON format.
 2. **Generate JSON:** Write `output/schedule-data-YYYY-MM-DD.json` conforming to the schema.
-3. **Build HTML:** Run `bash marketing/templates/build-schedule.sh output/schedule-data-YYYY-MM-DD.json output/daily-schedule-YYYY-MM-DD.html`
+3. **Build HTML:** Run `python3 marketing/templates/build-schedule.py output/schedule-data-YYYY-MM-DD.json output/daily-schedule-YYYY-MM-DD.html`
 4. **Open in browser:** `open output/daily-schedule-YYYY-MM-DD.html` or use Chrome MCP.
 5. **Telegram push (if configured):** Send top 3 actions via Telegram MCP.
 
@@ -1806,18 +1808,18 @@ After Step 11 completes (or whenever the morning routine ends, even if ending ea
 **12a. Snapshot session-end state checksums:**
 Re-read the same key fields from Step 0c:
 ```bash
-bash q-system/.q-system/log-step.sh DATE checksum-end last_calendar_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_gmail_sync "2026-03-14"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_prospect_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end dp_outreach_count "3"
-bash q-system/.q-system/log-step.sh DATE checksum-end decisions_rule_count "17"
-bash q-system/.q-system/log-step.sh DATE checksum-end last_publish_date "2026-03-14"
+python3 q-system/.q-system/log-step.py DATE checksum-end last_calendar_sync "2026-03-14"
+python3 q-system/.q-system/log-step.py DATE checksum-end last_gmail_sync "2026-03-14"
+python3 q-system/.q-system/log-step.py DATE checksum-end dp_prospect_count "17"
+python3 q-system/.q-system/log-step.py DATE checksum-end dp_outreach_count "3"
+python3 q-system/.q-system/log-step.py DATE checksum-end decisions_rule_count "17"
+python3 q-system/.q-system/log-step.py DATE checksum-end last_publish_date "2026-03-14"
 ```
 The script auto-detects drift between start and end values.
 
 **12b. Mark action cards as delivered:**
 ```bash
-bash q-system/.q-system/log-step.sh DATE deliver-cards
+python3 q-system/.q-system/log-step.py DATE deliver-cards
 ```
 
 **12c. Run the audit harness:**
@@ -1828,7 +1830,7 @@ python3 q-system/.q-system/audit-morning.py q-system/output/morning-log-DATE.jso
 
 **12d. Log Step 12 and update morning-state.md:**
 ```bash
-bash q-system/.q-system/log-step.sh DATE 12_audit done "VERDICT - X/Y steps"
+python3 q-system/.q-system/log-step.py DATE 12_audit done "VERDICT - X/Y steps"
 ```
 Update `memory/morning-state.md` with today's sync dates, audit verdict, and any open items.
 
@@ -1863,12 +1865,12 @@ This step auto-detects DM replies and connection accepts so the founder never ne
   When a debrief_next_step loop exists and the founder has now SENT the follow-up (detected as a new outbound DM/email in this step), close the debrief loop and open the appropriate new loop:
   ```bash
   # If the debrief said "send deck to Bob" and we detect the email was sent:
-  bash q-system/.q-system/loop-tracker.sh close <debrief_loop_id> "next step completed - email sent" "auto_step_3.8"
+  python3 q-system/.q-system/loop-tracker.py close <debrief_loop_id> "next step completed - email sent" "auto_step_3.8"
   # The email_sent loop was already opened by Step 9 or 5.85
   ```
   Also: during Step 0b action card confirmation, if the founder confirms a card that matches a debrief_next_step loop's action_card_id, auto-close:
   ```bash
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "action card confirmed by founder" "founder"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "action card confirmed by founder" "founder"
   ```
 
   **Part D - Outbound action detection (auto-detect what the founder DID):**
@@ -1881,11 +1883,11 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 - **LOOP AUTO-CLOSE (Step 3.8):** After detecting replies and accepts, cross-reference against `output/open-loops.json`:
   ```bash
   # For each DM reply detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DM reply detected" "auto_step_3.8"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "DM reply detected" "auto_step_3.8"
   # For each connection accept detected:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "connection accepted" "auto_step_3.8"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "connection accepted" "auto_step_3.8"
   # For dp_offer_sent loops where target replied via DM:
-  bash q-system/.q-system/loop-tracker.sh close <loop_id> "DP replied to offer" "auto_step_3.8"
+  python3 q-system/.q-system/loop-tracker.py close <loop_id> "DP replied to offer" "auto_step_3.8"
   ```
   Match by target name. If a loop target name matches a DM reply sender or connection accepter, close it.
 
@@ -1955,9 +1957,11 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 **MCP tools used:**
 - Google Calendar: `mcp__claude_ai_Google_Calendar__gcal_list_events`
 - Gmail: `mcp__claude_ai_Gmail__gmail_search_messages`, `mcp__claude_ai_Gmail__gmail_read_message`
-- Notion: `mcp__notion__notion-search`, `mcp__notion__notion-fetch`, `mcp__notion__notion-update-page`, `mcp__notion__notion-create-pages`
-- Apify (primary for data scraping): `mcp__apify__*` - LinkedIn Profile/Posts Scraper, Twitter/X Scraper, Web Scraper (Medium, Reddit, Substack). Use for all structured data collection. Cheaper and faster than Chrome.
-- Chrome (interactive + DMs): `mcp__claude-in-chrome__*` - Use for: LinkedIn DM reading (Step 3.8), posting comments/replies, checking notifications, LinkedIn Comments tab, Google Analytics, visual content review. NOT for profile/post scraping (use Apify).
+- Notion: `mcp__claude_ai_Notion__notion-search`, `mcp__claude_ai_Notion__notion-fetch`, `mcp__claude_ai_Notion__notion-update-page`, `mcp__claude_ai_Notion__notion-create-pages`
+- Apify (X/Twitter ONLY): `mcp__apify__*` - `apidojo~tweet-scraper` for X activity and lead sourcing. NOT for LinkedIn, Reddit, Medium, or Substack.
+- Chrome (LinkedIn primary + interactive): `mcp__claude-in-chrome__*` - Use for: ALL LinkedIn scraping (profiles, posts, DMs, comments, search), posting comments/replies, checking notifications, Google Analytics, visual content review.
+- Reddit MCP: `mcp__reddit__*` - search, search_subreddit, get_post, get_subreddit_posts, get_user, get_user_posts. No auth needed. Full content + engagement data.
+- RSS feeds via WebFetch: Medium (`medium.com/feed/` endpoints), Substack (`*.substack.com/feed`). Primary data source for Medium and Substack content.
 - VC Pipeline Manager: `http://localhost:5050/api/pipeline` (GET) - Returns full VC pipeline with 66+ contacts, warm intro paths, tiers, statuses. Use `WebFetch` to pull. Data source for warm intro matching (Step 1.5) and cross-referencing connectors. App at `http://localhost:5050/`.
 - NotebookLM: `mcp__notebooklm__add_notebook`, `mcp__notebooklm__ask_question`, `mcp__notebooklm__search_notebooks`
 - Signals: `WebFetch` on `https://{{YOUR_DOMAIN}}/signals`
@@ -1972,12 +1976,12 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 
 **Full run (weekly, or on demand):**
 
-1. **Scrape all platforms via Apify** (`mcp__apify__*`):
-   - **LinkedIn:** LinkedIn Posts Scraper actor on founder's profile. Pull last 30 days of posts. Extract: text, impressions, likes, comments, reposts, date/time posted.
-   - **X/Twitter:** Twitter/X Scraper actor on @{{YOUR_X_HANDLE}}. Pull last 30 days. Extract: text, impressions, likes, retweets, replies, quotes, date/time.
-   - **Medium:** Web Scraper actor on {{YOUR_MEDIUM_PROFILE}}. Pull all articles. Extract: title, reads, claps, read ratio, responses, publish date.
-   - **Reddit:** Reddit Scraper actor on founder's posts. Pull last 30 days. Extract: title, subreddit, upvotes, comments, upvote ratio.
-   - **Substack:** Web Scraper actor on {{YOUR_SUBSTACK_PROFILE}}. Pull newsletter stats. Extract: title, open rate, click rate, subscriber count.
+1. **Scrape all platforms** using Chrome (LinkedIn), Reddit MCP, Apify (X only), and RSS feeds (Medium, Substack):
+   - **LinkedIn:** Navigate to founder's profile via Chrome. Pull last 30 days of posts. Extract: text, impressions, likes, comments, reposts, date/time posted.
+   - **X/Twitter:** Apify `apidojo~tweet-scraper` on {{YOUR_X_HANDLE}}. Pull last 30 days. Extract: text, impressions, likes, retweets, replies, quotes, date/time.
+   - **Medium:** Pass 1: `WebFetch(url="https://medium.com/feed/@{{YOUR_MEDIUM_HANDLE}}", prompt="Extract all articles: title, URL, author, date, content text. Numbered list.")`. Pass 2: Navigate to each article via Chrome for claps, responses, read ratio (RSS has no engagement metrics).
+   - **Reddit:** Use Reddit MCP `mcp__reddit__get_user_posts` with `username={{YOUR_REDDIT_USERNAME}}`, `limit=20`. Returns posts with title, score, comments, subreddit, full content. No two-pass needed. Pull last 30 days.
+   - **Substack:** `WebFetch(url="https://{{YOUR_SUBSTACK}}.substack.com/feed", prompt="Extract all posts: title, URL, date, content text. Numbered list.")`. Open rate requires Substack dashboard via Chrome.
 
 2. **Normalize and rank:**
    - Calculate engagement rate per post: (likes + comments + reposts) / impressions
@@ -2046,7 +2050,7 @@ This step auto-detects DM replies and connection accepts so the founder never ne
 
 Run `/q-content-intel score` with a draft post. Scores it 1-5 on hook strength, pattern match, platform fit, timing, and novelty using current `canonical/content-intelligence.md` data. Returns pass/revise/rethink recommendation.
 
-**Apify cost estimate:** ~$2-4 per full run (LinkedIn profiles + posts + X tweets + web scraping). Well within free tier for weekly cadence.
+**Cost estimate:** Apify ~$0.50 per run (X/Twitter only). Reddit MCP, RSS feeds, and Chrome are free (included in Claude Max plan).
 
 ---
 
@@ -2059,7 +2063,7 @@ Run `/q-content-intel score` with a draft post. Scores it 1-5 on hook strength, 
 **Workflow:**
 
 1. **Pull current state:**
-   - Read Investor Pipeline DB (see `my-project/notion-ids.md` for DB ID) for all VCs with status != Passed
+   - Read Investor Pipeline DB (DB fd92016f-7890-40c3-abe9-154c864e05b3) for all VCs with status != Passed
    - Read `my-project/relationships.md` for anyone tagged "quarterly update list"
    - Read `my-project/progress.md` for recent milestones since last update
    - Read `memory/morning-state.md` -> "Investor Update Tracker" for last update date and content
@@ -2099,7 +2103,7 @@ Run `/q-content-intel score` with a draft post. Scores it 1-5 on hook strength, 
      - [Intro to a specific person, feedback on a specific thing]
 
      Thanks for following along.
-     {{FOUNDER_FIRST_NAME}}
+     Assaf
      ```
    - **Rules:**
      - Under 300 words. VCs scan, they don't read.
@@ -2319,15 +2323,15 @@ Workflow for each type:
 - Content Pipeline DB: (created by /q-market-plan first run)
 - Editorial Calendar DB: (created by /q-market-plan first run)
 - Asset Library DB: (created by /q-market-assets first run)
-- Parent page: (see `my-project/notion-ids.md`)
+- Parent page: 314bf98c-0529-81bb-a576-d5982475fd2d (CRM parent)
 
 **NotebookLM:**
-- Marketing Knowledge Base notebook: (see `my-project/notion-ids.md` or configure during setup)
+- Marketing Knowledge Base notebook: bb6ae0cb-0677-4611-84ab-dde086461668
 
 **Gamma MCP:**
 - `mcp__gamma__generate_gamma` — generate presentations, documents, social cards
 - `mcp__gamma__get_gamma_generation` — retrieve URLs and export links
-- Existing deck: {{YOUR_GAMMA_DECK_URL}} (see `my-project/notion-ids.md` or configure during setup)
+- Existing deck: https://gamma.app/docs/sqm26tt7e54f8kj (Short Deck v3)
 - Edit queue: `output/gamma-v3-edit-queue.md`
 
 ---
@@ -2396,7 +2400,7 @@ Workflow for each type:
 
 > 10-minute end-of-day system health check. Closes open loops, previews tomorrow.
 
-Read `.claude/skills/evening-wrap/SKILL.md` for the full workflow (5 steps).
+Use the `/q-wrap` skill for the full workflow (5 steps).
 
 **Quick summary:**
 1. **Effort log** (2 min): Count actions taken today from Notion. Track effort, not outcomes.
@@ -2427,7 +2431,7 @@ This gives the founder a preview on their phone so they wake up knowing what's f
 
 > Formal session-end message for the next session. Ensures continuity across context window resets.
 
-Read `.claude/skills/session-handoff/SKILL.md` for the full spec.
+Use the `/q-handoff` skill for the full spec.
 
 **When to trigger:**
 - User says "done", "stopping", "wrapping up"
@@ -2462,8 +2466,8 @@ Read `.claude/skills/session-handoff/SKILL.md` for the full spec.
 
    **Positioning challenges:**
    - "You say {{YOUR_PRODUCT}} is {{YOUR_METAPHOR}}. What if enterprises already have this and you're solving a problem that doesn't exist at your target scale?"
-   - "You say {{YOUR_WEDGE}} is one of [N] artifact types. Can you name a customer who cares about artifact type #5?"
-   - "What if the '{{YOUR_WEDGE}}' only matters to certain industries and the broader market doesn't care?"
+   - "You say detection is one of seven artifact types. Can you name a customer who cares about artifact type #5 (email transport rules)?"
+   - "What if the 'governance wedge' only matters to compliance-heavy industries and the broader market doesn't care?"
 
    **Traction challenges:**
    - "You have X design partners. How many have actually used the product vs. just said 'interesting'?"
@@ -2697,10 +2701,12 @@ Before ANY output that makes a factual claim about {{YOUR_PRODUCT}}, the system 
 |---|--------|-----------|--------------|-------------|
 | 1 | Google Calendar | `mcp__claude_ai_Google_Calendar__gcal_list_events` with today's date | Returns events array (even if empty) | Step 1 calendar, meeting prep |
 | 2 | Gmail | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns messages array | Step 1 email pull, reply detection |
-| 3 | Notion (API) | `mcp__notion_api__API-post-database-query` on Actions DB (ID from `my-project/notion-ids.md`) with `page_size: 1` | Returns results array | Steps 1-10 (CRM, pipeline, tracker, actions) |
-| 4 | Chrome | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Steps 3.8, 5, 5.5 (DMs, GA, LinkedIn) |
-| 5 | Apify (MCP) | Any `mcp__apify__*` tool call | Returns response | Steps 2, 5.9 (profile scraping, lead sourcing) |
-| 5b | Apify (REST fallback) | `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` via Bash | Returns JSON with `data` array | Fallback if MCP Apify unavailable |
+| 3 | Notion (API) | `mcp__claude_ai_Notion__notion-fetch` on Actions DB `0718ee69-d9d0-473d-8182-732d21c60491` with `page_size: 1` | Returns results array | Steps 1-10 (CRM, pipeline, tracker, actions) |
+| 4 | Chrome | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Steps 2, 3, 3.8, 5, 5.5 (LinkedIn, DMs, GA) |
+| 5 | Apify (MCP, X only) | Any `mcp__apify__*` tool call | Returns response | Steps 2.5, 5.9 (X/Twitter scraping only) |
+| 5b | Apify (REST fallback) | `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` via Bash | Returns JSON with `data` array | Fallback if MCP Apify unavailable (X only) |
+| 5c | Reddit MCP | `ToolSearch("+reddit")` then `mcp__reddit__search` with query "test" | Returns structured post data | Steps 3.7, 5.9 (Reddit content intel + lead sourcing) |
+| 5d | RSS feeds (Medium/Substack) | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | Steps 3.7, 5.9 (Medium content intel + lead sourcing) |
 | 6 | VC Pipeline API | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON pipeline data | Steps 1, 1.5 (warm intro matching) |
 | 7 | NotebookLM | `mcp__notebooklm__list_notebooks` | Returns notebook list | Research grounding (Step 2) |
 
@@ -2713,11 +2719,13 @@ CONNECTION CHECK (Step 0f)
 [PASS] Gmail - messages loaded
 [PASS] Notion API - Actions DB accessible
 [PASS] Chrome - browser connected
-[PASS] Apify MCP - tools loaded
+[PASS] Apify MCP - X/Twitter tools loaded
+[PASS] Reddit MCP - search working
+[PASS] RSS feeds - Medium/Substack reachable
 [PASS] VC Pipeline API - pipeline data loaded
 [PASS] NotebookLM - notebooks accessible
 
-All 7 connections OK. Proceeding to Step 0a.
+All 8 connections OK. Proceeding to Step 0a.
 ```
 
 **If ANY fails:**
@@ -2729,7 +2737,9 @@ MORNING ROUTINE HALTED - CONNECTION CHECK FAILED
 [PASS] Gmail - messages loaded
 [FAIL] Notion API - Error: "Could not find property..."
 [SKIP] Chrome - not tested (halted)
-[SKIP] Apify - not tested (halted)
+[SKIP] Apify (X only) - not tested (halted)
+[SKIP] Reddit MCP - not tested (halted)
+[SKIP] RSS feeds - not tested (halted)
 [SKIP] VC Pipeline API - not tested (halted)
 [SKIP] NotebookLM - not tested (halted)
 
@@ -2745,7 +2755,7 @@ Fix the issue and re-run /q-morning. Do NOT proceed with partial data.
 If a non-critical server fails (NotebookLM, VC Pipeline API), Claude MAY ask:
 "[Server] is down. This blocks [steps]. The rest of the routine can run without it. Proceed without [server], or fix and re-run?"
 
-If the founder says proceed, note the skipped steps in the briefing output. Critical servers (Calendar, Gmail, Notion, Chrome, Apify) have NO degraded mode - they halt the routine.
+If the founder says proceed, note the skipped steps in the briefing output. Critical servers (Calendar, Gmail, Notion, Chrome) have NO degraded mode - they halt the routine. Apify failure only blocks X/Twitter scraping (Steps 2.5, 5.9 X portion) and has Chrome fallback. Reddit MCP failure only blocks Reddit in Steps 3.7 and 5.9 (no Chrome fallback - skip Reddit). RSS failure only blocks Medium/Substack in Steps 3.7 and 5.9 and has Chrome fallback.
 
 **This also applies to failures MID-ROUTINE.** If any step fails during execution (API error, timeout, unexpected response, tool call rejected), STOP at that point and report:
 ```

@@ -8,60 +8,79 @@
       "name": "KTLYST_strategy",
       "path": "/Users/assafkip/Desktop/KTLYST_strategy",
       "subtree_prefix": "q-system",
-      "current_q_dir": "q-ktlyst",
+      "instance_q_dir": "q-ktlyst",
+      "type": "subtree",
       "has_git": true
     },
     {
       "name": "ktlyst",
       "path": "/Users/assafkip/Desktop/ktlyst",
       "subtree_prefix": "q-system",
-      "current_q_dir": null,
+      "instance_q_dir": null,
+      "type": "subtree",
       "has_git": true
     },
     {
       "name": "VC_Reachout",
       "path": "/Users/assafkip/Desktop/assafs_qs/VC_Reachout",
-      "subtree_prefix": "q-system",
-      "current_q_dir": "q-VC-Sourcing",
-      "has_git": false
+      "status": "merged_into_KTLYST_strategy",
+      "merged_date": "2026-03-26",
+      "merged_as": "q-ktlyst/vc-sourcing/"
     },
     {
       "name": "car-research",
       "path": "/Users/assafkip/Desktop/car-research",
       "subtree_prefix": "q-system",
-      "current_q_dir": "q-system",
-      "has_git": true
+      "instance_q_dir": null,
+      "type": "direct-clone",
+      "has_git": true,
+      "note": "Clone of kipi-system remote. q-system/ IS the skeleton, not a subtree. Updates via git pull."
     },
     {
       "name": "q-education",
       "path": "/Users/assafkip/Desktop/q-education",
       "subtree_prefix": "q-system",
-      "current_q_dir": "q-system",
-      "has_git": false
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     },
+    {
+      "name": "ASK_AI_consultant",
+      "path": "/Users/assafkip/Desktop/ASK_AI_consultant",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-consult",
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "ktlyst-website",
+      "path": "/Users/assafkip/Desktop/ktlyst-website",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    }
+  ],
+  "excluded": [
     {
       "name": "Pure_spectrum_Q",
       "path": "/Users/assafkip/Desktop/Pure_spectrum_Q",
-      "subtree_prefix": "q-system",
-      "current_q_dir": ".q-system",
-      "has_git": true
+      "reason": "Custom architecture, not skeleton-based"
     },
     {
       "name": "q-investigate-osint-bot",
       "path": "/Users/assafkip/Desktop/q-investigate-osint-bot",
-      "subtree_prefix": "q-system",
-      "current_q_dir": ".q-system",
-      "has_git": true
+      "reason": "Standalone OSINT system, not skeleton-based"
     }
   ],
-  "eliminate": [
+  "eliminated": [
     {
       "name": "kipi-pipeline-plugin",
-      "path": "/Users/assafkip/Desktop/kipi-pipeline-plugin"
+      "archived_to": "/Users/assafkip/Desktop/_archived/kipi-pipeline-plugin"
     },
     {
       "name": "q-founder-os",
-      "path": "/Users/assafkip/Desktop/q-founder-os"
+      "status": "already removed"
     }
   ]
 }

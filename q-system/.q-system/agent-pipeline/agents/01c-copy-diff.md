@@ -1,7 +1,7 @@
 ---
 name: 01c-copy-diff
 description: "Compare yesterday's generated copy against what the founder actually posted, log edits"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

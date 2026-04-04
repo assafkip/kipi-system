@@ -20,7 +20,7 @@ known bugs and broke guardrails.
 
 ### Read 1: Preflight -- Tool Manifest + Known Issues
 ```
-Read: q-consult/.q-system/preflight.md (offset: 1, limit: 136)
+Read: q-system/.q-system/preflight.md (offset: 1, limit: 136)
 ```
 Sections 1-2: What tools work, what's broken, fallback chains, and 10 known
 issues (KI-1 through KI-10) that have burned real sessions. The preflight agent
@@ -29,14 +29,14 @@ or KI-6 (generic subs produce 0 leads) or KI-9 (new positioning). You do.
 
 ### Read 2: Preflight -- Execution Gates + Action Cards
 ```
-Read: q-consult/.q-system/preflight.md (offset: 246, limit: 75)
+Read: q-system/.q-system/preflight.md (offset: 246, limit: 75)
 ```
 Sections 5-6: When to halt, how to log steps, and the rule that "card delivered"
 is NOT "done" -- only founder-confirmed actions update state files.
 
 ### Read 3: Current Positioning
 ```
-Read: q-consult/canonical/decisions.md (limit: 60)
+Read: q-system/canonical/decisions.md (limit: 60)
 ```
 So agents generate content with current positioning, not deprecated messaging.
 
@@ -47,8 +47,8 @@ So agents generate content with current positioning, not deprecated messaging.
 
 ```bash
 DATE=$(date +%Y-%m-%d)
-BUS_DIR="q-consult/.q-system/agent-pipeline/bus/${DATE}"
-AGENTS_DIR="q-consult/.q-system/agent-pipeline/agents"
+BUS_DIR="q-system/.q-system/agent-pipeline/bus/${DATE}"
+AGENTS_DIR="q-system/.q-system/agent-pipeline/agents"
 mkdir -p "${BUS_DIR}"
 ```
 
@@ -60,11 +60,11 @@ Your context window will compact automatically as it approaches limits. Do not s
 1. Read each agent's prompt file from AGENTS_DIR
 2. Replace {{DATE}} with today's date, {{BUS_DIR}} with the bus path, {{QROOT}} with project root, {{AGENTS_DIR}} with the agents directory path
 3. Spawn agents using the Agent tool with the prompt
-4. Use model=sonnet for all agents EXCEPT 05-engagement-hitlist and 07-synthesize (use opus)
+4. Model allocation: haiku for data pulls (00-preflight, 00-session-bootstrap, 01-*), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
 5. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
 6. When a phase depends on the previous phase's output, wait for completion first
 7. After each phase, verify the expected bus/ JSON files exist before proceeding
-8. Log each phase completion via log-step.sh
+8. Log each phase completion via log-step.py
 9. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
 ## Instance Customization
@@ -75,11 +75,11 @@ Some instances may cut agents to save tokens. If an agent was cut for this insta
 
 ## Phase Sequence
 
-### Phase 0: Preflight + Bootstrap (2 agents, SEQUENTIAL)
-1. Spawn: 00-preflight.md (sonnet)
+### Phase 0: Preflight + Bootstrap + Canonical Digest (2 agents + 1 script, SEQUENTIAL)
+1. Spawn: 00-preflight.md (haiku)
    - Verify: bus/{date}/preflight.json exists and ready=true
    - If ready=false: HALT. Report which tools failed. Do not continue.
-2. Spawn: 00-session-bootstrap.md (sonnet) - action card pickup, loop escalation, canonical checksums
+2. Spawn: 00-session-bootstrap.md (haiku) - action card pickup, loop escalation, canonical checksums
    - Verify: bus/{date}/bootstrap.json exists
    - AFTER bootstrap completes: Ask the founder the check-in questions:
      - "Any calls or meetings today?"
@@ -87,15 +87,20 @@ Some instances may cut agents to save tokens. If an agent was cut for this insta
      - "Any conversations outside LinkedIn/Reddit?"
      - "Any new commitments or deadlines?"
      - "Did you build anything since last session?"
+3. Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/canonical-digest.py {date}`
+   - Verify: bus/{date}/canonical-digest.json exists
 
-### Phase 1: Data Ingest (4 agents, ALL PARALLEL)
+### Phase 1: Data Ingest (4 agents + 1 script, PARALLEL agents then script)
 Launch in ONE message with 4 Agent tool calls:
-- 01-calendar-pull.md (sonnet)
-- 01-gmail-pull.md (sonnet)
-- 01-notion-pull.md (sonnet)
-- 01-vc-pipeline-pull.md (sonnet) - OPTIONAL: skip if no VC pipeline API configured
+- 01-calendar-pull.md (haiku)
+- 01-gmail-pull.md (haiku)
+- 01-notion-pull.md (haiku)
+- 01-vc-pipeline-pull.md (haiku) - OPTIONAL: skip if no VC pipeline API configured
 Verify: calendar.json, gmail.json, notion.json all exist in bus/ (vc-pipeline.json optional)
 If any required agent fails: log the failure, continue with available data
+THEN run SCRIPT: `python3 {{QROOT}}/.q-system/scripts/copy-diff.py {date}`
+- Reads yesterday's hitlist.json + today's linkedin-posts.json, writes copy-diffs.json
+- If Chrome data is needed beyond what linkedin-posts provides, spawn 01c-copy-diff.md agent as fallback
 
 ### Phase 2: Analysis (3 agents, PARALLEL)
 Launch in ONE message with 3 Agent tool calls:
@@ -110,7 +115,7 @@ Chrome agents (SEQUENTIAL -- one tab at a time):
 - 03-linkedin-dms.md (sonnet) - writes linkedin-dms.json
 - 03-prospect-pipeline.md (sonnet) - reads notion.json, writes prospect-pipeline.json
 THEN (can run after posts + x-activity are done):
-- 03-publish-reconciliation.md (sonnet) - fuzzy-matches published posts against Content Pipeline, writes publish-reconciliation.json
+- Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/publish-reconciliation.py {date}` - fuzzy-matches published posts against Content Pipeline, writes publish-reconciliation.json
 - 03-content-intel.md (sonnet, MONDAYS ONLY) - multi-platform content performance scrape, writes content-intel.json. Skip on non-Mondays.
 
 ### Phase 4: Content (2-4 agents, SEQUENTIAL then PARALLEL)
@@ -120,36 +125,56 @@ THEN (can run after posts + x-activity are done):
   - 04-post-visuals.md (sonnet) - reads signals.json (+ founder-brand-post.json if weekly brand day), generates Gamma social cards + carousels, writes post-visuals.json
   - IF weekly brand day: 04-founder-brand-post.md (sonnet) - writes founder-brand-post.json. NOTE: If brand day, run founder-brand-post BEFORE post-visuals so visuals agent can read both drafts. Sequence: signals -> founder-brand-post -> [value-routing + post-visuals] in parallel.
 
-### Phase 5: Pipeline (5 parallel, then conditional, then 1 sequential)
-Launch in ONE message:
-- 05-temperature-scoring.md (sonnet) - reads all bus/ files, writes temperature.json
-- 05-lead-sourcing.md (sonnet) - runs Apify, writes leads.json
+### Phase 5: Pipeline (1 script + 4 agents parallel, then conditional, then 1 sequential)
+Run SCRIPT first: `python3 {{QROOT}}/.q-system/scripts/temperature-scoring.py {date}` - writes temperature.json
+THEN launch in ONE message:
+- 05-lead-sourcing.md (sonnet) - runs Chrome (LinkedIn) + Reddit MCP + RSS (Medium) + Apify (X only), writes leads.json
 - 05-pipeline-followup.md (sonnet) - reads notion.json + DMs + gmail, writes pipeline-followup.json (includes warming ladder stage advancement)
 - 05-loop-review.md (sonnet) - reads notion.json + prospect-pipeline.json, writes loop-review.json
 - 05-connection-mining.md (sonnet) - scans LinkedIn 1st-degree connections for ICP matches, writes connection-mining.json
+
+**NOTE:** lead-sourcing uses Chrome ONLY for LinkedIn search (not Reddit - Reddit uses its own MCP). connection-mining also uses Chrome for LinkedIn People Search. Both use Chrome but at different times within their own execution. The Agent tool runs them as independent sub-agents, each making sequential Chrome calls within their own flow. This is safe as long as Chrome calls don't literally overlap. If Chrome contention occurs, the orchestrator will detect it via errors in leads.json or connection-mining.json and log it.
+
 After all complete, check leads.json:
-- If `error` key exists (e.g. Apify limit): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet). Do NOT stop to ask the founder. Log: "Apify failed, running Chrome fallback."
-- If Chrome fallback also fails: proceed with empty leads (hitlist will use existing bus data only).
-- If leads.json has results: proceed.
+- Read the `platform_errors` object (if present). Each key is a platform that failed.
+  - `linkedin` error (Chrome failed): Log failure, proceed without LinkedIn leads. Do NOT fall back to Chrome agent (Chrome was already primary).
+  - `reddit` error (Reddit MCP failed): Skip Reddit leads. Do NOT fall back to Chrome for Reddit. Log: "Reddit MCP failed, skipping Reddit leads."
+  - `medium` error (RSS failed): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet) for Medium only. Log: "RSS failed for Medium, running Chrome fallback."
+  - `x` error (Apify failed): Auto-fallback to 05-lead-sourcing-chrome.md (sonnet) for X only. Log: "Apify failed, running Chrome fallback for X."
+- If `platform_errors` is absent or empty: all platforms succeeded, proceed.
+- If Chrome fallback also fails: proceed with whatever leads were collected from other platforms.
+- The Chrome fallback agent MERGES its results into the existing leads.json (append to qualified_leads, update run_summary counts, remove the fixed platforms from platform_errors).
 THEN:
 - 05-engagement-hitlist.md (OPUS) - reads temperature + leads + linkedin-posts + pipeline-followup + loop-review, writes hitlist.json
 
-### Phase 6: Compliance + Health (4 agents, PARALLEL)
-Launch in ONE message:
-- 06-compliance-check.md (sonnet) - reads bus/ content + canonical files, writes compliance.json
+### Phase 6: Compliance + Health + Sycophancy (1 script + 4 agents, script first then PARALLEL agents)
+Run SCRIPT first: `python3 {{QROOT}}/.q-system/scripts/compliance-check.py {date}` - writes compliance.json
+THEN launch in ONE message:
 - 06-positioning-check.md (sonnet) - reads canonical files + drift detection, writes positioning.json
 - 06-client-deliverables.md (sonnet) - checks client commitments for overdue/upcoming, writes client-deliverables.json
 - 04-marketing-health.md (sonnet) - asset freshness, cadence progress, stale drafts, writes marketing-health.json
+- 06-sycophancy-audit.md (sonnet) - anti-sycophancy check (Chandra et al. 2026). Reads all bus/ + decisions.md + sycophancy-log.json. Writes sycophancy-audit.json. If verdict is "watch" or "alert", synthesizer surfaces it in the schedule. **SKIP CONDITION:** If `my-project/founder-profile.md` contains `sycophancy_audit_enabled: false`, do NOT spawn this agent. Log: "Sycophancy audit: disabled by founder preference."
+
+**Post-phase sycophancy gate (MANDATORY, after verify-bus):**
+After Phase 6 verify-bus passes, run the deterministic sycophancy harness:
+```bash
+python3 {{QROOT}}/.q-system/sycophancy-harness.py {date}
+```
+- Exit 0: proceed to Phase 7 normally
+- Exit 1: proceed to Phase 7, BUT the synthesizer MUST treat sycophancy-audit.json as "alert" regardless of what the agent wrote (harness overrode the agent's verdict in the file)
+- Exit 2: log error, proceed (harness failure should not block the pipeline)
+
+The harness independently parses decisions.md to verify the agent's pi calculation. If the agent was sycophantic about its own sycophancy audit, the harness catches it and amends sycophancy-audit.json with a `harness_override` field. The synthesizer reads the amended file.
 
 ### Phase 7: Synthesis (1 agent, sequential, OPUS)
 - 07-synthesize.md (OPUS) - reads ALL bus/{date}/*.json, writes schedule-data-{date}.json
 - This is the most expensive agent. It produces the daily schedule JSON.
 
 ### Phase 8: Build + Verify (sequential)
-1. Run: `bash q-consult/marketing/templates/build-schedule.sh output/schedule-data-{date}.json output/daily-schedule-{date}.html`
+1. Run: `python3 {{QROOT}}/marketing/templates/build-schedule.py {{QROOT}}/output/schedule-data-{date}.json {{QROOT}}/output/daily-schedule-{date}.html`
 2. Spawn: 08-visual-verify.md (sonnet) - opens HTML in Chrome, checks layout
-3. Run: `python3 q-consult/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
-4. Run: `python3 q-consult/.q-system/audit-morning.py q-consult/output/morning-log-{date}.json`
+3. Run: `python3 {{QROOT}}/.q-system/bus-to-log.py {date}` - bridges bus/ files to morning-log.json
+4. Run: `python3 {{QROOT}}/.q-system/audit-morning.py {{QROOT}}/output/morning-log-{date}.json`
 5. Show audit output to founder
 Steps 3-4 are NON-OPTIONAL. A hook enforces this - see .claude/settings.json.
 
@@ -163,17 +188,19 @@ These are the final agents. If either fails, log the error - do not retry.
 
 At the start of each day (Phase 0), delete bus/ directories older than 3 days:
 ```bash
-find q-consult/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
+find q-system/.q-system/agent-pipeline/bus/ -maxdepth 1 -type d -mtime +3 -exec rm -rf {} \;
 ```
 
 ## Fallback Chain (tool-level)
 
 | Tool fails | Auto-fallback | Founder approval? |
 |------------|---------------|-------------------|
-| Apify | Chrome scraping (see Phase 5 lead-sourcing-chrome) | No -- auto, just log it |
-| Chrome | STOP and report | Yes |
-| Notion `mcp__notion_api__*` | curl with API token | No -- auto, just log it |
-| `mcp__claude_ai_Notion__*` | **NEVER USE for ASK data** -- wrong workspace | N/A |
+| Chrome (LinkedIn lead sourcing) | Skip LinkedIn leads. No fallback. | No -- just log it |
+| Reddit MCP | Skip Reddit scraping. No Chrome fallback. | No -- just log it |
+| RSS feeds (Medium) | Chrome scraping via 05-lead-sourcing-chrome | No -- auto, just log it |
+| Apify (X/Twitter only) | Chrome scraping via 05-lead-sourcing-chrome | No -- auto, just log it |
+| Chrome (DMs, interactive) | STOP and report | Yes |
+| Notion `mcp__claude_ai_Notion__*` | STOP and report | Yes |
 | Gmail | Skip email-dependent steps | Note in briefing |
 | Calendar | Skip meeting prep | Note in briefing |
 
@@ -183,5 +210,5 @@ Read Notion IDs from `q-system/my-project/notion-ids.md`. Never hardcode IDs in 
 
 ## Catastrophic Fallback
 
-If the agent pipeline fails catastrophically, fall back to the monolithic step-by-step
-flow using step-loader.sh. The old steps still exist in steps/.
+If the agent pipeline fails catastrophically, stop and report diagnostics to the founder.
+Include which phase failed, the bus files written so far, and the error message.

@@ -1,7 +1,7 @@
 ---
 name: 03-prospect-pipeline
 description: "Count prospects by status, compute touch recency, and flag auto-close candidates"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 
@@ -24,7 +24,9 @@ You are a data analysis agent. Your ONLY job is to read Notion pipeline data, co
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "03-prospect-pipeline",
   "counts": {
     "active": 0,
     "warm": 0,

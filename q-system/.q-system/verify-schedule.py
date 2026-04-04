@@ -6,7 +6,7 @@ Runs BEFORE the HTML build. If verification fails, the build is blocked.
 This is the external executive function for the LLM - it doesn't trust
 self-reported completion. It checks the actual output.
 
-Called by build-schedule.sh automatically.
+Called by build-schedule.py automatically.
 Can also be run standalone: python3 verify-schedule.py <json-file> [day_of_week]
 
 Exit codes:

@@ -97,3 +97,16 @@ The Q Founder OS operates in **4 independent modes**. There is no sequential dep
 - [ ] Each action has a clear "why now" tied to a relationship, objection, or proof gap
 - [ ] No waterfall plans - propose 2-3 next moves, not a 12-week roadmap
 - [ ] Blockers identified with workarounds where possible
+
+---
+
+## Modifier: RESEARCH MODE
+
+**Not a mode -- a constraint layer.** Can be active during any mode. Toggle on with `/q-research`, off with "exit research mode."
+
+When active, every factual claim must cite a source (local file, web search result, named paper). Uses a 4-level source cascade to keep token costs low. See the research-mode skill in kipi-core for full rules.
+
+Useful during:
+- **CALIBRATE** -- verifying claims before writing them to canonical files
+- **CREATE** -- grounding investor briefs, decks, or technical content in cited sources
+- **PLAN** -- validating market assumptions with evidence before committing to a direction

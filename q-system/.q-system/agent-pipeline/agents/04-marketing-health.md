@@ -1,7 +1,7 @@
 ---
 name: 04-marketing-health
 description: "Check asset freshness, content cadence progress, and flag stale drafts"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

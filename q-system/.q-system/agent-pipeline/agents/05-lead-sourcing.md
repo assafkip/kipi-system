@@ -7,14 +7,15 @@ maxTurns: 50
 
 # Agent: Lead Sourcing
 
-You are a lead sourcing agent. Your ONLY job is to run Apify actors across 4 platforms, score results, and write qualified leads to disk.
+You are a lead sourcing agent. Your ONLY job is to collect leads across 4 platforms using Chrome (LinkedIn), Reddit MCP (Reddit), RSS feeds (Medium), and Apify (X/Twitter only), score results, and write qualified leads to disk.
 
 ## Reads
 
-- Apify actor results (fetched live via REST)
+- Chrome browser results (LinkedIn), Reddit MCP results (Reddit), RSS feed results (Medium), Apify actor results (X/Twitter only)
 - `q-system/my-project/current-state.md` - your target buyer personas and pain categories
 - `q-system/my-project/budget-qualifiers.md` - keep/skip signals for budget qualification
 - `q-system/my-project/founder-profile.md` - service_lines section for tagging
+- `q-system/my-project/lead-sources.md` - Reddit subreddits (with day rotation), Medium tags (for RSS), X accounts to monitor
 - `q-system/canonical/market-intelligence.md` - target buyer language and pain categories
 
 ## Writes
@@ -23,35 +24,50 @@ You are a lead sourcing agent. Your ONLY job is to run Apify actors across 4 pla
 
 ## Instructions
 
-### Phase 1: Run Apify actors
+### Phase 1: Collect leads across 4 platforms
 
-**Use `bash q-system/.q-system/apify-run.sh` for ALL Apify calls.** This script handles REST API auth, response nesting, dataset fetching, and error handling. Never write inline curl + parsing.
+Use Chrome for LinkedIn, Reddit MCP for Reddit, WebFetch for RSS feeds (Medium), and Apify MCP for X/Twitter.
 
-Read `q-system/canonical/market-intelligence.md` first to get your target buyer language and pain categories. Use those terms in the search queries below.
+**Tool loading:** All MCP tools and WebFetch are deferred. Use ToolSearch to load them before first use:
+- `ToolSearch("+reddit")` - for Reddit MCP (`mcp__reddit__*`)
+- `ToolSearch("select:WebFetch")` - for Medium RSS feeds
+- `ToolSearch("select:WebSearch")` - for Medium supplement
+- `ToolSearch("select:mcp__claude-in-chrome__navigate")` - for Chrome (LinkedIn)
+- `ToolSearch("+apify")` - for X/Twitter (Apify MCP)
 
-Run these 4 in parallel using Bash tool calls. Replace {{SEARCH_TERMS}} with terms from market-intelligence.md:
+**How WebFetch works with RSS feeds (Medium/Substack only):** WebFetch takes a URL and a prompt. It processes content via a small model. You get structured text back, NOT raw XML.
 
-1. **LinkedIn**
-   ```bash
-   bash q-system/.q-system/apify-run.sh "supreme_coder~linkedin-post" '{"urls":["https://www.linkedin.com/search/results/content/?keywords={{SEARCH_TERMS}}&sortBy=date_posted"],"deepScrape":false,"maxItems":20}' 120
-   ```
+Read `{{QROOT}}/canonical/market-intelligence.md` first to get target buyer language and pain categories. Use those terms in searches.
 
-2. **Reddit**
-   ```bash
-   bash q-system/.q-system/apify-run.sh "trudax~reddit-scraper-lite" '{"startUrls":[{"url":"https://www.reddit.com/r/{{TARGET_SUBREDDIT}}/search/?q={{SEARCH_TERMS}}&sort=new&restrict_sr=on&t=week"}],"maxItems":20}' 120
-   ```
+**Fallback chain per platform:**
+- LinkedIn: Chrome is primary. If Chrome fails, skip LinkedIn leads.
+- Reddit: Reddit MCP is primary. If Reddit MCP fails, skip Reddit. Do NOT use Chrome for Reddit.
+- Medium: RSS via WebFetch is primary, WebSearch as supplement. If both fail, fall back to Chrome.
+- X/Twitter: Apify MCP is primary. If Apify fails, fall back to Chrome.
 
-3. **Medium**
-   ```bash
-   bash q-system/.q-system/apify-run.sh "apify~google-search-scraper" '{"queries":"site:medium.com ({{SEARCH_TERMS}}) 2026","maxPagesPerQuery":1,"resultsPerPage":10}' 120
-   ```
+Replace {{SEARCH_TERMS}} with terms from market-intelligence.md:
 
-4. **X (Twitter)**
-   ```bash
-   bash q-system/.q-system/apify-run.sh "apidojo~tweet-scraper" '{"searchTerms":["{{SEARCH_TERMS}}"],"maxItems":20,"mode":"search"}' 120
-   ```
+1. **LinkedIn (Chrome)** - Navigate to `https://www.linkedin.com/search/results/content/?keywords={{SEARCH_TERMS}}&sortBy=date_posted` via `mcp__claude-in-chrome__navigate`. Use `mcp__claude-in-chrome__read_page` or `mcp__claude-in-chrome__get_page_text` to extract the first 10-20 results. Save full post text for each relevant result.
 
-Each returns a clean JSON array to stdout. Parse directly with python3.
+2. **Reddit (Reddit MCP)** - Read `{{QROOT}}/my-project/lead-sources.md` for today's subreddit rotation. Use the Reddit MCP tools:
+   - For each target subreddit, call `mcp__reddit__search_subreddit` with `subreddit`, `query={{SEARCH_TERMS}}`, `limit=10`, `sort="new"`.
+   - The Reddit MCP returns structured data with full post text, author, score (upvotes), URL, and comments.
+   - For high-scoring leads that need deeper context, call `mcp__reddit__get_post` with the permalink to get the full comment tree.
+   - Limit 20 results total across subreddits.
+
+3. **Medium (RSS + WebSearch)** - Read `{{QROOT}}/my-project/lead-sources.md` for Medium tags. Two-pass approach:
+   - **Pass 1 (discovery):** For each tag, call:
+     ```
+     WebFetch(url="https://medium.com/feed/tag/TAG", prompt="Extract all articles from this RSS feed. For each return: title, article URL, author name, published date, and content text (as much as available). Return as a numbered list.")
+     ```
+     Supplement: Use WebSearch for `site:medium.com {{SEARCH_TERMS}} 2025 OR 2026`.
+   - **Pass 2 (full text):** For Tier A/B results, fetch the full article via Chrome to get complete text for outreach generation.
+   - **Engagement counts:** Medium RSS does NOT include claps or response counts. Set `engagement_count` to 0 for RSS-sourced leads. If you need clap counts, fetch via Chrome in Pass 2.
+   - Limit 10 results total.
+
+4. **X (Twitter) - Apify** - Actor: `apidojo/tweet-scraper` via Apify MCP (`mcp__apify__*` via ToolSearch). Search {{SEARCH_TERMS}}, maxItems 20. If Apify MCP unavailable, fall back to Chrome: navigate to `https://x.com/search?q={{SEARCH_TERMS}}&f=live`, read first 10 results.
+
+Parse and filter immediately, don't hold raw results in context.
 
 ### Phase 2: Score each result on 6 dimensions (max 30 pts total)
 
@@ -83,11 +99,19 @@ Also save: author name, author title/role, author profile URL, post URL, platfor
 
 ### Phase 4: Write to disk
 
-Write results to `{{BUS_DIR}}/leads.json`:
+Write results to `{{BUS_DIR}}/leads.json`.
+
+If any platform failed, include a `platform_errors` object with the platform name and error message. The orchestrator uses this to decide which Chrome fallback to trigger. Only include platforms that actually failed - omit the field entirely if all platforms succeeded.
 
 ```json
 {
+  "bus_version": 1,
   "date": "{{DATE}}",
+  "generated_by": "05-lead-sourcing",
+  "platform_errors": {
+    "reddit": "Reddit MCP unavailable",
+    "x": "Apify MCP unavailable"
+  },
   "run_summary": {
     "linkedin_fetched": 0,
     "reddit_fetched": 0,

@@ -1,29 +1,27 @@
 # Pricing Framework
 
-{{SETUP_NEEDED}}
+> Pricing model, packaging tiers, and budget conversation guidance. Updated through debriefs and calibration.
 
-## Pricing Model
-- **Type:** (value-based / hourly / project-based / retainer)
-- **Anchor price:** ${{ANCHOR_PRICE}}/mo (the number you say first in conversations)
+## Format
 
-## Tiers
+```
+### Tier: [Tier Name]
+- **Target:** [buyer persona / company size]
+- **Price point:** [range or specific]
+- **Packaging:** [what's included]
+- **Proof points:** [why this price works]
+- **Objection handling:** [common pushback at this tier]
+- **Source:** [Person] - [Date]
+```
 
-| Tier | Price Range | What's Included | Who It's For |
-|------|------------|-----------------|--------------|
-| POC Sprint | ${{POC_MIN}} - ${{POC_MAX}} | {{description}} | New clients validating fit |
-| Monthly Retainer | ${{RETAINER_MIN}} - ${{RETAINER_MAX}} | {{description}} | Ongoing engagements |
-| Implementation | ${{IMPL_MIN}} - ${{IMPL_MAX}} | {{description}} | One-time builds |
+## Pricing Tiers
 
-## Rules
-- Never quote hourly rates
-- Never discount without removing scope
-- Always frame as investment vs. cost of current pain
-- If asked "what's your rate," redirect to "what's the problem we're solving"
+(populated through debriefs and calibration)
 
-## Objection Responses
-| Objection | Response |
-|-----------|----------|
-| "Too expensive" | {{response}} |
-| "Can we start smaller?" | {{response}} |
-| "What's your hourly rate?" | {{response}} |
-| "Competitor charges less" | {{response}} |
+## Budget Signals from Conversations
+
+(captured from debrief pricing/packaging analysis)
+
+## Competitive Pricing Intel
+
+(what prospects compare us to, price-wise)

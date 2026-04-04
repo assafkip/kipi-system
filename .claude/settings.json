@@ -5,7 +5,7 @@
       "Bash(npm:*)",
       "Bash(npx:*)",
       "Bash(python3:*)",
-      "Bash(bash q-system/marketing/templates/build-schedule.sh:*)",
+      "Bash(python3 q-system/marketing/templates/build-schedule.py:*)",
       "Bash(git log:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
@@ -57,15 +57,81 @@
     ],
     "defaultMode": "acceptEdits"
   },
+  "outputStyle": "Founder OS",
   "effortLevel": "thorough",
+  "autoMemoryEnabled": true,
+  "cleanupPeriodDays": 30,
+  "worktree": {
+    "symlinkDirectories": ["node_modules", ".cache", "q-system/output"]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/statusline.sh\""
+  },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-context.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/post-compact.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\"",
+            "async": true
           }
         ]
       }

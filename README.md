@@ -1,10 +1,10 @@
 # The Kipi System
 
-**Your AI operating system for relationship-driven work.**
+**Your AI brain. Externalized.**
 
-You know who you need to follow up with. You just don't remember when. You know what that person said last month that mattered. You just can't find it. You know exactly what email to write. You just haven't written it.
+Your brain knows who you need to follow up with. It just doesn't remind you. Your brain knows what that person said last month that mattered. It just can't find it. Your brain knows exactly what email to write. It just won't write it for you.
 
-The Kipi System is the part of your brain that remembers everything, connects everything, and turns everything into the next action. It runs on Claude Code. It learns from every conversation you have. It produces your entire day as a single file: every action pre-written, every follow-up drafted, every open thread tracked.
+The Kipi System is the part of your brain that remembers everything, connects everything, and turns everything into the next action. It runs in Claude Code. It learns from every conversation you have. It produces your entire day as a single file: every action pre-written, every follow-up drafted, every open thread tracked.
 
 You copy, paste, check the box, move on.
 
@@ -12,7 +12,7 @@ You copy, paste, check the box, move on.
 
 ## What happens when you run `/q-morning`
 
-The system pulls from your calendar, email, CRM, and social platforms. It reads every open loop. It checks what went cold. Then 25 agents run across 9 phases and produce a single HTML file:
+The system pulls from your calendar, email, CRM, and social platforms. It reads every open loop. It checks what went cold. Then it produces a single HTML file:
 
 - **Copy-paste actions sorted by friction.** 2-minute replies first, deep work later. Momentum builds before the hard stuff.
 - **Every follow-up pre-written in your voice.** Not AI voice. YOUR voice. Fed from your writing samples, your word choices, your pet peeves.
@@ -52,41 +52,9 @@ Loops auto-close when the system detects a response. Gmail reply? Closed. Linked
 
 ---
 
-## How the agent pipeline works
+## Built for ADHD. Works for everyone.
 
-> **Visual guides:** [Agent Pipeline Architecture](docs/diagrams/agent-pipeline-architecture.pdf) | [Daily Workflow](docs/diagrams/daily-workflow.pdf) | [Data Flow Architecture](docs/diagrams/data-flow-architecture.pdf)
->
-> Interactive versions: [Pipeline](https://gamma.app/docs/ovum1angmf5mh1d) | [Workflow](https://gamma.app/docs/zn2h7mtj1kc0l9y) | [Data Flow](https://gamma.app/docs/923zj6f7zv4nzdq)
-
-The morning routine is not a single prompt. It's 25 specialized agents organized into 9 phases. Each agent has one job. They communicate through JSON files in a shared bus/ directory, not through context. This keeps the main conversation light while the agents do heavy lifting in parallel.
-
-**Phase 0: Preflight.** One agent checks that all tools are responding (calendar, email, CRM, browser). If anything is down, the pipeline halts before wasting tokens.
-
-**Phase 1: Data Ingest.** Four agents run in parallel, each pulling from a different source: calendar events, email threads, CRM contacts and pipeline, and any external APIs you've configured. They write structured JSON to the bus.
-
-**Phase 2: Analysis.** Two agents read the bus data and produce meeting prep and warm introduction matching. They run in parallel because neither depends on the other.
-
-**Phase 3: Social.** Three agents run sequentially (browser automation needs one tab at a time). They scan LinkedIn posts, read DMs and connection accepts, and count your prospect pipeline by status.
-
-**Phase 4: Content.** A signals agent finds today's relevant news and drafts posts. Then a value-routing agent matches signals to prospects, and a visual generation agent creates social cards and carousels. On brand post days, a personal brand agent drafts a separate post.
-
-**Phase 5: Pipeline.** Four agents score prospect temperature, source new leads, draft overdue follow-ups, and review stale loops, all in parallel. Then an engagement hitlist agent (the most important one) reads everything and produces the copy-paste-ready action list.
-
-**Phase 6: Compliance.** Two agents check all generated content against your positioning rules and audit your talk tracks for freshness.
-
-**Phase 7: Synthesis.** One agent reads every bus file and produces the daily schedule JSON, following strict actionability rules: every item must be copy-paste ready, have a next physical action, an energy tag, and a time estimate.
-
-**Phase 8: Build and Verify.** A build script converts the JSON to HTML. A visual verify agent opens it in the browser. An audit harness checks for skipped steps.
-
-**Phase 9: Write-back.** Two agents push today's actions to your CRM and update your daily checklist pages.
-
-The agents don't share context. They share files. This means you can run the same pipeline tomorrow with zero context carryover and get a fresh, accurate daily plan.
-
----
-
-## Built for focus. Works for everyone.
-
-The system was designed with ADHD in mind. Every design decision reduces cognitive load.
+I have AUDHD (ADHD + Autism). Every design decision comes from that.
 
 **No decisions.** The system picks who to contact, what to say, in what order, through which channel. You copy-paste and check boxes.
 
@@ -96,7 +64,7 @@ The system was designed with ADHD in mind. Every design decision reduces cogniti
 
 **Effort-tracked.** "You sent 4 messages today" matters more than "nobody responded yet." Progress is actions taken, not outcomes received.
 
-This isn't a feature toggle. It's how the whole system thinks. Even without ADHD, you get a system that eliminates decision fatigue and orders your day by what's easiest to start.
+This isn't a feature toggle. It's how the whole system thinks. If you don't have ADHD, you still get a system that eliminates decision fatigue and orders your day by what's easiest to start.
 
 ---
 
@@ -106,7 +74,7 @@ Your biological brain forgets 90% of every conversation within a week. This one 
 
 **Canonical memory.** Your positioning, your objections and the responses that worked, your competitive landscape, every relationship and what each person cares about. Every workflow reads from this memory. Every conversation updates it.
 
-**Time-layered recall.** Working memory expires in 48 hours (you don't need yesterday's scratch notes). Weekly patterns roll up. Monthly insights persist. Session logs capture what happened and when, separate from current state. Like a real brain, it forgets what doesn't matter and strengthens what does.
+**Time-layered recall.** Working memory expires in 48 hours (you don't need yesterday's scratch notes). Weekly patterns roll up. Monthly insights persist. Like a real brain, it forgets what doesn't matter and strengthens what does.
 
 **Connections across conversations.** A knowledge graph links people, companies, what they said, and how they relate. The insight from a conversation three weeks ago changes what the system suggests today. You didn't have to remember it. The brain did.
 
@@ -120,7 +88,7 @@ git clone https://github.com/assafkip/kipi-system.git
 cd kipi-system && claude
 ```
 
-The system walks you through setup: who you are, what you're building, how you talk, who you know. Takes about 20 minutes. Then run `/q-morning` and see your first daily action plan.
+The system walks you through setup. Who you are, what you're building, how you talk, who you know. Takes about 20 minutes. Then run `/q-morning` and see your first daily action plan.
 
 ---
 
@@ -129,56 +97,20 @@ The system walks you through setup: who you are, what you're building, how you t
 ```
 kipi-system/
 ├── .q-system/
-│   ├── agent-pipeline/
-│   │   ├── agents/              # 25 agent prompt files (one per task)
-│   │   │   ├── 00-preflight.md          # Verify all tools respond
-│   │   │   ├── 01-calendar-pull.md      # Fetch calendar events
-│   │   │   ├── 01-gmail-pull.md         # Fetch flagged emails
-│   │   │   ├── 01-notion-pull.md        # Fetch CRM data
-│   │   │   ├── 01-vc-pipeline-pull.md   # Fetch external pipeline (optional)
-│   │   │   ├── 02-meeting-prep.md       # Prep today's meetings
-│   │   │   ├── 02-warm-intro-match.md   # Cross-ref warm intro paths
-│   │   │   ├── 03-linkedin-posts.md     # Scan LinkedIn feed
-│   │   │   ├── 03-linkedin-dms.md       # Scan DMs + connection accepts
-│   │   │   ├── 03-prospect-pipeline.md  # Count prospects by status
-│   │   │   ├── 04-signals-content.md    # Find signals, draft posts
-│   │   │   ├── 04-value-routing.md      # Match signals to prospects
-│   │   │   ├── 04-post-visuals.md       # Generate visual assets
-│   │   │   ├── 04-founder-brand-post.md # Weekly personal brand post
-│   │   │   ├── 05-temperature-scoring.md # Score prospect engagement
-│   │   │   ├── 05-lead-sourcing.md      # Run lead scraping
-│   │   │   ├── 05-lead-sourcing-chrome.md # Browser fallback for leads
-│   │   │   ├── 05-pipeline-followup.md  # Draft overdue follow-ups
-│   │   │   ├── 05-loop-review.md        # Flag stale loops
-│   │   │   ├── 05-engagement-hitlist.md # Copy-paste engagement actions
-│   │   │   ├── 06-compliance-check.md   # Check content vs rules
-│   │   │   ├── 06-positioning-check.md  # Audit talk tracks + objections
-│   │   │   ├── 07-synthesize.md         # Produce daily schedule JSON
-│   │   │   ├── 08-visual-verify.md      # Open HTML, check layout
-│   │   │   ├── 09-notion-push.md        # Push actions to CRM
-│   │   │   ├── 10-daily-checklists.md   # Update checklist pages
-│   │   │   ├── _auto-fail-checklist.md  # Voice/content rules
-│   │   │   └── _cadence-config.md       # Posting/outreach timing
-│   │   └── bus/                 # Inter-agent JSON (per-date directories)
-│   │
-│   ├── steps/               # Monolithic step files (fallback)
-│   ├── commands.md           # Full workflow definitions
-│   ├── audit-morning.py      # Catches skipped steps
-│   ├── bus-to-log.py         # Bridges bus/ files to morning log
-│   ├── log-step.sh           # Flight recorder for every step
-│   ├── loop-tracker.sh       # Opens, escalates, closes loops
-│   ├── step-loader.sh        # Re-injects step requirements (EOP)
-│   ├── tool-counter.sh       # Session tool call counter with thresholds
-│   ├── diagnose-tools.sh     # Pre-command tool availability check
-│   ├── verify-schedule.py    # Blocks HTML if sections missing
-│   ├── token-guard.py        # Stops runaway token consumption
-│   └── preflight.md          # Tool manifest and known issues
+│   ├── commands.md          # 35+ step morning routine and all workflows
+│   ├── loop-tracker.py      # Opens, escalates, and closes loops
+│   ├── verify-schedule.py   # Blocks HTML build if required sections missing
+│   ├── agent-pipeline/      # Decomposed morning routine agents and bus protocol
+│   ├── session-start.py     # Auto-loads context on first use each day
+│   ├── audit-morning.py     # Catches skipped steps and missing content
+│   ├── token-guard.py       # Stops runaway AI token consumption
+│   ├── log-step.py          # Flight recorder for every step
+│   └── preflight.md         # Tool manifest, known issues, and verification rules
 │
 ├── canonical/               # Source of truth (updates from every conversation)
 │   ├── talk-tracks.md       # What to say, tested and tagged by audience
 │   ├── objections.md        # Every pushback, with the response that worked
 │   ├── market-intelligence.md  # Buyer language and competitive signals
-│   ├── engagement-playbook.md  # Comment, DM, and connection request strategies
 │   └── decisions.md         # Every decision with origin and rationale
 │
 ├── my-project/              # Your specific context
@@ -190,21 +122,13 @@ kipi-system/
 │   ├── working/             # 48-hour scratch (auto-cleaned)
 │   ├── weekly/              # 7-day patterns
 │   ├── monthly/             # Persistent insights
-│   ├── sessions/            # Per-session logs (what happened when)
 │   └── graph.jsonl          # Who knows whom, who cares about what
 │
 ├── marketing/               # Content templates, guardrails, voice matching
-│   └── templates/
-│       ├── build-schedule.sh          # JSON -> HTML build script
-│       ├── daily-schedule-template.html # Actionability-optimized HTML template
-│       └── schedule-data-schema.md    # JSON schema (with post visuals)
-│
 ├── methodology/             # Debrief template, operating modes
 │
-├── tools/
-│   └── osint-infra-mcp/     # WHOIS, DNS, Wayback Machine lookups
-│
 └── output/
+    ├── open-loops.json      # Every tracked loop with escalation state
     ├── daily-schedule-*.html # Your daily action plan
     └── morning-log-*.json   # Audit trail
 ```
@@ -218,15 +142,13 @@ kipi-system/
 | Generate your entire day | `/q-morning` |
 | Process a conversation | `/q-debrief` (or just paste a transcript) |
 | Draft a quick email or DM | `/q-draft` |
-| Challenge your assumptions | `/q-challenge` |
-| Identify research gaps | `/q-ask-first` |
 | Get engagement actions for prospects' posts | `/q-engage` |
 | Plan your week's content | `/q-market-plan` |
 | Update your positioning from new info | `/q-calibrate` |
 | Stress-test your positioning | `/q-reality-check` |
-| Capture report screenshots | `/q-screenshots` |
 | End-of-day health check | `/q-wrap` |
 | Save context for next session | `/q-handoff` |
+| Research with citations only | `/q-research <topic>` |
 
 ---
 
@@ -239,20 +161,25 @@ Works standalone with local files. Each integration adds capability:
 | Notion | CRM, pipeline, relationship tracking |
 | Google Calendar | Meeting detection, auto-prep |
 | Gmail | Email monitoring, loop auto-close on reply |
-| Apify | LinkedIn/X/Reddit scraping for lead sourcing |
-| Chrome | LinkedIn DMs, analytics, interactive browsing |
-| Gamma | Social cards, carousels, presentation visuals |
+| Apify | X/Twitter scraping only (lead sourcing, activity) |
+| Reddit MCP | Reddit search, posts, comments (no auth needed) |
+| Chrome | LinkedIn (profiles, posts, DMs, engagement), analytics |
+| RSS feeds | Medium, Substack content (via WebFetch) |
 | Slack | Notifications, approval workflows |
-| Threat Intel MCP | VirusTotal, AbuseIPDB, OTX feeds for signal enrichment |
-| OSINT Infra MCP | WHOIS, DNS, cert transparency, Wayback Machine lookups |
+
+### Research mode
+
+Built into the kipi-core plugin. Say `/research <topic>` to force citation-backed answers. Every claim needs a source -- local files, web results, or named papers. If it can't find one, it says "I don't know" instead of guessing. Also available as a [standalone plugin](https://github.com/assafkip/research-mode) for non-kipi projects.
 
 ---
 
 ## The AI needs scaffolding too
 
-The AI running this system has the same executive function problems you do.
+Here's something nobody talks about: the AI running this system has the same executive function problems you do.
 
 Research calls it "Lost in the Middle" (Stanford, 2023). In long conversations, LLMs forget instructions from earlier in the context. They rush to produce output and skip boring middle steps. They self-report completion without verifying. They pattern-match from old sessions instead of reading current requirements.
+
+Sound familiar?
 
 So the system has guardrails for the AI, not just for you:
 
@@ -260,39 +187,29 @@ So the system has guardrails for the AI, not just for you:
 
 **Echo of Prompt.** Before each step executes, a script re-injects that step's requirements fresh into context. Combats the attention drift that makes the AI "forget" what a step actually requires by the time it runs it.
 
-**Token discipline.** A tool counter tracks every call and warns at 10, 30, and 50 thresholds. A token guard blocks runaway consumption. A diagnose script checks tool availability before expensive operations. The AI is forced to pause and ask: "Am I closer to the goal than 10 calls ago?"
-
 **No self-authorized skipping.** The AI cannot decide on its own to skip a step. It must ask you first. The default is always run.
 
 **Structured deliverables, not text summaries.** The system logs what was actually produced (number of follow-ups, number of copy blocks) not just "done."
 
+The research basis: "Lost in the Middle" (Stanford), "Context Degradation Syndrome," "LLMs Get Lost in Multi-Turn Conversation" (Laban et al. 2025), and "Echo of Prompt" refocusing mechanisms.
+
+Building a system for a brain that drops things, then discovering the AI brain drops things the same way, then building a system for the system. It's turtles all the way down.
+
 ---
 
-## Who this is for
+## Not just for founders
 
 The pattern works anywhere humans manage concurrent relationships and compound knowledge:
 
+**Lawyers** - case files as canonical state, filing deadlines as loops, client conversations as debriefs.
+
 **Sales teams** - accounts as relationships, proposals as loops, call notes as debriefs.
+
+**Doctors** - patients as relationships, referrals and labs as loops, visit notes as debriefs.
 
 **Consultants** - clients as relationships, deliverables as loops, stakeholder meetings as debriefs.
 
-**Lawyers** - case files as canonical state, filing deadlines as loops, client conversations as debriefs.
-
-**Recruiters** - candidates as relationships, interview stages as loops, hiring manager conversations as debriefs.
-
-**Account managers** - customers as relationships, renewals as loops, QBRs as debriefs.
-
-Fork it and replace the canonical files with your domain.
-
----
-
-## Compatibility
-
-The Kipi System is built for **Claude Code** (CLI or Desktop Code tab). It uses sub-agents, bash execution, hooks, MCP servers, CLAUDE.md, and skills, all of which are Claude Code features.
-
-**Claude Cowork** can run the core pipeline (sub-agents, local files, MCP, skills all work) but loses the bash scripts (HTML build, audit harness), hooks (automated guardrails), and CLAUDE.md auto-loading. About 80% of the system's value transfers. The daily HTML deliverable would need reworking.
-
-**Claude.ai Projects** (web) cannot run the pipeline. No local file access, no sub-agents, no bash. You can upload the canonical files as project knowledge and use the debrief template manually, but the automation doesn't transfer.
+The founder context is where I built it. Fork it and replace the canonical files with your domain.
 
 ---
 
@@ -302,10 +219,13 @@ The Kipi System is built for **Claude Code** (CLI or Desktop Code tab). It uses 
 - PreToolUse hooks intercept dangerous operations at runtime
 - No secrets in committed files
 - `rm -rf`, `sudo`, `git push --force` denied by default
-- Token guard prevents runaway consumption
 
 ---
 
 ## Origin
 
-Built by [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/) to run [KTLYST Labs](https://ktlystlabs.com) operations. The production instance manages investor pipeline, prospect outreach, content publishing, and meeting prep for a pre-seed security startup. This repo is the general-purpose version.
+I'm [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/). 12 years in threat intelligence at LinkedIn, Google, Meta, and ElevenLabs. I burned out at Google fighting the same problems over and over. Left corporate. Started building [KTLYST](https://ktlystlabs.com), a security product that turns threat reports into governed, deployable artifacts for every team.
+
+Running a startup solo with ADHD meant my brain couldn't hold everything it needed to hold. So I built a second one. It manages my investor pipeline, writes my outreach in my voice, preps my meetings, tracks every open loop, and produces a daily HTML file that IS my workday. It remembers what I forget. It follows up when I don't. It compounds what I learn.
+
+KTLYST's operations run on a production instance of this brain. This repo is the general-purpose version. Fork it and teach it yours.

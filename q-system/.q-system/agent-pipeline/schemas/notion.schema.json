@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Notion Pull",
+  "description": "Phase 1 Notion CRM data - contacts, actions, pipeline, LinkedIn tracker",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "contacts", "actions", "pipeline"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "contacts": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "actions": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "pipeline": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "linkedin_tracker": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

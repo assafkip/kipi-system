@@ -1,7 +1,7 @@
 ---
 name: 02-warm-intro-match
 description: "Cross-reference investor warm intro paths against existing CRM contacts"
-model: opus
+model: sonnet
 maxTurns: 30
 ---
 

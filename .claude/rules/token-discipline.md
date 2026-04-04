@@ -1,4 +1,5 @@
 ---
+description: Token consumption guardrails and self-monitoring rules
 paths:
   - "**/*"
 ---
@@ -12,7 +13,7 @@ tokens without results.
 Common blocks and what to do:
 - "3 retries": Something is broken. Diagnose the root cause. Tell the founder.
 - "50 tool calls": You've been working too long without checking in. Summarize progress.
-- "3 subagents": Use Grep/Glob/Read directly. Agents are expensive.
+- "25 subagents": Use Grep/Glob/Read directly. Agents are expensive.
 - "30 MCP calls": You're hammering an API. Batch your requests or reduce scope.
 - "15 reads without write": You're exploring, not producing. Pick a direction.
 

@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sycophancy Audit",
+  "description": "Phase 6 anti-sycophancy audit based on Chandra et al. (2026)",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "overall", "residual_risk_acknowledged", "confirmation_bias", "decision_sycophancy"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "paper_ref": {
+      "type": "string"
+    },
+    "confirmation_bias": {
+      "type": "object",
+      "required": ["contradicting_signals_found", "contradicting_signals_surfaced", "verdict"],
+      "properties": {
+        "contradicting_signals_found": { "type": "integer" },
+        "contradicting_signals_surfaced": { "type": "integer" },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "signal": { "type": "string" },
+              "source": { "type": "string" },
+              "canonical_position": { "type": "string" },
+              "surfaced": { "type": "boolean" }
+            }
+          }
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["clean", "bias_detected"]
+        }
+      }
+    },
+    "decision_sycophancy": {
+      "type": "object",
+      "required": ["approved", "modified", "rejected", "pi", "verdict"],
+      "properties": {
+        "approved": { "type": "integer" },
+        "modified": { "type": "integer" },
+        "rejected": { "type": "integer" },
+        "user_directed": { "type": "integer" },
+        "pi": { "type": "number" },
+        "verdict": {
+          "type": "string",
+          "enum": ["healthy", "watch", "alert"]
+        }
+      }
+    },
+    "positioning_variance": {
+      "type": "object",
+      "properties": {
+        "ran": { "type": "boolean" },
+        "claims_checked": { "type": "integer" },
+        "monotonically_rising": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "tested_this_week": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["healthy", "stale_beliefs", "spiral_risk"]
+        }
+      }
+    },
+    "co_rumination": {
+      "type": "object",
+      "properties": {
+        "amplified_signals": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "softened_negatives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "over_indexed_positives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["clean", "risk_detected"]
+        }
+      }
+    },
+    "monthly_contradictions": {
+      "type": ["object", "null"]
+    },
+    "residual_risk_acknowledged": {
+      "type": "boolean",
+      "const": true
+    },
+    "overall": {
+      "type": "string",
+      "enum": ["pass", "watch", "alert"]
+    },
+    "founder_note": {
+      "type": "string"
+    }
+  }
+}

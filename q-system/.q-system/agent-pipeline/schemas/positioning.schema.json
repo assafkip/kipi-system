@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Positioning Check",
+  "description": "Phase 6 talk track freshness, objection signals, and canonical drift",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "talk_tracks", "objections", "overall_positioning_health"],
+  "properties": {
+    "bus_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "talk_tracks": {
+      "type": "object",
+      "required": ["overall_fresh", "issues"],
+      "properties": {
+        "overall_fresh": { "type": "boolean" },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["track", "issue", "severity"],
+            "properties": {
+              "track": { "type": "string" },
+              "issue": { "type": "string" },
+              "severity": {
+                "type": "string",
+                "enum": ["auto-fail", "warn"]
+              },
+              "suggested_fix": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "objections": {
+      "type": "object",
+      "required": ["need_response_update", "building", "stable"],
+      "properties": {
+        "need_response_update": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["objection", "weighted_signal_count"],
+            "properties": {
+              "objection": { "type": "string" },
+              "weighted_signal_count": { "type": "number" },
+              "last_response_updated": { "type": "string" },
+              "recommendation": { "type": "string" }
+            }
+          }
+        },
+        "building": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "objection": { "type": "string" },
+              "weighted_signal_count": { "type": "number" },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "stable": { "type": "integer" }
+      }
+    },
+    "overall_positioning_health": {
+      "type": "string",
+      "enum": ["good", "needs_attention", "critical"]
+    },
+    "drift": {
+      "type": "object",
+      "properties": {
+        "detected": { "type": "boolean" },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": { "type": "string" },
+              "last_checkpoint": { "type": "string" },
+              "file_modified": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
