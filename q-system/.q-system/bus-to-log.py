@@ -38,6 +38,8 @@ bus_to_steps = {
     "daily-checklists.json": ["10_daily_checklists"],
     # Canonical digest
     "canonical-digest.json": ["0c_canonical_digest"],
+    # Collection gate
+    "collection-gate.json": ["0g_collection_gate"],
     # Phase 1 scripts
     "copy-diffs.json": ["1c_copy_diff"],
     # Phase 3 (Monday only)
