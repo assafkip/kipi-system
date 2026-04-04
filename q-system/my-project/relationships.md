@@ -2,7 +2,7 @@
 
 > Canonical record of every important contact and conversation. Updated by `/q-debrief` and `/q-morning`.
 
-## Format
+## Format <!-- pin -->
 
 ```
 ### [Name] — [Role] — [Company]

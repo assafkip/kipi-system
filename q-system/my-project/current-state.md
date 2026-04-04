@@ -2,7 +2,7 @@
 
 > Single source of truth for what works today vs. what's planned.
 
-## What Works Today (Demo-able)
+## What Works Today (Demo-able) <!-- pin -->
 - (filled during setup and updated as you build)
 
 ## Claimed But Unproven
@@ -17,6 +17,6 @@
 - **Team size:**
 - **Key numbers:** (TAM, ACV, pipeline size, etc.)
 
-## What We Are NOT
+## What We Are NOT <!-- pin -->
 - (common misclassifications to guard against)
 - (filled during setup Step 3)
