@@ -29,6 +29,12 @@ AGENT_CEILING = 25          # Agent spawns per user message = block (morning rou
 MCP_RATE_WINDOW = 60        # Seconds
 MCP_RATE_LIMIT = 30         # MCP calls in window = block
 READ_SPIRAL_LIMIT = 15      # Consecutive reads without write = warn
+FILE_REREAD_LIMIT = 3       # Same file path read N times = warn
+GREP_DRIFT_LIMIT = 5        # Greps since last write = warn
+EDIT_FAIL_LIMIT = 3         # Edit attempts on same file without success = block
+AGENT_NO_OUTPUT_LIMIT = 3   # Agent spawns with no write between them = warn
+STALL_TIME_SECONDS = 120    # Seconds since last write + calls = warn
+STALL_MIN_CALLS = 10        # Minimum calls before time-based stall triggers
 
 # Sensitive file patterns
 SENSITIVE_PATTERNS = (".env", ".pem", ".key", "credentials")
@@ -54,6 +60,12 @@ def load_cache(session_id):
         "repeat_map": {},
         "consecutive_reads": 0,
         "warnings_issued": 0,
+        "file_read_counts": {},
+        "greps_since_write": 0,
+        "edit_targets": {},
+        "agents_without_write": 0,
+        "last_write_time": time.time(),
+        "calls_since_write": 0,
     }
 
 
@@ -88,6 +100,43 @@ def update_counters(tool_name, tool_input, cache):
         cache["consecutive_reads"] = cache.get("consecutive_reads", 0) + 1
     elif tool_name in ("Edit", "Write", "Bash", "Agent"):
         cache["consecutive_reads"] = 0
+
+    # --- Token suck detection ---
+
+    # Track file re-reads
+    if tool_name == "Read":
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            counts = cache.get("file_read_counts", {})
+            counts[file_path] = counts.get(file_path, 0) + 1
+            cache["file_read_counts"] = counts
+
+    # Track greps since last write
+    if tool_name in ("Grep", "Glob"):
+        cache["greps_since_write"] = cache.get("greps_since_write", 0) + 1
+
+    # Track edit attempts per file
+    if tool_name == "Edit":
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            targets = cache.get("edit_targets", {})
+            targets[file_path] = targets.get(file_path, 0) + 1
+            cache["edit_targets"] = targets
+
+    # Track agents without write
+    if tool_name == "Agent":
+        cache["agents_without_write"] = cache.get("agents_without_write", 0) + 1
+
+    # Track calls since last write + reset write-dependent counters on write
+    cache["calls_since_write"] = cache.get("calls_since_write", 0) + 1
+    if tool_name in ("Edit", "Write"):
+        cache["greps_since_write"] = 0
+        cache["agents_without_write"] = 0
+        cache["last_write_time"] = time.time()
+        cache["calls_since_write"] = 0
+    # Only Write resets edit_targets (Edit can't reset its own spiral tracker)
+    if tool_name == "Write":
+        cache["edit_targets"] = {}
 
     # Track MCP rate
     if tool_name.startswith("mcp__"):
@@ -165,6 +214,61 @@ def check_read_spiral(tool_name, cache):
     return None
 
 
+def check_file_reread(tool_name, tool_input, cache):
+    """Warn if same file read too many times."""
+    if tool_name != "Read":
+        return None
+    file_path = tool_input.get("file_path", "")
+    count = cache.get("file_read_counts", {}).get(file_path, 0)
+    if count >= FILE_REREAD_LIMIT:
+        short = os.path.basename(file_path)
+        return f"You've read {short} {count} times. You already have this information. Use it or move on."
+    return None
+
+
+def check_grep_drift(tool_name, cache):
+    """Warn if too many greps without producing output."""
+    if tool_name not in ("Grep", "Glob"):
+        return None
+    count = cache.get("greps_since_write", 0)
+    if count >= GREP_DRIFT_LIMIT:
+        return f"{count} searches without producing output. You're searching, not working. Pick a direction."
+    return None
+
+
+def check_edit_spiral(tool_name, tool_input, cache):
+    """Block if too many edit attempts on the same file."""
+    if tool_name != "Edit":
+        return None
+    file_path = tool_input.get("file_path", "")
+    count = cache.get("edit_targets", {}).get(file_path, 0)
+    if count >= EDIT_FAIL_LIMIT:
+        short = os.path.basename(file_path)
+        return f"{count} edit attempts on {short}. The approach isn't working. Read the file again, find the exact string, or tell the founder what's wrong."
+    return None
+
+
+def check_agent_no_output(tool_name, cache):
+    """Warn if agents spawned with no writes between them."""
+    if tool_name != "Agent":
+        return None
+    count = cache.get("agents_without_write", 0)
+    if count >= AGENT_NO_OUTPUT_LIMIT:
+        return f"{count} agents spawned with no output written. Agents aren't helping. Use Grep/Glob/Read directly or tell the founder what you're looking for."
+    return None
+
+
+def check_time_stall(cache):
+    """Warn if too much time and too many calls since last write."""
+    last_write = cache.get("last_write_time", time.time())
+    elapsed = time.time() - last_write
+    calls = cache.get("calls_since_write", 0)
+    if elapsed >= STALL_TIME_SECONDS and calls >= STALL_MIN_CALLS:
+        minutes = int(elapsed // 60)
+        return f"{minutes} minutes and {calls} tool calls since your last write. You may be stuck. Summarize what you've tried and what's blocking you."
+    return None
+
+
 def block(message):
     """Exit with code 2 to block the tool call."""
     print(message, file=sys.stderr)
@@ -184,6 +288,12 @@ def reset_per_message_counters(cache):
     cache["repeat_map"] = {}
     cache["consecutive_reads"] = 0
     cache["warnings_issued"] = 0
+    cache["file_read_counts"] = {}
+    cache["greps_since_write"] = 0
+    cache["edit_targets"] = {}
+    cache["agents_without_write"] = 0
+    cache["last_write_time"] = time.time()
+    cache["calls_since_write"] = 0
     return cache
 
 
@@ -249,6 +359,36 @@ def main():
 
     # 6. Read spiral warning
     msg = check_read_spiral(tool_name, cache)
+    if msg:
+        save_cache(session_id, cache)
+        warn(msg)
+
+    # 7. File re-read warning
+    msg = check_file_reread(tool_name, tool_input, cache)
+    if msg:
+        save_cache(session_id, cache)
+        warn(msg)
+
+    # 8. Grep drift warning
+    msg = check_grep_drift(tool_name, cache)
+    if msg:
+        save_cache(session_id, cache)
+        warn(msg)
+
+    # 9. Edit spiral block
+    msg = check_edit_spiral(tool_name, tool_input, cache)
+    if msg:
+        save_cache(session_id, cache)
+        block(msg)
+
+    # 10. Agent no-output warning
+    msg = check_agent_no_output(tool_name, cache)
+    if msg:
+        save_cache(session_id, cache)
+        warn(msg)
+
+    # 11. Time stall warning
+    msg = check_time_stall(cache)
     if msg:
         save_cache(session_id, cache)
         warn(msg)
