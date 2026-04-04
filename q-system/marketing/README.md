@@ -18,7 +18,7 @@ marketing/
 | Command | What it does |
 |---------|-------------|
 | `/q-market-plan` | Weekly content planning from theme rotation + calendar |
-| `/q-market-create [type]` | Generate content (linkedin, x, medium, deck, email) |
+| `/q-market-create [type]` | Generate content (linkedin, x, medium, substack, one-pager, outreach, deck, follow-up, reddit, investor-update) |
 | `/q-market-review` | Validate against guardrails |
 | `/q-market-publish` | Mark published, update tracking |
 | `/q-market-status` | Pipeline snapshot |

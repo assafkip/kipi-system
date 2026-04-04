@@ -1,7 +1,8 @@
 # Template: Cold Outreach
 
-> Used by `/q-market-create outreach [contact]` and `/q-engage`
+> Used by `/q-engage dp-outreach` and `/q-engage` reactive mode
 > LinkedIn connection requests, first DMs, value drops
+> For email outreach, see `outreach-email.md`
 
 ---
 
