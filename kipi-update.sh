@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+trap "" PIPE
 
 # kipi-update.sh - Pull latest kipi-system skeleton into all registered instances
 # Usage: ./kipi-update.sh [--dry-run]
@@ -91,7 +92,13 @@ while IFS='|' read -r name path prefix itype; do
         fi
       fi
     else
-      echo "  (dry run - skipped)"
+      cd "$path"
+      git fetch origin main --quiet 2>/dev/null || true
+      BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null) || BEHIND="?"
+      echo "  $BEHIND commits behind origin/main"
+      if [ "$BEHIND" != "0" ] && [ "$BEHIND" != "?" ]; then
+        git log --oneline -5 HEAD..origin/main 2>/dev/null | while read -r line; do echo "    $line"; done || true
+      fi
       PASS=$((PASS + 1))
     fi
   else
@@ -105,7 +112,16 @@ while IFS='|' read -r name path prefix itype; do
         FAIL=$((FAIL + 1))
       fi
     else
-      echo "  (dry run - skipped)"
+      cd "$path"
+      # Show skeleton HEAD vs instance subtree state
+      SKEL_HEAD=$(git ls-remote "$SKELETON_REMOTE" "$SKELETON_BRANCH" 2>/dev/null | cut -f1 | head -c 7)
+      INST_HEAD=$(git log --oneline -1 -- "$prefix/" 2>/dev/null | cut -d' ' -f1)
+      echo "  skeleton HEAD: ${SKEL_HEAD:-unknown}  instance last sync: ${INST_HEAD:-unknown}"
+      if [ "$SKEL_HEAD" != "$INST_HEAD" ] && [ -n "$SKEL_HEAD" ]; then
+        echo "  Changes pending (run without --dry to apply)"
+      else
+        echo "  Up to date"
+      fi
       PASS=$((PASS + 1))
     fi
   fi
@@ -120,20 +136,43 @@ while IFS='|' read -r name path prefix itype; do
   if [ "$DRY_RUN" != "--dry-run" ] && [ -d "$path/.claude" ]; then
     echo "  Syncing .claude/ config..."
 
-    # Rebuild settings.json from template (preserves instance MCP servers)
+    # Rebuild settings.json from template (preserves instance customizations)
     if [ -f "$path/.claude/settings.json" ]; then
       python3 -c "
 import json, sys
+
 template = json.load(open('$SCRIPT_DIR/settings-template.json'))
 existing = json.load(open('$path/.claude/settings.json'))
-# Preserve instance-specific MCP servers (user configured)
+merged = dict(template)
+
+# Preserve instance MCP servers (all, including disabled _prefixed)
 if 'mcpServers' in existing:
+    merged['mcpServers'] = dict(template.get('mcpServers', {}))
     for k, v in existing['mcpServers'].items():
-        if not k.startswith('_'):
-            template['mcpServers'][k] = v
-# Merge: template wins for hooks, permissions, top-level; instance wins for MCP
-json.dump(template, open('$path/.claude/settings.json', 'w'), indent=2)
-print('    settings.json updated (MCP servers preserved)')
+        merged['mcpServers'][k] = v
+
+# Preserve instance-specific enabled plugins (additive merge)
+if 'enabledPlugins' in existing:
+    merged['enabledPlugins'] = dict(template.get('enabledPlugins', {}))
+    merged['enabledPlugins'].update(existing['enabledPlugins'])
+
+# Preserve instance-specific permission additions (merge allow lists)
+if 'permissions' in existing and 'allow' in existing['permissions']:
+    template_allow = set(template.get('permissions', {}).get('allow', []))
+    instance_allow = set(existing['permissions']['allow'])
+    merged['permissions']['allow'] = sorted(template_allow | instance_allow)
+
+# Preserve instance tool configurations (additive merge)
+if 'toolConfigurations' in existing:
+    merged['toolConfigurations'] = dict(template.get('toolConfigurations', {}))
+    merged['toolConfigurations'].update(existing['toolConfigurations'])
+
+# Preserve instance model override if different from template
+if existing.get('model') and existing.get('model') != template.get('model'):
+    merged['model'] = existing['model']
+
+json.dump(merged, open('$path/.claude/settings.json', 'w'), indent=2)
+print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
 " 2>/dev/null || echo "    WARN: settings.json sync failed"
 
       # Fix paths for subtree instances
