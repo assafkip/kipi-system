@@ -20,7 +20,7 @@
 | `/q-content-intel` | Content intelligence. Scrape own content across all platforms (Chrome for LinkedIn, Reddit MCP for Reddit, RSS for Medium/Substack, Apify for X only). Analyze what works vs. doesn't. Update `canonical/content-intelligence.md`. Cross-reference themes against `canonical/market-intelligence.md` to check if our content topics align with what the market is discussing. Score drafts before publishing. | CALIBRATE |
 | `/q-investor-update` | Draft a milestone-triggered investor update email for the full VC list. Pulls pipeline, recent wins, metrics. Batch send-ready. | CREATE |
 | `/q-market-plan` | Weekly content planning. Reads theme rotation + editorial calendar. Generates this week's plan. Creates Notion entries in Content Pipeline + Editorial Calendar DBs. | CREATE |
-| `/q-market-create [type] [topic]` | Generate marketing content. Types: linkedin, x, medium, one-pager, outreach, deck, follow-up. Reads canonical files + templates + NotebookLM. Runs guardrails. For deck/one-pager, generates via Gamma MCP. See workflow below. | CREATE |
+| `/q-market-create [type] [topic]` | Generate marketing content. Types: linkedin, x, medium, substack, one-pager, outreach, deck, follow-up, reddit, investor-update. Reads canonical files + templates + NotebookLM. Runs guardrails. For deck/one-pager, generates via Gamma MCP. See workflow below. | CREATE |
 | `/q-market-review [file]` | Validate content against `marketing/content-guardrails.md`. PASS/FAIL with specific fixes. | — |
 | `/q-market-publish [file]` | Mark content published. Update Content Pipeline DB status. Log to `memory/marketing-state.md` publish log. | — |
 | `/q-market-assets` | Refresh all reusable assets in `marketing/assets/` from canonical files. Flag stale items. Flag Gamma decks needing re-generation. Update Asset Library DB. | CALIBRATE |
@@ -100,7 +100,7 @@ For prospects with DP Status = Prospect who have NOT been contacted yet:
    - Specific recent posts (quotes, subjects)
    - Professional focus areas and what they care about
    - Any angles connecting to {{YOUR_PRODUCT}}'s positioning
-2. **Personalize** using the `cold-email` marketing skill: For each prospect, craft:
+2. **Personalize** using the `cold-email` marketing skill and `marketing/templates/cold-outreach.md` template: For each prospect, craft:
    - Touch 1 comment (if they have recent posts to comment on)
    - Connection request (under 300 chars) referencing something specific from their activity
    - Follow-up DM (under 500 chars) referencing their specific work, asking a genuine question, with UTM-tagged demo link as async CTA (e.g., `demo.{{YOUR_DOMAIN}}?utm_source=linkedin&utm_medium=dm&utm_campaign=cold-outreach&utm_content=[prospect-slug]`)
@@ -640,8 +640,8 @@ Detects content published directly (not through Q) and updates tracking to match
 - **Mon/Wed/Fri:** Signals post (LinkedIn + X) + X hot take + X BTS
 - **Tue/Thu:** Thought leadership post (LinkedIn + X). NO signals post.
 - **Weekly (Wednesdays): Kipi System promotion post.** One building-in-public post about the open source repo (https://github.com/assafkip/kipi-system). Follows a 4-week rotation:
-  - Week 1: r/ClaudeAI post (architecture, Claude Code build, screenshots)
-  - Week 2: r/ADHD post (executive function, no shame language, how it helps)
+  - Week 1: r/ClaudeAI post (architecture, Claude Code build, screenshots). Follow `marketing/templates/reddit-post.md`.
+  - Week 2: r/ADHD post (executive function, no shame language, how it helps). Follow `marketing/templates/reddit-post.md`.
   - Week 3: LinkedIn series (5 posts Mon-Fri, each showing one thing the system did that day)
   - Week 4: X thread (full walkthrough, 10-15 tweets, repo link at end)
   - Track which week we're on in `memory/morning-state.md` field `kipi_promo_week` (1-4, auto-increment).
@@ -651,6 +651,7 @@ Detects content published directly (not through Q) and updates tracking to match
 - **Never generate all content types on the same day.** This is the single biggest context waster in Step 4.
 
 - **Before generating any content:** Read `canonical/content-intelligence.md` for current patterns. Use high-performing language/formats. Avoid low-performing patterns. Score each draft against the Content Scoring Model before finalizing.
+- **Templates:** `marketing/templates/linkedin-signals.md` (LinkedIn format), `marketing/templates/x-signals.md` (X format). Follow their Pre-Generation Steps, Rules, and Imagery sections.
 - **Fetch {{YOUR_DOMAIN}}/signals (Mon/Wed/Fri only):** Use `WebFetch` to pull the latest signals from the signals page
 - **Pick 2-4 top signals** that are: (a) breaking news, high severity, actively exploited, or big-name brands, (b) trending or viral potential (data leaks, source code dumps, major CVEs), (c) interesting to security and fraud practitioners
 - **Generate LinkedIn post:** Breaking news roundup format. Lead with the most attention-grabbing signal. List 2-4 signals with key facts (numbers, affected products, what happened). End with link to {{YOUR_DOMAIN}}/signals and total signals analyzed. Goal: drive traffic to the signals page, NOT thought leadership or {{YOUR_PRODUCT}} positioning.
@@ -2078,6 +2079,7 @@ Run `/q-content-intel score` with a draft post. Scores it 1-5 on hook strength, 
    - Upcoming events (RSA, conferences, pitch competitions)
 
 3. **Draft the update email:**
+   - **Template:** Read `marketing/templates/investor-update.md` for structure and rules.
    - **Format:** Plain text email. No HTML, no fancy formatting. Founder-to-investor voice.
    - **Structure:**
      ```
@@ -2203,6 +2205,8 @@ Supported types and their templates:
 | `outreach` | outreach-email.md | No | No | output/marketing/outreach/ |
 | `deck` | slide-deck-brief.md | Optional | Yes (presentation format) | output/marketing/decks/ |
 | `follow-up` | follow-up-email.md | No | No | output/marketing/outreach/ |
+| `reddit` | reddit-post.md | No | No | output/marketing/reddit/ |
+| `investor-update` | investor-update.md | No | No | output/marketing/investor-updates/ |
 
 Workflow for each type:
 1. Read the corresponding template from `marketing/templates/`
