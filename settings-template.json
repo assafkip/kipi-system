@@ -93,6 +93,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/session-start.py\" 2>/dev/null || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/md-prune.py\" 2>/dev/null || true",
+            "timeout": 10
           }
         ]
       }

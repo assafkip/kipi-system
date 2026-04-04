@@ -142,4 +142,5 @@ These rules auto-load based on which files you're working with:
 - `auto-detection.md` - transcript/screenshot/council auto-triggers
 - `sycophancy.md` - anti-sycophancy + decision tagging (loads for pipeline/decisions files)
 - `morning-pipeline.md` - preflight, audit harness, agent pipeline (loads for .q-system files)
+- `md-hygiene.md` - line budgets, section pinning, auto-pruning (loads for canonical/my-project/memory files)
 - `dev-skills-auto-invoke.md` - skill/MCP/plugin/hook dev skills (loads for plugins/skills/agent files)
