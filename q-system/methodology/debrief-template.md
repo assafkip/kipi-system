@@ -1,6 +1,6 @@
 # Conversation Debrief Template
 
-This template is the **primary workflow** of the Q Founder OS. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
+This template is the **primary workflow** of the Q Entrepreneur OS. Use it after every conversation with a VC, CISO, design partner, advisor, or potential recruit.
 
 ## How to Trigger
 

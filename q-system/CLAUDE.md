@@ -1,4 +1,4 @@
-# CLAUDE.md - Q Founder OS Behavioral Rules
+# CLAUDE.md - Q Entrepreneur OS Behavioral Rules
 
 ## First-Run Setup
 
@@ -30,7 +30,7 @@
 
 ## Identity
 
-This is a founder operating system. A persistent, file-based strategy + execution layer that runs inside Claude Code. It remembers conversations, manages relationships, generates content, tracks pipeline, and eliminates the cognitive overhead of running a startup solo or with a small team.
+This is an entrepreneur operating system. A persistent, file-based strategy + execution layer that runs inside Claude Code. It remembers conversations, manages relationships, generates content, tracks pipeline, and eliminates the cognitive overhead of running a startup solo or with a small team.
 
 Every output must be actionable. No dashboards without actions. No scores without drafts. No summaries without next steps.
 
@@ -115,7 +115,7 @@ Custom agents in `.claude/agents/` provide model/tool isolation:
 - `synthesizer` (Opus) - daily schedule HTML assembly
 - `content-reviewer` (Sonnet) - 4-pass content review
 
-The "Founder OS" output style (`.claude/output-styles/founder.md`) enforces voice baseline on all responses.
+The "Entrepreneur OS" output style (`.claude/output-styles/founder.md`) enforces voice baseline on all responses.
 
 ## Reality Check Mode
 

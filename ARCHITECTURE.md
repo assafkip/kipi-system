@@ -2,7 +2,7 @@
 
 ## Overview
 
-Kipi is a portable founder operating system that runs inside Claude Code. It uses a skeleton + instance architecture where generic capabilities live in a shared skeleton and project-specific content lives in each instance.
+Kipi is a portable entrepreneur operating system that runs inside Claude Code. It uses a skeleton + instance architecture where generic capabilities live in a shared skeleton and project-specific content lives in each instance.
 
 ## Skeleton (kipi-system)
 

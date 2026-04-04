@@ -1,7 +1,7 @@
-# Q Founder OS
+# Q Entrepreneur OS
 
 ## About
-A portable founder operating system for Claude Code. Strategy, execution, relationship management, content pipeline, and daily routines - all running from your terminal.
+A portable entrepreneur operating system for Claude Code. Strategy, execution, relationship management, content pipeline, and daily routines - all running from your terminal.
 
 @q-system/CLAUDE.md
 
@@ -23,7 +23,7 @@ A portable founder operating system for Claude Code. Strategy, execution, relati
   - `kipi-ops/` - Council debates + customer fit reviews (GTM instances)
   - `kipi-design/` - UI/UX, brand identity, visual assets (design instances)
 - `.claude/agents/` - Custom agent definitions (preflight, data-ingest, synthesizer, etc.)
-- `.claude/output-styles/` - Founder OS output style (always-on voice baseline)
+- `.claude/output-styles/` - Entrepreneur OS output style (always-on voice baseline)
 - `.claude/rules/` - Path-scoped instruction files (14 rules)
 - `q-system/` - Core operating system
   - `.q-system/agent-pipeline/` - 9-phase morning routine (50+ agent prompts)

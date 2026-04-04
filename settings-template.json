@@ -10,7 +10,7 @@
   "enabledPlugins": {
     "kipi-core@kipi": true
   },
-  "outputStyle": "Founder OS",
+  "outputStyle": "Entrepreneur OS",
   "effortLevel": "thorough",
   "autoMemoryEnabled": true,
   "cleanupPeriodDays": 30,

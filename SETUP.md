@@ -1,6 +1,6 @@
-# Q Founder OS - Setup Guide
+# Q Entrepreneur OS - Setup Guide
 
-A persistent founder operating system that runs inside Claude Code. It manages your relationships, generates content, tracks pipeline, processes conversations, and eliminates the cognitive overhead of running a startup.
+A persistent entrepreneur operating system that runs inside Claude Code. It manages your relationships, generates content, tracks pipeline, processes conversations, and eliminates the cognitive overhead of running a startup.
 
 ## What You Get
 

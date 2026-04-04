@@ -4,7 +4,7 @@ set -euo pipefail
 KIPI_HOME="/Users/assafkip/Desktop/kipi-system"
 
 usage() {
-  echo "kipi - manage your founder OS instances"
+  echo "kipi - manage your entrepreneur OS instances"
   echo ""
   echo "  kipi update          Pull latest skeleton into all projects"
   echo "  kipi update --dry    Show what would happen without changing anything"

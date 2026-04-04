@@ -46,7 +46,7 @@ cat > "$TEMPLATE_DIR/CLAUDE.md" << 'EOF'
 ## About
 A personal operating system powered by Kipi.
 
-## Founder OS
+## Entrepreneur OS
 @q-system/CLAUDE.md
 
 ## Instance Rules

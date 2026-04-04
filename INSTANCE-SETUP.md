@@ -103,7 +103,7 @@ Your root `CLAUDE.md` must import the skeleton behavioral rules:
 ## About
 One-sentence description.
 
-## Founder OS (Skeleton)
+## Entrepreneur OS (Skeleton)
 @q-system/q-system/CLAUDE.md
 
 ## Instance Rules
@@ -137,7 +137,7 @@ Available plugins:
 
 Research mode (`/research <topic>`) is included in kipi-core. No extra install needed.
 
-The "Founder OS" output style is set by default in `settings-template.json` and enforces voice rules on all responses.
+The "Entrepreneur OS" output style is set by default in `settings-template.json` and enforces voice rules on all responses.
 
 ---
 

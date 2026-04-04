@@ -1,6 +1,6 @@
 # Operating Modes
 
-The Q Founder OS operates in **4 independent modes**. There is no sequential dependency. The founder switches between modes as the situation demands.
+The Q Entrepreneur OS operates in **4 independent modes**. There is no sequential dependency. The founder switches between modes as the situation demands.
 
 ---
 

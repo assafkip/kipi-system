@@ -53,7 +53,7 @@ if [ ! -f CLAUDE.md ]; then
 ## About
 {{DESCRIPTION}}
 
-## Founder OS
+## Entrepreneur OS
 @q-system/CLAUDE.md
 
 ## Conventions
