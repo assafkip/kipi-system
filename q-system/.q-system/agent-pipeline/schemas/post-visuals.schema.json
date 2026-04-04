@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Post Visuals",
+  "description": "Phase 4 visual asset generation for social posts",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "visuals"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "visuals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["post_source", "recommended_format"],
+        "properties": {
+          "post_source": { "type": "string" },
+          "recommended_format": { "type": "string", "enum": ["hero_image", "carousel"] },
+          "hero_image": {
+            "type": "object",
+            "properties": {
+              "tool": { "type": "string" },
+              "image_urls": { "type": "array", "items": { "type": "string" } },
+              "prompt_used": { "type": "string" },
+              "aspect_ratio": { "type": "string" }
+            }
+          },
+          "carousel": {
+            "type": "object",
+            "properties": {
+              "tool": { "type": "string" },
+              "gamma_url": { "type": "string" },
+              "pdf_export": { "type": "string" },
+              "num_cards": { "type": "integer" },
+              "card_headlines": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "social_card_fallback": {
+            "type": "object",
+            "properties": {
+              "tool": { "type": "string" },
+              "gamma_url": { "type": "string" },
+              "pdf_export": { "type": "string" },
+              "headline_used": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

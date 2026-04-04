@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "X/Twitter Activity",
+  "description": "Phase 2 X/Twitter activity scan and reply opportunities",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "founder_posts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text_preview": { "type": "string" },
+          "url": { "type": "string" },
+          "impressions": { "type": "integer" },
+          "likes": { "type": "integer" },
+          "retweets": { "type": "integer" },
+          "replies": { "type": "integer" },
+          "engagement_rate": { "type": "number" },
+          "needs_reply": { "type": "boolean" }
+        }
+      }
+    },
+    "top_performers": { "type": "array", "items": { "type": "string" } },
+    "reply_opportunities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "account": { "type": "string" },
+          "post_url": { "type": "string" },
+          "post_summary": { "type": "string" },
+          "draft_reply": { "type": "string" },
+          "why_engage": { "type": "string" }
+        }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "properties": {
+        "new_followers": { "type": "integer" },
+        "pending_dms": { "type": "integer" },
+        "unreplied_mentions": { "type": "integer" }
+      }
+    },
+    "weekly_metrics": {
+      "type": ["object", "null"],
+      "properties": {
+        "impressions": { "type": "integer" },
+        "engagement_rate": { "type": "number" },
+        "follower_delta": { "type": "integer" },
+        "top_post_url": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Value Routing",
+  "description": "Phase 4 signal-to-prospect matching for value-drop messages",
+  "type": "object",
+  "required": ["bus_version", "date", "generated_by", "routes"],
+  "properties": {
+    "bus_version": { "type": "integer", "const": 1 },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "generated_by": { "type": "string" },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["prospect_name", "signal_title", "message", "platform"],
+        "properties": {
+          "prospect_name": { "type": "string" },
+          "prospect_role": { "type": "string" },
+          "prospect_company": { "type": "string" },
+          "notion_id": { "type": "string" },
+          "signal_title": { "type": "string" },
+          "signal_url": { "type": "string" },
+          "match_reason": { "type": "string" },
+          "message": { "type": "string" },
+          "platform": { "type": "string" },
+          "last_value_drop": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "skipped_prospects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Canonical Digest",
+  "description": "Phase 0 deterministic digest of canonical files for agent context injection",
+  "type": "object",
+  "required": ["date", "digest_version", "talk_tracks", "objections", "current_state", "discovery", "decisions"],
+  "properties": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "digest_version": { "type": "integer", "const": 1 },
+    "talk_tracks": {
+      "type": "object",
+      "properties": {
+        "primary_metaphor": { "type": "string" },
+        "product_definition": { "type": "string" },
+        "wedge_formula": { "type": "string" },
+        "banned_phrases": { "type": "array", "items": { "type": "string" } },
+        "detection_rule": { "type": "string" }
+      }
+    },
+    "objections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "response_summary": { "type": "string" },
+          "signal_count": { "type": "integer" },
+          "near_threshold": { "type": "boolean" }
+        }
+      }
+    },
+    "current_state": {
+      "type": "object",
+      "properties": {
+        "works_today": { "type": "array", "items": { "type": "string" } },
+        "validated": { "type": "array", "items": { "type": "string" } },
+        "unvalidated": { "type": "array", "items": { "type": "string" } },
+        "is_not": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "top_questions": { "type": "array" },
+        "gaps": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "decisions": { "type": "array" }
+  }
+}
