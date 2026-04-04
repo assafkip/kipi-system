@@ -407,6 +407,8 @@ def phase_4():
             agent_path = os.path.join(path, prefix, "q-system", ".q-system", "agent-pipeline", "agents")
             if not dir_exists(agent_path):
                 agent_path = os.path.join(path, prefix, "q-system", "agent-pipeline", "agents")
+            if not dir_exists(agent_path):
+                agent_path = os.path.join(path, prefix, ".q-system", "agent-pipeline", "agents")
 
         if dir_exists(agent_path):
             i_count = count_files(agent_path)
