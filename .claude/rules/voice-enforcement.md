@@ -1,11 +1,22 @@
 ---
-description: Founder voice enforcement for all written output
+description: Founder voice enforcement for external-facing written content
 ---
 
 # Voice Rule (ENFORCED)
 
-Every piece of written output must use the founder's voice skill. This includes planned content, ad-hoc content, system-generated content, slide copy, and anything a human will read.
+Apply the founder's voice skill ONLY when generating content that will be published or sent to another person. This includes:
+- Social posts (LinkedIn, X, Reddit, Medium)
+- Comments and replies on other people's posts
+- DMs and emails
+- Outreach messages
+- Slide copy and deck text
+- Talk tracks and scripts
+- Any text the founder asks to "write," "draft," or "respond with"
 
-Read the founder-voice skill's `references/voice-dna.md` and `references/writing-samples.md` before generating any written content. Apply all rules from the founder-voice skill including the anti-AI detection patterns.
+Read the founder-voice skill's `references/voice-dna.md` and `references/writing-samples.md` before generating this content. Apply all rules including anti-AI detection patterns.
 
-No exceptions. If the output is text that another person will read, it goes through the voice skill.
+Do NOT apply voice rules to:
+- Conversational responses to the founder (that's governed by AUDHD interaction rules)
+- Internal notes, logs, system output
+- Analysis, summaries, or recommendations for the founder's eyes only
+- Code, config files, documentation
