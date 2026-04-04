@@ -198,9 +198,11 @@ def verify(date, phase):
     phase_files = {
         0: {
             "required": ["preflight.json", "energy.json"],
+            "optional": ["collection-gate.json"],
             "checks": {
                 "preflight.json": lambda d: d.get("ready") == True,
                 "energy.json": lambda d: d.get("level") in range(1, 6),
+                "collection-gate.json": lambda d: "verdicts" in d and "summary" in d,
             }
         },
         1: {
