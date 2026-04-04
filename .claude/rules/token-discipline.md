@@ -16,6 +16,11 @@ Common blocks and what to do:
 - "25 subagents": Use Grep/Glob/Read directly. Agents are expensive.
 - "30 MCP calls": You're hammering an API. Batch your requests or reduce scope.
 - "15 reads without write": You're exploring, not producing. Pick a direction.
+- "read [file] N times": You already have this info. Extract what you need and move on.
+- "N searches without output": You're grep-drifting. Pick the best result and write something.
+- "N edit attempts on [file]": Your edit approach is wrong. Read the file again, find the exact match, or ask the founder.
+- "N agents no output": Agents aren't helping. Use Grep/Glob/Read directly.
+- "N minutes since last write": You may be stuck. Summarize what you've tried and what's blocking you.
 
 Self-monitoring rules (Layer 2, always active even without hook triggers):
 - If a tool call fails, do NOT retry the same call. Diagnose why it failed first. Change the approach.
