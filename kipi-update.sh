@@ -66,6 +66,45 @@ while IFS='|' read -r name path prefix itype; do
       PASS=$((PASS + 1))
     fi
   fi
+
+  # Sync settings, agents, rules, output styles, and plugins
+  if [ "$DRY_RUN" != "--dry-run" ] && [ -d "$path/.claude" ]; then
+    echo "  Syncing .claude/ config..."
+
+    # Rebuild settings.json from template (preserves instance MCP servers)
+    if [ -f "$path/.claude/settings.json" ]; then
+      python3 -c "
+import json, sys
+template = json.load(open('$SCRIPT_DIR/settings-template.json'))
+existing = json.load(open('$path/.claude/settings.json'))
+# Preserve instance-specific MCP servers (user configured)
+if 'mcpServers' in existing:
+    for k, v in existing['mcpServers'].items():
+        if not k.startswith('_'):
+            template['mcpServers'][k] = v
+# Merge: template wins for hooks, permissions, top-level; instance wins for MCP
+json.dump(template, open('$path/.claude/settings.json', 'w'), indent=2)
+print('    settings.json updated (MCP servers preserved)')
+" 2>/dev/null || echo "    WARN: settings.json sync failed"
+
+      # Fix paths for subtree instances
+      if [ "$itype" = "subtree" ]; then
+        sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' "$path/.claude/settings.json" 2>/dev/null || true
+        sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' "$path/.claude/settings.json" 2>/dev/null || true
+      fi
+    fi
+
+    # Sync agents, output styles, rules
+    cp "$SCRIPT_DIR"/.claude/agents/*.md "$path/.claude/agents/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/.claude/output-styles/*.md "$path/.claude/output-styles/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/.claude/rules/*.md "$path/.claude/rules/" 2>/dev/null || true
+
+    # Sync plugins
+    cp -R "$SCRIPT_DIR/.claude-plugin" "$path/.claude-plugin" 2>/dev/null || true
+    cp -R "$SCRIPT_DIR/plugins" "$path/plugins" 2>/dev/null || true
+
+    echo "  Config synced"
+  fi
   echo ""
 done < <(python3 -c "
 import json
