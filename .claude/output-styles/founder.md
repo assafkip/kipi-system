@@ -1,5 +1,5 @@
 ---
-name: Founder OS
+name: Entrepreneur OS
 description: "Actionable, no-fluff output with founder voice. Short sentences, scar patterns, no AI filler."
 keep-coding-instructions: true
 ---
