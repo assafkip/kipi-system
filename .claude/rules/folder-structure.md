@@ -106,6 +106,8 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── icp.md                    # Structured ICP definition (buyer, pain, language)
 │   │   ├── icp-signals.md            # Platform-specific discovery signals (hashtags, creators, keywords)
 │   │   ├── lead-sources.md           # Reddit subreddits, Medium tags, X accounts, IG/TikTok sources
+│   │   ├── budget-qualifiers.md      # Keep/skip signals for lead budget qualification
+│   │   ├── client-deliverables.md    # Active client commitments tracker
 │   │   ├── notion-ids.md
 │   │   └── progress.md
 │   │
