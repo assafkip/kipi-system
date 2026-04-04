@@ -64,6 +64,12 @@
         "title": { "type": "string" },
         "angle": { "type": "string" }
       }
+    },
+    "instagram_draft": {
+      "type": ["string", "null"]
+    },
+    "tiktok_draft": {
+      "type": ["string", "null"]
     }
   }
 }

@@ -63,7 +63,10 @@ Tag each action with the service line from the lead's `service_line` field. If n
 - Use "man" or "dude" sparingly if it fits the tone. Never "bro."
 - No AI words: no "leverage," "delve," "innovative," "cutting-edge"
 - No hedging: write like you know what you're talking about
-- Comments: max 3-4 sentences. Add a real insight, not a compliment. Respect per-prospect weekly cap from cadence config.
+- Comments: max 3-4 sentences. Add a real insight, not a compliment. Respect per-prospect weekly cap from cadence config. Platform-specific rules:
+  - **LinkedIn/Reddit/Medium:** 3-4 sentences, can include links or references
+  - **Instagram:** 2-3 sentences. Can include 1-2 relevant niche hashtags. Conversational tone. No links.
+  - **TikTok:** Under 150 characters. Punchy and direct. No hashtags in comments. No links.
 - DMs: max 4 sentences. Lead with their context, add one specific observation, soft ask or no ask.
 - Connection requests: max 300 chars note. Pick style based on context:
   - Post reference: cite something specific they wrote
@@ -90,7 +93,7 @@ Write to `{{BUS_DIR}}/hitlist.json`:
       "rank": 1,
       "contact_name": "...",
       "contact_title": "...",
-      "platform": "LinkedIn|X|Reddit",
+      "platform": "LinkedIn|X|Reddit|Instagram|TikTok",
       "action_type": "comment|DM|connection_request",
       "relationship_stage": "Warm Up|Connect|First DM|Conversation|Demo",
       "temperature": "Hot|Warm|Cool|Cold|New Lead",

@@ -16,6 +16,8 @@ Read `{{AGENTS_DIR}}/_cadence-config.md` for posting frequency. Only draft conte
 
 - Web search results (fetch live)
 - `q-system/canonical/market-intelligence.md` - buyer language, category signals (read before drafting)
+- `q-system/my-project/icp-signals.md` - IG/TikTok hashtags and keywords for signal discovery
+- `q-system/my-project/lead-sources.md` - today's IG/TikTok rotation schedule
 
 ## Writes
 
@@ -27,15 +29,16 @@ Search for 2-3 signals published in the last 24-48 hours relevant to your target
 - Industry news your target buyers care about (check market-intelligence.md for their pain categories)
 - Regulatory or compliance updates in your space
 - High-signal events or announcements from adjacent tools/vendors
-- Real operational problems surfaced in practitioner communities (Reddit, Twitter, LinkedIn)
+- Real operational problems surfaced in practitioner communities (Reddit, Twitter, LinkedIn, Instagram, TikTok)
+- Trending IG/TikTok content from monitored hashtags in `icp-signals.md` (check today's rotation in `lead-sources.md`)
 
-Pick the single most actionable signal for today's posts.
+Pick the single most actionable signal for today's posts. **Cross-platform boost:** If a signal appears on IG/TikTok AND another platform (web, Reddit, LinkedIn), prioritize it over single-platform signals.
 
 ## Instructions
 
 1. Use web search to find 2-3 signals matching the above criteria
 2. Pick the single most actionable signal for today's posts
-3. Draft posts for ALL 4 platforms from this signal:
+3. Draft posts for up to 6 platforms from this signal (skip platforms the founder isn't active on per `founder-profile.md`):
 
 **LinkedIn post:**
    - Start with a scar or sharp observation, NOT a question or "I"
@@ -59,6 +62,18 @@ Pick the single most actionable signal for today's posts.
 **Medium article hook** (optional):
    - If the signal has enough depth for a longer piece, draft a 2-sentence article pitch (title + angle).
    - If not, set to null.
+
+**Instagram post** (optional, only if founder has IG handle in `founder-profile.md`):
+   - Max 150 words caption. Visual-first: describe what image/graphic should accompany.
+   - 3-5 niche hashtags from `icp-signals.md` Instagram Hashtags. No broad tags.
+   - Conversational, practitioner tone.
+   - If the signal doesn't suit IG, set to null.
+
+**TikTok post** (optional, only if founder has TikTok handle in `founder-profile.md`):
+   - Max 3-sentence script hook. What's the first 3 seconds?
+   - Describe the video concept (talking head, screen recording, text overlay).
+   - 3-5 hashtags from `icp-signals.md` TikTok Hashtags.
+   - If the signal doesn't suit TikTok, set to null.
 
 4. Write results to `{{BUS_DIR}}/signals.json`:
 
@@ -86,7 +101,9 @@ Pick the single most actionable signal for today's posts.
   "linkedin_draft": "...",
   "x_draft": "...",
   "reddit_draft": {"subreddit": "...", "thread_url": "...", "comment": "..."} ,
-  "medium_hook": {"title": "...", "angle": "..."}
+  "medium_hook": {"title": "...", "angle": "..."},
+  "instagram_draft": "... (null if not applicable or no IG handle)",
+  "tiktok_draft": "... (null if not applicable or no TikTok handle)"
 }
 ```
 

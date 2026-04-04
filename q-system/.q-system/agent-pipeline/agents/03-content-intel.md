@@ -11,7 +11,7 @@ You are a content intelligence agent. Your ONLY job is to scrape the founder's o
 
 ## Reads
 - `{{QROOT}}/canonical/content-intelligence.md` -- previous analysis (if exists)
-- `{{QROOT}}/my-project/founder-profile.md` -- Platform Handles section (LinkedIn URL, X handle, Medium handle, Reddit username, Substack name)
+- `{{QROOT}}/my-project/founder-profile.md` -- Platform Handles section (LinkedIn URL, X handle, Medium handle, Reddit username, Substack name, Instagram handle, TikTok handle)
 - `{{QROOT}}/memory/marketing-state.md` -- last content intel date
 
 ## Writes
@@ -34,6 +34,8 @@ Scrape the founder's own accounts (last 30 days) using Chrome, Reddit MCP, RSS f
 | Reddit | Reddit MCP `get_user_posts` | `mcp__reddit__get_user_posts` | title, score (upvotes), comments, subreddit | **Yes.** MCP returns scores directly. |
 | Medium | RSS feed for discovery, then Chrome for metrics | WebFetch + Chrome | title, claps, responses per article | **RSS: No.** Claps/responses require Chrome visit to each article page. |
 | Substack | RSS feed `NEWSLETTER.substack.com/feed` | WebFetch | title, publish date | **RSS: No.** Open rate requires Substack dashboard (Chrome). |
+| Instagram | Apify `apify/instagram-post-scraper` | `mcp__apify__call-actor` | likes, comments, views (reels) | Yes (Apify returns all) |
+| TikTok | Apify `clockworks/tiktok-profile-scraper` | `mcp__apify__call-actor` | views, likes, comments, shares, bookmarks | Yes (Apify returns all) |
 
 **Tool loading:** All MCP tools and WebFetch are deferred. Load before first use:
 - `ToolSearch("+reddit")` - for Reddit MCP (`mcp__reddit__*`)
@@ -53,6 +55,10 @@ WebFetch(url="https://medium.com/feed/@assafkip", prompt="Extract all articles: 
 2. **Pass 2 (engagement via Chrome):** For each post found in Pass 1, navigate to the post URL via Chrome to read engagement metrics (Medium: claps, responses, read ratio). Cap at top 10 posts per platform.
 
 **Reddit:** No two-pass needed. `mcp__reddit__get_user_posts` returns the founder's posts with scores (upvotes) and comment counts directly.
+
+**Instagram (optional):** Only if founder has an Instagram handle in `founder-profile.md`. Call Apify actor `apify/instagram-post-scraper` with `{"username": "HANDLE", "resultsLimit": 30}`. Returns posts with likes, comments, views. No two-pass needed.
+
+**TikTok (optional):** Only if founder has a TikTok handle in `founder-profile.md`. Call Apify actor `clockworks/tiktok-profile-scraper` with `{"profiles": ["HANDLE"], "resultsPerPage": 30}`. Returns videos with views, likes, comments, shares, bookmarks. No two-pass needed.
 
 Chrome for LinkedIn is sequential (one browser). Apify for X/Twitter runs independently. If any platform fails, log the failure and continue with available data. Space RSS WebFetch calls 2-3 seconds apart to avoid rate limiting.
 

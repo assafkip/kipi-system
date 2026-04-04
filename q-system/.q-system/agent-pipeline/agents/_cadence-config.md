@@ -41,6 +41,21 @@ Updated when strategy changes - not by agents, only by the founder.
 | DM follow-up timeout (auto-Cooling) | 14 days no reply | Aligns with Follow-up 3 timing. |
 | Auto-close (Passed) | 21 days no reply after 3+ touches | Breakup timing from cold-email skill. |
 
+## Apify Actor Reference
+
+| Platform | Actor ID | Use Case | Max Results |
+|----------|----------|----------|-------------|
+| X/Twitter | `curious_coder/twitter-scraper` | Post scraping, search | 100 |
+| Instagram | `apify/instagram-hashtag-scraper` | Hashtag discovery | 50/hashtag |
+| Instagram | `apify/instagram-profile-scraper` | Creator monitoring | 20 posts/profile |
+| Instagram | `apify/instagram-post-scraper` | Founder's own metrics | 30 days |
+| Instagram | `apify/instagram-comment-scraper` | Comment mining (future) | 100/post |
+| TikTok | `clockworks/tiktok-scraper` | Keyword + hashtag search | 50/query |
+| TikTok | `clockworks/tiktok-profile-scraper` | Creator monitoring | 20 videos/profile |
+| TikTok | `clockworks/tiktok-comments-scraper` | Comment mining (future) | 100/video |
+
+**Budget cap:** Do not exceed $2 total Apify spend per morning run across IG + TikTok combined.
+
 ## Engagement Cadence
 
 | Activity | Frequency | Cap |
