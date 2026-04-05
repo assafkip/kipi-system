@@ -13,6 +13,9 @@ else
   QROOT="$PROJ_DIR/q-system"
 fi
 
+# Compact earlier (50% instead of 95%) to give long pipelines headroom
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+
 echo "=== Session Context ==="
 echo "Date: $(date '+%Y-%m-%d %A')"
 echo ""
