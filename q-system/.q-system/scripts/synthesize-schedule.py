@@ -857,6 +857,8 @@ def main():
     founder_brand_post = load_bus(bus_dir, "founder-brand-post.json")
     client_deliverables = load_bus(bus_dir, "client-deliverables.json")
     compliance = load_bus(bus_dir, "compliance.json")
+    bootstrap = load_bus(bus_dir, "bootstrap.json")
+    warm_intros = load_bus(bus_dir, "warm-intros.json")
 
     # Build effort summary from yesterday's session effort log
     effort = None
@@ -885,11 +887,34 @@ def main():
     meeting_prep_boxes = build_meeting_prep(meeting_prep)
     today_focus = build_today_focus(calendar, pipeline_followup, client_deliverables, loop_review, date_str)
 
+    # Missed debriefs from bootstrap (surface as Quick Win items)
+    missed_debrief_items = []
+    if bootstrap:
+        for md in bootstrap.get("missed_debriefs", []):
+            missed_debrief_items.append(make_item(
+                id_=f"DEBRIEF-{len(missed_debrief_items)+1}",
+                title=f"Run debrief: {md.get('name', 'Unknown')} ({md.get('meeting_date', 'recent')})",
+                energy="deepfocus",
+                time="10 min",
+                needs_eyes="Meeting happened but was never debriefed. Run /q-debrief.",
+                action_type="followup",
+            ))
+        for sp in bootstrap.get("stale_pending_items", []):
+            if isinstance(sp, dict):
+                missed_debrief_items.append(make_item(
+                    id_=f"STALE-{len(missed_debrief_items)+1}",
+                    title=f"Stale item: {sp.get('target', sp.get('id', 'unknown'))}",
+                    energy="admin",
+                    time="3 min",
+                    needs_eyes="Carried forward - needs your eyes",
+                    action_type="followup",
+                ))
+
     # Build sections in enforced order
     sections = []
 
-    # Quick Wins
-    qw_items = build_quick_wins(hitlist)
+    # Quick Wins (includes missed debriefs from bootstrap)
+    qw_items = build_quick_wins(hitlist) + strip_internal(missed_debrief_items)
     quick_win_ids = {item["id"] for item in qw_items}
     if qw_items:
         total_time = sum(int(re.search(r"(\d+)", i["time"]).group(1)) for i in qw_items if re.search(r"(\d+)", i["time"]))
@@ -935,6 +960,54 @@ def main():
             "collapsed": False,
             "items": strip_internal(pf_items),
         })
+
+    # Warm Intros (from warm-intros.json, added to Pipeline Follow-ups)
+    if warm_intros and pf_items is not None:
+        pass  # handled below
+    warm_intro_items = []
+    if warm_intros:
+        for match in warm_intros.get("matches", []):
+            if match.get("match_status") == "cold_outreach_only":
+                continue
+            connector = match.get("connector_name", "")
+            target = match.get("target_name", "Unknown")
+            firm = match.get("target_firm", "")
+            context_parts = []
+            if match.get("warm_intro_path"):
+                context_parts.append(match["warm_intro_path"])
+            if match.get("connector_last_contact"):
+                context_parts.append(f"Last contact with {connector}: {match['connector_last_contact']}")
+
+            item = make_item(
+                id_=f"WI{len(warm_intro_items)+1}",
+                title=f"Warm intro: ask {connector} about {target} ({firm})",
+                energy="people",
+                time="5 min",
+                platform="LinkedIn",
+                badge="KEY" if match.get("target_tier") == "A" else None,
+                context=" | ".join(context_parts) if context_parts else None,
+                needs_eyes=f"Draft intro request to {connector} - needs your eyes",
+                action_type="followup",
+            )
+            warm_intro_items.append(item)
+        strip_internal(warm_intro_items)
+
+    # Inject warm intros into Pipeline Follow-ups section if it exists
+    for s in sections:
+        if s["id"] == "pipeline-followups" and warm_intro_items:
+            s["items"].extend(warm_intro_items)
+            s["meta"] = f"{len(s['items'])} items"
+            break
+    else:
+        if warm_intro_items:
+            sections.append({
+                "id": "pipeline-followups",
+                "title": "Pipeline Follow-ups",
+                "accent": "purple",
+                "meta": f"{len(warm_intro_items)} items",
+                "collapsed": False,
+                "items": warm_intro_items,
+            })
 
     # LinkedIn Engagement (overflow from hitlist beyond Quick Wins cap)
     eng_items = build_engagement(hitlist, quick_win_ids)
