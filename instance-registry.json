@@ -59,23 +59,27 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
-    }
-  ],
-  "standalone": [
+    },
     {
       "name": "4_points_consulting",
       "path": "/Users/assafkip/Desktop/4_points_consulting",
-      "purpose": "Threat intelligence investigation (4 Points client)",
-      "has_skeleton": false,
-      "note": "Custom OSINT architecture with q-investigate/"
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-investigate",
+      "type": "subtree",
+      "has_git": true,
+      "note": "OSINT investigation system with custom q-investigate/ pipeline"
     },
     {
       "name": "Pure_spectrum_Q",
       "path": "/Users/assafkip/Desktop/Pure_spectrum_Q",
-      "purpose": "Strategic advisory engagement hub (PureSpectrum client)",
-      "has_skeleton": false,
-      "note": "Custom .q-system/ predates skeleton architecture"
-    },
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true,
+      "note": "Client advisory hub with custom .q-system/ (predates skeleton)"
+    }
+  ],
+  "standalone": [
     {
       "name": "q-investigate-osint-bot",
       "path": "/Users/assafkip/Desktop/q-investigate-osint-bot",

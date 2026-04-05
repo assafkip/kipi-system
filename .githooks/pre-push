@@ -7,6 +7,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Only run skeleton validation if this IS the skeleton repo
+if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
+    exit 0
+fi
+
 echo "[pre-push] Running full skeleton validation (phases 0-5)..."
 
 if ! python3 "$SCRIPT_DIR/validate-separation.py" 5 2>/dev/null; then

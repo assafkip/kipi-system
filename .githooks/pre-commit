@@ -7,6 +7,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Only run skeleton validation if this IS the skeleton repo (has instance-registry.json at root)
+if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
+    echo "[pre-commit] Not skeleton repo, skipping validation."
+    exit 0
+fi
+
 echo "[pre-commit] Running skeleton validation (phases 0-1)..."
 
 # Phase 0: registry + instance paths exist
