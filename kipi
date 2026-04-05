@@ -12,6 +12,8 @@ usage() {
   echo "  kipi push            Push generic improvements back to skeleton (run from a project)"
   echo "  kipi dev             Launch Claude Code with all kipi plugins loaded"
   echo "  kipi check [phase]   Run validation harness (default: all phases)"
+  echo "  kipi migrate <path>  Migrate instance to full kipi compliance"
+  echo "  kipi migrate <path> --dry-run  Preview migration without changes"
   echo "  kipi list            Show all registered projects"
   echo "  kipi home            Print the skeleton path"
   echo ""
@@ -47,6 +49,10 @@ case "${1:-help}" in
     shift || true
     cd "$KIPI_HOME"
     python3 validate-separation.py "${1:-5}"
+    ;;
+  migrate)
+    shift
+    python3 "$KIPI_HOME/kipi-migrate.py" "$@"
     ;;
   list)
     python3 -c "
