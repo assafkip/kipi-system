@@ -31,7 +31,7 @@ Invoke `project-management` skill to create persistent TODO tasks via Claude's n
 - Screenshot export task(s) — can parallelize per file
 - Report generation task
 
-Spawn parallel subagents for independent tasks (e.g., multiple HTML files for different sizes).
+Spawn parallel subagents for independent tasks (e.g., multiple HTML files for different sizes). **Sub-agent guard:** If running inside a sub-agent context (Agent tool unavailable), generate sizes sequentially instead of spawning parallel agents. Same output, just one size at a time.
 
 ### Step 2: Analyze Requirements
 

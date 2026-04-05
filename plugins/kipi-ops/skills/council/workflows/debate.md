@@ -4,6 +4,10 @@ Full structured 3-round debate. Positions, challenges, synthesis. 30-90 seconds.
 
 ## Execution
 
+### Sub-Agent Guard
+
+Sub-agents cannot spawn other sub-agents. If you are running inside a sub-agent context (the Agent tool is unavailable or errors on use), do NOT attempt parallel agent spawning. Instead, run all 4 personas **sequentially in the current context** for each round. Apply each persona's prompt template yourself, write each take inline, then proceed to the next round. All 3 rounds still execute. Same prompts, same output format, just sequential.
+
 ### Step 0: Read Canonical Files
 
 Before spawning any agents, read all relevant files:

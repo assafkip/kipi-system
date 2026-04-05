@@ -4,6 +4,10 @@ Fast single-round perspective check. 4 personas, 1 round, 10-20 seconds.
 
 ## Execution
 
+### Sub-Agent Guard
+
+Sub-agents cannot spawn other sub-agents. If you are running inside a sub-agent context (the Agent tool is unavailable or errors on use), do NOT attempt parallel agent spawning. Instead, run all 4 personas **sequentially in the current context**: apply each persona's prompt template yourself, write each take inline, then proceed to the output format in Step 3. Same prompts, same output, just sequential.
+
 ### Step 1: Read Canonical Files
 
 Before spawning any agents, read the files each persona needs:
