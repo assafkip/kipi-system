@@ -289,6 +289,8 @@ def build_quick_wins(hitlist):
         )
         items.append(item)
     items.sort(key=friction_key)
+    # Cap at 8 items, overflow goes to LinkedIn Engagement
+    items = items[:8]
     return items
 
 
@@ -309,7 +311,7 @@ def build_open_loops(loop_review):
             days_ago=f"{loop.get('days_overdue', '?')} DAYS",
             context=f"Recommendation: {loop.get('recommendation', 'review')}. {loop.get('reason', '')}",
             badge=badge,
-            needs_eyes=f"Review: {loop.get('recommendation', 'action needed')}" if loop.get("recommendation") in ("force-close", "escalate") else None,
+            needs_eyes=f"Review: {loop.get('recommendation', 'action needed')} - needs your eyes",
             action_type="followup",
         )
         items.append(item)
@@ -345,6 +347,7 @@ def build_pipeline_followups(pipeline_followup):
             days_ago=f"{days} DAYS" if days and days >= 7 else None,
             context=" - ".join(context_parts) if context_parts else None,
             copy_blocks=copy_blocks if copy_blocks else None,
+            needs_eyes="No draft available - needs your eyes" if not copy_blocks else None,
             action_type="followup",
         )
         items.append(item)
@@ -352,12 +355,46 @@ def build_pipeline_followups(pipeline_followup):
     return items
 
 
-def build_engagement(hitlist):
-    """LinkedIn Engagement from hitlist.json - comment items only (already used in quick wins)."""
-    # Quick Wins already consumed comment items. This section is for overflow
-    # if hitlist has more comments than fit in quick wins. For now, return empty
-    # since build_quick_wins takes all comments.
-    return []
+def build_engagement(hitlist, quick_win_ids):
+    """LinkedIn Engagement from hitlist.json - comment items that overflowed Quick Wins."""
+    if not hitlist:
+        return []
+    items = []
+    for action in hitlist.get("actions", []):
+        item_id = f"H{action.get('rank', len(items)+1)}"
+        if item_id in quick_win_ids:
+            continue  # Already in Quick Wins
+        if action.get("action_type") != "comment":
+            continue
+
+        copy_blocks = []
+        if action.get("copy"):
+            copy_blocks.append({"label": "Comment", "text": action["copy"]})
+
+        links = []
+        if action.get("post_url"):
+            links.append({"text": "Open post", "url": action["post_url"]})
+
+        context_parts = []
+        if action.get("contact_title"):
+            context_parts.append(action["contact_title"])
+        if action.get("rationale"):
+            context_parts.append(action["rationale"])
+
+        item = make_item(
+            id_=item_id,
+            title=f"Comment: {action.get('contact_name', 'Unknown')}",
+            energy="quickwin",
+            time="2 min",
+            platform=action.get("platform"),
+            context=" - ".join(context_parts) if context_parts else None,
+            links=links if links else None,
+            copy_blocks=copy_blocks if copy_blocks else None,
+            action_type="comment",
+        )
+        items.append(item)
+    items.sort(key=friction_key)
+    return items
 
 
 def build_new_leads(leads, connection_mining):
@@ -585,7 +622,7 @@ def build_meeting_prep_section(meeting_prep):
     return items
 
 
-def build_fyi(positioning, marketing_health, temperature, sycophancy_audit):
+def build_fyi(positioning, marketing_health, temperature, sycophancy_audit, compliance=None):
     """FYI section - info notes and pipeline grid."""
     info_notes = []
     pipeline = []
@@ -613,6 +650,17 @@ def build_fyi(positioning, marketing_health, temperature, sycophancy_audit):
                 {"value": warm if isinstance(warm, int) else 0, "label": "Warm"},
                 {"value": cool if isinstance(cool, int) else 0, "label": "Cool"},
             ]
+
+    # Compliance violations
+    if compliance:
+        violations = compliance.get("auto_fail_violations", []) + compliance.get("violations", [])
+        if violations:
+            summaries = [v.get("message", v.get("rule", str(v))) if isinstance(v, dict) else str(v) for v in violations[:5]]
+            info_notes.append(f"<strong>Compliance issues:</strong> {'; '.join(summaries)}")
+        warnings = compliance.get("warnings", [])
+        if warnings:
+            summaries = [w.get("message", w.get("rule", str(w))) if isinstance(w, dict) else str(w) for w in warnings[:3]]
+            info_notes.append(f"<strong>Compliance warnings:</strong> {'; '.join(summaries)}")
 
     # Sycophancy audit surfacing
     if sycophancy_audit:
@@ -842,6 +890,7 @@ def main():
 
     # Quick Wins
     qw_items = build_quick_wins(hitlist)
+    quick_win_ids = {item["id"] for item in qw_items}
     if qw_items:
         total_time = sum(int(re.search(r"(\d+)", i["time"]).group(1)) for i in qw_items if re.search(r"(\d+)", i["time"]))
         sections.append({
@@ -887,8 +936,8 @@ def main():
             "items": strip_internal(pf_items),
         })
 
-    # LinkedIn Engagement (overflow from hitlist, usually empty)
-    eng_items = build_engagement(hitlist)
+    # LinkedIn Engagement (overflow from hitlist beyond Quick Wins cap)
+    eng_items = build_engagement(hitlist, quick_win_ids)
     if eng_items:
         sections.append({
             "id": "linkedin-engagement",
@@ -971,7 +1020,7 @@ def main():
             })
 
     # FYI (collapsed)
-    fyi_notes, fyi_pipeline = build_fyi(positioning, marketing_health, temperature, sycophancy_audit)
+    fyi_notes, fyi_pipeline = build_fyi(positioning, marketing_health, temperature, sycophancy_audit, compliance)
     if fyi_notes or fyi_pipeline:
         fyi_section = {
             "id": "fyi",
