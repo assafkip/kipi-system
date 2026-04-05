@@ -168,15 +168,25 @@
     "_apify": {
       "_comment": "Rename to 'apify' to enable. Get token from https://console.apify.com/account#/integrations",
       "command": "npx",
-      "args": [
-        "-y",
-        "@apify/actors-mcp-server",
-        "--tools",
-        "actors,curious_coder/twitter-scraper"
-      ],
+      "args": ["-y", "@apify/actors-mcp-server@0.9.10"],
       "env": {
-        "APIFY_TOKEN": "YOUR_APIFY_TOKEN"
+        "APIFY_TOKEN": "YOUR_APIFY_TOKEN",
+        "TOOLS": "actors,curious_coder/twitter-scraper,apify/web-scraper,apify/instagram-hashtag-scraper,apify/instagram-profile-scraper,apify/instagram-post-scraper,clockworks/tiktok-scraper,clockworks/tiktok-profile-scraper"
       }
+    },
+
+    "_nano-banana": {
+      "_comment": "Rename to 'nano-banana' to enable. Image generation via Gemini. Install: npm i -g nano-banana-mcp",
+      "command": "nano-banana-mcp",
+      "env": {
+        "GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+      }
+    },
+
+    "_notebooklm": {
+      "_comment": "Rename to 'notebooklm' to enable. Browser-based Google auth on first run.",
+      "command": "npx",
+      "args": ["-y", "notebooklm-mcp@latest"]
     },
 
     "reddit": {
