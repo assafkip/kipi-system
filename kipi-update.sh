@@ -2,8 +2,12 @@
 set -euo pipefail
 trap "" PIPE
 
-# kipi-update.sh - Pull latest kipi-system skeleton into all registered instances
+# kipi-update.sh - Sync latest kipi-system skeleton into all registered instances
 # Usage: ./kipi-update.sh [--dry-run]
+#
+# Uses git archive + rsync (not git subtree pull) for speed and reliability.
+# Instance-specific directories (my-project/, canonical/, memory/, output/, bus/)
+# are preserved. Everything else syncs from the skeleton.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
@@ -40,9 +44,9 @@ while IFS='|' read -r name path prefix itype; do
     cd "$path"
 
     # Clean up stale git lock files from crashed processes
-    for lockfile in "$path/.git/HEAD.lock" "$path/.git/index.lock"; do
+    for lockfile in "$path/.git/HEAD.lock" "$path/.git/index.lock" "$path/.git/AUTO_MERGE.lock"; do
       if [ -f "$lockfile" ]; then
-        echo "  Removing stale lock: $lockfile"
+        echo "  Removing stale lock: $(basename "$lockfile")"
         rm -f "$lockfile"
       fi
     done
@@ -57,17 +61,8 @@ while IFS='|' read -r name path prefix itype; do
       git merge --abort 2>/dev/null || true
     fi
 
-    # Auto-stash dirty working tree
-    STASHED=false
+    # Auto-commit tracked modified files so working tree is clean
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-      echo "  Stashing uncommitted changes..."
-      git stash push -m "kipi-update auto-stash $(date '+%Y-%m-%d %H:%M')" 2>&1 || true
-      STASHED=true
-    fi
-    # Auto-commit only tracked modified files that would block subtree
-    # Do NOT auto-commit untracked files (they may be instance artifacts)
-    MODIFIED=$(git diff --name-only 2>/dev/null | head -1)
-    if [ -n "$MODIFIED" ]; then
       echo "  Auto-committing modified tracked files..."
       git add -u 2>/dev/null || true
       git commit -m "chore: auto-commit before kipi update" 2>/dev/null || true
@@ -77,13 +72,14 @@ while IFS='|' read -r name path prefix itype; do
   if [ "$itype" = "direct-clone" ]; then
     echo "  Direct clone - pulling from origin..."
     if [ "$DRY_RUN" != "--dry-run" ]; then
-      if git pull --ff-only origin main 2>&1; then
+      git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null || true
+      if git pull --rebase origin "$SKELETON_BRANCH" 2>&1; then
         echo "  OK"
         PASS=$((PASS + 1))
       else
-        # Try merge if ff-only fails
-        echo "  Fast-forward failed, trying merge..."
-        if git merge origin/main --no-edit 2>&1; then
+        echo "  WARN: rebase failed, trying merge..."
+        git rebase --abort 2>/dev/null || true
+        if git merge origin/"$SKELETON_BRANCH" --no-edit 2>&1; then
           echo "  OK (merged)"
           PASS=$((PASS + 1))
         else
@@ -94,43 +90,55 @@ while IFS='|' read -r name path prefix itype; do
       fi
     else
       cd "$path"
-      git fetch origin main --quiet 2>/dev/null || true
-      BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null) || BEHIND="?"
-      echo "  $BEHIND commits behind origin/main"
+      git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null || true
+      BEHIND=$(git rev-list --count HEAD..origin/"$SKELETON_BRANCH" 2>/dev/null) || BEHIND="?"
+      echo "  $BEHIND commits behind origin/$SKELETON_BRANCH"
       if [ "$BEHIND" != "0" ] && [ "$BEHIND" != "?" ]; then
-        git log --oneline -5 HEAD..origin/main 2>/dev/null | while read -r line; do echo "    $line"; done || true
+        git log --oneline -5 HEAD..origin/"$SKELETON_BRANCH" 2>/dev/null | while read -r line; do echo "    $line"; done || true
       fi
       PASS=$((PASS + 1))
     fi
   else
-    echo "  Subtree pull into $prefix/"
+    # Archive + rsync: fast, reliable, no history walking
+    echo "  Syncing $prefix/ from skeleton..."
     if [ "$DRY_RUN" != "--dry-run" ]; then
-      if git subtree pull --prefix="$prefix" "$SKELETON_REMOTE" "$SKELETON_BRANCH" --squash 2>&1; then
-        echo "  OK"
+      ARCHIVE_TMP=$(mktemp -d)
+      if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$ARCHIVE_TMP" 2>/dev/null; then
+        rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
+          --exclude="my-project/" \
+          --exclude="canonical/" \
+          --exclude="memory/" \
+          --exclude="output/" \
+          --exclude=".q-system/agent-pipeline/bus/" 2>/dev/null
+        rm -rf "$ARCHIVE_TMP"
+        cd "$path"
+        git add "$prefix/" 2>/dev/null || true
+        CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$CHANGES" != "0" ]; then
+          git commit -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" 2>/dev/null || true
+          echo "  OK ($CHANGES files updated)"
+        else
+          echo "  OK (already up to date)"
+        fi
         PASS=$((PASS + 1))
       else
-        echo "  WARN: subtree pull failed (may need manual resolve)"
+        rm -rf "$ARCHIVE_TMP"
+        echo "  WARN: archive export failed"
         FAIL=$((FAIL + 1))
       fi
     else
       cd "$path"
-      # Show skeleton HEAD vs instance subtree state
-      SKEL_HEAD=$(git ls-remote "$SKELETON_REMOTE" "$SKELETON_BRANCH" 2>/dev/null | cut -f1 | head -c 7)
-      INST_HEAD=$(git log --oneline -1 -- "$prefix/" 2>/dev/null | cut -d' ' -f1)
-      echo "  skeleton HEAD: ${SKEL_HEAD:-unknown}  instance last sync: ${INST_HEAD:-unknown}"
-      if [ "$SKEL_HEAD" != "$INST_HEAD" ] && [ -n "$SKEL_HEAD" ]; then
+      # Compare file counts as a quick diff indicator
+      SKEL_COUNT=$(find "$SCRIPT_DIR/q-system" -type f -not -path "*/output/*" -not -path "*/bus/*" -not -path "*/my-project/*" -not -path "*/canonical/*" -not -path "*/memory/*" 2>/dev/null | wc -l | tr -d ' ')
+      INST_COUNT=$(find "$path/$prefix" -type f -not -path "*/output/*" -not -path "*/bus/*" -not -path "*/my-project/*" -not -path "*/canonical/*" -not -path "*/memory/*" 2>/dev/null | wc -l | tr -d ' ')
+      echo "  skeleton files: $SKEL_COUNT  instance files: $INST_COUNT"
+      if [ "$SKEL_COUNT" != "$INST_COUNT" ]; then
         echo "  Changes pending (run without --dry to apply)"
       else
-        echo "  Up to date"
+        echo "  Likely up to date (file counts match)"
       fi
       PASS=$((PASS + 1))
     fi
-  fi
-
-  # Pop stash if we stashed
-  if [ "$DRY_RUN" != "--dry-run" ] && [ "$STASHED" = true ]; then
-    echo "  Restoring stashed changes..."
-    git stash pop 2>&1 || echo "  WARN: stash pop had conflicts, check manually"
   fi
 
   # Sync settings, agents, rules, output styles, and plugins
@@ -176,7 +184,7 @@ json.dump(merged, open('$path/.claude/settings.json', 'w'), indent=2)
 print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
 " 2>/dev/null || echo "    WARN: settings.json sync failed"
 
-      # Fix paths for subtree instances
+      # Fix paths for subtree instances (q-system/ is nested under q-system/)
       if [ "$itype" = "subtree" ]; then
         sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' "$path/.claude/settings.json" 2>/dev/null || true
         sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' "$path/.claude/settings.json" 2>/dev/null || true
@@ -184,6 +192,7 @@ print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
     fi
 
     # Sync agents, output styles, rules
+    mkdir -p "$path/.claude/agents" "$path/.claude/output-styles" "$path/.claude/rules"
     cp "$SCRIPT_DIR"/.claude/agents/*.md "$path/.claude/agents/" 2>/dev/null || true
     cp "$SCRIPT_DIR"/.claude/output-styles/*.md "$path/.claude/output-styles/" 2>/dev/null || true
     cp "$SCRIPT_DIR"/.claude/rules/*.md "$path/.claude/rules/" 2>/dev/null || true

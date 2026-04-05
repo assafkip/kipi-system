@@ -34,8 +34,7 @@ A portable entrepreneur operating system for Claude Code. Strategy, execution, r
   - `memory/` - Session state (last-handoff.md, sycophancy-log.json)
   - `hooks/` - Session lifecycle scripts (context injection, compaction recovery, effort logging)
 - `kipi` - CLI for instance management
-- `skill-manifest.json` - Plugin group assignments per instance
-- `settings-template.json` - Template for new instances (marketplace + plugins + output style)
+- `settings-template.json` - Template for new instances
 
 ## Conventions
 - Never produce fluff - every sentence must carry information or enable action

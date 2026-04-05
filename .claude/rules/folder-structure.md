@@ -26,7 +26,6 @@ kipi-system/                          # Project root (skeleton/template repo + m
 ├── build-template-repo.sh            # Builds clean template for GitHub fork users
 ├── validate-separation.py            # Validation harness (used by kipi check)
 ├── instance-registry.json            # Registered project instances
-├── skill-manifest.json               # Plugin group assignments per instance
 ├── settings-template.json            # Template for new instances
 │
 ├── sites/                            # Vercel-deployed skill landing pages (GITIGNORED content)
@@ -36,18 +35,14 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │
 ├── plugins/                          # Plugin groups (loaded directly from disk)
 │   ├── kipi-core/                    # Core (every instance)
-│   │   ├── .claude-plugin/plugin.json
 │   │   └── skills/
 │   │       ├── audhd-executive-function/
 │   │       ├── founder-voice/
 │   │       └── research-mode/
 │   ├── kipi-ops/                     # Operations (GTM instances)
-│   │   ├── .claude-plugin/plugin.json
 │   │   └── skills/
-│   │       ├── council/
-│   │       └── customer-fit-review/
+│   │       └── council/
 │   └── kipi-design/                  # Design (UI/visual instances)
-│       ├── .claude-plugin/plugin.json
 │       └── skills/
 │           ├── ui-ux-pro-max/
 │           ├── brand/

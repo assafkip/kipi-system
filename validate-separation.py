@@ -127,11 +127,14 @@ def phase_0():
     check("instance-registry.json exists", file_exists(REGISTRY))
     check("q-system/ directory exists in skeleton", dir_exists(os.path.join(SCRIPT_DIR, "q-system")))
 
-    registry = load_registry()
-    for instance in registry.get("instances", []):
-        path = instance.get("path", "")
-        name = os.path.basename(path)
-        check(f"Instance path exists: {name}", dir_exists(path))
+    if os.getenv('CI') == 'true':
+        print(f"  {YELLOW}SKIP{NC} Instance path checks (CI environment)")
+    else:
+        registry = load_registry()
+        for instance in registry.get("instances", []):
+            path = instance.get("path", "")
+            name = os.path.basename(path)
+            check(f"Instance path exists: {name}", dir_exists(path))
 
 
 def phase_1():
