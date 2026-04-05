@@ -73,10 +73,10 @@
       "name": "Pure_spectrum_Q",
       "path": "/Users/assafkip/Desktop/Pure_spectrum_Q",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-pure",
       "type": "subtree",
       "has_git": true,
-      "note": "Client advisory hub with custom .q-system/ (predates skeleton)"
+      "note": "Client advisory hub, instance content in q-pure/"
     }
   ],
   "standalone": [
