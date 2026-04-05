@@ -34,10 +34,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   ├── vercel.json
 │   └── <skill-name>/                # One subdir per published skill page
 │
-├── .claude-plugin/                   # Marketplace manifest
-│   └── marketplace.json              # Lists kipi-core, kipi-ops, kipi-design plugins
-│
-├── plugins/                          # Marketplace plugin groups
+├── plugins/                          # Plugin groups (loaded directly from disk)
 │   ├── kipi-core/                    # Core (every instance)
 │   │   ├── .claude-plugin/plugin.json
 │   │   └── skills/
