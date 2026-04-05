@@ -622,14 +622,7 @@ def build_fyi(positioning, marketing_health, temperature, sycophancy_audit):
             info_notes.append(f"<strong>Sycophancy harness override:</strong> {harness_override.get('reason', 'harness disagreed with agent')}")
         if overall == "pass":
             info_notes.append("Sycophancy audit: clean. (Residual risk always exists per Chandra et al.)")
-        elif overall == "watch":
-            checks = []
-            if sycophancy_audit.get("confirmation_bias", {}).get("verdict") == "bias_detected":
-                checks.append("confirmation bias")
-            if sycophancy_audit.get("decision_sycophancy", {}).get("verdict") in ("watch", "alert"):
-                pi = sycophancy_audit.get("decision_sycophancy", {}).get("pi", 0)
-                checks.append(f"decision sycophancy (pi={pi:.2f})")
-            info_notes.append(f"<strong>Sycophancy watch:</strong> {', '.join(checks) if checks else 'review needed'}")
+        # "watch" is handled separately via build_sycophancy_watch_section(), not in FYI
 
     return info_notes, pipeline
 
@@ -677,6 +670,42 @@ def build_sycophancy_alert_section(sycophancy_audit):
         "title": "Sycophancy Alert",
         "accent": "orange",
         "meta": "review needed",
+        "collapsed": False,
+        "infoNotes": info_notes,
+    }
+
+
+def build_sycophancy_watch_section(sycophancy_audit):
+    """If sycophancy overall=watch, return an Admin-level section (not collapsed)."""
+    if not sycophancy_audit:
+        return None
+    overall = sycophancy_audit.get("overall", "pass")
+    harness_override = sycophancy_audit.get("harness_override")
+    if harness_override and harness_override.get("verdict") == "watch":
+        overall = "watch"
+    if overall != "watch":
+        return None
+
+    checks = []
+    if sycophancy_audit.get("confirmation_bias", {}).get("verdict") == "bias_detected":
+        checks.append("confirmation bias")
+    ds = sycophancy_audit.get("decision_sycophancy", {})
+    if ds.get("verdict") in ("watch", "alert"):
+        pi = ds.get("pi", 0)
+        checks.append(f"decision sycophancy (pi={pi:.2f})")
+
+    info_notes = [
+        f"<strong>Sycophancy watch:</strong> {', '.join(checks) if checks else 'review needed'}",
+        "Talk to someone who disagrees with a specific claim this week.",
+    ]
+    if harness_override:
+        info_notes.append(f"Harness note: {harness_override.get('reason', 'harness flagged')}")
+
+    return {
+        "id": "sycophancy-watch",
+        "title": "Sycophancy Watch",
+        "accent": "yellow",
+        "meta": "action suggested",
         "collapsed": False,
         "infoNotes": info_notes,
     }
@@ -781,6 +810,19 @@ def main():
     client_deliverables = load_bus(bus_dir, "client-deliverables.json")
     compliance = load_bus(bus_dir, "compliance.json")
 
+    # Build effort summary from yesterday's session effort log
+    effort = None
+    try:
+        yesterday = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        effort_path = os.path.join(OUTPUT_DIR, f"session-effort-{yesterday}.log")
+        if os.path.isfile(effort_path):
+            with open(effort_path) as f:
+                lines = f.read().strip().split(chr(10))
+                # Take last non-empty line as effort summary
+                effort = next((l for l in reversed(lines) if l.strip()), None)
+    except (ValueError, OSError):
+        pass
+
     # Build date display
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -823,10 +865,14 @@ def main():
             "items": strip_internal(ol_items),
         })
 
-    # Sycophancy Alert (after Open Loops, before Pipeline)
-    syc_section = build_sycophancy_alert_section(sycophancy_audit)
-    if syc_section:
-        sections.append(syc_section)
+    # Sycophancy Alert or Watch (after Open Loops, before Pipeline)
+    syc_alert = build_sycophancy_alert_section(sycophancy_audit)
+    if syc_alert:
+        sections.append(syc_alert)
+    else:
+        syc_watch = build_sycophancy_watch_section(sycophancy_audit)
+        if syc_watch:
+            sections.append(syc_watch)
 
     # Pipeline Follow-ups
     pf_items = build_pipeline_followups(pipeline_followup)
@@ -948,10 +994,13 @@ def main():
         "dateDisplay": date_display,
         "generated": generated,
         "callBanners": call_banners,
+        "effort": effort,
         "meetingPrep": meeting_prep_boxes,
         "sections": sections,
     }
 
+    if effort:
+        schedule["effort"] = effort
     if today_focus:
         schedule["todayFocus"] = today_focus
 
