@@ -53,19 +53,23 @@ mkdir -p "${BUS_DIR}"
 ```
 
 ## Context Management
-Your context window will compact automatically as it approaches limits. Do not skip steps or phases to save context. If context runs low, tell the founder what phase you're in and what remains. Never self-authorize skipping.
+Your context window will compact automatically at ~50% capacity (set by session-context.sh). After compaction, the PostCompact hook re-injects: operating mode, open loops, morning pipeline phase progress (which bus files exist), canonical positioning snapshot, and voice reminders. Do not skip steps or phases to save context. If context runs low, tell the founder what phase you're in and what remains. Never self-authorize skipping.
+
+**Token conservation:** Never read agent .md files. Never read bus files for verification (use `test -f`). Never inject voice layers into spawn prompts. Each sub-agent has its own context window and reads its own files.
 
 ## Execution Rules
 
-1. Read each agent's prompt file from AGENTS_DIR
-2. Replace {{DATE}} with today's date, {{BUS_DIR}} with the bus path, {{QROOT}} with project root, {{AGENTS_DIR}} with the agents directory path
-3. Spawn agents using the Agent tool with the prompt
-4. Model allocation: haiku for data pulls and simple writes (00-*, 01-*, 03-linkedin-posts, 03-linkedin-dms, 08-visual-verify, 09-notion-push, 10-daily-checklists), sonnet for analysis/content agents, opus for 05-engagement-hitlist and 07-synthesize only
-5. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
-6. When a phase depends on the previous phase's output, wait for completion first
-7. After each phase, verify the expected bus/ JSON files exist before proceeding
-8. Log each phase completion via log-step.py
-9. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
+1. Do NOT read agent .md files into orchestrator context. Agents have independent context windows and read their own instructions.
+2. Spawn agents using the Agent tool. The spawn prompt for each agent is:
+   ```
+   Read your instructions from {{AGENTS_DIR}}/{agent-file}. Template vars: DATE={{DATE}}, BUS_DIR={{BUS_DIR}}, QROOT={{QROOT}}, AGENTS_DIR={{AGENTS_DIR}}. If your instructions reference voice or AUDHD skill files, read them yourself from the paths specified. Write output to the bus file specified in your instructions.
+   ```
+3. Model allocation: haiku for data pulls and simple writes (00-*, 01-*, 03-linkedin-posts, 03-linkedin-dms, 08-visual-verify, 09-notion-push, 10-daily-checklists), sonnet for analysis/content agents, opus for 05-engagement-hitlist only
+4. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
+5. When a phase depends on the previous phase's output, wait for completion first
+6. After each phase, verify the expected bus/ JSON files exist using `test -f` or `ls`. Do NOT read bus file contents for verification. Only read bus files if a phase failed and you need to diagnose the error.
+7. Log each phase completion via log-step.py
+8. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
 ## Instance Customization
 
@@ -180,9 +184,15 @@ python3 {{QROOT}}/.q-system/sycophancy-harness.py {date}
 
 The harness independently parses decisions.md to verify the agent's pi calculation. If the agent was sycophantic about its own sycophancy audit, the harness catches it and amends sycophancy-audit.json with a `harness_override` field. The synthesizer reads the amended file.
 
-### Phase 7: Synthesis (1 agent, sequential, OPUS)
-- 07-synthesize.md (OPUS) - reads ALL bus/{date}/*.json, writes schedule-data-{date}.json
-- This is the most expensive agent. It produces the daily schedule JSON.
+### Phase 7: Synthesis (1 script, sequential, DETERMINISTIC)
+Run SCRIPT (not agent): `python3 {{QROOT}}/.q-system/scripts/synthesize-schedule.py {date}`
+- Reads all bus/{date}/*.json files, applies section ordering, friction sorting, todayFocus selection, post visual attachment, sycophancy surfacing, investor update triggers
+- Validates output against schedule-data.schema.json
+- Writes: output/schedule-data-{date}.json
+- Verify: output/schedule-data-{date}.json exists
+- If exit code 1 (no bus directory): HALT, report to founder
+- If exit code 2 (schema validation failed): HALT, show validation errors to founder, do not proceed to Phase 8
+- This replaces the 07-synthesize.md Opus agent. No LLM needed for data assembly.
 
 ### Phase 8: Build + Verify (sequential)
 1. Run: `python3 {{QROOT}}/marketing/templates/build-schedule.py {{QROOT}}/output/schedule-data-{date}.json {{QROOT}}/output/daily-schedule-{date}.html`
