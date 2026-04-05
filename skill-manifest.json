@@ -8,7 +8,7 @@
     "founder-ops": {
       "description": "Projects that run GTM, pipeline, relationships",
       "plugin": "kipi-ops",
-      "skills": ["council", "customer-fit-review"]
+      "skills": ["council"]
     },
     "design": {
       "description": "Projects that build websites, UIs, or visual output",
