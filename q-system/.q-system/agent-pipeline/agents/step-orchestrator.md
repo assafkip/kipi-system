@@ -67,7 +67,7 @@ Your context window will compact automatically at ~50% capacity (set by session-
 3. Model allocation: haiku for data pulls and simple writes (00-*, 01-*, 03-linkedin-posts, 03-linkedin-dms, 08-visual-verify, 09-notion-push, 10-daily-checklists), sonnet for analysis/content agents, opus for 05-engagement-hitlist only
 4. When multiple agents in a phase are independent, launch them ALL in a single message (parallel)
 5. When a phase depends on the previous phase's output, wait for completion first
-6. After each phase, verify the expected bus/ JSON files exist using `test -f` or `ls`. Do NOT read bus file contents for verification. Only read bus files if a phase failed and you need to diagnose the error.
+6. After each phase, verify the expected bus/ JSON files exist using `test -f` or `ls`. Do NOT read bus file contents for verification. Only read bus files if: (a) a phase failed and you need to diagnose, (b) Phase 0 preflight ready=true gate check, or (c) collection-gate.json for Phase 1 prompt injection. These are small, justified reads.
 7. Log each phase completion via log-step.py
 8. Bus files are OVERWRITTEN each run, never appended. Each day starts clean.
 
