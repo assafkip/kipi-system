@@ -307,6 +307,10 @@ def phase_2():
 
     ktlyst = "/Users/assafkip/Desktop/KTLYST_strategy"
 
+    if os.getenv('CI') == 'true' or not dir_exists(ktlyst):
+        print(f"  {YELLOW}SKIP{NC} KTLYST_strategy checks (not available)")
+        return
+
     check("KTLYST has q-system/ directory (subtree)", dir_exists(os.path.join(ktlyst, "q-system")))
     check("KTLYST has q-ktlyst/ directory (instance content)", dir_exists(os.path.join(ktlyst, "q-ktlyst")))
 
@@ -367,6 +371,10 @@ def phase_2():
 def phase_3():
     phase_header(3, "Plugin elimination")
 
+    if os.getenv('CI') == 'true':
+        print(f"  {YELLOW}SKIP{NC} Plugin elimination checks (CI environment)")
+        return
+
     check("kipi-pipeline-plugin directory removed", not dir_exists("/Users/assafkip/Desktop/kipi-pipeline-plugin"))
     check("q-founder-os directory removed", not dir_exists("/Users/assafkip/Desktop/q-founder-os"))
 
@@ -391,6 +399,10 @@ def phase_3():
 
 def phase_4():
     phase_header(4, "All instances")
+
+    if os.getenv('CI') == 'true':
+        print(f"  {YELLOW}SKIP{NC} Instance checks (CI environment)")
+        return
 
     registry = load_registry()
     for instance in registry.get("instances", []):
