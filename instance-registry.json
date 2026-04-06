@@ -77,6 +77,14 @@
       "type": "subtree",
       "has_git": true,
       "note": "Client advisory hub, instance content in q-pure/"
+    },
+    {
+      "name": "ktlyst_lawyer",
+      "path": "/Users/assafkip/Desktop/KTLYST_lawyer",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
