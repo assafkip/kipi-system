@@ -91,7 +91,7 @@ This system operates in **4 modes** (not stages). The founder switches freely be
 ## Inter-Skill Review Gates (ENFORCED)
 
 Before outputting ANY factual claim about {{YOUR_PRODUCT}}:
-1. Check against canonical files (current-state.md, talk-tracks.md, proof-points.md)
+1. Check against canonical files (current-state.md, talk-tracks.md) and marketing/assets/proof-points.md
 2. If not in canonical: mark `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}`
 3. If contradicts canonical: BLOCK the output
 
@@ -105,7 +105,7 @@ The SessionStart hook auto-injects last handoff and founder context. The PostCom
 
 Skills live in `plugins/` (loaded directly from disk), not `.claude/skills/`:
 - **kipi-core** - audhd-executive-function, founder-voice, research-mode (every instance)
-- **kipi-ops** - council, customer-fit-review (GTM instances)
+- **kipi-ops** - council (GTM instances)
 - **kipi-design** - ui-ux-pro-max, brand, design (design instances)
 
 Custom agents in `.claude/agents/` provide model/tool isolation:
