@@ -82,4 +82,7 @@ NEVER downplay an alert. NEVER soften the harness override. The entire point of 
 
 Never shame the founder. This is structural, not personal. Frame as "the system might be filtering" not "you're rubber-stamping."
 
+## Contact Title Attribution (ENFORCED)
+When displaying a contact's role/title in schedule items: only use titles present in bus data. If no title is available, use company name only. Never infer or fabricate titles. If a title comes from CRM-sourced bus files (pipeline-followup, loop-review), append "(CRM)" after the title so the founder knows it may be stale.
+
 ## Token budget: this is the most expensive agent. Keep output tight.

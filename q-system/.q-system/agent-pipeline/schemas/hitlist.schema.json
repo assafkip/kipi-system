@@ -29,14 +29,29 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["rank", "contact_name", "platform", "action_type", "copy"],
+        "required": ["rank", "contact_name", "contact_title", "platform", "action_type",
+                     "copy", "rationale", "energy", "time_est"],
+        "allOf": [
+          {
+            "if": { "properties": { "action_type": { "const": "comment" } } },
+            "then": { "required": ["post_url"] }
+          },
+          {
+            "if": { "properties": { "action_type": { "const": "DM" } } },
+            "then": { "required": ["profile_url"] }
+          },
+          {
+            "if": { "properties": { "action_type": { "const": "connection_request" } } },
+            "then": { "required": ["profile_url"] }
+          }
+        ],
         "properties": {
           "rank": { "type": "integer" },
           "contact_name": { "type": "string" },
           "contact_title": { "type": "string" },
           "platform": {
             "type": "string",
-            "enum": ["LinkedIn", "X", "Reddit", "Instagram", "TikTok"]
+            "enum": ["LinkedIn", "X", "Reddit", "HN", "Email", "Instagram", "TikTok"]
           },
           "action_type": {
             "type": "string",
@@ -44,11 +59,52 @@
           },
           "relationship_stage": { "type": "string" },
           "temperature": { "type": "string" },
-          "post_url": { "type": "string" },
-          "profile_url": { "type": "string" },
+          "post_url": { "type": "string", "minLength": 10 },
+          "profile_url": { "type": "string", "minLength": 10 },
           "post_full_text": { "type": "string" },
-          "copy": { "type": "string" },
-          "rationale": { "type": "string" }
+          "copy": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "energy": {
+            "type": "string",
+            "enum": ["Quick Win", "Deep Focus", "People", "Admin"]
+          },
+          "time_est": {
+            "type": "string",
+            "pattern": "^\\d+ min$"
+          },
+          "source": {
+            "type": "string",
+            "description": "Origin of this action. 'icp-discovery' for ICP agent items. Omit for standard hitlist items."
+          },
+          "icp_tier": {
+            "type": "string",
+            "enum": ["engage", "monitor"],
+            "description": "ICP discovery tier. Only present when source=icp-discovery."
+          },
+          "narrative_matches": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Narrative patterns matched (N1-N9). Only present when source=icp-discovery."
+          },
+          "content_seed": {
+            "type": "boolean",
+            "description": "True if item is a blog/newsletter worth reading but not directly commentable. Only present when source=icp-discovery."
+          }
+        }
+      }
+    },
+    "deferred": {
+      "type": "array",
+      "description": "Items dropped from actions because URL could not be resolved. For manual review only.",
+      "items": {
+        "type": "object",
+        "required": ["contact_name", "reason"],
+        "properties": {
+          "contact_name": { "type": "string" },
+          "action_type": { "type": "string" },
+          "platform": { "type": "string" },
+          "reason": { "type": "string" },
+          "post_full_text": { "type": "string" }
         }
       }
     }

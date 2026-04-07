@@ -98,12 +98,22 @@ steps["8.5_start_here"] = {
     "timestamp": now
 }
 
+# Preserve existing action cards from prior session
+existing_cards = []
+if os.path.isfile(log_path):
+    try:
+        with open(log_path) as f:
+            existing_log = json.load(f)
+        existing_cards = existing_log.get("action_cards", [])
+    except (json.JSONDecodeError, KeyError):
+        pass
+
 # Write the log
 log = {
     "date": date,
     "steps": steps,
     "gates_checked": {},
-    "action_cards": [],
+    "action_cards": existing_cards,
     "state_checksums": {},
     "verification_queue": []
 }
