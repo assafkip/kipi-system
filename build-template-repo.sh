@@ -66,6 +66,8 @@ find "$TEMPLATE_DIR" -name ".DS_Store" -delete
 mkdir -p "$TEMPLATE_DIR/q-system/output/drafts"
 mkdir -p "$TEMPLATE_DIR/q-system/output/lead-gen"
 mkdir -p "$TEMPLATE_DIR/q-system/output/design-partner"
+mkdir -p "$TEMPLATE_DIR/q-system/output/content-intel"
+mkdir -p "$TEMPLATE_DIR/q-system/output/investor-updates"
 mkdir -p "$TEMPLATE_DIR/q-system/output/marketing/linkedin"
 touch "$TEMPLATE_DIR/q-system/output/.gitkeep"
 touch "$TEMPLATE_DIR/q-system/output/drafts/.gitkeep"

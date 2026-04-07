@@ -99,26 +99,23 @@ q-founder-os/
       security.md                    # Blocks .env/credentials/key file access
       coding-standards.md            # Code style rules (path-scoped to code files)
       content-output.md              # Content generation rules (path-scoped to output/)
-    skills/
+    agents/                          # Custom agent definitions
+      preflight.md                   # Haiku - pipeline gate-keeper
+      data-ingest.md                 # Haiku - calendar/email/Notion pulls
+      engagement-hitlist.md          # Opus - copy-paste engagement actions
+      synthesizer.md                 # Opus - daily schedule assembly
+      content-reviewer.md            # Sonnet - 4-pass content review
+  plugins/                           # Plugin groups (loaded directly from disk)
+    kipi-core/skills/                # Core (every instance)
       audhd-executive-function/      # ADHD/ASD accommodations (optional)
-        SKILL.md
-        references/
-          research.md                # Academic research (Barkley, Mahan, Dodson)
-          user-profile.md            # Your AUDHD behavioral profile
       founder-voice/                 # Your writing voice
-        SKILL.md
-        references/
-          voice-dna.md               # Your voice profile
-          writing-samples.md         # Real examples of your writing
       research-mode/                 # Anti-hallucination research mode
-        SKILL.md
-        commands/
-          q-research.md              # /q-research slash command
-        references/
-          anthropic-reduce-hallucinations.md  # Source techniques
-  .agents/
-    product-marketing-context.md     # Marketing foundation
-    skills/                          # Marketing skills (32 skills from Corey Haines)
+    kipi-ops/skills/                 # Operations (GTM instances)
+      council/                       # Multi-persona debate for decisions
+    kipi-design/skills/              # Design (UI/visual instances)
+      ui-ux-pro-max/                 # UX guidelines, styling, accessibility
+      brand/                         # Brand voice, visual identity
+      design/                        # Orchestrates all design sub-skills
   q-system/
     CLAUDE.md                        # Full behavioral rules + setup wizard
     .q-system/
@@ -169,7 +166,7 @@ q-founder-os/
       lead-gen/
       design-partner/
       marketing/linkedin/
-    seed-materials/                  # Drop docs here for /q-ingest-feedback
+    # seed-materials/ removed — /q-ingest-feedback reads from output/
     memory/
       working/                       # Session-scoped (<48h, auto-cleaned)
       weekly/                        # 7-day rolling (reviewed Mondays)
