@@ -433,7 +433,9 @@ def phase_4():
             if not dir_exists(agent_path):
                 agent_path = os.path.join(path, prefix, ".q-system", "agent-pipeline", "agents")
 
-        if dir_exists(agent_path):
+        if instance.get("skip_agent_check"):
+            check(f"{name}: has agents (skipped - {instance.get('note', 'no pipeline')})", True)
+        elif dir_exists(agent_path):
             i_count = count_files(agent_path)
             threshold = 15 if itype == "direct-clone" else 30
             label = f"{i_count}, direct-clone - relaxed threshold" if itype == "direct-clone" else str(i_count)

@@ -58,7 +58,9 @@
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
-      "has_git": true
+      "has_git": true,
+      "skip_agent_check": true,
+      "note": "Website project, no agent pipeline needed"
     },
     {
       "name": "4_points_consulting",
