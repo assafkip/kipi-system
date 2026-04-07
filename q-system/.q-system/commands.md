@@ -688,7 +688,7 @@ Workflow for each type:
 - `mcp__gamma__generate_gamma` — generate presentations, documents, social cards
 - `mcp__gamma__get_gamma_generation` — retrieve URLs and export links
 - Existing deck: https://gamma.app/docs/sqm26tt7e54f8kj (Short Deck v3)
-- Edit queue: `output/gamma-v3-edit-queue.md`
+- Edit queue: saved to `output/` on first use
 
 ---
 
