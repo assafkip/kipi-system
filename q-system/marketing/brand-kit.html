@@ -1,0 +1,51 @@
+<!--
+  Brand Kit — Visual identity reference for content generation.
+  Read by /q-market-create when producing decks, one-pagers, and HTML output.
+  Update during /q-market-assets or /q-calibrate.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Brand Kit</title>
+<style>
+  :root {
+    /* Primary palette — update these to match your brand */
+    --brand-primary: #000000;
+    --brand-secondary: #333333;
+    --brand-accent: #0066FF;
+    --brand-bg: #FFFFFF;
+    --brand-bg-alt: #F5F5F5;
+    --brand-text: #1A1A1A;
+    --brand-text-muted: #666666;
+
+    /* Typography */
+    --font-heading: 'Inter', -apple-system, sans-serif;
+    --font-body: 'Inter', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    /* Sizing */
+    --heading-1: 2.5rem;
+    --heading-2: 1.75rem;
+    --heading-3: 1.25rem;
+    --body: 1rem;
+    --small: 0.875rem;
+  }
+</style>
+</head>
+<body>
+  <h1>Brand Kit</h1>
+  <p>Update CSS variables above to match your brand. Used by <code>/q-market-create</code> for visual content.</p>
+
+  <h2>Usage</h2>
+  <ul>
+    <li>Decks and one-pagers pull colors and fonts from <code>:root</code> variables</li>
+    <li>Gamma prompts reference these values for consistent output</li>
+    <li>HTML schedule and reports inherit this palette when generating public-facing output</li>
+  </ul>
+
+  <h2>Logo</h2>
+  <p>Add your logo URL or base64 here:</p>
+  <code><!-- LOGO_URL: (paste URL or base64 data URI) --></code>
+</body>
+</html>
