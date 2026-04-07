@@ -66,10 +66,11 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   └── founder.md                # Entrepreneur OS voice baseline
 │   │
 │   ├── rules/                        # Path-scoped instruction files
-│   │   └── (15 files: anti-misclassification, audhd, auto-detection,
+│   │   └── (16 files: anti-misclassification, audhd-interaction, auto-detection,
 │   │        coding-standards, content-output, design-auto-invoke,
 │   │        dev-skills-auto-invoke, folder-structure, marketing-system,
-│   │        md-hygiene, morning-pipeline, security, sycophancy,
+│   │        md-hygiene, morning-pipeline, security,
+│   │        social-reaction-gate, sycophancy,
 │   │        token-discipline, voice-enforcement)
 │   │
 │   └── plans/                        # Plan mode output (auto-created, GITIGNORED)
