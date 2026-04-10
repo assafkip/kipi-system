@@ -42,6 +42,11 @@ A portable entrepreneur operating system for Claude Code. Strategy, execution, r
 - All written output goes through the founder voice skill
 - All actionable output follows AUDHD executive function rules (if enabled)
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
+- When something fails because an LLM misinterpreted instructions, the fix must be a deterministic script or code change. Never fix LLM-instruction failures with better instructions.
+- For any task involving more than a single file edit, state the planned approach in 1-2 bullet points and wait for the founder's OK before executing. Do not proceed on assumption.
+- When fixing identified issues, fix exactly what was flagged. No architectural changes, refactors, or scope expansion beyond the request.
+- Never read or search files outside the current project directory without stating which directory you're reaching into and why. If unsure which instance owns the data, ask.
+- All product/system changes use the PRD template at `q-system/marketing/templates/prd.md`. No PRD ships without a completed wiring checklist.
 
 ## Commands
 - `/q-morning` - Full morning briefing (9-phase agent pipeline, 50+ sub-agents)

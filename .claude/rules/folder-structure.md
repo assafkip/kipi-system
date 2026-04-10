@@ -144,6 +144,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── morning-log-*.json
 │   │   ├── schedule-data-*.json
 │   │   ├── daily-schedule-*.html
+│   │   ├── prd-*.md                  # PRD documents (named prd-<slug>-YYYY-MM-DD.md)
 │   │   ├── session-effort-*.log
 │   │   └── .gitkeep
 │   │
@@ -216,6 +217,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 **New Python harness?** -> `q-system/.q-system/scripts/<name>.py` (if in scripts/) or `q-system/.q-system/<name>.py` (if top-level harness)
 **New canonical file?** -> `q-system/canonical/<name>.md`
 **New marketing template?** -> `q-system/marketing/templates/<name>.md`
+**New PRD?** -> `q-system/output/prd-<slug>-YYYY-MM-DD.md` (use template from `q-system/marketing/templates/prd.md`)
 **New onboarding guide?** -> `q-system/.q-system/onboarding/guides/connect-<tool>.md`
 
 ## Naming Conventions
@@ -231,6 +233,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 | Python scripts | kebab-case.py | `log-step.py` |
 | Bus files | kebab-case.json | `linkedin-posts.json` |
 | Output files | `type-YYYY-MM-DD.ext` | `morning-log-2026-04-02.json` |
+| PRD files | `prd-<slug>-YYYY-MM-DD.md` | `prd-usage-report-fixes-2026-04-09.md` |
 
 ## QROOT Resolution
 
