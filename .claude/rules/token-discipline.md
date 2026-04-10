@@ -30,3 +30,17 @@ Self-monitoring rules (Layer 2, always active even without hook triggers):
 - If you've read 5+ files without writing anything, stop and tell the founder what you're looking for and why.
 - Never hold large API responses in context. Process and discard immediately.
 - When blocked, do NOT brute-force. Try a different approach or ask the founder.
+
+## Cleanup / Migration Rule (ENFORCED)
+
+When doing cleanup, migration, or rename tasks: run TWO grep passes.
+- Pass 1 catches obvious string/symbol hits.
+- Pass 2 catches stale IDs, dead import paths, and embedded references in JSON, HTML, and markdown.
+- State "pass 1 done, starting pass 2" before finishing.
+- Not optional, even on small renames.
+
+## Pre-Action Echo (ENFORCED)
+
+Before the first Edit, Write, or destructive Bash call: if the task touches more than one file OR more than one tool category (Read, Bash, Edit, Web, Agent), echo the plan in 2-3 bullets and wait for OK. No exceptions for "small" tasks. If you find yourself thinking "this is small, I'll just do it," that is the trigger to echo.
+
+**Exception:** Does not apply to agent pipeline sub-agents executing inside `/q-morning`. Pipeline phases run autonomously.
