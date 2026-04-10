@@ -22,7 +22,22 @@ python3 q-system/.q-system/sycophancy-harness.py YYYY-MM-DD
 ```
 If exit code = 1 (alert), the synthesizer MUST surface it prominently. Show audit output to the founder always.
 
-If any MCP server is unavailable or any step fails, STOP immediately and report. Do NOT continue with partial data.
+## Self-Healing Loop (ENFORCED)
+
+On phase failure during `/q-morning`:
+1. Capture stderr from the failed phase run
+2. Run the bus verification harness to diagnose missing or malformed bus artifacts (instance-specific path, e.g. `python3 .q-system/verify-bus.py {date} {phase}`)
+3. Read the failing agent file in `agent-pipeline/agents/` to confirm its declared output artifact names
+4. Read the relevant bus artifact(s) at `agent-pipeline/bus/{date}/<artifact>.json`. Bus files are content-named, not phase-numbered: `hitlist.json`, `leads.json`, `preflight.json`, `calendar.json`, `linkedin-posts.json`, etc. There is no `{phase}.json`.
+5. Apply a targeted fix (config, path, missing dependency)
+6. Re-run ONLY the failed phase
+7. Iterate up to 3 attempts max
+
+On 3rd failure: STOP and surface diagnosis to the founder. Include error trace, attempted fixes, and current bus state.
+
+Every retry attempt logs to `output/morning-log-YYYY-MM-DD.json` with `phase`, `attempt`, `error`, `fix_applied`.
+
+**MCP hard-down exception (no retries):** If the failure is an authentication error, server crash, or hard-down for a configured MCP server (e.g., Notion, Apify, Gmail, Google Calendar, Linear, PostHog), STOP on attempt 1. These are environmental, not logic, failures.
 
 # Agent Pipeline
 
@@ -32,4 +47,4 @@ Read `.q-system/agent-pipeline/agents/step-orchestrator.md` for the full phase p
 
 **Content review pipeline:** `/q-market-review` runs 4 Sonnet passes via the content-reviewer agent.
 
-**Fallback:** If agent pipeline fails, report to founder with diagnostics. Do not attempt monolithic fallback.
+**Fallback:** If the self-healing loop hits its 3-attempt cap, report to founder with diagnostics. Do not attempt monolithic fallback.
