@@ -421,10 +421,24 @@ def phase_4():
         prefix = instance.get("subtree_prefix", "q-system")
         itype = instance.get("type", "subtree")
 
+        # Skip archived/merged instances
+        if instance.get("status"):
+            print()
+            print(f"  --- {name} ({itype}) ---")
+            print(f"  {YELLOW}SKIP{NC} {name}: {instance['status']}")
+            continue
+
         print()
         print(f"  --- {name} ({itype}) ---")
 
-        check(f"{name}: {prefix}/ directory exists", dir_exists(os.path.join(path, prefix)))
+        if not instance.get("skip_agent_check"):
+            check(f"{name}: {prefix}/ directory exists", dir_exists(os.path.join(path, prefix)))
+        else:
+            prefix_exists = dir_exists(os.path.join(path, prefix))
+            if not prefix_exists:
+                print(f"  {YELLOW}SKIP{NC} {name}: {prefix}/ not present ({instance.get('note', 'optional')})")
+            else:
+                check(f"{name}: {prefix}/ directory exists", True)
 
         if itype == "direct-clone":
             agent_path = os.path.join(path, prefix, ".q-system", "agent-pipeline", "agents")
