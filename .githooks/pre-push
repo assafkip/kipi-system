@@ -5,6 +5,9 @@ set -euo pipefail
 # Runs full validation (phases 0-5) before pushing to remote.
 # This protects all instances from broken skeleton pushes.
 
+# Unbuffered output so progress is visible during long runs
+export PYTHONUNBUFFERED=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Only run skeleton validation if this IS the skeleton repo
@@ -14,7 +17,7 @@ fi
 
 echo "[pre-push] Running full skeleton validation (phases 0-5)..."
 
-if ! python3 "$SCRIPT_DIR/validate-separation.py" 5 2>/dev/null; then
+if ! python3 "$SCRIPT_DIR/validate-separation.py" 5; then
     echo ""
     echo "[pre-push] BLOCKED: Full validation failed."
     echo "Run 'python3 validate-separation.py 5 --verbose' to see details."
