@@ -6,6 +6,15 @@ This template is the **primary workflow** of the Q Entrepreneur OS. Use it after
 
 Use `/q-debrief [person]` to start a debrief session.
 
+## Raw Source Archival (before extraction)
+
+Before running the template, save the raw conversation transcript:
+1. Write the full transcript to `sources/YYYY-MM-DD-person-name.md`
+2. Frontmatter: `date`, `person`, `company`, `workflow: debrief`
+3. This file is immutable after creation. Never edit it.
+4. Proceed with extraction only after the source is saved.
+5. Retention: 90 days. Sources older than 90 days auto-deleted on 1st of month via /q-wrap.
+
 ## Predict-First Step (before founder describes conversation)
 
 After reading the person's history but BEFORE the founder describes what happened, generate predictions:
@@ -316,3 +325,8 @@ After completing the template and implications analysis, route insights to canon
   - [ ] If design partner conversion message was sent: `python3 q-system/.q-system/loop-tracker.py open dp_offer_sent "Person" "DP offer context" "" "" "Follow-up if no reply..."`
   - [ ] Debrief is NOT complete until all outbound actions have corresponding loops opened
   - [ ] If VC-only conversation: marked "N/A - VC conversation"
+- [ ] **Ripple verification complete:**
+  - [ ] Every canonical file edit logged via `python3 q-system/.q-system/scripts/changelog-write.py <file> debrief "<summary>" --source "<person> - <date> - conversation"`
+  - [ ] `python3 q-system/.q-system/scripts/ripple-verify.py q-system/canonical/changelog.md YYYY-MM-DD`
+  - [ ] If exit 0: done
+  - [ ] If exit 1 (soft gate): address missing targets or log skip reason in changelog. Do NOT block debrief completion.

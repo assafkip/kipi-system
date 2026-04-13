@@ -39,6 +39,9 @@ q-system/.q-system/agent-pipeline/bus/
 # Obsidian vault config (user-specific, not committed)
 q-system/.obsidian/
 
+# Raw source transcripts (instance-specific, 90-day retention)
+q-system/sources/*.md
+
 # Pruned markdown archives (historical, not loaded in context)
 q-system/memory/archives/
 
