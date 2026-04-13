@@ -11,7 +11,3 @@ Source: [person/conversation/market signal/founder directive]
 ```
 
 <!-- entries below this line -->
-
-### 2026-04-12 | debrief | canonical/objections.md
-Test entry for CrowdStrike objection
-Source: smoke test
