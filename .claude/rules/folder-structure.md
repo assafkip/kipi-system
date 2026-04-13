@@ -159,6 +159,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   └── .q-system/                    # Execution infrastructure
 │       ├── commands.md               # Command reference
 │       ├── preflight.md              # Tool manifest + known issues
+│       ├── ripple-graph.json         # Canonical file dependency graph (v1, file-level)
 │       ├── state-model.md            # State machine design
 │       │
 │       ├── [Python harnesses]        # Deterministic guardrails
@@ -176,9 +177,14 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │       │
 │       ├── scripts/                  # Deterministic replacements for LLM agents
 │       │   ├── canonical-digest.py
+│       │   ├── changelog-write.py
 │       │   ├── compliance-check.py
+│       │   ├── content-lint.py
 │       │   ├── copy-diff.py
+│       │   ├── instruction-budget-audit.py
 │       │   ├── publish-reconciliation.py
+│       │   ├── ripple-verify.py
+│       │   ├── test-ripple.py
 │       │   ├── scan-draft.py
 │       │   └── temperature-scoring.py
 │       │
