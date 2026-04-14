@@ -12,6 +12,8 @@ class DraftScanner:
         "groundbreaking", "unprecedented", "tapestry", "synergy", "realm",
         "beacon", "interplay", "treasure trove", "paradigm", "cornerstone",
         "catalyst", "linchpin", "testament",
+        "ecosystem", "landscape", "holistic", "scalable", "disruptive",
+        "next-gen", "seamless",
     ]
 
     TIER1_VERBS = [
@@ -27,7 +29,7 @@ class DraftScanner:
     ]
 
     BANNED_PHRASES = [
-        "in today's world", "in today's fast-paced", "in today's era",
+        r"in today's \S+",
         "let's dive in", "let's explore", "let's unpack",
         "it's important to note", "it's crucial to note", "it's worth noting",
         "generally speaking",

@@ -69,6 +69,8 @@ _WEAK_INTENSIFIERS = {"very", "really", "extremely", "incredibly"}
 
 _PASSIVE_RE = re.compile(r"\b(is|are|was|were|been|being)\s+\w+ed\b", re.IGNORECASE)
 
+_RULE_OF_THREE_RE = re.compile(r"\b\w+,\s+\w+,\s+\w+[.!?]")
+
 _SUBJECT_SALESY = re.compile(
     r"\b(increase|boost|ROI)\b", re.IGNORECASE
 )
@@ -166,6 +168,14 @@ class Linter:
                 "context": _context_around(text, match),
             })
 
+        for match in _RULE_OF_THREE_RE.finditer(text):
+            violations.append({
+                "type": "rule_of_three",
+                "severity": "warning",
+                "detail": f"possible rule-of-three list: {match.group()}",
+                "context": _context_around(text, match),
+            })
+
         hedge_count = sum(
             len(p.findall(text)) for p in _ds._hedge_patterns
         )
@@ -173,8 +183,12 @@ class Linter:
             hedge_count / (word_count / 500) if word_count >= 50 else 0.0
         )
 
+        blocking_count = sum(
+            1 for v in violations if v.get("severity") != "warning"
+        )
+
         return {
-            "pass": len(violations) == 0,
+            "pass": blocking_count == 0,
             "word_count": word_count,
             "sentence_count": sentence_count,
             "avg_sentence_length": round(avg_sentence_length, 2),
