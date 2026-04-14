@@ -83,23 +83,33 @@ Before drafting a reaction (comment, reply, quote-post, DM about someone's conte
 
 ## Pre-Publish Checklist
 
-Run in this order. Do not return a draft until every step passes.
+Run in this order. Drafting is never blocked by cadence — only the final ship decision is.
 
-### Step 0: Cadence check (BLOCKING)
+### Step 0: Cadence awareness (ADVISORY, posts only)
 
-Before drafting a new post, call `kipi_linkedin_cadence_check()`. If `pass: false` with `weekly_post_cap`, stop — the founder has already hit 3 posts this week. If `warnings[]` includes `engage_ratio`, surface it: the founder should comment on 2nd-degree posts before drafting a new one.
+When drafting a new original post, call `kipi_linkedin_cadence_check()` and surface the result to the founder. Do NOT block the draft — the founder may be preparing a post for a later week, or deliberately overriding the cap.
 
-Skip this step when drafting a comment, reply, DM, or About section — the cap applies to original posts only.
+- If `posts_this_week >= 3`: surface verbatim "This would be your Nth post this week (cap is 3). Intentional override, or draft for next week?" and wait for the founder's answer before continuing.
+- If `warnings[]` contains `engage_ratio`: surface the ratio and suggest 2nd-degree comments before shipping. Not blocking.
+
+Skip Step 0 entirely when drafting a comment, reply, DM, or About section.
 
 ### Step 1: Deterministic gate (BLOCKING)
 
-Call `kipi_linkedin_gate(draft, day_of_week, override_day)` on the full draft text. This wraps voice lint + copy lint + hashtag count + body-link check + day-of-week gate.
+Call `kipi_linkedin_gate(draft, kind, day_of_week, override_day)`. Pass `kind` every time based on what you are drafting:
 
-- If `pass: false`, read `violations[]`, `lint_voice.violations[]`, and `lint_copy.replacements/filler_words/passive_voice`. Fix each one and re-run until `pass: true`.
-- `day_of_week` is the day the post will ship (`tue`/`wed`/`thu`). Pass `override_day=true` if the founder explicitly chose a non-cadence day.
-- Violation types: `hashtag_count`, `body_link`, `day_of_week`, plus any from `lint_voice` (`emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length`, `paragraph_uniformity`, `rule_of_three` warning-only) and `lint_copy` (replacements, filler_words, passive_voice).
+- `kind="post"` — original post. Hashtag, body-link, and day-of-week rules all apply.
+- `kind="comment"` — comment or reply on another post. Hashtag and voice/copy rules apply; body-link and day-of-week rules do not.
+- `kind="dm"` — direct message. Same as comment.
+- `kind="about"` — LinkedIn About section. Same as comment.
 
-Never return a draft with `pass: false`. If after 3 iterations a rule still fails, surface the specific violation to the founder verbatim and ask whether to override.
+For `kind="post"` only:
+- `day_of_week` is the **ship day** weekday (`tue`/`wed`/`thu`). If you do not know the ship day, OMIT this field — passing today's weekday by default will block drafts prepared a day early.
+- `override_day=true` bypasses the day-of-week gate.
+
+If `pass: false`, read `violations[]`, `lint_voice.violations[]`, and `lint_copy.replacements/filler_words/passive_voice`. Fix each one and re-run until `pass: true`. After 3 iterations, surface the violation verbatim and ask whether to override.
+
+Violation types: `hashtag_count`, `body_link` (posts only), `day_of_week` (posts only), plus any from `lint_voice` (`emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length`, `paragraph_uniformity`, `rule_of_three` warning-only) and `lint_copy` (replacements, filler_words, passive_voice).
 
 ### Step 2: Subjective checks (not mechanizable)
 
@@ -107,8 +117,8 @@ These require human judgment. Verify before returning:
 
 1. First sentence scar-anchored (lead with real operational experience)?
 2. Matches one of the founder's committed pillars (from `my-project/linkedin-playbook.md`)?
-3. First-hour engagement plan stated (3-5 2nd-degree comments to land)?
-4. Pillar tag declared (`[Pillar 1: scar]`, `[Pillar 2: founder-op]`, `[Pillar 3: AI/visibility]`)?
+3. First-hour engagement plan stated (posts only: 3-5 2nd-degree comments to land)?
+4. Pillar tag declared (posts only: `[Pillar 1: scar]`, `[Pillar 2: founder-op]`, `[Pillar 3: AI/visibility]`)?
 
 If any subjective check fails, fix before returning the draft.
 

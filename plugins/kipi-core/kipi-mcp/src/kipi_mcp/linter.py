@@ -499,9 +499,16 @@ class Linter:
     def linkedin_gate(
         self,
         draft: str,
+        kind: str = "post",
         day_of_week: str = "",
         override_day: bool = False,
     ) -> dict:
+        kind_norm = kind.strip().lower() or "post"
+        if kind_norm not in ("post", "comment", "dm", "about"):
+            raise ValueError(
+                f"kind must be one of post|comment|dm|about, got '{kind}'"
+            )
+
         voice = self.voice_lint(draft)
         copy_edit = self.copy_edit_lint(draft)
 
@@ -517,7 +524,7 @@ class Linter:
             })
 
         body_links = _URL_RE.findall(draft)
-        if body_links:
+        if kind_norm == "post" and body_links:
             violations.append({
                 "type": "body_link",
                 "detail": f"{len(body_links)} link(s) in body — move to first comment",
@@ -526,12 +533,12 @@ class Linter:
 
         day_ok = True
         day_norm = day_of_week.strip().lower()
-        if day_norm and not override_day:
+        if kind_norm == "post" and day_norm and not override_day:
             if day_norm not in _LINKEDIN_ALLOWED_DAYS:
                 day_ok = False
                 violations.append({
                     "type": "day_of_week",
-                    "detail": f"day={day_of_week} — allowed Tue/Wed/Thu (pass override_day=true to bypass)",
+                    "detail": f"ship day={day_of_week} — allowed Tue/Wed/Thu (pass override_day=true to bypass)",
                     "context": "",
                 })
 
@@ -541,6 +548,7 @@ class Linter:
                 and copy_edit["pass"]
                 and len(violations) == 0
             ),
+            "kind": kind_norm,
             "lint_voice": voice,
             "lint_copy": copy_edit,
             "hashtag_count": hashtag_count,

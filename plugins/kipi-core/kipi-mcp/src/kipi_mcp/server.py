@@ -1033,20 +1033,31 @@ def kipi_copy_edit_lint(text: str) -> str:
 
 @mcp.tool()
 def kipi_linkedin_gate(
-    draft: str, day_of_week: str = "", override_day: bool = False,
+    draft: str,
+    kind: str = "post",
+    day_of_week: str = "",
+    override_day: bool = False,
 ) -> str:
     """Run the full LinkedIn pre-publish gate on a draft.
 
-    Wraps kipi_voice_lint + kipi_copy_edit_lint plus LinkedIn-specific checks:
-    hashtag count (max 1), body links (none allowed), day-of-week (Tue/Wed/Thu).
+    Wraps kipi_voice_lint + kipi_copy_edit_lint plus LinkedIn-specific checks.
+    Voice, copy, and hashtag rules apply to every kind. Body-link and
+    day-of-week rules apply only when kind="post" (reach-sensitive).
 
     Args:
-        draft: The full LinkedIn post text.
-        day_of_week: Weekday the post will ship (e.g. "tue"). Blank = skip day check.
-        override_day: Set true to bypass the day-of-week gate.
+        draft: The full LinkedIn draft text.
+        kind: "post" (default), "comment", "dm", or "about". Controls which
+            post-only rules apply.
+        day_of_week: Ship-day weekday for a post (e.g. "tue"). Blank = skip.
+            Ignored unless kind="post".
+        override_day: Set true to bypass the day-of-week gate on a post.
     """
     try:
-        return json.dumps(linter.linkedin_gate(draft, day_of_week, override_day))
+        return json.dumps(
+            linter.linkedin_gate(draft, kind, day_of_week, override_day)
+        )
+    except ValueError as e:
+        raise ToolError(str(e))
     except Exception as e:
         logger.error("kipi_linkedin_gate failed", exc_info=True)
         raise ToolError(str(e))

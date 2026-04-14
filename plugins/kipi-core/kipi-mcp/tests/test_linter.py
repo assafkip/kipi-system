@@ -803,12 +803,19 @@ class TestLinkedInGateHashtags:
 
 
 class TestLinkedInGateBodyLinks:
-    def test_body_link_blocks(self, linter):
+    def test_body_link_blocks_post(self, linter):
         draft = _CLEAN_DRAFT + "\n\nSee https://example.com/post for more."
         r = linter.linkedin_gate(draft)
         assert r["pass"] is False
         assert len(r["body_links"]) == 1
         assert any(v["type"] == "body_link" for v in r["violations"])
+
+    @pytest.mark.parametrize("kind", ["comment", "dm", "about"])
+    def test_body_link_allowed_non_post(self, linter, kind):
+        draft = _CLEAN_DRAFT + "\n\nSee https://example.com/post for more."
+        r = linter.linkedin_gate(draft, kind=kind)
+        assert not any(v["type"] == "body_link" for v in r["violations"])
+        assert len(r["body_links"]) == 1
 
 
 class TestLinkedInGateDayOfWeek:
@@ -819,7 +826,7 @@ class TestLinkedInGateDayOfWeek:
         assert not any(v["type"] == "day_of_week" for v in r["violations"])
 
     @pytest.mark.parametrize("day", ["mon", "fri", "sat", "sun"])
-    def test_disallowed_days_block(self, linter, day):
+    def test_disallowed_days_block_post(self, linter, day):
         r = linter.linkedin_gate(_CLEAN_DRAFT, day_of_week=day)
         assert r["pass"] is False
         assert r["day_ok"] is False
@@ -828,6 +835,34 @@ class TestLinkedInGateDayOfWeek:
         r = linter.linkedin_gate(_CLEAN_DRAFT, day_of_week="mon", override_day=True)
         assert r["pass"] is True
         assert r["day_ok"] is True
+
+    @pytest.mark.parametrize("kind", ["comment", "dm", "about"])
+    def test_day_gate_skipped_for_non_posts(self, linter, kind):
+        r = linter.linkedin_gate(_CLEAN_DRAFT, kind=kind, day_of_week="mon")
+        assert r["pass"] is True
+        assert not any(v["type"] == "day_of_week" for v in r["violations"])
+
+    def test_empty_day_skips_gate(self, linter):
+        r = linter.linkedin_gate(_CLEAN_DRAFT)
+        assert r["day_ok"] is True
+
+
+class TestLinkedInGateKind:
+    def test_rejects_unknown_kind(self, linter):
+        with pytest.raises(ValueError):
+            linter.linkedin_gate(_CLEAN_DRAFT, kind="story")
+
+    def test_hashtag_rule_universal(self, linter):
+        r = linter.linkedin_gate(_CLEAN_DRAFT + " #a #b", kind="comment")
+        assert r["pass"] is False
+        assert any(v["type"] == "hashtag_count" for v in r["violations"])
+
+    def test_voice_rule_universal(self, linter):
+        r = linter.linkedin_gate(
+            "We leverage the platform. " + _CLEAN_DRAFT, kind="dm",
+        )
+        assert r["pass"] is False
+        assert r["lint_voice"]["pass"] is False
 
 
 class TestLinkedInGateWrapsLinters:
