@@ -103,7 +103,7 @@ If any sentence exceeds 25 words, break it. If the paragraph exceeds 3 sentences
 
 ## Voice: first-person openers
 
-Per Assaf's preference (and AUDHD rules): DMs/emails/comments start with "I," never the recipient's name.
+Per voice and AUDHD rules: DMs, emails, and comments start with "I," never the recipient's name.
 
 ```
 BAD:  Hey Sarah, loved your post about...
