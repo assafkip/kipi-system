@@ -69,7 +69,7 @@ _WEAK_INTENSIFIERS = {"very", "really", "extremely", "incredibly"}
 
 _PASSIVE_RE = re.compile(r"\b(is|are|was|were|been|being)\s+\w+ed\b", re.IGNORECASE)
 
-_RULE_OF_THREE_RE = re.compile(r"\b\w+,\s+\w+,\s+\w+[.!?]")
+_RULE_OF_THREE_RE = re.compile(r"\b\w+,\s+\w+,\s+\w+\b")
 
 _SUBJECT_SALESY = re.compile(
     r"\b(increase|boost|ROI)\b", re.IGNORECASE

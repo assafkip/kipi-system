@@ -46,26 +46,20 @@ If those instance files do not exist, ask the founder to create them before draf
 
 ### AI-detection patterns (scrub before publishing)
 
-Split between linter-enforced (automatic during pre-publish checklist) and self-check (manual).
+All patterns below are enforced deterministically by `kipi_voice_lint` and `kipi_copy_edit_lint` during the Pre-Publish Checklist. No memory-based self-check.
 
-**Linter-enforced** (via `kipi_voice_lint` and `kipi_copy_edit_lint`):
+**Enforced by `kipi_voice_lint` / `kipi_copy_edit_lint`:**
 - Em-dashes (any `\u2014` character)
-- 50+ specific banned words: leverage, utilize, robust, paradigm, synergy, streamline, empower, delve, comprehensive, crucial, pivotal, innovative, transformative, cutting-edge, groundbreaking, unprecedented, tapestry, realm, catalyst, testament, optimize, foster, underscore, bolster, enhance, revolutionize, spearhead, seamlessly, meticulously, effectively, strategically, furthermore, moreover, additionally, indeed, and more. Full list: `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` → `TIER1_WORDS / TIER1_VERBS / TIER1_ADVERBS`.
-- 30+ banned phrases: "in today's world," "in today's fast-paced," "in today's era," "let's dive in," "let's explore," "it's important to note," "it's worth noting," "in conclusion," "game-changer," "unlock the potential," "revolutionize the way," "circling back," "just checking in," "i'm excited to," "thrilled to share," "humbled by," and more. Full list: `draft_scanner.py` → `BANNED_PHRASES`.
+- 55+ banned words: leverage, utilize, robust, paradigm, synergy, streamline, empower, delve, comprehensive, crucial, pivotal, innovative, transformative, cutting-edge, groundbreaking, unprecedented, tapestry, realm, catalyst, testament, optimize, foster, underscore, bolster, enhance, revolutionize, spearhead, seamlessly, meticulously, effectively, strategically, furthermore, moreover, additionally, indeed, ecosystem, landscape, holistic, scalable, disruptive, next-gen, seamless, and more. Full list: `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` → `TIER1_WORDS / TIER1_VERBS / TIER1_ADVERBS`.
+- Banned phrases: any `"in today's X"` variant (regex), "let's dive in," "let's explore," "it's important to note," "it's worth noting," "in conclusion," "game-changer," "unlock the potential," "revolutionize the way," "circling back," "just checking in," "i'm excited to," "thrilled to share," "humbled by," and more. Full list: `draft_scanner.py` → `BANNED_PHRASES`.
 - Filler words: basically, actually, very, really, extremely, incredibly, just, quite, obviously, of course
 - Passive voice patterns
 - Sentence length: avg >20 words blocks
 - Paragraph uniformity: all paragraphs with identical sentence counts flagged
+- Rule-of-three pattern (`word, word, word`): flagged as warning (non-blocking). Review context; if it reads generic, rewrite.
 - Hedging density: reported in the linter output as a metric (not blocking). Review it and trim hedges if >1 per 500 words.
 
-**Self-check only** (not in either linter — verify manually):
-- Rule-of-three lists ("faster, smarter, better") — no scanner exists
-- Generic words NOT in the banned list: ecosystem, landscape, holistic, scalable, next-gen, disruptive, seamless (only the adverb form "seamlessly" is caught)
-- "In today's [X]" variants other than world / fast-paced / era (e.g., "in today's landscape" is NOT caught)
-- Scar-anchored opener (subjective)
-- Personal-adjacent vs. pure professional tone (subjective)
-
-If a self-check pattern keeps slipping past, add it to `draft_scanner.py` or `linter.py` rather than relying on Claude to remember.
+If a pattern keeps slipping past, extend `draft_scanner.py` or `linter.py`. Never add rules to this file that ask Claude to remember.
 
 See `references/voice-check.md` for the teaching reference.
 
@@ -95,7 +89,7 @@ Run in this order. Do not return a draft until every step passes.
 
 Call both MCP tools on the full draft text before returning anything to the founder:
 
-1. `kipi_voice_lint(draft)` — parse the returned JSON. If `pass: false`, read every entry in `violations[]`, fix each one, re-run until `pass: true`. Violation types the linter catches: `emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length` (avg >20 words), `paragraph_uniformity`.
+1. `kipi_voice_lint(draft)` — parse the returned JSON. If `pass: false`, read every entry in `violations[]`, fix each one, re-run until `pass: true`. Violation types the linter catches: `emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length` (avg >20 words), `paragraph_uniformity`, `rule_of_three` (warning only — review but don't block).
 2. `kipi_copy_edit_lint(draft)` — parse the returned JSON. If `pass: false`, apply each `replacements[].suggested`, remove every `filler_words[].word` instance, and rewrite each `passive_voice[].context` as active voice. Re-run until `pass: true`.
 
 Never return a draft with `pass: false` on either linter. If after 3 iterations a rule still fails, surface the specific violation to the founder verbatim and ask whether to override.
