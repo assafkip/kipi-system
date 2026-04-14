@@ -27,9 +27,7 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - State positions directly. If uncertain, say "I don't know yet."
 
 ### 3. No Filler
-- NEVER: "leverage," "innovative," "cutting-edge," "game-changing," "next-gen," "disruptive"
-- NEVER: "I'm excited to announce," "thrilled to share," "proud to say," "humbled by"
-- NEVER: "In today's rapidly evolving landscape"
+- Banned words/phrases are enforced deterministically in the Pre-Publish Check below. Do not rely on memory.
 - Use plain words. "Use" not "leverage." "Build" not "architect."
 
 ### 4. The Scar Pattern
@@ -50,32 +48,30 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - Articles: end with a reflective question that reframes the whole piece
 - Emails/DMs: end with one clear ask or one specific question
 
-## DON'T SOUND LIKE AI (ENFORCED)
+## Pre-Publish Check (BLOCKING)
 
-### Banned AI Words (NEVER use)
-delve, comprehensive, crucial, vital, pivotal, robust, innovative, transformative, intricate, meticulous, nuanced, vibrant, enduring, unparalleled, unwavering, cutting-edge, groundbreaking, unprecedented, tapestry, synergy, landscape (metaphorical), realm, beacon, interplay, treasure trove, paradigm, cornerstone, catalyst, linchpin, testament, leverage, utilize, optimize, foster, underscore, embark, garner, bolster, showcase, enhance, empower, unlock, revolutionize, streamline, spearhead, navigate (metaphorical), meticulously, effectively, efficiently, strategically, consistently, seamlessly, furthermore, moreover, additionally, indeed
+Before returning any draft to the founder, call both MCP tools on the full text:
 
-### Structural Anti-Patterns (NEVER)
-1. Uniform sentence length (vary 4-word punches with 25-word developing sentences)
-2. Uniform paragraph length (some 1 sentence, some longer)
-3. "Furthermore," "Moreover," "Additionally" as paragraph openers
-4. Bold-title immediately restated in the following sentence
-5. Everything grouped in threes (use 2 or 4)
-6. Formulaic closings that restate what was said
-7. Colon overuse
+1. `kipi_voice_lint(draft)` — blocks on `emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length` (avg >20 words), `paragraph_uniformity`. Warns on `rule_of_three`. If `pass: false`, fix every `violations[]` entry and re-run until `pass: true`.
+2. `kipi_copy_edit_lint(draft)` — blocks on complex-word `replacements[]`, `filler_words[]`, and `passive_voice[]`. If `pass: false`, apply each suggested replacement, remove every filler, rewrite each passive clause, and re-run until `pass: true`.
 
-### The Detection Test
-Before outputting:
-- **Perplexity:** Am I always picking the most predictable next word?
-- **Burstiness:** Are sentences varying enough in length?
-- **The "who wrote this" test:** Would a reader guess this was written by a specific person? Or any LLM?
+Banned words and phrases enforced by `kipi_voice_lint` include: delve, comprehensive, crucial, pivotal, robust, innovative, transformative, cutting-edge, groundbreaking, unprecedented, tapestry, synergy, realm, catalyst, testament, leverage, utilize, optimize, foster, bolster, enhance, empower, revolutionize, streamline, spearhead, seamlessly, meticulously, effectively, strategically, furthermore, moreover, additionally, indeed, ecosystem, landscape, holistic, scalable, disruptive, next-gen, seamless, and more. Full list in `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py`. If a pattern keeps slipping past, extend the linter — do not add rules here.
 
-## Quality Check (ALL MUST PASS)
+Never return a draft with `pass: false` on either linter. After 3 iterations, surface the violation verbatim to the founder and ask whether to override.
+
+## Subjective Checks (human judgment, not mechanizable)
+
+The linters do not check these. Verify before returning:
 
 1. **Scar test:** Does at least one paragraph anchor in real experience?
 2. **Contrast test:** Is there at least one sharp contrast pattern?
 3. **Specificity test:** Could any content marketer have written this? If yes, rewrite.
-4. **Filler test:** Zero banned AI words?
-5. **Sentence test:** Does length VARY? Mix of short and long?
-6. **Paragraph test:** At least one single-sentence paragraph?
-7. **Personality test:** Remove the byline. Can you tell WHICH human wrote this?
+4. **Burstiness test:** Does sentence length VARY? Mix of short and long?
+5. **Paragraph test:** At least one single-sentence paragraph?
+6. **Personality test:** Remove the byline. Can you tell WHICH human wrote this?
+
+### Structural Anti-Patterns the linter partially catches
+
+- Uniform paragraph length (linter flags if ALL paragraphs have identical sentence counts; human check catches softer cases)
+- "Furthermore," "Moreover," "Additionally" as paragraph openers (linter catches at line-start via `structural_opener`)
+- Human-only checks: bold-title immediately restated, everything grouped in threes (linter flags rule-of-three as warning), formulaic closings that restate what was said, colon overuse

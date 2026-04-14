@@ -94,19 +94,19 @@ Call both MCP tools on the full draft text before returning anything to the foun
 
 Never return a draft with `pass: false` on either linter. If after 3 iterations a rule still fails, surface the specific violation to the founder verbatim and ask whether to override.
 
-### Step 2: Self-check (subjective, not covered by linters)
+### Step 2: Subjective checks (not mechanizable)
 
-The linters do NOT check these. Verify manually before returning:
+These require human judgment. Verify before returning:
 
 1. Hashtag count: 0 or 1?
 2. External links: in first comment only, not body?
-3. First sentence scar-anchored? No hedging?
+3. First sentence scar-anchored (lead with real operational experience)?
 4. Matches one of the founder's committed pillars (from `my-project/linkedin-playbook.md`)?
 5. Day-of-week = Tue/Wed/Thu?
 6. First-hour engagement plan stated (3-5 2nd-degree comments to land)?
 7. Pillar tag declared (`[Pillar 1: scar]`, `[Pillar 2: founder-op]`, `[Pillar 3: AI/visibility]`)?
 
-If any self-check fails, fix before returning the draft.
+If any subjective check fails, fix before returning the draft.
 
 ## LLM Visibility Mode
 
