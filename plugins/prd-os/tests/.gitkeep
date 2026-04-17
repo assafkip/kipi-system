@@ -1,0 +1,2 @@
+# Workflow tests land here in step 9.
+# Tests pin plugin behavior and must pass against any host repo, not just this one.

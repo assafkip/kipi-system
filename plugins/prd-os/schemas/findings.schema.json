@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "prd-os finding",
+  "description": "One review finding attached to a PRD. Findings stream as JSONL (one JSON object per line) in the PRD's findings file. Every finding must have a disposition before the PRD can advance to `approved`.",
+  "type": "object",
+  "required": [
+    "id",
+    "prd_id",
+    "source",
+    "severity",
+    "disposition",
+    "body",
+    "created_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^finding-[0-9]+$",
+      "description": "Sequential within a PRD: finding-1, finding-2, ..."
+    },
+    "prd_id": {
+      "type": "string",
+      "description": "Matches the `id` frontmatter of the target PRD."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["codex-review", "codex-adversarial", "manual"],
+      "description": "Who produced this finding. Codex output should be normalized into this shape via a deterministic template step; the schema does not trust raw Codex output."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["blocker", "major", "minor", "nit"]
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["pending", "accepted", "rejected", "deferred"],
+      "description": "`pending` is the initial state. A PRD cannot advance to `approved` while any finding is still `pending`."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Required when disposition is `rejected` or `deferred`. Explains why the finding is not being fixed now."
+    },
+    "body": {
+      "type": "string",
+      "description": "The finding itself. Plain text. Keep to one concrete concern per finding."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Set when disposition leaves `pending`."
+    }
+  },
+  "additionalProperties": false
+}

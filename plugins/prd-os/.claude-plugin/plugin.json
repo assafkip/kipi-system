@@ -1,0 +1,8 @@
+{
+  "name": "prd-os",
+  "version": "0.1.0",
+  "description": "PRD operating system: capture rough ideas, draft reviewable PRDs, run Codex review and adversarial review, triage findings, decompose approved PRDs into atomic issue specs, and execute those issues with scope enforcement, stop-gate receipts, and Codex review.",
+  "author": {
+    "name": "Assaf Kipnis"
+  }
+}

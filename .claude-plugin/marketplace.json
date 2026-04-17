@@ -6,6 +6,7 @@
   "plugins": [
     { "name": "kipi-core", "source": "./plugins/kipi-core", "description": "Core founder OS skills (voice, research, AUDHD, linkedin-brand)", "category": "productivity" },
     { "name": "kipi-ops", "source": "./plugins/kipi-ops", "description": "GTM and council skills", "category": "productivity" },
-    { "name": "kipi-design", "source": "./plugins/kipi-design", "description": "Brand, UI/UX, and design skills", "category": "productivity" }
+    { "name": "kipi-design", "source": "./plugins/kipi-design", "description": "Brand, UI/UX, and design skills", "category": "productivity" },
+    { "name": "prd-os", "source": "./plugins/prd-os", "description": "PRD lifecycle: draft, Codex review, triage, approve, split into atomic issues, execute with scope enforcement", "category": "productivity" }
   ]
 }
