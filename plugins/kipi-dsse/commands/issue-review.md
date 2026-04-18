@@ -10,6 +10,7 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    ```bash
    ALLOWED=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" allowed-files)
+   ISSUE_ID=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status | python3 -c "import sys,json; print(json.load(sys.stdin).get('issue_id',''))")
    ```
 
    `$ALLOWED` is a JSON array (e.g. `["q-ktlyst/.q-system/agent-pipeline/schemas/**","q-ktlyst/.q-system/scripts/**"]`). If empty, stop and tell the founder the spec has no scope.
@@ -32,6 +33,15 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    Use `--base origin/main --background` unless the diff is trivially small (1-2 files). When the command returns, wait for completion via `codex:result` / `codex:status`. Paste the full verdict block to the founder verbatim.
 
+   **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
+
+   ```bash
+   echo '<JSON_ARRAY>' | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_findings.py" \
+     add "$ISSUE_ID" --source codex-review --allowed-files-json "$ALLOWED"
+   ```
+
+   If the standard review returned approve with no findings, skip the writer call for this source. Do this before invoking the adversarial pass in step 6.
+
 5. Try to claim an "adversarial" review slot:
 
    ```bash
@@ -50,20 +60,20 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    Same `--base origin/main --background` pattern. Wait for completion. Paste verdict verbatim.
 
-7. Pipe each review's findings into the per-finding writer. Codex output may be free-form; translate to `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
+   **Immediately pipe the adversarial-review findings to disk** (same compaction reason as step 4):
 
    ```bash
    echo '<JSON_ARRAY>' | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_findings.py" \
-     add <issue-id> --source codex-review --allowed-files-json "$ALLOWED"
+     add "$ISSUE_ID" --source codex-adversarial --allowed-files-json "$ALLOWED"
    ```
 
-   Repeat with `--source codex-adversarial` for the adversarial pass. If a review returned approve with no findings, skip the writer call for that source.
+   If the adversarial review returned approve with no findings, skip the writer call for this source.
 
-8. If both reviews completed (regardless of verdict, even if findings exist):
+7. If both reviews completed (regardless of verdict, even if findings exist):
    - Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" mark reviewed`.
    - Report: "reviewed receipt recorded at <timestamp>. Findings now belong to `/issue-closeout` triage."
 
-9. If either review failed to complete (Codex error, timeout, parse error):
+8. If either review failed to complete (Codex error, timeout, parse error):
    - Do NOT call `mark reviewed`.
    - Note: the slot was already claimed in step 3 / step 5. Re-running `/issue-review` will hit the cap. Tell the founder to retry with `ISSUE_ALLOW_REVIEW_REPEAT=1` if the failure was transient.
    - Report the failure mode. Stop.

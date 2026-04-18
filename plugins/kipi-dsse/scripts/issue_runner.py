@@ -14,7 +14,8 @@ Subcommands:
   gate                     Exit 0 if stop is allowed, exit 2 if gate blocks
   mark <receipt>           Set a receipt timestamp (verified|reviewed|findings_triaged)
   approve                  Flip spec status open -> in-progress; reset stale receipts
-  close                    Verify all receipts; flip status=closed; clear active state
+  amend --reason STR       Re-snapshot spec scope, clear verified+reviewed receipts, log amendment
+  close                    Verify all receipts; flip status=closed; flush amendments to spec footer; clear state
   clear                    Clear active state (for abandoned work)
   allowed-files            Print snapshotted allowed_files as JSON array
   record-review <kind>     Increment review round counter (standard|adversarial) under cap
@@ -211,6 +212,9 @@ def _empty_state() -> dict:
         "receipts": {k: None for k in RECEIPT_FIELDS},
         "review_rounds": {k: 0 for k in REVIEW_KINDS},
         "allowed_files_snapshot": [],
+        "required_checks_snapshot": [],
+        "disallowed_files_snapshot": [],
+        "amendments": [],
     }
 
 
@@ -220,8 +224,10 @@ def _migrate_state(state: dict) -> dict:
     else:
         for k in REVIEW_KINDS:
             state["review_rounds"].setdefault(k, 0)
-    if "allowed_files_snapshot" not in state:
-        state["allowed_files_snapshot"] = []
+    state.setdefault("allowed_files_snapshot", [])
+    state.setdefault("required_checks_snapshot", [])
+    state.setdefault("disallowed_files_snapshot", [])
+    state.setdefault("amendments", [])
     return state
 
 
@@ -242,7 +248,8 @@ def _now_iso() -> str:
 def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     path, fm, _ = _load_spec(paths, args.issue_id)
     allowed = fm.get("allowed_files", []) or []
-    checks = fm.get("required_checks", [])
+    checks = fm.get("required_checks", []) or []
+    disallowed = fm.get("disallowed_files", []) or []
     reviews = fm.get("required_reviews", [])
     state = {
         "issue_id": fm.get("id", args.issue_id),
@@ -251,6 +258,9 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         "receipts": {k: None for k in RECEIPT_FIELDS},
         "review_rounds": {k: 0 for k in REVIEW_KINDS},
         "allowed_files_snapshot": list(allowed),
+        "required_checks_snapshot": list(checks),
+        "disallowed_files_snapshot": list(disallowed),
+        "amendments": [],
     }
     _write_state(paths, state)
     print(json.dumps({
@@ -396,8 +406,56 @@ def cmd_approve(paths: Paths, args: argparse.Namespace) -> int:
     state["receipts"] = {k: None for k in RECEIPT_FIELDS}
     state["review_rounds"] = {k: 0 for k in REVIEW_KINDS}
     state["allowed_files_snapshot"] = list(fm.get("allowed_files", []) or [])
+    state["required_checks_snapshot"] = list(fm.get("required_checks", []) or [])
+    state["disallowed_files_snapshot"] = list(fm.get("disallowed_files", []) or [])
+    state.setdefault("amendments", [])
     _write_state(paths, state)
     print(json.dumps({"approved": issue_id, "status": "in-progress"}))
+    return 0
+
+
+def cmd_amend(paths: Paths, args: argparse.Namespace) -> int:
+    reason = (args.reason or "").strip()
+    if not reason:
+        sys.stderr.write("amend requires a non-empty --reason\n")
+        return 2
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        sys.stderr.write("no active issue\n")
+        return 2
+    _, fm, _ = _load_spec(paths, issue_id)
+    old_snapshot = {
+        "allowed_files": list(state.get("allowed_files_snapshot", []) or []),
+        "required_checks": list(state.get("required_checks_snapshot", []) or []),
+        "disallowed_files": list(state.get("disallowed_files_snapshot", []) or []),
+    }
+    new_snapshot = {
+        "allowed_files": list(fm.get("allowed_files", []) or []),
+        "required_checks": list(fm.get("required_checks", []) or []),
+        "disallowed_files": list(fm.get("disallowed_files", []) or []),
+    }
+    state["allowed_files_snapshot"] = new_snapshot["allowed_files"]
+    state["required_checks_snapshot"] = new_snapshot["required_checks"]
+    state["disallowed_files_snapshot"] = new_snapshot["disallowed_files"]
+    receipts = state.setdefault("receipts", {k: None for k in RECEIPT_FIELDS})
+    receipts["verified"] = None
+    receipts["reviewed"] = None
+    entry = {
+        "timestamp": _now_iso(),
+        "reason": reason,
+        "old_snapshot": old_snapshot,
+        "new_snapshot": new_snapshot,
+    }
+    state.setdefault("amendments", []).append(entry)
+    _write_state(paths, state)
+    print(json.dumps({
+        "amended": issue_id,
+        "at": entry["timestamp"],
+        "reason": reason,
+        "cleared_receipts": ["verified", "reviewed"],
+        "amendment_count": len(state["amendments"]),
+    }, indent=2))
     return 0
 
 
@@ -428,10 +486,52 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
     )
+    amendments = state.get("amendments") or []
+    if amendments:
+        new_text = _append_amendments_footer(new_text, amendments)
     path.write_text(new_text)
     _write_state(paths, _empty_state())
-    print(json.dumps({"closed": issue_id, "spec": str(path.relative_to(paths.repo_root))}))
+    print(json.dumps({
+        "closed": issue_id,
+        "spec": str(path.relative_to(paths.repo_root)),
+        "amendments_flushed": len(amendments),
+    }))
     return 0
+
+
+def _render_amendment_entries(amendments: list) -> str:
+    lines: list[str] = []
+    for entry in amendments:
+        lines.append("")
+        lines.append(f"### {entry.get('timestamp', '')}")
+        lines.append(f"Reason: {entry.get('reason', '').strip()}")
+        lines.append("")
+        lines.append("Before:")
+        old = entry.get("old_snapshot", {}) or {}
+        lines.append(f"- allowed_files: {old.get('allowed_files', [])}")
+        lines.append(f"- required_checks: {old.get('required_checks', [])}")
+        lines.append(f"- disallowed_files: {old.get('disallowed_files', [])}")
+        lines.append("")
+        lines.append("After:")
+        new = entry.get("new_snapshot", {}) or {}
+        lines.append(f"- allowed_files: {new.get('allowed_files', [])}")
+        lines.append(f"- required_checks: {new.get('required_checks', [])}")
+        lines.append(f"- disallowed_files: {new.get('disallowed_files', [])}")
+    return "\n".join(lines) + "\n"
+
+
+def _append_amendments_footer(text: str, amendments: list) -> str:
+    """Append unflushed amendment entries under an '## Amendments' section.
+
+    If the section already exists (spec closed once, reopened, amended, closed
+    again — unusual but possible), new entries append below without duplicating
+    the header.
+    """
+    entries = _render_amendment_entries(amendments)
+    separator = "" if text.endswith("\n") else "\n"
+    if "## Amendments" in text:
+        return text + separator + entries
+    return text + separator + "\n## Amendments\n" + entries
 
 
 def cmd_clear(paths: Paths, args: argparse.Namespace) -> int:
@@ -541,6 +641,11 @@ def main(argv: list[str] | None = None) -> int:
     p_mark.set_defaults(func=cmd_mark)
 
     sub.add_parser("approve").set_defaults(func=cmd_approve)
+
+    p_amend = sub.add_parser("amend")
+    p_amend.add_argument("--reason", required=True, help="why the spec is being amended")
+    p_amend.set_defaults(func=cmd_amend)
+
     sub.add_parser("close").set_defaults(func=cmd_close)
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     sub.add_parser("allowed-files").set_defaults(func=cmd_allowed_files)
