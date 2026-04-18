@@ -1,0 +1,10 @@
+{
+  "name": "kipi-dsse",
+  "version": "0.1.0",
+  "description": "DSSE issue workflow: scope-enforced edits, per-finding dispositions, Codex review gates. Provides /issue-start, /issue-approve, /issue-verify, /issue-review, /issue-closeout. Consumes issue specs created by prd-os or dropped in manually.",
+  "author": {
+    "name": "Assaf Kipnis"
+  },
+  "repository": "https://github.com/assafkip/kipi-system",
+  "license": "MIT"
+}

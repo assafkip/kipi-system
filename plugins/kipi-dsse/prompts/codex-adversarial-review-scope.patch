@@ -1,0 +1,73 @@
+From: KTLYST Strategy <assafkip@gmail.com>
+Subject: [PATCH] adversarial-review: honor scope filter, calibrate approval, dampen post-round-1 churn
+
+The adversarial-review prompt currently optimizes for "find something." When a
+caller invokes it more than once on the same diff, or against a small contract
+slice that is already correct, the prompt's bias toward findings drives the
+model to manufacture concerns outside the change surface. In an iterative DSSE
+workflow this loops indefinitely: each new "finding" gets patched, which
+regenerates the diff, which generates new "findings."
+
+This patch makes three small changes:
+
+1. Adds a <scope_filter> block. If the user_focus contains a "Scope filter" or
+   "Contract slice" line (e.g. a JSON list of allowed paths), the model treats
+   it as a hard constraint and explicitly marks anything outside it as
+   out-of-contract instead of proposing a patch.
+
+2. Reframes the approval clause in <structured_output_contract>. Today's
+   wording ("only if you cannot support any substantive adversarial finding")
+   reads as "approval is the failure case." New wording explicitly licenses
+   honest scope-bounded approval.
+
+3. Adds one line to <calibration_rules>: when a scope filter or contract slice
+   is present and the slice has already been reviewed once, raise the bar.
+   Iteration is not a license to expand the contract.
+
+The change is purely additive to the prompt template. Existing call sites that
+do not pass a scope filter behave identically.
+
+---
+ prompts/adversarial-review.md | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/prompts/adversarial-review.md b/prompts/adversarial-review.md
+index 0000000..0000001 100644
+--- a/prompts/adversarial-review.md
++++ b/prompts/adversarial-review.md
+@@ -8,6 +8,16 @@ Target: {{TARGET_LABEL}}
+ User focus: {{USER_FOCUS}}
+ </task>
+
++<scope_filter>
++The user focus may include a "Scope filter" line listing allowed paths (e.g. a JSON array or glob list) and/or a "Contract slice" directive.
++If a scope filter is present, treat it as a hard constraint:
++- Limit findings to defects inside the listed paths.
++- A finding that requires changes outside the scope is OUT OF CONTRACT for this review. Mark it explicitly as out-of-scope in the body and do not propose a patch for it.
++- Do not flag pre-existing patterns in unchanged code, even if you would normally flag them.
++- Do not raise edge cases that would require new follow-up issues unless they are defects in the diff itself.
++- If you have no defect inside the contract slice after honest review, return `approve`. Honest scope-bounded approval is the right answer; manufacturing findings to satisfy adversarial framing is not.
++</scope_filter>
++
+ <operating_stance>
+ Default to skepticism.
+ Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
+@@ -49,7 +59,7 @@ Every finding must include:
+ Return only valid JSON matching the provided schema.
+ Keep the output compact and specific.
+ Use `needs-attention` if there is any material risk worth blocking on.
+-Use `approve` only if you cannot support any substantive adversarial finding from the provided context.
++Use `approve` if you cannot support any substantive adversarial finding inside the contract slice. Approval is the correct verdict when the diff is sound within its declared scope; do not invent findings to avoid approving.
+ Every finding must include:
+ - the affected file
+ - `line_start` and `line_end`
+@@ -69,6 +79,7 @@ Be aggressive, but stay grounded.
+ Prefer one strong finding over several weak ones.
+ Do not dilute serious issues with filler.
+ If the change looks safe, say so directly and return no findings.
++If a scope filter or contract slice is present and you have already reviewed this slice once, raise the bar for additional findings: only report defects with a concrete reproduction path, not edge cases that would require speculation. Iteration is not a license to expand the contract.
+ </calibration_rules>
+
+ <final_check>
+--
+2.40.0

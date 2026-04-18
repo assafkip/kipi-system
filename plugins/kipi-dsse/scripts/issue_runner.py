@@ -1,0 +1,558 @@
+#!/usr/bin/env python3
+"""Portable DSSE issue-runner for the kipi-dsse plugin.
+
+Loads issue specs, enforces scope, records receipts, gates stop. Repo root is
+resolved via CLAUDE_PROJECT_DIR (set by Claude Code when hooks/commands run)
+with a CWD walk-up fallback for tests and direct invocation. Issues, findings,
+and state directories are read from `.prd-os/config.json` when present; when
+absent, defaults are used that work for any generic instance.
+
+Subcommands:
+  load <issue-id>          Load spec, write active-issue state, print JSON summary
+  status                   Print active issue + receipt state
+  scope <path>             Exit 0 if path is in allowed_files (or carve-out), exit 2 otherwise
+  gate                     Exit 0 if stop is allowed, exit 2 if gate blocks
+  mark <receipt>           Set a receipt timestamp (verified|reviewed|findings_triaged)
+  approve                  Flip spec status open -> in-progress; reset stale receipts
+  close                    Verify all receipts; flip status=closed; clear active state
+  clear                    Clear active state (for abandoned work)
+  allowed-files            Print snapshotted allowed_files as JSON array
+  record-review <kind>     Increment review round counter (standard|adversarial) under cap
+
+Behavior contract mirrors the pre-plugin runner at
+q-ktlyst/.q-system/scripts/issue-runner.py. Exit codes, stderr messages, and
+stdout JSON are preserved so existing commands and hooks see the same behavior.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
+REVIEW_KINDS = ("standard", "adversarial")
+REVIEW_CAP_DEFAULTS = {"standard": 2, "adversarial": 1}
+REVIEW_CAP_OVERRIDE_ENV = "ISSUE_ALLOW_REVIEW_REPEAT"
+
+CONFIG_RELPATH = ".prd-os/config.json"
+DEFAULT_ISSUES_DIR = "issues"
+DEFAULT_FINDINGS_SUBDIR = "findings"
+DEFAULT_STATE_DIR = ".claude/state"
+
+
+# ---------------------------------------------------------------------------
+# Repo root + config resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_repo_root(cli_override: str | None) -> Path:
+    """Locate the host repo. Priority: --repo-root, CLAUDE_PROJECT_DIR, CWD walk-up."""
+    if cli_override:
+        return Path(cli_override).resolve()
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        candidate = Path(env).resolve()
+        if candidate.is_dir():
+            return candidate
+    start = Path.cwd().resolve()
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists() or (candidate / CONFIG_RELPATH).is_file():
+            return candidate
+    return start
+
+
+class Paths:
+    def __init__(self, repo_root: Path):
+        self.repo_root = repo_root
+        cfg = self._load_config(repo_root)
+        self.issues_dir = repo_root / cfg.get("issues_dir", DEFAULT_ISSUES_DIR)
+        findings_override = cfg.get("findings_dir")
+        if findings_override:
+            # When a shared findings_dir is configured (e.g. `.prd-os/findings`
+            # that also holds PRD findings), keep issue findings under an
+            # `/issue/` subdir so the two types don't collide.
+            self.findings_dir = repo_root / findings_override / "issue"
+        else:
+            self.findings_dir = self.issues_dir / DEFAULT_FINDINGS_SUBDIR
+        state_dir = repo_root / cfg.get("state_dir", DEFAULT_STATE_DIR)
+        self.state_path = state_dir / "active-issue.json"
+
+    @staticmethod
+    def _load_config(repo_root: Path) -> dict:
+        path = repo_root / CONFIG_RELPATH
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# Spec parsing (minimal YAML frontmatter — no external deps)
+# ---------------------------------------------------------------------------
+
+
+def _parse_frontmatter(text: str) -> dict:
+    if not text.startswith("---"):
+        raise ValueError("spec missing YAML frontmatter")
+    end = text.find("\n---", 3)
+    if end == -1:
+        raise ValueError("spec frontmatter not closed with ---")
+    block = text[3:end].strip("\n")
+    return _parse_yaml_block(block)
+
+
+def _parse_yaml_block(block: str) -> dict:
+    result: dict = {}
+    current_key: str | None = None
+    for raw in block.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        if line.startswith("  - "):
+            if current_key is None:
+                raise ValueError("list item without key: " + raw)
+            result.setdefault(current_key, []).append(line[4:].strip())
+            continue
+        if ":" not in line:
+            raise ValueError("cannot parse line: " + raw)
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value == "":
+            result[key] = []
+            current_key = key
+        elif value == "[]":
+            result[key] = []
+            current_key = None
+        else:
+            result[key] = value
+            current_key = None
+    return result
+
+
+def _load_spec(paths: Paths, issue_id: str) -> tuple[Path, dict, str]:
+    candidates = [
+        paths.issues_dir / f"{issue_id}.md",
+        paths.issues_dir / issue_id,
+    ]
+    for path in candidates:
+        if path.is_file():
+            text = path.read_text()
+            return path, _parse_frontmatter(text), text
+    raise FileNotFoundError(f"issue spec not found for id={issue_id!r}")
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+
+def _read_state(paths: Paths) -> dict:
+    if not paths.state_path.exists():
+        return _empty_state()
+    try:
+        return _migrate_state(json.loads(paths.state_path.read_text()))
+    except json.JSONDecodeError:
+        return _empty_state()
+
+
+def _findings_path(paths: Paths, issue_id: str) -> Path:
+    return paths.findings_dir / f"{issue_id}-findings.jsonl"
+
+
+def _count_in_scope_pending(paths: Paths, issue_id: str) -> tuple[int, list[str]]:
+    path = _findings_path(paths, issue_id)
+    if not path.is_file():
+        return 0, []
+    pending = 0
+    bad: list[str] = []
+    with path.open() as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                bad.append(f"{path.name}:{lineno}: invalid JSON ({exc})")
+                continue
+            if not isinstance(rec, dict):
+                bad.append(f"{path.name}:{lineno}: not an object")
+                continue
+            if rec.get("out_of_scope"):
+                continue
+            disp = rec.get("disposition")
+            if disp == "pending":
+                pending += 1
+            elif disp in ("rejected", "deferred"):
+                rationale = rec.get("rationale")
+                if not isinstance(rationale, str) or not rationale.strip():
+                    bad.append(
+                        f"{rec.get('id', '?')}: disposition={disp!r} missing rationale"
+                    )
+    return pending, bad
+
+
+def _empty_state() -> dict:
+    return {
+        "issue_id": None,
+        "loaded_at": None,
+        "spec_path": None,
+        "receipts": {k: None for k in RECEIPT_FIELDS},
+        "review_rounds": {k: 0 for k in REVIEW_KINDS},
+        "allowed_files_snapshot": [],
+    }
+
+
+def _migrate_state(state: dict) -> dict:
+    if "review_rounds" not in state:
+        state["review_rounds"] = {k: 0 for k in REVIEW_KINDS}
+    else:
+        for k in REVIEW_KINDS:
+            state["review_rounds"].setdefault(k, 0)
+    if "allowed_files_snapshot" not in state:
+        state["allowed_files_snapshot"] = []
+    return state
+
+
+def _write_state(paths: Paths, state: dict) -> None:
+    paths.state_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.state_path.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
+    path, fm, _ = _load_spec(paths, args.issue_id)
+    allowed = fm.get("allowed_files", []) or []
+    checks = fm.get("required_checks", [])
+    reviews = fm.get("required_reviews", [])
+    state = {
+        "issue_id": fm.get("id", args.issue_id),
+        "loaded_at": _now_iso(),
+        "spec_path": str(path.relative_to(paths.repo_root)),
+        "receipts": {k: None for k in RECEIPT_FIELDS},
+        "review_rounds": {k: 0 for k in REVIEW_KINDS},
+        "allowed_files_snapshot": list(allowed),
+    }
+    _write_state(paths, state)
+    print(json.dumps({
+        "loaded": state["issue_id"],
+        "spec_path": state["spec_path"],
+        "title": fm.get("title", ""),
+        "priority": fm.get("priority", ""),
+        "allowed_files": allowed,
+        "required_checks": checks,
+        "required_reviews": reviews,
+    }, indent=2))
+    return 0
+
+
+def cmd_status(paths: Paths, args: argparse.Namespace) -> int:
+    state = _read_state(paths)
+    print(json.dumps(state, indent=2))
+    return 0
+
+
+def _workflow_control_plane_paths(state: dict) -> set[str]:
+    """Paths the DSSE workflow itself needs Claude to Edit while an issue is loaded.
+
+    Only the active issue's own spec file. The state file is intentionally NOT
+    here: it holds receipts and would allow synthetic receipts or silent
+    deactivation if editable. The runner writes state via write_text from
+    Python, which never passes through the Edit/Write tool scope check.
+    """
+    paths: set[str] = set()
+    spec = state.get("spec_path")
+    if spec:
+        paths.add(_normalize_path(spec, None))
+    return paths
+
+
+def cmd_scope(paths: Paths, args: argparse.Namespace) -> int:
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        return 0
+    target_rel = _normalize_path(args.path, paths.repo_root)
+    if target_rel in _workflow_control_plane_paths(state):
+        return 0
+    _, fm, _ = _load_spec(paths, issue_id)
+    allowed = fm.get("allowed_files", []) or []
+    disallowed = fm.get("disallowed_files", []) or []
+    if any(_match(pat, target_rel) for pat in disallowed):
+        sys.stderr.write(
+            f"DSSE scope deny: {target_rel} matched disallowed in {issue_id}\n"
+        )
+        return 2
+    if not allowed:
+        sys.stderr.write(
+            "DSSE scope block: "
+            f"allowed_files is empty for {issue_id} — no edits permitted "
+            "outside the active spec (control-plane carve-out). "
+            f"Widen allowed_files in {state.get('spec_path')} first, "
+            "or set ISSUE_GATE_OFF=1.\n"
+        )
+        return 2
+    if any(_match(pat, target_rel) for pat in allowed):
+        return 0
+    sys.stderr.write(
+        "DSSE scope block: "
+        f"{target_rel} is not in allowed_files for {issue_id}. "
+        f"Update {state.get('spec_path')} first or set ISSUE_GATE_OFF=1.\n"
+    )
+    return 2
+
+
+def cmd_gate(paths: Paths, args: argparse.Namespace) -> int:
+    if os.environ.get("ISSUE_GATE_OFF") == "1":
+        return 0
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        return 0
+    try:
+        _, fm, _ = _load_spec(paths, issue_id)
+    except FileNotFoundError:
+        return 0
+    status = (fm.get("status") or "").strip()
+    if status in ("open", "closed"):
+        return 0
+    receipts = state.get("receipts", {})
+    missing = [k for k in RECEIPT_FIELDS if not receipts.get(k)]
+    if missing:
+        sys.stderr.write(
+            "DSSE stop gate: active issue "
+            f"{issue_id} has missing receipts: {', '.join(missing)}. "
+            "Run /issue-verify, /issue-review, /issue-closeout. "
+            "Override with ISSUE_GATE_OFF=1.\n"
+        )
+        return 2
+    pending, bad = _count_in_scope_pending(paths, issue_id)
+    if pending or bad:
+        msgs = []
+        if pending:
+            msgs.append(f"{pending} in-scope finding(s) still pending")
+        if bad:
+            msgs.append(f"{len(bad)} finding(s) with invalid disposition: {bad[:3]}")
+        sys.stderr.write(
+            "DSSE stop gate: active issue "
+            f"{issue_id} cannot close: {'; '.join(msgs)}. "
+            "Run /issue-closeout to triage. Override with ISSUE_GATE_OFF=1.\n"
+        )
+        return 2
+    return 0
+
+
+def cmd_mark(paths: Paths, args: argparse.Namespace) -> int:
+    if args.receipt not in RECEIPT_FIELDS:
+        sys.stderr.write(f"unknown receipt: {args.receipt}\n")
+        return 2
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    state["receipts"][args.receipt] = _now_iso()
+    _write_state(paths, state)
+    print(json.dumps({"marked": args.receipt, "at": state["receipts"][args.receipt]}))
+    return 0
+
+
+def cmd_approve(paths: Paths, args: argparse.Namespace) -> int:
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        sys.stderr.write("no active issue\n")
+        return 2
+    path, fm, text = _load_spec(paths, issue_id)
+    current = (fm.get("status") or "").strip()
+    if current == "in-progress":
+        print(json.dumps({"approved": issue_id, "status": "in-progress", "note": "already"}))
+        return 0
+    if current != "open":
+        sys.stderr.write(
+            f"cannot approve {issue_id}: status is {current!r}, expected 'open'\n"
+        )
+        return 2
+    new_text = re.sub(r"(?m)^status:\s*.+$", "status: in-progress", text, count=1)
+    path.write_text(new_text)
+    state["receipts"] = {k: None for k in RECEIPT_FIELDS}
+    state["review_rounds"] = {k: 0 for k in REVIEW_KINDS}
+    state["allowed_files_snapshot"] = list(fm.get("allowed_files", []) or [])
+    _write_state(paths, state)
+    print(json.dumps({"approved": issue_id, "status": "in-progress"}))
+    return 0
+
+
+def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        sys.stderr.write("no active issue\n")
+        return 2
+    missing = [k for k in RECEIPT_FIELDS if not state["receipts"].get(k)]
+    if missing:
+        sys.stderr.write(
+            f"cannot close {issue_id}: missing receipts {', '.join(missing)}\n"
+        )
+        return 2
+    pending, bad = _count_in_scope_pending(paths, issue_id)
+    if pending or bad:
+        msgs = []
+        if pending:
+            msgs.append(f"{pending} in-scope finding(s) still pending")
+        if bad:
+            msgs.append(f"invalid disposition records: {bad[:3]}")
+        sys.stderr.write(
+            f"cannot close {issue_id}: {'; '.join(msgs)}\n"
+        )
+        return 2
+    path, fm, text = _load_spec(paths, issue_id)
+    new_text = re.sub(
+        r"(?m)^status:\s*.+$", "status: closed", text, count=1
+    )
+    path.write_text(new_text)
+    _write_state(paths, _empty_state())
+    print(json.dumps({"closed": issue_id, "spec": str(path.relative_to(paths.repo_root))}))
+    return 0
+
+
+def cmd_clear(paths: Paths, args: argparse.Namespace) -> int:
+    _write_state(paths, _empty_state())
+    print("cleared")
+    return 0
+
+
+def cmd_allowed_files(paths: Paths, args: argparse.Namespace) -> int:
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    print(json.dumps(state.get("allowed_files_snapshot", [])))
+    return 0
+
+
+def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
+    if args.kind not in REVIEW_KINDS:
+        sys.stderr.write(f"kind must be one of {REVIEW_KINDS}; got {args.kind!r}\n")
+        return 2
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    rounds = state.setdefault("review_rounds", {k: 0 for k in REVIEW_KINDS})
+    current = rounds.get(args.kind, 0)
+    cap = REVIEW_CAP_DEFAULTS[args.kind]
+    override = os.environ.get(REVIEW_CAP_OVERRIDE_ENV) == "1"
+    if current >= cap and not override:
+        sys.stderr.write(
+            f"review cap reached for {args.kind}: {current}/{cap}. "
+            f"Findings beyond this round should auto-defer. "
+            f"Override with {REVIEW_CAP_OVERRIDE_ENV}=1 if you really want another round.\n"
+        )
+        return 2
+    rounds[args.kind] = current + 1
+    _write_state(paths, state)
+    print(json.dumps({
+        "kind": args.kind,
+        "round": rounds[args.kind],
+        "cap": cap,
+        "capped": rounds[args.kind] >= cap,
+    }))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_path(target: str, repo_root: Path | None) -> str:
+    """Resolve target to a repo-relative path, collapsing '..' segments.
+
+    Inputs that escape the repo root are returned as absolute filesystem
+    paths so they cannot accidentally fnmatch any repo-rooted allowed_files
+    glob. Falls back to the raw input when repo_root is unknown (used by
+    control-plane-paths resolution where the spec path is already relative).
+    """
+    p = Path(target)
+    if repo_root is None:
+        return target
+    if not p.is_absolute():
+        p = repo_root / p
+    resolved = p.resolve()
+    try:
+        return str(resolved.relative_to(repo_root))
+    except ValueError:
+        return str(resolved)
+
+
+def _match(pattern: str, path: str) -> bool:
+    if "**" in pattern:
+        regex = "^" + re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*") + "$"
+        return re.match(regex, path) is not None
+    return fnmatch.fnmatch(path, pattern)
+
+
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo-root",
+        help="override repo root (default: CLAUDE_PROJECT_DIR or walk-up)",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_load = sub.add_parser("load")
+    p_load.add_argument("issue_id")
+    p_load.set_defaults(func=cmd_load)
+
+    sub.add_parser("status").set_defaults(func=cmd_status)
+
+    p_scope = sub.add_parser("scope")
+    p_scope.add_argument("path")
+    p_scope.set_defaults(func=cmd_scope)
+
+    sub.add_parser("gate").set_defaults(func=cmd_gate)
+
+    p_mark = sub.add_parser("mark")
+    p_mark.add_argument("receipt")
+    p_mark.set_defaults(func=cmd_mark)
+
+    sub.add_parser("approve").set_defaults(func=cmd_approve)
+    sub.add_parser("close").set_defaults(func=cmd_close)
+    sub.add_parser("clear").set_defaults(func=cmd_clear)
+    sub.add_parser("allowed-files").set_defaults(func=cmd_allowed_files)
+
+    p_record = sub.add_parser("record-review")
+    p_record.add_argument("kind", help="standard|adversarial")
+    p_record.set_defaults(func=cmd_record_review)
+
+    args = parser.parse_args(argv)
+    paths = Paths(_resolve_repo_root(args.repo_root))
+    return args.func(paths, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
