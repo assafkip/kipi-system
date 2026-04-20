@@ -103,6 +103,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "event_coordinator",
+      "path": "/Users/assafkip/projects/ktlyst-hub/event_coordinator",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
