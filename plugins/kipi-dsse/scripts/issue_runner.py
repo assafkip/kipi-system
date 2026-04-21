@@ -32,6 +32,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,7 @@ CONFIG_RELPATH = ".prd-os/config.json"
 DEFAULT_ISSUES_DIR = "issues"
 DEFAULT_FINDINGS_SUBDIR = "findings"
 DEFAULT_STATE_DIR = ".claude/state"
+DEFAULT_RECEIPTS_PATH = ".prd-os/receipts.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,7 @@ class Paths:
             self.findings_dir = self.issues_dir / DEFAULT_FINDINGS_SUBDIR
         state_dir = repo_root / cfg.get("state_dir", DEFAULT_STATE_DIR)
         self.state_path = state_dir / "active-issue.json"
+        self.receipts_path = repo_root / cfg.get("receipts_path", DEFAULT_RECEIPTS_PATH)
 
     @staticmethod
     def _load_config(repo_root: Path) -> dict:
@@ -271,6 +274,53 @@ def _write_state(paths: Paths, state: dict) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _git_head_sha(repo_root: Path) -> str | None:
+    """Return the current HEAD sha, or None if the tree has no commit yet."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _extract_marker_fields(text: str) -> dict[str, str] | None:
+    """Return {prd_id, finding_id, at} from the spec's generated-by marker."""
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    body = text[end + len("\n---"):]
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        m = MARKER_RE.fullmatch(stripped)
+        if m is None:
+            return None
+        return {
+            "prd_id": m.group("prd"),
+            "finding_id": m.group("finding"),
+            "marker_at": m.group("at"),
+        }
+    return None
+
+
+def _append_receipt(path: Path, entry: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +570,32 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         )
         return 2
     path, fm, text = _load_spec(paths, issue_id)
+    sha = _git_head_sha(paths.repo_root)
+    if not sha:
+        sys.stderr.write(
+            f"cannot close {issue_id}: no git commit sha for working tree. "
+            "Commit your work first so the receipt can pin to HEAD.\n"
+        )
+        return 2
+    marker = _extract_marker_fields(text)
+    if marker is None:
+        sys.stderr.write(
+            f"cannot close {issue_id}: spec is missing a prd_split.py "
+            "generated-by marker. Regenerate the spec via /prd-split.\n"
+        )
+        return 2
+    closed_at = _now_iso()
+    receipt = {
+        "issue_id": issue_id,
+        "prd_id": marker["prd_id"],
+        "finding_id": marker["finding_id"],
+        "closed_at": closed_at,
+        "verified_at": state["receipts"].get("verified"),
+        "reviewed_at": state["receipts"].get("reviewed"),
+        "findings_triaged_at": state["receipts"].get("findings_triaged"),
+        "commit_sha": sha,
+    }
+    _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
     )
@@ -532,6 +608,8 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "closed": issue_id,
         "spec": str(path.relative_to(paths.repo_root)),
         "amendments_flushed": len(amendments),
+        "commit_sha": sha,
+        "receipt": str(paths.receipts_path.relative_to(paths.repo_root)),
     }))
     return 0
 
