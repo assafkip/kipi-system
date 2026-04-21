@@ -242,6 +242,10 @@ def cmd_advance(cfg: Config, args: argparse.Namespace) -> int:
         if rc != 0:
             sys.stderr.write(err)
             return rc
+        rc, err = _issues_manifest_gate(cfg, state)
+        if rc != 0:
+            sys.stderr.write(err)
+            return rc
 
     spec_path = cfg.repo_root / state["spec_path"]
     text = spec_path.read_text()
@@ -287,6 +291,114 @@ def cmd_clear(cfg: Config, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Findings gate
 # ---------------------------------------------------------------------------
+
+
+def _issues_manifest_gate(cfg: Config, state: dict) -> tuple[int, str]:
+    """G1: PRD must carry a ## Issues manifest covering every accepted finding.
+
+    Returns (exit_code, stderr_text). Zero means approval may proceed.
+    """
+    spec_path = cfg.repo_root / state["spec_path"]
+    text = spec_path.read_text()
+
+    # Find body after frontmatter end.
+    if not text.startswith("---"):
+        return 2, f"{spec_path}: spec missing YAML frontmatter\n"
+    fm_end = text.find("\n---", 3)
+    if fm_end == -1:
+        return 2, f"{spec_path}: frontmatter not closed with ---\n"
+    body = text[fm_end + len("\n---"):]
+
+    issues_match = re.search(r"(?m)^##\s+Issues\s*$", body)
+    if not issues_match:
+        return 2, (
+            "approval blocked: PRD has no ## Issues manifest. "
+            "Add a `## Issues` section with a fenced ```json block listing "
+            "one entry per accepted finding (finding_id, allowed_files, required_checks).\n"
+        )
+    rest = body[issues_match.end():]
+    fence = re.search(r"```(?:json)?\s*\n(.*?)\n```", rest, flags=re.DOTALL)
+    if not fence:
+        return 2, (
+            "approval blocked: PRD ## Issues manifest is missing a fenced ```json block.\n"
+        )
+    try:
+        entries = json.loads(fence.group(1))
+    except json.JSONDecodeError as exc:
+        return 2, f"approval blocked: issues manifest is not valid JSON ({exc}).\n"
+    if not isinstance(entries, list):
+        return 2, "approval blocked: issues manifest must be a JSON array.\n"
+
+    # Per-entry field validation.
+    seen_finding_ids: set[str] = set()
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            return 2, f"approval blocked: manifest entry #{i} must be a JSON object.\n"
+        fid = entry.get("finding_id")
+        if not isinstance(fid, str) or not fid:
+            return 2, (
+                f"approval blocked: manifest entry #{i} is missing a non-empty "
+                "`finding_id` string.\n"
+            )
+        if fid in seen_finding_ids:
+            return 2, (
+                f"approval blocked: finding_id {fid!r} appears in multiple "
+                "manifest entries.\n"
+            )
+        seen_finding_ids.add(fid)
+        allowed = entry.get("allowed_files")
+        if not isinstance(allowed, list) or not allowed or not all(
+            isinstance(x, str) and x for x in allowed
+        ):
+            return 2, (
+                f"approval blocked: manifest entry for {fid!r} has empty or "
+                "invalid allowed_files (must be a non-empty list of non-empty strings).\n"
+            )
+        checks = entry.get("required_checks")
+        if not isinstance(checks, list) or not checks or not all(
+            isinstance(x, str) and x for x in checks
+        ):
+            return 2, (
+                f"approval blocked: manifest entry for {fid!r} has empty or "
+                "invalid required_checks (must be a non-empty list of non-empty strings).\n"
+            )
+
+    # Cross-check against findings JSONL.
+    fm = _parse_frontmatter(text)
+    rel = fm.get("findings_path")
+    accepted: set[str] = set()
+    if rel:
+        findings_file = cfg.repo_root / rel
+        if findings_file.is_file():
+            with findings_file.open() as fh:
+                for lineno, raw in enumerate(fh, start=1):
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # _findings_gate already fails closed on this
+                    if isinstance(rec, dict) and rec.get("disposition") == "accepted":
+                        fid = rec.get("id")
+                        if isinstance(fid, str):
+                            accepted.add(fid)
+
+    missing = sorted(accepted - seen_finding_ids)
+    if missing:
+        lines = ["approval blocked: accepted findings have no manifest entry (not covered):"]
+        for fid in missing:
+            lines.append(f"  - {fid}")
+        return 2, "\n".join(lines) + "\n"
+
+    unknown = sorted(seen_finding_ids - accepted)
+    if unknown:
+        lines = ["approval blocked: manifest references unknown finding_id values:"]
+        for fid in unknown:
+            lines.append(f"  - {fid}")
+        return 2, "\n".join(lines) + "\n"
+
+    return 0, ""
 
 
 def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
