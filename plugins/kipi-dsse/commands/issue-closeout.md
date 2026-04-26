@@ -2,6 +2,8 @@
 description: Triage Codex findings via per-finding dispositions, mark findings_triaged, close the active issue
 ---
 
+**Autonomy contract.** This step is agent-handled, not founder-gated. Once every pending in-scope finding has a non-pending disposition (accepted/rejected/deferred) AND every accepted patch has been applied with required_checks green, close the issue automatically without founder confirmation. The founder is notified post-closeout via the final report (step 6). Founder-gated steps remain: `/issue-approve`, `/prd-approve`, `/prd-split` commit, and any mid-issue scope amendment. Disposition rationale text and patch correctness still need to meet the merge-blocker rules in step 3. Autonomy is about removing the gate prompt, not lowering the bar.
+
 Close the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm `receipts.verified` and `receipts.reviewed` are both set. If either is null, stop and tell the founder which step is missing. Do not relaunch `/issue-review` on your own initiative; that command has its own iteration cap.

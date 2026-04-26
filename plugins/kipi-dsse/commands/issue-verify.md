@@ -2,6 +2,8 @@
 description: Run all required_checks for the active issue and record the verified receipt
 ---
 
+**Autonomy contract.** This step is agent-handled, not founder-gated. Verify automatically once `required_checks` have all exited 0. Record the verified receipt without founder confirmation. The receipt itself is the audit signal: the founder reads it after the fact, not before. Founder-gated steps are still: `/issue-approve`, `/prd-approve`, `/prd-split` commit, and any scope amendment mid-issue. This step is not one of them.
+
 Verify the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm an issue is loaded. If `issue_id` is null, stop and tell the founder to run `/issue-start <issue-id>` first.
