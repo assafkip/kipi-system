@@ -237,6 +237,11 @@ def cmd_advance(cfg: Config, args: argparse.Namespace) -> int:
         )
         return 2
 
+    rc, err = _issues_dedup_gate(cfg, state)
+    if rc != 0:
+        sys.stderr.write(err)
+        return rc
+
     if target == "approved":
         rc, err = _findings_gate(cfg, state)
         if rc != 0:
@@ -301,6 +306,33 @@ def cmd_clear(cfg: Config, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Findings gate
 # ---------------------------------------------------------------------------
+
+
+def _issues_dedup_gate(cfg: Config, state: dict) -> tuple[int, str]:
+    """Reject advance when the PRD body has more than one `## Issues` heading.
+
+    Recurring drafting artifact: author adds a second `## Issues` block while
+    filling Problem/Goals/etc., on top of the template's pre-existing one.
+    Downstream `prd_split.py` and `_issues_manifest_gate` use `re.search`,
+    which silently picks the first match — so a misordered or empty leading
+    block parses garbage. Catch it deterministically at every transition.
+    """
+    spec_path = cfg.repo_root / state["spec_path"]
+    text = spec_path.read_text()
+    if not text.startswith("---"):
+        return 0, ""  # frontmatter checks live elsewhere; nothing to dedup yet
+    fm_end = text.find("\n---", 3)
+    if fm_end == -1:
+        return 0, ""
+    body = text[fm_end + len("\n---"):]
+    matches = re.findall(r"(?m)^##\s+Issues\s*$", body)
+    if len(matches) > 1:
+        return 2, (
+            f"advance blocked: PRD body has {len(matches)} `## Issues` "
+            "headings; the template already provides one. Remove the "
+            "duplicate before advancing.\n"
+        )
+    return 0, ""
 
 
 def _issues_manifest_gate(cfg: Config, state: dict) -> tuple[int, str]:

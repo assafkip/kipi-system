@@ -29,4 +29,6 @@ After success, read the new PRD spec file to the author and ask them to fill in:
 - Risks and rollback
 - Open questions
 
+The template already includes a `## Issues` section with an empty `[]` JSON block. Author content into the existing sections; do not add a second `## Issues` heading. The runner blocks `advance` when the body has more than one `## Issues` heading.
+
 Do not auto-draft PRD content. The PRD is the author's contract. Auto-drafting creates sycophantic PRDs that pass review because Claude agreed with itself.

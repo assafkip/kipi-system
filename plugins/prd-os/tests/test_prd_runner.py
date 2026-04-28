@@ -153,6 +153,43 @@ def test_advance_without_active_prd(fake_repo, write_config, run_prd_runner):
 
 
 # ---------------------------------------------------------------------------
+# duplicate `## Issues` heading gate
+# ---------------------------------------------------------------------------
+
+
+def test_advance_blocks_when_body_has_duplicate_issues_heading(
+    fake_repo, write_config, run_prd_runner
+):
+    """Drafting artifact: author adds a second `## Issues` block while filling
+    Problem/Goals/etc., on top of the template's pre-existing one. The dup
+    causes downstream `re.search` parsing to pick the wrong block silently.
+    Reject deterministically at advance time.
+    """
+    _bootstrap(fake_repo, write_config)
+    assert run_prd_runner(fake_repo, "new", "dup-issues-block").returncode == 0
+    prd_id = _read_state(fake_repo)["prd_id"]
+    spec_path = fake_repo / f".prd-os/prds/{prd_id}.md"
+    spec_path.write_text(
+        spec_path.read_text() + "\n## Issues\n\n```json\n[]\n```\n"
+    )
+
+    r = run_prd_runner(fake_repo, "advance", "draft")
+    assert r.returncode == 2
+    assert "## Issues" in r.stderr
+    assert "duplicate" in r.stderr.lower() or "2 " in r.stderr
+
+
+def test_advance_passes_with_single_issues_heading(
+    fake_repo, write_config, run_prd_runner
+):
+    """Sanity: the template's single `## Issues` heading does not trip the gate."""
+    _bootstrap(fake_repo, write_config)
+    assert run_prd_runner(fake_repo, "new", "single-issues-block").returncode == 0
+    r = run_prd_runner(fake_repo, "advance", "draft")
+    assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------
 # approval gate (findings)
 # ---------------------------------------------------------------------------
 
