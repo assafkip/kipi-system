@@ -2,85 +2,66 @@
 
 **Your AI brain. Externalized.**
 
-Your brain knows who you need to follow up with. It just doesn't remind you. Your brain knows what that person said last month that mattered. It just can't find it. Your brain knows exactly what email to write. It just won't write it for you.
+It remembers everything you do. Then it becomes whatever you need.
 
-The Kipi System is the part of your brain that remembers everything, connects everything, and turns everything into the next action. It runs in Claude Code. It learns from every conversation you have. It produces your entire day as a single file: every action pre-written, every follow-up drafted, every open thread tracked.
+Today it might run as your chief of staff. Tomorrow your lawyer. Next week your investigator. Same system, different role, because it remembers every decision, every conversation, every project you've ever brought it.
 
-You copy, paste, check the box, move on.
+Most AI tools handle one job. This one handles every job you used to do yourself.
 
----
-
-## What happens when you run `/q-morning`
-
-The system pulls from your calendar, email, CRM, and social platforms. It reads every open loop. It checks what went cold. Then it produces a single HTML file:
-
-- **Copy-paste actions sorted by friction.** 2-minute replies first, deep work later. Momentum builds before the hard stuff.
-- **Every follow-up pre-written in your voice.** Not AI voice. YOUR voice. Fed from your writing samples, your word choices, your pet peeves.
-- **Open loops with escalation.** Sent a DM 7 days ago with no reply? The system drafted the follow-up already. 14 days? It forces you to decide: send, park, or kill.
-- **Meeting prep with context.** Who you're meeting, what you discussed last time, what they care about, suggested talking points.
-
-You open the HTML. Start at the top. Work down. Done.
+It runs in Claude Code. Plain markdown all the way down. No vector database, no embeddings, no black box. You read it with `cat`, search it with `rg`, version it with `git`.
 
 ---
 
-## Paste a conversation. Get your next 10 actions.
+## What it actually does
 
-Had a call? Paste the transcript. The system extracts:
-- What resonated (their exact words)
-- What got pushback
-- What you owe them
-- New objections to prepare for
+Three things, repeatedly.
 
-Then it routes each insight to the right file automatically. Your talk tracks update. Your relationship file updates. Your follow-up email is drafted and waiting in tomorrow's HTML.
+**Remembers.** Every conversation, decision, debrief, and artifact lives in plain markdown files. A new session reads them. The system arrives with full context of what you've been doing.
 
-After 50 conversations, the system knows your market better than you do. Because it remembers everything. You don't have to.
+**Reasons across.** Connections between projects, people, decisions, and patterns get logged in a knowledge graph (JSONL). When you ask a question, the system pulls from the right files automatically. Insights from one project apply to another without you wiring it.
+
+**Becomes any role.** The same skeleton can run as a chief of staff, a lawyer, a PM, an investigator, a content operator, a researcher. You configure what role each instance plays through a `canonical/` directory. The system adapts its behavior, voice, and outputs to the role.
 
 ---
 
-## Nothing gets forgotten
+## Six real deployments
 
-Every outbound action opens a loop. Every loop has a timer.
+Six instances running across one person's work right now. All six share the same skeleton. They differ only in their canonical content.
 
-| Days open | What happens |
-|-----------|-------------|
-| 0-2 | Quiet. Listed in your dashboard. |
-| 3-6 | Follow-up drafted. Shows in your action plan. |
-| 7-13 | Flagged. Shows at the top. "This is going cold." |
-| 14+ | Forced decision. Act now, park for later, or kill it. No more open loops draining mental energy. |
-
-Loops auto-close when the system detects a response. Gmail reply? Closed. LinkedIn DM reply? Closed. Connection accepted? Closed. You don't track anything. The system tracks everything.
+- **Chief of staff.** Tracks conversations, talk tracks, decisions, positioning. Drafts updates, debriefs, follow-ups.
+- **PM for a client engagement.** Coordinates multiple projects, logs every decision, drafts deliverables, tracks stakeholder context.
+- **Lawyer.** Generates separation packages, contract redlines, compliance memos. Citations to relevant code on every position.
+- **Investigator.** Manages active OSINT cases, evidence artifacts, published intel reports. Cross-platform source orchestration.
+- **Operator for a consulting business.** Pipeline tracking, content cadence, deliverable production.
+- **Architect for itself.** Manages its own PRDs, issues, reviews. The system builds the system.
 
 ---
 
-## Built for ADHD. Works for everyone.
+## How memory compounds
 
-I have AUDHD (ADHD + Autism). Every design decision comes from that.
+Three layers, time-aware.
 
-**No decisions.** The system picks who to contact, what to say, in what order, through which channel. You copy-paste and check boxes.
+| Layer | What it holds | Lifecycle |
+|---|---|---|
+| **Working** | Active session notes, scratch work | Auto-cleaned after 48h |
+| **Canonical** | Decisions, positioning, frameworks that persist | Updated on every conversation, never auto-deleted |
+| **Graph** | Who/what/when triples linking entities across projects | Append-only |
 
-**No shame.** Never "overdue." Always "carried forward." Never "you forgot." Always "not yet done." Language matters when your brain punishes you for every dropped ball.
-
-**Friction-ordered.** Quick wins first. Dopamine before discipline. The hardest task is never at the top.
-
-**Effort-tracked.** "You sent 4 messages today" matters more than "nobody responded yet." Progress is actions taken, not outcomes received.
-
-This isn't a feature toggle. It's how the whole system thinks. If you don't have ADHD, you still get a system that eliminates decision fatigue and orders your day by what's easiest to start.
+Insights flow upward. A pattern noticed in scratch notes gets promoted to weekly. A repeated weekly pattern becomes canonical. The system gets sharper the longer you run it.
 
 ---
 
-## A brain that compounds
+## Cross-instance memory
 
-Your biological brain forgets 90% of every conversation within a week. This one doesn't.
+Each deployment is its own instance with its own directory, canonical files, and graph. But instances can share state through a bridge directory.
 
-**Canonical memory.** Your positioning, your objections and the responses that worked, your competitive landscape, every relationship and what each person cares about. Every workflow reads from this memory. Every conversation updates it.
+A real example: an investigation instance pulled positioning context from a separate strategy instance mid-task, and produced a synthesized advisory across two projects that had never been connected manually.
 
-**Time-layered recall.** Working memory expires in 48 hours (you don't need yesterday's scratch notes). Weekly patterns roll up. Monthly insights persist. Like a real brain, it forgets what doesn't matter and strengthens what does.
-
-**Connections across conversations.** A knowledge graph links people, companies, what they said, and how they relate. The insight from a conversation three weeks ago changes what the system suggests today. You didn't have to remember it. The brain did.
+That's not storage. That's compounding across role-specific deployments.
 
 ---
 
-## Three commands to start
+## Install
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -88,7 +69,23 @@ git clone https://github.com/assafkip/kipi-system.git
 cd kipi-system && claude
 ```
 
-The system walks you through setup. Who you are, what you're building, how you talk, who you know. Takes about 20 minutes. Then run `/q-morning` and see your first daily action plan.
+Setup walks you through who you are, what you work on, how you write, and who you know. Takes about 20 minutes. After that the system runs.
+
+---
+
+## Commands
+
+Optional. Most usage is just talking to the system in Claude Code.
+
+| Command | What it does |
+|---|---|
+| `/q-debrief` | Extract insights from a conversation or paste a transcript |
+| `/q-draft` | Quick email, DM, or content draft in your voice |
+| `/q-engage` | Generate engagement on someone else's post |
+| `/q-research` | Citation-only research mode |
+| `/q-morning` | Build a daily action plan (full routine, optional) |
+| `/q-wrap` | End-of-day health check |
+| `/q-handoff` | Save context for next session |
 
 ---
 
@@ -96,127 +93,72 @@ The system walks you through setup. Who you are, what you're building, how you t
 
 ```
 kipi-system/
-├── .q-system/
-│   ├── commands.md          # 35+ step morning routine and all workflows
-│   ├── loop-tracker.py      # Opens, escalates, and closes loops
-│   ├── verify-schedule.py   # Blocks HTML build if required sections missing
-│   ├── agent-pipeline/      # Decomposed morning routine agents and bus protocol
-│   ├── session-start.py     # Auto-loads context on first use each day
-│   ├── audit-morning.py     # Catches skipped steps and missing content
-│   ├── token-guard.py       # Stops runaway AI token consumption
-│   ├── log-step.py          # Flight recorder for every step
-│   └── preflight.md         # Tool manifest, known issues, and verification rules
-│
-├── canonical/               # Source of truth (updates from every conversation)
-│   ├── talk-tracks.md       # What to say, tested and tagged by audience
-│   ├── objections.md        # Every pushback, with the response that worked
-│   ├── market-intelligence.md  # Buyer language and competitive signals
-│   └── decisions.md         # Every decision with origin and rationale
-│
-├── my-project/              # Your specific context
-│   ├── relationships.md     # Every person and what you owe them
-│   ├── current-state.md     # What's true today (not vision)
-│   └── progress.md          # Decision log and change history
-│
+├── canonical/              # Source of truth, updated by every conversation
+│   ├── decisions.md
+│   ├── positioning.md
+│   ├── insights.md
+│   └── ...
 ├── memory/
-│   ├── working/             # 48-hour scratch (auto-cleaned)
-│   ├── weekly/              # 7-day patterns
-│   ├── monthly/             # Persistent insights
-│   └── graph.jsonl          # Who knows whom, who cares about what
-│
-├── marketing/               # Content templates, guardrails, voice matching
-├── methodology/             # Debrief template, operating modes
-│
-└── output/
-    ├── open-loops.json      # Every tracked loop with escalation state
-    ├── daily-schedule-*.html # Your daily action plan
-    └── morning-log-*.json   # Audit trail
+│   ├── working/            # 48h scratch
+│   ├── weekly/             # 7-day rollups
+│   ├── monthly/            # Persistent
+│   └── graph.jsonl         # Entity-relationship triples
+├── output/                 # Generated artifacts (drafts, reports, schedules)
+├── plugins/                # MCP tools, hooks, skills
+└── .claude/                # Agents, rules, settings
 ```
 
----
-
-## Commands
-
-| What you want to do | Command |
-|---------------------|---------|
-| Generate your entire day | `/q-morning` |
-| Process a conversation | `/q-debrief` (or just paste a transcript) |
-| Draft a quick email or DM | `/q-draft` |
-| Get engagement actions for prospects' posts | `/q-engage` |
-| Plan your week's content | `/q-market-plan` |
-| Update your positioning from new info | `/q-calibrate` |
-| Stress-test your positioning | `/q-reality-check` |
-| End-of-day health check | `/q-wrap` |
-| Save context for next session | `/q-handoff` |
-| Research with citations only | `/q-research <topic>` |
+Each instance you spin up has its own copy of this structure.
 
 ---
 
 ## Connects to
 
-Works standalone with local files. Each integration adds capability:
+Works standalone with local files. Each integration adds capability.
 
-| Tool | What it adds |
-|------|-------------|
-| Notion | CRM, pipeline, relationship tracking |
+| Tool | Adds |
+|---|---|
+| Notion | CRM, project tracking |
 | Google Calendar | Meeting detection, auto-prep |
-| Gmail | Email monitoring, loop auto-close on reply |
-| Apify | X/Twitter scraping only (lead sourcing, activity) |
-| Reddit MCP | Reddit search, posts, comments (no auth needed) |
-| Chrome | LinkedIn (profiles, posts, DMs, engagement), analytics |
-| RSS feeds | Medium, Substack content (via WebFetch) |
-| Slack | Notifications, approval workflows |
-
-### Research mode
-
-Built into the kipi-core plugin. Say `/research <topic>` to force citation-backed answers. Every claim needs a source -- local files, web results, or named papers. If it can't find one, it says "I don't know" instead of guessing. Also available as a [standalone plugin](https://github.com/assafkip/research-mode) for non-kipi projects.
+| Gmail | Email monitoring |
+| Linear | Issue tracking, PRD workflow |
+| Slack | Notifications |
+| Chrome (DevTools MCP) | Web automation, LinkedIn |
+| Apify | X/Twitter scraping |
+| Reddit | Search and post tracking |
 
 ---
 
-## The AI needs scaffolding too
+## ADHD-aware, not ADHD-only
 
-Here's something nobody talks about: the AI running this system has the same executive function problems you do.
+I have AUDHD. Some design choices reflect that. Friction-ordered actions. No shame language. Effort tracking. Decision elimination. If you have executive function challenges, the system removes a lot of cognitive load by default.
 
-Research calls it "Lost in the Middle" (Stanford, 2023). In long conversations, LLMs forget instructions from earlier in the context. They rush to produce output and skip boring middle steps. They self-report completion without verifying. They pattern-match from old sessions instead of reading current requirements.
-
-Sound familiar?
-
-So the system has guardrails for the AI, not just for you:
-
-**Verification gate.** Before the HTML builds, a script checks the JSON output. Are pipeline follow-ups there? Does day-specific content exist? Are sections in the right order? If verification fails, the build is blocked. The AI can't bypass it.
-
-**Echo of Prompt.** Before each step executes, a script re-injects that step's requirements fresh into context. Combats the attention drift that makes the AI "forget" what a step actually requires by the time it runs it.
-
-**No self-authorized skipping.** The AI cannot decide on its own to skip a step. It must ask you first. The default is always run.
-
-**Structured deliverables, not text summaries.** The system logs what was actually produced (number of follow-ups, number of copy blocks) not just "done."
-
-The research basis: "Lost in the Middle" (Stanford), "Context Degradation Syndrome," "LLMs Get Lost in Multi-Turn Conversation" (Laban et al. 2025), and "Echo of Prompt" refocusing mechanisms.
-
-Building a system for a brain that drops things, then discovering the AI brain drops things the same way, then building a system for the system. It's turtles all the way down.
+If you don't, you still get an AI that doesn't make you decide who to contact, what order to do things in, or how to phrase the message.
 
 ---
 
-## Not just for founders
+## How the AI stays focused
 
-The pattern works anywhere humans manage concurrent relationships and compound knowledge:
+The AI running this system has the same context-loss problems a human brain does. Research calls it "Lost in the Middle." In long conversations, LLMs forget instructions from earlier context, skip middle steps, and self-report completion without verifying.
 
-**Lawyers** - case files as canonical state, filing deadlines as loops, client conversations as debriefs.
+The system has guardrails for that.
 
-**Sales teams** - accounts as relationships, proposals as loops, call notes as debriefs.
+**Verification gates.** Scripts check output before claiming done.
 
-**Doctors** - patients as relationships, referrals and labs as loops, visit notes as debriefs.
+**Re-injected step requirements.** Each step's instructions get fresh context.
 
-**Consultants** - clients as relationships, deliverables as loops, stakeholder meetings as debriefs.
+**No self-authorized skipping.** The AI cannot decide on its own to skip steps.
 
-The founder context is where I built it. Fork it and replace the canonical files with your domain.
+**Structured logs.** What was actually produced, not just "completed."
+
+Research basis: "Lost in the Middle" (Stanford), "LLMs Get Lost in Multi-Turn Conversation" (Laban et al. 2025).
 
 ---
 
 ## Security
 
 - `.env`, credentials, and key files blocked from read/write
-- PreToolUse hooks intercept dangerous operations at runtime
+- PreToolUse hooks intercept dangerous operations
 - No secrets in committed files
 - `rm -rf`, `sudo`, `git push --force` denied by default
 
@@ -224,8 +166,8 @@ The founder context is where I built it. Fork it and replace the canonical files
 
 ## Origin
 
-I'm [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/). 12 years in threat intelligence at LinkedIn, Google, Meta, and ElevenLabs. I burned out at Google fighting the same problems over and over. Left corporate. Started building [KTLYST](https://ktlystlabs.com), a security product that turns threat reports into governed, deployable artifacts for every team.
+I'm [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/). 12 years in threat intelligence at LinkedIn, Google, Meta, and ElevenLabs. I burned out fighting the same problems over and over. Left corporate. Started [KTLYST](https://ktlystlabs.com), a security product that turns threat reports into governed, deployable artifacts.
 
-Running a startup solo with ADHD meant my brain couldn't hold everything it needed to hold. So I built a second one. It manages my investor pipeline, writes my outreach in my voice, preps my meetings, tracks every open loop, and produces a daily HTML file that IS my workday. It remembers what I forget. It follows up when I don't. It compounds what I learn.
+Running a company solo with ADHD meant my brain couldn't hold everything it needed to hold. So I built a second one. It manages my work, writes in my voice, remembers what I forget, and compounds what I learn.
 
-KTLYST's operations run on a production instance of this brain. This repo is the general-purpose version. Fork it and teach it yours.
+Right now it runs as six different roles across my work. This repo is the general-purpose version. Fork it and teach it yours.
