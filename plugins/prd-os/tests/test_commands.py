@@ -24,6 +24,8 @@ EXPECTED = {
     "prd-triage.md": ["prd_runner.py", "findings_writer.py"],
     "prd-approve.md": ["prd_runner.py"],
     "prd-split.md": ["prd_split.py"],
+    "prd-archive.md": ["prd_runner.py"],
+    "prd-personas.md": ["prd_runner.py"],
 }
 
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)

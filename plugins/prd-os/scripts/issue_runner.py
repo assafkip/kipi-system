@@ -40,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
+from prd_split import MARKER_RE as _RECEIPT_MARKER_RE  # noqa: E402  receipt-writer reuses split's marker
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
@@ -323,6 +324,17 @@ def cmd_approve(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_close(cfg: Config, args: argparse.Namespace) -> int:
+    """Close the active issue and emit a receipt to cfg.receipts_path.
+
+    Receipt write is idempotent on (prd_id, finding_id): if a receipt for the
+    same pair already exists in the file, the append is skipped silently. This
+    means duplicate close attempts (retries, autonomous re-runs, manual reruns)
+    never produce duplicate receipt records.
+
+    The reader (`prd_runner.py:_load_receipts_for_prd`) already dedupes via set
+    semantics, so existing archive behavior is unchanged either way; the
+    idempotency check here just keeps the file from bloating.
+    """
     state = _read_state(cfg)
     issue_id = state.get("issue_id")
     if not issue_id:
@@ -337,6 +349,7 @@ def cmd_close(cfg: Config, args: argparse.Namespace) -> int:
     path, fm, text = _load_spec(cfg, issue_id)
     new_text = re.sub(r"(?m)^status:\s*.+$", "status: closed", text, count=1)
     path.write_text(new_text)
+    _write_receipt(cfg, issue_id, new_text, state["receipts"])
     _write_state(cfg, _empty_state())
     print(json.dumps({"closed": issue_id, "spec": _relpath(cfg, path)}))
     return 0
@@ -346,6 +359,82 @@ def cmd_clear(cfg: Config, args: argparse.Namespace) -> int:
     _write_state(cfg, _empty_state())
     print("cleared")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Receipt writing (called from cmd_close)
+# ---------------------------------------------------------------------------
+
+
+# Marker injected by prd_split.py at the top of every generated issue body.
+# Format: <!-- generated-by: prd_split.py prd=<id> finding=<id> at=<iso> -->
+# We re-declare the regex here rather than import from prd_split to keep the
+# issue runner independent of the split helper at runtime. The pattern must
+# stay in sync with prd_split.py:MARKER_RE.
+
+def _extract_prd_and_finding(spec_text: str) -> tuple[str, str] | None:
+    """Parse the prd_split marker from the issue spec body.
+
+    Returns (prd_id, finding_id) on success, None if the marker is missing
+    or malformed. Callers handle the None case (warn and skip the receipt).
+    """
+    match = _RECEIPT_MARKER_RE.search(spec_text)
+    if not match:
+        return None
+    return match.group("prd"), match.group("finding")
+
+
+def _receipt_already_recorded(receipts_path: Path, prd_id: str, finding_id: str) -> bool:
+    """Idempotency check: scan receipts file for an existing (prd, finding) pair."""
+    if not receipts_path.is_file():
+        return False
+    for raw in receipts_path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("prd_id") == prd_id and rec.get("finding_id") == finding_id:
+            return True
+    return False
+
+
+def _write_receipt(
+    cfg: Config,
+    issue_id: str,
+    spec_text: str,
+    receipts: dict,
+) -> None:
+    """Append a receipt record to cfg.receipts_path.
+
+    Marker missing -> warn and skip (don't block close).
+    Duplicate (prd_id, finding_id) -> skip silently (idempotent).
+    """
+    parsed = _extract_prd_and_finding(spec_text)
+    if parsed is None:
+        sys.stderr.write(
+            f"warning: issue {issue_id} spec has no prd_split marker; "
+            "skipping receipt write\n"
+        )
+        return
+    prd_id, finding_id = parsed
+    receipts_path = cfg.receipts_path
+    if _receipt_already_recorded(receipts_path, prd_id, finding_id):
+        return
+    record = {
+        "prd_id": prd_id,
+        "finding_id": finding_id,
+        "issue_id": issue_id,
+        "closed_at": _now_iso(),
+        "receipts": dict(receipts),
+    }
+    receipts_path.parent.mkdir(parents=True, exist_ok=True)
+    with receipts_path.open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 # ---------------------------------------------------------------------------
