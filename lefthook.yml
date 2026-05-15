@@ -26,7 +26,10 @@ pre-commit:
         # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,
         # and known AI-tooling caches. Allow .env.example / .env.sample / .env.template.
         # Gitleaks is the deeper safety-net for anything that slips through.
-        blocked=$(git diff --cached --name-only | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' || true)
+        # --diff-filter=ACMRT: only inspect adds, copies, modifies, renames, type-changes.
+        # Deletions (D) are allowed through; cleanup commits that remove an
+        # accidentally-tracked .env or __pycache__/ should not be blocked.
+        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' || true)
         if [ -n "$blocked" ]; then
           echo "BLOCK: these paths should not be committed:"
           echo "$blocked"
