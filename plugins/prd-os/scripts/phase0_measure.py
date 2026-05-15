@@ -57,6 +57,27 @@ from classify_findings import classify_jsonl  # noqa: E402
 from config import Config, load as load_config  # noqa: E402
 
 
+__all__ = [
+    "BASELINE_DOC_RELPATH",
+    "MIN_PRDS_PER_GROUP",
+    # Persona-detection primitives (promoted to public for cross-script reuse,
+    # e.g. propose_skeptic_antipatterns.py reads Q-A pairs from PRD specs).
+    "PERSONA_REVIEW_HEADING_RE",
+    "CANONICAL_ANSWER_RE",
+    "SKEPTIC_SUBSECTION_RE",
+    "strip_html_comments",
+    "has_canonical_answer",
+    "has_bold_question_with_answer",
+    "extract_skeptic_section",
+    "has_personas_applied",
+    # Aggregation + verdict.
+    "classify_prds",
+    "compute_verdict",
+    "append_baseline_row",
+    "run",
+]
+
+
 BASELINE_DOC_RELPATH = "q-system/memory/working/prd-personas-baseline.md"
 MIN_PRDS_PER_GROUP = 3
 
@@ -67,29 +88,29 @@ MIN_PRDS_PER_GROUP = 3
 
 
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_PERSONA_REVIEW_HEADING_RE = re.compile(r"(?m)^## Persona Review\b")
+PERSONA_REVIEW_HEADING_RE = re.compile(r"(?m)^## Persona Review\b")
 # Canonical answer format used by the template scaffold: "A1: <text>"
-_CANONICAL_ANSWER_RE = re.compile(r"(?m)^A[123]:[ \t]*(\S.*)$")
+CANONICAL_ANSWER_RE = re.compile(r"(?m)^A[123]:[ \t]*(\S.*)$")
 # Alternate format used in earlier PRDs (bold question heading on its own line):
 # "**Q1: ...?**" followed by a non-empty prose answer on the next non-blank line.
 _BOLD_QUESTION_RE = re.compile(r"(?m)^\*\*Q[123]:.*\*\*\s*$")
 
 
-def _strip_html_comments(text: str) -> str:
+def strip_html_comments(text: str) -> str:
     """Remove all HTML comment blocks. Used before persona detection so
     commented-out template scaffolds do not trigger a false positive."""
     return _HTML_COMMENT_RE.sub("", text)
 
 
-def _has_canonical_answer(stripped: str) -> bool:
+def has_canonical_answer(stripped: str) -> bool:
     """Detect `A1:` / `A2:` / `A3:` lines with non-empty trailing text."""
-    for match in _CANONICAL_ANSWER_RE.finditer(stripped):
+    for match in CANONICAL_ANSWER_RE.finditer(stripped):
         if match.group(1).strip():
             return True
     return False
 
 
-def _has_bold_question_with_answer(stripped: str) -> bool:
+def has_bold_question_with_answer(stripped: str) -> bool:
     """Detect `**Q[123]: ...**` followed within 5 lines by a non-empty
     prose answer (not another question heading, not a markdown heading)."""
     lines = stripped.splitlines()
@@ -106,20 +127,20 @@ def _has_bold_question_with_answer(stripped: str) -> bool:
     return False
 
 
-_SKEPTIC_SUBSECTION_RE = re.compile(
+SKEPTIC_SUBSECTION_RE = re.compile(
     r"(?ms)^### Skeptic\b.*?(?=^##\s|^### \S|\Z)"
 )
 
 
-def _extract_skeptic_section(stripped: str) -> str | None:
+def extract_skeptic_section(stripped: str) -> str | None:
     """Return the text of the ### Skeptic subsection inside the Persona Review
     block, or None if the section is missing. Bounds are: from the ### Skeptic
     heading to the next ## or ### heading, or end of document."""
-    header = _PERSONA_REVIEW_HEADING_RE.search(stripped)
+    header = PERSONA_REVIEW_HEADING_RE.search(stripped)
     if header is None:
         return None
     body_after_header = stripped[header.end():]
-    match = _SKEPTIC_SUBSECTION_RE.search(body_after_header)
+    match = SKEPTIC_SUBSECTION_RE.search(body_after_header)
     return match.group(0) if match else None
 
 
@@ -135,11 +156,11 @@ def has_personas_applied(prd_body: str) -> bool:
     Scoping to the ### Skeptic subsection prevents false positives from
     stray A1/A2/A3 lines elsewhere in the PRD body.
     """
-    stripped = _strip_html_comments(prd_body)
-    skeptic_text = _extract_skeptic_section(stripped)
+    stripped = strip_html_comments(prd_body)
+    skeptic_text = extract_skeptic_section(stripped)
     if skeptic_text is None:
         return False
-    return _has_canonical_answer(skeptic_text) or _has_bold_question_with_answer(skeptic_text)
+    return has_canonical_answer(skeptic_text) or has_bold_question_with_answer(skeptic_text)
 
 
 # ---------------------------------------------------------------------------

@@ -27,17 +27,21 @@ For each hitlist action: check if comment/DM/CR was sent, compare generated vs a
 
 ### Step 3: Classify
 - `used_as_is`: >95% match
-- `edited`: 50-95% match (capture the diff)
+- `edited`: 50-95% match (capture the diff AND the full original + posted text)
 - `skipped`: not posted/sent
 - `unknown`: couldn't verify
 
 ### Step 4: Write
+For `edited` status, include `original_text` (yesterday's drafted copy) and `posted_text` (what the founder actually posted). The full-text pair feeds route-overrides-to-learn.py, which builds inbox files for the learn-from-correction skill. `edit_summary` stays as a short human-readable note.
+
 ```json
-{"date":"{{DATE}}","yesterday":"YYYY-MM-DD","actions_checked":10,"diffs":[{"action_rank":1,"contact_name":"...","action_type":"comment|dm|connection_request","status":"used_as_is|edited|skipped|unknown","edit_summary":"..."}],"stats":{"used_as_is":0,"edited":0,"skipped":0,"unknown":0},"persisted_to_sqlite":false}
+{"date":"{{DATE}}","yesterday":"YYYY-MM-DD","actions_checked":10,"diffs":[{"action_rank":1,"contact_name":"...","action_type":"comment|dm|connection_request","status":"edited","edit_summary":"shortened, removed CTA","original_text":"<full drafted text>","posted_text":"<full posted text>"}],"stats":{"used_as_is":0,"edited":0,"skipped":0,"unknown":0},"persisted_to_sqlite":false}
 ```
 
+For non-`edited` statuses, omit `original_text` and `posted_text` (they only carry information when an override exists).
+
 ### Step 5: Persist edits to SQLite
-For each `edited` action, insert into `copy_edits` table in `{{QROOT}}/.q-system/data/metrics.db`.
+For each `edited` action, insert into `copy_edits` table in `{{QROOT}}/.q-system/data/metrics.db`. Required columns: `date`, `contact_name`, `action_type`, `original` (full drafted text), `edited` (full posted text), `edit_summary`. The full-text pair is what route-overrides-to-learn.py reads from to build learn-from-correction inputs.
 
 If Chrome fails after 2 attempts, write minimal output and exit. Do NOT block.
 

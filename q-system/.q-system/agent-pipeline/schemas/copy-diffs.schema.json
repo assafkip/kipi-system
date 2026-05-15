@@ -20,7 +20,15 @@
           "contact_name": { "type": "string" },
           "action_type": { "type": "string" },
           "status": { "type": "string", "enum": ["used_as_is", "edited", "skipped", "unknown"] },
-          "edit_summary": { "type": "string" }
+          "edit_summary": { "type": "string" },
+          "original_text": {
+            "type": "string",
+            "description": "Agent-drafted copy from yesterday's hitlist. Populated when status is 'edited' so route-overrides-to-learn.py can feed the (original, posted) pair into the learn-from-correction skill."
+          },
+          "posted_text": {
+            "type": "string",
+            "description": "What the founder actually posted, captured via Chrome MCP. Populated when status is 'edited'. Pairs with original_text."
+          }
         }
       }
     },

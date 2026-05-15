@@ -301,8 +301,24 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     spec_path.write_text(new_text)
     archived_id = state["prd_id"]
     _write_state(cfg, _empty_state())
+    _propose_skeptic_antipatterns_best_effort(cfg, archived_id)
     print(json.dumps({"archived": archived_id}))
     return 0
+
+
+def _propose_skeptic_antipatterns_best_effort(cfg: Config, prd_id: str) -> None:
+    """Generate a Skeptic anti-pattern proposal from Codex findings on this PRD.
+
+    Best-effort: archive is the load-bearing step. If proposal generation
+    fails for any reason (missing script, parse error, IO error), log to
+    stderr and continue. Archive remains successful.
+    """
+    try:
+        from propose_skeptic_antipatterns import propose
+        _, proposal_path = propose(cfg, prd_id)
+        sys.stderr.write(f"skeptic proposal written: {proposal_path}\n")
+    except Exception as exc:  # intentional best-effort catch-all
+        sys.stderr.write(f"skeptic proposal skipped: {exc}\n")
 
 
 def cmd_clear(cfg: Config, args: argparse.Namespace) -> int:
