@@ -208,6 +208,49 @@ def test_cli_dirty_file_exits_two(tmpdir: Path) -> None:
     assert rc == 2, f"CLI dirty file should exit 2; got {rc}; out={out}; err={err}"
 
 
+def test_missing_registry_fails_closed(tmpdir: Path) -> None:
+    """No registry in tree = fail-closed (exit 2) on in-scope content."""
+    bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    bus.mkdir(parents=True)
+    target = bus / "tl-content.json"
+    target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target)},
+    }
+    # Clamp registry lookup to a known-missing path so the walk doesn't
+    # find an unrelated repo's registry on dev machines.
+    rc, _, err = run_hook(
+        payload,
+        extra_env={
+            "STAT_VERIFY_BOOTSTRAP": "",
+            "STAT_REGISTRY_PATH": str(tmpdir / "nope-registry.json"),
+        },
+    )
+    assert rc == 2, f"expected fail-closed exit 2 on missing registry; got {rc}; stderr={err}"
+    assert "registry" in err.lower(), f"expected registry hint in stderr; got: {err!r}"
+
+
+def test_bootstrap_escape_allows_missing_registry(tmpdir: Path) -> None:
+    """STAT_VERIFY_BOOTSTRAP=1 allows in-scope content to pass with no registry."""
+    bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    bus.mkdir(parents=True)
+    target = bus / "tl-content.json"
+    target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target)},
+    }
+    rc, _, err = run_hook(
+        payload,
+        extra_env={
+            "STAT_VERIFY_BOOTSTRAP": "1",
+            "STAT_REGISTRY_PATH": str(tmpdir / "nope-registry.json"),
+        },
+    )
+    assert rc == 0, f"bootstrap mode should pass; got {rc}; stderr={err}"
+
+
 def test_self_test_passes(tmpdir: Path) -> None:
     proc = subprocess.run(
         ["python3", str(SCRIPT), "--self-test"],
@@ -219,6 +262,8 @@ def test_self_test_passes(tmpdir: Path) -> None:
 
 TESTS = [
     test_in_scope_bus_content_with_bad_stat_blocks,
+    test_missing_registry_fails_closed,
+    test_bootstrap_escape_allows_missing_registry,
     test_in_scope_bus_content_with_canonical_stat_passes,
     test_unvalidated_tag_allows_unknown_stat,
     test_skip_marker_bypasses_entire_file,

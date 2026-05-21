@@ -217,21 +217,27 @@ OPT_OUT_PROXIMITY = 80  # chars before/after a claim to scan for opt-out tag
 # ---------------------------------------------------------------------------
 
 def find_registry(start_path: Path) -> Path | None:
-    """Walk up from start_path looking for canonical/stat-registry.json."""
+    """Locate canonical/stat-registry.json.
+
+    Priority:
+      1. STAT_REGISTRY_PATH env var (explicit override; if set and not a
+         readable file, this also clamps the lookup — no fallback walk).
+      2. Walk down from start_path's parents looking for the file.
+    """
+    env = os.environ.get("STAT_REGISTRY_PATH")
+    if env is not None:
+        p = Path(env)
+        return p if p.is_file() else None
+
     here = start_path.resolve()
     if here.is_file():
         here = here.parent
     for parent in [here, *here.parents]:
         for candidate in parent.rglob("canonical/stat-registry.json"):
-            # Skip anything in node_modules, .venv, etc.
             sp = str(candidate)
             if any(x in sp for x in ("/.venv/", "/node_modules/", "/__pycache__/")):
                 continue
             return candidate
-    # Fall back to env var if walk failed.
-    env = os.environ.get("STAT_REGISTRY_PATH")
-    if env and Path(env).is_file():
-        return Path(env)
     return None
 
 
@@ -545,9 +551,23 @@ def hook_mode() -> None:
 
     registry_path = find_registry(fp)
     if registry_path is None:
-        # Bootstrap mode: fail-open and warn quietly.
-        print("stat-verify: no canonical/stat-registry.json found; skipping", file=sys.stderr)
-        sys.exit(0)
+        # No registry = fail-closed unless explicit bootstrap escape.
+        # STAT_VERIFY_BOOTSTRAP=1 is the one-time escape during initial
+        # registry creation. Without it, an in-scope content write with no
+        # registry to check against is a configuration error, not a clean pass.
+        if os.environ.get("STAT_VERIFY_BOOTSTRAP") == "1":
+            print(
+                "stat-verify: no canonical/stat-registry.json (bootstrap mode)",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+        print(
+            "stat-verify: no canonical/stat-registry.json found for "
+            f"{file_path}. Create the registry or set STAT_VERIFY_BOOTSTRAP=1 "
+            "for one-time bootstrap.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     registry = load_registry(registry_path)
     violations = lint_file(fp, registry)
