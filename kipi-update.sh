@@ -15,6 +15,15 @@ SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
 SKELETON_BRANCH="main"
 DRY_RUN="${1:-}"
 
+# Portable in-place sed (BSD/macOS requires `sed -i ''`, GNU/Linux requires `sed -i`)
+sed_inplace() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
 if [ ! -f "$REGISTRY" ]; then
   echo "ERROR: instance-registry.json not found at $REGISTRY"
   exit 1
@@ -186,8 +195,8 @@ print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
 
       # Fix paths for subtree instances (q-system/ is nested under q-system/)
       if [ "$itype" = "subtree" ]; then
-        sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' "$path/.claude/settings.json" 2>/dev/null || true
-        sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' "$path/.claude/settings.json" 2>/dev/null || true
+        sed_inplace 's|/q-system/hooks/|/q-system/q-system/hooks/|g' "$path/.claude/settings.json" 2>/dev/null || true
+        sed_inplace 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' "$path/.claude/settings.json" 2>/dev/null || true
       fi
     fi
 
