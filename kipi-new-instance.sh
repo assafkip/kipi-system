@@ -10,6 +10,15 @@ SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
 SKELETON_BRANCH="main"
 PREFIX="q-system"
 
+# Portable in-place sed (BSD/macOS requires `sed -i ''`, GNU/Linux requires `sed -i`)
+sed_inplace() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <path> <name>"
   echo "  path: directory to create the instance in"
@@ -65,7 +74,7 @@ if [ ! -f CLAUDE.md ]; then
 - Never produce fluff - every sentence must carry information or enable action
 - Mark unvalidated claims with `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}`
 CLAUDE_EOF
-  sed -i '' "s/{{INSTANCE_NAME}}/$INST_NAME/g" CLAUDE.md 2>/dev/null || true
+  sed_inplace "s/{{INSTANCE_NAME}}/$INST_NAME/g" CLAUDE.md 2>/dev/null || true
   echo "  Created template CLAUDE.md"
 fi
 
@@ -75,8 +84,8 @@ mkdir -p .claude/agents .claude/output-styles .claude/rules
 cp "$SCRIPT_DIR/settings-template.json" .claude/settings.json
 
 # Fix hook paths: subtree nests the repo under q-system/, so q-system/hooks/ becomes q-system/q-system/hooks/
-sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' .claude/settings.json
-sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' .claude/settings.json
+sed_inplace 's|/q-system/hooks/|/q-system/q-system/hooks/|g' .claude/settings.json
+sed_inplace 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' .claude/settings.json
 
 cp "$SCRIPT_DIR"/.claude/agents/*.md .claude/agents/ 2>/dev/null || true
 cp "$SCRIPT_DIR"/.claude/output-styles/*.md .claude/output-styles/ 2>/dev/null || true

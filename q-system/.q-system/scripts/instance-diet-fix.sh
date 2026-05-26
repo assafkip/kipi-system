@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# Portable in-place sed (BSD/macOS requires `sed -i ''`, GNU/Linux requires `sed -i`)
+sed_inplace() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
 # instance-diet-fix.sh - Fix broken imports and remove duplicate sections
 # from an instance's CLAUDE.md. Creates a backup before modifying.
 #
@@ -39,7 +48,7 @@ BEFORE=$(grep -c '.' "$CLAUDE_MD" || true)
 
 # Fix broken import path
 if grep -q '@q-system/q-system/CLAUDE.md' "$CLAUDE_MD"; then
-  sed -i '' 's|@q-system/q-system/CLAUDE.md|@q-system/CLAUDE.md|g' "$CLAUDE_MD"
+  sed_inplace 's|@q-system/q-system/CLAUDE.md|@q-system/CLAUDE.md|g' "$CLAUDE_MD"
   echo "Fixed: broken import @q-system/q-system/CLAUDE.md -> @q-system/CLAUDE.md"
 fi
 
