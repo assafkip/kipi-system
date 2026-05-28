@@ -45,7 +45,7 @@ def run_cli(file_path: str) -> tuple[int, str, str]:
 
 
 def make_instance(tmpdir: Path, stat_overrides: list | None = None) -> Path:
-    """Create a fake q-ktlyst-shaped tree with canonical/stat-registry.json."""
+    """Create a fake instance-shaped tree with canonical/stat-registry.json."""
     canonical = tmpdir / "canonical"
     canonical.mkdir(parents=True)
     bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
@@ -68,7 +68,7 @@ def make_instance(tmpdir: Path, stat_overrides: list | None = None) -> Path:
                 "canonical_phrasings": ["42 handoffs", "7 input types", "6 teams"],
             },
             {
-                "id": "ktlyst-spec",
+                "id": "test-spec",
                 "approved_numerics": ["60+", "11", "40 seconds"],
                 "canonical_phrasings": ["60+ artifacts", "11 team folders", "40 seconds"],
             },
@@ -351,7 +351,7 @@ def test_dollar_range_extracted_as_one_token(tmpdir: Path) -> None:
     verified, not silently dropped."""
     bus = make_instance(tmpdir, stat_overrides=[
         {
-            "id": "ktlyst-acv",
+            "id": "test-acv",
             "approved_numerics": ["$25-75K"],
             "canonical_phrasings": ["$25-75K pilot"],
         },
