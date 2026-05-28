@@ -184,11 +184,15 @@ json.dump(merged, open('$path/.claude/settings.json', 'w'), indent=2)
 print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
 " 2>/dev/null || echo "    WARN: settings.json sync failed"
 
-      # Fix paths for subtree instances (q-system/ is nested under q-system/)
-      if [ "$itype" = "subtree" ]; then
-        sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' "$path/.claude/settings.json" 2>/dev/null || true
-        sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' "$path/.claude/settings.json" 2>/dev/null || true
-      fi
+      # Path rewriting: previously this section doubled $CLAUDE_PROJECT_DIR/q-system/
+      # to $CLAUDE_PROJECT_DIR/q-system/q-system/ for "subtree" instances. That logic
+      # was wrong: the rsync above copies skeleton/q-system/* into instance/q-system/*,
+      # so template paths like q-system/.q-system/scripts/X.py already point to the
+      # correct file at instance/q-system/.q-system/scripts/X.py.
+      # The doubled paths were silently no-ops via the `test -f ... || true` wrappers
+      # in the hook commands, which is why this went undetected for a long time.
+      # If you're reading this and considering re-adding sed rewriting, verify the
+      # actual on-disk file structure of a subtree instance first.
     fi
 
     # Sync agents, output styles, rules

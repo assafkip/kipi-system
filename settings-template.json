@@ -114,6 +114,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-dna-loader.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-dna-loader.py\" || true",
+            "timeout": 5
           }
         ]
       }
