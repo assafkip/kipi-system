@@ -4,6 +4,12 @@
 
 Kipi is a portable entrepreneur operating system that runs inside Claude Code. It uses a skeleton + instance architecture where generic capabilities live in a shared skeleton and project-specific content lives in each instance.
 
+## Design Thesis
+
+Kipi assumes the LLM is unreliable on complex content. Every architectural choice in this repo follows from that assumption. The canonical layer exists so the model has files to cite instead of facts to invent. The `graph.jsonl` gives every claim a timestamped triple with provenance. The hooks fire deterministic checks the model can't talk its way past. The `{{UNVALIDATED}}` markers force ungrounded claims to wear a label. The `DQ-###` system keeps open questions open until evidence answers them. The sycophancy harness runs second-model verification on debriefs. Together these don't make the model accurate. They make the model's mistakes findable. Trust moves from the model to the trail. The trail is the product.
+
+For the full mechanism see `q-system/methodology/anti-hallucination.md`.
+
 ## Skeleton (kipi-system)
 
 The skeleton contains everything that's generic across all instances:

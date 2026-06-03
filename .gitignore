@@ -4,6 +4,10 @@
 .claude/settings.local.json
 CLAUDE.local.md
 
+# Local security-remediation working dir (settings backups, scan dumps,
+# canary scripts) — contains real/old tokens, never belongs in this repo
+security-remediation/
+
 # OS
 .DS_Store
 Thumbs.db

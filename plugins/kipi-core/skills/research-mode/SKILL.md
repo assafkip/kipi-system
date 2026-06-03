@@ -68,3 +68,16 @@ For academic papers or research findings, use Scholar Gateway MCP if available. 
 
 ## How to exit
 Say "exit research mode" or switch to any other task.
+
+## Relationship to the broader anti-hallucination architecture
+
+Research mode is the runtime enforcement layer. It applies the cite-or-retract rule and the source-lookup cascade during a single session.
+
+The broader pattern is documented at `q-system/methodology/anti-hallucination.md`. That doc covers:
+- The thesis (LLM is unreliable, make mistakes findable)
+- The full loop (pre-hooks, structured output, post-hooks, verifier, audit, canonical update)
+- Source-of-truth hierarchy (graph.jsonl beats canonical beats dashboard beats drafts)
+- What's automated vs structural vs manual
+- Worked example of catching a real contradiction
+
+Use research mode when you need runtime enforcement. Read the methodology doc when you need to understand why this skill exists and how it fits the rest of the system.
