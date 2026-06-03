@@ -61,3 +61,6 @@ __pycache__/
 .claude/state/active-prd.json
 .claude/state/active-issue.json
 .claude/state/prdos-stop-gate-firings.json
+
+# Generated standalone plugin builds
+plugins/*/dist/

@@ -152,11 +152,6 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" || true",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/rca-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/rca-lint.py\" || true",
-            "timeout": 5
           }
         ]
       }

@@ -2,10 +2,10 @@
 """
 rca-lint.py — Deterministic RCA / premortem structure enforcer.
 
-Pairs with the canonical RCA template at
-q-system/methodology/rca-template.md. Catches RCA docs that skip required
-sections, bury action items in prose, assert fixes without evidence, omit
-cause-type tags, or name people instead of system failures.
+Pairs with the rca skill (SKILL.md + references/rca-template.md). Catches RCA
+docs that skip required sections, bury action items in prose, assert fixes
+without evidence, omit cause-type tags, or name people instead of system
+failures.
 
 Usage:
     python3 rca-lint.py <file_path>     # CLI mode
@@ -19,10 +19,11 @@ Override:
     Add <!-- rca-lint-skip --> anywhere in the file to bypass.
 
 Scope:
-    Fires when the file is an RCA/premortem document, detected by EITHER:
-      - path under q-system/output/rca/ , or filename rca-*.md / premortem-*.md
-      - H1 starting with "# RCA:" or "# Premortem"
-    Anything else exits 0.
+    Fires only on an actual RCA/premortem document, detected by EITHER:
+      - H1 starting with "# RCA:" (colon) or "# Premortem"
+      - path under an /output/rca/ directory
+    Source files that merely contain "rca" in their name (commands, skills,
+    this template) are NOT in scope. Anything else exits 0.
 """
 
 import json
@@ -55,13 +56,10 @@ CAUSE_TYPES = {
     "implicit-contract", "process", "capacity",
 }
 
-# Evidence words that mark real verification (case-insensitive).
 EVIDENCE_WORDS = re.compile(
     r"\b(ran|got|observed|confirmed|passed|output|exit\s*0|reproduced|green)\b", re.I
 )
 
-# Conservative blame patterns. Low false-positive: targets fault-attribution to
-# a person, not system/contract/test failures.
 BLAME_PATTERNS = [
     (re.compile(r"\bto blame\b", re.I), "person-blame phrase 'to blame'"),
     (re.compile(r"\bwhose fault\b", re.I), "person-blame phrase 'whose fault'"),
@@ -70,12 +68,8 @@ BLAME_PATTERNS = [
 ]
 
 
-def is_rca_path(file_path):
-    p = str(file_path)
-    if "/output/rca/" in p:
-        return True
-    name = Path(p).name.lower()
-    return name.startswith("rca-") or name.startswith("premortem-")
+def in_rca_output_dir(file_path):
+    return "/output/rca/" in str(file_path)
 
 
 def extract_h1(body):
@@ -87,22 +81,23 @@ def extract_h1(body):
 
 
 def doc_kind(file_path, text):
-    """Return 'rca', 'premortem', or None (out of scope)."""
-    h1 = extract_h1(text) or ""
-    hl = h1.lower()
-    if hl.startswith("premortem"):
+    """Return 'rca', 'premortem', or None (out of scope).
+
+    Tight on purpose: only a real RCA doc (H1 'RCA:' with colon, or H1
+    'Premortem') or a file under an output/rca/ dir is in scope. A source file
+    that merely has 'rca' in its name is not."""
+    h1 = (extract_h1(text) or "").lower()
+    if h1.startswith("premortem"):
         return "premortem"
-    if hl.startswith("rca"):
+    if h1.startswith("rca:"):
         return "rca"
-    # Path-based detection still classifies by filename.
-    if is_rca_path(file_path):
+    if in_rca_output_dir(file_path):
         name = Path(str(file_path)).name.lower()
         return "premortem" if name.startswith("premortem-") else "rca"
     return None
 
 
 def headers(text):
-    """Set of normalized ## / ### header titles present."""
     found = set()
     for line in text.splitlines():
         m = re.match(r"#{2,3}\s+(.*?)\s*$", line)
@@ -112,7 +107,6 @@ def headers(text):
 
 
 def section_body(text, title):
-    """Return the lines under a given ## section up to the next ## header."""
     lines = text.splitlines()
     out, capturing = [], False
     for line in lines:
@@ -128,8 +122,6 @@ def section_body(text, title):
 
 
 def header_present(found, title):
-    """A required section is present if any header startswith its title.
-    Allows 'Structural root cause' plus '### Root cause #1' style splits."""
     if title in found:
         return True
     low = title.lower()
@@ -140,9 +132,8 @@ def lint_text(file_path, text):
     violations = []
     kind = doc_kind(file_path, text)
     if kind is None:
-        return []  # out of scope
+        return []
 
-    # Metadata
     if not re.search(r"^\*\*Date:\*\*", text, re.M):
         violations.append({"rule": "missing-metadata", "detail": "missing **Date:** line"})
     if not re.search(r"^\*\*Trigger:\*\*", text, re.M):
@@ -155,18 +146,15 @@ def lint_text(file_path, text):
             violations.append({"rule": "missing-section", "detail": f"missing required section: ## {sec}"})
 
     if kind == "rca":
-        # Structural root cause must carry at least one valid cause-type tag.
         struct = section_body(text, "Structural root cause")
         tags = re.findall(r"type:\s*([a-z-]+)", struct)
-        valid = [t for t in tags if t in CAUSE_TYPES]
-        if not valid:
+        if not [t for t in tags if t in CAUSE_TYPES]:
             violations.append({
                 "rule": "missing-cause-type",
                 "detail": "Structural root cause has no valid 'type:' tag "
                           f"(one of: {', '.join(sorted(CAUSE_TYPES))})",
             })
 
-        # Verification must contain evidence, not just an assertion.
         verif = section_body(text, "Verification")
         if "```" not in verif and not EVIDENCE_WORDS.search(verif):
             violations.append({
@@ -175,7 +163,6 @@ def lint_text(file_path, text):
                           "(a code fence or words like ran/got/observed/passed)",
             })
 
-        # Action items must be real checkboxes, not prose.
         actions = section_body(text, "Action items")
         if not re.search(r"^\s*-\s*\[[ xX]\]", actions, re.M):
             violations.append({
@@ -183,7 +170,6 @@ def lint_text(file_path, text):
                 "detail": "Action items must be checkboxes (- [ ] ...), not prose",
             })
 
-    # Blameless (both kinds)
     for pat, msg in BLAME_PATTERNS:
         if pat.search(text):
             violations.append({"rule": "not-blameless", "detail": msg})
@@ -206,7 +192,7 @@ def format_report(file_path, violations):
     lines = [f"rca-lint: {len(violations)} violation(s) in {file_path}:"]
     for v in violations:
         lines.append(f"  [{v['rule']}] {v['detail']}")
-    lines.append(f"Fix per q-system/methodology/rca-template.md, or add <!-- {SKIP_MARKER} --> to bypass.")
+    lines.append(f"Fix per the rca skill's references/rca-template.md, or add <!-- {SKIP_MARKER} --> to bypass.")
     return "\n".join(lines)
 
 
