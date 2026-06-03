@@ -62,7 +62,11 @@
   "autoMemoryEnabled": true,
   "cleanupPeriodDays": 30,
   "worktree": {
-    "symlinkDirectories": ["node_modules", ".cache", "q-system/output"]
+    "symlinkDirectories": [
+      "node_modules",
+      ".cache",
+      "q-system/output"
+    ]
   },
   "statusLine": {
     "type": "command",
@@ -166,6 +170,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/rca-lint.py\"",
             "timeout": 5
           }
         ]

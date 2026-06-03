@@ -16,7 +16,11 @@
   "cleanupPeriodDays": 30,
   "model": "opus",
   "worktree": {
-    "symlinkDirectories": ["node_modules", ".cache", "q-system/output"]
+    "symlinkDirectories": [
+      "node_modules",
+      ".cache",
+      "q-system/output"
+    ]
   },
   "statusLine": {
     "type": "command",
@@ -148,6 +152,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/rca-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/rca-lint.py\" || true",
+            "timeout": 5
           }
         ]
       }
@@ -187,26 +196,29 @@
   },
   "mcpServers": {
     "_INSTRUCTIONS_": "Uncomment and configure the servers you need. Replace YOUR_*_TOKEN placeholders with your actual tokens. Delete this _INSTRUCTIONS_ key when done.",
-
     "_notion_api": {
       "_comment": "Rename to 'notion_api' to enable. Get token from https://www.notion.so/my-integrations",
       "command": "npx",
-      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server"
+      ],
       "env": {
         "NOTION_TOKEN": "YOUR_NOTION_TOKEN"
       }
     },
-
     "_apify": {
       "_comment": "Rename to 'apify' to enable. Get token from https://console.apify.com/account#/integrations",
       "command": "npx",
-      "args": ["-y", "@apify/actors-mcp-server@0.9.10"],
+      "args": [
+        "-y",
+        "@apify/actors-mcp-server@0.9.10"
+      ],
       "env": {
         "APIFY_TOKEN": "YOUR_APIFY_TOKEN",
         "TOOLS": "actors,curious_coder/twitter-scraper,apify/web-scraper,apify/instagram-hashtag-scraper,apify/instagram-profile-scraper,apify/instagram-post-scraper,clockworks/tiktok-scraper,clockworks/tiktok-profile-scraper"
       }
     },
-
     "_nano-banana": {
       "_comment": "Rename to 'nano-banana' to enable. Image generation via Gemini. Install: npm i -g nano-banana-mcp",
       "command": "nano-banana-mcp",
@@ -214,18 +226,20 @@
         "GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
       }
     },
-
     "_notebooklm": {
       "_comment": "Rename to 'notebooklm' to enable. Browser-based Google auth on first run.",
       "command": "npx",
-      "args": ["-y", "notebooklm-mcp@latest"]
+      "args": [
+        "-y",
+        "notebooklm-mcp@latest"
+      ]
     },
-
     "reddit": {
       "command": "uvx",
-      "args": ["reddit-no-auth-mcp-server"]
+      "args": [
+        "reddit-no-auth-mcp-server"
+      ]
     },
-
     "_telegram": {
       "_comment": "Rename to 'telegram' to enable. Get credentials from https://my.telegram.org",
       "command": "telegram-mcp",
@@ -234,38 +248,53 @@
         "TG_API_HASH": "YOUR_TELEGRAM_API_HASH"
       }
     },
-
     "_obsidian": {
       "_comment": "Rename to 'obsidian' to enable. Requires Obsidian Local REST API plugin. Get key from plugin settings.",
       "command": "uvx",
-      "args": ["mcp-obsidian"],
+      "args": [
+        "mcp-obsidian"
+      ],
       "env": {
         "OBSIDIAN_API_KEY": "YOUR_OBSIDIAN_API_KEY"
       }
     },
-
     "_playwright": {
       "_comment": "Rename to 'playwright' to enable. Browser automation alternative to Chrome MCP.",
       "command": "npx",
-      "args": ["@playwright/mcp@latest"]
+      "args": [
+        "@playwright/mcp@latest"
+      ]
     }
   },
   "toolConfigurations": {
     "Read": {
-      "autoApprove": ["**/*"],
-      "deny": [".env", "**/.env"]
+      "autoApprove": [
+        "**/*"
+      ],
+      "deny": [
+        ".env",
+        "**/.env"
+      ]
     },
     "Edit": {
-      "autoApprove": ["**/*"]
+      "autoApprove": [
+        "**/*"
+      ]
     },
     "Write": {
-      "autoApprove": ["**/*"]
+      "autoApprove": [
+        "**/*"
+      ]
     },
     "mcp__claude_ai_Notion__*": {
-      "autoApprove": ["*"]
+      "autoApprove": [
+        "*"
+      ]
     },
     "mcp__apify__*": {
-      "autoApprove": ["*"]
+      "autoApprove": [
+        "*"
+      ]
     }
   },
   "_recommended_plugins": "Enable these in Claude Code plugin manager: document-skills@anthropic-agent-skills, Notion@claude-plugins-official (if using Notion CRM), github@claude-plugins-official"
