@@ -1,8 +1,2 @@
 # Files that gitleaks should not scan.
 # Each line is a gitleaks fingerprint (file:rule:line) or a path glob.
-
-# security-remediation/backups/ holds archived configuration snapshots from
-# the May 2026 security remediation work. The files contain REDACTED tokens
-# (placeholder strings, not live credentials) preserved for audit trail.
-# Live credentials in this directory were rotated as part of remediation.
-security-remediation/backups/
