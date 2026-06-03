@@ -13,7 +13,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"   # plugins/kipi-core/skills/rca
 CORE="$(cd "$HERE/../.." && pwd)"       # plugins/kipi-core
-OUT="${1:-$CORE/dist/kipi-rca}"
+ROOT="$(cd "$CORE/../.." && pwd)"       # repo root
+# Output lives OUTSIDE plugins/ so kipi update's plugin copy never ships the
+# build artifact into instances. Override by passing an output dir as $1.
+OUT="${1:-$ROOT/dist/kipi-rca}"
 
 mkdir -p "$OUT/skills/rca/references" "$OUT/skills/rca/scripts" "$OUT/commands" "$OUT/hooks"
 

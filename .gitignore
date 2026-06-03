@@ -64,3 +64,4 @@ __pycache__/
 
 # Generated standalone plugin builds
 plugins/*/dist/
+/dist/
