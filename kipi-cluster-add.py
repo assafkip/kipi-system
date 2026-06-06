@@ -10,7 +10,7 @@ Plugs an existing instance into the KTLYST cluster:
 5. Reports what it did
 
 Usage:
-    python3 kipi-cluster-add.py ~/Desktop/new-instance "new_instance" "What this instance does"
+    python3 kipi-cluster-add.py ~/projects/ktlyst-hub/new-instance "new_instance" "What this instance does"
 """
 
 import json
@@ -143,7 +143,7 @@ def add_cluster_section_to_new_instance(instance_path, new_name, new_role, all_m
 
     section += f"\n**Bridge:** `~/.ktlyst/bridge/` - shared state files. Read `canonical-digest.json` before making positioning claims.\n"
     section += "**Canonical authority:** Strategy owns talk tracks and positioning. Do not contradict.\n"
-    section += "**Cross-instance access:** Use `--add-dir ~/Desktop/<instance>` when needed.\n"
+    section += "**Cross-instance access:** Use `--add-dir ~/projects/ktlyst-hub/<instance>` when needed.\n"
 
     text = text.rstrip() + "\n" + section
     claude_md.write_text(text)
