@@ -8,10 +8,16 @@ The voice-lint PostToolUse hook only fires on file writes. Most voice
 failures happen in chat output — drafts I produce for the founder to
 copy-paste into X, LinkedIn, email, DMs. None of those reach a file.
 
-This hook closes that gap. At turn end, it reads the transcript, finds
-the assistant's final message text, writes it to a temp file, runs the
-full voice-lint check on it, and exits 2 if violations are found. Claude
-must then re-draft before the turn can complete.
+This hook closes that gap WITHOUT gating ordinary conversation. Per
+.claude/rules/voice-enforcement.md, voice rules apply to content sent to
+another person, NOT to "conversational responses to the founder." A Stop
+hook can't see the founder's request, so it keys on explicit publish-intent
+framing in the assistant's own message ("here's the post/reply/DM/email…",
+"draft for LinkedIn", "ready to send"). No such framing means conversational,
+which is skipped. When framing IS present, it lints the set-off draft (fenced
+prose blocks + blockquotes) rather than the whole message, so surrounding chat
+and any code fences are not themselves linted. Exits 2 only on a real draft
+violation; Claude must then re-draft before the turn can complete.
 
 Pairs with voice-substance-lint.py for positive-pattern enforcement.
 
@@ -24,6 +30,7 @@ Exit codes:
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +42,46 @@ VOICE_LINT = SCRIPTS_DIR / "voice-lint.py"
 SUBSTANCE_LINT = SCRIPTS_DIR / "voice-substance-lint.py"
 
 MIN_TEXT_BYTES = 80
+
+# Explicit publish-intent framing — the only signal that a final chat message hands the
+# founder content meant for someone ELSE. Engineering/debug chat carries none of these,
+# so it's treated as conversational-to-founder and skipped (voice-enforcement.md).
+_NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|message|outreach|"
+         r"response|blurb)")
+_PLAT = r"(linkedin|x|twitter|medium|reddit|instagram|threads)"
+_PUBLISH_MARKER_RE = re.compile(
+    r"(?im)("
+    # "here's / here is / below is  the/a/your/my  [up to 2 words]  post/reply/…"
+    r"\b(here'?s|here\s+is|below\s+is)\s+(the|a|your|my)\s+(\w+\s+){0,2}" + _NOUN + r"\b"
+    r"|\bdraft(ed|ing)?\s+(the|a|your|my|for|below|:)"
+    r"|\b" + _NOUN + r"\s+draft\b"
+    r"|\bready\s+to\s+(post|send|paste|publish)\b"
+    r"|\bcopy[-\s]?paste\b"
+    r"|\b(for|on|to)\s+" + _PLAT + r"\b"          # "for LinkedIn", "to X"
+    r"|\b" + _PLAT + r"\s+" + _NOUN + r"\b"       # "LinkedIn post", "X reply"
+    r")"
+)
+# Fenced blocks: lint the body only for PROSE fences (no language, or a prose tag). A
+# code fence (```python / ```bash) is not a draft and must not be voice-linted.
+_FENCE_RE = re.compile(r"```([^\n]*)\n(.*?)```", re.DOTALL)
+_PROSE_FENCE_LANGS = {"", "text", "txt", "md", "markdown", "quote", "draft"}
+_QUOTE_RE = re.compile(r"(?m)^>\s?(.*)$")
+
+
+def extract_publishable(text):
+    """The draft content to lint, or '' when the message is conversational.
+
+    '' (skip) unless the message carries explicit publish framing. When it does, return
+    the set-off draft — prose fences + blockquotes — so surrounding chat and code fences
+    aren't linted; if framing is present but nothing is set off (draft written inline),
+    fall back to the whole message."""
+    if not _PUBLISH_MARKER_RE.search(text):
+        return ""
+    segments = [body for info, body in _FENCE_RE.findall(text)
+                if info.strip().lower() in _PROSE_FENCE_LANGS]
+    segments += _QUOTE_RE.findall(text)
+    draft = "\n\n".join(s.strip() for s in segments if s.strip())
+    return draft if draft else text
 
 
 def find_final_assistant_text(transcript_path):
@@ -84,12 +131,14 @@ def main():
         sys.exit(0)
     transcript_path = payload.get("transcript_path", "")
     text = find_final_assistant_text(transcript_path)
-    if len(text.encode("utf-8")) < MIN_TEXT_BYTES:
+    # Gate only real drafts; a conversational reply to the founder is not voice-checked.
+    draft = extract_publishable(text)
+    if len(draft.encode("utf-8")) < MIN_TEXT_BYTES:
         sys.exit(0)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
     ) as tmp:
-        tmp.write(text)
+        tmp.write(draft)
         tmp_path = tmp.name
     try:
         violations_output = []
