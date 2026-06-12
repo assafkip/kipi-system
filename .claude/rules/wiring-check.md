@@ -15,6 +15,11 @@ Before declaring done, confirm (evidence required, not assumed):
 - Any new rule is auto-loaded or imported via `@` in CLAUDE.md
 - Any new Python harness has a caller and resolves QROOT correctly
 - Skeleton-vs-instance placement is correct; `kipi update --dry` confirms propagation if this is `kipi-system`
+- The repo's registered bypass gates are green:
+  `python3 plugins/prd-os/scripts/prd_runner.py gates run` exits 0 (the
+  permanent "no bypass remains" re-proof — issue closeout auto-registers
+  every bypass_check into `.prd-os/gates.jsonl`; gates only grow). Skip
+  this bullet only if the repo has never run `/prd-os-init` (no `.prd-os/`).
 
 When finished, run `/wiring-check` and produce the WIRING REPORT. "I think it
 works" is not done. "I ran X, got Y" is done.
