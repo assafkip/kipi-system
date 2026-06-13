@@ -37,6 +37,24 @@ from pathlib import Path
 
 SKIP_MARKER = "audhd-lint-skip"
 
+# Heuristic / probabilistic rules with a real false-positive rate. WARN-only:
+# they print to stderr but do NOT block (exit 0). Every other rule this linter
+# emits is implicitly BLOCK (deterministic, ~0 false-positive): exit 2.
+#
+# This linter's rules are all deterministic — banned words/phrases (shame-word,
+# back-reference), required structural elements (missing-time-estimate,
+# missing-clickable-link, step-without-status), and read-error. None are fuzzy
+# prose-cadence heuristics, so WARN_RULES is empty. It exists for consistency
+# with the precision-tiered partition machinery used across the linters.
+WARN_RULES = frozenset()
+
+
+def _partition(violations):
+    blocking = [v for v in violations if v.get("rule") not in WARN_RULES]
+    warnings = [v for v in violations if v.get("rule") in WARN_RULES]
+    return blocking, warnings
+
+
 SCOPE_PATH_PATTERNS = [
     r"q-system/output/daily-schedule-.*\.html$",
     r"q-system/output/morning-log-.*\.json$",
@@ -226,20 +244,33 @@ def hook_mode():
         sys.exit(0)
 
     violations = lint_file(file_path)
-    if not violations:
-        sys.exit(0)
-
-    print(format_report(file_path, violations), file=sys.stderr)
-    sys.exit(2)
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking), file=sys.stderr)
+        sys.exit(2)
+    if warnings:
+        print(
+            "audhd-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings),
+            file=sys.stderr,
+        )
+    sys.exit(0)
 
 
 def cli_mode(file_path):
     violations = lint_file(file_path)
+    blocking, warnings = _partition(violations)
     if not violations:
         print(f"audhd-lint: clean ({file_path})")
         sys.exit(0)
-    print(format_report(file_path, violations))
-    sys.exit(2)
+    if blocking:
+        print(format_report(file_path, blocking))
+        sys.exit(2)
+    print(
+        "audhd-lint (warnings, non-blocking):\n"
+        + format_report(file_path, warnings)
+    )
+    sys.exit(0)
 
 
 if __name__ == "__main__":

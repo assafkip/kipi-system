@@ -40,6 +40,22 @@ CR_MAX_CHARS = 300
 DM_EMAIL_MAX_HASHTAGS = 0
 POST_MAX_HASHTAGS = 1
 
+# Precision tiers. Rules listed here are heuristic/probabilistic (real
+# false-positive rate): they warn to stderr but do NOT block (exit 0). Every
+# other rule this linter emits is implicitly BLOCK (deterministic, ~0 FP) and
+# exits 2. This linter currently emits only deterministic rules — hard char
+# caps (cr-length), hashtag caps (hashtag-in-non-post, hashtag-overuse),
+# body-link ban (url-in-post-body), opener requirement (dm-greeting-opener,
+# dm-name-opener), and read-error — so WARN_RULES is empty. It exists so that
+# any future prose-cadence/heuristic rule can be downgraded by name.
+WARN_RULES = frozenset()
+
+
+def _partition(violations):
+    blocking = [v for v in violations if v.get("rule") not in WARN_RULES]
+    warnings = [v for v in violations if v.get("rule") in WARN_RULES]
+    return blocking, warnings
+
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 HASHTAG_RE = re.compile(r"(?<![A-Za-z0-9_])#[A-Za-z][A-Za-z0-9_]+")
 URL_RE = re.compile(r"https?://[^\s)]+")
@@ -224,21 +240,39 @@ def hook_mode():
     if not file_path:
         sys.exit(0)
 
-    violations = lint_file(file_path)
-    if not violations:
+    # Self-scope: only LinkedIn content paths. Fast-exit on code/non-content
+    # without reading the file (token discipline: deploy only when needed).
+    if not is_linkedin_path(file_path):
         sys.exit(0)
 
-    print(format_report(file_path, violations), file=sys.stderr)
-    sys.exit(2)
+    violations = lint_file(file_path)
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking), file=sys.stderr)
+        sys.exit(2)
+    if warnings:
+        print(
+            "linkedin-format-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings),
+            file=sys.stderr,
+        )
+    sys.exit(0)
 
 
 def cli_mode(file_path):
     violations = lint_file(file_path)
-    if not violations:
-        print(f"linkedin-format-lint: clean ({file_path})")
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking))
+        sys.exit(2)
+    if warnings:
+        print(
+            "linkedin-format-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings)
+        )
         sys.exit(0)
-    print(format_report(file_path, violations))
-    sys.exit(2)
+    print(f"linkedin-format-lint: clean ({file_path})")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

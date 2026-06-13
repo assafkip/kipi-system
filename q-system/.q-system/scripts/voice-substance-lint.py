@@ -36,12 +36,21 @@ Override:
     Add `<!-- voice-lint-skip -->` anywhere in the file to bypass.
 """
 
+import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
 
 
 SKIP_MARKER = "voice-lint-skip"
+
+# Heuristic / probabilistic rules with a real false-positive rate are WARN-class:
+# they print a non-blocking warning and exit 0 rather than hard-blocking (exit 2).
+# This linter emits only "no-substance-anchor" (a fuzzy first-N-words substance
+# heuristic), so it is WARN-only and never hard-blocks. Every other rule this
+# linter might emit is implicitly BLOCK.
+WARN_RULES = frozenset({"no-substance-anchor"})
 
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
@@ -166,6 +175,12 @@ def lint(text):
     return []
 
 
+def _partition(violations):
+    blocking = [v for v in violations if v.get("rule") not in WARN_RULES]
+    warnings = [v for v in violations if v.get("rule") in WARN_RULES]
+    return blocking, warnings
+
+
 def format_report(file_path, violations):
     if not violations:
         return ""
@@ -175,6 +190,54 @@ def format_report(file_path, violations):
     lines.append("")
     lines.append("Add a real anchor or add <!-- voice-lint-skip --> to bypass (intentional exception only).")
     return "\n".join(lines)
+
+
+def _load_is_published_path():
+    """Reuse voice-lint's published-path scope so both lints fire on exactly the same files."""
+    try:
+        vl_path = Path(__file__).resolve().parent / "voice-lint.py"
+        spec = importlib.util.spec_from_file_location("voice_lint", vl_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.is_published_path
+    except Exception:
+        return lambda p: str(p).endswith(".md") and any(
+            s in str(p)
+            for s in ("/output/", "/marketing/", "/articles/", "/blog/", "/posts/", "/social/",
+                      "linkedin", "medium", "substack")
+        )
+
+
+_is_published_path = _load_is_published_path()
+
+
+def hook_mode():
+    """PostToolUse entrypoint: self-scope to published content, exit 2 on violation."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        sys.exit(0)
+    if payload.get("tool_name", "") not in ("Edit", "Write", "MultiEdit"):
+        sys.exit(0)
+    file_path = payload.get("tool_input", {}).get("file_path", "")
+    if not file_path or not _is_published_path(file_path):
+        sys.exit(0)
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+    except Exception:
+        sys.exit(0)
+    violations = lint(text)
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking), file=sys.stderr)
+        sys.exit(2)
+    if warnings:
+        print(
+            "voice-substance-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings),
+            file=sys.stderr,
+        )
+    sys.exit(0)
 
 
 def main():
@@ -188,12 +251,22 @@ def main():
         sys.stderr.write(f"voice-substance-lint: read error: {e}\n")
         sys.exit(0)
     violations = lint(text)
-    if not violations:
-        print(f"voice-substance-lint: clean ({file_path})")
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking))
+        sys.exit(2)
+    if warnings:
+        print(
+            "voice-substance-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings)
+        )
         sys.exit(0)
-    print(format_report(file_path, violations))
-    sys.exit(2)
+    print(f"voice-substance-lint: clean ({file_path})")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 1:
+        hook_mode()
+    else:
+        main()

@@ -7,6 +7,26 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/rca/scripts/rca-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-substance-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-substance-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/headline-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/headline-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/audhd-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/audhd-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/linkedin-format-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/linkedin-format-lint.py\""
           }
         ]
       },

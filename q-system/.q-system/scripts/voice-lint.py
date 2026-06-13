@@ -17,8 +17,10 @@ Usage:
     python3 voice-lint.py <file_path>
 
 Exit codes:
-    0 = clean
-    2 = violations found (PostToolUse hook contract — Claude must fix)
+    0 = clean, OR only heuristic WARN-class rules fired (printed to stderr,
+        non-blocking)
+    2 = a deterministic BLOCK-class violation found (PostToolUse hook
+        contract — Claude must fix). See WARN_RULES for the warn-only set.
 
 Override:
     Add <!-- voice-lint-skip --> anywhere in the file to bypass entirely.
@@ -135,6 +137,21 @@ CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
 BLOCKQUOTE_RE = re.compile(r"^>\s.*$", re.MULTILINE)
+
+# Heuristic/probabilistic rules with a real false-positive rate. These warn
+# (exit 0 + stderr) instead of blocking. Every other rule is implicitly BLOCK
+# (deterministic, ~0 false-positive) and exits 2.
+WARN_RULES = frozenset({
+    "rule-of-three",
+    "rule-of-three-density",
+    "comma-triplet",
+    "cross-paragraph-fragments",
+    "sentence-uniformity",
+    "hedge-density",
+    "no-single-sentence-paragraph",
+    "bold-restatement",
+    "missing-contraction",
+})
 
 
 def is_published_path(file_path):
@@ -505,6 +522,12 @@ def lint_file(file_path):
     return all_violations
 
 
+def _partition(violations):
+    blocking = [v for v in violations if v.get("rule") not in WARN_RULES]
+    warnings = [v for v in violations if v.get("rule") in WARN_RULES]
+    return blocking, warnings
+
+
 def format_report(file_path, violations):
     if not violations:
         return ""
@@ -535,20 +558,33 @@ def hook_mode():
         sys.exit(0)
 
     violations = lint_file(file_path)
-    if not violations:
-        sys.exit(0)
-
-    print(format_report(file_path, violations), file=sys.stderr)
-    sys.exit(2)
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking), file=sys.stderr)
+        sys.exit(2)
+    if warnings:
+        print(
+            "voice-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings),
+            file=sys.stderr,
+        )
+    sys.exit(0)
 
 
 def cli_mode(file_path):
     violations = lint_file(file_path)
+    blocking, warnings = _partition(violations)
     if not violations:
         print(f"voice-lint: clean ({file_path})")
         sys.exit(0)
-    print(format_report(file_path, violations))
-    sys.exit(2)
+    if blocking:
+        print(format_report(file_path, blocking))
+    if warnings:
+        print(
+            "voice-lint (warnings, non-blocking):\n"
+            + format_report(file_path, warnings)
+        )
+    sys.exit(2 if blocking else 0)
 
 
 if __name__ == "__main__":

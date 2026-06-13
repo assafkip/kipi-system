@@ -9,8 +9,9 @@ Usage:
     python3 headline-lint.py <file_path>
 
 Exit codes:
-    0 = clean (or out of scope)
-    2 = violations found
+    0 = clean, out of scope, or only WARN-class (heuristic) violations
+        (warnings print to stderr, non-blocking)
+    2 = one or more BLOCK-class (deterministic) violations found
 
 Override:
     Add <!-- headline-lint-skip --> anywhere in the file to bypass.
@@ -28,6 +29,16 @@ import sys
 from pathlib import Path
 
 SKIP_MARKER = "headline-lint-skip"
+
+# WARN-class rules: heuristic / probabilistic checks with a real false-positive
+# rate. These print a non-blocking warning (exit 0) instead of hard-blocking.
+# Every other rule this linter emits is implicitly BLOCK (deterministic).
+# - weak-first-seven: first-7-words emptiness / vagueness heuristic
+# - title-outside-sweet-spot: soft style-preference range, not a hard char cap
+WARN_RULES = frozenset({
+    "weak-first-seven",
+    "title-outside-sweet-spot",
+})
 
 HEADLINE_PATH_PATTERNS = [
     r"q-system/output/articles/.*\.md$",
@@ -231,6 +242,12 @@ def lint_file(file_path):
     return violations
 
 
+def _partition(violations):
+    blocking = [v for v in violations if v.get("rule") not in WARN_RULES]
+    warnings = [v for v in violations if v.get("rule") in WARN_RULES]
+    return blocking, warnings
+
+
 def format_report(file_path, violations):
     if not violations:
         return ""
@@ -257,21 +274,34 @@ def hook_mode():
     if not file_path:
         sys.exit(0)
 
-    violations = lint_file(file_path)
-    if not violations:
+    # Self-scope: only headline-bearing content paths. Fast-exit on code/non-content
+    # without reading the file (token discipline: deploy only when needed).
+    if not is_headline_path(file_path):
         sys.exit(0)
 
-    print(format_report(file_path, violations), file=sys.stderr)
-    sys.exit(2)
+    violations = lint_file(file_path)
+
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking), file=sys.stderr)
+        sys.exit(2)
+    if warnings:
+        print("headline-lint (warnings, non-blocking):\n" + format_report(file_path, warnings), file=sys.stderr)
+    sys.exit(0)
 
 
 def cli_mode(file_path):
     violations = lint_file(file_path)
-    if not violations:
-        print(f"headline-lint: clean ({file_path})")
+
+    blocking, warnings = _partition(violations)
+    if blocking:
+        print(format_report(file_path, blocking))
+        sys.exit(2)
+    if warnings:
+        print("headline-lint (warnings, non-blocking):\n" + format_report(file_path, warnings))
         sys.exit(0)
-    print(format_report(file_path, violations))
-    sys.exit(2)
+    print(f"headline-lint: clean ({file_path})")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
