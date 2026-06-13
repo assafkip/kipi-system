@@ -180,8 +180,34 @@ if 'toolConfigurations' in existing:
 if existing.get('model') and existing.get('model') != template.get('model'):
     merged['model'] = existing['model']
 
+# Preserve instance-added HOOKS (union template + instance per event+matcher, dedupe by
+# command). Without this the merge dropped instance hooks every update -- the
+# kipi-update-clobbers-instance-files failure that wiped skill-hook gating. Template hook
+# updates still apply; instance-added lint/gate hooks survive.
+if 'hooks' in existing or 'hooks' in template:
+    merged_hooks = {}
+    events = set(list(template.get('hooks', {})) + list(existing.get('hooks', {})))
+    for event in events:
+        groups = template.get('hooks', {}).get(event, []) + existing.get('hooks', {}).get(event, [])
+        by_matcher = {}
+        order = []
+        for grp in groups:
+            m = grp.get('matcher', '')
+            if m not in by_matcher:
+                by_matcher[m] = {'matcher': m, 'hooks': [], '_seen': set()}
+                order.append(m)
+            for h in grp.get('hooks', []):
+                cmd = h.get('command', '')
+                if cmd not in by_matcher[m]['_seen']:
+                    by_matcher[m]['_seen'].add(cmd)
+                    by_matcher[m]['hooks'].append(h)
+        merged_hooks[event] = [{'matcher': by_matcher[m]['matcher'], 'hooks': by_matcher[m]['hooks']}
+                               if by_matcher[m]['matcher'] else {'hooks': by_matcher[m]['hooks']}
+                               for m in order]
+    merged['hooks'] = merged_hooks
+
 json.dump(merged, open('$path/.claude/settings.json', 'w'), indent=2)
-print('    settings.json updated (MCP, plugins, permissions, tools preserved)')
+print('    settings.json updated (MCP, plugins, permissions, tools, hooks preserved)')
 " 2>/dev/null || echo "    WARN: settings.json sync failed"
 
       # Path rewriting: previously this section doubled $CLAUDE_PROJECT_DIR/q-system/
