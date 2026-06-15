@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 trap "" PIPE
+# Never let an instance's git hooks, GPG signing, or a credential prompt hang the
+# updater. These are infra commits made by kipi, not content commits; instance
+# pre-commit hooks (e.g. gitleaks on thousands of staged files) must not run here.
+export GIT_TERMINAL_PROMPT=0
 
 # kipi-update.sh - Sync latest kipi-system skeleton into all registered instances
 # Usage: ./kipi-update.sh [--dry-run]
@@ -65,7 +69,7 @@ while IFS='|' read -r name path prefix itype; do
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
       echo "  Auto-committing modified tracked files..."
       git add -u 2>/dev/null || true
-      git commit -m "chore: auto-commit before kipi update" 2>/dev/null || true
+      git commit --no-verify --no-gpg-sign -m "chore: auto-commit before kipi update" </dev/null 2>/dev/null || true
     fi
   fi
 
@@ -115,7 +119,7 @@ while IFS='|' read -r name path prefix itype; do
         git add "$prefix/" 2>/dev/null || true
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
-          git commit -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" 2>/dev/null || true
+          git commit --no-verify --no-gpg-sign -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" </dev/null 2>/dev/null || true
           echo "  OK ($CHANGES files updated)"
         else
           echo "  OK (already up to date)"
