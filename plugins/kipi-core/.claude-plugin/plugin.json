@@ -1,6 +1,6 @@
 {
   "name": "kipi-core",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Core founder OS — voice, research, AUDHD, LinkedIn/brand, RCA, build-craft skills + kipi-mcp server",
   "author": { "name": "Assaf Kipnis", "email": "[REDACTED]" },
   "repository": "https://github.com/assafkip/kipi-system",
