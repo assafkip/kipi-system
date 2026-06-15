@@ -24,10 +24,10 @@ time the suite runs. The damage shows up later, as missing rows nobody can expla
 On the Edit/Write, the paired hook fires and blocks:
 
 ```
-build-craft-lint: 1 test-isolation violation(s) in test_promotion.py:
+fable-discipline-lint: 1 test-isolation violation(s) in test_promotion.py:
   line 2: test names a live data path "app/data/prod.db"
 Tests must use a temp copy, a tempfile, or :memory: ... Fix it, or add
-# build-craft-lint-skip to bypass.
+# fable-discipline-lint-skip to bypass.
 ```
 
 ### The fix

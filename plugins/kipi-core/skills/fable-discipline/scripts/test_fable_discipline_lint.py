@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Self-contained test for build-craft-lint.py. Exit 0 = all pass, 1 = a case failed.
+Self-contained test for fable-discipline-lint.py. Exit 0 = all pass, 1 = a case failed.
 
-Dogfoods the build-craft skill: every fixture is written under a TemporaryDirectory
+Dogfoods the fable-discipline skill: every fixture is written under a TemporaryDirectory
 (isolation), never a real path. Run:
-    python3 plugins/kipi-core/skills/build-craft/scripts/test_build_craft_lint.py
+    python3 plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py
 """
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-LINT = str(Path(__file__).resolve().parent / "build-craft-lint.py")
+LINT = str(Path(__file__).resolve().parent / "fable-discipline-lint.py")
 
 # (filename, content, expected_exit)
 CASES = [
@@ -25,7 +25,7 @@ CASES = [
      'import sqlite3\ndef test_x(tmp_path):\n    sqlite3.connect(":memory:")\n    sqlite3.connect(str(tmp_path / "t.db"))\n',
      0),
     ("test_skip.py",
-     '# build-craft-lint-skip\nimport sqlite3\ndef test_x():\n    sqlite3.connect("data/live.db")\n',
+     '# fable-discipline-lint-skip\nimport sqlite3\ndef test_x():\n    sqlite3.connect("data/live.db")\n',
      0),
     ("test_assertion_ctx.py",
      'def test_audit(out):\n    # audit test names the live path on purpose\n    assert "data/prod.db" in out\n',
@@ -69,9 +69,9 @@ def main():
             if not ok:
                 failures += 1
     if failures:
-        print(f"build-craft-lint self-test: {failures} FAILED")
+        print(f"fable-discipline-lint self-test: {failures} FAILED")
         sys.exit(1)
-    print(f"build-craft-lint self-test: all {len(CASES)} cases passed")
+    print(f"fable-discipline-lint self-test: all {len(CASES)} cases passed")
     sys.exit(0)
 
 

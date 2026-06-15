@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-build-craft-lint.py — Deterministic test-isolation enforcer.
+fable-discipline-lint.py — Deterministic test-isolation enforcer.
 
-Pairs with the build-craft skill (SKILL.md). Enforces the one mechanically
+Pairs with the fable-discipline skill (SKILL.md). Enforces the one mechanically
 checkable slice of that skill's "verify against a copy, never the live resource"
 rule: a TEST file must not name a real data path. Tests use a temp copy, a
 tempfile, or :memory:.
@@ -12,7 +12,7 @@ prove idempotency) turned into a consistent guardrail, because an independent
 Codex review caught a sibling test risking mutation of the live founder DB.
 
 Usage:
-    python3 build-craft-lint.py <file_path>   # CLI mode
+    python3 fable-discipline-lint.py <file_path>   # CLI mode
     (no args)                                 # hook mode: PostToolUse JSON on stdin
 
 Exit codes:
@@ -20,7 +20,7 @@ Exit codes:
     2 = violation (a test names a non-isolated data path)
 
 Override:
-    Add  # build-craft-lint-skip  anywhere in the file to bypass.
+    Add  # fable-discipline-lint-skip  anywhere in the file to bypass.
 
 Detector coverage (enumerated on purpose, per the hook-blind-spots rule):
     CATCHES  a quoted literal that is a real DB path — has a path separator AND a
@@ -53,7 +53,7 @@ import re
 import sys
 from pathlib import Path
 
-SKIP_MARKER = "build-craft-lint-skip"
+SKIP_MARKER = "fable-discipline-lint-skip"
 
 # A path literal is isolated (safe in a test) if it names any of these.
 ISOLATION_TOKENS = (
@@ -128,12 +128,12 @@ def lint_file(file_path):
 
 
 def format_report(file_path, violations):
-    lines = [f"build-craft-lint: {len(violations)} test-isolation violation(s) in {file_path}:"]
+    lines = [f"fable-discipline-lint: {len(violations)} test-isolation violation(s) in {file_path}:"]
     for ln, path in violations:
         lines.append(f"  line {ln}: test names a live data path \"{path}\"")
     lines.append(
         "Tests must use a temp copy, a tempfile, or :memory: — never a real data "
-        "resource (build-craft skill: verify against a copy). "
+        "resource (fable-discipline skill: verify against a copy). "
         f"Fix it, or add  # {SKIP_MARKER}  to bypass."
     )
     return "\n".join(lines)
@@ -158,11 +158,11 @@ def hook_mode():
 
 def cli_mode(file_path):
     if not is_test_file(file_path):
-        print(f"build-craft-lint: out of scope (not a test file): {file_path}")
+        print(f"fable-discipline-lint: out of scope (not a test file): {file_path}")
         sys.exit(0)
     violations = lint_file(file_path)
     if not violations:
-        print(f"build-craft-lint: clean ({file_path})")
+        print(f"fable-discipline-lint: clean ({file_path})")
         sys.exit(0)
     print(format_report(file_path, violations))
     sys.exit(2)
@@ -174,5 +174,5 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         cli_mode(sys.argv[1])
     else:
-        print("Usage: build-craft-lint.py <file_path>", file=sys.stderr)
+        print("Usage: fable-discipline-lint.py <file_path>", file=sys.stderr)
         sys.exit(1)

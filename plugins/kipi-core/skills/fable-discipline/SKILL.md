@@ -1,9 +1,9 @@
 ---
-name: build-craft
+name: fable-discipline
 description: "Engineering discipline distilled from a forensic read of one model's work. Use when building a feature, fixing a bug, writing tests, hardening a data path, or running any task that spans multiple files, sources, or sessions. Two layers: how to RUN the task (stage it, verify each stage with a check that can fail, write done-criteria) and how to WRITE the code (recon before edit, verify against a copy with a negative self-test, single-writer chokepoints, scar-anchored why-comments). Ships a paired hook that deterministically blocks a test from touching live data, the one habit a machine can enforce."
 ---
 
-# Build-Craft
+# Fable-Discipline
 
 Coding and task discipline, distilled from reading thousands of edits by one
 capable model and grading them against an independent review. It is additive: it
@@ -108,6 +108,6 @@ mark your pick, give the tradeoff, end with one action.
 ## Enforcement
 
 The deterministic slice (test isolation) is enforced by
-`scripts/build-craft-lint.py`, wired in `hooks/hooks.json` as a PostToolUse hook.
+`scripts/fable-discipline-lint.py`, wired in `hooks/hooks.json` as a PostToolUse hook.
 Everything else is judgment and lives here. See `EXAMPLE.md` for a worked
 before/after, and `references/checklist.md` for the copy-paste pre-done gate.

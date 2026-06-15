@@ -1,4 +1,4 @@
-# Build-Craft Pre-Done Checklist
+# Fable-Discipline Pre-Done Checklist
 
 Copy into the task. Check each box before claiming done. Skip a box only with a
 one-line reason next to it.
@@ -34,4 +34,4 @@ one-line reason next to it.
 - [ ] Options named + pick marked when a real choice existed
 - [ ] No style rules applied to shipped output but skipped in your own narration
 
-Bypass the paired hook on a specific file with `# build-craft-lint-skip`.
+Bypass the paired hook on a specific file with `# fable-discipline-lint-skip`.

@@ -10,7 +10,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/build-craft/scripts/build-craft-lint.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/fable-discipline/scripts/fable-discipline-lint.py\""
           },
           {
             "type": "command",
