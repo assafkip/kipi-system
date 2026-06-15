@@ -78,6 +78,11 @@ def load_findings(prd_os_dir: str) -> tuple[dict[str, list[dict]], list[str]]:
                 except json.JSONDecodeError as exc:
                     errors.append(f"{name}:{lineno}: {exc}")
                     continue
+                if not isinstance(obj, dict):
+                    # Valid JSON but not an object (e.g. [] or "x") is still a hole
+                    # in the trail, not a crash. Codex review finding, 2026-06-15.
+                    errors.append(f"{name}:{lineno}: expected a JSON object, got {type(obj).__name__}")
+                    continue
                 prd_id = obj.get("prd_id") or name[: -len("-findings.jsonl")]
                 findings.setdefault(prd_id, []).append(obj)
     return findings, errors
