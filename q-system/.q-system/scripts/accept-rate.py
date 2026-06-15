@@ -105,6 +105,8 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
                 # A malformed receipt means we cannot prove that closeout, so the
                 # finding stays counted as unreceipted. Skipping is the safe side.
                 continue
+            if not isinstance(obj, dict):
+                continue
             prd_id = obj.get("prd_id")
             finding_id = obj.get("finding_id")
             if prd_id and finding_id:
@@ -249,6 +251,16 @@ def selftest() -> int:
                 failures.append(f"integration: unexpected parse errors {errors}")
             if row is None or row["accepted_without_receipt"] != 0:
                 failures.append("integration: file load disagrees with pure path")
+            # Degenerate: a malformed line and a valid-but-non-object line must
+            # be reported as trail errors, not crash. Codex review, 2026-06-15.
+            bad_path = os.path.join(d, "findings", "prd-bad-findings.jsonl")
+            with open(bad_path, "w", encoding="utf-8") as fh:
+                print('{"prd_id": "prd-bad", "id": "f1", "disposition": "accepted", "severity": "major"}', file=fh)
+                print("not json", file=fh)
+                print('["valid json but not an object"]', file=fh)
+            _, errors2 = build_report(d)
+            if len(errors2) < 2:
+                failures.append("integration: malformed + non-object lines should both report")
 
     if failures:
         print("SELFTEST FAIL:")
@@ -262,7 +274,7 @@ def selftest() -> int:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="prd-os disposition / receipt metric")
     ap.add_argument("--prd-os-dir", default=None,
-                    help="path to a .prd-os directory (defaults to repo root)")
+                    help="path to a .prd-os directory (defaults to <repo>/.prd-os)")
     ap.add_argument("--gate", action="store_true",
                     help="exit 2 if any PRD trips an alert (for hook wiring)")
     ap.add_argument("--selftest", action="store_true",
@@ -276,7 +288,10 @@ def main(argv: list[str]) -> int:
     rows, errors = build_report(prd_os_dir)
     print_report(rows, errors)
 
-    if args.gate and any(r["alert"] for r in rows):
+    # A parse error is a hole in the trail: it could hide an accepted-without-receipt
+    # or a deferred-major behind a green gate. The gate fails on errors too.
+    # Codex review finding, 2026-06-15.
+    if args.gate and (errors or any(r["alert"] for r in rows)):
         return 2
     return 0
 
