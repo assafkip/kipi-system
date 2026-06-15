@@ -175,73 +175,83 @@ def _write_jsonl(path: str, objs: list[dict]) -> None:
 
 
 def selftest() -> int:
-    """Positive + negative self-test against a tempdir. Never reads live .prd-os/.
+    """Positive + negative self-test.
 
     A passing check unseen-to-fail is not a check (fable-discipline rule 2): so we
     assert both that a clean PRD does NOT alert and that a dirty one DOES, and that
     flipping the single offending field clears the alert.
+
+    Scar (codex-review finding-1, 2026-06-15): the core logic test runs entirely in
+    memory through `stats_for_prd`, so it passes even in a read-only sandbox with no
+    writable temp dir - the exact environment the prd-os Codex gate runs in. A
+    check the gate itself cannot execute is a weak check. The file round-trip is a
+    second, best-effort test that confirms the disk-load path agrees with the pure
+    path; it is skipped (not failed) when no temp dir is available.
     """
-    with tempfile.TemporaryDirectory() as d:
-        os.makedirs(os.path.join(d, "findings"))
-        # Clean PRD: one accepted finding WITH a receipt, no deferred majors.
-        _write_jsonl(
-            os.path.join(d, "findings", "prd-clean-findings.jsonl"),
-            [{"prd_id": "prd-clean", "id": "finding-1", "disposition": "accepted",
-              "severity": "major"}],
-        )
-        # Dirty PRD: one accepted-without-receipt + one deferred major.
-        _write_jsonl(
-            os.path.join(d, "findings", "prd-dirty-findings.jsonl"),
-            [{"prd_id": "prd-dirty", "id": "finding-1", "disposition": "accepted",
-              "severity": "major"},
-             {"prd_id": "prd-dirty", "id": "finding-2", "disposition": "deferred",
-              "severity": "major"}],
-        )
-        # Receipt only for the clean PRD's accepted finding.
-        _write_jsonl(
-            os.path.join(d, "receipts.jsonl"),
-            [{"prd_id": "prd-clean", "finding_id": "finding-1",
-              "issue_id": "iss-1", "closed_at": "2026-06-15T00:00:00Z"}],
-        )
-        rows, errors = build_report(d)
-        by_id = {r["prd_id"]: r for r in rows}
+    failures: list[str] = []
 
-        failures = []
-        if by_id["prd-clean"]["alert"]:
-            failures.append("clean PRD should NOT alert but did")
-        if not by_id["prd-dirty"]["alert"]:
-            failures.append("dirty PRD SHOULD alert but did not")
-        if by_id["prd-dirty"]["accepted_without_receipt"] != 1:
-            failures.append("dirty accepted-without-receipt should be 1")
-        if errors:
-            failures.append(f"unexpected parse errors: {errors}")
+    # --- Core logic, in memory, no filesystem. stats_for_prd IS the logic. ---
+    clean = stats_for_prd(
+        "prd-clean",
+        [{"id": "finding-1", "disposition": "accepted", "severity": "major"}],
+        {("prd-clean", "finding-1")},  # accepted AND receipted
+    )
+    if clean["alert"]:
+        failures.append("clean PRD should NOT alert but did")
 
-        # Negative self-test: add the missing receipt for the dirty PRD's accepted
-        # finding and confirm accepted-without-receipt drops by one. Proves the
-        # signal tracks the input, not a constant.
-        _write_jsonl(
-            os.path.join(d, "receipts.jsonl"),
-            [{"prd_id": "prd-clean", "finding_id": "finding-1",
-              "issue_id": "iss-1", "closed_at": "2026-06-15T00:00:00Z"},
-             {"prd_id": "prd-dirty", "finding_id": "finding-1",
-              "issue_id": "iss-2", "closed_at": "2026-06-15T00:00:00Z"}],
-        )
-        rows2, _ = build_report(d)
-        dirty2 = {r["prd_id"]: r for r in rows2}["prd-dirty"]
-        if dirty2["accepted_without_receipt"] != 0:
-            failures.append("adding the receipt should zero accepted-without-receipt")
-        # The deferred major still stands, so the dirty PRD still alerts on the
-        # softer signal. That is correct: a receipt does not un-defer a waved major.
-        if not dirty2["alert"]:
-            failures.append("dirty PRD should still alert on deferred-major")
+    dirty_items = [
+        {"id": "finding-1", "disposition": "accepted", "severity": "major"},
+        {"id": "finding-2", "disposition": "deferred", "severity": "major"},
+    ]
+    dirty = stats_for_prd("prd-dirty", dirty_items, set())  # no receipts at all
+    if not dirty["alert"]:
+        failures.append("dirty PRD SHOULD alert but did not")
+    if dirty["accepted_without_receipt"] != 1:
+        failures.append("dirty accepted-without-receipt should be 1")
 
-        if failures:
-            print("SELFTEST FAIL:")
-            for f in failures:
-                print(f"  - {f}")
-            return 1
-        print("SELFTEST PASS: clean ok, dirty alerts, signal tracks the input.")
-        return 0
+    # Negative self-test: add the missing receipt and prove the signal drops to 0.
+    # This is what makes the green meaningful - the count tracks the input, not a
+    # constant.
+    dirty_fixed = stats_for_prd("prd-dirty", dirty_items, {("prd-dirty", "finding-1")})
+    if dirty_fixed["accepted_without_receipt"] != 0:
+        failures.append("adding the receipt should zero accepted-without-receipt")
+    # The deferred major still stands, so it still alerts. A receipt does not
+    # un-defer a waved major.
+    if not dirty_fixed["alert"]:
+        failures.append("dirty PRD should still alert on deferred-major")
+
+    # --- File round-trip, best-effort. Confirms load_findings/load_receipts agree
+    #     with the pure path. Skipped, not failed, when no temp dir exists. ---
+    try:
+        tmp = tempfile.TemporaryDirectory()
+    except (FileNotFoundError, OSError) as exc:
+        print(f"integration test skipped: no writable temp dir ({exc})")
+    else:
+        with tmp as d:
+            os.makedirs(os.path.join(d, "findings"))
+            _write_jsonl(
+                os.path.join(d, "findings", "prd-dirty-findings.jsonl"),
+                [{"prd_id": "prd-dirty", **it} for it in dirty_items],
+            )
+            _write_jsonl(
+                os.path.join(d, "receipts.jsonl"),
+                [{"prd_id": "prd-dirty", "finding_id": "finding-1",
+                  "issue_id": "iss", "closed_at": "2026-06-15T00:00:00Z"}],
+            )
+            rows, errors = build_report(d)
+            row = {r["prd_id"]: r for r in rows}.get("prd-dirty")
+            if errors:
+                failures.append(f"integration: unexpected parse errors {errors}")
+            if row is None or row["accepted_without_receipt"] != 0:
+                failures.append("integration: file load disagrees with pure path")
+
+    if failures:
+        print("SELFTEST FAIL:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print("SELFTEST PASS: clean ok, dirty alerts, signal tracks the input.")
+    return 0
 
 
 def main(argv: list[str]) -> int:
