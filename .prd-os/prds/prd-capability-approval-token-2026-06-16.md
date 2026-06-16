@@ -1,9 +1,9 @@
 ---
 id: prd-capability-approval-token-2026-06-16
 title: Capability Approval Token
-status: approved
+status: archived
 created_at: 2026-06-16T03:08:29Z
-updated_at: 2026-06-16T03:29:17Z
+updated_at: 2026-06-16T04:23:00Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-capability-approval-token-2026-06-16-findings.jsonl
