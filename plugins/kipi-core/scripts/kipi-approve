@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# kipi-approve <hash> - founder-facing, out-of-band approval of ONE destructive
+# command. Mints a single-use capability token for the <hash> that the
+# destructive-op-deny hook printed in its deny message. Run this in your OWN
+# shell. The whole point is that the agent cannot run it for itself: it is a
+# separate, conscious act outside the agent's loop.
+#
+# Usage:  kipi-approve <64-hex-hash>
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+LIB="$HERE/capability-token.sh"
+[ -x "$LIB" ] || LIB="$HOME/.claude/bin/capability-token.sh"
+
+if [ ! -x "$LIB" ]; then
+  echo "kipi-approve: capability-token.sh not found (run install-capability-token.sh)" >&2
+  exit 1
+fi
+
+exec bash "$LIB" mint "${1-}"

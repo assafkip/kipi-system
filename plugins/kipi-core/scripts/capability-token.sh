@@ -11,15 +11,27 @@
 #
 # Single-writer chokepoint: `mint` is the only creator of tokens, `check` is the
 # only consumer. The hook only ever calls `check`; the founder only ever calls
-# `mint` (via kipi-approve), out of band. Everything fails closed: any error,
-# missing token, expired/malformed token, or lost race denies.
+# `mint` (via kipi-approve), out of band. Everything fails closed.
 
 set -uo pipefail
 
-# Overridable for tests; defaults are the real global locations.
-APPROVALS_DIR="${CAPABILITY_TOKEN_DIR:-$HOME/.claude/approvals}"
-AUDIT_LOG="${CAPABILITY_TOKEN_LOG:-$HOME/.claude/audit/destructive-op-deny.log}"
-TTL="${CAPABILITY_TOKEN_TTL:-300}"   # seconds; default 5 minutes
+# Pin PATH so the security-critical externals (mv, cat, date, sha256, awk)
+# cannot be hijacked by a caller-controlled PATH. (codex-adversarial finding-4)
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+# Trust root is FIXED in production. The env overrides are honored only when
+# CAPABILITY_TOKEN_TEST=1, so a stray or poisoned CAPABILITY_TOKEN_DIR in the
+# environment cannot redirect `check` at a forged token directory. The hook
+# never sets the test flag. (codex finding-1)
+if [ "${CAPABILITY_TOKEN_TEST:-0}" = "1" ]; then
+  APPROVALS_DIR="${CAPABILITY_TOKEN_DIR:-$HOME/.claude/approvals}"
+  AUDIT_LOG="${CAPABILITY_TOKEN_LOG:-$HOME/.claude/audit/destructive-op-deny.log}"
+  TTL="${CAPABILITY_TOKEN_TTL:-300}"
+else
+  APPROVALS_DIR="$HOME/.claude/approvals"
+  AUDIT_LOG="$HOME/.claude/audit/destructive-op-deny.log"
+  TTL=300   # seconds; 5 minutes
+fi
 
 _sha256() {
   # Portable sha256 -> 64 lowercase hex chars (Linux sha256sum / macOS shasum).
@@ -43,11 +55,14 @@ _log() {
 }
 
 cmd_hash() {
-  # hash <command> <cwd> -> sha256(command + LF + cwd). Verbatim, no
-  # normalization: any byte difference yields a different hash, which fails
-  # closed to deny rather than risking a false approval.
-  local command="${1-}" cwd="${2-}"
-  printf '%s\n%s' "$command" "$cwd" | _sha256
+  # hash <command> <cwd>. Unambiguous binding: hash each part separately, then
+  # hash the two fixed-length hex digests together. (command + LF + cwd was
+  # ambiguous when a value contained a newline; codex finding-2.) Verbatim, no
+  # normalization: any byte difference yields a different hash, failing closed.
+  local command="${1-}" cwd="${2-}" hc hd
+  hc="$(printf '%s' "$command" | _sha256)" || return 1
+  hd="$(printf '%s' "$cwd" | _sha256)" || return 1
+  printf '%s:%s' "$hc" "$hd" | _sha256
 }
 
 cmd_check() {
@@ -85,7 +100,8 @@ cmd_mint() {
   esac
   [ "${#hash}" -eq 64 ] || { echo "mint: hash must be 64 lowercase hex chars" >&2; return 2; }
   mkdir -p "$APPROVALS_DIR" 2>/dev/null || { echo "mint: cannot create $APPROVALS_DIR" >&2; return 1; }
-  chmod 0700 "$APPROVALS_DIR" 2>/dev/null || true
+  # Fail closed if the dir cannot be locked to the owner only. (codex finding-3)
+  chmod 0700 "$APPROVALS_DIR" || { echo "mint: cannot secure $APPROVALS_DIR (0700)" >&2; return 1; }
   local now f exp
   now="$(_now)"
   # Prune so the dir does not accumulate stale grants.

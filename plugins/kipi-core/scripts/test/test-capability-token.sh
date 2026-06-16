@@ -5,6 +5,8 @@
 #  - consume is proven by a SECOND check failing (if delete were skipped, green)
 #  - expiry is proven by an expired token being rejected (if ignored, green)
 #  - atomicity is proven by exactly ONE of two racing consumers winning
+#  - hash binding is proven by newline-shifted command/cwd pairs differing
+#  - trust-root gating is proven by the env override being ignored without the flag
 # This is the fable-discipline rule: a check you have never seen fail is not a
 # check. These have been seen to fail against deliberately broken inputs.
 
@@ -15,6 +17,9 @@ LIB="$HERE/../capability-token.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# CAPABILITY_TOKEN_TEST=1 is required to honor the dir/log/ttl overrides; the
+# production hook never sets it, so the trust root is fixed in production.
+export CAPABILITY_TOKEN_TEST=1
 export CAPABILITY_TOKEN_DIR="$TMP/approvals"
 export CAPABILITY_TOKEN_LOG="$TMP/audit.log"
 export CAPABILITY_TOKEN_TTL=300
@@ -72,6 +77,20 @@ if bash "$LIB" mint "not-a-hash" 2>/dev/null; then bad "mint must reject a non-h
 grants=$(grep -c '"event":"grant"' "$CAPABILITY_TOKEN_LOG" 2>/dev/null || true); grants=${grants:-0}
 consumes=$(grep -c '"event":"consume"' "$CAPABILITY_TOKEN_LOG" 2>/dev/null || true); consumes=${consumes:-0}
 if [ "$grants" -ge 1 ] && [ "$consumes" -ge 1 ]; then ok "audit log records grant and consume"; else bad "audit log missing events (grant=$grants consume=$consumes)"; fi
+
+# 9. hash is unambiguous across newline-shifted command/cwd pairs (finding-2).
+ha="$(bash "$LIB" hash 'a' "$(printf 'b\nc')")"
+hb="$(bash "$LIB" hash "$(printf 'a\nb')" 'c')"
+if [ "$ha" != "$hb" ]; then ok "hash unambiguous across newline-shifted pairs"; else bad "hash ambiguous: ('a','b\\nc') collides with ('a\\nb','c')"; fi
+
+# 10. env override is IGNORED without the test flag (production trust root fixed; finding-1).
+hg="$(bash "$LIB" hash 'gate-cmd' "$CWD")"
+bash "$LIB" mint "$hg" >/dev/null   # token written into the temp override dir
+if env -u CAPABILITY_TOKEN_TEST bash "$LIB" check 'gate-cmd' "$CWD"; then
+  bad "override honored without test flag (trust root not fixed)"
+else
+  ok "env override ignored without test flag (fixed trust root)"
+fi
 
 if [ "$fail" -ne 0 ]; then echo "TESTS FAILED"; exit 1; fi
 echo "ALL TESTS PASSED"
