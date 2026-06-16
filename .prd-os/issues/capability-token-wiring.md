@@ -1,7 +1,7 @@
 ---
 id: capability-token-wiring
 title: kipi-approve wrapper, idempotent install, and hook integration verified against a copy
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-capability-approval-token-2026-06-16
 allowed_files:

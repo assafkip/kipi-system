@@ -1,7 +1,7 @@
 ---
 id: capability-token-lib
 title: capability-token.sh: hash, atomic check-and-consume, mint, audit logging
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-capability-approval-token-2026-06-16
 allowed_files:
