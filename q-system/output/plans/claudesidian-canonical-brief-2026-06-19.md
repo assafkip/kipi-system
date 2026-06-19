@@ -166,3 +166,77 @@ claudesidian is a strong SECONDARY target for the OSS-contribution mission (MIT,
 When ready to mine the next repo, append Entry #002 using the schema in section 1. Candidates implied by this analysis:
 - Anthropic's `skill-creator` directly (claudesidian only bundles it) for the eval methodology behind H1/H12.
 - The OSS-mission targets already in flight (rhuss/cc-spex, dwarvesf/claude-guardrails) for reverse-harvest (what THEY do that kipi could adopt).
+
+---
+
+# Addendum A: System-wide learning + Obsidian-live (founder challenge 2026-06-19)
+
+## The founder's two intuitions, judged
+
+Two things raised:
+1. **Cross-instance learning** is the highest-leverage missing piece: a lesson learned in one of the ~20 kipi instances should reach the other 17-19.
+2. **"Make kipi live in Obsidian"** (the way claudesidian does) is how you get that.
+
+Verdict, split cleanly:
+- **Intuition 1 is correct.** It is the new top item, above H1. Nothing else in the brief compounds across the fleet. The brief's own skip-list already concedes the gap (siloed auto-memory, empty rollup stubs, bridge carries state not learning).
+- **Intuition 2 is a misread of what claudesidian does.** Claudesidian does NOT do cross-instance learning. It is ONE vault per user. Its weekly synthesis is cross-FOLDER synthesis inside that single vault, not cross-repo. "Live in Obsidian" there means file SYNC of that one vault (iCloud / git / paid Obsidian Sync), nothing more. It cannot manufacture edges between notes in two confidential repos because, in claudesidian's world, there is only ever one repo.
+
+So the cross-instance gap is real, but it is **kipi's native frontier** (inspired by claudesidian's synthesis idea, not copied from a capability it has). Obsidian is a viewer. The engine has to be built either way.
+
+## The real gap
+
+kipi learns inside each instance and never across the ~20. Siloed today, per instance: per-project auto-memory (`~/.claude/projects/<instance>/memory/MEMORY.md`), debrief outputs, RCAs (`q-system/output/rca/`), scars/corrections, the memory store itself (`q-system/memory/`, with `weekly/` + `monthly/` rollups confirmed still `.gitkeep` stubs, so the corpus is currently thin).
+
+Rails that exist, and why none carry learning:
+- **`kipi update` (down):** skeleton -> instances, structure only. `rsync -a --delete` excluding my-project/, canonical/, memory/, output/, bus/ (lines 111-116). No instance-originated learning.
+- **`kipi push` (up):** instance -> skeleton, generic code only. Its safety scanner exists to keep instance-specific content OUT of the skeleton.
+- **KTLYST bridge (`~/.ktlyst/bridge/`):** cross-instance STATE (5 files across 5 same-company instances). No accumulated learning, and does not reach the consulting/client instances.
+
+The producers (rca, learn-from-correction) exist. The consumer does not. That is the whole gap.
+
+## Confidentiality: the thing Noah never faces (the make-or-break)
+
+Noah's claudesidian is one vault for one user. There is no other client to leak to. kipi has mutually-confidential clients in separate repos. The stress-test found a concrete A-to-B leak in the FIRST design:
+
+A consulting instance writes an RCA scar. A scar only earns promotion because of the specific that made it sting, so the body names a client's investigation target ("...correlating the burner across the <client-target> case..."). The first design gated promotion with `kipi-push-upstream.sh`'s existing scanner (line 26):
+```
+grep -ril "KTLYST\|ktlyst\|CISO\|re-breach\|Assaf\|/Users/" ... | head -5
+```
+Six KTLYST-flavored tokens, `head -5` truncation. ZERO consulting-client names, zero target/case codenames, zero PII regex. The client target matches none of the six tokens, scanner exits 0, the lesson lands in the skeleton, then `rsync -a --delete` (no `lessons/` exclude) fans it verbatim into every instance including competing clients, with no per-instance veto. Client A's target is now in client B's working context.
+
+**Blocking.** Structural, not an edge case. The ranking + both architects claimed the gate "fail-closed rejects on any client token." False on inspection (neither read what the scanner matches). The fix is not a better scrubber.
+
+## Recommended architecture (re-architected after the stress-test rejected v1)
+
+Confidentiality model, enforced deterministically at the WRITE step, fail-closed:
+- **Shareable = HOW.** Reusable patterns (single-writer chokepoint, verify-against-a-copy), process methodology, RCA root-cause *types*.
+- **Unshareable = WHAT.** Any client name, target/case codename, `/Users/` path, deliverable content, debrief/canonical body, dollar figure, PII.
+- If the shared store never contains client data, there is nothing to leak at read time.
+
+The safe design:
+1. **Promotion rule is v1, not v2:** a lesson is eligible to go fleet-wide only when the same pattern independently recurs in **2+ unrelated instances**. A pattern common to two unrelated clients is de-identified by construction. This is the one structurally-sound control.
+2. **Only `kind=pattern` and `kind=methodology` are eligible.** `kind=scar` and `kind=rca` are FORBIDDEN from the shared folder. The specific that makes a scar worth promoting IS the WHAT you cannot share. Raw scars stay instance-local in `q-system/memory/` (already update-excluded).
+3. **Promotion is a human-authored net-new abstracted restatement** you write by hand, never an auto-scrub of an existing scar.
+4. **Keep the clever fan-out:** one committed `q-system/lessons/` folder NOT in the `kipi update` exclude list rides the existing daily rail into every instance for free. No 19th repo.
+5. **Single-writer fix:** `lessons/` is written by ONE path. Promotion writes to the skeleton via a separate curated step, not a subtree push that collides with the down-rsync (a two-writer collision would violate fable-discipline's own single-writer rule).
+6. **The 6-token scanner is a backstop only,** and only after it gains real coverage (email/currency regex + a client/target/case-codename roster kept OUTSIDE the synced skeleton).
+
+`{{UNVALIDATED}}`: the false-negative rate of any future content scanner is unmeasurable until a real corpus exists. The safe path does not depend on the scanner being perfect. That is the point.
+
+## Obsidian-live: verdict
+
+What it actually means: file SYNC of ONE vault (iCloud / git / paid Obsidian Sync). Not a server, not a shared brain.
+
+What kipi already uses (confirmed): `q-system/.obsidian-starter/` (committed config, pre-enables Dataview), `q-system/CRM-Dashboard.md` (working Dataview, its footer says "No sync, no API, no database. Same files, visual view."), `q-system/.q-system/onboarding/guides/connect-obsidian.md`, and the investigations `export/obsidian.py` + `export/canvas.py`.
+
+**Orthogonal, not load-bearing.** Obsidian is a viewer (graph / backlinks / Dataview / canvas) plus mobile + sync. It does not create cross-instance learning. A graph cannot draw edges between notes that were never gathered. Build the aggregator first; Obsidian renders it later. Options: (A) status quo 18 vaults, Quick Win; (B) the sanitizing aggregator on the `lessons/` rail, Deep Focus; (C) a unified meta-vault, which REQUIRES B first, multi-day.
+
+## Ranking vs the brief
+
+- **System-wide learning = H0. Outranks H1.** Every brief item is single-instance; none move a lesson from A to B. H0 is the only item whose value compounds across the fleet, and it gives the per-instance producers (rca, learn-from-correction) their first consumer.
+- The cheap fan-out spine can ship near the Quick Wins, but the confidentiality engine is Deep Focus and must precede any push. The safe version is the actual product, not "one focused session."
+- **Obsidian-live = optional v3 bolt-on,** alongside H14/H15, below H0 and H1/H2. A viewer, never a blocker.
+
+## Next action
+
+**Reconcile `instance-registry.json`** so all entries point at `/Users/assafkipnis` (live `$HOME`), then merge or remove the duplicate on-disk trees under `/Users/assafkip` (confirmed: 17 of 21 entries point at the stale path, and duplicate physical copies of instances exist). **[Admin, ~45m]** Nothing downstream (not the fan-out, not the dry-run, not a single lesson) is safe to build until propagation targets one real copy. A confidential lesson written to a tree nobody is watching is the same leak class, just quieter.
