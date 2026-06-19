@@ -239,4 +239,8 @@ What kipi already uses (confirmed): `q-system/.obsidian-starter/` (committed con
 
 ## Next action
 
-**Reconcile `instance-registry.json`** so all entries point at `/Users/assafkipnis` (live `$HOME`), then merge or remove the duplicate on-disk trees under `/Users/assafkip` (confirmed: 17 of 21 entries point at the stale path, and duplicate physical copies of instances exist). **[Admin, ~45m]** Nothing downstream (not the fan-out, not the dry-run, not a single lesson) is safe to build until propagation targets one real copy. A confidential lesson written to a tree nobody is watching is the same leak class, just quieter.
+**Normalize `instance-registry.json`** path spellings from `/Users/assafkip/...` to the canonical `/Users/assafkipnis/...`.
+
+CORRECTED (direct recon 2026-06-19): `/Users/assafkip` is a root-owned SYMLINK to `/Users/assafkipnis` (same inode confirmed on 4_points_consulting and kipi-system; same git HEAD). There are NO duplicate on-disk trees, and every registry path already resolves through the symlink. The earlier "duplicate physical copies / fix-first blocker / lesson written to a tree nobody is watching" claim was an AGENT OVERSTATEMENT (the second this session, after "zero update safety net" on H2). Lesson for the harvest method: an agent reporting "two paths both exist" is not evidence of duplication until someone checks the inode / symlink. Ground before you diagnose.
+
+The real issue is minor and non-destructive: 14 instance entries + the skeleton + the standalone use the symlink alias, so they break ONLY if that root-owned symlink is ever removed; and 4 Desktop entries (VC_Reachout already marked merged, car-research, q-education, q-investigate-osint-bot) point at dirs gone from disk. **[Admin, ~20m, LOW priority]** This is hygiene that hardens against a symlink removal, NOT a blocker for H0. H0 (cross-instance learning) can proceed independently.
