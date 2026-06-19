@@ -1,12 +1,12 @@
 {
   "skeleton": {
-    "path": "/Users/assafkip/projects/kipi-system",
+    "path": "/Users/assafkipnis/projects/kipi-system",
     "remote": "https://github.com/assafkip/kipi-system.git"
   },
   "instances": [
     {
       "name": "KTLYST_strategy",
-      "path": "/Users/assafkip/projects/ktlyst-hub/strategy",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/strategy",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-ktlyst",
       "type": "subtree",
@@ -14,7 +14,7 @@
     },
     {
       "name": "ktlyst",
-      "path": "/Users/assafkip/projects/ktlyst-hub/product",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/product",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -22,14 +22,14 @@
     },
     {
       "name": "VC_Reachout",
-      "path": "/Users/assafkip/Desktop/assafs_qs/VC_Reachout",
+      "path": "/Users/assafkipnis/Desktop/assafs_qs/VC_Reachout",
       "status": "merged_into_KTLYST_strategy",
       "merged_date": "2026-03-26",
       "merged_as": "q-ktlyst/vc-sourcing/"
     },
     {
       "name": "car-research",
-      "path": "/Users/assafkip/Desktop/car-research",
+      "path": "/Users/assafkipnis/Desktop/car-research",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "direct-clone",
@@ -38,7 +38,7 @@
     },
     {
       "name": "q-education",
-      "path": "/Users/assafkip/Desktop/q-education",
+      "path": "/Users/assafkipnis/Desktop/q-education",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -46,7 +46,7 @@
     },
     {
       "name": "ASK_AI_consultant",
-      "path": "/Users/assafkip/projects/ASK_AI_consultant",
+      "path": "/Users/assafkipnis/projects/ASK_AI_consultant",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-consult",
       "type": "subtree",
@@ -54,7 +54,7 @@
     },
     {
       "name": "ktlyst-website",
-      "path": "/Users/assafkip/projects/ktlyst-hub/website",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/website",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -64,7 +64,7 @@
     },
     {
       "name": "4_points_consulting",
-      "path": "/Users/assafkip/projects/4_points_consulting",
+      "path": "/Users/assafkipnis/projects/4_points_consulting",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-investigate",
       "type": "subtree",
@@ -73,7 +73,7 @@
     },
     {
       "name": "Pure_spectrum_Q",
-      "path": "/Users/assafkip/projects/Pure_spectrum_Q",
+      "path": "/Users/assafkipnis/projects/Pure_spectrum_Q",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-pure",
       "type": "subtree",
@@ -82,7 +82,7 @@
     },
     {
       "name": "ktlyst_lawyer",
-      "path": "/Users/assafkip/projects/ktlyst-hub/lawyer",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/lawyer",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -90,7 +90,7 @@
     },
     {
       "name": "personal-brand",
-      "path": "/Users/assafkip/projects/ktlyst-hub/personal-brand",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/personal-brand",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -98,7 +98,7 @@
     },
     {
       "name": "AUDHD_KIDS",
-      "path": "/Users/assafkip/projects/AUDHD_KIDS",
+      "path": "/Users/assafkipnis/projects/AUDHD_KIDS",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -106,7 +106,7 @@
     },
     {
       "name": "event_coordinator",
-      "path": "/Users/assafkip/projects/ktlyst-hub/event_coordinator",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/event_coordinator",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -114,7 +114,7 @@
     },
     {
       "name": "school-idf",
-      "path": "/Users/assafkip/projects/school-idf",
+      "path": "/Users/assafkipnis/projects/school-idf",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -144,12 +144,20 @@
       "type": "subtree",
       "has_git": true,
       "note": "Single-purpose tuition-negotiation coach. Domain in q-negotiate/. No routines."
+    },
+    {
+      "name": "gtm-partner",
+      "path": "/Users/assafkipnis/projects/random-stuff-ideas",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
     {
       "name": "q-investigate-osint-bot",
-      "path": "/Users/assafkip/Desktop/q-investigate-osint-bot",
+      "path": "/Users/assafkipnis/Desktop/q-investigate-osint-bot",
       "purpose": "Standalone OSINT collection system",
       "has_skeleton": false
     }
@@ -157,7 +165,7 @@
   "eliminated": [
     {
       "name": "kipi-pipeline-plugin",
-      "archived_to": "/Users/assafkip/Desktop/_archived/kipi-pipeline-plugin"
+      "archived_to": "/Users/assafkipnis/Desktop/_archived/kipi-pipeline-plugin"
     },
     {
       "name": "q-founder-os",
