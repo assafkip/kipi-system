@@ -151,24 +151,26 @@ def lint(text):
     has_witness = len(witnesses) >= 1
     has_number = len(numbers) >= 1
     has_proper = len(proper_nouns) >= 1
-    anchor_count = sum([has_witness, has_number, has_proper])
+    # H10: count TOTAL anchors (a single dropped brand name is not enough);
+    # require >=2. Stays WARN-class (no-substance-anchor in WARN_RULES; never hard-blocks).
+    anchor_count = len(witnesses) + len(numbers) + len(proper_nouns)
     if total_words >= 200:
-        if anchor_count == 0:
+        if anchor_count < 2:
             return [{
                 "rule": "no-substance-anchor",
                 "detail": (
-                    f"draft has {total_words} words but zero anchors. "
+                    f"draft has {total_words} words but fewer than 2 concrete anchors. "
                     "Needs at least one of: witness phrase (I built/I shipped/...), "
                     "specific named entity (not generic), or concrete number. "
                     "Cadence without substance reads as AI."
                 ),
             }]
     elif total_words >= 80:
-        if anchor_count == 0:
+        if anchor_count < 2:
             return [{
                 "rule": "no-substance-anchor",
                 "detail": (
-                    f"draft has {total_words} words and zero anchors. "
+                    f"draft has {total_words} words and fewer than 2 concrete anchors. "
                     "Add a witness phrase, named entity, or concrete number."
                 ),
             }]

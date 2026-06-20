@@ -95,6 +95,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/lessons-index.py\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\" 2>/dev/null || true"
           }
         ]
       }

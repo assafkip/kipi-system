@@ -1,0 +1,7 @@
+{"skill":"fable-discipline","fired_marker":"fable-discipline","cases":[
+ {"prompt":"build a new feature across several files","should_trigger":true},
+ {"prompt":"fix this bug in the data path","should_trigger":true},
+ {"prompt":"write tests for this module","should_trigger":true},
+ {"prompt":"what is the weather today","should_trigger":false},
+ {"prompt":"summarize this article in one line","should_trigger":false}
+]}

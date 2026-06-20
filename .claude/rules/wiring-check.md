@@ -6,6 +6,7 @@ that isn't connected to the rest is dead weight.
 
 Before declaring done, confirm (evidence required, not assumed):
 - Any new skill has a trigger (auto-invoke rule, command, or discoverable description)
+- Any new high-stakes auto-invoked skill has a trigger-eval fixture in `q-system/.q-system/skill-evals/` (run advisory/periodic via `skill-trigger-eval.py`; never a blocking gate)
 - Any new slash command is registered (listed in CLAUDE.md commands and/or `plugin.json`)
 - Any new hook script is referenced from `settings.json`, is executable, and uses the correct exit-code contract
 - Any new MCP tool is registered in the server and appears in the plugin description

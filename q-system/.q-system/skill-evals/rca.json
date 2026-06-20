@@ -1,0 +1,7 @@
+{"skill":"rca","fired_marker":"rca","cases":[
+ {"prompt":"why did this pipeline break","should_trigger":true},
+ {"prompt":"root cause this failure","should_trigger":true},
+ {"prompt":"postmortem this incident","should_trigger":true},
+ {"prompt":"write a new feature from scratch","should_trigger":false},
+ {"prompt":"what time is it","should_trigger":false}
+]}

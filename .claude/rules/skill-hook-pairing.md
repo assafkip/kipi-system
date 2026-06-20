@@ -26,6 +26,10 @@ Hooks block by default. Bypass per-file with an explicit marker (one per hook, n
 
 founder-voice → voice-lint (+ voice-substance) · headline-engineering → headline-lint · audhd-executive-function → audhd-lint · linkedin-brand → linkedin-format-lint · rca → rca-lint (plugin hooks.json) · fable-discipline → fable-discipline-lint (plugin hooks.json; enforces test-isolation, the deterministic slice of "verify against a copy"). · lessons corpus → lessons-validator (allowlist frontmatter guard for q-system/lessons/). Correctly interpretive (no hook): research-mode, learn-from-correction, deck-ai, council, kipi-design (brand/design/ui-ux-pro-max).
 
+## Trigger-eval pairings (advisory, not a blocking hook)
+
+Interpretive auto-invoked skills (founder-voice, audhd-executive-function, rca, fable-discipline) cannot be gated by a deterministic hook -- whether they FIRE is a model decision. They instead get a TRIGGER-EVAL fixture set in `q-system/.q-system/skill-evals/<skill>.json` (should_trigger prompts), run ON-DEMAND by `q-system/.q-system/scripts/skill-trigger-eval.py` (it shells `claude -p`). This is ADVISORY and PERIODIC -- never a blocking exit-2 hook (it costs real Opus calls and the rate is noisy). It measures the one thing the lint layer structurally cannot see: whether the skill actually triggers.
+
 ## Does NOT apply
 
 Reference-only skills (no output); skills that emit code or visual artifacts (use type/lint/schema checks instead); one-shot internal-only outputs.

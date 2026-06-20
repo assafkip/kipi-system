@@ -108,12 +108,31 @@ while IFS='|' read -r name path prefix itype; do
     if [ "$DRY_RUN" != "--dry-run" ]; then
       ARCHIVE_TMP=$(mktemp -d)
       if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$ARCHIVE_TMP" 2>/dev/null; then
+        # Snapshot untracked instance files before the destructive --delete.
+        # `git ls-files --others` lists untracked files INCLUDING gitignored ones
+        # (so it covers q-system/sources/ etc. that `git stash -u` would miss).
+        # Lives inside ARCHIVE_TMP so the existing rm -rf cleans it -- no stash stack,
+        # no extra cleanup, collision-safe.
+        SNAP="$ARCHIVE_TMP/.snap"; mkdir -p "$SNAP/f"
+        ( cd "$path" && git ls-files -z --others -- "$prefix/" \
+            ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
+            ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
+            ":(exclude)$prefix/.q-system/agent-pipeline/bus/" 2>/dev/null ) > "$SNAP/list" || true
+        ( cd "$path" && while IFS= read -r -d '' uf; do
+            mkdir -p "$SNAP/f/$(dirname "$uf")" && cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || true
+          done < "$SNAP/list" )
         rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
           --exclude="my-project/" \
           --exclude="canonical/" \
           --exclude="memory/" \
           --exclude="output/" \
           --exclude=".q-system/agent-pipeline/bus/" 2>/dev/null
+        # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
+        ( cd "$path" && while IFS= read -r -d '' uf; do
+            if ! { [ -e "$uf" ] || [ -L "$uf" ]; } && { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
+              mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && echo "  restored untracked: $uf"
+            fi
+          done < "$SNAP/list" )
         rm -rf "$ARCHIVE_TMP"
         cd "$path"
         git add "$prefix/" 2>/dev/null || true
@@ -132,14 +151,24 @@ while IFS='|' read -r name path prefix itype; do
       fi
     else
       cd "$path"
-      # Compare file counts as a quick diff indicator
-      SKEL_COUNT=$(find "$SCRIPT_DIR/q-system" -type f -not -path "*/output/*" -not -path "*/bus/*" -not -path "*/my-project/*" -not -path "*/canonical/*" -not -path "*/memory/*" 2>/dev/null | wc -l | tr -d ' ')
-      INST_COUNT=$(find "$path/$prefix" -type f -not -path "*/output/*" -not -path "*/bus/*" -not -path "*/my-project/*" -not -path "*/canonical/*" -not -path "*/memory/*" 2>/dev/null | wc -l | tr -d ' ')
-      echo "  skeleton files: $SKEL_COUNT  instance files: $INST_COUNT"
-      if [ "$SKEL_COUNT" != "$INST_COUNT" ]; then
-        echo "  Changes pending (run without --dry to apply)"
+      # Real itemized preview: rsync -ain --delete from the SAME `git archive HEAD`
+      # source AND the same excludes the real run uses, so --dry cannot drift from
+      # what a real run would change/delete.
+      DRY_TMP=$(mktemp -d)
+      if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$DRY_TMP" 2>/dev/null; then
+        CHANGED=$(rsync -ain --delete "$DRY_TMP/q-system/" "$path/$prefix/" \
+          --exclude="my-project/" --exclude="canonical/" --exclude="memory/" \
+          --exclude="output/" --exclude=".q-system/agent-pipeline/bus/" 2>/dev/null)
+        if [ -n "$CHANGED" ]; then
+          echo "  Changes vs skeleton (run without --dry to apply):"
+          echo "$CHANGED" | sed 's/^/    /'
+        else
+          echo "  Up to date"
+        fi
+        rm -rf "$DRY_TMP"
       else
-        echo "  Likely up to date (file counts match)"
+        rm -rf "$DRY_TMP"
+        echo "  WARN: archive export failed (dry)"
       fi
       PASS=$((PASS + 1))
     fi

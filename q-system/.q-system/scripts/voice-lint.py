@@ -101,6 +101,8 @@ BANNED_PHRASES = [
     "let's face it", "great question", "hope this helps",
     "circling back", "just checking in", "following up on my last",
     "excited to announce", "excited to share", "proud to say",
+    "it's worth mentioning", "it is worth mentioning",
+    "it's worth noting", "it is worth noting", "worth highlighting",
 ]
 
 NON_CONTRACTED_NEGATIONS = [

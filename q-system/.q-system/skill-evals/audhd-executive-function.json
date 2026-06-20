@@ -1,0 +1,7 @@
+{"skill":"audhd-executive-function","fired_marker":"audhd","cases":[
+ {"prompt":"give me my tasks for today with energy tags","should_trigger":true},
+ {"prompt":"break this big task into chunks","should_trigger":true},
+ {"prompt":"help me batch my outreach this week","should_trigger":true},
+ {"prompt":"explain how TCP works","should_trigger":false},
+ {"prompt":"write a haiku about rain","should_trigger":false}
+]}

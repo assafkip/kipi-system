@@ -42,6 +42,8 @@ class DraftScanner:
         "i hope this helps",
         "circling back", "just checking in", "following up on my last message",
         "i'm excited to", "thrilled to share", "proud to say", "humbled by",
+        "it's worth mentioning", "it is worth mentioning", "it is worth noting",
+        "worth highlighting",
     ]
 
     HEDGING_WORDS = ["might", "could", "perhaps", "generally", "somewhat", "arguably"]

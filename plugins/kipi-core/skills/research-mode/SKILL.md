@@ -48,6 +48,9 @@ Only when Perplexity's summary is insufficient and you need word-for-word text f
 **Level 4 -- Scholar Gateway (for academic claims):**
 For academic papers or research findings, use Scholar Gateway MCP if available. Structured results, no page scraping.
 
+**Level 5 -- Firecrawl scrape-to-FILE (persist full source; for large or long-lived research projects):**
+When you need the FULL text of many pages SAVED for later search and citation (not summarized into context), run `q-system/.q-system/scripts/firecrawl-scrape.py <url> <output-dir>`. It writes the page's full markdown (`onlyMainContent`) to a file, so the cascade can grep + cite thousands of sources without hitting context limits. Requires `FIRECRAWL_API_KEY` (env var ONLY; no committed secret). Fail-closed on an empty body (persists nothing). Use only when persistence beats a one-shot Perplexity/WebFetch answer.
+
 ### Token budget
 - Maximum 3 Perplexity calls per research question
 - Maximum 2 WebFetch calls per research question (only if Level 2 was insufficient)

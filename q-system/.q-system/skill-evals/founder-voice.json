@@ -1,0 +1,7 @@
+{"skill":"founder-voice","fired_marker":"founder-voice","cases":[
+ {"prompt":"write me a linkedin post about threat intel","should_trigger":true},
+ {"prompt":"draft a DM to a prospect","should_trigger":true},
+ {"prompt":"write a reply to this comment","should_trigger":true},
+ {"prompt":"what is the capital of France","should_trigger":false},
+ {"prompt":"list the files in this directory","should_trigger":false}
+]}

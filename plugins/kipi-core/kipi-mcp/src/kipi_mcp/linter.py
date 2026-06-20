@@ -84,7 +84,9 @@ _SUBJECT_SPAM = re.compile(
 )
 _BODY_AI_PHRASES = re.compile(
     r"(I hope this email finds you well|I came across your profile"
-    r"|leverage|synergy|best-in-class)",
+    r"|leverage|synergy|best-in-class"
+    r"|it'?s worth (?:mentioning|noting|highlighting)"
+    r"|it is worth (?:mentioning|noting|highlighting))",
     re.IGNORECASE,
 )
 
