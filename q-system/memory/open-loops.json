@@ -16,6 +16,14 @@
       "needs_founder": true,
       "status": "open",
       "added": "2026-06-20"
+    },
+    {
+      "id": "inv-h14h15-branch",
+      "title": "kipi-investigations H14/H15 lives on branch feat/skill-hook-enforcement",
+      "next_action": "H14/H15 (Obsidian Bases + callouts, commit 387f3643) is committed on feat/skill-hook-enforcement and verified end-to-end (241 entities, .base + callouts render). It reaches main when that branch merges. If you abandon that branch, the work dies with it -> git cherry-pick 387f3643 onto main or a fresh branch to save it. Set this loop to closed once the branch merges or you've cherry-picked.",
+      "needs_founder": true,
+      "status": "open",
+      "added": "2026-06-20"
     }
   ]
 }
