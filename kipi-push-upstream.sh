@@ -71,6 +71,10 @@ if inst:
         if skel.get(rel) != blob:
             sys.stderr.write("lessons/ differs from skeleton: " + rel + "\n")
             sys.exit(1)
+    for rel in skel:
+        if rel not in inst:
+            sys.stderr.write("lessons/ deleted vs skeleton: " + rel + " (run kipi update first if merely out of date)\n")
+            sys.exit(1)
 sys.exit(0)
 PYGUARD
 then

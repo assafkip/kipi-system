@@ -12,6 +12,7 @@ git init -q --bare "$WORK/skel.git"
 G clone -q "$WORK/skel.git" "$WORK/seed"
 mkdir -p "$WORK/seed/q-system/lessons"
 printf -- '---\nid: a\nkind: pattern\ntitle: A clean lesson\ndate: 2026-06-01\n---\nbody\n' > "$WORK/seed/q-system/lessons/a.md"
+printf -- '---\nid: b\nkind: pattern\ntitle: B clean lesson\ndate: 2026-06-02\n---\nbody\n' > "$WORK/seed/q-system/lessons/b.md"
 ( cd "$WORK/seed" && G add -A && G commit -qm seed && G push -q origin HEAD:main )
 G clone -q -b main "$WORK/skel.git" "$WORK/inst"
 cp "$SCRIPT" "$WORK/inst/kipi-push-upstream.sh"
@@ -59,6 +60,7 @@ git init -q --bare "$WORK/flatskel.git"
 G clone -q "$WORK/flatskel.git" "$WORK/flatseed"
 mkdir -p "$WORK/flatseed/lessons"
 printf -- '---\nid: a\nkind: pattern\ntitle: A clean lesson\ndate: 2026-06-01\n---\nbody\n' > "$WORK/flatseed/lessons/a.md"
+printf -- '---\nid: b\nkind: pattern\ntitle: B clean lesson\ndate: 2026-06-02\n---\nbody\n' > "$WORK/flatseed/lessons/b.md"
 ( cd "$WORK/flatseed" && G add -A && G commit -qm seed && G push -q origin HEAD:main )
 G clone -q -b main "$WORK/skel.git" "$WORK/inst3"
 cp "$SCRIPT" "$WORK/inst3/kipi-push-upstream.sh"
@@ -67,4 +69,14 @@ OUT="$( ( cd "$WORK/inst3" && KIPI_SKELETON_REMOTE="$WORK/flatskel.git" bash kip
 echo "$OUT" | grep -qiE "Traceback|IndexError" && fail "flat-skeleton layout crashed the guard: $OUT"
 echo "$OUT" | grep -q "Pushing to skeleton" || fail "flat-skeleton clean case did not clear the guards: $OUT"
 
-echo "PASS: refuses uncommitted+committed lesson edits and non-allowlisted direct-clones; clean push clears the guards; fails CLOSED when unverifiable; handles flat + nested skeleton layouts"
+# 7. committed lesson DELETION -> refuse (reverse skeleton-dict check)
+G clone -q -b main "$WORK/skel.git" "$WORK/inst4"
+cp "$SCRIPT" "$WORK/inst4/kipi-push-upstream.sh"
+printf '{"instances":[{"name":"foo","type":"subtree"}]}\n' > "$WORK/inst4/instance-registry.json"
+( cd "$WORK/inst4" && G rm -q q-system/lessons/a.md && G commit -qam "delete lesson" )
+OUT="$( ( cd "$WORK/inst4" && KIPI_SKELETON_REMOTE="$WORK/skel.git" bash kipi-push-upstream.sh ) 2>&1 )" && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] || fail "committed lesson DELETION was not refused"
+echo "$OUT" | grep -q "Pushing to skeleton" && fail "deletion reached the push stage"
+echo "$OUT" | grep -qiE "deleted|skeleton-authored" || fail "deletion: wrong error: $OUT"
+
+echo "PASS: refuses uncommitted+committed lesson edits and non-allowlisted direct-clones; clean push clears the guards; fails CLOSED when unverifiable; handles flat + nested layouts; blocks committed DELETION"

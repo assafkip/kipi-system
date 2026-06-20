@@ -104,6 +104,10 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   │   ├── talk-tracks.md
 │   │   └── verticals.md
 │   │
+│   ├── lessons/                      # Cross-instance lessons corpus (skeleton-authored, read-only fan-out)
+│   │   ├── README.md                 # Promotion rule + authoring instruction
+│   │   └── <id>.md                   # One HOW-only lesson per file
+│   │
 │   ├── my-project/                   # Instance-specific state
 │   │   ├── current-state.md
 │   │   ├── founder-profile.md        # Identity, platform handles, connected tools
@@ -230,6 +234,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 **New agent?** -> `q-system/.q-system/agent-pipeline/agents/<phase>-<name>.md`
 **New Python harness?** -> `q-system/.q-system/scripts/<name>.py` (if in scripts/) or `q-system/.q-system/<name>.py` (if top-level harness)
 **New canonical file?** -> `q-system/canonical/<name>.md`
+**New cross-instance lesson?** -> `q-system/lessons/<id>.md`
 **New marketing template?** -> `q-system/marketing/templates/<name>.md`
 **New PRD?** -> `q-system/output/prd-<slug>-YYYY-MM-DD.md` (use template from `q-system/marketing/templates/prd.md`)
 **New onboarding guide?** -> `q-system/.q-system/onboarding/guides/connect-<tool>.md`

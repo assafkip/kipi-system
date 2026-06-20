@@ -17,6 +17,10 @@ A HOW-only, reusable pattern or methodology learned in one instance and worth sh
 
 Instances RECEIVE lessons (read-only) via `kipi update`. They never author, edit, or push lessons. `kipi update` fans this folder down. Enforced by sibling issues in this PRD: `kipi push` will hard-fail if `lessons/` was modified in an instance, once wired (issue `lessons-push-guard`).
 
+## Adding a lesson
+
+To add a lesson, create `q-system/lessons/<id>.md` with frontmatter `id` / `kind` / `title` / `date` and a HOW-only body. Copy `single-writer-chokepoint.md` as a template. Only the founder authors lessons, here in the skeleton; instances receive them read-only.
+
 ## Frontmatter (exactly these keys)
 
 ```yaml
