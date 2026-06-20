@@ -260,17 +260,17 @@ Every H-item is now at a closed status (brief rule 3). Shipped via prd-os + fabl
 | H3 | ADOPTED | prd-claudesidian-finish -- kipi rollback verb (ef3cce9) |
 | H4 | ADOPTED | Goal 2 -- real rsync --dry diff (1268aeb) |
 | H5 | ADOPTED | Goal 2 + Goal 3 -- version-skew nudge, fires on dirty trees (1268aeb, 1d60429) |
-| H6 | DEFERRED | Resumable manifest. Fleet of 18 is local/fast/idempotent; verifier graded marginal -- revisit at ~50 instances or if direct-clones dominate. |
+| H6 | REJECTED (won't build) | Resumable manifest adds a silent-skip footgun for ~zero gain at fleet of 18. Killed, not parked. Reopen only if the fleet passes ~50. |
 | H7 | ADOPTED | Goal 2 -- firecrawl-scrape.py, fail-closed, wired into research-mode (1268aeb) |
 | H8 | ADOPTED | Goal 2 (worth-mentioning BLOCK) + prd-claudesidian-finish (emphasis-opener WARN) |
 | H9 | ADOPTED | prd-claudesidian-finish -- rhetorical-qa WARN detector |
 | H10 | ADOPTED | Goal 2 -- voice-substance anchor >=2 (1268aeb) |
-| H11 | DEFERRED | Skill-discovery hook. kipi's semantic *-auto-invoke rules already beat a literal-"skill" trigger; verifier graded marginal/no. |
-| H12 | DEFERRED | Benchmark delta. Already dropped in the Goal-2 brief; expensive (40 nested Opus calls), non-deterministic scoring; verifier graded no. |
+| H11 | REJECTED (won't build) | Duplicates the existing find-skills skill + semantic auto-invoke. Killed, not parked. |
+| H12 | REJECTED (won't build) | Already dropped once; expensive + non-deterministic scoring. Killed, not parked. |
 | H13 | ADOPTED | Goal 2 -- trigger-eval pairing + wiring-check bullet (1268aeb) |
 | H14 | ADOPTED | Obsidian Bases exporter APPLIED to kipi-investigations (investigations/export/bases.py, commit 387f3643). entities.base with All / High threat / By type views. 3 tests pass in their venv. |
 | H15 | ADOPTED | Threat/confidence callouts + frontmatter enrichment APPLIED to kipi-investigations (obsidian.py + invctl.py wiring, commit 387f3643). danger/warning/info per tier, thresholds match canvas.py. |
 
-**Deferred-item provenance:** H6/H11/H12 deferrals were set by the agent during prd-os triage, grounded in a 7-agent verification pass that read the real files. They are documented here, not silently cut. Un-defer any by saying so.
+**Deferred-item provenance:** H6/H11/H12 are REJECTED (decided, off the list -- not deferred), set by the agent during prd-os triage, grounded in a 7-agent verification pass that read the real files. They are documented here, not silently cut. Un-defer any by saying so.
 
 **Cross-repo gate: CLOSED.** H14/H15 were applied additively to kipi-investigations (commit 387f3643) -- 4 files only (bases.py, obsidian.py, invctl.py, test), no other in-flight work touched, 3 tests green in their venv. Every claudesidian harvest item H0-H15 is now ADOPTED or DEFERRED-with-reason. Harvest complete.

@@ -1,16 +1,18 @@
 ---
 id: capability-signer-se
 title: capability-signer Swift Secure-Enclave helper + install provisioning
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-capability-token-signing-2026-06-16
 allowed_files:
   - plugins/kipi-core/scripts/capability-signer.swift
   - plugins/kipi-core/scripts/install-capability-token.sh
   - plugins/kipi-core/scripts/test/test-capability-signer.sh
+  - plugins/kipi-core/scripts/test/test-capability-token-wiring.sh
 disallowed_files: []
 required_checks:
   - bash plugins/kipi-core/scripts/test/test-capability-signer.sh
+  - bash plugins/kipi-core/scripts/test/test-capability-token-wiring.sh
 required_reviews: []
 bypass_check: "bash plugins/kipi-core/scripts/test/test-capability-signer.sh"
 ---

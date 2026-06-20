@@ -24,11 +24,25 @@ INTEG_SIG='"$_ct" check "$COMMAND"'
 
 die() { echo "install: $1" >&2; exit 1; }
 
+# --with-signer provisions the Secure-Enclave signer (compile + init). Off by
+# default so the automated wiring test stays free of keychain side effects; the
+# real phase-2 activation passes it (and it requires the founder's Touch ID).
+WITH_SIGNER=0
+for arg in "$@"; do [ "$arg" = "--with-signer" ] && WITH_SIGNER=1; done
+
 mkdir -p "$BIN_DIR" || die "cannot create $BIN_DIR"
 install -m 0755 "$SRC_DIR/capability-token.sh" "$BIN_DIR/capability-token.sh" || die "failed to install capability-token.sh"
 install -m 0755 "$SRC_DIR/kipi-approve"        "$BIN_DIR/kipi-approve"        || die "failed to install kipi-approve"
 [ -x "$BIN_DIR/capability-token.sh" ] || die "capability-token.sh not executable after install"
 [ -x "$BIN_DIR/kipi-approve" ]        || die "kipi-approve not executable after install"
+
+if [ "$WITH_SIGNER" = "1" ]; then
+  command -v swiftc >/dev/null 2>&1 || die "swiftc not found; cannot build capability-signer"
+  swiftc "$SRC_DIR/capability-signer.swift" -o "$BIN_DIR/capability-signer" || die "capability-signer build failed"
+  chmod 0755 "$BIN_DIR/capability-signer" || die "cannot set capability-signer permissions"
+  "$BIN_DIR/capability-signer" init || die "capability-signer init failed (Secure Enclave / Touch ID required)"
+  echo "install: Secure-Enclave signer provisioned"
+fi
 
 mkdir -p "$APPROVALS" || die "cannot create $APPROVALS"
 chmod 0700 "$APPROVALS" || die "cannot secure $APPROVALS (0700)"

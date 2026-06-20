@@ -933,10 +933,131 @@ def gate_register(cfg: Config, *, prd_id: str, issue_id: str, command: str) -> d
     return {"gate_id": gate_id, "registered": True}
 
 
+# ---------------------------------------------------------------------------
+# Spillover ledger (prd-os-spine-native): out-of-scope findings, durable + gated
+# ---------------------------------------------------------------------------
+# The scar: a finding marked `deferred`, or an adjacent issue "mentioned" in
+# prose, used to be terminal — it vanished and nobody (least of all an operator
+# with ADHD) revisited it. The ledger makes capture a file write, and the
+# standing gate (gates run) stays RED while any item is `open`, so forgetting an
+# item is a permanently red gate, not a silent drop. Resolution requires a real
+# CLOSED issue (or an explicitly recorded void), never a hand flip.
+
+
+def _spillover_path(cfg: Config):
+    return cfg.repo_root / ".prd-os" / "spillover.jsonl"
+
+
+def _read_spillover(cfg: Config) -> dict:
+    """Append-only ledger read with last-write-wins per id (the crash-safe
+    pattern: state changes append a new record, reads collapse to the latest)."""
+    path = _spillover_path(cfg)
+    items: dict = {}
+    if path.is_file():
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and rec.get("id"):
+                items[rec["id"]] = rec
+    return items
+
+
+def _spillover_open(cfg: Config) -> list:
+    return [r for r in _read_spillover(cfg).values() if r.get("status") == "open"]
+
+
+def _spillover_append(cfg: Config, record: dict) -> None:
+    path = _spillover_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as fh:
+        fh.write(json.dumps(record) + "\n")
+        fh.flush()
+
+
+def _issue_is_closed(cfg: Config, issue_id: str) -> bool:
+    """A spillover item may only resolve against an issue that actually closed.
+    The deterministic signal is the issue spec's frontmatter `status: closed`,
+    which issue_runner sets only after every receipt verified."""
+    spec = cfg.issues_dir / f"{issue_id}.md"
+    if not spec.is_file():
+        return False
+    for line in spec.read_text().splitlines():
+        s = line.strip()
+        if s.startswith("status:"):
+            return s.split(":", 1)[1].strip() == "closed"
+    return False
+
+
+def cmd_spillover(cfg: Config, args) -> int:
+    """add | list | check | resolve — the out-of-scope finding ledger."""
+    import hashlib as _hashlib
+    sub = args.spillover_cmd
+    if sub == "add":
+        sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
+        _spillover_append(cfg, {
+            "id": sid, "source": args.source, "description": args.desc,
+            "severity": args.severity, "status": "open", "created_at": _now_iso(),
+        })
+        print(json.dumps({"id": sid, "status": "open"}))
+        return 0
+    if sub == "list":
+        items = list(_read_spillover(cfg).values())
+        if args.open_only:
+            items = [r for r in items if r.get("status") == "open"]
+        if args.as_json:
+            print(json.dumps(items))
+        else:
+            for r in items:
+                print(f"[{r.get('status')}] {r['id']}: {r.get('description', '')[:80]} (src {r.get('source')})")
+        return 0
+    if sub == "check":
+        openv = _spillover_open(cfg)
+        if openv:
+            for r in openv:
+                sys.stderr.write(f"SPILLOVER OPEN: {r['id']}: {r.get('description', '')[:100]} (src {r.get('source')})\n")
+            sys.stderr.write(
+                f"{len(openv)} open spillover item(s). Resolve each against a CLOSED issue "
+                f"(prd_runner.py spillover resolve <id> --resolution-ref <issue-id>) or void it "
+                f"(--void <reason>). They cannot be silently dropped.\n")
+            return 1
+        print("no open spillover items")
+        return 0
+    if sub == "resolve":
+        rec = _read_spillover(cfg).get(args.id)
+        if not rec:
+            sys.stderr.write(f"unknown spillover id: {args.id}\n")
+            return 2
+        if not args.resolution_ref and not args.void:
+            sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
+            return 2
+        new = dict(rec)
+        if args.void:
+            new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
+        else:
+            if not _issue_is_closed(cfg, args.resolution_ref):
+                sys.stderr.write(
+                    f"cannot resolve {args.id}: issue '{args.resolution_ref}' is not closed. "
+                    f"Build it through the normal reproducer-first issue flow and close it first.\n")
+                return 2
+            new.update(status="resolved", resolution_ref=args.resolution_ref, resolved_at=_now_iso())
+        _spillover_append(cfg, new)
+        print(json.dumps({"id": args.id, "status": "resolved"}))
+        return 0
+    sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
+    return 2
+
+
 def cmd_gates(cfg: Config, args) -> int:
     """gates list — print the registry; gates run — execute every gate from
     the repo root (operator-authored shell commands, the same trust boundary
-    as required_checks), per-gate green/RED, non-zero exit on any RED."""
+    as required_checks), per-gate green/RED, non-zero exit on any RED. `run`
+    ALSO fails while any spillover item is open (out-of-scope findings are part
+    of the standing no-bypass re-proof, so they can never be silently dropped)."""
     import subprocess as _subprocess
     path = _gates_path(cfg)
     records = []
@@ -962,11 +1083,20 @@ def cmd_gates(cfg: Config, args) -> int:
         if result.returncode != 0:
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
             failures.append((rec["gate_id"], "\n".join(tail)))
+    # Out-of-scope findings are part of the standing re-proof: an open spillover
+    # item turns the gate RED until it is resolved against a closed issue.
+    openv = _spillover_open(cfg)
+    if openv:
+        names = ", ".join(r["id"] for r in openv)
+        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
+        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
+        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
+                                      f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} registered gates green")
+    print(f"all {len(records)} registered gates green; no open spillover")
     return 0
 
 
@@ -996,6 +1126,23 @@ def main(argv: list[str] | None = None) -> int:
     p_gates = sub.add_parser("gates")
     p_gates.add_argument("gates_cmd", choices=("list", "run"))
     p_gates.set_defaults(func=cmd_gates)
+
+    p_spill = sub.add_parser("spillover")
+    spill_sub = p_spill.add_subparsers(dest="spillover_cmd", required=True)
+    sp_add = spill_sub.add_parser("add")
+    sp_add.add_argument("--source", required=True, help="originating prd-id or issue-id")
+    sp_add.add_argument("--desc", required=True, help="what the out-of-scope finding is")
+    sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
+    sp_add.add_argument("--severity", default="minor")
+    sp_list = spill_sub.add_parser("list")
+    sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
+    sp_list.add_argument("--json", dest="as_json", action="store_true")
+    spill_sub.add_parser("check")
+    sp_res = spill_sub.add_parser("resolve")
+    sp_res.add_argument("id")
+    sp_res.add_argument("--resolution-ref", dest="resolution_ref", help="closed issue-id that fixed it")
+    sp_res.add_argument("--void", help="record a non-item (with reason) instead of fixing")
+    p_spill.set_defaults(func=cmd_spillover)
 
     args = parser.parse_args(argv)
     try:

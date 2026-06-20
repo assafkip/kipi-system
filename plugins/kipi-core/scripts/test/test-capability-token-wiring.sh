@@ -45,6 +45,15 @@ defs="$(grep -c '^emit_deny() {' "$HOOK")"
 [ "$defs" -eq 1 ] && ok "idempotent: single emit_deny after re-install" || bad "emit_deny defined $defs times"
 grep -q 'capability-token-integration' "$HOOK" && ok "hook patched (marker present)" || bad "hook not patched"
 
+# Phase 2: provision a software signer + trusted pubkey at the production paths
+# so the hook's signed mint/check works without Touch ID (the SE/Touch-ID signer
+# is covered by test-capability-signer.sh and the manual install).
+OSSL=/usr/bin/openssl
+"$OSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/priv.pem" 2>/dev/null
+"$OSSL" ec -in "$TMP/priv.pem" -pubout -out "$HOME/.claude/capability-token.pub" 2>/dev/null
+printf '#!/usr/bin/env bash\n%s dgst -sha256 -sign "%s" | %s base64 -A\n' "$OSSL" "$TMP/priv.pem" "$OSSL" > "$HOME/.claude/bin/capability-signer"
+chmod +x "$HOME/.claude/bin/capability-signer"
+
 CMD='rm -rf /tmp/integration-x'
 CWD='/Users/x/project'
 decision() {

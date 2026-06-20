@@ -23,6 +23,16 @@ export CAPABILITY_TOKEN_TEST=1
 export CAPABILITY_TOKEN_DIR="$TMP/approvals"
 export CAPABILITY_TOKEN_LOG="$TMP/audit.log"
 export CAPABILITY_TOKEN_TTL=300
+# Phase 2: provision a software P-256 signer + trusted pubkey so signed
+# mint/check work without Touch ID. (signing is now required; no downgrade)
+OSSL=/usr/bin/openssl
+"$OSSL" ecparam -name prime256v1 -genkey -noout -out "$TMP/priv.pem" 2>/dev/null
+"$OSSL" ec -in "$TMP/priv.pem" -pubout -out "$TMP/pub.pem" 2>/dev/null
+printf '#!/usr/bin/env bash\n%s dgst -sha256 -sign "%s" | %s base64 -A\n' "$OSSL" "$TMP/priv.pem" "$OSSL" > "$TMP/signer.sh"
+chmod +x "$TMP/signer.sh"
+export CAPABILITY_SIGNER="$TMP/signer.sh"
+export CAPABILITY_PUBKEY="$TMP/pub.pem"
+mkdir -p "$CAPABILITY_TOKEN_DIR"
 
 fail=0
 ok()  { printf 'ok   - %s\n' "$1"; }

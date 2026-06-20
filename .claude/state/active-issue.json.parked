@@ -1,0 +1,18 @@
+{
+  "issue_id": "capability-signer-se",
+  "loaded_at": "2026-06-16T05:17:27Z",
+  "spec_path": ".prd-os/issues/capability-signer-se.md",
+  "receipts": {
+    "verified": "2026-06-16T05:20:32Z",
+    "reviewed": null,
+    "findings_triaged": null
+  },
+  "review_rounds": {
+    "standard": 1,
+    "adversarial": 1
+  },
+  "allowed_files_snapshot": [],
+  "required_checks_snapshot": [],
+  "disallowed_files_snapshot": [],
+  "amendments": []
+}

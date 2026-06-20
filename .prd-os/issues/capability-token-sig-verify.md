@@ -1,7 +1,7 @@
 ---
 id: capability-token-sig-verify
 title: capability-token.sh: domain-separated signed token, verify-before-allow, no-downgrade
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-capability-token-signing-2026-06-16
 allowed_files:

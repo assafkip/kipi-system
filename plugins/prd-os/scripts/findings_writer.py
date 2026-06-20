@@ -396,6 +396,33 @@ def cmd_list(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None:
+    """A `deferred` finding must not be terminal. Mirror it as an OPEN spillover
+    item so the standing gate keeps it visible until it is fixed as a tracked
+    issue; moving the finding off `deferred` clears the item. Reuses
+    prd_runner's ledger helpers so there is one definition of the format.
+    Scar: `deferred` used to be a silent drop -- a rationale and then gone."""
+    from prd_runner import _read_spillover, _spillover_append  # sibling script
+
+    sid = f"defer-{prd_id}-{finding['id']}"
+    existing = _read_spillover(cfg).get(sid)
+    if finding.get("disposition") == "deferred":
+        if existing and existing.get("status") == "open":
+            return  # idempotent: already tracked open
+        _spillover_append(cfg, {
+            "id": sid, "source": prd_id, "finding_id": finding["id"],
+            "description": f"deferred finding {finding['id']}: {str(finding.get('body', ''))[:120]}",
+            "severity": finding.get("severity", "minor"),
+            "status": "open", "created_at": _now_iso(),
+        })
+    elif existing and existing.get("status") == "open":
+        new = dict(existing)
+        new.update(status="resolved",
+                   void_reason=f"finding re-dispositioned to {finding.get('disposition')}",
+                   resolved_at=_now_iso())
+        _spillover_append(cfg, new)
+
+
 def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901
     if args.disposition not in DISPOSITIONS:
         sys.stderr.write(
@@ -439,6 +466,7 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
         sys.stderr.write(f"{exc}\n")
         return 2
     _write_all(path, recs)
+    _sync_spillover_for_finding(cfg, args.prd_id, target)
     print(
         json.dumps(
             {
