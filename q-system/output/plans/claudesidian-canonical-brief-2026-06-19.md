@@ -268,9 +268,9 @@ Every H-item is now at a closed status (brief rule 3). Shipped via prd-os + fabl
 | H11 | DEFERRED | Skill-discovery hook. kipi's semantic *-auto-invoke rules already beat a literal-"skill" trigger; verifier graded marginal/no. |
 | H12 | DEFERRED | Benchmark delta. Already dropped in the Goal-2 brief; expensive (40 nested Opus calls), non-deterministic scoring; verifier graded no. |
 | H13 | ADOPTED | Goal 2 -- trigger-eval pairing + wiring-check bullet (1268aeb) |
-| H14 | BUILT, ready-to-apply | Obsidian Bases exporter for kipi-investigations. bases.py written + offline-tested (3 views, tier thresholds match canvas.py). Artifact: q-system/output/plans/h14-h15-investigations-obsidian-2026-06-20.md. Apply blocked only by that repo's active issue + founder go. |
-| H15 | BUILT, ready-to-apply | Threat/confidence callouts + frontmatter enrichment (obsidian.py patch). Helpers offline-tested (danger/warning/info per tier, None-safe). Same artifact doc; same apply gate as H14. |
+| H14 | ADOPTED | Obsidian Bases exporter APPLIED to kipi-investigations (investigations/export/bases.py, commit 387f3643). entities.base with All / High threat / By type views. 3 tests pass in their venv. |
+| H15 | ADOPTED | Threat/confidence callouts + frontmatter enrichment APPLIED to kipi-investigations (obsidian.py + invctl.py wiring, commit 387f3643). danger/warning/info per tier, thresholds match canvas.py. |
 
 **Deferred-item provenance:** H6/H11/H12 deferrals were set by the agent during prd-os triage, grounded in a 7-agent verification pass that read the real files. They are documented here, not silently cut. Un-defer any by saying so.
 
-**Cross-repo gate:** H14/H15 are the only remaining harvest items. Both are now BUILT + offline-tested as a ready-to-apply artifact (q-system/output/plans/h14-h15-investigations-obsidian-2026-06-20.md); applying into kipi-investigations is gated on that repo being free of its active issue + a clean tree + founder go.
+**Cross-repo gate: CLOSED.** H14/H15 were applied additively to kipi-investigations (commit 387f3643) -- 4 files only (bases.py, obsidian.py, invctl.py, test), no other in-flight work touched, 3 tests green in their venv. Every claudesidian harvest item H0-H15 is now ADOPTED or DEFERRED-with-reason. Harvest complete.

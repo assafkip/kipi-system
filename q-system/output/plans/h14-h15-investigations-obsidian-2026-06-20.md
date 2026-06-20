@@ -1,6 +1,6 @@
 # H14 + H15: Obsidian Bases + threat/confidence callouts (ready-to-apply)
 
-**Status:** Built + offline-tested in kipi-system. NOT applied -- target is a separate repo.
+**Status:** APPLIED to kipi-investigations (commit 387f3643), 3 tests green in their venv. This doc is the design record + apply log.
 **Target repo:** `/Users/assafkipnis/projects/kipi-investigations` (its own `.prd-os`).
 **Why prepared, not applied:** that repo was locked by an active prd-os issue
 (`design-rule-universal`, loaded 2026-06-20T05:27Z) on a dirty `feat/skill-hook-enforcement`
