@@ -6,6 +6,20 @@ All notable changes to the `prd-os` plugin are recorded here. Format follows [Ke
 
 (next release goes here)
 
+## [0.4.0]
+
+### Added
+- **Spillover gate** (`.prd-os/spillover.jsonl`): out-of-scope findings are
+  captured to a durable ledger, and `prd_runner.py spillover add|list|check|resolve`
+  manages it. `gates run` now FAILS while any spillover item is open, so an
+  out-of-scope finding can never be silently dropped. `resolve` requires a closed
+  issue (or an explicitly recorded `--void` reason).
+- A `deferred` triage disposition AUTO-creates an open spillover item
+  (findings_writer); `rejected` stays terminal. Moving a finding off `deferred`
+  clears its item.
+- `prd-archive` + `issue-closeout` report each spillover item, its resolving
+  issue, the fix, and the system impact.
+
 ## [0.3.0]
 
 ### Added

@@ -65,6 +65,7 @@ Close the active DSSE issue. Execute in order:
    - Checks that passed (the `required_checks` list)
    - Review rounds used (from state's `review_rounds`)
    - Triage summary: count of accepted / deferred / rejected, and how many of those were out-of-scope (informational only)
+   - Spillover report: run `prd_runner.py spillover list`. For each item this issue touched, report the item, the resolving issue, the fix, and how it affected the system. Any out-of-scope finding noticed during the work MUST already be captured (`prd_runner.py spillover add`); `gates run` must be green (no open spillover) before the issue is truly done.
    - Next suggested action (merge, open follow-up issue from any deferred finding's `followup_issue_id`, next issue in queue)
 
 If `close` exits non-zero, the runner names what is missing (receipt or pending finding id). Re-run `status` and `issue_findings.py list --only-pending` and report. Do not edit the spec or state file manually to bypass the gate.

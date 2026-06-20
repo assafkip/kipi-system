@@ -34,6 +34,21 @@ Bootstrap: `/prd-os-init` (runs once per repo to scaffold `.prd-os/` and registe
 - Concurrent PRD and issue contexts are blocked. `/prd-start` refuses if an issue is `in-progress`; `/issue-start` refuses if a PRD is `in-review`.
 - Codex never edits. Claude is the sole editor. Codex runs through `/codex:review` and `/codex:adversarial-review` and returns findings for Claude to triage.
 - Runtime state (`.claude/state/active-{prd,issue}.json`) is never committed. The bootstrap command adds the state directory to `.gitignore`.
+- Out-of-scope findings are never dropped. A `deferred` disposition auto-creates an open spillover item, and `gates run` stays red until it is resolved. See Spillover below.
+
+## Spillover: out-of-scope findings never vanish
+
+An issue found mid-work that is out of scope must be CAPTURED, not mentioned. The
+ledger is `.prd-os/spillover.jsonl`; the standing gate enforces it.
+
+- Capture: `prd_runner.py spillover add --source <id> --desc "..."` (a `deferred`
+  triage disposition does this automatically; `rejected` does not).
+- Gate: `prd_runner.py gates run` FAILS while any item is `open` — the same
+  no-bypass re-proof as the registered gates. Forgetting an item = a red gate.
+- Resolve: `spillover resolve <id> --resolution-ref <closed-issue-id>` (refuses
+  unless that issue is actually closed) or `--void "<reason>"` for a non-item.
+- Report: closeout/archive name each item, its resolving issue, the fix, and the
+  system impact. See the `.claude/rules/no-orphan-findings.md` rule.
 
 ## Portable core vs repo-local split
 

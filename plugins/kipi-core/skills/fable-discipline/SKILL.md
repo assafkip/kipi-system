@@ -74,7 +74,14 @@ How to move through complex work without shipping a confident wrong answer.
    the specific past bug that motivates it, not a restatement of the code. These
    survive refactors because they encode an invariant.
 
-5. **Build against the recurring gap classes.** If the change scales or touches
+5. **Capture every out-of-scope finding; never just mention it.** If you notice
+   a real issue that is out of scope for the current work, write it to the
+   spillover ledger (`prd_runner.py spillover add --source <id> --desc "..."`).
+   A mention in prose is a silent drop; the ledger keeps the standing gate
+   (`gates run`) red until it is fixed as a tracked issue. The paired lint blocks
+   deferral language written into code without capture.
+
+6. **Build against the recurring gap classes.** If the change scales or touches
    sensitive data, walk the gap-class block in `references/checklist.md`: an
    in-memory cap is not a disk bound; a UI hide is not access control; a gate
    fails closed while a filter fails open; redact at the egress edge; a new flag

@@ -21,6 +21,7 @@ one-line reason next to it.
 - [ ] Persisted external input is validated before it is stored
 - [ ] Mutations of the shared resource go through one writer
 - [ ] Why-comments encode the constraint + the named scar, not the "what"
+- [ ] Any out-of-scope finding noticed is CAPTURED to the spillover ledger (`prd_runner.py spillover add`), never just mentioned — the standing gate holds it until it is fixed as a tracked issue
 
 ## Gap classes (build against these)
 Defect shapes that repeatedly ship past review on changes that scale or touch
