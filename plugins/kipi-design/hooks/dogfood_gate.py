@@ -126,6 +126,20 @@ def _hsl(r, g, b):
     return (h, s, l)
 
 
+def _u8(x):
+    # clamp a CSS numeric to a 0..255 int. A crafted/accidental overflow value (e.g.
+    # rgb(999...400 digits...)) makes float()->inf and int(inf) raise OverflowError; an
+    # unguarded crash here exits 1, which the PostToolUse contract treats as a hook
+    # error -> the page ships UNGATED (fail-open). So coerce defensively, never raise.
+    try:
+        v = float(x)
+    except Exception:
+        return 0
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / inf
+        return 0
+    return min(255, max(0, int(v)))
+
+
 def parse_color(tok):
     tok = tok.strip().lower()
     m = re.match(r"^#([0-9a-f]{3})$", tok)
@@ -138,10 +152,16 @@ def parse_color(tok):
         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
     m = re.match(r"^rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)", tok)
     if m:
-        return (min(255, int(float(m.group(1)))), min(255, int(float(m.group(2)))), min(255, int(float(m.group(3)))))
+        return (_u8(m.group(1)), _u8(m.group(2)), _u8(m.group(3)))
     m = re.match(r"^hsla?\(\s*([\d.]+)[ ,]+([\d.]+)%[ ,]+([\d.]+)%", tok)
     if m:
-        return _hsl_to_rgb(float(m.group(1)), float(m.group(2)) / 100, float(m.group(3)) / 100)
+        try:
+            h, s, l = float(m.group(1)), float(m.group(2)) / 100, float(m.group(3)) / 100
+        except Exception:
+            return None
+        if any(v != v or v in (float("inf"), float("-inf")) for v in (h, s, l)):
+            return None
+        return _hsl_to_rgb(h, min(1.0, max(0.0, s)), min(1.0, max(0.0, l)))
     return None
 
 
@@ -288,7 +308,16 @@ def main():
         sys.exit(0)
 
     fp = load_fingerprint()
-    findings = scan_html(content, fp)
+    # FAIL CLOSED: this gate's whole job is preventing a bad page from shipping. If the
+    # scan itself errors, block (exit 2) and point to the manual render check, rather
+    # than crashing to exit 1 (which the hook contract treats as a no-op = page ships).
+    try:
+        findings = scan_html(content, fp)
+    except Exception as e:
+        sys.stderr.write(
+            "eyeball gate errored on %s (%s). Failing CLOSED — run the render check manually:\n"
+            "  node ~/projects/eyeball/web/scan.mjs %s\n" % (path, e, path))
+        sys.exit(2)
 
     if findings:
         msg = ["eyeball gate BLOCKED a public page: " + path,

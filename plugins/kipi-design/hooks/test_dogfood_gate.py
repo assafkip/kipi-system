@@ -95,6 +95,20 @@ def run(fp, tag):
 run(load_fingerprint(), "live")
 run(EMBEDDED_FALLBACK, "fallback")
 
+# finding #2 reproducer: an overflowing rgb()/hsl() value must NOT crash scan_html.
+# An unguarded crash exits 1, which the PostToolUse contract treats as a no-op, so the
+# page would ship UNGATED (fail-open — the dogfood scar). It must coerce, not raise.
+OVERFLOW_RGB = ('<!doctype html><html><head><style>h1{color:rgb(' + ("9" * 400) + ',0,0)}'
+                '</style></head><body><h1>hi</h1><form><input><button>go</button></form></body></html>')
+OVERFLOW_HSL = ('<!doctype html><html><head><style>body{background:hsl(40,' + ("9" * 200) + '%,'
+                + ("9" * 200) + '%)}</style></head><body><h1>hi</h1><form><input><button>go</button></form></body></html>')
+for label, page in (("rgb", OVERFLOW_RGB), ("hsl", OVERFLOW_HSL)):
+    try:
+        result = scan_html(page, load_fingerprint())
+        ok("[guard] overflowing %s color does not crash scan_html (no fail-open)" % label, isinstance(result, list))
+    except Exception:
+        ok("[guard] overflowing %s color does not crash scan_html (no fail-open)" % label, False)
+
 if failures:
     print("test_dogfood_gate FAILED:")
     for f in failures:
