@@ -48,6 +48,19 @@ CASES = [
     ("app.py",
      'import sqlite3\nsqlite3.connect("investigations/data/investigations.db")\n',
      0),
+    # --- spillover deferral capture (code files only; the GATE is the teeth) ---
+    ("deferred_uncaptured.py",
+     '# TODO: archive filter is out of scope here, fix later\nVALUE = 1\n',
+     2),
+    ("deferred_acked.py",
+     '# spillover-skip\n# out of scope: captured as sp-123 already\nVALUE = 1\n',
+     0),
+    ("no_deferral.py",
+     'def add(a, b):\n    return a + b  # straightforward\n',
+     0),
+    ("deferral_in_markdown.md",
+     'We left the CLI digest filter out of scope for now; fix later.\n',
+     0),
 ]
 
 
