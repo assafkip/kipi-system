@@ -1,1 +1,1 @@
-{"config_schema_version": 1}
+{"config_schema_version": 1, "issues_dir": ".prd-os/issues", "findings_dir": ".prd-os/findings"}
