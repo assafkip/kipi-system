@@ -14,6 +14,15 @@ set -uo pipefail
 MSG="${1:-}"
 [ -n "$MSG" ] || exit 0
 
+# Project label so the founder always knows which instance pinged. Resolved in order:
+#   KIPI_INSTANCE_NAME (set by the fleet heartbeat = exact registry name)
+#   -> git repo root basename -> cwd basename. Every message is prefixed "[label] ".
+LABEL="${KIPI_INSTANCE_NAME:-}"
+if [ -z "$LABEL" ]; then
+  LABEL="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
+fi
+MSG="[$LABEL] $MSG"
+
 HOOK="${KIPI_SLACK_WEBHOOK:-}"
 if [ -z "$HOOK" ] && [ -f "$HOME/.config/kipi/slack-webhook" ]; then
   HOOK="$(tr -d '\n\r' < "$HOME/.config/kipi/slack-webhook")"

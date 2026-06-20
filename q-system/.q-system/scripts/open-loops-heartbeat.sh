@@ -30,7 +30,7 @@ Autonomous open-loops heartbeat for THIS instance. Be terse; act only on what is
    - OSS PR waiting on a maintainer: check via gh (gh issue view <n> --repo <r> --json comments,state ; gh pr list). Push the PR ONLY if a maintainer has clearly approved/invited it (follow the loop's next_action). No clear approval -> do nothing, leave it open.
    - Internal work in this instance: drive it through prd-os in full (PRD -> review -> tests -> blast radius -> closeout), making all triage/approve/merge decisions yourself per the autonomy contract.
 3. Hard limits: no force-push, no git reset --hard, no branch deletion, no destructive ops, and NEVER publish to an external repo without clear maintainer approval. When unsure, do nothing.
-4. Slack the founder ONLY on a meaningful change (pushed a PR, closed a loop, maintainer replied): bash $2/.q-system/scripts/slack-notify.sh "<one line>". Silent otherwise.
+4. Slack the founder ONLY on a meaningful change (pushed a PR, closed a loop, maintainer replied): bash $2/.q-system/scripts/slack-notify.sh "<one line>". The project name is prefixed automatically -- do NOT add it yourself. Silent otherwise.
 5. Report what you did in 3-5 lines. Do not invent new work beyond the open loops.
 PROMPT_EOF
 }
@@ -55,9 +55,9 @@ work_instance() {
   fi
   echo "$(TS) heartbeat[$name]: $count open loop(s) -> waking headless agent" >> "$LOG"
   local prompt; prompt="$(build_prompt "$script" "$qroot")"
-  if ! ( cd "$path" && $TO claude -p "$prompt" >> "$LOG" 2>&1 ); then
+  if ! ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" >> "$LOG" 2>&1 ); then
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"
-    bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "Kipi heartbeat[$name]: autonomous run failed/timeout -- check open-loops-heartbeat.log" 2>/dev/null || true
+    KIPI_INSTANCE_NAME="$name" bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "heartbeat: autonomous run failed/timeout -- check open-loops-heartbeat.log" 2>/dev/null || true
   fi
 }
 
