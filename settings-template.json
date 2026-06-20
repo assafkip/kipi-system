@@ -116,6 +116,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-update.sh\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/open-loops.py\" 2>/dev/null || true"
           }
         ]
       }
