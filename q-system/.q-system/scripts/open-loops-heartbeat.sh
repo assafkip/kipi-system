@@ -47,6 +47,9 @@ PROMPT_EOF
 
 echo "$(TS) heartbeat: $COUNT open loop(s) -> waking headless agent" >> "$LOG"
 cd "$REPO" || exit 0
-$TO claude -p "$PROMPT" >> "$LOG" 2>&1 || echo "$(TS) heartbeat: agent run ended (nonzero or timeout)" >> "$LOG"
+if ! $TO claude -p "$PROMPT" >> "$LOG" 2>&1; then
+  echo "$(TS) heartbeat: agent run ended (nonzero or timeout)" >> "$LOG"
+  bash "$REPO/q-system/.q-system/scripts/slack-notify.sh" "Kipi heartbeat: the autonomous run failed or timed out -- check q-system/output/open-loops-heartbeat.log" 2>/dev/null || true
+fi
 echo "$(TS) heartbeat: run complete" >> "$LOG"
 exit 0
