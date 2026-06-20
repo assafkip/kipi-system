@@ -54,14 +54,10 @@ if git cat-file -e "$REMOTE_HEAD" 2>/dev/null; then
   exit 0
 fi
 
-# Check for clean working tree before attempting pull
-if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-  # Dirty tree - skip silently (don't pollute session start with noise)
-  touch "$SENTINEL"
-  exit 0
-fi
-
 # Updates available -- NUDGE ONLY. Never auto-pull from a SessionStart hook:
+# (No working-tree check here: the old pull-era code skipped the nudge on a dirty
+# tree, which silently hid the update notice from any founder with uncommitted
+# work. The nudge only prints -- it never touches files -- so tree state is moot.)
 # the old git-subtree auto-pull here used the wrong prefix on real subtree instances
 # and ran silently. `kipi update` is the single safe, tested propagation path.
 echo "=== Kipi skeleton update available ==="

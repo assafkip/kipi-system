@@ -25,4 +25,17 @@ OUT="$(CLAUDE_PROJECT_DIR="$INST" KIPI_SKELETON_REMOTE="$BARE" bash "$H" 2>&1)" 
 echo "$OUT" | grep -qi "kipi update" || fail "skew did not produce a kipi-update nudge: $OUT"
 [ ! -f "$INST/q-system/b.md" ] || fail "auto-update PULLED (b.md appeared) -- must only nudge"
 
-echo "PASS: de-fanged (no subtree pull), exits 0 on non-git, nudges on skew without pulling, registered in both settings files"
+# DIRTY tree must NOT suppress the nudge. Regression guard for the removed pull-era
+# skip (it ran `git diff --quiet` and silently swallowed the nudge on any dirty tree).
+# Fixture: a fresh instance that is BEHIND the remote (so it reaches the nudge path),
+# then modify a TRACKED file so `git diff --quiet` reports dirty (an untracked file
+# would not trip the old check, so it would not prove the regression is fixed).
+INST2="$(mktemp -d)"; ( cd "$INST2" && G clone -q -b main "$BARE" . )
+( cd "$SEED" && printf 'c\n' > q-system/c.md && G add -A && G commit -qm extra2 && G push -q "$BARE" HEAD:main )
+printf 'wip\n' >> "$INST2/q-system/a.md"   # modify a TRACKED file -> dirty working tree
+OUT2="$(CLAUDE_PROJECT_DIR="$INST2" KIPI_SKELETON_REMOTE="$BARE" bash "$H" 2>&1)" && rc=0 || rc=$?
+[ "${rc:-1}" -eq 0 ] || fail "dirty-tree nudge path exited non-zero: $OUT2"
+echo "$OUT2" | grep -qi "kipi update" || fail "dirty tree suppressed the nudge (pull-era skip regressed): $OUT2"
+[ ! -f "$INST2/q-system/c.md" ] || fail "auto-update PULLED on a dirty tree (c.md appeared) -- must only nudge"
+
+echo "PASS: de-fanged (no subtree pull), exits 0 on non-git, nudges on skew AND on a dirty tree without pulling, registered in both settings files"
