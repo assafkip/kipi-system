@@ -1,0 +1,21 @@
+{
+  "_doc": "Open loops = anything parked, waiting, or ready-but-not-applied. The single source of truth so nothing falls on the ground. open-loops.py surfaces every open entry at SessionStart. To close one, set status to 'closed' (or delete it). NEVER prose-defer in a ledger; add it here instead.",
+  "loops": [
+    {
+      "id": "cc-spex-pr",
+      "title": "cc-spex closeout-gate PR",
+      "next_action": "Check github.com/rhuss/cc-spex/issues/9. If the maintainer replied yes/just-send-it: fork rhuss/cc-spex, push branch chore/closeout-gate, open the PR. Commands + body in q-system/output/cc-spex-pr-drafts-2026-06-16.md. (gh runs in your terminal, not the agent sandbox.)",
+      "needs_founder": true,
+      "status": "open",
+      "added": "2026-06-20"
+    },
+    {
+      "id": "captoken-pr",
+      "title": "capability-token PR to dwarvesf/claude-guardrails",
+      "next_action": "Built + 12/12 tests pass, never filed. Run STEP 1 (one gh issue create) from q-system/output/captoken-pr-drafts-2026-06-16.md in your terminal, paste the issue URL back. PR after a maintainer thumbs-up.",
+      "needs_founder": true,
+      "status": "open",
+      "added": "2026-06-20"
+    }
+  ]
+}
