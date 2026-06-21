@@ -49,9 +49,9 @@ EMBEDDED_FALLBACK = {
             {"value": "violet-accent", "label": "the violet/indigo 'AI' accent", "pull_strength": 0.78,
              "range": {"h": [248, 280], "s": [0.4, 1], "l": [0.4, 0.78]},
              "fix": "Pick an accent that means something for your brand, not the default model violet."},
-            {"value": "warm-cream-bg", "label": "warm cream / paper background", "pull_strength": 0.66,
-             "range": {"h": [20, 60], "s": [0.12, 0.6], "l": [0.88, 0.985]},
-             "fix": "Warm-cream paper is the current 'tasteful' default. A real surface choice beats the reflex."},
+            {"value": "warm-cream-bg", "label": "warm cream / paper / tan / greige background", "pull_strength": 0.66,
+             "range": {"h": [15, 82], "s": [0.045, 0.6], "l": [0.80, 0.995]},
+             "fix": "A warm-tinted near-white (cream/tan/oat/greige) is the current 'tasteful' default. A true neutral or a saturated brand color beats it."},
             {"value": "amber-accent", "label": "amber/orange accent", "pull_strength": 0.62,
              "range": {"h": [25, 50], "s": [0.55, 1], "l": [0.45, 0.68]},
              "fix": "The warm amber accent is the new default. Make sure it is a choice, not a reflex."},
@@ -240,7 +240,7 @@ def scan_html(content, fp):
             if not rgb:
                 continue
             hsl = _hsl(*rgb)
-            if hsl[1] <= 0.08:        # neutral grayscale is never a tell
+            if hsl[1] <= 0.04:        # only truly achromatic is exempt; a warm near-white (cream/tan) IS a tell
                 continue
             for t in palette:
                 rng = t.get("range")
