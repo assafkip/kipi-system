@@ -33,6 +33,7 @@
 - `/q-handoff` - Session continuity
 - `/q-research` - Anti-hallucination research mode
 - `/wiring-check` - End-of-task gate: verify every change is connected end-to-end. Full rule in `.claude/rules/wiring-check.md`
+- `/say` - Read the previous assistant response aloud via OpenAI TTS (manual, macOS). `/say stop` stops playback.
 
 ## Build and Test
 - Build daily schedule: `python3 q-system/marketing/templates/build-schedule.py <json> <html>`
