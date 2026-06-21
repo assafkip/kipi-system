@@ -271,6 +271,22 @@ def stop_playback():
     return "say: cleared any afplay/mpv playback."
 
 
+KNOWN_ARGS = {"stop", "--dry-run", "--dump-chunks", "--no-play"}
+
+
+def usage():
+    """One-screen usage text. Printed for --help and on an unrecognized arg."""
+    return (
+        "say: usage: say-last-response.py [stop|--dry-run|--dump-chunks|--no-play]\n"
+        "  (no args)      synthesize the last response to mp3, print the play command\n"
+        "  stop           clear any stray playback\n"
+        "  --dry-run      print the extracted text only (no API call)\n"
+        "  --dump-chunks  print chunk count and sizes (no API call)\n"
+        "  --no-play      alias for the default (synthesize, do not auto-play)\n"
+        "  --help, -h     show this and exit"
+    )
+
+
 def fail(message):
     sys.stderr.write(message.rstrip() + "\n")
     sys.exit(1)
@@ -295,6 +311,15 @@ def write_audio(audio):
 
 def main():
     args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(usage())
+        return
+    unknown = [a for a in args if a not in KNOWN_ARGS]
+    if unknown:
+        # Reject before any synthesis. An unrecognized arg used to fall
+        # through to a real (paid) OpenAI call; now it never does.
+        fail(f"say: unrecognized argument(s): {' '.join(unknown)}\n{usage()}")
+
     if "stop" in args:
         print(stop_playback())
         return
