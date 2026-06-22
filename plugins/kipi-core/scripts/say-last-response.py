@@ -14,13 +14,17 @@ What it does:
   4. Chunk to <=4000 chars (OpenAI hard limit is 4096/request) and synthesize
      each chunk via POST https://api.openai.com/v1/audio/speech.
   5. Write the mp3 to a STABLE path. When local (not SSH) with mpv present,
-     AUTOPLAY it by opening a NEW iTerm window running mpv — a real terminal so
-     the founder's speed/seek/pause keys reach the player. A player Claude spawns
-     detached takes no key presses; a real window does. Over SSH (server cannot
-     open a window on the laptop) or without mpv, fall back to printing the play
-     command. Same stable file is what makes over-SSH playback work — pull it to
-     the laptop and play there. (2026-06-21: controls require a real terminal;
-     autoplay opens one. controls + ssh + autoplay are one design.)
+     AUTOPLAY it by opening a NEW Terminal.app window (via `open`) running mpv —
+     a real terminal so the founder's speed/seek/pause keys reach the player. A
+     player Claude spawns detached takes no key presses; a real window does. The
+     window MUST come from `open`, not AppleScript: /say runs in a seatbelt
+     sandbox that blocks AppleEvents (iTerm, driven only by AppleEvents, times
+     out there), but `open -a Terminal <file>.command` is allowed. Over SSH (the
+     server cannot open a window on the laptop) or without mpv, fall back to
+     printing the play command. Same stable file is what makes over-SSH playback
+     work — pull it to the laptop and play there. (2026-06-21: controls need a
+     real terminal; autoplay opens one via `open`. Tested: AppleScript->iTerm
+     times out sandboxed; the `open`->Terminal path fires.)
 
 API key: read from $OPENAI_API_KEY, else ~/.config/kipi/openai-key. No key is a
 clean one-line error, not a traceback.
@@ -31,7 +35,7 @@ Flags:
   --no-play       Synthesize + write the file but do NOT open the autoplay window.
   stop            Clear any stray playback (afplay/mpv).
 
-Stdlib only (urllib for HTTP). Autoplay opens iTerm via osascript so the
+Stdlib only (urllib for HTTP). Autoplay opens a Terminal window via `open` so the
 founder's keyboard drives the player; over SSH it is the founder's own mpv run.
 
 Exit codes: 0 = ok, 1 = user-facing error (no key, no transcript, API failure).
@@ -53,12 +57,18 @@ CONFIG_DIR = Path.home() / ".config" / "kipi"
 KEY_FILE = CONFIG_DIR / "openai-key"
 PID_FILE = CONFIG_DIR / ".say-playing.pid"
 # Stable output path (NOT a random tempfile). Local autoplay opens this file in
-# a NEW iTerm window so the founder gets a keyboard for speed/seek/pause controls
-# — a player Claude launches DETACHED can never take key presses, but a real
-# terminal window can. The stable path is also what makes over-SSH playback work:
-# pull THIS file to the laptop and play it there. (2026-06-21: controls need a
-# real terminal; autoplay opens one. controls + ssh + autoplay are one design.)
+# a NEW Terminal.app window so the founder gets a keyboard for speed/seek/pause
+# controls — a player Claude launches DETACHED can never take key presses, but a
+# real terminal window can. The stable path is also what makes over-SSH playback
+# work: pull THIS file to the laptop and play it there. (2026-06-21: controls
+# need a real terminal; autoplay opens one via `open`. controls + ssh + autoplay
+# are one design.)
 SAY_MP3 = CONFIG_DIR / "say-last.mp3"
+# Generated launcher that the autoplay Terminal window runs. `open` hands a
+# .command file to Terminal, which executes it; that is the sandbox-safe way to
+# get a real terminal window (AppleScript->terminal is blocked by the seatbelt
+# sandbox /say runs in).
+PLAY_LAUNCHER = CONFIG_DIR / "say-play.command"
 
 TTS_URL = "https://api.openai.com/v1/audio/speech"
 DEFAULT_MODEL = os.environ.get("KIPI_TTS_MODEL", "gpt-4o-mini-tts")
@@ -227,30 +237,36 @@ def ssh_server_ip():
     return parts[2] if len(parts) >= 3 else None
 
 
-def autoplay_in_iterm(path):
-    """Open mpv in a NEW iTerm window so the founder's keys reach the player.
+def autoplay_in_terminal(path):
+    """Autoplay mpv in a NEW Terminal.app window so the founder's keys reach it.
 
     A detached player Claude spawns takes no key presses; a real terminal window
-    does. iTerm is the founder's terminal. Local + mpv only: over SSH the server
-    cannot open a window on the laptop, and without mpv there is no controllable
-    player to launch — both keep the printed-instructions fallback. This is the
-    reconciliation of the 2026-06-21 "controls + ssh are one design" scar, not a
-    reversal: controls still require a real terminal; we now open one.
+    does. The window MUST come from `open` (LaunchServices), NOT AppleScript:
+    /say runs in a seatbelt sandbox that blocks AppleEvents, so AppleScript->iTerm
+    times out (-1712), but `open -a Terminal <file>.command` is allowed and
+    Terminal executes the .command. Local + mpv only: over SSH the server cannot
+    open a window on the laptop, and without mpv there is no controllable player —
+    both keep the printed-instructions fallback. (2026-06-21, tested: iTerm via
+    AppleScript times out in the sandbox; this `open`->Terminal path fires.)
 
     Returns True if the autoplay window was launched, False otherwise.
     """
     if ssh_server_ip() is not None:
         return False
-    if not (shutil.which("mpv") and shutil.which("osascript")):
+    mpv = shutil.which("mpv")
+    if not mpv or not shutil.which("open"):
         return False
-    command = f"mpv {shlex.quote(str(path))}"
-    script = (
-        'tell application "iTerm" to create window with default profile '
-        f'command "{command}"'
+    # mpv path is resolved to an absolute here so the .command does not depend on
+    # the new window's PATH; `exec` so the shell exits when mpv quits (q).
+    PLAY_LAUNCHER.write_text(
+        "#!/bin/bash\n"
+        f"exec {shlex.quote(mpv)} {shlex.quote(str(path))}\n",
+        encoding="utf-8",
     )
+    PLAY_LAUNCHER.chmod(0o755)
     try:
         subprocess.run(
-            ["osascript", "-e", script],
+            ["open", "-a", "Terminal", str(PLAY_LAUNCHER)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -263,15 +279,15 @@ def autoplay_in_iterm(path):
 def play_instructions(minutes, autoplayed=False):
     """Build the founder-facing status + play commands.
 
-    On local autoplay we confirm the window opened (keys work there). The full
-    play commands still print as a reference and as the fallback when autoplay
-    did not fire (SSH, no mpv, or --no-play). mpv is the only common player that
-    does speed+seek+pause; ffplay is offered as a no-speed fallback.
+    On local autoplay we confirm the Terminal window opened (keys work there).
+    The full play commands still print as a reference and as the fallback when
+    autoplay did not fire (SSH, no mpv, or --no-play). mpv is the only common
+    player that does speed+seek+pause; ffplay is offered as a no-speed fallback.
     """
     lines = []
     if autoplayed:
         lines.append(
-            "say: autoplaying in a new iTerm window — your "
+            "say: autoplaying in a new Terminal window — your "
             "[ ] speed / seek / pause keys work there."
         )
     lines.append(f"say: ready (~{minutes} min) at {SAY_MP3}")
@@ -296,8 +312,8 @@ def play_instructions(minutes, autoplayed=False):
 def stop_playback():
     """Clear any stray playback. Returns a one-line status string.
 
-    Autoplay runs mpv inside an iTerm window the founder quits with q; this is a
-    best-effort cleanup of any leftover afplay/mpv process.
+    Autoplay runs mpv inside a Terminal window the founder quits with q; this is
+    a best-effort cleanup of any leftover afplay/mpv process.
     """
     pid = None
     if PID_FILE.is_file():
@@ -324,7 +340,7 @@ def usage():
     """One-screen usage text. Printed for --help and on an unrecognized arg."""
     return (
         "say: usage: say-last-response.py [stop|--dry-run|--dump-chunks|--no-play]\n"
-        "  (no args)      synthesize the last response, autoplay it in a new iTerm window\n"
+        "  (no args)      synthesize the last response, autoplay it in a new Terminal window\n"
         "  stop           clear any stray playback\n"
         "  --dry-run      print the extracted text only (no API call)\n"
         "  --dump-chunks  print chunk count and sizes (no API call)\n"
@@ -400,9 +416,9 @@ def main():
 
     write_audio(audio)
     minutes = max(1, round(len(text) / 950))  # ~950 chars/min spoken
-    # Default autoplays in a real iTerm window so the founder's keys drive the
+    # Default autoplays in a real Terminal window so the founder's keys drive the
     # player; --no-play suppresses the window (synthesize + write only).
-    autoplayed = "--no-play" not in args and autoplay_in_iterm(SAY_MP3)
+    autoplayed = "--no-play" not in args and autoplay_in_terminal(SAY_MP3)
     print(play_instructions(minutes, autoplayed=autoplayed))
 
 
