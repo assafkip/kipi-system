@@ -160,6 +160,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "fractional-cxo",
+      "path": "/Users/assafkipnis/projects/fractional-cxo",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
