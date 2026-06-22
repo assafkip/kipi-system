@@ -28,10 +28,10 @@ to github.com/assafkip/claude-voice (MIT, public). Posts drafted, not published.
 
 ## RESUME HERE (next unchecked action)
 
-Publish the `claude-voice` launch posts. Both drafted and voice-checked this
-session (X single tweet + Reddit title/body). Founder publishes by hand.
-Subreddit: r/ClaudeAI (broad) or r/ClaudeCode (technical). Repo:
-github.com/assafkip/claude-voice.
+`claude-voice` launch posts PUBLISHED (X + Reddit, 2026-06-21). Repo:
+github.com/assafkip/claude-voice. Next: watch for replies/issues/stars, answer
+questions, fold any real install friction back into the README. No action
+required unless someone engages.
 
 Note: claude-voice is a NEW standalone repo, a deliberate exception to the
 OSS-mission north star (PRs into existing projects, not new repos). Founder
