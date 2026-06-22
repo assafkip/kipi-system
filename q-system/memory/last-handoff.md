@@ -1,4 +1,46 @@
-# Session handoff — 2026-06-16
+# Session handoff - 2026-06-21
+
+## Headline
+
+Shipped `/say` autoplay-with-controls and launched `claude-voice` as a public
+repo. `/say` now opens a real Terminal window playing the response via mpv, so
+the keyboard drives speed/seek/pause. Extracted a de-kipi'd standalone version
+to github.com/assafkip/claude-voice (MIT, public). Posts drafted, not published.
+
+## What shipped today (effort, not outcomes)
+
+1. Verified the `/say` plugin scope fix held: `kipi-core@kipi` is `scope:user`,
+   no projectPath, 1.5.3. All three kipi-core commands present this session.
+   Original closeout task: DONE.
+2. Built `/say` autoplay-with-controls (kipi-core). Diagnosed that a slash
+   command runs in a seatbelt sandbox that BLOCKS AppleEvents (AppleScript to
+   iTerm times out -1712). Chose `open -a Terminal <file>.command` (sandbox
+   allows it, Terminal runs the .command). iTerm is impossible from the sandbox.
+   Tested compile + SSH/no-mpv guards + full open->Terminal->launcher->mpv chain
+   + live run. Committed to skeleton.
+3. Propagated to the fleet: `kipi update` -> 16 updated, 0 failed, 2 skipped.
+   All 16 instance copies carry `autoplay_in_terminal`. Runtime was already live
+   everywhere via the shared user-scoped cache; this synced the source dirs.
+4. Created + published `claude-voice` (bare `/say` command, script, README, MIT
+   LICENSE, .gitignore). Re-authored with the GitHub noreply email (push was
+   rejected for the private gmail), `main` default branch.
+5. Memory saved: `project_claude_voice_repo.md` (+ MEMORY.md pointer).
+
+## RESUME HERE (next unchecked action)
+
+Publish the `claude-voice` launch posts. Both drafted and voice-checked this
+session (X single tweet + Reddit title/body). Founder publishes by hand.
+Subreddit: r/ClaudeAI (broad) or r/ClaudeCode (technical). Repo:
+github.com/assafkip/claude-voice.
+
+Note: claude-voice is a NEW standalone repo, a deliberate exception to the
+OSS-mission north star (PRs into existing projects, not new repos). Founder
+directed it as a product launch, not an OSS contribution. Separate track, not
+drift.
+
+---
+
+# Session handoff — 2026-06-16 (prior session - still-live loops below)
 
 ## Headline
 
