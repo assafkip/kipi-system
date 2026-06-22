@@ -1,0 +1,1421 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - paragraph [ref=e8]:
+            - text: Interview fractional leaders this week for
+            - strong [ref=e9]: free
+            - text: "!"
+          - link "Schedule a call →" [ref=e10] [cursor=pointer]:
+            - /url: /hire/new
+        - button "Dismiss" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: Dismiss
+          - img [ref=e14]
+      - navigation "Global" [ref=e16]:
+        - link "Go Fractional" [ref=e18] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e19]: Go Fractional
+          - img [ref=e20]
+        - navigation "Main" [ref=e23]:
+          - list [ref=e25]:
+            - listitem [ref=e26]:
+              - button "Hire" [ref=e27] [cursor=pointer]:
+                - text: Hire
+                - img [ref=e28]
+            - listitem [ref=e30]:
+              - button "Jobs" [ref=e31] [cursor=pointer]:
+                - text: Jobs
+                - img [ref=e32]
+            - listitem [ref=e34]:
+              - button "Resources" [ref=e35] [cursor=pointer]:
+                - text: Resources
+                - img [ref=e36]
+        - generic [ref=e39]:
+          - link "Log in" [ref=e40] [cursor=pointer]:
+            - /url: /login
+            - generic [ref=e41]: Log in
+          - link "Hire Talent" [ref=e42] [cursor=pointer]:
+            - /url: /hire/new
+    - main [ref=e43]:
+      - generic [ref=e44]:
+        - generic [ref=e45]:
+          - heading "Fractional Jobs" [level=1] [ref=e46]
+          - generic [ref=e47]: Explore All Jobs
+          - paragraph [ref=e48]: Find fractional and interim jobs across Engineering, Marketing, Product, Design, Sales, Finance, Operations and more. Senior roles hand-picked from vetted companies.
+        - generic [ref=e49]:
+          - generic [ref=e51]:
+            - img [ref=e52]
+            - textbox "Search jobs by title, company, or keyword..." [active] [ref=e54]: securityintelligence
+            - button "Search" [ref=e55] [cursor=pointer]
+          - generic [ref=e56]:
+            - button "Job Category" [ref=e57] [cursor=pointer]:
+              - generic [ref=e58]: Job Category
+              - img
+            - button "Skills" [ref=e59] [cursor=pointer]:
+              - generic [ref=e60]: Skills
+              - img
+            - button "Location Type" [ref=e61] [cursor=pointer]:
+              - generic [ref=e62]: Location Type
+              - img
+            - button "Location" [ref=e63] [cursor=pointer]:
+              - generic [ref=e64]: Location
+              - img
+            - button "Hourly Rate" [ref=e65] [cursor=pointer]:
+              - generic [ref=e66]: Hourly Rate
+              - img
+            - button "Hours per Week" [ref=e67] [cursor=pointer]:
+              - generic [ref=e68]: Hours per Week
+              - img
+            - button "More Filters" [ref=e69] [cursor=pointer]:
+              - generic [ref=e70]: More Filters
+              - img
+      - generic [ref=e72]:
+        - generic:
+          - generic:
+            - heading [level=2]
+        - generic [ref=e73]:
+          - figure [ref=e75]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e77]:
+              - generic [ref=e78]:
+                - img [ref=e80]
+                - generic [ref=e82]:
+                  - generic [ref=e83]:
+                    - generic [ref=e84]: Industrial Software Product Company
+                    - link "Chief Product Officer (Go Fractional)" [ref=e85] [cursor=pointer]:
+                      - /url: /job/chief-product-officer-go-fractional-cmoa8j7m
+                      - generic [ref=e86]: Chief Product Officer (Go Fractional)
+                  - generic [ref=e88]:
+                    - generic [ref=e89]:
+                      - img [ref=e90]
+                      - text: Posted about 1 month
+                    - generic [ref=e92]:
+                      - generic [ref=e93]:
+                        - generic [ref=e94]: 🇩🇪
+                        - generic [ref=e95]: Remote
+                      - generic [ref=e96]:
+                        - img [ref=e97]
+                        - text: Remote
+              - generic [ref=e100]:
+                - generic [ref=e101]:
+                  - img [ref=e102]
+                  - generic [ref=e105]: $175-$250/hr
+                - generic [ref=e106]:
+                  - img [ref=e107]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e109] [cursor=pointer]:
+                  - img
+          - figure [ref=e111]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e113]:
+              - generic [ref=e114]:
+                - img [ref=e116]
+                - generic [ref=e118]:
+                  - generic [ref=e119]:
+                    - generic [ref=e120]: Logistics Solutions Startup
+                    - link "Fractional CTO" [ref=e121] [cursor=pointer]:
+                      - /url: /job/fractional-cto-cmnruszk
+                      - generic [ref=e122]: Fractional CTO
+                  - generic [ref=e124]:
+                    - generic [ref=e125]:
+                      - img [ref=e126]
+                      - text: Posted 2 months
+                    - generic [ref=e128]:
+                      - generic [ref=e129]:
+                        - generic [ref=e130]: 🇺🇸
+                        - generic [ref=e131]: Remote
+                      - generic [ref=e132]:
+                        - img [ref=e133]
+                        - text: Remote
+              - generic [ref=e136]:
+                - generic [ref=e137]:
+                  - img [ref=e138]
+                  - generic [ref=e142]: $130-$255/hr *
+                - generic [ref=e143]:
+                  - img [ref=e144]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e146] [cursor=pointer]:
+                  - img
+          - figure [ref=e148]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e150]:
+              - generic [ref=e151]:
+                - img [ref=e153]
+                - generic [ref=e155]:
+                  - generic [ref=e156]:
+                    - generic [ref=e157]: Logistics Operations Company
+                    - link "Fractional Systems/Operations Automation Specialist" [ref=e158] [cursor=pointer]:
+                      - /url: /job/fractional-systems-operations-automation-specialist-cmqidzwu
+                      - generic [ref=e159]: Fractional Systems/Operations Automation Specialist
+                  - generic [ref=e161]:
+                    - generic [ref=e162]:
+                      - img [ref=e163]
+                      - text: Posted 5 days
+                    - generic [ref=e165]:
+                      - generic [ref=e166]:
+                        - generic [ref=e167]: 🇺🇸
+                        - generic [ref=e168]: Arizona, United States
+                      - generic [ref=e169]:
+                        - img [ref=e170]
+                        - text: Remote
+              - generic [ref=e173]:
+                - generic [ref=e174]:
+                  - img [ref=e175]
+                  - generic [ref=e179]: $100-$175/hr *
+                - generic [ref=e180]:
+                  - img [ref=e181]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e183] [cursor=pointer]:
+                  - img
+          - figure [ref=e185]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e187]:
+              - generic [ref=e188]:
+                - img [ref=e190]
+                - generic [ref=e192]:
+                  - generic [ref=e193]:
+                    - generic [ref=e194]: Healthcare Operations Company
+                    - link "Founding COO / Head of Operations [Full-Time]" [ref=e195] [cursor=pointer]:
+                      - /url: /job/founding-coo-head-of-operations-cmpnivlw
+                      - generic [ref=e196]: Founding COO / Head of Operations [Full-Time]
+                  - generic [ref=e198]:
+                    - generic [ref=e199]:
+                      - img [ref=e200]
+                      - text: Posted 26 days
+                    - generic [ref=e202]:
+                      - generic [ref=e204]: 🇺🇸
+                      - generic [ref=e205]:
+                        - img [ref=e206]
+                        - text: Remote
+                      - generic [ref=e209]: Contract-to-Hire
+              - generic [ref=e210]:
+                - generic [ref=e211]:
+                  - img [ref=e212]
+                  - text: 40 hrs/week
+                - button "Expand details" [ref=e214] [cursor=pointer]:
+                  - img
+          - figure [ref=e216]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e218]:
+              - generic [ref=e219]:
+                - img [ref=e221]
+                - generic [ref=e223]:
+                  - generic [ref=e224]:
+                    - generic [ref=e225]: Sales Decision Tools Company
+                    - link "Director, Strategy & Partnerships (Fractional)" [ref=e226] [cursor=pointer]:
+                      - /url: /job/director-strategy-partnerships-fractional-cmq9oi5n
+                      - generic [ref=e227]: Director, Strategy & Partnerships (Fractional)
+                  - generic [ref=e229]:
+                    - generic [ref=e230]:
+                      - img [ref=e231]
+                      - text: Posted 6 days
+                    - generic [ref=e233]:
+                      - generic [ref=e234]:
+                        - generic [ref=e235]: 🇺🇸
+                        - generic [ref=e236]: Remote
+                      - generic [ref=e237]:
+                        - img [ref=e238]
+                        - text: Remote
+              - generic [ref=e241]:
+                - generic [ref=e242]:
+                  - img [ref=e243]
+                  - generic [ref=e247]: $125-$200/hr *
+                - generic [ref=e248]:
+                  - img [ref=e249]
+                  - text: 15-25 hrs/week
+                - button "Expand details" [ref=e251] [cursor=pointer]:
+                  - img
+          - figure [ref=e253]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e255]:
+              - generic [ref=e256]:
+                - img [ref=e258]
+                - generic [ref=e260]:
+                  - generic [ref=e261]:
+                    - generic [ref=e262]: AI Infrastructure Operations Company
+                    - link "Fractional Operations Generalist" [ref=e263] [cursor=pointer]:
+                      - /url: /job/fractional-operations-generalist-cmqb7hu0
+                      - generic [ref=e264]: Fractional Operations Generalist
+                  - generic [ref=e266]:
+                    - generic [ref=e267]:
+                      - img [ref=e268]
+                      - text: Posted 6 days
+                    - generic [ref=e270]:
+                      - generic [ref=e271]:
+                        - generic [ref=e272]: 🇺🇸
+                        - generic [ref=e273]: California, United States
+                      - generic [ref=e274]:
+                        - img [ref=e275]
+                        - text: Remote
+                      - generic [ref=e278]: Contract-to-Hire
+              - generic [ref=e279]:
+                - generic [ref=e280]:
+                  - img [ref=e281]
+                  - generic [ref=e285]: $125-$177/hr *
+                - generic [ref=e286]:
+                  - img [ref=e287]
+                  - text: 10-20 hrs/week
+                - button "Expand details" [ref=e289] [cursor=pointer]:
+                  - img
+          - figure [ref=e291]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e293]:
+              - generic [ref=e294]:
+                - img [ref=e296]
+                - generic [ref=e298]:
+                  - generic [ref=e299]:
+                    - generic [ref=e300]: Rural Events Tech Company
+                    - link "Fractional Monetization Expert" [ref=e301] [cursor=pointer]:
+                      - /url: /job/fractional-monetization-expert-cmqflbxn
+                      - generic [ref=e302]: Fractional Monetization Expert
+                  - generic [ref=e304]:
+                    - generic [ref=e305]:
+                      - img [ref=e306]
+                      - text: Posted 6 days
+                    - generic [ref=e308]:
+                      - generic [ref=e310]: 🇺🇸
+                      - generic [ref=e311]:
+                        - img [ref=e312]
+                        - text: Remote
+              - generic [ref=e315]:
+                - generic [ref=e316]:
+                  - img [ref=e317]
+                  - generic [ref=e321]: $150-$250/hr *
+                - generic [ref=e322]:
+                  - img [ref=e323]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e325] [cursor=pointer]:
+                  - img
+          - figure [ref=e327]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e329]:
+              - generic [ref=e330]:
+                - img [ref=e332]
+                - generic [ref=e334]:
+                  - generic [ref=e335]:
+                    - generic [ref=e336]: Consumer Marketing Company
+                    - link "Fractional PR & Growth Marketer" [ref=e337] [cursor=pointer]:
+                      - /url: /job/fractional-pr-growth-marketer-cmqbe3b4
+                      - generic [ref=e338]: Fractional PR & Growth Marketer
+                  - generic [ref=e340]:
+                    - generic [ref=e341]:
+                      - img [ref=e342]
+                      - text: Posted 7 days
+                    - generic [ref=e344]:
+                      - generic [ref=e345]:
+                        - generic [ref=e346]: 🇺🇸
+                        - generic [ref=e347]: Washington, United States
+                      - generic [ref=e348]:
+                        - img [ref=e349]
+                        - text: Remote
+              - generic [ref=e352]:
+                - generic [ref=e353]:
+                  - img [ref=e354]
+                  - generic [ref=e358]: $50-$95/hr *
+                - generic [ref=e359]:
+                  - img [ref=e360]
+                  - text: 15-30 hrs/week
+                - button "Expand details" [ref=e362] [cursor=pointer]:
+                  - img
+          - figure [ref=e364]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e366]:
+              - generic [ref=e367]:
+                - img [ref=e369]
+                - generic [ref=e371]:
+                  - generic [ref=e372]:
+                    - generic [ref=e373]: Enterprise B2B Sales Company
+                    - link "Fractional Chief Revenue Officer (CRO)" [ref=e374] [cursor=pointer]:
+                      - /url: /job/fractional-chief-revenue-officer-cro-cmq9agq3
+                      - generic [ref=e375]: Fractional Chief Revenue Officer (CRO)
+                  - generic [ref=e377]:
+                    - generic [ref=e378]:
+                      - img [ref=e379]
+                      - text: Posted 7 days
+                    - generic [ref=e381]:
+                      - generic [ref=e382]:
+                        - generic [ref=e383]: 🇺🇸
+                        - generic [ref=e384]: NY, United States
+                      - generic [ref=e385]:
+                        - img [ref=e386]
+                        - text: Remote
+              - generic [ref=e389]:
+                - generic [ref=e390]:
+                  - img [ref=e391]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e393] [cursor=pointer]:
+                  - img
+          - figure [ref=e395]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e397]:
+              - generic [ref=e398]:
+                - img [ref=e400]
+                - generic [ref=e402]:
+                  - generic [ref=e403]:
+                    - generic [ref=e404]: Workwear Operations Company
+                    - link "Fractional E-Commerce Executive" [ref=e405] [cursor=pointer]:
+                      - /url: /job/fractional-e-commerce-executive-cmppx7q2
+                      - generic [ref=e406]: Fractional E-Commerce Executive
+                  - generic [ref=e408]:
+                    - generic [ref=e409]:
+                      - img [ref=e410]
+                      - text: Posted 13 days
+                    - generic [ref=e412]:
+                      - generic [ref=e413]:
+                        - generic [ref=e414]: 🇺🇸
+                        - generic [ref=e415]: Indiana
+                      - generic [ref=e416]:
+                        - img [ref=e417]
+                        - text: Remote
+              - generic [ref=e420]:
+                - generic [ref=e421]:
+                  - img [ref=e422]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e424] [cursor=pointer]:
+                  - img
+          - figure [ref=e426]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e428]:
+              - generic [ref=e429]:
+                - img [ref=e431]
+                - generic [ref=e433]:
+                  - generic [ref=e434]:
+                    - generic [ref=e435]: Investment Operations Firm
+                    - link "Office Manager" [ref=e436] [cursor=pointer]:
+                      - /url: /job/office-manager-cmp4c4hc
+                      - generic [ref=e437]: Office Manager
+                  - generic [ref=e439]:
+                    - generic [ref=e440]:
+                      - img [ref=e441]
+                      - text: Posted 13 days
+                    - generic [ref=e443]:
+                      - generic [ref=e444]:
+                        - generic [ref=e445]: 🇺🇸
+                        - generic [ref=e446]: New York, NY, United States
+                      - generic [ref=e447]:
+                        - img [ref=e448]
+                        - text: On-site
+                      - generic [ref=e451]: Contract-to-Hire
+              - generic [ref=e452]:
+                - generic [ref=e453]:
+                  - img [ref=e454]
+                  - generic [ref=e457]: $100-$150/hr
+                - generic [ref=e458]:
+                  - img [ref=e459]
+                  - text: 25-33 hrs/week
+                - button "Expand details" [ref=e461] [cursor=pointer]:
+                  - img
+          - figure [ref=e463]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e465]:
+              - generic [ref=e466]:
+                - img [ref=e468]
+                - generic [ref=e470]:
+                  - generic [ref=e471]:
+                    - generic [ref=e472]: D2C Beauty Marketing Company
+                    - link "Fractional Content Marketer" [ref=e473] [cursor=pointer]:
+                      - /url: /job/fractional-content-marketer-cmpcwsl3
+                      - generic [ref=e474]: Fractional Content Marketer
+                  - generic [ref=e476]:
+                    - generic [ref=e477]:
+                      - img [ref=e478]
+                      - text: Posted 13 days
+                    - generic [ref=e480]:
+                      - generic [ref=e481]:
+                        - generic [ref=e482]: 🇺🇸
+                        - generic [ref=e483]: New York, United States
+                      - generic [ref=e484]:
+                        - img [ref=e485]
+                        - text: Remote
+              - generic [ref=e488]:
+                - generic [ref=e489]:
+                  - img [ref=e490]
+                  - generic [ref=e494]: $130-$190/hr *
+                - generic [ref=e495]:
+                  - img [ref=e496]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e498] [cursor=pointer]:
+                  - img
+          - figure [ref=e500]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e502]:
+              - generic [ref=e503]:
+                - img [ref=e505]
+                - generic [ref=e507]:
+                  - generic [ref=e508]:
+                    - generic [ref=e509]: In-house Legal Recruiting Company
+                    - link "Fractional Recruiter / Sourcer" [ref=e510] [cursor=pointer]:
+                      - /url: /job/fractional-recruiter-sourcer-cmpvcxhf
+                      - generic [ref=e511]: Fractional Recruiter / Sourcer
+                  - generic [ref=e513]:
+                    - generic [ref=e514]:
+                      - img [ref=e515]
+                      - text: Posted 21 days
+                    - generic [ref=e517]:
+                      - generic [ref=e518]:
+                        - generic [ref=e519]: 🇺🇸
+                        - generic [ref=e520]: Remote
+                      - generic [ref=e521]:
+                        - img [ref=e522]
+                        - text: Remote
+              - generic [ref=e525]:
+                - generic [ref=e526]:
+                  - img [ref=e527]
+                  - generic [ref=e531]: $65-$155/hr *
+                - generic [ref=e532]:
+                  - img [ref=e533]
+                  - text: 10-25 hrs/week
+                - button "Expand details" [ref=e535] [cursor=pointer]:
+                  - img
+          - figure [ref=e537]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e539]:
+              - generic [ref=e540]:
+                - img [ref=e542]
+                - generic [ref=e544]:
+                  - generic [ref=e545]:
+                    - generic [ref=e546]: AI Sales Engineering Company
+                    - link "Full-Stack Engineer (Full Time - In Office)" [ref=e547] [cursor=pointer]:
+                      - /url: /job/full-stack-engineer-full-time-in-office-cmp7dlx0
+                      - generic [ref=e548]: Full-Stack Engineer (Full Time - In Office)
+                  - generic [ref=e550]:
+                    - generic [ref=e551]:
+                      - img [ref=e552]
+                      - text: Posted about 1 month
+                    - generic [ref=e554]:
+                      - generic [ref=e555]:
+                        - generic [ref=e556]: 🇺🇸
+                        - generic [ref=e557]: San Francisco, United States
+                      - generic [ref=e558]:
+                        - img [ref=e559]
+                        - text: On-site
+              - generic [ref=e562]:
+                - generic [ref=e563]:
+                  - img [ref=e564]
+                  - text: 40-50 hrs/week
+                - button "Expand details" [ref=e566] [cursor=pointer]:
+                  - img
+          - figure [ref=e568]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e570]:
+              - generic [ref=e571]:
+                - img [ref=e573]
+                - generic [ref=e575]:
+                  - generic [ref=e576]:
+                    - generic [ref=e577]: People Operations Tech Company
+                    - link "Fractional Recruiter" [ref=e578] [cursor=pointer]:
+                      - /url: /job/fractional-recruiter-cmom1acl
+                      - generic [ref=e579]: Fractional Recruiter
+                  - generic [ref=e581]:
+                    - generic [ref=e582]:
+                      - img [ref=e583]
+                      - text: Posted about 2 months
+                    - generic [ref=e585]:
+                      - generic [ref=e587]: Remote
+                      - generic [ref=e588]:
+                        - img [ref=e589]
+                        - text: Remote
+              - generic [ref=e592]:
+                - generic [ref=e593]:
+                  - img [ref=e594]
+                  - text: 15-40 hrs/week
+                - button "Expand details" [ref=e596] [cursor=pointer]:
+                  - img
+          - figure [ref=e598]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e600]:
+              - generic [ref=e601]:
+                - img [ref=e603]
+                - generic [ref=e605]:
+                  - generic [ref=e606]:
+                    - generic [ref=e607]: AI Infrastructure Engineering Company
+                    - link "Forward-Deployed Engineer / Technical Solutions Lead" [ref=e608] [cursor=pointer]:
+                      - /url: /job/forward-deployed-engineer-technical-solutions-lead-cmostmo4
+                      - generic [ref=e609]: Forward-Deployed Engineer / Technical Solutions Lead
+                  - generic [ref=e611]:
+                    - generic [ref=e612]:
+                      - img [ref=e613]
+                      - text: Posted about 2 months
+                    - generic [ref=e615]:
+                      - generic [ref=e616]:
+                        - generic [ref=e617]: 🇺🇸
+                        - generic [ref=e618]: Remote
+                      - generic [ref=e619]:
+                        - img [ref=e620]
+                        - text: Remote
+                      - generic [ref=e623]: Contract-to-Hire
+              - generic [ref=e624]:
+                - generic [ref=e625]:
+                  - img [ref=e626]
+                  - generic [ref=e630]: $135-$240/hr *
+                - generic [ref=e631]:
+                  - img [ref=e632]
+                  - text: 5-20 hrs/week
+                - button "Expand details" [ref=e634] [cursor=pointer]:
+                  - img
+          - figure [ref=e636]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e638]:
+              - generic [ref=e639]:
+                - img [ref=e641]
+                - generic [ref=e643]:
+                  - generic [ref=e644]:
+                    - generic [ref=e645]: Fintech Engineering Startup Company
+                    - link "Fractional CTO / Founding Engineer" [ref=e646] [cursor=pointer]:
+                      - /url: /job/fractional-cto-founding-engineer-cmoiyjgc
+                      - generic [ref=e647]: Fractional CTO / Founding Engineer
+                  - generic [ref=e649]:
+                    - generic [ref=e650]:
+                      - img [ref=e651]
+                      - text: Posted about 2 months
+                    - generic [ref=e653]:
+                      - generic [ref=e654]:
+                        - generic [ref=e655]: 🇺🇸
+                        - generic [ref=e656]: New York; California, United States
+                      - generic [ref=e657]:
+                        - img [ref=e658]
+                        - text: Remote
+                      - generic [ref=e661]: Contract-to-Hire
+              - generic [ref=e662]:
+                - generic [ref=e663]:
+                  - img [ref=e664]
+                  - generic [ref=e668]: $60-$115/hr *
+                - generic [ref=e669]:
+                  - img [ref=e670]
+                  - text: 15-30 hrs/week
+                - button "Expand details" [ref=e672] [cursor=pointer]:
+                  - img
+          - figure [ref=e674]:
+            - generic:
+              - generic:
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+                - img
+            - generic [ref=e676]:
+              - generic [ref=e677]:
+                - img [ref=e679]
+                - generic [ref=e681]:
+                  - generic [ref=e682]:
+                    - generic [ref=e683]: Consumer Travel Tech Company
+                    - link "Fractional Product Manager" [ref=e684] [cursor=pointer]:
+                      - /url: /job/product-manager-site-app-redesign-cmokd4na
+                      - generic [ref=e685]: Fractional Product Manager
+                  - generic [ref=e687]:
+                    - generic [ref=e688]:
+                      - img [ref=e689]
+                      - text: Posted about 2 months
+                    - generic [ref=e691]:
+                      - generic [ref=e692]:
+                        - generic [ref=e693]: 🇺🇸
+                        - generic [ref=e694]: Remote
+                      - generic [ref=e695]:
+                        - img [ref=e696]
+                        - text: Remote
+                      - generic [ref=e699]: Contract-to-Hire
+              - generic [ref=e700]:
+                - generic [ref=e701]:
+                  - img [ref=e702]
+                  - generic [ref=e706]: $115-$200/hr *
+                - generic [ref=e707]:
+                  - img [ref=e708]
+                  - text: 15-30 hrs/week
+                - button "Expand details" [ref=e710] [cursor=pointer]:
+                  - img
+          - figure [ref=e712]:
+            - generic [ref=e714]:
+              - generic [ref=e715]:
+                - img "Viral Nation Inc." [ref=e717]
+                - generic [ref=e718]:
+                  - generic [ref=e719]:
+                    - generic [ref=e720]: Viral Nation Inc.
+                    - link "Manager, Performance Marketing" [ref=e721] [cursor=pointer]:
+                      - /url: /job/greenhouse-manager-performance-marketing-1-year-contract-greenhouse
+                      - generic [ref=e722]: Manager, Performance Marketing
+                  - generic [ref=e724]:
+                    - generic [ref=e725]:
+                      - img [ref=e726]
+                      - text: Posted 1 day
+                    - generic [ref=e728]:
+                      - generic [ref=e730]: United States
+                      - generic [ref=e731]:
+                        - img [ref=e732]
+                        - text: Remote
+              - generic [ref=e735]:
+                - generic [ref=e736]:
+                  - img [ref=e737]
+                  - generic [ref=e741]: $105-$145/hr *
+                - generic [ref=e742]:
+                  - img [ref=e743]
+                  - text: 30-40 hrs/week
+                - button "Expand details" [ref=e745] [cursor=pointer]:
+                  - img
+          - figure [ref=e747]:
+            - generic [ref=e749]:
+              - generic [ref=e750]:
+                - img "Reflow" [ref=e752]
+                - generic [ref=e753]:
+                  - generic [ref=e754]:
+                    - generic [ref=e755]: Reflow
+                    - link "Fractional Technical Advisor" [ref=e756] [cursor=pointer]:
+                      - /url: /job/ashbyhq-technical-advisor-reflow-jobs
+                      - generic [ref=e757]: Fractional Technical Advisor
+                  - generic [ref=e759]:
+                    - generic [ref=e760]:
+                      - img [ref=e761]
+                      - text: Posted 1 day
+                    - generic [ref=e763]:
+                      - generic [ref=e765]: United States
+                      - generic [ref=e766]:
+                        - img [ref=e767]
+                        - text: Remote
+              - generic [ref=e770]:
+                - generic [ref=e771]:
+                  - img [ref=e772]
+                  - generic [ref=e776]: $150-$225/hr *
+                - generic [ref=e777]:
+                  - img [ref=e778]
+                  - text: 10-15 hrs/week
+                - button "Expand details" [ref=e780] [cursor=pointer]:
+                  - img
+      - generic [ref=e782]:
+        - generic [ref=e783]: Showing 1-20 of 271 results
+        - generic [ref=e784]:
+          - button "Previous page" [disabled]:
+            - img
+            - generic: Previous
+          - button "1" [ref=e785] [cursor=pointer]
+          - button "2" [ref=e786] [cursor=pointer]
+          - button "3" [ref=e787] [cursor=pointer]
+          - button "4" [ref=e788] [cursor=pointer]
+          - generic [ref=e789]: ...
+          - button "14" [ref=e790] [cursor=pointer]
+          - button "Next page" [ref=e791] [cursor=pointer]:
+            - generic [ref=e792]: Next
+            - img
+      - separator [ref=e793]
+      - generic [ref=e794]:
+        - heading "Popular Job Searches" [level=2] [ref=e795]
+        - generic [ref=e796]:
+          - generic [ref=e797]:
+            - heading "By Category" [level=3] [ref=e798]
+            - generic [ref=e799]:
+              - list [ref=e800]:
+                - listitem [ref=e801]:
+                  - link "Engineering" [ref=e802] [cursor=pointer]:
+                    - /url: /jobs/engineering
+                - listitem [ref=e803]:
+                  - link "Marketing" [ref=e804] [cursor=pointer]:
+                    - /url: /jobs/marketing
+                - listitem [ref=e805]:
+                  - link "Product" [ref=e806] [cursor=pointer]:
+                    - /url: /jobs/product
+                - listitem [ref=e807]:
+                  - link "Design" [ref=e808] [cursor=pointer]:
+                    - /url: /jobs/design
+                - listitem [ref=e809]:
+                  - link "Finance" [ref=e810] [cursor=pointer]:
+                    - /url: /jobs/finance
+              - list [ref=e811]:
+                - listitem [ref=e812]:
+                  - link "Operations" [ref=e813] [cursor=pointer]:
+                    - /url: /jobs/operations
+                - listitem [ref=e814]:
+                  - link "Sales" [ref=e815] [cursor=pointer]:
+                    - /url: /jobs/sales
+                - listitem [ref=e816]:
+                  - link "People & HR" [ref=e817] [cursor=pointer]:
+                    - /url: /jobs/people
+                - listitem [ref=e818]:
+                  - link "Data" [ref=e819] [cursor=pointer]:
+                    - /url: /jobs/data
+                - listitem [ref=e820]:
+                  - link "Legal" [ref=e821] [cursor=pointer]:
+                    - /url: /jobs/legal
+          - generic [ref=e822]:
+            - heading "Popular Roles" [level=3] [ref=e823]
+            - generic [ref=e824]:
+              - list [ref=e825]:
+                - listitem [ref=e826]:
+                  - link "CTO" [ref=e827] [cursor=pointer]:
+                    - /url: /jobs/fractional-cto
+                - listitem [ref=e828]:
+                  - link "CMO" [ref=e829] [cursor=pointer]:
+                    - /url: /jobs/fractional-cmo
+                - listitem [ref=e830]:
+                  - link "CFO" [ref=e831] [cursor=pointer]:
+                    - /url: /jobs/fractional-cfo
+                - listitem [ref=e832]:
+                  - link "COO" [ref=e833] [cursor=pointer]:
+                    - /url: /jobs/fractional-coo
+                - listitem [ref=e834]:
+                  - link "CRO" [ref=e835] [cursor=pointer]:
+                    - /url: /jobs/fractional-cro
+                - listitem [ref=e836]:
+                  - link "CISO" [ref=e837] [cursor=pointer]:
+                    - /url: /jobs/fractional-ciso
+              - list [ref=e838]:
+                - listitem [ref=e839]:
+                  - link "Senior Engineer" [ref=e840] [cursor=pointer]:
+                    - /url: /jobs/senior-engineer
+                - listitem [ref=e841]:
+                  - link "Growth Lead" [ref=e842] [cursor=pointer]:
+                    - /url: /jobs/growth-lead
+                - listitem [ref=e843]:
+                  - link "Recruiter" [ref=e844] [cursor=pointer]:
+                    - /url: /jobs/recruiter
+                - listitem [ref=e845]:
+                  - link "Head of Product" [ref=e846] [cursor=pointer]:
+                    - /url: /jobs/head-of-product
+                - listitem [ref=e847]:
+                  - link "Product Designer" [ref=e848] [cursor=pointer]:
+                    - /url: /jobs/product-designer
+                - listitem [ref=e849]:
+                  - link "Head of People" [ref=e850] [cursor=pointer]:
+                    - /url: /jobs/head-of-people
+          - generic [ref=e851]:
+            - heading "By Location" [level=3] [ref=e852]
+            - generic [ref=e853]:
+              - list [ref=e854]:
+                - listitem [ref=e855]:
+                  - link "New York Jobs" [ref=e856] [cursor=pointer]:
+                    - /url: /jobs/new-york
+                - listitem [ref=e857]:
+                  - link "San Francisco Jobs" [ref=e858] [cursor=pointer]:
+                    - /url: /jobs/san-francisco
+                - listitem [ref=e859]:
+                  - link "Los Angeles Jobs" [ref=e860] [cursor=pointer]:
+                    - /url: /jobs/los-angeles
+              - list [ref=e861]:
+                - listitem [ref=e862]:
+                  - link "London Jobs" [ref=e863] [cursor=pointer]:
+                    - /url: /jobs/london
+                - listitem [ref=e864]:
+                  - link "Toronto Jobs" [ref=e865] [cursor=pointer]:
+                    - /url: /jobs/toronto
+                - listitem [ref=e866]:
+                  - link "Vancouver Jobs" [ref=e867] [cursor=pointer]:
+                    - /url: /jobs/vancouver
+          - generic [ref=e868]:
+            - heading "By Type" [level=3] [ref=e869]
+            - list [ref=e870]:
+              - listitem [ref=e871]:
+                - link "Remote" [ref=e872] [cursor=pointer]:
+                  - /url: /jobs/remote
+              - listitem [ref=e873]:
+                - link "Contract to Hire" [ref=e874] [cursor=pointer]:
+                  - /url: /jobs/contract-to-hire
+              - listitem [ref=e875]:
+                - link "Interim" [ref=e876] [cursor=pointer]:
+                  - /url: /jobs/interim
+    - contentinfo "Footer" [ref=e877]:
+      - heading "Footer" [level=2] [ref=e878]
+      - generic [ref=e879]:
+        - generic [ref=e880]:
+          - generic [ref=e881]:
+            - link "Go Fractional Homepage" [ref=e882] [cursor=pointer]:
+              - /url: /
+              - img [ref=e883]
+            - paragraph [ref=e885]: Connecting companies with top fractional leaders
+            - generic [ref=e886]:
+              - generic [ref=e887]:
+                - generic [ref=e888]: Email
+                - textbox "Email" [ref=e889]:
+                  - /placeholder: Enter your email
+                - button "Subscribe" [ref=e890] [cursor=pointer]
+              - paragraph [ref=e891]:
+                - text: By subscribing you agree to our
+                - link "Privacy Policy" [ref=e892] [cursor=pointer]:
+                  - /url: /privacy-policy
+            - generic [ref=e893]:
+              - generic [ref=e894]:
+                - generic [ref=e895]: Email
+                - img [ref=e896]
+              - link "hello@gofractional.com" [ref=e899] [cursor=pointer]:
+                - /url: mailto:hello@gofractional.com
+            - generic [ref=e900]:
+              - link "LinkedIn" [ref=e901] [cursor=pointer]:
+                - /url: https://www.linkedin.com/company/gofractional
+                - generic [ref=e902]: LinkedIn
+                - img [ref=e903]
+              - link "Instagram" [ref=e905] [cursor=pointer]:
+                - /url: https://www.instagram.com/gofractional
+                - generic [ref=e906]: Instagram
+                - img [ref=e907]
+              - link "YouTube" [ref=e911] [cursor=pointer]:
+                - /url: https://www.youtube.com/@gofractional
+                - generic [ref=e912]: YouTube
+                - img [ref=e913]
+          - generic [ref=e915]:
+            - generic [ref=e916]:
+              - heading "Talent" [level=3] [ref=e917]
+              - list [ref=e918]:
+                - listitem [ref=e919]:
+                  - link "Explore Talent" [ref=e920] [cursor=pointer]:
+                    - /url: /explore
+                - listitem [ref=e921]:
+                  - link "Fractional Jobs" [ref=e922] [cursor=pointer]:
+                    - /url: /jobs
+                - listitem [ref=e923]:
+                  - link "Membership" [ref=e924] [cursor=pointer]:
+                    - /url: /membership
+                - listitem [ref=e925]:
+                  - link "Community Guidelines" [ref=e926] [cursor=pointer]:
+                    - /url: /community-guidelines
+                - listitem [ref=e927]:
+                  - link "Hourly Rate Calculator" [ref=e928] [cursor=pointer]:
+                    - /url: /hourly-calculator
+            - generic [ref=e929]:
+              - heading "Insights" [level=3] [ref=e930]
+              - list [ref=e931]:
+                - listitem [ref=e932]:
+                  - link "State of Fractional Work" [ref=e933] [cursor=pointer]:
+                    - /url: /insights
+                - listitem [ref=e934]:
+                  - link "Hourly Rate Benchmarks" [ref=e935] [cursor=pointer]:
+                    - /url: /insights/rates
+                - listitem [ref=e936]:
+                  - link "Playbooks" [ref=e937] [cursor=pointer]:
+                    - /url: /playbooks
+                - listitem [ref=e938]:
+                  - link "Blog" [ref=e939] [cursor=pointer]:
+                    - /url: /blog
+            - generic [ref=e940]:
+              - heading "Company" [level=3] [ref=e941]
+              - list [ref=e942]:
+                - listitem [ref=e943]:
+                  - link "How It Works" [ref=e944] [cursor=pointer]:
+                    - /url: /how-it-works
+                - listitem [ref=e945]:
+                  - link "About" [ref=e946] [cursor=pointer]:
+                    - /url: /about
+                - listitem [ref=e947]:
+                  - link "Case Studies" [ref=e948] [cursor=pointer]:
+                    - /url: /success-stories
+                - listitem [ref=e949]:
+                  - link "Affiliate Program" [ref=e950] [cursor=pointer]:
+                    - /url: https://affiliates.gofractional.com/signup
+                - listitem [ref=e951]:
+                  - link "API Status" [ref=e952] [cursor=pointer]:
+                    - /url: https://status.gofractional.com/
+            - generic [ref=e953]:
+              - heading "Legal" [level=3] [ref=e954]
+              - list [ref=e955]:
+                - listitem [ref=e956]:
+                  - link "Terms of Service" [ref=e957] [cursor=pointer]:
+                    - /url: /terms-of-service
+                - listitem [ref=e958]:
+                  - link "Privacy Policy" [ref=e959] [cursor=pointer]:
+                    - /url: /privacy-policy
+                - listitem [ref=e960]:
+                  - link "Referral Program Terms" [ref=e961] [cursor=pointer]:
+                    - /url: /referral-program-terms-and-service
+        - generic [ref=e963]:
+          - generic [ref=e964]:
+            - heading "The Fractional C-Suite" [level=3] [ref=e965]
+            - list [ref=e966]:
+              - listitem [ref=e967]:
+                - link "Fractional CTO" [ref=e968] [cursor=pointer]:
+                  - /url: /hire/fractional-cto
+              - listitem [ref=e969]:
+                - link "Fractional COO" [ref=e970] [cursor=pointer]:
+                  - /url: /hire/fractional-coo
+              - listitem [ref=e971]:
+                - link "Fractional CFO" [ref=e972] [cursor=pointer]:
+                  - /url: /hire/fractional-cfo
+              - listitem [ref=e973]:
+                - link "Fractional CMO" [ref=e974] [cursor=pointer]:
+                  - /url: /hire/fractional-cmo
+              - listitem [ref=e975]:
+                - link "Fractional CIO" [ref=e976] [cursor=pointer]:
+                  - /url: /hire/fractional-cio
+              - listitem [ref=e977]:
+                - link "Fractional CISO" [ref=e978] [cursor=pointer]:
+                  - /url: /hire/fractional-ciso
+              - listitem [ref=e979]:
+                - link "Fractional CRO" [ref=e980] [cursor=pointer]:
+                  - /url: /hire/fractional-cro
+              - listitem [ref=e981]:
+                - link "Fractional CHRO" [ref=e982] [cursor=pointer]:
+                  - /url: /hire/fractional-chro
+              - listitem [ref=e983]:
+                - link "Fractional CPO" [ref=e984] [cursor=pointer]:
+                  - /url: /hire/fractional-cpo
+              - listitem [ref=e985]:
+                - link "Fractional CDO" [ref=e986] [cursor=pointer]:
+                  - /url: /hire/fractional-cdo
+          - generic [ref=e987]:
+            - heading "Top Fractional Leaders" [level=3] [ref=e988]
+            - list [ref=e989]:
+              - listitem [ref=e990]:
+                - link "Fractional Developers" [ref=e991] [cursor=pointer]:
+                  - /url: /explore/engineering
+              - listitem [ref=e992]:
+                - link "Fractional Marketers" [ref=e993] [cursor=pointer]:
+                  - /url: /explore/marketing
+              - listitem [ref=e994]:
+                - link "Fractional Sales" [ref=e995] [cursor=pointer]:
+                  - /url: /explore/sales
+              - listitem [ref=e996]:
+                - link "Fractional Product Managers" [ref=e997] [cursor=pointer]:
+                  - /url: /explore/product
+              - listitem [ref=e998]:
+                - link "Fractional Operations" [ref=e999] [cursor=pointer]:
+                  - /url: /explore/operations
+              - listitem [ref=e1000]:
+                - link "Fractional Finance" [ref=e1001] [cursor=pointer]:
+                  - /url: /explore/finance
+              - listitem [ref=e1002]:
+                - link "Fractional HR & People" [ref=e1003] [cursor=pointer]:
+                  - /url: /explore/people
+              - listitem [ref=e1004]:
+                - link "Fractional Designers" [ref=e1005] [cursor=pointer]:
+                  - /url: /explore/design
+              - listitem [ref=e1006]:
+                - link "Fractional Data Engineers" [ref=e1007] [cursor=pointer]:
+                  - /url: /explore/data
+              - listitem [ref=e1008]:
+                - link "Fractional Legal" [ref=e1009] [cursor=pointer]:
+                  - /url: /explore/legal
+          - generic [ref=e1010]:
+            - heading "Fractional Rate Benchmarks" [level=3] [ref=e1011]
+            - list [ref=e1012]:
+              - listitem [ref=e1013]:
+                - link "CTO Rates" [ref=e1014] [cursor=pointer]:
+                  - /url: /insights/rates/cto
+              - listitem [ref=e1015]:
+                - link "CMO Rates" [ref=e1016] [cursor=pointer]:
+                  - /url: /insights/rates/cmo
+              - listitem [ref=e1017]:
+                - link "CFO Rates" [ref=e1018] [cursor=pointer]:
+                  - /url: /insights/rates/cfo
+              - listitem [ref=e1019]:
+                - link "COO Rates" [ref=e1020] [cursor=pointer]:
+                  - /url: /insights/rates/coo
+              - listitem [ref=e1021]:
+                - link "CRO Rates" [ref=e1022] [cursor=pointer]:
+                  - /url: /insights/rates/cro
+              - listitem [ref=e1023]:
+                - link "CHRO Rates" [ref=e1024] [cursor=pointer]:
+                  - /url: /insights/rates/chro
+              - listitem [ref=e1025]:
+                - link "CDO Rates" [ref=e1026] [cursor=pointer]:
+                  - /url: /insights/rates/chief-data-officer
+              - listitem [ref=e1027]:
+                - link "Product Manager Rates" [ref=e1028] [cursor=pointer]:
+                  - /url: /insights/rates/product-manager
+              - listitem [ref=e1029]:
+                - link "Data Scientist Rates" [ref=e1030] [cursor=pointer]:
+                  - /url: /insights/rates/senior-data-scientist
+              - listitem [ref=e1031]:
+                - link "Chief of Staff Rates" [ref=e1032] [cursor=pointer]:
+                  - /url: /insights/rates/chief-of-staff
+          - generic [ref=e1033]:
+            - heading "Interim Leadership" [level=3] [ref=e1034]
+            - list [ref=e1035]:
+              - listitem [ref=e1036]:
+                - link "Interim CTO" [ref=e1037] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-cto
+              - listitem [ref=e1038]:
+                - link "Interim COO" [ref=e1039] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-coo
+              - listitem [ref=e1040]:
+                - link "Interim CEO" [ref=e1041] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-ceo
+              - listitem [ref=e1042]:
+                - link "Interim CMO" [ref=e1043] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-cmo
+              - listitem [ref=e1044]:
+                - link "Interim CHRO" [ref=e1045] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-chro
+              - listitem [ref=e1046]:
+                - link "Interim CIO" [ref=e1047] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-cio
+              - listitem [ref=e1048]:
+                - link "Interim CISO" [ref=e1049] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-ciso
+              - listitem [ref=e1050]:
+                - link "Interim CFO" [ref=e1051] [cursor=pointer]:
+                  - /url: /blog/what-is-interim-cfo
+              - listitem [ref=e1052]:
+                - link "Interim CPO" [ref=e1053] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-cpo
+              - listitem [ref=e1054]:
+                - link "Interim CRO" [ref=e1055] [cursor=pointer]:
+                  - /url: /blog/what-is-an-interim-cro
+      - paragraph [ref=e1058]: © 2026 Gotta Go Fast, LLC dba Go Fractional ® All rights reserved.
+  - alert [ref=e1059]
