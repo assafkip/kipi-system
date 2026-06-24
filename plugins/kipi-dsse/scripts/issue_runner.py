@@ -595,6 +595,16 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         sys.stderr.write(contract_err)
         return 2
 
+    # Wiring contract (RCA 2026-06-24): a closeout gate verified "tests pass in
+    # this tree", never "the work is actually committed". A created-but-unstaged
+    # file passed every gate and vanished on a fresh checkout. This blocks close
+    # until every allowed_file that exists on disk is git-tracked in its own repo
+    # (nested repos resolve via the file's directory).
+    wiring_err = _enforce_wiring_contract(paths, fm, issue_id)
+    if wiring_err:
+        sys.stderr.write(wiring_err)
+        return 2
+
     closed_at = _now_iso()
     receipt = {
         "issue_id": issue_id,
@@ -623,6 +633,49 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "receipt": str(paths.receipts_path.relative_to(paths.repo_root)),
     }))
     return 0
+
+
+def _file_is_git_tracked(abspath) -> bool:
+    """True iff abspath is tracked in whatever git repo contains it. Runs git
+    from the file's own directory so a NESTED repo (a project repo inside the
+    instance) resolves to its own index, not the outer one."""
+    import subprocess as _subprocess
+    try:
+        result = _subprocess.run(
+            ["git", "-C", str(abspath.parent), "ls-files", "--error-unmatch",
+             str(abspath)],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def _enforce_wiring_contract(paths, fm: dict, issue_id: str) -> str:
+    """Block close when an allowed_file that EXISTS on disk is not git-tracked.
+
+    Catches the create-but-never-stage miss: a new source/test file passes a
+    working-tree gate (it is there, tests pass) but was never committed, so it
+    vanishes on a fresh checkout and its standing gate cannot run. Only the
+    issue's own declared files are checked, so there are no false positives from
+    unrelated untracked files."""
+    allowed = fm.get("allowed_files") or []
+    untracked = []
+    for rel in allowed:
+        abspath = paths.repo_root / rel
+        if abspath.exists() and not _file_is_git_tracked(abspath):
+            untracked.append(rel)
+    if not untracked:
+        return ""
+    lines = [
+        f"cannot close {issue_id}: wiring contract failed — "
+        f"{len(untracked)} allowed_file(s) exist on disk but are NOT git-tracked "
+        "(created but never committed; they would vanish on a fresh checkout and "
+        "their gate could not run):",
+    ]
+    lines += [f"    - {u}" for u in untracked]
+    lines.append("  Fix: commit them (git add <file>), then re-run close.")
+    return "\n".join(lines) + "\n"
 
 
 _DELETES_EXCLUDE = ("tests/", ".prd-os/", "docs/", "q-system/output/")

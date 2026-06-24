@@ -113,3 +113,21 @@ class when a real defect recurs across more than one feature.
     same class reappears across rounds, stop patching instances. Scope the
     invariant (19) and make the guard self-enumerating (20). Convergence comes
     from changing the fix, not from running more rounds.
+
+## Wiring / completeness
+
+22. **A field/state written but never read is dead wiring.** A new model field,
+    config key, or return value that is populated but has no non-test consumer
+    ships a write-only artifact: an audit trail nothing displays, a dead
+    override interface, an unused column. The producer's own references (the
+    field set BY NAME at construction) mask it from a name search; only an
+    attribute/subscript READ outside tests counts as a consumer. Dynamic access
+    (`getattr(obj, f"...")`) and serialization (`model_dump`) defeat a literal
+    grep, so this is a REVIEW lens, not a deterministic gate (RCA 2026-06-24:
+    two write-only fields shipped in one PRD, each "tested" only by a test that
+    asserted it was written).
+    Catch: for each field / key / return value added in the diff, name the
+    production code that READS it and where it is SURFACED. If the only reader is
+    a test, it is dead — consume it, surface it, or delete it. The deterministic
+    sibling (every created allowed_file is git-tracked) is enforced at issue
+    close by the wiring contract; this judgment half is the review's job.
