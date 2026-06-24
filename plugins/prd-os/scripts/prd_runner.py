@@ -1059,6 +1059,7 @@ def cmd_gates(cfg: Config, args) -> int:
     ALSO fails while any spillover item is open (out-of-scope findings are part
     of the standing no-bypass re-proof, so they can never be silently dropped)."""
     import subprocess as _subprocess
+    import re as _re
     path = _gates_path(cfg)
     records = []
     if path.is_file():
@@ -1075,11 +1076,24 @@ def cmd_gates(cfg: Config, args) -> int:
         print(json.dumps(records, indent=2))
         return 0
     failures = []
+    skipped_self_ref = 0
     for rec in records:
-        result = _subprocess.run(rec["command"], shell=True, cwd=cfg.repo_root,
+        command = rec["command"]
+        # Self-reference guard (scar 2026-06-24): a gate whose command runs
+        # `gates run` re-enters this very loop and recurses without bound — each
+        # level re-runs the whole registry including itself, an exponential
+        # process fork bomb (observed: 160+ prd_runner processes). Such a gate is
+        # the anti-pattern created when an issue's bypass_check is `gates run`
+        # (the prior qep-wiring-sweep did exactly that). Skip it: a gate that runs
+        # all gates can never be a meaningful member of the set it runs.
+        if "prd_runner.py gates run" in command or _re.search(r"\bgates\s+run\b", command):
+            skipped_self_ref += 1
+            print(f"[skip] {rec['gate_id']}: self-referential `gates run` gate (not executed)")
+            continue
+        result = _subprocess.run(command, shell=True, cwd=cfg.repo_root,
                                  capture_output=True, text=True, timeout=900)
         status = "green" if result.returncode == 0 else "RED"
-        print(f"[{status}] {rec['gate_id']}: {rec['command'][:90]}")
+        print(f"[{status}] {rec['gate_id']}: {command[:90]}")
         if result.returncode != 0:
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
             failures.append((rec["gate_id"], "\n".join(tail)))
