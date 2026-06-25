@@ -10,14 +10,14 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/assafkipnis/projects/kipi-system/q-system/.q-system/scripts/open-loops-heartbeat.sh</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/open-loops-heartbeat.sh</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/assafkipnis/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>KIPI_REPO</key>
-    <string>/Users/assafkipnis/projects/kipi-system</string>
+    <string>__KIPI_REPO__</string>
   </dict>
   <key>StartCalendarInterval</key>
   <array>

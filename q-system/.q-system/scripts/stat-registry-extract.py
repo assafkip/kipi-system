@@ -144,7 +144,7 @@ def hook_mode() -> None:
         if len(drift) > 20:
             print(f"  ... and {len(drift) - 20} more", file=sys.stderr)
         print(
-            "Update q-ktlyst/canonical/stat-registry.json approved_numerics or "
+            "Update <instance>/canonical/stat-registry.json approved_numerics or "
             "canonical_phrasings to keep the stat-verify gate in sync.",
             file=sys.stderr,
         )

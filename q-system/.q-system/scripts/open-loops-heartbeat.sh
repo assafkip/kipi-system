@@ -10,7 +10,10 @@
 # Disable: launchctl unload ~/Library/LaunchAgents/com.kipi.openloops-heartbeat.plist
 set -uo pipefail
 
-SKEL="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
+# Default the repo root to this script's location (q-system/.q-system/scripts ->
+# three levels up), so the skeleton carries no hardcoded home path. Override
+# with KIPI_REPO if the script is relocated.
+SKEL="${KIPI_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 REGISTRY="$SKEL/instance-registry.json"
 LOG="$SKEL/q-system/output/open-loops-heartbeat.log"
 TS() { date '+%Y-%m-%d %H:%M:%S'; }

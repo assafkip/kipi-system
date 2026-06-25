@@ -214,10 +214,16 @@ def phase_1():
     build_sched = os.path.join(SCRIPT_DIR, "q-system", "marketing", "templates", "build-schedule.py")
     check("build-schedule.py exists and is non-empty", file_exists(build_sched) and os.path.getsize(build_sched) > 0)
 
-    # No KTLYST in scripts
+    # No KTLYST in scripts. Exclude the lessons-validator denylist machinery
+    # (the leak-detector and its test): a denylist must name the tokens it
+    # blocks, so it legitimately contains them. Same self-reference exemption
+    # this validator grants itself in the full sweep below.
+    script_exclude = ("lessons-validator",)
     script_hits = 0
     for root, dirs, files in os.walk(scripts_dir):
         for f in files:
+            if any(ex in f for ex in script_exclude):
+                continue
             if f.endswith(".py") or f.endswith(".sh"):
                 filepath = os.path.join(root, f)
                 if file_contains(filepath, r"KTLYST|ktlyst|q-ktlyst"):
@@ -291,7 +297,7 @@ def phase_1():
 
     q_system_dir = os.path.join(SCRIPT_DIR, "q-system")
     full_sweep = 0
-    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry"}
+    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator"}
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]

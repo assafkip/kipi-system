@@ -10,7 +10,7 @@ A HOW-only, reusable pattern or methodology learned in one instance and worth sh
 
 - **Skeleton is the sole writer.** Lessons are authored ONLY here in kipi-system, by the founder. No instance authors or edits a lesson.
 - **Eligibility:** `kind: pattern` or `kind: methodology` ONLY. `kind: scar` and `kind: rca` are forbidden (the specific that makes a scar sting IS the client-confidential WHAT).
-- **2+ unrelated instances:** promote a lesson only when the same pattern recurred in 2 or more UNRELATED instances. "Unrelated" = no shared client/confidentiality boundary, and not in the same KTLYST cluster. A pattern common to two unrelated engagements is de-identified by construction.
+- **2+ unrelated instances:** promote a lesson only when the same pattern recurred in 2 or more UNRELATED instances. "Unrelated" = no shared client/confidentiality boundary, and not in the same instance cluster. A pattern common to two unrelated engagements is de-identified by construction.
 - **Hand-authored abstraction:** write a net-new HOW-only restatement. Never paste or auto-scrub a client-specific scar.
 
 ## Read-only-consumer invariant

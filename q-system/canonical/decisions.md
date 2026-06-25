@@ -47,7 +47,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 ### RULE-2026-05-27-B: kipi-investigations is a new instance, not a kipi-core feature
 - **Origin:** [USER-DIRECTED]
 - **Decision:** Build kipi-investigations in a new folder (`~/projects/kipi-investigations`) via `kipi new`, not as a feature inside kipi-system.
-- **Reason:** Different ICP, different deliverables, different lifecycle. Skeleton stays clean; instance carries investigation-specific scaffolding. Aligns with kipi multi-instance pattern (consulting, KTLYST cluster, etc.).
+- **Reason:** Different ICP, different deliverables, different lifecycle. Skeleton stays clean; instance carries investigation-specific scaffolding. Aligns with kipi multi-instance pattern (consulting, multi-instance cluster, etc.).
 - **Date:** 2026-05-27
 - **Revisit:** Permanent
 
