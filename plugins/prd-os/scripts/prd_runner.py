@@ -794,7 +794,7 @@ def _manifest_status_gate(cfg: Config, state: dict) -> tuple[int, str]:
         for iid, status in open_issues:
             lines.append(f"  - {iid}: status={status}")
         lines.append(
-            "(close each issue with `issue_runner.py close` before archiving the PRD.)"
+            "(close each issue with `/issue-closeout` before archiving the PRD.)"
         )
         return 2, "\n".join(lines) + "\n"
 
@@ -867,7 +867,7 @@ def _archive_coverage_gate(cfg: Config, state: dict) -> tuple[int, str]:
             lines.append(f"  - {fid}")
         lines.append(
             f"(receipts source: {_relpath(cfg, cfg.receipts_path)}; "
-            "close each issue with `issue_runner.py close` to record a receipt.)"
+            "close each issue with `/issue-closeout` to record a receipt.)"
         )
         return 2, "\n".join(lines) + "\n"
 

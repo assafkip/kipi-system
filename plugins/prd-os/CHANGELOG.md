@@ -30,9 +30,20 @@ All notable changes to the `prd-os` plugin are recorded here. Format follows [Ke
   `config.py` used `.prd-os/issues`; a no-config repo wrote issue specs to one
   path and the runner looked in another. Aligned to the canonical default.
 
+### Removed
+- Legacy issue-execution stack: `scripts/issue_runner.py`,
+  `hooks/scope_hook.py`, `hooks/stop_gate.py` (and their tests). Issue
+  execution and scope/stop enforcement are owned by the `kipi-dsse` plugin
+  ("the spine goes native"); the prd-os copies were unreachable (no `issue-*`
+  commands here) and could not even read kipi-dsse's state schema, so both
+  plugins' hooks fired on every edit with the prd-os copy failing open. prd-os
+  now ships no hooks. The PRD-side concurrency guard is unaffected — it reads
+  `active-issue.json` directly via `concurrency.py`.
+
 ### Notes
 - All 0.4.0 capabilities preserved (spillover gate, persona/skeptic review,
-  gap-classes dimension). This release is purely additive.
+  gap-classes dimension). The additive parts of this release add capability;
+  the removal deletes only dead duplicates, no reachable behavior.
 
 ## [0.4.0]
 

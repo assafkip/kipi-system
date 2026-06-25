@@ -51,13 +51,6 @@ def _write_issue_state(repo: Path, issue_id: str | None) -> Path:
     return path
 
 
-def _write_prd_state(repo: Path, prd_id: str | None, status: str | None) -> Path:
-    path = repo / ".claude/state/active-prd.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"prd_id": prd_id, "status": status}))
-    return path
-
-
 # ---------------------------------------------------------------------------
 # Helper unit tests
 # ---------------------------------------------------------------------------
@@ -166,51 +159,9 @@ def test_prd_new_allowed_after_issue_cleared(fake_repo, write_config, run_prd_ru
     assert r.returncode == 0, r.stderr
 
 
-# ---------------------------------------------------------------------------
-# Runner integration: issue side
-# ---------------------------------------------------------------------------
-
-
-def test_issue_load_refuses_when_prd_active(
-    fake_repo, write_config, run_runner, write_issue_spec
-):
-    _bootstrap(fake_repo, write_config)
-    # Put an in-progress PRD into state.
-    _write_prd_state(fake_repo, "prd-live-2026-04-16", "in-review")
-    # Write an issue spec so the runner could otherwise load it.
-    write_issue_spec(
-        fake_repo / ".prd-os/issues",
-        "issue-a",
-        allowed_files=["src/a.py"],
-    )
-    r = run_runner(fake_repo, "load", "issue-a")
-    assert r.returncode == 2
-    assert "prd-live-2026-04-16" in r.stderr
-    assert "load issue" in r.stderr
-
-
-def test_issue_load_allowed_when_prd_archived(
-    fake_repo, write_config, run_runner, write_issue_spec
-):
-    _bootstrap(fake_repo, write_config)
-    _write_prd_state(fake_repo, "prd-old-2026-04-16", "archived")
-    write_issue_spec(
-        fake_repo / ".prd-os/issues",
-        "issue-a",
-        allowed_files=["src/a.py"],
-    )
-    r = run_runner(fake_repo, "load", "issue-a")
-    assert r.returncode == 0, r.stderr
-
-
-def test_issue_load_allowed_when_no_prd_state(
-    fake_repo, write_config, run_runner, write_issue_spec
-):
-    _bootstrap(fake_repo, write_config)
-    write_issue_spec(
-        fake_repo / ".prd-os/issues",
-        "issue-a",
-        allowed_files=["src/a.py"],
-    )
-    r = run_runner(fake_repo, "load", "issue-a")
-    assert r.returncode == 0, r.stderr
+# NOTE: The issue-side concurrency guard (refuse to load an issue while a PRD is
+# active) lived in prd-os's legacy issue_runner.py, which was unreachable (no
+# issue-* commands in prd-os) and has been removed. Issue execution is owned by
+# the kipi-dsse plugin; the symmetric guard belongs there. See the prd-os/
+# kipi-dsse issue-stack-cleanup change. concurrency.py still backs the PRD-side
+# guard above, which reads active-issue.json directly.

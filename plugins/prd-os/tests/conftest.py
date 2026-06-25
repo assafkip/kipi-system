@@ -21,7 +21,6 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
-ISSUE_RUNNER = SCRIPTS_DIR / "issue_runner.py"
 PRD_RUNNER = SCRIPTS_DIR / "prd_runner.py"
 PRD_SPLIT = SCRIPTS_DIR / "prd_split.py"
 FINDINGS_WRITER = SCRIPTS_DIR / "findings_writer.py"
@@ -108,26 +107,6 @@ def write_issue_spec() -> Callable[..., Path]:
         return path
 
     return _write
-
-
-@pytest.fixture
-def run_runner() -> Callable[..., subprocess.CompletedProcess]:
-    """Invoke issue_runner.py in a subprocess with a given repo root."""
-
-    def _run(repo: Path, *args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
-        env["CLAUDE_PROJECT_DIR"] = str(repo)
-        if env_extra:
-            env.update(env_extra)
-        return subprocess.run(
-            [sys.executable, str(ISSUE_RUNNER), *args],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-
-    return _run
 
 
 @pytest.fixture

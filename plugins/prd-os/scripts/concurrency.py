@@ -69,8 +69,8 @@ def assert_no_active_issue(issue_state_path: Path, *, action: str) -> None:
     if issue_id:
         raise ConcurrencyError(
             f"cannot {action}: issue {issue_id!r} is active. "
-            "Close the issue (`/issue-closeout`) or clear its state "
-            "(`issue_runner.py clear`) before starting PRD work."
+            "Close the issue (`/issue-closeout`) or clear its active state "
+            "before starting PRD work."
         )
 
 
