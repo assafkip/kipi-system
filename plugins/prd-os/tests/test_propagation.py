@@ -33,6 +33,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 UPDATE_SCRIPT = REPO_ROOT / "kipi-update.sh"
 
+# kipi-update.sh lives at the skeleton repo root, not inside the portable
+# plugin. In a standalone extraction of plugins/prd-os it is absent, so this
+# whole module (which validates that skeleton propagation contract) skips
+# rather than failing. In the kipi-system skeleton the script is present and
+# the tests run.
+pytestmark = pytest.mark.skipif(
+    not UPDATE_SCRIPT.is_file(),
+    reason="kipi-update.sh is a kipi-system skeleton artifact, absent in a portable extraction",
+)
+
 PROTECTED_EXCLUSIONS = ("memory/", "output/", "my-project/")
 
 
