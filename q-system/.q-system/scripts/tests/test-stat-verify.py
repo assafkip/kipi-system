@@ -5,7 +5,7 @@ walks, opt-out tags, scope, and registry lookup. Runnable standalone:
 
     python3 q-system/.q-system/scripts/tests/test-stat-verify.py
 
-Exits 0 if all tests pass, 1 otherwise. Self-contained — uses tmpdirs, no
+Exits 0 if all tests pass, 1 otherwise. Self-contained — uses tmp_paths, no
 pytest dependency, no network.
 """
 
@@ -44,11 +44,11 @@ def run_cli(file_path: str) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def make_instance(tmpdir: Path, stat_overrides: list | None = None) -> Path:
+def make_instance(tmp_path: Path, stat_overrides: list | None = None) -> Path:
     """Create a fake instance-shaped tree with canonical/stat-registry.json."""
-    canonical = tmpdir / "canonical"
+    canonical = tmp_path / "canonical"
     canonical.mkdir(parents=True)
-    bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    bus = tmp_path / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
     bus.mkdir(parents=True)
     registry = {
         "version": 1,
@@ -78,8 +78,8 @@ def make_instance(tmpdir: Path, stat_overrides: list | None = None) -> Path:
     return bus
 
 
-def test_in_scope_bus_content_with_bad_stat_blocks(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_in_scope_bus_content_with_bad_stat_blocks(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({
         "x_thread": ["SIEMs are missing 76% of ATT&CK coverage."],
@@ -93,8 +93,8 @@ def test_in_scope_bus_content_with_bad_stat_blocks(tmpdir: Path) -> None:
     assert "76%" in err, f"expected '76%' in stderr; got: {err!r}"
 
 
-def test_in_scope_bus_content_with_canonical_stat_passes(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_in_scope_bus_content_with_canonical_stat_passes(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({
         "x_thread": [
@@ -110,8 +110,8 @@ def test_in_scope_bus_content_with_canonical_stat_passes(tmpdir: Path) -> None:
     assert rc == 0, f"expected exit 0, got {rc}; stderr={err}"
 
 
-def test_unvalidated_tag_allows_unknown_stat(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_unvalidated_tag_allows_unknown_stat(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({
         "linkedin_draft": "Something something 999% improvement {{UNVALIDATED}}.",
@@ -124,8 +124,8 @@ def test_unvalidated_tag_allows_unknown_stat(tmpdir: Path) -> None:
     assert rc == 0, f"expected exit 0, got {rc}; stderr={err}"
 
 
-def test_skip_marker_bypasses_entire_file(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_skip_marker_bypasses_entire_file(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({
         "_note": "stat-verify-skip",
@@ -139,8 +139,8 @@ def test_skip_marker_bypasses_entire_file(tmpdir: Path) -> None:
     assert rc == 0, f"expected exit 0, got {rc}; stderr={err}"
 
 
-def test_metadata_bus_file_out_of_scope(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_metadata_bus_file_out_of_scope(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "_meta.json"
     target.write_text(json.dumps({"x_thread": ["76% bogus"]}))
     payload = {
@@ -151,8 +151,8 @@ def test_metadata_bus_file_out_of_scope(tmpdir: Path) -> None:
     assert rc == 0, f"expected exit 0 (metadata out of scope), got {rc}; stderr={err}"
 
 
-def test_non_content_fields_ignored(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_non_content_fields_ignored(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     # 76% lives only in a non-content key — should be ignored.
     target.write_text(json.dumps({
@@ -167,9 +167,9 @@ def test_non_content_fields_ignored(tmpdir: Path) -> None:
     assert rc == 0, f"non-content fields should not trip the verifier; got {rc}; stderr={err}"
 
 
-def test_out_of_scope_path_silent(tmpdir: Path) -> None:
-    make_instance(tmpdir)
-    target = tmpdir / "random.json"
+def test_out_of_scope_path_silent(tmp_path: Path) -> None:
+    make_instance(tmp_path)
+    target = tmp_path / "random.json"
     target.write_text(json.dumps({"linkedin_draft": "76% nope"}))
     payload = {
         "tool_name": "Write",
@@ -179,8 +179,8 @@ def test_out_of_scope_path_silent(tmpdir: Path) -> None:
     assert rc == 0, f"out-of-scope path should be silent; got {rc}; stderr={err}"
 
 
-def test_non_edit_tool_silent(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_non_edit_tool_silent(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["76% bogus"]}))
     payload = {
@@ -191,8 +191,8 @@ def test_non_edit_tool_silent(tmpdir: Path) -> None:
     assert rc == 0, f"non-Edit/Write tool should be silent; got {rc}; stderr={err}"
 
 
-def test_cli_clean_file_exits_zero(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_cli_clean_file_exits_zero(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["42 handoffs across 6 teams."]}))
     rc, out, err = run_cli(str(target))
@@ -200,17 +200,17 @@ def test_cli_clean_file_exits_zero(tmpdir: Path) -> None:
     assert "clean" in out
 
 
-def test_cli_dirty_file_exits_two(tmpdir: Path) -> None:
-    bus = make_instance(tmpdir)
+def test_cli_dirty_file_exits_two(tmp_path: Path) -> None:
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["fake 99% claim"]}))
     rc, out, err = run_cli(str(target))
     assert rc == 2, f"CLI dirty file should exit 2; got {rc}; out={out}; err={err}"
 
 
-def test_missing_registry_fails_closed(tmpdir: Path) -> None:
+def test_missing_registry_fails_closed(tmp_path: Path) -> None:
     """No registry in tree = fail-closed (exit 2) on in-scope content."""
-    bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    bus = tmp_path / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
     bus.mkdir(parents=True)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
@@ -224,16 +224,16 @@ def test_missing_registry_fails_closed(tmpdir: Path) -> None:
         payload,
         extra_env={
             "STAT_VERIFY_BOOTSTRAP": "",
-            "STAT_REGISTRY_PATH": str(tmpdir / "nope-registry.json"),
+            "STAT_REGISTRY_PATH": str(tmp_path / "nope-registry.json"),
         },
     )
     assert rc == 2, f"expected fail-closed exit 2 on missing registry; got {rc}; stderr={err}"
     assert "registry" in err.lower(), f"expected registry hint in stderr; got: {err!r}"
 
 
-def test_bootstrap_escape_allows_missing_registry(tmpdir: Path) -> None:
+def test_bootstrap_escape_allows_missing_registry(tmp_path: Path) -> None:
     """STAT_VERIFY_BOOTSTRAP=1 allows in-scope content to pass with no registry."""
-    bus = tmpdir / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    bus = tmp_path / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
     bus.mkdir(parents=True)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
@@ -245,21 +245,21 @@ def test_bootstrap_escape_allows_missing_registry(tmpdir: Path) -> None:
         payload,
         extra_env={
             "STAT_VERIFY_BOOTSTRAP": "1",
-            "STAT_REGISTRY_PATH": str(tmpdir / "nope-registry.json"),
+            "STAT_REGISTRY_PATH": str(tmp_path / "nope-registry.json"),
         },
     )
     assert rc == 0, f"bootstrap mode should pass; got {rc}; stderr={err}"
 
 
-def test_cli_missing_registry_exits_two_not_one(tmpdir: Path) -> None:
+def test_cli_missing_registry_exits_two_not_one(tmp_path: Path) -> None:
     """CLI mode aligns with hook mode: exit 2 on missing registry, not 1."""
-    target = tmpdir / "lone.json"
+    target = tmp_path / "lone.json"
     target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
     proc = subprocess.run(
         ["python3", str(SCRIPT), str(target)],
         capture_output=True,
         text=True,
-        env={**os.environ, "STAT_REGISTRY_PATH": str(tmpdir / "nope-registry.json")},
+        env={**os.environ, "STAT_REGISTRY_PATH": str(tmp_path / "nope-registry.json")},
     )
     assert proc.returncode == 2, (
         f"CLI must exit 2 on missing registry; got {proc.returncode}; "
@@ -267,16 +267,16 @@ def test_cli_missing_registry_exits_two_not_one(tmpdir: Path) -> None:
     )
 
 
-def test_find_registry_does_not_walk_into_sibling_subtree(tmpdir: Path) -> None:
+def test_find_registry_does_not_walk_into_sibling_subtree(tmp_path: Path) -> None:
     """find_registry's parent walk must not satisfy lookup from a sibling
     subtree containing a stat-registry.json. Direct-check semantics only.
     """
-    inst_a = tmpdir / "instance-A" / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
+    inst_a = tmp_path / "instance-A" / ".q-system" / "agent-pipeline" / "bus" / "2026-05-21"
     inst_a.mkdir(parents=True)
     target = inst_a / "tl-content.json"
     target.write_text(json.dumps({"x_thread": ["42 handoffs"]}))
 
-    inst_b = tmpdir / "instance-B" / "canonical"
+    inst_b = tmp_path / "instance-B" / "canonical"
     inst_b.mkdir(parents=True)
     (inst_b / "stat-registry.json").write_text(json.dumps({"version": 1, "stats": []}))
 
@@ -298,10 +298,10 @@ def test_find_registry_does_not_walk_into_sibling_subtree(tmpdir: Path) -> None:
     assert "registry" in proc.stderr.lower()
 
 
-def test_phrasing_does_not_launder_unapproved_numeric(tmpdir: Path) -> None:
+def test_phrasing_does_not_launder_unapproved_numeric(tmp_path: Path) -> None:
     """A canonical phrasing in context must contain the token to validate it.
     'SIEMs cover 21% of ATT&CK ... missing 76%' must block 76%."""
-    bus = make_instance(tmpdir)
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text(json.dumps({
         "x_thread": [
@@ -317,10 +317,10 @@ def test_phrasing_does_not_launder_unapproved_numeric(tmpdir: Path) -> None:
     assert "76%" in err, f"expected 76% in error; got {err!r}"
 
 
-def test_unreadable_file_fails_closed(tmpdir: Path) -> None:
+def test_unreadable_file_fails_closed(tmp_path: Path) -> None:
     """A file the linter cannot read must fail closed, not be silently
     treated as clean."""
-    bus = make_instance(tmpdir)
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_bytes(b"\xff\xfe\x00\x00\xff")
     payload = {
@@ -332,9 +332,9 @@ def test_unreadable_file_fails_closed(tmpdir: Path) -> None:
     assert "unreadable" in err.lower() or "cannot read" in err.lower()
 
 
-def test_malformed_json_fails_closed(tmpdir: Path) -> None:
+def test_malformed_json_fails_closed(tmp_path: Path) -> None:
     """Malformed in-scope JSON must fail closed, not silently pass."""
-    bus = make_instance(tmpdir)
+    bus = make_instance(tmp_path)
     target = bus / "tl-content.json"
     target.write_text("{ this is not json")
     payload = {
@@ -346,10 +346,10 @@ def test_malformed_json_fails_closed(tmpdir: Path) -> None:
     assert "malformed" in err.lower() or "json" in err.lower()
 
 
-def test_dollar_range_extracted_as_one_token(tmpdir: Path) -> None:
+def test_dollar_range_extracted_as_one_token(tmp_path: Path) -> None:
     """`$25-75K` must extract as a single token so the upper bound is
     verified, not silently dropped."""
-    bus = make_instance(tmpdir, stat_overrides=[
+    bus = make_instance(tmp_path, stat_overrides=[
         {
             "id": "demo-acv",
             "approved_numerics": ["$25-75K"],
@@ -367,7 +367,7 @@ def test_dollar_range_extracted_as_one_token(tmpdir: Path) -> None:
     assert rc == 2, f"$25-99K must block (upper bound not approved); got {rc}; err={err!r}"
 
 
-def test_self_test_passes(tmpdir: Path) -> None:
+def test_self_test_passes(tmp_path: Path) -> None:
     proc = subprocess.run(
         ["python3", str(SCRIPT), "--self-test"],
         capture_output=True,
