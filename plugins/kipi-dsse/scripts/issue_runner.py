@@ -37,6 +37,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
+
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
 REVIEW_KINDS = ("standard", "adversarial")
@@ -86,6 +89,7 @@ class Paths:
             self.findings_dir = self.issues_dir / DEFAULT_FINDINGS_SUBDIR
         state_dir = repo_root / cfg.get("state_dir", DEFAULT_STATE_DIR)
         self.state_path = state_dir / "active-issue.json"
+        self.active_prd_state_path = state_dir / "active-prd.json"
         self.receipts_path = repo_root / cfg.get("receipts_path", DEFAULT_RECEIPTS_PATH)
 
     @staticmethod
@@ -329,6 +333,16 @@ def _append_receipt(path: Path, entry: dict) -> None:
 
 
 def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
+    # Cross-runner concurrency: refuse to load an issue while a non-archived PRD
+    # is active. Symmetric with prd-os's prd_runner, which refuses to start a
+    # PRD while an issue is active. Reads active-prd.json directly.
+    try:
+        assert_no_active_prd(
+            paths.active_prd_state_path, action=f"load issue {args.issue_id!r}"
+        )
+    except ConcurrencyError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
     path, fm, text = _load_spec(paths, args.issue_id)
     err = _require_marker(text)
     if err is not None:
