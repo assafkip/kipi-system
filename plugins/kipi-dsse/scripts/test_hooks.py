@@ -92,6 +92,42 @@ def _edit(path):
     return {"tool_name": "Edit", "tool_input": {"file_path": path}}
 
 
+def _env_no_project(repo):
+    """Env with plugin root but no CLAUDE_PROJECT_DIR, to exercise cwd walk-up."""
+    env = _env(repo)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    return env
+
+
+def _hook_no_project(script, repo, payload, *, cwd):
+    return subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(cwd), capture_output=True, text=True, env=_env_no_project(repo),
+        input=json.dumps(payload),
+    )
+
+
+# Spec where allowed_files is a glob that also matches a disallowed entry, so
+# disallowed must take precedence.
+_SPEC_PRECEDENCE = f"""\
+---
+id: issue-a
+title: issue-a fixture
+status: open
+priority: p0
+allowed_files:
+  - src/*
+disallowed_files:
+  - src/secret.py
+required_checks: []
+required_reviews: []
+---
+{_MARKER}
+
+body
+"""
+
+
 # --- scope hook --------------------------------------------------------------
 
 
@@ -154,6 +190,53 @@ def test_scope_missing_file_path_allows():
         assert r.returncode == 0
 
 
+def test_scope_notebook_path_honored():
+    with tempfile.TemporaryDirectory() as d:
+        repo = _new_repo(d)
+        payload = {"tool_name": "NotebookEdit", "tool_input": {"notebook_path": "other/x.ipynb"}}
+        r = _hook(SCOPE_HOOK, repo, payload)
+        assert r.returncode == 2, f"out-of-scope notebook should block: {r.stdout}"
+
+
+def test_scope_disallowed_takes_precedence_over_allowed_glob():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        (repo / ".git").mkdir()
+        issues = repo / ".prd-os" / "issues"
+        issues.mkdir(parents=True)
+        (issues / "issue-a.md").write_text(_SPEC_PRECEDENCE)
+        assert _runner(repo, "load", "issue-a").returncode == 0
+        assert _runner(repo, "approve").returncode == 0
+        # src/secret.py matches allowed glob src/* AND disallowed src/secret.py.
+        r = _hook(SCOPE_HOOK, repo, _edit("src/secret.py"))
+        assert r.returncode == 2, "disallowed must win over an allowing glob"
+        # A sibling under src/* that is NOT disallowed still passes.
+        assert _hook(SCOPE_HOOK, repo, _edit("src/ok.py")).returncode == 0
+
+
+def test_scope_missing_config_does_not_break_session():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        (repo / ".git").mkdir()  # repo marker, but NO .prd-os/config.json
+        r = _hook(SCOPE_HOOK, repo, _edit("anything.py"))
+        assert r.returncode == 0, r.stderr
+
+
+def test_scope_walkup_resolves_when_env_unset():
+    with tempfile.TemporaryDirectory() as d:
+        repo = _new_repo(d)
+        # No CLAUDE_PROJECT_DIR; cwd is the repo (.git present) so walk-up finds it.
+        r = _hook_no_project(SCOPE_HOOK, repo, _edit("other/x.py"), cwd=repo)
+        assert r.returncode == 2, "walk-up should resolve the repo and enforce scope"
+
+
+def test_scope_dormant_when_no_repo_marker():
+    with tempfile.TemporaryDirectory() as d:
+        bare = Path(d)  # no .git, no config, no CLAUDE_PROJECT_DIR
+        r = _hook_no_project(SCOPE_HOOK, bare, _edit("anything.py"), cwd=bare)
+        assert r.returncode == 0, r.stderr
+
+
 # --- stop gate ---------------------------------------------------------------
 
 
@@ -192,6 +275,59 @@ def test_stop_exhaustion_allows_after_max_firings():
         codes = [_hook(STOP_GATE, repo, {}).returncode for _ in range(5)]
         assert codes[0] == 2
         assert codes[-1] == 0, f"expected exhaustion to allow, got {codes}"
+
+
+def test_stop_allows_when_all_receipts_present():
+    with tempfile.TemporaryDirectory() as d:
+        repo = _new_repo(d)
+        for receipt in ("verified", "reviewed", "findings_triaged"):
+            assert _runner(repo, "mark", receipt).returncode == 0, receipt
+        r = _hook(STOP_GATE, repo, {})
+        assert r.returncode == 0, f"all receipts present should allow stop: {r.stderr}"
+
+
+def test_stop_allows_when_issue_closed():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        # Real git repo with a commit: close pins its receipt to HEAD.
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "--allow-empty", "-q", "-m", "init"],
+            cwd=str(repo), check=True,
+        )
+        issues = repo / ".prd-os" / "issues"
+        issues.mkdir(parents=True)
+        (issues / "issue-a.md").write_text(_SPEC)
+        assert _runner(repo, "load", "issue-a").returncode == 0
+        assert _runner(repo, "approve").returncode == 0
+        for receipt in ("verified", "reviewed", "findings_triaged"):
+            assert _runner(repo, "mark", receipt).returncode == 0
+        assert _runner(repo, "close").returncode == 0, "close should succeed"
+        r = _hook(STOP_GATE, repo, {})
+        assert r.returncode == 0, r.stderr
+
+
+def test_stop_missing_config_does_not_break_session():
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        (repo / ".git").mkdir()  # repo marker, no config, no active issue
+        r = _hook(STOP_GATE, repo, {})
+        assert r.returncode == 0, r.stderr
+
+
+def test_stop_walkup_resolves_when_env_unset():
+    with tempfile.TemporaryDirectory() as d:
+        repo = _new_repo(d)
+        r = _hook_no_project(STOP_GATE, repo, {}, cwd=repo)
+        assert r.returncode == 2, "walk-up should resolve the repo and block on unclosed issue"
+
+
+def test_stop_dormant_when_no_repo_marker():
+    with tempfile.TemporaryDirectory() as d:
+        bare = Path(d)  # no .git, no config, no active issue
+        r = _hook_no_project(STOP_GATE, bare, {}, cwd=bare)
+        assert r.returncode == 0, r.stderr
 
 
 if __name__ == "__main__":
