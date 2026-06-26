@@ -1,0 +1,18 @@
+[mcp_servers.apify]
+command = "npx"
+args = [
+    "-y",
+    "@apify/actors-mcp-server@0.9.10",
+]
+env_vars = ["APIFY_TOKEN"]
+
+[mcp_servers.apify.env]
+TOOLS = "actors,curious_coder/twitter-scraper"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+[mcp_servers.reddit]
+command = "uvx"
+args = ["reddit-no-auth-mcp-server"]
