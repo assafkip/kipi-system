@@ -68,17 +68,52 @@ report's "governance must keep pace" claim, implemented.
 
 ---
 
-## Per-instance analysis (to fill in the deep dive)
+## Per-instance analysis (deep dive — 19 registered instances, 2026-06-26)
 
-> For each: How does it alleviate a report concern? How is it different from what
-> the report worries about? How does it make things better?
+Read-only agent pass over every registered instance's own positioning/identity
+files. Strength = how directly it answers a report concern.
 
-### Pure Spectrum (the product) — TBD
-### KTLYST Strategy instance — TBD
-### KTLYST Website / Kipi web — TBD
-### kipi-investigations — TBD
-### 4_points_consulting (investigation OS) — TBD
-### Other instances (lawyer, accountant, product, personal-brand) — TBD
+| Instance | Strength | How it answers the report (one line) |
+|---|---|---|
+| **KTLYST_strategy** | **Strong** | Governance as a design primitive: 27+ deterministic gates + character-level provenance + honest BLOCKED verdicts. Governs capability *at generation time*. |
+| **ktlyst-website** | **Strong** | Public positioning *is* the governance layer: "Deterministic, Not Probabilistic," full audit trail, mandatory human approval before production. |
+| **4_points_consulting** | **Strong** | 18 IC structured-analytic techniques (ACH, deception detection, premortem) + A–F confidence + citation enforcement. Assumes AI is unreliable, plans for it. |
+| **ktlyst_lawyer** | **Strong** | Compliance/liability infrastructure cited to statute; turns regulatory obligation into contractual + audit procedure. Governance after capability. |
+| **ASK_AI_consultant** | **Strong** | Sells the fix: hardens orgs' unreliable AI into governed systems (Pure Spectrum proof, $600K+ avoidance). Closes the gap at the org level. |
+| **ktlyst (product)** | **Medium** | Zero-inference extraction + source citations + 5 validation gates + DSSE audit logs. Trades capability for verifiability. |
+| **Pure_spectrum_Q** | **Medium** | Provenance after a real hallucination incident (DQ-055); agents as discovery tools, not decision-makers; reversible/auditable controls. |
+| **kipi-investigations** | **Medium** | Every node/edge traced to the `tool_use_id` that produced it; analyst-approval gates on every edge; `{{UNVALIDATED}}` marks. |
+| **accountant** | **Medium** | Fail-closed egress filter (Rust): the LLM *cannot* see raw financial PII regardless of prompt. Constrain the model, don't trust it. |
+| **personal-brand** | **Medium-Strong** | A credible threat-intel expert publicly modeling responsible AI use — bridges the exact expert↔public trust gap (#15) the report measures. |
+| **AUDHD_KIDS** | **Medium** | Evidence-tiered (1–5), citation-enforced parent research for neurodivergent kids — fills a population the report never measures. |
+| **travel-agent** | **Medium** | Even a consumer tool carries the signature: prices cited live, "founder decides," never auto-books. The discipline is reflexive. |
+| **fractional-cxo** | Tangential | Income finder; routes an AI-security expert toward governance roles, but doesn't itself close any gap. |
+| **gtm-partner** | Tangential | Agentic GTM with proof-gating discipline, but operates *within* the gap, doesn't close it. |
+| **school-negotiator** | Tangential | Consumer value from AI (#8) — negotiation coach. No governance angle. |
+| q-education / event_coordinator / school-idf / car-research | None | Placeholder, placeholder, non-AI activity, not on disk. |
+
+### The convergence finding (the actual headline)
+
+The same architecture appears in **every serious instance, independently, across
+unrelated domains** (threat intel, fraud, legal, accounting, OSINT, parenting
+research, travel). The shared pattern:
+
+1. **Deterministic/zero-inference extraction first; the LLM is advisory only.**
+2. **Provenance on every claim** — page/offset, source span, `tool_use_id`, statute cite.
+3. **Human approval gate before anything ships** — "NOT FOR DEPLOYMENT," analyst
+   gates, "founder decides," fail-closed egress.
+4. **Explicit uncertainty** — `{{UNVALIDATED}}`, A–F confidence, evidence tiers 1–5.
+
+This is the *same doctrine* as the core OS (hooks → receipts → gates), rediscovered
+per domain. It even shows up where there's no compliance reason for it (travel
+booking). That makes it a genuine signature, not a feature bolted on for security
+buyers.
+
+**So the comparison is not "kipi has governance features." It is:** the report
+describes the capability/governance gap as the defining unsolved problem of the
+field; this body of work is *the same answer, re-derived 12 times in 12 domains.*
+What the report says the industry is failing to do — govern capability at the point
+of generation — is the involuntary default of everything here.
 
 ---
 
@@ -109,5 +144,15 @@ encoded as hooks and receipts. Worth a piece once the per-instance evidence land
 
 ## Refinement log
 
-- 2026-06-26 — doc created; core-OS mapping done. Per-instance deep dive pending
-  cross-instance path confirmation (KTLYST cluster preflight).
+- 2026-06-26 — doc created; core-OS mapping done.
+- 2026-06-26 — per-instance deep dive complete (19 registered instances, read-only
+  agent pass). Convergence finding added: one governance-at-generation-time pattern
+  re-derived across 12 domains. 5 Strong, 6 Medium(+), 3 Tangential, rest None/empty.
+- Open threads to refine next:
+  - Quantify the pattern: pull the actual gate/provenance mechanism from each
+    instance's code (this pass read positioning only) to make the "12 domains"
+    claim airtight for a public piece.
+  - Decide the artifact: essay ("governance as code at n=1"), conference talk, or
+    a KTLYST positioning asset. Ties to the OSS-contribution mission.
+  - Environmental footprint (#10) is a real blind spot — only KTLYST_strategy's
+    $5/run cap touches it. Worth a deliberate position or an explicit "out of scope."
