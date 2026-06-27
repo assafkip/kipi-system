@@ -253,56 +253,75 @@ claim survived verification), and the named diffusion frameworks (Crane, Rogers,
 Granovetter — no verified claim). NeurIPS 2026 specifics are cycle-specific; verify
 the live CFP. A gap-fill pass is queued if a venue gets chosen.
 
-## Going to revenue: the consulting-leverage playbook (PARTIAL — 2026-06-26)
+## Going to revenue: the consulting-leverage playbook (2026-06-26)
 
-Scope: reach buyers (ICP = AI-builder companies + security teams shipping
-unreliable AI), win = inbound consulting clients/revenue.
+Deep-research pass (108 agents, 25/25 claims verified on the completed re-run).
+Scope: buyers = AI-builder companies + security teams shipping unreliable AI; win
+= inbound consulting revenue.
 
-**Run status: INCOMPLETE.** The deep-research pass hit a weekly usage limit
-partway through verification. Only 4 claims completed the 3-vote check; ~21
-extracted claims were left unverified (verifier agents abstained/failed on the
-limit, NOT refuted), and the synthesis/playbook step never ran. Re-run after the
-limit resets to finish. Treat everything below the line as a lead, not a fact.
+### The load-bearing insight (and the trap)
+There is a real tension in the evidence, and resolving it is the whole game:
+- Edelman-LinkedIn says PUBLISH expertise (it drives RFP access, premium, demand).
+- Gartner says DISPLAYING expertise BACKFIRES: buyers are overwhelmed by
+  high-quality info (89%), hit a "crisis of confidence," and are 153% more likely
+  to settle for a smaller, safer purchase. Suppliers "unwittingly exacerbate this
+  by focusing on thought leadership and high levels of expertise."
+- Resolution: SENSE-MAKING. Sellers who help buyers reconcile conflicting info and
+  decide with confidence closed high-quality, low-regret deals ~80% of the time.
 
-### Verified (3-0)
-- **Thought leadership buys RFP access:** 86% of B2B decision-makers are
-  moderately/very likely to invite a consistent thought-leadership producer into
-  an RFP (Edelman-LinkedIn B2B Thought Leadership Impact Report 2024).
-- **And pricing power:** 60% say they'll pay a premium to work with an org that
-  produces valuable thought leadership (same report).
-- **And net-new demand:** 75% say a specific piece of thought leadership led them
-  to research a product/service they weren't previously considering (same report).
-- **But info-overload shrinks deals:** 89% of B2B buyers encounter high-quality
-  information during purchase, and when they can't make sense of it they're
-  significantly more likely to settle for a smaller, less disruptive action than
-  planned (Gartner 2019).
+The move: frame the six-system receipts + AI-Index comparison as a DIAGNOSTIC that
+reduces the buyer's confusion ("here's how to tell if your AI is actually
+governed"), NOT as an expertise flex. Same asset, opposite framing.
 
-### Tentative read from the verified facts only
-Thought leadership demonstrably opens doors (RFP, premium, new demand). But the
-binding constraint is buyer overwhelm: more content makes buyers shrink the deal.
-So the edge is not MORE content, it's content that REDUCES the buyer's confusion
-and is verifiable. The six-system receipts + the AI-Index comparison are exactly
-the rare verifiable, sense-making asset that counters the overload failure mode.
-This is directionally supported but the playbook step that would rank the moves
-did not run.
+### Verified findings (with evidence tier)
+1. **Verifiable content is the rare winner** [vendor: Edelman-LinkedIn]. 55% of
+   buyers prioritize content "grounded in verifiable facts"; only 15% of thought
+   leadership is rated "very good." The receipts are exactly that rare, checkable
+   content almost no competitor produces. Most actionable finding.
+2. **Thought leadership drives demand — as stated intent** [vendor: Edelman-LinkedIn].
+   86% would invite a consistent producer to an RFP; 60% pay a premium; 75%
+   researched something new because of a piece. CAVEAT: self-reported intent; the
+   report's own actual-purchase number is 23%.
+3. **Expertise-display backfires; sense-making wins** [vendor: Gartner]. The
+   load-bearing insight above.
+4. **Credibility genuinely persuades** [PEER-REVIEWED: Pornpitakpan 2004, J. Applied
+   Social Psych]. High-credibility sources are more persuasive (effect comparable to
+   argument quality) — but delivery must be sense-making, not a flex.
+5. **Referrals are a myth; engineer distribution** [PEER-REVIEWED: Grierson & Brennan
+   2017]. Providers overestimate referral influence; clients say they weren't
+   influenced to refer. Do NOT rely on good work spreading itself. Failure mode.
+6. **Productize into fixed-scope, fixed-price premium** [practitioner case: Dunford].
+   Live proof a solo expert charges $50K-$100K FLAT per engagement (not hourly).
+7. **Sell from authority via a "probative conversation"** [practitioner: Enns / Win
+   Without Pitching]. Arrive as the guide, not the pitch. Consistent with sense-making.
+8. **Don't invent a category; anchor to the emerging problem** [practitioner: Dunford,
+   vs Play Bigger]. Category creation needs "double persuasion." Ride the
+   already-emerging "shipping ungoverned AI" problem instead.
 
-### Unverified leads (extracted, NOT yet checked — confirm on re-run)
-- LinkedIn-Edelman: 90% more receptive to outreach from consistent TL producers;
-  55% prioritize content grounded in verifiable facts/data; only 15% of TL rated
-  "very good." (If verified, this is the core argument FOR the receipts asset.)
-- Gartner "sense-making" sellers (help buyers reconcile conflicting info) report
-  ~80% high-quality/low-regret deals, beating "telling expertise."
-- Professional-services referral study: providers cannot reliably control client
-  referrals (challenges the "great work sells itself" assumption).
-- SME-blog credibility study (n=449, SEM-PLS): trustworthiness drives source
-  credibility, perceived EXPERTISE does not (H2 rejected, p=0.336) — counterintuitive.
-- Productization / value-pricing material (Baker, Enns "Win Without Pitching",
-  Dunford) was retrieved but is practitioner framework, not evidence, and unverified.
+### The ranked playbook (highest evidence first)
+1. Reframe the receipts as a DIAGNOSTIC that cuts buyer confusion (#1 + #3).
+2. Productize it into a named, fixed-price engagement, not hourly (#6).
+3. Engineer distribution deliberately — publish, talk, community; don't wait for
+   referrals (#5).
+4. Sell from authority: arrive already-the-expert via the asset (#4 + #7).
+5. Anchor to "ungoverned AI" as an existing problem; don't evangelize a new
+   category (#8).
 
-### To finish
-Re-run the consulting pass after the weekly limit resets (7am PT) to verify the
-leads, fill angles 2-6 (productization, proof-asset funnels, ICP channels,
-category creation, ranked playbook), and run synthesis.
+### Evidence honesty (3 tiers — do not conflate)
+- PEER-REVIEWED (rigorous anchors): source credibility persuades (Pornpitakpan
+  2004); referrals are a myth (Grierson & Brennan 2017).
+- VENDOR-SPONSORED (high-quality but self-interested, self-reported intent): all
+  Edelman-LinkedIn and Gartner figures. Edelman sells TL consulting; Gartner sells
+  the framework.
+- PRACTITIONER OPINION (useful, not evidence): Dunford, Enns, Baker.
+
+### Gaps the research could NOT fill (real holes in the plan)
+- NO evidence on the proof-asset / free-audit as a lead magnet in security buying —
+  how much to give away vs gate is unanswered.
+- NO channel-specific evidence for reaching AI-builder / security buyers (community,
+  analyst relations, talks, dark social).
+- NO evidence that a signature named framework lifts pricing beyond general credibility.
+These are the next research targets if this becomes the plan.
 
 ## Refinement log
 
