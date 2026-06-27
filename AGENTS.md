@@ -15,6 +15,7 @@
 - All actionable output follows AUDHD executive function rules (if enabled)
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 - When something fails because an LLM misinterpreted instructions, the fix must be a deterministic script or code change
+- A prompt or skill alone cannot enforce behavior. Enforcement requires a hook, script, test, validator, required check, or executable code. The `prompt-only-enforcement-guard.py` PostToolUse hook blocks prompt-only enforcement claims.
 - For any task involving more than a single file edit, state the planned approach and wait for OK
 - When fixing identified issues, fix exactly what was flagged. No scope expansion.
 - Never read or search files outside the current project directory without stating which directory and why

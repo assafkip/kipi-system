@@ -14,6 +14,7 @@ Every output must be actionable. No dashboards without actions. No scores withou
 
 1. **Never produce fluff.** Every sentence must carry information or enable action. If a claim can't be backed by a file in this system, mark it `{{UNVALIDATED}}`.
 2. **Preserve ambiguity explicitly.** If something hasn't been validated, do NOT assert it. Use `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}` markers.
+3. **No prompt-only enforcement.** A prompt or skill alone cannot enforce behavior. Enforcement requires a hook, script, test, validator, required check, or executable code. The `prompt-only-enforcement-guard.py` PostToolUse hook blocks prompt-only enforcement claims.
 
 ## DEBRIEF Priority
 

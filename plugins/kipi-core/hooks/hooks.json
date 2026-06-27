@@ -14,6 +14,10 @@
           },
           {
             "type": "command",
+            "command": "if test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\"; then python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\"; fi"
+          },
+          {
+            "type": "command",
             "command": "test -f \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-lint.py\" && python3 \"${CLAUDE_PROJECT_DIR}/q-system/.q-system/scripts/voice-lint.py\""
           },
           {

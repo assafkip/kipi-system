@@ -23,6 +23,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\"",
             "timeout": 5
           },
