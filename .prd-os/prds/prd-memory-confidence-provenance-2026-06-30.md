@@ -1,9 +1,9 @@
 ---
 id: prd-memory-confidence-provenance-2026-06-30
 title: Memory Confidence Provenance
-status: approved
+status: archived
 created_at: 2026-06-30T17:01:25Z
-updated_at: 2026-06-30T17:20:45Z
+updated_at: 2026-06-30T20:13:22Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-memory-confidence-provenance-2026-06-30-findings.jsonl
@@ -200,6 +200,7 @@ run at the gate.
 ```json
 [
   {
+    "id": "memory-confidence-f1",
     "finding_id": "finding-1",
     "title": "Trust signal reaches every reader: surfacer + direct-Read field + MEMORY.md [low-conf] marker",
     "allowed_files": [
@@ -217,6 +218,7 @@ run at the gate.
     "acceptance": "low-trust memory surfaces at SessionStart; the field is visible on any direct Read; MEMORY.md [low-conf] marker convention documented in the rule; validator blocks invalid values at write (negative self-test proves teeth)."
   },
   {
+    "id": "memory-confidence-f2",
     "finding_id": "finding-2",
     "title": "mcp-03 build-order dependency stated and enforced by the wiring test",
     "allowed_files": [
