@@ -427,6 +427,13 @@ def reset_volume_if_committed(cache):
 
 
 def main():
+    # Runtime guard (scar sp-28bf75a4): this is a Claude Code circuit breaker.
+    # Foreign runtimes that load the kipi plugins via their own marketplace clone
+    # (e.g. Codex through ~/.codex/.tmp/marketplaces/kipi) must NOT run it -- a
+    # UserPromptSubmit block fired inside `codex exec` and killed an in-repo Codex
+    # review. CLAUDECODE=1 is set only by the Claude Code runtime; absent it, no-op.
+    if not os.environ.get("CLAUDECODE"):
+        sys.exit(0)
     # Read hook input from stdin
     try:
         hook_input = json.load(sys.stdin)
