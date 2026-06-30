@@ -1,9 +1,9 @@
 ---
 id: prd-memory-confidence-provenance-2026-06-30
 title: Memory Confidence Provenance
-status: in-review
+status: approved
 created_at: 2026-06-30T17:01:25Z
-updated_at: 2026-06-30T17:07:22Z
+updated_at: 2026-06-30T17:20:45Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-memory-confidence-provenance-2026-06-30-findings.jsonl
@@ -189,42 +189,46 @@ hook — the model forgets conventions; only the hook makes it non-optional.
 
 ## Issues
 
+<!--
+Spine-native manifest: one entry per ACCEPTED finding (finding_id + allowed_files +
+required_checks + bypass_check), the contract the prd_runner approval gate enforces.
+The feature's three build units (validator / surfacer / wire+doc) map onto these two
+finding-coverage entries via allowed_files + required_checks; all three test suites
+run at the gate.
+-->
+
 ```json
 [
   {
-    "id": "mcp-01-validator",
-    "title": "PostToolUse validator: block invalid confidence/provenance on auto-memory writes",
-    "allowed_files": [
-      "q-system/.q-system/scripts/memory-confidence-validator.py",
-      "q-system/.q-system/scripts/test_memory_confidence_validator.py"
-    ],
-    "required_checks": ["python3 q-system/.q-system/scripts/test_memory_confidence_validator.py"],
-    "acceptance": "confidence 1.5 -> exit 2; provenance 'madeup' -> exit 2; valid 0.4+inferred -> exit 0; neither field -> exit 0; off-scope path -> exit 0; negative self-test proves a corrupted input fails.",
-    "priority": "p1"
-  },
-  {
-    "id": "mcp-02-surfacer",
-    "title": "SessionStart surfacer: flag low-confidence / inferred memories at recall",
+    "finding_id": "finding-1",
+    "title": "Trust signal reaches every reader: surfacer + direct-Read field + MEMORY.md [low-conf] marker",
     "allowed_files": [
       "q-system/.q-system/scripts/memory-confidence-surface.py",
-      "q-system/.q-system/scripts/test_memory_confidence_surface.py"
+      "q-system/.q-system/scripts/test_memory_confidence_surface.py",
+      "q-system/.q-system/scripts/memory-confidence-validator.py",
+      "q-system/.q-system/scripts/test_memory_confidence_validator.py",
+      ".claude/rules/memory-confidence.md"
     ],
-    "required_checks": ["python3 q-system/.q-system/scripts/test_memory_confidence_surface.py"],
-    "acceptance": "seeded memory with confidence<0.5 OR provenance in {inferred,observed} appears under a [LOW-CONF] header; field-less memory does not; always exit 0; resolves auto-memory dir outside project tree.",
-    "priority": "p1"
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/test_memory_confidence_surface.py",
+      "python3 q-system/.q-system/scripts/test_memory_confidence_validator.py"
+    ],
+    "bypass_check": "python3 q-system/.q-system/scripts/test_memory_confidence_surface.py",
+    "acceptance": "low-trust memory surfaces at SessionStart; the field is visible on any direct Read; MEMORY.md [low-conf] marker convention documented in the rule; validator blocks invalid values at write (negative self-test proves teeth)."
   },
   {
-    "id": "mcp-03-wire-and-doc",
-    "title": "Wire both hooks + author rule + register pairing",
+    "finding_id": "finding-2",
+    "title": "mcp-03 build-order dependency stated and enforced by the wiring test",
     "allowed_files": [
       ".claude/settings.json",
-      ".claude/rules/memory-confidence.md",
       ".claude/rules/skill-hook-pairing.md",
       "q-system/.q-system/scripts/test_memory_confidence_wiring.py"
     ],
-    "required_checks": ["python3 q-system/.q-system/scripts/test_memory_confidence_wiring.py"],
-    "acceptance": "settings.json contains the validator (PostToolUse) and surfacer (SessionStart) entries; both scripts exist and are executable; memory-confidence.md present with frontmatter; skill-hook-pairing.md Wired-pairings line names the new pairing.",
-    "priority": "p2"
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/test_memory_confidence_wiring.py"
+    ],
+    "bypass_check": "python3 q-system/.q-system/scripts/test_memory_confidence_wiring.py",
+    "acceptance": "wiring test asserts both scripts exist (build-order) before checking settings.json entries; dependency also stated in Resolved decisions; pairing registered."
   }
 ]
 ```
