@@ -1,9 +1,9 @@
 ---
 id: prd-spillover-gate-2026-06-20
 title: Spillover gate: no out-of-scope finding is ever silently dropped
-status: idea
+status: archived
 created_at: 2026-06-20T05:42:37Z
-updated_at: 2026-06-20T05:42:37Z
+updated_at: 2026-06-30T22:26:09Z
 owner: assafkip
 findings_path: .prd-os/findings/prd-spillover-gate-2026-06-20-findings.jsonl
 ---
@@ -110,74 +110,19 @@ relies on the operator revisiting it (the exact failure this fixes).
 
 ## Issues
 
+<!--
+LEGACY RECORD (repaired 2026-06-30, spillover sp-cd50b062): this PRD predates the
+spine-native manifest (it is id-keyed, not finding_id-keyed) and its 4 planned
+issue specs were never materialized on disk -- the spillover feature shipped
+DIRECTLY, outside the split flow. The work is live and covered by passing tests:
+  - plugins/prd-os/tests/test_spillover.py (ledger + standing gate) PASS
+  - plugins/prd-os/tests/test_deferred_spillover.py (deferred auto-creates) PASS
+  - plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py PASS
+  - .claude/rules/no-orphan-findings.md (always-on capture rule) present + propagated
+The phantom manifest is emptied so this legacy PRD can reach a terminal (archived)
+state; the feature it describes is in production.
+-->
+
 ```json
-[
-  {
-    "id": "spill-01-ledger-gate",
-    "title": "Spillover ledger + standing gate: add/list/resolve/check in prd_runner; gates run fails while any item is open",
-    "priority": "p1",
-    "allowed_files": [
-      "plugins/prd-os/scripts/prd_runner.py",
-      "plugins/prd-os/tests/test_spillover.py"
-    ],
-    "required_checks": [
-      "python3 -m pytest -q plugins/prd-os/tests/test_spillover.py",
-      "python3 -m pytest -q plugins/prd-os/tests"
-    ],
-    "bypass_check": "python3 -m pytest -q plugins/prd-os/tests/test_spillover.py",
-    "acceptance": "prd_runner.py gains `spillover add|list|resolve|check`. `add` appends an open item to .prd-os/spillover.jsonl (append-only, idempotent by id). `check` exits 1 if any item is open, 0 otherwise. `resolve <id> --resolution-ref <issue-id>` refuses unless the referenced issue is closed (close receipt or registered green gate); `--void <reason>` records a non-item without a fix. `cmd_gates` 'run' invokes the spillover check and reports RED + non-zero exit while any item is open. Reproducer (a deferred/open item turning gates run red, then green after resolve) shown failing first."
-    },
-  {
-    "id": "spill-02-deferred-feeds",
-    "title": "A deferred triage disposition auto-creates an open spillover item",
-    "priority": "p1",
-    "allowed_files": [
-      "plugins/prd-os/scripts/findings_writer.py",
-      "plugins/prd-os/tests/test_deferred_spillover.py"
-    ],
-    "required_checks": [
-      "python3 -m pytest -q plugins/prd-os/tests/test_deferred_spillover.py",
-      "python3 -m pytest -q plugins/prd-os/tests"
-    ],
-    "bypass_check": "python3 -m pytest -q plugins/prd-os/tests/test_deferred_spillover.py",
-    "acceptance": "When a finding's disposition is set to `deferred`, an open spillover item is created in .prd-os/spillover.jsonl linking back to the finding id + PRD id (idempotent: re-deferring the same finding does not duplicate). `rejected` does NOT create a spillover item. Reproducer (defer a finding, assert spillover item exists + gates run goes red) shown failing first."
-  },
-  {
-    "id": "spill-03-fable-capture",
-    "title": "fable-discipline: lint blocks deferral language with no ledger write; checklist + SKILL require capture",
-    "priority": "p1",
-    "allowed_files": [
-      "plugins/kipi-core/skills/fable-discipline/scripts/fable-discipline-lint.py",
-      "plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
-      "plugins/kipi-core/skills/fable-discipline/SKILL.md",
-      "plugins/kipi-core/skills/fable-discipline/references/checklist.md"
-    ],
-    "required_checks": [
-      "python3 plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py"
-    ],
-    "bypass_check": "python3 plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
-    "acceptance": "The fable-discipline-lint hook detects out-of-scope/deferral language about the change under work and blocks (exit 2) unless a spillover ledger entry exists or an explicit `# spillover-skip` marker is present. SKILL.md gains a capture rule; checklist.md gains a 'every out-of-scope finding written to spillover.jsonl' line. Negative self-test (deferral language with no ledger entry FAILS the lint) shown first."
-  },
-  {
-    "id": "spill-04-report-wire-docs",
-    "title": "Closeout reports spillover resolution + system impact; document + auto-fire the flow",
-    "priority": "p1",
-    "allowed_files": [
-      "plugins/prd-os/commands/prd-archive.md",
-      "plugins/prd-os/commands/prd-triage.md",
-      "plugins/prd-os/skills/prd-os/SKILL.md",
-      "plugins/prd-os/README.md",
-      "plugins/prd-os/CHANGELOG.md",
-      "plugins/prd-os/.claude-plugin/plugin.json",
-      "plugins/kipi-dsse/commands/issue-closeout.md",
-      ".claude/rules/no-orphan-findings.md"
-    ],
-    "required_checks": [
-      "python3 -m pytest -q plugins/prd-os/tests",
-      "test -f .claude/rules/no-orphan-findings.md"
-    ],
-    "bypass_check": "test -f .claude/rules/no-orphan-findings.md",
-    "acceptance": "issue-closeout + prd-archive instruct printing every spillover item touched by the work, the resolving issue, the fix, and the system impact. prd-triage documents that `deferred` creates a spillover item. prd-os SKILL.md documents the spillover lifecycle. A new ENFORCED rule `.claude/rules/no-orphan-findings.md` (auto-loaded, propagates via kipi update) makes 'capture every out-of-scope finding to spillover.jsonl' always-on. README template/feature list + CHANGELOG + plugin.json version bumped."
-  }
-]
+[]
 ```
