@@ -54,4 +54,18 @@ if [ ${#PROTECTED_CHANGED[@]} -gt 0 ]; then
     echo "These files affect all instances. Review carefully before pushing."
 fi
 
+# Derived-copy-drift guards (RCA rca-derived-copy-drift-2026-06-30):
+# a changed plugin must bump its version (else the version-keyed cache serves a
+# stale copy), and an enforcement hook must not be stranded in settings.json.
+VBUMP="$SCRIPT_DIR/q-system/.q-system/scripts/plugin-version-bump-check.py"
+if [ -f "$VBUMP" ] && ! python3 "$VBUMP" --staged; then
+    echo "[pre-commit] BLOCKED: plugin changed without a version bump (above)."
+    exit 1
+fi
+SYNC="$SCRIPT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py"
+if [ -f "$SYNC" ] && ! CLAUDE_PROJECT_DIR="$SCRIPT_DIR" python3 "$SYNC" --check; then
+    echo "[pre-commit] BLOCKED: settings.json / settings-template.json out of sync (above)."
+    exit 1
+fi
+
 echo "[pre-commit] Validation passed."

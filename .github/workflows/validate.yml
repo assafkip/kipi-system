@@ -30,6 +30,28 @@ jobs:
         env:
           CI: true
 
+      - name: Run derived-copy-drift guard tests
+        run: |
+          set -e
+          for t in \
+            test_settings_template_sync_check.py \
+            test_plugin_version_bump_check.py \
+            test_memory_confidence_validator.py \
+            test_memory_confidence_surface.py; do
+            echo "--- $t ---"
+            python3 "q-system/.q-system/scripts/$t"
+          done
+        env:
+          CI: true
+
+      - name: Plugin version-bump guard (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1 || true
+          python3 q-system/.q-system/scripts/plugin-version-bump-check.py --against origin/main
+        env:
+          CI: true
+
       - name: Check for protected file changes
         if: github.event_name == 'pull_request'
         run: |
