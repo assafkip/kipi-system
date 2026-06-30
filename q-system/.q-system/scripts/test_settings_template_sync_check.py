@@ -65,6 +65,11 @@ def main():
         build_repo(t, [prop("foo-lint.py")], [prop("foo-lint.py")])
         check("in sync -> exit 0", run_check_cli(t) == 0)
 
+    # 2b. in template, NOT settings.json -> skeleton gap -> exit 2 (sp-aa7e4995 class)
+    with tempfile.TemporaryDirectory() as t:
+        build_repo(t, [], [prop("bar-lint.py")])
+        check("in template, not settings.json -> exit 2 (skeleton gap)", run_check_cli(t) == 2)
+
     # 3. allowlisted skeleton-only (the check itself) missing from template -> exit 0
     with tempfile.TemporaryDirectory() as t:
         build_repo(t, [prop("settings-template-sync-check.py")], [])

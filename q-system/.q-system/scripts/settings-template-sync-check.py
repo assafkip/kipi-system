@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""settings-template-sync-check: catch enforcement hooks stranded in settings.json.
+"""settings-template-sync-check: catch enforcement hooks drifted between the two
+settings files (both directions).
 
 Scar (2026-06-30): `kipi update` rebuilds each instance's settings.json from
 settings-template.json ONLY. A hook wired in the skeleton's runtime
 .claude/settings.json but absent from settings-template.json ships its SCRIPT to
 the fleet (q-system/ rsyncs from git HEAD) while the SWITCH never propagates --
 it ran dead in 18/18 instances (lessons-validator, wiring-check, memory-confidence
-+ 5 lints). This check fails when a hook invoking a PROPAGATED script is present
-in .claude/settings.json but missing from settings-template.json.
++ 5 lints). The inverse also drifts: a hook in the template but not in the
+skeleton's settings.json runs dead in the skeleton's own runtime (scar sp-aa7e4995:
+memory-freshness-check + prompt-only-enforcement-guard). This check fails on either
+direction for any hook invoking a PROPAGATED script.
 
 Modes:
 - CLI / preflight (`--check`, or stdin empty): compare the repo's two settings
@@ -30,6 +33,13 @@ SKELETON_ONLY = {
     "settings-template-sync-check.py",
 }
 
+# Scripts that legitimately live ONLY in settings-template.json (fleet) and not in
+# the skeleton's own runtime settings.json. Empty by default: a hook in the
+# template but not the skeleton runs dead in the skeleton itself (scar sp-aa7e4995:
+# memory-freshness-check + prompt-only-enforcement-guard were live in the fleet but
+# dead in the skeleton). Add here only when an asymmetry is deliberate.
+FLEET_ONLY = set()
+
 # A hook "propagates" when it invokes a script under a directory kipi update
 # rsyncs into instances. Such a hook's switch MUST live in the template too.
 SCRIPT_RE = re.compile(
@@ -49,7 +59,11 @@ def scripts_in_hooks(settings):
 
 
 def find_divergence(repo_root):
-    """Sorted stranded basenames (in settings.json, not template). None = no-op."""
+    """Both drift directions. Returns (stranded, skeleton_gap) or None for no-op.
+
+    stranded     -- in settings.json, not template: ships dead to the fleet.
+    skeleton_gap -- in template, not settings.json: runs dead in the skeleton.
+    """
     sj = os.path.join(repo_root, ".claude", "settings.json")
     st = os.path.join(repo_root, "settings-template.json")
     if not os.path.isfile(st) or not os.path.isfile(sj):
@@ -59,7 +73,9 @@ def find_divergence(repo_root):
         template = scripts_in_hooks(json.load(open(st)))
     except (json.JSONDecodeError, OSError):
         return None
-    return sorted((runtime - template) - SKELETON_ONLY)
+    stranded = sorted((runtime - template) - SKELETON_ONLY)
+    skeleton_gap = sorted((template - runtime) - FLEET_ONLY)
+    return (stranded, skeleton_gap)
 
 
 def repo_root_from(path):
@@ -90,22 +106,37 @@ def main():
     else:
         root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
-    stranded = find_divergence(root)
-    if not stranded:
+    result = find_divergence(root)
+    if not result:
+        sys.exit(0)
+    stranded, skeleton_gap = result
+    if not stranded and not skeleton_gap:
         sys.exit(0)
 
-    sys.stderr.write(
-        "settings-template-sync-check: enforcement hook(s) wired in "
-        ".claude/settings.json but MISSING from settings-template.json -> they "
-        "ship DEAD to the fleet (kipi update rebuilds instance settings from the "
-        "template only):\n"
-    )
-    for s in stranded:
-        sys.stderr.write(f"  - {s}\n")
-    sys.stderr.write(
-        "Fix: add them to settings-template.json, or add to SKELETON_ONLY if "
-        "intentionally skeleton-only.\n"
-    )
+    if stranded:
+        sys.stderr.write(
+            "settings-template-sync-check: hook(s) wired in .claude/settings.json "
+            "but MISSING from settings-template.json -> they ship DEAD to the fleet "
+            "(kipi update rebuilds instance settings from the template only):\n"
+        )
+        for s in stranded:
+            sys.stderr.write(f"  - {s}\n")
+        sys.stderr.write(
+            "Fix: add to settings-template.json, or add to SKELETON_ONLY if "
+            "intentionally skeleton-only.\n"
+        )
+    if skeleton_gap:
+        sys.stderr.write(
+            "settings-template-sync-check: hook(s) in settings-template.json but "
+            "MISSING from .claude/settings.json -> they run DEAD in the skeleton's "
+            "own runtime (the fleet has them, the skeleton does not):\n"
+        )
+        for s in skeleton_gap:
+            sys.stderr.write(f"  - {s}\n")
+        sys.stderr.write(
+            "Fix: add to .claude/settings.json, or add to FLEET_ONLY if "
+            "intentionally fleet-only.\n"
+        )
     sys.exit(2)
 
 
