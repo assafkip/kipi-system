@@ -134,6 +134,24 @@ while IFS='|' read -r name path prefix itype; do
             ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
             ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
             ":(exclude)$prefix/.q-system/agent-pipeline/bus/" 2>/dev/null ) > "$SNAP/list" || true
+        # Also preserve TRACKED instance-only files the --delete would remove. The
+        # ls-files --others snapshot above only covers UNTRACKED files; a script the
+        # instance COMMITTED inside the synced tree was deleted with no protection
+        # (scar 2026-06-24: fractional-cxo income scanners died this way for 6 days).
+        # The helper flags only files the skeleton NEVER tracked (genuinely instance-
+        # added), so skeleton-intended deletions still propagate. Fail-open: a missing
+        # or erroring helper is a no-op, never breaking the update.
+        PRESERVE_SCAN="$SCRIPT_DIR/kipi-update-preserve-scan.py"
+        if [ -f "$PRESERVE_SCAN" ]; then
+          python3 "$PRESERVE_SCAN" --skeleton-archive "$ARCHIVE_TMP" \
+            --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
+            > "$SNAP/tracked" 2>"$SNAP/warn" || true
+          [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
+          if [ -s "$SNAP/tracked" ]; then
+            while IFS= read -r tf; do [ -n "$tf" ] && printf '%s\0' "$tf"; done \
+              < "$SNAP/tracked" >> "$SNAP/list"
+          fi
+        fi
         ( cd "$path" && while IFS= read -r -d '' uf; do
             mkdir -p "$SNAP/f/$(dirname "$uf")" && cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || true
           done < "$SNAP/list" )
