@@ -21,30 +21,6 @@
       "has_git": true
     },
     {
-      "name": "VC_Reachout",
-      "path": "/Users/assafkipnis/Desktop/assafs_qs/VC_Reachout",
-      "status": "merged_into_KTLYST_strategy",
-      "merged_date": "2026-03-26",
-      "merged_as": "q-ktlyst/vc-sourcing/"
-    },
-    {
-      "name": "car-research",
-      "path": "/Users/assafkipnis/Desktop/car-research",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": null,
-      "type": "direct-clone",
-      "has_git": true,
-      "note": "Clone of kipi-system remote. q-system/ IS the skeleton, not a subtree. Updates via git pull."
-    },
-    {
-      "name": "q-education",
-      "path": "/Users/assafkipnis/Desktop/q-education",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": null,
-      "type": "subtree",
-      "has_git": true
-    },
-    {
       "name": "ASK_AI_consultant",
       "path": "/Users/assafkipnis/projects/ASK_AI_consultant",
       "subtree_prefix": "q-system",

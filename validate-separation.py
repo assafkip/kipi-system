@@ -297,7 +297,10 @@ def phase_1():
 
     q_system_dir = os.path.join(SCRIPT_DIR, "q-system")
     full_sweep = 0
-    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator"}
+    # ai-index-2026-comparison: founder analysis in canonical/ that references the
+    # fleet by name on purpose; canonical/ is NOT propagated by kipi update, so the
+    # refs are instance-local (same rationale as lessons-validator/instance-registry).
+    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "ai-index-2026-comparison"}
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
