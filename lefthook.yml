@@ -36,3 +36,14 @@ pre-commit:
           echo "Rename .env.example/.env.sample/.env.template if you meant to commit an example file."
           exit 1
         fi
+
+    # Derived-copy-drift guards (RCA rca-derived-copy-drift-2026-06-30). Added to
+    # lefthook (the ACTIVE framework) rather than .githooks (which core.hooksPath
+    # does not point at) so they actually run on commit. Skeleton-only by nature.
+    plugin-version-bump:
+      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged
+      fail_text: "A changed plugin must bump its .claude-plugin/plugin.json version (else the version-keyed cache serves the stale copy)."
+
+    settings-template-sync:
+      run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
+      fail_text: "settings.json and settings-template.json are out of sync — a hook would ship dead to the fleet or run dead in the skeleton."
