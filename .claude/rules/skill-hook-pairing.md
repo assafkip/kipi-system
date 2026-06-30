@@ -24,7 +24,7 @@ Hooks block by default. Bypass per-file with an explicit marker (one per hook, n
 
 ## Wired pairings (status)
 
-founder-voice → voice-lint (+ voice-substance) · headline-engineering → headline-lint · audhd-executive-function → audhd-lint · linkedin-brand → linkedin-format-lint · rca → rca-lint (plugin hooks.json) · fable-discipline → fable-discipline-lint (plugin hooks.json; enforces test-isolation, the deterministic slice of "verify against a copy"). · lessons corpus → lessons-validator (allowlist frontmatter guard for q-system/lessons/). Correctly interpretive (no hook): research-mode, learn-from-correction, deck-ai, council, kipi-design (brand/design/ui-ux-pro-max).
+founder-voice → voice-lint (+ voice-substance) · headline-engineering → headline-lint · audhd-executive-function → audhd-lint · linkedin-brand → linkedin-format-lint · rca → rca-lint (plugin hooks.json) · fable-discipline → fable-discipline-lint (plugin hooks.json; enforces test-isolation, the deterministic slice of "verify against a copy"). · lessons corpus → lessons-validator (allowlist frontmatter guard for q-system/lessons/). · memory-confidence (rule) → memory-confidence-validator (PostToolUse: blocks out-of-range confidence / unknown provenance on auto-memory writes) + memory-confidence-surface (SessionStart: surfaces low-trust memories at recall). Correctly interpretive (no hook): research-mode, learn-from-correction, deck-ai, council, kipi-design (brand/design/ui-ux-pro-max).
 
 ## Trigger-eval pairings (advisory, not a blocking hook)
 
