@@ -90,25 +90,29 @@ When done with these questions, uncomment this section and move it to live just 
 ## Issues
 
 <!--
-After review and approval, populate the fenced JSON block below with one
-entry per atomic issue. `prd_split.py` reads this block verbatim and writes
-one issue spec per entry.
+After review and approval, populate the fenced JSON block below. The manifest is
+read by TWO consumers and every entry must satisfy both:
+  - `prd_split.py` materializes one issue spec per entry (needs `id`).
+  - the approval gate proves every ACCEPTED finding is covered by an entry (needs
+    `finding_id` + a `bypass_check`). One entry per accepted finding.
 
-Required keys per entry:
-  - id (kebab-case, unique across the repo)
+Required keys per entry (spine-native -- both consumers):
+  - id (kebab-case, unique across the repo)            -- prd_split.py
+  - finding_id (the accepted finding it covers, e.g. "finding-1") -- approval gate
   - title (non-empty string)
   - allowed_files (non-empty list of glob patterns)
-  - required_checks (non-empty list, e.g. ["pytest -q"]). The runner's
-    stop-gate checks that three receipts are marked (verified, reviewed,
-    findings_triaged). Those receipts are meaningless unless the spec
-    documents what must be verified, so an empty list is rejected.
+  - required_checks (non-empty list, e.g. ["pytest -q"]). The stop-gate checks
+    three receipts (verified, reviewed, findings_triaged); they are meaningless
+    unless the spec documents what must be verified, so an empty list is rejected.
+  - bypass_check (a command proving no bypass remains) OR
+    bypass_exempt: "<reason>"                          -- spine contract
 
 Optional keys:
   - priority (default p1)
   - disallowed_files, required_reviews, acceptance
 
-IDs must match the repo's issue naming convention and must not collide with
-existing issue specs.
+Authoring a manifest with `id` but no `finding_id` (the pre-spine shape) is
+rejected at approve. The template-vs-runner contract test enforces this list.
 -->
 
 ```json
