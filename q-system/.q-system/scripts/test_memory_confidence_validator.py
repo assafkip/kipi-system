@@ -52,6 +52,8 @@ CASES = [
     ("confidence 1.5 -> block", fm(confidence="1.5"), True, 2),
     ("provenance madeup -> block", fm(provenance="madeup"), True, 2),
     ("confidence non-numeric -> block", fm(confidence="abc"), True, 2),
+    ("confidence nan -> block", fm(confidence="nan"), True, 2),
+    ("confidence inf -> block", fm(confidence="inf"), True, 2),
     ("valid 0.4 + inferred -> pass", fm(confidence="0.4", provenance="inferred"), True, 0),
     ("confidence 0 -> pass", fm(confidence="0"), True, 0),
     ("confidence 1.0 -> pass", fm(confidence="1.0"), True, 0),

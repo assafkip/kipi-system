@@ -94,6 +94,10 @@ def main():
             conf = float(raw)
         except (TypeError, ValueError):
             block(f"confidence {raw!r} is not a number (want a float in [0.0, 1.0])")
+        # NaN fails both comparisons below, so reject it explicitly. inf is caught
+        # by the range check. (degenerate-case guard; fable-discipline)
+        if conf != conf:
+            block(f"confidence {raw!r} is NaN (want a real number in [0.0, 1.0])")
         if conf < 0.0 or conf > 1.0:
             block(f"confidence {conf} out of range [0.0, 1.0]")
 
