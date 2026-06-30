@@ -120,6 +120,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/open-loops.py\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-surface.py\" 2>/dev/null || true"
           }
         ]
       }
@@ -170,6 +174,42 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/audhd-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/audhd-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/batch-uniformity-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/batch-uniformity-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/decision-origin-tag-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/decision-origin-tag-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/format-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/format-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-validator.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linkedin-format-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linkedin-format-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\""
           }
         ]
       }
