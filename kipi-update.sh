@@ -30,6 +30,22 @@ echo "Branch: $SKELETON_BRANCH"
 [ "$DRY_RUN" = "--dry-run" ] && echo "MODE: DRY RUN (no changes)"
 echo ""
 
+# Preflight: refuse to propagate if an enforcement hook is wired in the skeleton's
+# runtime .claude/settings.json but missing from settings-template.json -- it would
+# ship its SCRIPT to the fleet while the SWITCH never propagates (instances rebuild
+# settings from the template only). Scar 2026-06-30: 8 hooks ran dead in 18/18
+# instances exactly this way (lessons-validator, wiring-check, +6).
+SYNC_CHECK="$SCRIPT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py"
+if [ -f "$SYNC_CHECK" ]; then
+  if ! CLAUDE_PROJECT_DIR="$SCRIPT_DIR" python3 "$SYNC_CHECK" --check; then
+    echo ""
+    echo "ABORT: .claude/settings.json and settings-template.json are out of sync (above)."
+    echo "Add the stranded hook(s) to settings-template.json before propagating,"
+    echo "or kipi update would ship dead enforcement to every instance."
+    exit 1
+  fi
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
