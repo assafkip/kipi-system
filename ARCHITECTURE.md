@@ -92,4 +92,8 @@ Skeleton (kipi-system)
 
 ## Key Constraint
 
-**Never put instance-specific content in `q-system/`.** The subtree is read-only from the instance's perspective. Changes go upstream through `kipi-push-upstream.sh`, not by editing files in the subtree directly.
+**Never put instance-specific content in `q-system/`.** The subtree is read-only from the instance's perspective. Changes go upstream through `kipi-push-upstream.sh`, not by editing files in the subtree directly. (Instance-specific *automation* also stays out of `q-system/` — repo-root only — because the subtree is an `rsync --delete` target. See RULE-2026-06-30-A.)
+
+## Autonomous Systems
+
+The fleet self-heals (launchd jobs + a watchdog + the updater's warn-and-preserve guard) and self-learns (a nightly loop that distills every instance's RCAs into fleet-wide lessons behind a fail-closed client-data gate). Full design, build story, and operate/verify commands: **[AUTONOMOUS-SYSTEMS.md](AUTONOMOUS-SYSTEMS.md)**. The decisions behind it are logged as RULE-2026-06-30-A..E in `q-system/canonical/decisions.md`.
