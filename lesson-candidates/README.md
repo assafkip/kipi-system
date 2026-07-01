@@ -1,26 +1,21 @@
-# lesson-candidates/ — the harvest queue (skeleton-only, NOT fanned)
+# lesson-candidates/ — the HELD queue + auto-learn ledger (skeleton-only, NOT fanned)
 
-Auto-generated drafts from `kipi lessons-harvest`. This is the ENGINE half of the cross-instance
-lessons corpus: `lessons-harvest.py` sweeps every instance's RCAs, classifies each structural cause
-into a fixed-taxonomy tag (LLM proposes, the script verifies against the allowlist), and drops a
-candidate here whenever the SAME cause-type recurred across **2+ unrelated clusters**.
+The cross-instance learning loop is autonomous: `lessons-daily.sh` (launchd, daily 06:00) distills
+every instance's new RCA into a HOW-only lesson, runs it through the fail-closed client-data gate
+(`lessons_scrub.py`), publishes the clean ones to `q-system/lessons/`, propagates to the fleet via
+`kipi update`, and Slacks a summary. The founder does nothing on the happy path.
 
-## Why this dir is here and not in q-system/lessons/
+This directory holds the two things that must stay skeleton-side:
 
-- It lives at the repo ROOT (outside `q-system/`), so `kipi update` NEVER fans it to instances.
-  Candidates carry source-instance provenance (which RCAs, which instances) — safe to keep here
-  skeleton-only, unsafe to ever ship. This is the promotion-provenance ledger the PRD deferred to v2.
-- It is git-tracked (recoverable), unlike gitignored `output/`.
+- `held-<hash>.md` — a lesson the gate could NOT clear (deterministic scrub left a client-data
+  signal, OR the LLM semantic pass flagged a residual real entity). It was NOT published. Read it,
+  scrub by hand and move to `q-system/lessons/` if worth keeping, or delete. These are the only
+  human-in-the-loop items, and they are the SAFE ones (held, never leaked).
+- `.processed.json` — the ledger of source RCAs already seen, so each learning is processed once
+  (idempotent daily runs).
 
-## What you do with a candidate
+Why here and not in q-system/: this dir is at the repo ROOT, so `kipi update` never fans it to
+instances. Held lessons + provenance stay skeleton-only by construction.
 
-A candidate is a DRAFT, not a lesson. It never becomes a lesson automatically — the confidentiality
-model requires a human-authored abstraction (never an auto-scrub of a client scar):
-
-1. `kipi lessons-harvest` (or `--dry` to preview). Candidates land here, one file per cause-type.
-2. Read the candidate + its source RCAs.
-3. Hand-write a NET-NEW, HOW-only lesson at `q-system/lessons/<id>.md` (frontmatter EXACTLY
-   `{id, kind: pattern|methodology, title, date}`). The lessons-validator gates the write.
-4. Delete the candidate. It has done its job (it found the pattern; you abstracted it).
-
-The rail (`q-system/lessons/`) fans the finished lesson read-only to all instances on the next update.
+Manual one-shot: `kipi lessons-run`. Preview without writing: `python3
+q-system/.q-system/scripts/lessons-distill.py --dry`.
