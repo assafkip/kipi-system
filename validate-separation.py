@@ -214,11 +214,11 @@ def phase_1():
     build_sched = os.path.join(SCRIPT_DIR, "q-system", "marketing", "templates", "build-schedule.py")
     check("build-schedule.py exists and is non-empty", file_exists(build_sched) and os.path.getsize(build_sched) > 0)
 
-    # No KTLYST in scripts. Exclude the lessons-validator denylist machinery
-    # (the leak-detector and its test): a denylist must name the tokens it
-    # blocks, so it legitimately contains them. Same self-reference exemption
-    # this validator grants itself in the full sweep below.
-    script_exclude = ("lessons-validator",)
+    # No KTLYST in scripts. Exclude the lessons-validator and lessons_scrub
+    # denylist machinery (the leak-detectors and their tests): a denylist must
+    # name the tokens it blocks, so it legitimately contains them. Same
+    # self-reference exemption this validator grants itself in the full sweep below.
+    script_exclude = ("lessons-validator", "lessons_scrub", "lessons-scrub")
     script_hits = 0
     for root, dirs, files in os.walk(scripts_dir):
         for f in files:
@@ -300,7 +300,16 @@ def phase_1():
     # ai-index-2026-comparison: founder analysis in canonical/ that references the
     # fleet by name on purpose; canonical/ is NOT propagated by kipi update, so the
     # refs are instance-local (same rationale as lessons-validator/instance-registry).
-    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "ai-index-2026-comparison"}
+    exclude_files = {
+        "PHASE-0-AUDIT",
+        "EXECUTION-PLAN",
+        "validate-separation",
+        "instance-registry",
+        "lessons-validator",
+        "lessons_scrub",
+        "lessons-scrub",
+        "ai-index-2026-comparison",
+    }
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
