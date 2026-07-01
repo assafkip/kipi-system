@@ -1,0 +1,97 @@
+name: AI Builds Radar
+min_entities_for_move: 2
+theme_keywords:
+  agent memory:
+    - agent memory
+    - persistent context
+    - memory layer
+  eval harnesses:
+    - eval harness
+    - benchmark eval
+    - regression eval
+  local models:
+    - local model
+    - small model
+    - on-device
+  computer use:
+    - computer use
+    - browser agent
+    - desktop agent
+    - tool calls
+    - tool use
+  new repos:
+    - open-source
+    - new repo
+    - github
+  coding agents:
+    - coding agent
+    - claude code
+    - agentic coding
+    - mcp
+    - ai agent
+    - tool-using agent
+  model releases:
+    - model release
+    - new model
+    - text-generation
+    - text-to-image
+    - image-text-to-text
+    - gemini
+    - claude sonnet
+    - claude opus
+    - claude haiku
+    - gpt
+    - qwen
+    - glm
+entities:
+  - name: GitHub Trending
+    category: repos
+    sources:
+      github:
+        - trending
+        - ai-agents
+  - name: Reddit AI Builders
+    category: community
+    sources:
+      reddit:
+        - LocalLLaMA
+        - singularity
+        - artificial
+  - name: Hacker News AI Builders
+    category: community
+    sources:
+      hacker-news:
+        - show-hn
+        - ai-agents
+  - name: Builder Thread
+    category: builder
+    sources:
+      x:
+        - ai-builders
+        - agents
+  - name: AI Research Writers
+    category: research
+    sources:
+      substack:
+        - ai-research
+      medium:
+        - ai-engineering
+      rss:
+        - simonwillison
+        - ai-lab-feeds
+  - name: AI Research Papers
+    category: research
+    sources:
+      arxiv:
+        - cs-ai
+        - cs-lg
+  - name: Hugging Face Trending
+    category: models
+    sources:
+      huggingface:
+        - trending-models
+  - name: YouTube AI Builders
+    category: video
+    sources:
+      youtube:
+        - ai-builds

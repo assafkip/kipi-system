@@ -40,15 +40,21 @@ if [ ! -d .git ]; then
   echo "  Initialized git repo"
 fi
 
-# Ensure at least one commit exists (required by git subtree add)
+# Ensure at least one commit exists
 if ! git rev-parse HEAD >/dev/null 2>&1; then
   git commit --allow-empty -m "Initial commit"
 fi
 
-# Add subtree
-echo "  Adding kipi-system subtree at $PREFIX/..."
-git subtree add --prefix="$PREFIX" "$SKELETON_REMOTE" "$SKELETON_BRANCH" --squash
-echo "  Subtree added"
+# Seed $PREFIX/ with the skeleton's q-system/ CONTENT only (same layout kipi-update.sh
+# maintains). The old `git subtree add` put the ENTIRE skeleton repo under $PREFIX/
+# (root scripts, README, plugins/, plus a nested q-system/q-system/ shadow tree that
+# included a snapshot of the skeleton's own memory/). Every instance created that way
+# carried 30-350 stale junk files the updater could never delete. Scar: fleet cleanup
+# 2026-07-01 removed the shadow trees from 18/19 instances.
+echo "  Seeding $PREFIX/ from skeleton q-system/ (git archive)..."
+mkdir -p "$PREFIX"
+git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ | tar -x --strip-components=1 -C "$PREFIX"
+echo "  Skeleton q-system content seeded"
 
 # Create instance CLAUDE.md
 if [ ! -f CLAUDE.md ]; then
@@ -74,9 +80,10 @@ echo "  Setting up .claude/ configuration..."
 mkdir -p .claude/agents .claude/output-styles .claude/rules
 cp "$SCRIPT_DIR/settings-template.json" .claude/settings.json
 
-# Fix hook paths: subtree nests the repo under q-system/, so q-system/hooks/ becomes q-system/q-system/hooks/
-sed -i '' 's|/q-system/hooks/|/q-system/q-system/hooks/|g' .claude/settings.json
-sed -i '' 's|/q-system/.q-system/|/q-system/q-system/.q-system/|g' .claude/settings.json
+# No hook-path rewriting: the archive seeding above puts skeleton q-system/ CONTENT
+# at $PREFIX/, so template paths like q-system/.q-system/scripts/X.py are already
+# correct. The old sed doubling to q-system/q-system/ matched the old subtree layout
+# and produced dead hook paths after the first kipi update flattened it.
 
 cp "$SCRIPT_DIR"/.claude/agents/*.md .claude/agents/ 2>/dev/null || true
 cp "$SCRIPT_DIR"/.claude/output-styles/*.md .claude/output-styles/ 2>/dev/null || true
@@ -89,13 +96,17 @@ if [ ! -f .mcp.json ] && [ -f "$SCRIPT_DIR/.mcp.json" ]; then
   echo "  Copied .mcp.json (set PERPLEXITY_API_KEY + other tokens in env)"
 fi
 
-# Set up plugins (copy contents, not directory, to avoid nesting)
+# Set up plugins (copy contents, not directory, to avoid nesting).
+# rsync, not cp -R: a symlinked skeleton plugin (memory-lifecycle -> standalone repo)
+# would otherwise materialize WITH its .git, leaving the instance permanently dirty
+# on plugins/<name> in git status. Mirrors kipi-update.sh.
 if [ -d "$SCRIPT_DIR/plugins" ]; then
   mkdir -p plugins
   for plugin_dir in "$SCRIPT_DIR"/plugins/*/; do
     if [ -d "$plugin_dir" ]; then
       plugin_name="$(basename "$plugin_dir")"
-      cp -R "$plugin_dir" "plugins/$plugin_name"
+      rsync -a --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
+        "$plugin_dir" "plugins/$plugin_name/"
     fi
   done
 fi
@@ -107,7 +118,7 @@ echo "  .claude/ configured with rules, agents, and plugins"
 
 # Commit only instance files (never skeleton root files like validate-separation.py, instance-registry.json, kipi-*.sh)
 git add "$PREFIX/" .claude/ plugins/ .gitignore CLAUDE.md .mcp.json 2>/dev/null || true
-git commit -m "Add kipi-system skeleton as subtree with .claude config"
+git commit -m "Seed kipi-system q-system content with .claude config"
 
 # Register in instance-registry.json
 echo "  Registering in instance-registry.json..."

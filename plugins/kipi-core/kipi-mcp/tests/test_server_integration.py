@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -79,6 +80,9 @@ EXPECTED_TOOLS = [
     "kipi_log_agent_metric",
     "kipi_agent_metrics",
     "kipi_session_handoff",
+    "kipi_linkedin_gate",
+    "kipi_linkedin_cadence_check",
+    "kipi_log_linkedin_activity",
 ]
 
 EXPECTED_RESOURCES = [
@@ -90,7 +94,7 @@ EXPECTED_RESOURCES = [
     "kipi://backups",
 ]
 
-KIPI_MCP_DIR = "/Users/ike/code/kipi-system/kipi-mcp"
+KIPI_MCP_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_server_process_starts():

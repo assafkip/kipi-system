@@ -29,16 +29,25 @@ import subprocess
 import sys
 
 # Mirror the --exclude list in kipi-update.sh exactly (relative to <prefix>/).
+# "q-system/" is NOT an rsync exclude: it is the forbidden nested shadow tree (a
+# stale skeleton copy from the old `git subtree add` creation path). Listing it
+# here stops this scanner from flagging shadow-tree files as preserve-candidates,
+# so the updater's rsync --delete can actually remove them (fleet cleanup 2026-07-01).
 EXCLUDED_PREFIXES = (
     "my-project/",
     "canonical/",
     "memory/",
     "output/",
     ".q-system/agent-pipeline/bus/",
+    "q-system/",
 )
 
 
 def is_excluded(rel):
+    # Bytecode is never a preserve-candidate, even when an instance accidentally
+    # committed it -- preserving a tracked .pyc kept it immortal across syncs.
+    if rel.endswith(".pyc") or "__pycache__" in rel:
+        return True
     return any(rel == p.rstrip("/") or rel.startswith(p) for p in EXCLUDED_PREFIXES)
 
 

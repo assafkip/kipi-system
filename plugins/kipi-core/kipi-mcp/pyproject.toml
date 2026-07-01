@@ -19,6 +19,7 @@ dev = ["pytest", "pytest-mock", "pytest-asyncio"]
 
 [project.scripts]
 kipi-mcp = "kipi_mcp.server:main"
+kipi-competitive-intel = "kipi_mcp.competitive_intel:main"
 
 [build-system]
 requires = ["hatchling"]

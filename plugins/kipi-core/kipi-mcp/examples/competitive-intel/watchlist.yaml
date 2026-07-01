@@ -1,0 +1,36 @@
+name: Beauty Competitive Set
+min_entities_for_move: 2
+theme_keywords:
+  barrier repair:
+    - barrier repair
+    - ceramide
+    - skin barrier
+  mini formats:
+    - mini size
+    - travel size
+  creator-led education:
+    - tutorial
+    - creator routine
+    - dermatologist explains
+entities:
+  - name: North Star Skin
+    category: brand
+    sources:
+      instagram:
+        - northstarskin
+      tiktok:
+        - northstarskin
+  - name: Glow Lab
+    category: brand
+    sources:
+      tiktok:
+        - glowlab
+      x:
+        - glowlab
+  - name: Retail Pulse
+    category: retailer
+    sources:
+      youtube:
+        - retailpulse
+      linkedin:
+        - retail-pulse

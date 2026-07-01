@@ -218,7 +218,7 @@ def phase_1():
     # (the leak-detector and its test): a denylist must name the tokens it
     # blocks, so it legitimately contains them. Same self-reference exemption
     # this validator grants itself in the full sweep below.
-    script_exclude = ("lessons-validator",)
+    script_exclude = ("lessons-validator", "lessons_scrub", "lessons-scrub")
     script_hits = 0
     for root, dirs, files in os.walk(scripts_dir):
         for f in files:
@@ -300,7 +300,7 @@ def phase_1():
     # ai-index-2026-comparison: founder analysis in canonical/ that references the
     # fleet by name on purpose; canonical/ is NOT propagated by kipi update, so the
     # refs are instance-local (same rationale as lessons-validator/instance-registry).
-    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "ai-index-2026-comparison"}
+    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "lessons_scrub", "lessons-scrub", "ai-index-2026-comparison"}
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
@@ -443,7 +443,8 @@ def phase_4():
     for instance in registry.get("instances", []):
         name = instance.get("name", "unknown")
         path = instance.get("path", "")
-        prefix = instance.get("subtree_prefix", "q-system")
+        # `or`, not .get default: an explicit null in the registry bypasses the default
+        prefix = instance.get("subtree_prefix") or "q-system"
         itype = instance.get("type", "subtree")
 
         # Skip archived/merged instances
@@ -451,6 +452,14 @@ def phase_4():
             print()
             print(f"  --- {name} ({itype}) ---")
             print(f"  {YELLOW}SKIP{NC} {name}: {instance['status']}")
+            continue
+
+        # Standalone repos have no skeleton subtree; nothing to validate here
+        # (a null subtree_prefix used to crash this phase on os.path.join)
+        if itype == "standalone" or not instance.get("subtree_prefix"):
+            print()
+            print(f"  --- {name} ({itype}) ---")
+            print(f"  {YELLOW}SKIP{NC} {name}: standalone (not skeleton-managed)")
             continue
 
         print()

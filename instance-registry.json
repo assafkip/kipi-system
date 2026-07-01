@@ -160,6 +160,16 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "reddit-build-radar",
+      "path": "/Users/assafkipnis/projects/reddit-build-radar",
+      "subtree_prefix": null,
+      "instance_q_dir": null,
+      "type": "standalone",
+      "has_git": true,
+      "skip_agent_check": true,
+      "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree."
     }
   ],
   "standalone": [

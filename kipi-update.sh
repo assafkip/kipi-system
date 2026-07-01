@@ -60,6 +60,16 @@ while IFS='|' read -r name path prefix itype; do
     continue
   fi
 
+  # Standalone repos have no skeleton subtree; nothing to sync and the updater
+  # must not auto-commit or rsync into them. (A null subtree_prefix used to
+  # crash the registry parser below -- keep this guard before any mutation.)
+  if [ "$itype" = "standalone" ] || [ -z "$prefix" ]; then
+    echo "  SKIP: standalone (not skeleton-managed)"
+    SKIP=$((SKIP + 1))
+    echo ""
+    continue
+  fi
+
   if [ "$DRY_RUN" != "--dry-run" ]; then
     cd "$path"
 
@@ -130,10 +140,16 @@ while IFS='|' read -r name path prefix itype; do
         # Lives inside ARCHIVE_TMP so the existing rm -rf cleans it -- no stash stack,
         # no extra cleanup, collision-safe.
         SNAP="$ARCHIVE_TMP/.snap"; mkdir -p "$SNAP/f"
+        # Excluded from preservation: bytecode junk (regenerable) and the forbidden
+        # nested $prefix/q-system/ shadow tree (a stale skeleton copy from the old
+        # `git subtree add` creation path -- folder-structure.md bans it; restoring
+        # it made the shadow tree immortal across updates).
         ( cd "$path" && git ls-files -z --others -- "$prefix/" \
             ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
             ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
-            ":(exclude)$prefix/.q-system/agent-pipeline/bus/" 2>/dev/null ) > "$SNAP/list" || true
+            ":(exclude)$prefix/.q-system/agent-pipeline/bus/" \
+            ":(exclude)$prefix/q-system/" \
+            ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list" || true
         # Also preserve TRACKED instance-only files the --delete would remove. The
         # ls-files --others snapshot above only covers UNTRACKED files; a script the
         # instance COMMITTED inside the synced tree was deleted with no protection
@@ -155,12 +171,16 @@ while IFS='|' read -r name path prefix itype; do
         ( cd "$path" && while IFS= read -r -d '' uf; do
             mkdir -p "$SNAP/f/$(dirname "$uf")" && cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || true
           done < "$SNAP/list" )
+        # Excludes are ANCHORED (leading /) to the transfer root. Unanchored
+        # patterns also matched inside the nested q-system/q-system/ shadow copy
+        # (protecting ITS memory/, canonical/, ...), so rsync could never delete
+        # the shadow tree -- "not empty, cannot delete" on every update.
         rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
-          --exclude="my-project/" \
-          --exclude="canonical/" \
-          --exclude="memory/" \
-          --exclude="output/" \
-          --exclude=".q-system/agent-pipeline/bus/" 2>/dev/null
+          --exclude="/my-project/" \
+          --exclude="/canonical/" \
+          --exclude="/memory/" \
+          --exclude="/output/" \
+          --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null
         # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
         ( cd "$path" && while IFS= read -r -d '' uf; do
             if ! { [ -e "$uf" ] || [ -L "$uf" ]; } && { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
@@ -191,8 +211,8 @@ while IFS='|' read -r name path prefix itype; do
       DRY_TMP=$(mktemp -d)
       if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$DRY_TMP" 2>/dev/null; then
         CHANGED=$(rsync -ain --delete "$DRY_TMP/q-system/" "$path/$prefix/" \
-          --exclude="my-project/" --exclude="canonical/" --exclude="memory/" \
-          --exclude="output/" --exclude=".q-system/agent-pipeline/bus/" 2>/dev/null)
+          --exclude="/my-project/" --exclude="/canonical/" --exclude="/memory/" \
+          --exclude="/output/" --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null)
         if [ -n "$CHANGED" ]; then
           echo "  Changes vs skeleton (run without --dry to apply):"
           echo "$CHANGED" | sed 's/^/    /'
@@ -294,16 +314,32 @@ print('    settings.json updated (MCP, plugins, permissions, tools, hooks preser
     cp "$SCRIPT_DIR"/.claude/output-styles/*.md "$path/.claude/output-styles/" 2>/dev/null || true
     cp "$SCRIPT_DIR"/.claude/rules/*.md "$path/.claude/rules/" 2>/dev/null || true
 
-    # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting)
+    # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).
+    # rsync instead of rm -rf + cp -R: --delete-excluded strips embedded .git dirs
+    # and bytecode from the instance copy. A symlinked skeleton plugin (e.g.
+    # memory-lifecycle -> standalone repo) used to materialize WITH its .git,
+    # leaving every instance permanently dirty on plugins/<name> in git status.
     if [ -d "$SCRIPT_DIR/plugins" ]; then
       mkdir -p "$path/plugins"
       for plugin_dir in "$SCRIPT_DIR"/plugins/*/; do
         if [ -d "$plugin_dir" ]; then
           plugin_name="$(basename "$plugin_dir")"
-          rm -rf "$path/plugins/$plugin_name"
-          cp -R "$plugin_dir" "$path/plugins/$plugin_name"
+          rsync -a --delete --delete-excluded \
+            --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
+            "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null || true
         fi
       done
+    fi
+
+    # Commit the config sync. The updater used to commit only $prefix/, leaving
+    # .claude/ and plugins/ permanently dirty in every instance repo.
+    if git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+      ( cd "$path" && \
+        git rm -r -q --cached plugins/memory-lifecycle 2>/dev/null || true; \
+        git add .claude/ plugins/ 2>/dev/null || true; \
+        if ! git diff --cached --quiet 2>/dev/null; then \
+          git commit --no-verify --no-gpg-sign -m "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" </dev/null 2>/dev/null || true; \
+        fi )
     fi
 
     echo "  Config synced"
@@ -316,7 +352,7 @@ for i in d['instances']:
     if 'status' in i and i['status'].startswith('merged'):
         continue
     t = i.get('type', 'subtree')
-    prefix = i.get('subtree_prefix', 'q-system')
+    prefix = i.get('subtree_prefix') or ''
     print(i['name'] + '|' + i['path'] + '|' + prefix + '|' + t)
 ")
 

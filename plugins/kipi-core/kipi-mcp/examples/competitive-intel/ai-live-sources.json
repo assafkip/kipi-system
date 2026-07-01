@@ -1,0 +1,86 @@
+{
+  "_source": "Adapted from /Users/assafkipnis/projects/random-stuff-ideas/gtm/scripts/podcast/sources.json",
+  "_notes": [
+    "Keyless public sources only for the first reusable workflow.",
+    "Reddit uses /.rss with a browser UA, matching the random-stuff RCA fix.",
+    "X/Apify and NotebookLM/email delivery are intentionally not included here."
+  ],
+  "pool_size": 60,
+  "sources": [
+    {
+      "enabled": true,
+      "type": "github_search",
+      "name": "github-ai-search",
+      "query": "AI agent eval harness MCP Claude Code",
+      "days_back": 14,
+      "limit": 8
+    },
+    {
+      "enabled": true,
+      "type": "hackernews",
+      "name": "hacker-news-ai",
+      "query": "Claude Code OR MCP OR AI agent OR Show HN",
+      "limit": 8
+    },
+    {
+      "enabled": true,
+      "type": "reddit_rss",
+      "name": "reddit-ai-builds",
+      "limit": 8,
+      "subreddits": ["ClaudeCode", "mcp", "ClaudeAI", "LocalLLaMA"]
+    },
+    {
+      "enabled": true,
+      "type": "x_apify",
+      "name": "x-ai-builders",
+      "twitter_handles": [
+        "bcherny",
+        "trq212",
+        "leerob",
+        "ericzakariasson",
+        "gregpr07",
+        "simonw",
+        "AnjneyMidha",
+        "AIHighlight"
+      ],
+      "days_back": 2,
+      "max_items": 80,
+      "per_author_cap": 2,
+      "limit": 8
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "simonwillison",
+      "url": "https://simonwillison.net/atom/everything/",
+      "limit": 5
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "claude-code-releases",
+      "url": "https://github.com/anthropics/claude-code/releases.atom",
+      "limit": 5
+    },
+    {
+      "enabled": true,
+      "type": "rss",
+      "name": "openhands-releases",
+      "url": "https://github.com/All-Hands-AI/OpenHands/releases.atom",
+      "limit": 5
+    },
+    {
+      "enabled": true,
+      "type": "huggingface",
+      "name": "huggingface-ai",
+      "limit": 8
+    },
+    {
+      "enabled": true,
+      "type": "arxiv",
+      "name": "arxiv-ai",
+      "query": "agent memory eval harness tool use",
+      "limit": 5
+    }
+  ]
+}

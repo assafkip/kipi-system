@@ -1,0 +1,38 @@
+[
+  {
+    "entity": "North Star Skin",
+    "source": "instagram",
+    "source_id": "ig-1",
+    "url": "https://example.com/ig-1",
+    "published_at": "2026-06-24T12:00:00Z",
+    "text": "Launching our new ceramide barrier repair serum this week.",
+    "engagement": {"likes": 842, "comments": 73}
+  },
+  {
+    "entity": "Glow Lab",
+    "source": "tiktok",
+    "source_id": "tt-1",
+    "url": "https://example.com/tt-1",
+    "published_at": "2026-06-25T12:00:00Z",
+    "text": "Creators keep asking why skin barrier routines are everywhere.",
+    "engagement": {"likes": 12800, "comments": 401}
+  },
+  {
+    "entity": "Retail Pulse",
+    "source": "youtube",
+    "source_id": "yt-1",
+    "url": "https://example.com/yt-1",
+    "published_at": "2026-06-26T12:00:00Z",
+    "text": "Retail shelf space is shifting toward barrier repair and ceramide kits.",
+    "engagement": {"views": 44000, "comments": 88}
+  },
+  {
+    "entity": "Glow Lab",
+    "source": "x",
+    "source_id": "x-1",
+    "url": "https://example.com/x-1",
+    "published_at": "2026-06-27T12:00:00Z",
+    "text": "Our travel size kit sold out after the creator routine went live.",
+    "engagement": {"likes": 340, "reposts": 42}
+  }
+]

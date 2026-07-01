@@ -1,0 +1,64 @@
+[
+  {
+    "source_name": "github-trending",
+    "record_key": "gh-agent-memory",
+    "summary": {
+      "repo": "context-labs/agent-memory",
+      "title": "Agent memory repo adds eval harness",
+      "description": "New open-source memory layer for AI agents with persistent context and benchmark evals.",
+      "url": "https://github.com/context-labs/agent-memory",
+      "published_at": "2026-06-28T10:00:00Z",
+      "stars": 1840,
+      "forks": 132
+    }
+  },
+  {
+    "source_name": "reddit-ai-builds",
+    "record_key": "rd-agent-memory",
+    "summary": {
+      "subreddit": "LocalLLaMA",
+      "title": "Agent memory is showing up in every coding-agent build",
+      "selftext": "Builders are asking for persistent context examples and eval harnesses that catch regressions.",
+      "url": "https://reddit.example/rd-agent-memory",
+      "created_at": "2026-06-28T11:00:00Z",
+      "score": 512,
+      "comments": 97
+    }
+  },
+  {
+    "source": "x-ai-builders",
+    "id": "x-browser-agent",
+    "author": "Builder Thread",
+    "text": "Seeing a wave of browser agent and computer use demos, but the good ones ship regression evals.",
+    "url": "https://x.example/x-browser-agent",
+    "published_at": "2026-06-28T12:00:00Z",
+    "engagement": {
+      "likes": 900,
+      "reposts": 141
+    }
+  },
+  {
+    "source_name": "substack-ai-research",
+    "record_key": "ss-local-models",
+    "summary": {
+      "author": "AI Research Writers",
+      "title": "Small local model capability jumps are changing agent architecture",
+      "description": "The new repo pattern is local model routing plus persistent context.",
+      "url": "https://substack.example/local-model-agents",
+      "published_at": "2026-06-29T09:00:00Z"
+    }
+  },
+  {
+    "source_name": "youtube-ai-builds",
+    "record_key": "yt-computer-use",
+    "summary": {
+      "author": "YouTube AI Builders",
+      "title": "Building a desktop agent with computer use",
+      "description": "The build combines browser agent control, local model fallback, and regression evals.",
+      "url": "https://youtube.example/computer-use-build",
+      "published_at": "2026-06-29T16:00:00Z",
+      "views": 88000,
+      "comments": 320
+    }
+  }
+]
