@@ -18,6 +18,7 @@ usage() {
   echo "  kipi cluster add <path> <name> <role>  Plug an instance into the KTLYST cluster"
   echo "  kipi cluster sync    Re-run all bridge writers (push latest state to all instances)"
   echo "  kipi list            Show all registered projects"
+  echo "  kipi lessons-harvest [--dry]  Scan fleet RCAs; queue cross-instance lesson candidates"
   echo "  kipi home            Print the skeleton path"
   echo ""
 }
@@ -96,6 +97,10 @@ if d.get('excluded'):
     for e in d['excluded']:
         print(f\"  {e['name']:20s} {e.get('reason', '')}\")
 "
+    ;;
+  lessons-harvest)
+    shift || true
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/lessons-harvest.py" "$@"
     ;;
   home)
     echo "$KIPI_HOME"

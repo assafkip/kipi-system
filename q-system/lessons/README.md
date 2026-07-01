@@ -21,6 +21,10 @@ Instances RECEIVE lessons (read-only) via `kipi update`. They never author, edit
 
 To add a lesson, create `q-system/lessons/<id>.md` with frontmatter `id` / `kind` / `title` / `date` and a HOW-only body. Copy `single-writer-chokepoint.md` as a template. Only the founder authors lessons, here in the skeleton; instances receive them read-only.
 
+## Finding what to write (the harvest engine)
+
+`kipi lessons-harvest` finds candidates FOR you so the corpus fills itself. It sweeps every instance's RCAs, classifies each structural cause into a fixed-taxonomy tag (`lessons-harvest.py`), and queues a candidate in repo-root `lesson-candidates/` whenever the same cause-type recurred across **2+ unrelated clusters** (the cross-cluster recurrence IS the de-identification). Candidates are DRAFTS with skeleton-only provenance; they never auto-publish. You read the candidate, hand-author the HOW-only lesson here, then delete the candidate. This is the capture -> synthesize -> promote loop (claudesidian's model, adapted to kipi's confidentiality: the write-back stays human). Run `kipi lessons-harvest --dry` to preview.
+
 ## Frontmatter (exactly these keys)
 
 ```yaml
