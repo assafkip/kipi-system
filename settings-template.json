@@ -210,6 +210,11 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\""
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; fi",
+            "timeout": 5
           }
         ]
       }

@@ -38,7 +38,9 @@ SKELETON_ONLY = {
 # template but not the skeleton runs dead in the skeleton itself (scar sp-aa7e4995:
 # memory-freshness-check + prompt-only-enforcement-guard were live in the fleet but
 # dead in the skeleton). Add here only when an asymmetry is deliberate.
-FLEET_ONLY = set()
+# Hooks that intentionally run ONLY on instances (the skeleton self-detects and no-ops),
+# so they belong in settings-template.json but NOT in the skeleton's own .claude/settings.json.
+FLEET_ONLY = {"instance-automation-guard.py"}
 
 # A hook "propagates" when it invokes a script under a directory kipi update
 # rsyncs into instances. Such a hook's switch MUST live in the template too.
