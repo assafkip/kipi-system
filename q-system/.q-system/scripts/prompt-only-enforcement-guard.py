@@ -265,7 +265,10 @@ def main(argv: list[str]) -> int:
             "validator, required check, or executable code.\n"
             + "\n".join(findings)
         )
-        print(json.dumps({"message": message}))
+        # stderr, plain text: on exit 2 Claude Code feeds ONLY stderr back to
+        # the model. The old json-to-stdout form surfaced every block as
+        # "No stderr output" — a reasonless wall (sp-cd530cc7, 2026-07-02).
+        print(message, file=sys.stderr)
         return 2
 
     return 0
