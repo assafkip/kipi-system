@@ -332,8 +332,18 @@ def block(message):
 
 
 def warn(message):
-    """Output warning as JSON additionalContext (doesn't block)."""
-    print(json.dumps({"additionalContext": message}))
+    """Output warning as PreToolUse additionalContext (doesn't block). Must be
+    nested under hookSpecificOutput with hookEventName — a top-level
+    additionalContext key is silently ignored by Claude Code, which left every
+    warning tier invisible until 2026-07-02 (the guard jumped from zero
+    feedback straight to exit-2 blocks). warn() is only called from the
+    PreToolUse path; UserPromptSubmit and PostToolUse exit before the checks."""
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message,
+        }
+    }))
     sys.exit(0)
 
 

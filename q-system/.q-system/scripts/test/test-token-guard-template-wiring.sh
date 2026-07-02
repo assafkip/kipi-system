@@ -12,16 +12,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 TEMPLATE="$REPO_ROOT/settings-template.json"
 
 # 1) Pull every token-guard hook command out of the template (json-aware, no grep guessing).
-# Lines are "event<TAB>command" so the test also locks WHICH events carry the
-# wiring (Codex finding 2026-07-02: command-only extraction would pass with
-# both wirings moved to the wrong event).
+# Lines are "event<TAB>matcher<TAB>command" so the test also locks WHICH events
+# (and, for PostToolUse, which tools) carry the wiring (Codex finding
+# 2026-07-02: command-only extraction would pass with both wirings moved to the
+# wrong event; hooks-review 2026-07-02: the PostToolUse leg — successful-edit
+# spiral reset + commit reset — was wired NOWHERE, dead code since March).
 # macOS ships bash 3.2: no mapfile, so read-loop into the arrays
-COMMANDS=()
-EVENTS=""
-while IFS=$'\t' read -r _event _cmd; do
-  COMMANDS+=("$_cmd")
-  EVENTS="$EVENTS $_event"
-done < <(python3 - "$TEMPLATE" <<'EOF'
+extract_wirings() { # $1 = settings file; prints event\tmatcher\tcommand
+  python3 - "$1" <<'EOF'
 import json, sys
 hooks = json.load(open(sys.argv[1]))["hooks"]
 for event, groups in hooks.items():
@@ -29,19 +27,48 @@ for event, groups in hooks.items():
         for h in g.get("hooks", []):
             cmd = h.get("command", "")
             if "token-guard.py" in cmd:
-                print(f"{event}\t{cmd}")
+                # empty matcher prints as "-": tab is IFS whitespace, so bash
+                # `read` collapses "\t\t" and would shift cmd into the matcher field
+                print(f"{event}\t{g.get('matcher') or '-'}\t{cmd}")
 EOF
-)
+}
 
-[ "${#COMMANDS[@]}" -ge 2 ] || { echo "FAIL: expected >=2 token-guard wirings in template, found ${#COMMANDS[@]}"; exit 1; }
-case "$EVENTS" in
-  *UserPromptSubmit*) :;;
-  *) echo "FAIL: no token-guard wiring on UserPromptSubmit (found:$EVENTS)"; exit 1;;
-esac
-case "$EVENTS" in
-  *PreToolUse*) :;;
-  *) echo "FAIL: no token-guard wiring on PreToolUse (found:$EVENTS)"; exit 1;;
-esac
+# Both settings files must carry all three wirings: the template feeds the
+# fleet, the skeleton's own settings.json is its runtime (sync-scar 2026-06-30).
+check_events() { # $1 = label, $2 = extracted lines
+  local label="$1" lines="$2" events="" post_matcher=""
+  while IFS=$'\t' read -r _event _matcher _cmd; do
+    [ -n "$_event" ] || continue
+    events="$events $_event"
+    [ "$_event" = "PostToolUse" ] && post_matcher="$_matcher"
+  done <<< "$lines"
+  for required in UserPromptSubmit PreToolUse PostToolUse; do
+    case "$events" in
+      *"$required"*) :;;
+      *) echo "FAIL($label): no token-guard wiring on $required (found:$events)"; exit 1;;
+    esac
+  done
+  # The PostToolUse leg needs Edit/Write (spiral reset) AND Bash (commit reset)
+  for tool in Edit Write Bash; do
+    case "$post_matcher" in
+      *"$tool"*) :;;
+      *) echo "FAIL($label): PostToolUse token-guard matcher '$post_matcher' missing $tool"; exit 1;;
+    esac
+  done
+}
+
+check_events "template" "$(extract_wirings "$TEMPLATE")"
+check_events "skeleton" "$(extract_wirings "$REPO_ROOT/.claude/settings.json")"
+
+COMMANDS=()
+EVENTS=""
+while IFS=$'\t' read -r _event _matcher _cmd; do
+  [ -n "$_cmd" ] || continue
+  COMMANDS+=("$_cmd")
+  EVENTS="$EVENTS $_event"
+done <<< "$(extract_wirings "$TEMPLATE")"
+
+[ "${#COMMANDS[@]}" -ge 3 ] || { echo "FAIL: expected >=3 token-guard wirings in template, found ${#COMMANDS[@]}"; exit 1; }
 
 # 2) Static: the swallow form is banned
 for cmd in "${COMMANDS[@]}"; do
