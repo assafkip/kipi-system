@@ -8,7 +8,16 @@ matches every file Claude will ever read. The script must count these as always-
 not conditional. A naive has_paths_frontmatter() check would misclassify them.
 
 Exits non-zero if budget exceeded.
+
+--ratchet (the commit-time mode, wired in lefthook.yml pre-commit): the 300-line
+target was already 214 lines underwater when the hook was resurrected from a dead
+pre-commit.old backup (2026-07-02, spillover sp-b417481b), so an absolute block
+would freeze all commits. Ratchet mode blocks only REGRESSION against the
+committed baseline (instruction-budget-baseline.json) and auto-tightens the
+baseline when the total shrinks. CLAUDE.md's own 200-line cap stays absolute
+(it passes today). The 514->300 trim is tracked as its own spillover item.
 """
+import json
 import os
 import re
 import sys
@@ -103,6 +112,57 @@ def resolve_imports(path):
     return total
 
 
+BASELINE_PATH = os.path.join(QROOT, ".q-system", "instruction-budget-baseline.json")
+
+
+def read_baseline():
+    if not os.path.exists(BASELINE_PATH):
+        return None
+    with open(BASELINE_PATH) as f:
+        return json.load(f)
+
+
+def write_baseline(total):
+    with open(BASELINE_PATH, "w") as f:
+        json.dump({"total_always_on": total}, f, indent=2)
+        f.write("\n")
+
+
+def run_ratchet(claude_md_lines, total):
+    """Regression gate: block growth of the always-on total; tighten on shrink."""
+    if claude_md_lines > BUDGET_CLAUDE_MD:
+        print(
+            f"RATCHET FAIL: CLAUDE.md {claude_md_lines} > {BUDGET_CLAUDE_MD} (absolute cap)"
+        )
+        return 1
+
+    baseline = read_baseline()
+    if baseline is None:
+        write_baseline(total)
+        print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
+        return 0
+
+    allowed = baseline["total_always_on"]
+    if total > allowed:
+        print(
+            f"RATCHET FAIL: always-on total grew {allowed} -> {total} "
+            f"(+{total - allowed}). Trim what you added, or move a rule to "
+            f"paths-scoped. Target remains {BUDGET_TOTAL_ALWAYS_ON}."
+        )
+        return 1
+
+    if total < allowed:
+        write_baseline(total)
+        print(
+            f"RATCHET: tightened baseline {allowed} -> {total} "
+            f"(target {BUDGET_TOTAL_ALWAYS_ON}). Stage {BASELINE_PATH} with this commit."
+        )
+        return 0
+
+    print(f"RATCHET PASS: always-on total {total} (baseline {allowed}, target {BUDGET_TOTAL_ALWAYS_ON})")
+    return 0
+
+
 def main():
     claude_md = os.path.join(PROJECT_ROOT, "CLAUDE.md")
     rules_dir = os.path.join(PROJECT_ROOT, ".claude", "rules")
@@ -124,6 +184,9 @@ def main():
             conditional_files.append((f, lines))
 
     total = claude_md_lines + always_on_rules
+
+    if "--ratchet" in sys.argv:
+        sys.exit(run_ratchet(claude_md_lines, total))
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")
     print(f"Always-on rules ({len(always_on_files)} files):")

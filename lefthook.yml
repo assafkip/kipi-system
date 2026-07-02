@@ -48,6 +48,14 @@ pre-commit:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
       fail_text: "settings.json and settings-template.json are out of sync — a hook would ship dead to the fleet or run dead in the skeleton."
 
+    # Resurrected from a dead .git/hooks/pre-commit.old backup (sp-b417481b).
+    # Ratchet, not absolute: the 300-line target was 214 under water when revived,
+    # so this gates REGRESSION of the always-on total (baseline auto-tightens).
+    # The 514->300 trim is its own spillover item.
+    instruction-budget:
+      run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
+      fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."
+
 post-commit:
   commands:
     # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).
