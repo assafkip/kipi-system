@@ -41,7 +41,7 @@ Every retry attempt logs to `output/morning-log-YYYY-MM-DD.json` with `phase`, `
 
 # Agent Pipeline
 
-Read `.q-system/agent-pipeline/agents/step-orchestrator.md` for the full phase plan. Agents communicate through JSON files in `bus/{date}/`, not context. Model allocation: Haiku for data pulls, scrapes, and simple writes. Sonnet for analysis/content. Opus for engagement hitlist and synthesis only.
+Read `.q-system/agent-pipeline/agents/step-orchestrator.md` for the full phase plan. Agents communicate through JSON files in `bus/{date}/`, not context. Model allocation: see `.claude/rules/model-allocation.md` (single source; validated by `kipi check`).
 
 **Full post text rule (ENFORCED):** Agents reading social posts MUST save actual post text, not summaries.
 

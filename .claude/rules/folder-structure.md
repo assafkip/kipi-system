@@ -63,12 +63,12 @@ kipi-system/                          # Project root (skeleton/template repo + m
 │   ├── settings.json                 # Shared settings (committed)
 │   ├── settings.local.json           # Personal overrides (GITIGNORED)
 │   │
-│   ├── agents/                       # Custom agent definitions
-│   │   ├── preflight.md              # Haiku - pipeline gate-keeper
-│   │   ├── data-ingest.md            # Haiku - calendar/email/CRM pulls
-│   │   ├── engagement-hitlist.md     # Opus - copy-paste engagement actions
-│   │   ├── synthesizer.md            # Opus - daily schedule assembly
-│   │   └── content-reviewer.md       # Sonnet - 4-pass content review
+│   ├── agents/                       # Custom agent definitions (model tiers: model-allocation.md)
+│   │   ├── preflight.md              # pipeline gate-keeper
+│   │   ├── data-ingest.md            # calendar/email/CRM pulls
+│   │   ├── engagement-hitlist.md     # copy-paste engagement actions
+│   │   ├── synthesizer.md            # daily schedule assembly
+│   │   └── content-reviewer.md       # 4-pass content review
 │   │
 │   ├── output-styles/                # Custom output styles
 │   │   └── founder.md                # Entrepreneur OS voice baseline
