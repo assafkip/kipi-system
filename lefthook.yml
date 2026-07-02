@@ -47,3 +47,17 @@ pre-commit:
     settings-template-sync:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
       fail_text: "settings.json and settings-template.json are out of sync — a hook would ship dead to the fleet or run dead in the skeleton."
+
+post-commit:
+  commands:
+    # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).
+    # Any commit touching that data re-syncs the tool so it never drifts from the
+    # source of truth. Founder-picked mechanism 2026-07-02 (vs kipi-update / CI).
+    # Silent no-op when the commit didn't touch the data or cheapcheck is absent.
+    cheapcheck-design-sync:
+      run: |
+        git diff-tree --no-commit-id --name-only -r HEAD \
+          | grep -q '^plugins/kipi-design/skills/ui-ux-pro-max/data/' || exit 0
+        SYNC="$HOME/projects/cheapcheck/q-design/sync-from-kipi.sh"
+        [ -x "$SYNC" ] || { echo "cheapcheck-design-sync: sync script missing, skipped"; exit 0; }
+        bash "$SYNC"
