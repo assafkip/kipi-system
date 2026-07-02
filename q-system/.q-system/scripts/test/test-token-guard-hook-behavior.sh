@@ -93,4 +93,87 @@ assert cache.get("edit_targets", {}).get("/tmp/some-file.py") == 2, \
 EOF
 echo "ok: PostToolUse failed Edit keeps the spiral counter"
 
-echo "PASS: token-guard hook behavior (warn shape + PostToolUse edit reset)"
+# --- 4) A guard-BLOCKED attempt must not escalate into a false exact-retry ---
+# Scar 3 (2026-07-02, Pure_spectrum_Q/qep_agent): at the 50-call volume ceiling,
+# each blocked Edit still incremented repeat_map; the 3rd blocked retry was
+# reported as "attempted this exact call 3 times" for a call that executed
+# ZERO times (exact-retry outranks volume in check order). Blocked attempts
+# must be un-counted so the block reason stays the true one.
+python3 - "$CACHE" "$SESSION" <<'EOF'
+import json, sys, time
+cache = {
+    "actor_key": sys.argv[2],
+    "tool_calls_since_user": 50,
+    "agent_calls_since_user": 0,
+    "mcp_timestamps": [],
+    "repeat_map": {},
+    "consecutive_reads": 0,
+    "warnings_issued": 1,
+    "file_read_counts": {},
+    "greps_since_write": 0,
+    "edit_targets": {},
+    "agents_without_write": 0,
+    "last_write_time": time.time(),
+    "calls_since_write": 1,
+    "last_volume_reset": time.time(),
+}
+json.dump(cache, open(sys.argv[1], "w"))
+EOF
+
+CEILING_EDIT="{\"session_id\": \"$SESSION\", \"hook_event_name\": \"PreToolUse\", \"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/deadlock-probe.py\", \"old_string\": \"a\", \"new_string\": \"b\"}}"
+for attempt in 1 2 3; do
+  set +e
+  ERR="$(printf '%s' "$CEILING_EDIT" | CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD" 2>&1 >/dev/null)"
+  CODE=$?
+  set -e
+  [ "$CODE" -eq 2 ] || { echo "FAIL: ceiling attempt $attempt exited $CODE, want 2"; exit 1; }
+  case "$ERR" in
+    *"attempted this exact call"*)
+      echo "FAIL: attempt $attempt escalated to false exact-retry: $ERR"; exit 1;;
+    *"tool calls"*) ;;
+    *) echo "FAIL: attempt $attempt lost the volume message: $ERR"; exit 1;;
+  esac
+done
+python3 - "$CACHE" <<'EOF'
+import json, sys
+cache = json.load(open(sys.argv[1]))
+repeats = [v for v in cache.get("repeat_map", {}).values() if v > 0]
+assert not repeats, f"blocked attempts leaked into repeat_map: {cache.get('repeat_map')}"
+assert cache.get("edit_targets", {}).get("/tmp/deadlock-probe.py", 0) == 0, \
+    f"blocked attempts leaked into edit_targets: {cache.get('edit_targets')}"
+EOF
+echo "ok: guard-blocked attempts stay volume-blocked and are un-counted"
+
+# --- 5) The volume block must name the commit escape hatch ---
+# Same scar: git commit is exempt and resets the ceiling, but the old message
+# only said "Stop. Summarize." — so the model retried edits into the deadlock
+# instead of committing its 4 finished edits.
+case "$ERR" in
+  *commit*) echo "ok: volume block names the commit escape hatch";;
+  *) echo "FAIL: volume block message does not mention commit: $ERR"; exit 1;;
+esac
+
+# --- 6) Exact-retry still fires for identical calls that PASS the guard ---
+python3 - "$CACHE" "$SESSION" <<'EOF'
+import json, sys, time
+cache = json.load(open(sys.argv[1]))
+cache.update(tool_calls_since_user=1, repeat_map={}, edit_targets={},
+             warnings_issued=0, last_volume_reset=time.time())
+json.dump(cache, open(sys.argv[1], "w"))
+EOF
+REAL_RETRY="{\"session_id\": \"$SESSION\", \"hook_event_name\": \"PreToolUse\", \"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"pytest tests/flaky\"}}"
+for attempt in 1 2; do
+  printf '%s' "$REAL_RETRY" | CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD" >/dev/null \
+    || { echo "FAIL: allowed attempt $attempt was blocked"; exit 1; }
+done
+set +e
+ERR="$(printf '%s' "$REAL_RETRY" | CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD" 2>&1 >/dev/null)"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || { echo "FAIL: 3rd executed identical call exited $CODE, want 2"; exit 1; }
+case "$ERR" in
+  *"attempted this exact call"*) echo "ok: exact-retry still fires for executed identical calls";;
+  *) echo "FAIL: 3rd executed identical call blocked with wrong reason: $ERR"; exit 1;;
+esac
+
+echo "PASS: token-guard hook behavior (warn shape + PostToolUse edit reset + blocked-attempt un-count)"
