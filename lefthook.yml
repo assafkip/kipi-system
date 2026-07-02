@@ -5,7 +5,16 @@ pre-commit:
   parallel: true
   commands:
     gitleaks:
-      run: gitleaks protect --staged --redact --no-banner
+      # ~/.gitleaks.toml extends the defaults with kipi-specific rules (ntn_ etc.).
+      # It used to ride a hand-chained .git/hooks/pre-commit; when lefthook took
+      # the hook back (2026-07-02) the custom config had to move here or be lost.
+      run: |
+        CFG="$HOME/.gitleaks.toml"
+        if [ -f "$CFG" ]; then
+          gitleaks protect --staged --redact --no-banner --config="$CFG"
+        else
+          gitleaks protect --staged --redact --no-banner
+        fi
       fail_text: "Secret detected. Run 'gitleaks protect --staged -v' for details."
 
     large-files:
