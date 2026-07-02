@@ -1,9 +1,9 @@
 ---
 id: prd-prompt-only-guard-stderr-2026-07-02
 title: Prompt Only Guard Stderr
-status: approved
+status: archived
 created_at: 2026-07-02T23:13:41Z
-updated_at: 2026-07-02T23:16:39Z
+updated_at: 2026-07-02T23:20:51Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-prompt-only-guard-stderr-2026-07-02-findings.jsonl
