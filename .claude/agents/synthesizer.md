@@ -1,6 +1,6 @@
 ---
 name: synthesizer
-model: claude-opus-4-6
+model: claude-opus-4-8
 description: "Build daily schedule HTML from all pipeline bus data."
 allowed-tools: "Read Grep Write Bash(python3:*)"
 effort: max

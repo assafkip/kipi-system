@@ -1,6 +1,6 @@
 ---
 name: engagement-hitlist
-model: claude-opus-4-6
+model: claude-opus-4-8
 description: "Generate ranked, copy-paste-ready engagement actions from pipeline data."
 allowed-tools: "Read Grep"
 effort: max

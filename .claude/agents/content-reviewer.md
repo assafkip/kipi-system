@@ -1,6 +1,6 @@
 ---
 name: content-reviewer
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: "Review content for voice, guardrails, anti-AI patterns, and actionability."
 allowed-tools: "Read Grep"
 skills:
