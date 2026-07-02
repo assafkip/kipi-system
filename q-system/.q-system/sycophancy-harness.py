@@ -579,6 +579,20 @@ if __name__ == "__main__":
     date_arg = sys.argv[1]
     json_flag = "--json" in sys.argv
 
+    if date_arg == "--standalone":
+        decisions_arg = None
+        if "--decisions" in sys.argv:
+            idx = sys.argv.index("--decisions")
+            if idx + 1 >= len(sys.argv):
+                print("ERROR: --decisions requires a path argument")
+                sys.exit(2)
+            decisions_arg = sys.argv[idx + 1]
+        try:
+            sys.exit(run_standalone(decisions_arg, json_output=json_flag))
+        except Exception as e:
+            print(f"ERROR: {e}")
+            sys.exit(2)
+
     try:
         datetime.strptime(date_arg, '%Y-%m-%d')
     except ValueError:

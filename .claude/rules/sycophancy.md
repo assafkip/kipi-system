@@ -1,33 +1,32 @@
 ---
-description: Sycophancy awareness and decision origin tagging
+description: Sycophancy enforcement wiring for kipi instances
 paths:
   - "q-system/.q-system/agent-pipeline/**"
   - "q-system/canonical/decisions.md"
   - "q-system/output/**"
 ---
 
-# Sycophancy Awareness (ENFORCED)
+# Sycophancy (ENFORCED by wired scripts)
 
-This system is structurally sycophantic. RLHF training creates an incentive to validate the founder's beliefs. Research proves this causes belief drift even in ideal Bayesian reasoners (Chandra et al. 2026, arXiv:2602.19141).
+The behavioral rules, the origin-tag vocabulary, and the pi metric live in
+`sycophancy-core.md` — the portable core, safe to ship to systems that have no
+kipi pipeline (huntkit gets that file, not this one). This file is the kipi
+enforcement wiring:
 
-**Rules:**
-1. When the sycophancy audit agent runs (Phase 6), its output is verified by `sycophancy-harness.py`. If the harness disagrees, the harness wins.
-2. If `sycophancy-audit.json` shows `overall: "alert"`, the synthesizer MUST surface it as a dedicated section, not an FYI line.
-3. Contradicting signals are the most valuable data. Never filter them out, soften them, or bury them.
-4. A belief that has only been confirmed and never challenged is suspect, not validated.
-5. The founder's rubber-stamping is structural, not personal. Never shame. Frame as "the system might be filtering."
-6. Residual risk is permanent. Periodic conversations with people who disagree is the only true fix.
+- **Write-time:** the `decision-origin-tag-lint.py` PostToolUse hook blocks an
+  untagged decision written to `canonical/decisions.md`.
+- **Any time:** `python3 q-system/.q-system/sycophancy-harness.py --standalone`
+  recomputes pi from the decision log alone — no pipeline artifacts needed.
+  Exit 1 when pi >= 0.7 with >= 5 tagged assistant-recommended decisions.
+- **Monthly:** the `sycophancy-monthly-check.py` SessionStart hook script runs
+  the standalone check on the first session of each month and surfaces the
+  verdict. This is the deterministic form of core's "review it monthly" line.
+- **Morning pipeline:** the Phase-6 audit agent and its verification rules live
+  in `morning-pipeline.md`.
 
-# Decision Origin Tagging (ENFORCED)
+## Scar
 
-Every decision logged to `canonical/decisions.md` MUST include an origin tag:
-- `[USER-DIRECTED]` - founder explicitly made this decision
-- `[CLAUDE-RECOMMENDED -> APPROVED]` - Claude suggested, founder approved
-- `[CLAUDE-RECOMMENDED -> MODIFIED]` - Claude suggested, founder changed it
-- `[CLAUDE-RECOMMENDED -> REJECTED]` - Claude suggested, founder rejected
-- `[SYSTEM-INFERRED]` - Claude made this autonomously based on existing rules
-- `[COUNCIL-DEBATED]` - Council skill invoked; includes convergence/dissent summary
-
-Monthly audit on the 1st: check if >60% are rubber-stamped approvals.
-
-The sycophancy audit agent calculates pi = approved / (approved + modified + rejected). If pi >= 0.7, high sycophancy risk. The harness (`sycophancy-harness.py`) independently verifies this.
+2026-07-01: the pi check only ever executed inside /q-morning, gated on a bus
+artifact. An instance ran at pi~=0.88 — past the 0.7 alert line — and nothing
+could notice, because that instance never runs the morning pipeline. Hence the
+standalone mode and the monthly hook.
