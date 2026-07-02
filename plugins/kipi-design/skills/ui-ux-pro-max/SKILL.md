@@ -72,6 +72,7 @@ Read these files for detailed rules, workflow instructions, and checklists:
 | `references/workflow.md` | How to use the search CLI, prerequisites, step-by-step workflow (Steps 1-4), domain/stack reference tables |
 | `references/examples.md` | Complete example workflow (AI search homepage) |
 | `references/checklist.md` | Output formats, query tips, common sticking points, professional UI rules (icons, interaction, light/dark mode, layout/spacing), and pre-delivery checklist |
+| `references/animated-backgrounds.md` | Effect → free repo map for animated hero/background components (aurora, meteors, constellations, liquid) and the scroll-scrub cinematic hero technique |
 
 ### Also available (from ui-styling merge)
 

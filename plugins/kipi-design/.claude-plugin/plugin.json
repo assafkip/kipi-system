@@ -1,8 +1,11 @@
 {
   "name": "kipi-design",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Brand, UI/UX, and design skills",
-  "author": { "name": "Assaf Kipnis", "email": "[REDACTED]" },
+  "author": {
+    "name": "Assaf Kipnis",
+    "email": "[REDACTED]"
+  },
   "repository": "https://github.com/assafkip/kipi-system",
   "license": "MIT",
   "skills": "./skills/"
