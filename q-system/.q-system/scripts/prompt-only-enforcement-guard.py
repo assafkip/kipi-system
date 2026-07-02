@@ -195,10 +195,32 @@ def _strip_code_fences(text: str) -> str:
     return CODE_FENCE_RE.sub("", text)
 
 
-def _window(lines: list[str], index: int, radius: int = 2) -> str:
+TRIGGER_RADIUS = 2
+# Docs name their executable blocker a few lines from the claim-shaped
+# sentence; reading the suppressors through the same +/-2 window as the
+# triggers flagged 11 lines of the guard's own PRD (sp-edf9395d, 2026-07-02).
+SUPPRESSOR_RADIUS = 6
+
+
+def _window(lines: list[str], index: int, radius: int = TRIGGER_RADIUS) -> str:
     start = max(0, index - radius)
     end = min(len(lines), index + radius + 1)
     return "\n".join(lines[start:end]).lower()
+
+
+def _frontmatter_end(lines: list[str]) -> int:
+    """Index of the closing '---' of leading YAML frontmatter, else -1.
+
+    Frontmatter keys describe the doc, they do not claim enforcement; a
+    title like "Prompt Only Guard Stderr" matches subject "prompt" +
+    action "guard" and produced pure-metadata flags (sp-edf9395d).
+    """
+    if not lines or lines[0].strip() != "---":
+        return -1
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return index
+    return -1
 
 
 def _has_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -214,12 +236,14 @@ def _is_negated_prompt_only_warning(text: str) -> bool:
     )
 
 
-def _is_violation(window_text: str) -> bool:
-    if GUARD_FILENAME in window_text:
+def _is_violation(window_text: str, suppressor_text: str) -> bool:
+    # Blocker suppressors read the wider window. Negation stays on the
+    # narrow one: a "must not" six lines away must not mask a real claim.
+    if GUARD_FILENAME in suppressor_text:
+        return False
+    if DETERMINISTIC_RE.search(suppressor_text):
         return False
     if _is_negated_prompt_only_warning(window_text):
-        return False
-    if DETERMINISTIC_RE.search(window_text):
         return False
     return bool(
         SUBJECT_ENFORCES_RE.search(window_text)
@@ -241,12 +265,16 @@ def scan(path: Path) -> list[str]:
 
     text = _strip_code_fences(text)
     lines = text.splitlines()
+    frontmatter_end = _frontmatter_end(lines)
     findings: list[str] = []
     for index, line in enumerate(lines):
+        if index <= frontmatter_end:
+            continue
         if not line.strip():
             continue
         window_text = _window(lines, index)
-        if _is_violation(window_text):
+        suppressor_text = _window(lines, index, radius=SUPPRESSOR_RADIUS)
+        if _is_violation(window_text, suppressor_text):
             findings.append(
                 f"{path}:{index + 1}: prompt-only enforcement claim needs an executable blocker"
             )
