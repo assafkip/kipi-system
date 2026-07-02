@@ -99,12 +99,12 @@ q-founder-os/
       security.md                    # Blocks .env/credentials/key file access
       coding-standards.md            # Code style rules (path-scoped to code files)
       content-output.md              # Content generation rules (path-scoped to output/)
-    agents/                          # Custom agent definitions
-      preflight.md                   # Haiku - pipeline gate-keeper
-      data-ingest.md                 # Haiku - calendar/email/CRM pulls
-      engagement-hitlist.md          # Opus - copy-paste engagement actions
-      synthesizer.md                 # Opus - daily schedule assembly
-      content-reviewer.md            # Sonnet - 4-pass content review
+    agents/                          # Custom agent definitions (model tiers: .claude/rules/model-allocation.md)
+      preflight.md                   # pipeline gate-keeper
+      data-ingest.md                 # calendar/email/CRM pulls
+      engagement-hitlist.md          # copy-paste engagement actions
+      synthesizer.md                 # daily schedule assembly
+      content-reviewer.md            # 4-pass content review
   plugins/                           # Plugin groups (loaded directly from disk)
     kipi-core/skills/                # Core (every instance)
       audhd-executive-function/      # ADHD/ASD accommodations (optional)
