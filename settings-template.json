@@ -182,12 +182,12 @@
           },
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" || true",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\"; fi",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" || true",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\"; fi",
             "timeout": 5
           },
           {
