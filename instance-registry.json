@@ -170,6 +170,14 @@
       "has_git": true,
       "skip_agent_check": true,
       "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree."
+    },
+    {
+      "name": "Alice",
+      "path": "/Users/assafkipnis/projects/Alice",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
