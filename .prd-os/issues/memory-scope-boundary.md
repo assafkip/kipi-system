@@ -1,7 +1,7 @@
 ---
 id: memory-scope-boundary
 title: Scope scoring to q-system/memory only; record_outcome rejects out-of-scope memory_id
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:
