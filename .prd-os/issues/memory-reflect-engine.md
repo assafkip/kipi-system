@@ -1,7 +1,7 @@
 ---
 id: memory-reflect-engine
 title: memory_reflect.py: decay + corroboration + contested + sidecar + source-fingerprint resolver
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:
