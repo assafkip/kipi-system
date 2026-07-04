@@ -1,7 +1,7 @@
 ---
 id: autocapture-capture-core
 title: memory_autocapture.py Stop-hook: deterministic useful/dead_end via record_outcome, transcript-or-mtime read
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:
@@ -29,4 +29,4 @@ Reads .session-recall.json + the session tool-transcript; emits useful (source_f
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] memory_autocapture.py Stop-hook: deterministic useful/dead_end via record_outcome, transcript-or-mtime read
+- [x] memory_autocapture.py Stop-hook: deterministic useful/dead_end via record_outcome, transcript-or-mtime read

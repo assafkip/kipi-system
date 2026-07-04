@@ -1,7 +1,7 @@
 ---
 id: autocapture-recall-artifact
 title: Session-scoped .session-recall.json: single-writer producer + schema + atomic keyed write
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:
