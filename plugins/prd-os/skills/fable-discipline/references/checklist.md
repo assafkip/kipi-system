@@ -27,11 +27,13 @@ hook's header enumerates exactly what each detector catches and misses.
 - [ ] Persisted external input is validated before it is stored
 - [ ] Mutations of the shared resource go through one writer
 - [ ] Why-comments encode the constraint + the named scar, not the "what"
-- [ ] Out-of-scope findings that never reached a file (noticed in reading, in a tool result, in thought) are captured to the spillover ledger, not just mentioned; the hook only sees deferral language you WRITE into code
+- [ ] Out-of-scope findings that reached no file (noticed in reading, in a tool result, in thought) are captured to the spillover ledger, not just mentioned; the hook only sees deferral language you WRITE into code
 
 ## Gap classes (build against these)
 Defect shapes that repeatedly ship past review on changes that scale or touch
-sensitive data. Check only the ones this change touches.
+sensitive data. Check only the ones this change touches; skipping a class the
+change does not touch is the built-in escape hatch, with the one-line reason
+the checklist header already requires.
 - [ ] New append-only store ships compaction + a bounded read in THIS change (an in-memory cap bounds memory, not the file or read cost); compaction runs before any boot-time whole-file read
 - [ ] Search/filter applied to the cheap key set BEFORE per-item enrichment (cost scales with the filtered set, not the catalog)
 - [ ] New capability is additive: new params default-off, new data in a header/new field; existing response body that has consumers is not reshaped
@@ -39,13 +41,13 @@ sensitive data. Check only the ones this change touches.
 - [ ] State (archived/retired/blocked) enforced at the ACTION endpoint on every reachable path (API, CLI, replay), not only the list view
 - [ ] A gate fails CLOSED (refuses when it cannot verify); a filter may fail open; they do NOT share one helper
 - [ ] Redaction is at the egress edge; nothing augments/mutates the payload after it (or every post-step re-redacts)
-- [ ] What gets persisted is a redacted, whitelisted, JSON-safe projection, never the raw in-memory object
+- [ ] What gets persisted is a redacted, whitelisted, JSON-safe projection, never the raw in-memory object (exception: an ephemeral local debug dump outside every store/load path, named as a dump and deleted before done; gitignore alone is not the hatch)
 - [ ] Exposure classified by recipient (authorized?) + necessity before masking; the fix does not break the core workflow
 - [ ] Hiding/suppressing a thing does not bury an open obligation (block the hide while work is open)
 - [ ] A new flag/field reaches EVERY reader of the store (raw readers patched; canonical/replay-view readers inherit it); asked "what else reads this?" until nothing
 - [ ] Overloading an existing field: audited every existing consumer of that field
 - [ ] Check-then-mutate on shared state under one lock; compaction uses a SEPARATE stable lock file; shared counters guarded; proven with an N-thread reproducer
-- [ ] Liveness/health endpoint is per-line tolerant; never 500s on one bad row
+- [ ] Liveness/health endpoint is per-line tolerant; one bad row does not 500 it
 - [ ] Version/identity single-sourced; a test asserts the copies match
 - [ ] Cross-cutting invariant has a WRITTEN scope (what it does and does NOT cover) and a guard test that enumerates targets from the system (routes/registries), not a hand list
 

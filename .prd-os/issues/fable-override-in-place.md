@@ -1,7 +1,7 @@
 ---
 id: fable-override-in-place
 title: Every hard ban states its override condition and skip marker in the same paragraph
-status: open
+status: closed
 priority: p1
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:

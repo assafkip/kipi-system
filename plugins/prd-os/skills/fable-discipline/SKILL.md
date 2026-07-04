@@ -74,13 +74,15 @@ How to move through complex work without shipping a confident wrong answer.
 
 1. **Recon before edit. Read reality, do not assume it.** Grep the real schema and
    call-sites before changing anything. Never edit a file you have not read this
-   session. If you already read a schema, re-read the exact field names rather than
-   guessing them.
+   session, unless you created that file in this same session (your own fresh
+   write counts as read). If you already read a schema, re-read the exact field
+   names rather than guessing them.
 
 2. **Verify against a copy, with a negative self-test.** A passing gate is not
    trusted until it has been seen to fail. Run the reproducer against a copy of the
-   live resource, never the live one. Then corrupt a valid input and prove the
-   check FAILS on the violation, so a green result is not a rubber stamp.
+   live resource, never the live one, unless the resource is disposable by design
+   (a regenerable fixture or sandbox environment). Then corrupt a valid input and
+   prove the check FAILS on the violation, so a green result is not a rubber stamp.
 
 3. **Single-writer chokepoint, guarded by a grep-the-tree test.** Route every
    mutation of a shared resource through one helper, and write a test that greps
@@ -96,7 +98,8 @@ How to move through complex work without shipping a confident wrong answer.
    spillover ledger (`prd_runner.py spillover add --source <id> --desc "..."`).
    A mention in prose is a silent drop; the ledger keeps the standing gate
    (`gates run`) red until it is fixed as a tracked issue. The paired lint blocks
-   deferral language written into code without capture.
+   deferral language written into code without capture. Override: capture first,
+   then ack the captured line with `# spillover-skip`; there is no skip-first path.
 
 6. **Build against the recurring gap classes.** If the change scales or touches
    sensitive data, walk the gap-class block in `references/checklist.md`: an
@@ -113,13 +116,17 @@ How to move through complex work without shipping a confident wrong answer.
 Habits that are easy to do somewhere and forget elsewhere. Make them non-optional:
 
 - **Test isolation.** A test uses a temp copy, a tempfile, or `:memory:`, never a
-  real data path. (This is the slice the paired hook enforces.)
+  real data path. (This is the slice the paired hook enforces.) Override: an
+  audit test that must NAME a live path may assert on it (assertion lines are
+  exempt); anything else carries `# fable-discipline-lint-skip` in that file
+  with a one-line reason.
 - **Declare and pin every new dependency** the moment you import it, and keep a
   test that proves the manifest covers every third-party import.
 - **Specify degenerate cases before implementing**: empty, single-element,
   disconnected, non-converging. Each gets defined behavior, not an implicit crash.
 - **Validate persisted external input.** Never store arbitrary user or model JSON
-  that, if malformed, can permanently break a render or load path.
+  that, if malformed, can permanently break a render or load path, unless every
+  read path runs a validating loader that tolerates the malformed record.
 - **Enumerate all call-sites when scoping a change.** Grep for every site the
   change must reach before declaring it done.
 
