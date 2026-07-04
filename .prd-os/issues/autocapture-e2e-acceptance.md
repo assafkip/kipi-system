@@ -1,7 +1,7 @@
 ---
 id: autocapture-e2e-acceptance
 title: Deterministic end-to-end acceptance: auto-captured outcomes move memory_reflect verdicts
-status: open
+status: in-progress
 priority: p2
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:

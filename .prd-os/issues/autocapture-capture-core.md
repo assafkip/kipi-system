@@ -45,3 +45,16 @@ After:
 - allowed_files: ['q-system/.q-system/scripts/memory_autocapture.py', 'q-system/.q-system/scripts/test_memory_autocapture.py']
 - required_checks: ['python3 -m pytest q-system/.q-system/scripts/test_memory_autocapture.py -q']
 - disallowed_files: []
+
+### 2026-07-04T21:33:47Z
+Reason: Security/gate fix from instance-guard adversarial review: _current_instance trusted the KIPI_INSTANCE env var before the repo path, letting a non-allowlisted instance spoof identity to 4_points_consulting and enable capture. Derive identity ONLY from the durable repo directory name; keep the instance_id param for tests.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/memory_autocapture.py', 'q-system/.q-system/scripts/test_memory_autocapture.py']
+- required_checks: ['python3 -m pytest q-system/.q-system/scripts/test_memory_autocapture.py -q']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/memory_autocapture.py', 'q-system/.q-system/scripts/test_memory_autocapture.py']
+- required_checks: ['python3 -m pytest q-system/.q-system/scripts/test_memory_autocapture.py -q']
+- disallowed_files: []
