@@ -28,4 +28,4 @@ Replaces the vague success language with a deterministic threshold: a seeded des
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Deterministic end-to-end acceptance: auto-captured outcomes move memory_reflect verdicts
+- [x] Deterministic end-to-end acceptance: auto-captured outcomes move memory_reflect verdicts
