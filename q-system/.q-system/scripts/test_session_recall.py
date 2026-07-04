@@ -131,6 +131,28 @@ def test_read_and_clear_missing_is_empty() -> None:
                sr.read_and_clear("nope", path=p) == [], "expected []")
 
 
+def test_resolve_reads_claude_code_session_id() -> None:
+    # Regression: the producer must resolve the SAME id the Stop-hook consumer
+    # reads from its payload. Claude Code exports it as CLAUDE_CODE_SESSION_ID.
+    # The old code checked only CLAUDE_SESSION_ID (which does not exist), so the
+    # producer keyed recall under a pid fallback and capture read nothing.
+    saved = {k: os.environ.get(k) for k in
+             ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "KIPI_SESSION_ID")}
+    try:
+        for k in saved:
+            os.environ.pop(k, None)
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "real-uuid-123"
+        got = sr.resolve_session_id()
+        _check("resolve_reads_claude_code_session_id", got == "real-uuid-123",
+               f"got={got} (must equal the Stop payload session_id)")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_surface_producer_emits() -> None:
     # The surface script, given surfaced scores, records their ids into the
     # session-recall file via the single-writer helper (producer wiring).
@@ -157,6 +179,7 @@ def main() -> int:
     test_read_missing_is_empty()
     test_read_and_clear_is_atomic_snapshot()
     test_read_and_clear_missing_is_empty()
+    test_resolve_reads_claude_code_session_id()
     test_surface_producer_emits()
     if _failures:
         print(f"\n{len(_failures)} FAILURES: {_failures}")
