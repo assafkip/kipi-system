@@ -98,6 +98,25 @@ def test_scope_rejects_out_of_scope_memory_id(tmp_path, bad_id):
     assert not log.exists() or _read(log) == []
 
 
+def test_cli_records_and_dedups(tmp_path, monkeypatch, capsys):
+    """The capture CLI records an outcome; re-running the identical capture is a
+    no-op (content-hashed event_id)."""
+    log = tmp_path / "outcomes.jsonl"
+    monkeypatch.setattr(mo, "DEFAULT_LOG", log)
+    rc = mo.main(["feedback_rate_floor_250", "useful", "--note", "x", "--date", "2026-07-04"])
+    assert rc == 0
+    assert "recorded" in capsys.readouterr().out
+    rc2 = mo.main(["feedback_rate_floor_250", "useful", "--note", "x", "--date", "2026-07-04"])
+    assert rc2 == 0
+    assert "deduped" in capsys.readouterr().out
+    assert len(_read(log)) == 1
+
+
+def test_cli_rejects_out_of_scope(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mo, "DEFAULT_LOG", tmp_path / "outcomes.jsonl")
+    assert mo.main(["../evil", "useful"]) == 2
+
+
 def test_scope_accepts_normal_slug(tmp_path):
     log = tmp_path / "outcomes.jsonl"
     ev = mo.record_outcome("feedback_rate_floor_250", "useful", event_id="e1", log_path=log)

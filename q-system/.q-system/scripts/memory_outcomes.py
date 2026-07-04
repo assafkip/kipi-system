@@ -28,9 +28,13 @@ Issue-review hardening (Codex, memory-outcome-log):
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 import re
+import sys
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -176,3 +180,47 @@ def record_outcome(memory_id: str, outcome: str, *, event_id: str,
             if fcntl is not None:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     return event
+
+
+def _auto_event_id(memory_id: str, outcome: str, date: str, note: str) -> str:
+    """Deterministic event_id from the event content, so re-running the same
+    capture dedups instead of double-counting (idempotent CLI). 16 hex chars is
+    ample collision resistance for a per-founder local log."""
+    raw = f"{memory_id}|{outcome}|{date}|{note}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI capture path: record how a recalled memory performed.
+
+        python3 memory_outcomes.py <memory_id> <useful|dead_end|corrected> \\
+            [--note ...] [--date YYYY-MM-DD] [--source-file PATH] [--event-id ID]
+
+    Without --event-id, a content hash of (memory_id, outcome, date, note) is
+    used, so the same capture run twice is a no-op (deduped)."""
+    ap = argparse.ArgumentParser(description="Record a memory-use outcome.")
+    ap.add_argument("memory_id")
+    ap.add_argument("outcome", choices=VALID_OUTCOMES)
+    ap.add_argument("--note", default="")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: today)")
+    ap.add_argument("--source-file", default=None)
+    ap.add_argument("--event-id", default=None)
+    args = ap.parse_args(argv)
+
+    date = args.date or datetime.now().strftime("%Y-%m-%d")
+    event_id = args.event_id or _auto_event_id(
+        args.memory_id, args.outcome, date, args.note)
+    try:
+        ev = record_outcome(args.memory_id, args.outcome, event_id=event_id,
+                            date=date, note=args.note, source_file=args.source_file)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"recorded {args.outcome} for {args.memory_id} (event_id {event_id})"
+          if ev is not None else
+          f"already recorded (deduped): {args.memory_id} event_id {event_id}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
