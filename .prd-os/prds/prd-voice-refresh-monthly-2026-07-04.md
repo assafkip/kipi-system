@@ -1,12 +1,13 @@
 ---
 id: prd-voice-refresh-monthly-2026-07-04
 title: Voice Refresh Monthly
-status: idea
+status: in-review
 created_at: 2026-07-04T23:12:15Z
-updated_at: 2026-07-04T23:12:15Z
+updated_at: 2026-07-04T23:17:42Z
 owner: assafkip
 reviewers: []
 findings_path: .prd-os/findings/prd-voice-refresh-monthly-2026-07-04-findings.jsonl
+codex_reviewed_at: 2026-07-04T23:17:18Z
 ---
 
 # Voice Refresh Monthly
