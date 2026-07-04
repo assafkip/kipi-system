@@ -43,9 +43,27 @@ Detector coverage (enumerated on purpose, per the hook-blind-spots rule):
              - pathlib bare-segment joins: Path('/abs/data') / 'x.db'
              - em-dash narration (not a tool call; lives in the skill + style)
 
+Deferral-capture detector coverage (second detector, same enumeration rule):
+    CATCHES  deferral language written into a CODE file (suffix allowlist below):
+             "out of scope"/"out-of-scope", "fix (it) later", "defer(red) this",
+             "leave (this) for later", "won't fix (now)", "punt(ed/ing) on" —
+             case-insensitive, comments and strings alike — unless the file
+             acks a captured item with # spillover-skip.
+    SKIPS    non-code files (docs/PRDs legitimately discuss scope), and any
+             file containing the ack marker.
+    MISSES   (documented deferrals): synonym phrasings with no listed verb
+             ("not in scope", "TODO later", "handle this another day",
+             "skip for now", "future work"), deferrals split across lines,
+             and non-English phrasing. The GATE (prd_runner gates run) is the
+             enforcement of last resort; this detector is the write-time nudge.
+
 Scope (fast-exit otherwise, token discipline):
-    Fires only on a Python TEST file, detected by basename test_*.py / *_test.py
-    or a path under a /tests/ directory. Non-test code and non-Python edits exit 0.
+    Two detectors, two scopes, evaluated in this order:
+    1. Deferral capture runs on ANY code file (suffix allowlist in
+       _CODE_SUFFIXES) and can exit 2 on its own.
+    2. Test isolation then runs only on a Python TEST file, detected by
+       basename test_*.py / *_test.py or a path under a /tests/ directory.
+    A non-code, non-test edit (markdown, JSON, config) exits 0 untouched.
 """
 
 import json

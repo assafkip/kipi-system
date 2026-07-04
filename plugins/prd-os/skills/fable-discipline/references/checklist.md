@@ -3,6 +3,12 @@
 Copy into the task. Check each box before claiming done. Skip a box only with a
 one-line reason next to it.
 
+Every box below is JUDGMENT: the model weighs it per task. The two mechanical
+slices are NOT here because the paired hook enforces them on every edit
+(test-isolation: a test may not name a live data path; deferral capture:
+deferral language in code without a captured spillover item blocks). The
+hook's header enumerates exactly what each detector catches and misses.
+
 ## Running the task
 - [ ] Stage plan written; each stage names one checkable artifact
 - [ ] Each stage has a check that can fail (not "looks right")
@@ -21,7 +27,7 @@ one-line reason next to it.
 - [ ] Persisted external input is validated before it is stored
 - [ ] Mutations of the shared resource go through one writer
 - [ ] Why-comments encode the constraint + the named scar, not the "what"
-- [ ] Any out-of-scope finding noticed is CAPTURED to the spillover ledger (`prd_runner.py spillover add`), never just mentioned — the standing gate holds it until it is fixed as a tracked issue
+- [ ] Out-of-scope findings that never reached a file (noticed in reading, in a tool result, in thought) are captured to the spillover ledger, not just mentioned; the hook only sees deferral language you WRITE into code
 
 ## Gap classes (build against these)
 Defect shapes that repeatedly ship past review on changes that scale or touch
@@ -44,7 +50,7 @@ sensitive data. Check only the ones this change touches.
 - [ ] Cross-cutting invariant has a WRITTEN scope (what it does and does NOT cover) and a guard test that enumerates targets from the system (routes/registries), not a hand list
 
 ## Verification (ran, not assumed)
-- [ ] Reproducer runs against a temp/copy resource or :memory:, never live
+- [ ] Reproducer actually RAN against the copy (the hook blocks a test that names a live path; whether you ran it at all is on you)
 - [ ] Negative self-test: a corrupted input makes the gate FAIL (no rubber stamp)
 - [ ] Re-ran after the fix and saw green; pasted the command and the result
 - [ ] Grepped every call-site the change had to reach; all covered

@@ -1,7 +1,7 @@
 ---
 id: fable-mechanical-judgment-split
 title: Promote every mechanical checklist item into the lint hook; checklist becomes judgment-only
-status: open
+status: closed
 priority: p1
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:
