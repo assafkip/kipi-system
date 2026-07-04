@@ -4,7 +4,7 @@ Self-contained test for fable-discipline-lint.py. Exit 0 = all pass, 1 = a case 
 
 Dogfoods the fable-discipline skill: every fixture is written under a TemporaryDirectory
 (isolation), never a real path. Run:
-    python3 plugins/kipi-core/skills/fable-discipline/scripts/test_fable_discipline_lint.py
+    python3 plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py
 """
 import subprocess
 import sys
