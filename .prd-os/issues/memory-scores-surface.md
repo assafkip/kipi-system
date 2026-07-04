@@ -1,7 +1,7 @@
 ---
 id: memory-scores-surface
 title: SessionStart earned-trust surface + MEMORY.md [contested]/[stale] index markers
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:

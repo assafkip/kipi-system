@@ -99,6 +99,53 @@ def test_main_silent_on_malformed_sidecar(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""  # silent, no crash
 
 
+def test_trigger_main_refreshes_sidecar_from_log_before_reading(tmp_path, monkeypatch, capsys):
+    """finding-6: main() runs memory_reflect over the outcomes log FIRST, so the
+    sidecar reflects the latest events at SessionStart even if it was never built."""
+    log = tmp_path / "outcomes.jsonl"
+    sidecar = tmp_path / ".memory-scores.json"
+    mo.record_outcome("m_pref", "useful", event_id="p1", date="2026-07-01", log_path=log)
+    mo.record_outcome("m_pref", "useful", event_id="p2", date="2026-07-02", log_path=log)
+    assert not sidecar.exists()  # no sidecar yet
+
+    monkeypatch.setattr(surface, "OUTCOMES_LOG", log)
+    monkeypatch.setattr(surface, "DEFAULT_SIDECAR", sidecar)
+    monkeypatch.setattr(surface, "QROOT", tmp_path)
+    assert surface.main([]) == 0
+
+    assert sidecar.exists()  # main built it from the log
+    assert "m_pref" in capsys.readouterr().out  # and surfaced the fresh result
+
+
+def test_main_refresh_never_crashes_without_log(tmp_path, monkeypatch, capsys):
+    """No outcomes log -> refresh is a silent no-op, main stays silent, exit 0."""
+    monkeypatch.setattr(surface, "OUTCOMES_LOG", tmp_path / "nope.jsonl")
+    monkeypatch.setattr(surface, "DEFAULT_SIDECAR", tmp_path / ".memory-scores.json")
+    monkeypatch.setattr(surface, "QROOT", tmp_path)
+    assert surface.main([]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_refresh_preserves_old_sidecar_on_write_failure(tmp_path, monkeypatch):
+    """A failed refresh must not clobber a good existing sidecar (review finding:
+    atomic temp-write + os.replace)."""
+    log = tmp_path / "outcomes.jsonl"
+    sidecar = tmp_path / ".memory-scores.json"
+    mo.record_outcome("m1", "useful", event_id="e1", date="2026-07-01", log_path=log)
+    sidecar.write_text('{"good": "sidecar"}\n')  # pre-existing good state
+    monkeypatch.setattr(surface, "OUTCOMES_LOG", log)
+    monkeypatch.setattr(surface, "DEFAULT_SIDECAR", sidecar)
+    monkeypatch.setattr(surface, "QROOT", tmp_path)
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(surface.mr, "write_sidecar", _boom)
+
+    surface._refresh_sidecar()  # must not raise, must not truncate
+    assert sidecar.read_text() == '{"good": "sidecar"}\n'  # old state intact
+    assert not (tmp_path / ".memory-scores.json.tmp").exists()  # temp cleaned up
+
+
 def test_marker_is_idempotent(tmp_path):
     scores = _scored(tmp_path)
     loaded = mr.load_sidecar(scores, root=tmp_path)
