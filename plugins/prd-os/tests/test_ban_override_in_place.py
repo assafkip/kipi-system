@@ -103,9 +103,12 @@ def test_hook_enforced_bans_name_their_marker_in_place():
     assert iso and "fable-discipline-lint-skip" in iso[0], (
         "test-isolation ban paragraph does not name its skip marker"
     )
-    spill = [p for p in paras if "spillover ledger" in p and BAN_RE.search(p)]
+    # anchor on the stable rule heading, not the prose: the deferral-capture
+    # wording is deliberately generic (the public mirror is de-kipi'd, so it
+    # names no prd-os tool), but the ban must still carry its skip marker
+    spill = [p for p in paras if "out-of-scope finding" in p and BAN_RE.search(p)]
     assert spill and all("spillover-skip" in p for p in spill), (
-        "spillover-capture ban paragraph does not name its skip marker"
+        "deferral-capture ban paragraph does not name its skip marker"
     )
 
 

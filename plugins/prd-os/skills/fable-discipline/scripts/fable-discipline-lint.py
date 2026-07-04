@@ -54,7 +54,7 @@ Deferral-capture detector coverage (second detector, same enumeration rule):
     MISSES   (documented deferrals): synonym phrasings with no listed verb
              ("not in scope", "TODO later", "handle this another day",
              "skip for now", "future work"), deferrals split across lines,
-             and non-English phrasing. The GATE (prd_runner gates run) is the
+             and non-English phrasing. Your standing gate / CI is the
              enforcement of last resort; this detector is the write-time nudge.
 
 Scope (fast-exit otherwise, token discipline):
@@ -77,7 +77,7 @@ SKIP_MARKER = "fable-discipline-lint-skip"
 # nobody tracks) is the silent-drop scar. Block it unless the finding was
 # captured and the line is acked with `# spillover-skip`. Scoped to code files so
 # docs/PRDs that legitimately discuss scope are never tripped. The GATE
-# (prd_runner gates run) is the enforcement; this lint is the write-time nudge.
+# your standing gate / CI is the enforcement; this lint is the write-time nudge.
 SPILL_SKIP_MARKER = "spillover-skip"
 _CODE_SUFFIXES = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".rb", ".go",
                   ".rs", ".java", ".c", ".cpp", ".h", ".mjs", ".cjs"}
@@ -108,8 +108,8 @@ def format_deferral_report(file_path, hits):
         lines.append(f"  line {ln}: {snippet}")
     lines.append(
         "An out-of-scope deferral in code must be CAPTURED, never just written and "
-        "forgotten. Run `prd_runner.py spillover add --source <id> --desc \"...\"` so "
-        "the standing gate tracks it, then add  # spillover-skip  to this file to ack."
+        "forgotten. Record it in your tracked backlog (an issue/ticket/ledger your "
+        "gate reads), then add  # spillover-skip  to this file to ack."
     )
     return "\n".join(lines)
 

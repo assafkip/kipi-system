@@ -94,12 +94,12 @@ How to move through complex work without shipping a confident wrong answer.
    survive refactors because they encode an invariant.
 
 5. **Capture every out-of-scope finding; never just mention it.** If you notice
-   a real issue that is out of scope for the current work, write it to the
-   spillover ledger (`prd_runner.py spillover add --source <id> --desc "..."`).
-   A mention in prose is a silent drop; the ledger keeps the standing gate
-   (`gates run`) red until it is fixed as a tracked issue. The paired lint blocks
-   deferral language written into code without capture. Override: capture first,
-   then ack the captured line with `# spillover-skip`; there is no skip-first path.
+   a real issue that is out of scope for the current work, write it to a tracked
+   backlog (an issue, a ticket, a standing ledger your gate reads), not a bare
+   prose mention. A mention is a silent drop; a tracked item is one a gate can
+   keep failing until it is resolved. The paired lint blocks deferral language
+   written into code without such a capture. Override: capture first, then ack
+   the captured line with `# spillover-skip`; there is no skip-first path.
 
 6. **Build against the recurring gap classes.** If the change scales or touches
    sensitive data, walk the gap-class block in `references/checklist.md`: an
