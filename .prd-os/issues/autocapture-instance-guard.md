@@ -31,4 +31,4 @@ autocapture_config.json is the allowlist (enabled_instances: [4_points_consultin
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Design-partner-only enforcement: self-gating allowlist + guarded advisory Stop-hook wiring (settings + template sync)
+- [x] Design-partner-only enforcement: self-gating allowlist + guarded advisory Stop-hook wiring (settings + template sync)
