@@ -1,7 +1,7 @@
 ---
 id: memory-outcome-log
 title: Outcome event log + single-writer record_outcome with event_id dedup
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:
