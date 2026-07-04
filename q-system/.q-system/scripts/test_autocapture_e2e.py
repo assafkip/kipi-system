@@ -84,6 +84,17 @@ def main() -> int:
         # Sanity: the log filled itself, only via the capture path.
         _check("log_filled_by_capture", len(events) >= 3, f"events={len(events)}")
 
+        # Exact event set: an over-emitting referee must NOT pass (Codex finding-4).
+        by: dict[str, list[str]] = {}
+        for e in events:
+            by.setdefault(e["memory_id"], []).append(e["outcome"])
+        _check("exact_events",
+               sorted(by.get("mem_lean_on", [])) == ["useful", "useful"]
+               and by.get("mem_dead_end") == ["dead_end"]
+               and by.get("mem_corrected") == ["corrected"]
+               and set(by) == {"mem_lean_on", "mem_dead_end", "mem_corrected"},
+               f"by={by}")
+
         agg = mr.aggregate(events, now=now)
         preferred_ids = {e["memory_id"] for e in agg["preferred"]}
         dead_ids = {e["memory_id"] for e in agg["dead_ends"]}
@@ -99,11 +110,49 @@ def main() -> int:
                all("auto" in (e.get("note") or "").lower() for e in events),
                "an event lacked the auto-capture note")
 
+        _drive_main_entrypoint(tmp)
+
     if _failures:
         print(f"\n{len(_failures)} FAILURES: {_failures}")
         return 1
     print("\nALL PASS -- the outcomes log filled itself and moved memory_reflect verdicts")
     return 0
+
+
+def _drive_main_entrypoint(tmp: Path) -> None:
+    """Drive the REAL Stop-hook entry mac.main(): parse a stdin payload, pass the
+    instance gate, and capture (Codex finding-1, closes the 'main() could be broken
+    while capture() passes' gap). Redirects module globals to temp so nothing real
+    is written."""
+    import io
+    import json
+
+    log = tmp / "main-outcomes.jsonl"
+    recall = tmp / "main-recall.json"
+    transcript = tmp / "main-t.jsonl"
+    cfg = tmp / "main-cfg.json"
+    # Enable THIS instance (real repo dir name) so the gate opens.
+    cfg.write_text(json.dumps({"enabled_instances": [mac._current_instance()]}))
+    _write_transcript(transcript, ["/proj/q-system/memory/mem_main.md"])
+    sr.record_surfaced([("mem_main", "mem_main.md")], session_id="sess-main",
+                       path=recall, surfaced_at="2026-07-04T00:00:00Z")
+
+    saved = (mac.DEFAULT_CONFIG, sr.DEFAULT_PATH, mo.DEFAULT_LOG, sys.stdin)
+    mac.DEFAULT_CONFIG = cfg
+    sr.DEFAULT_PATH = recall          # capture() reads recall from the default path
+    mo.DEFAULT_LOG = log              # record_outcome writes to the default log
+    sys.stdin = io.StringIO(json.dumps(
+        {"session_id": "sess-main", "transcript_path": str(transcript)}))
+    try:
+        rc = mac.main()
+    finally:
+        mac.DEFAULT_CONFIG, sr.DEFAULT_PATH, mo.DEFAULT_LOG, sys.stdin = saved
+
+    rows = [r for r in mo.read_events(log)] if log.exists() else []
+    _check("main_entrypoint_captures",
+           rc == 0 and any(r["memory_id"] == "mem_main" and r["outcome"] == "useful"
+                           for r in rows),
+           f"rc={rc} rows={rows}")
 
 
 if __name__ == "__main__":
