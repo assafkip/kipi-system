@@ -1,7 +1,7 @@
 ---
 id: discipline-skill-versioning
 title: Freeze fable-discipline SKILL.md as -v1; record merge in prd-os CHANGELOG
-status: open
+status: closed
 priority: p0
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:

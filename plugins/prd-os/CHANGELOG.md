@@ -4,14 +4,31 @@ All notable changes to the `prd-os` plugin are recorded here. Format follows [Ke
 
 ## [Unreleased]
 
-(next release goes here)
+### Added
+- **Execution-discipline layer (fable-discipline merge, prd-fable-discipline-2026-07-04)**:
+  the fable-discipline skill (recon before edit, verify-against-a-copy with a
+  negative self-test, single-writer chokepoints, scar-anchored why-comments)
+  merges INTO prd-os as its execution-discipline layer, ending the
+  two-sibling-systems arrangement (prd-os owned the work-item procedure,
+  fable-discipline owned the per-edit procedure; one idea split across two
+  load paths). Rationale for the shape of the merge: the Leonxlnx/taste-skill
+  production lesson — graduated phrasing ("use sparingly") gets ignored in
+  production; only binary zero-or-fail rules and mechanical counts hold —
+  matching this repo's own scars (autonomy-contract phrase patching, hook
+  blind spots). The pre-merge SKILL.md is preserved verbatim at
+  `skills/prd-os/references/fable-discipline-v1.md`. Future behavior changes
+  to the discipline layer get an entry here plus a de-kipi'd export to the
+  public mirror (assafkip/fable-discipline, founder decision 2026-07-03);
+  the executable blocker for mirror drift is
+  `scripts/export-fable-mirror.sh --check` (exits non-zero on divergence;
+  required_check on every discipline-layer issue).
 
 ## [0.5.0]
 
 ### Added
 - **Cross-PRD findings advisory**: `findings_xref.py` surfaces prior
   `rejected`/`deferred` findings from sibling PRDs that closely match a pending
-  finding (token-shingle Jaccard, deterministic, read-only, no LLM). Wired into
+  finding (token-shingle Jaccard — a deterministic read-only script, no LLM). Wired into
   `/prd-triage` via `findings_writer.py advisory`, which swallows every xref
   failure so it can never block triage. Threshold resolves flag > config
   `xref_threshold` > 0.6, validated to a finite [0,1] value.
