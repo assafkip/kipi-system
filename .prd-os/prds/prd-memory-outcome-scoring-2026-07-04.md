@@ -1,9 +1,9 @@
 ---
 id: prd-memory-outcome-scoring-2026-07-04
 title: Memory Outcome Scoring
-status: approved
+status: archived
 created_at: 2026-07-04T19:28:37Z
-updated_at: 2026-07-04T19:38:30Z
+updated_at: 2026-07-04T20:06:45Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-memory-outcome-scoring-2026-07-04-findings.jsonl

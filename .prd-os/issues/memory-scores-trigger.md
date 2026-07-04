@@ -1,7 +1,7 @@
 ---
 id: memory-scores-trigger
 title: Surface runs memory_reflect before reading the sidecar so it is fresh at SessionStart
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:
