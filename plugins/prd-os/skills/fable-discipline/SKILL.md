@@ -54,8 +54,9 @@ How to move through complex work without shipping a confident wrong answer.
    no failable check, say so and mark its output unverified so the gap is visible.
 
 3. **Say, then batch.** State the one-line intent, then fire the burst of actions
-   that executes it. Someone reading only your intent lines should be able to
-   reconstruct the plan. It keeps you from drifting mid-burst.
+   that executes it. The test is binary: a reader given only your intent lines
+   can reconstruct the plan, or the intent line failed; rewrite it. It keeps
+   you from drifting mid-burst.
 
 4. **Done is written, not felt.** Define done-criteria up front. On a task that
    spans sessions, keep a short work log (decisions, what was tried, what failed)

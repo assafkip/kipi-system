@@ -1,7 +1,7 @@
 ---
 id: fable-binary-phrasing-audit
 title: Rewrite graduated phrasing to zero-or-fail in merged skill + prd-os prose
-status: open
+status: closed
 priority: p1
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:
