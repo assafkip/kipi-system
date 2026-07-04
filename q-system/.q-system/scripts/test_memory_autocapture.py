@@ -102,6 +102,22 @@ def test_idempotent_replay(tmp_path):
     assert len(_outcomes(log)) == first == 1
 
 
+def test_idempotent_across_midnight(tmp_path):
+    # Same session replayed on a later UTC day must still dedup (event_id is
+    # session-keyed, not date-keyed). Amend fix for adversarial finding-2.
+    recall = tmp_path / ".session-recall.json"
+    log = tmp_path / "outcomes.jsonl"
+    transcript = tmp_path / "t.jsonl"
+    _seed_recall(recall, "s8", [("m_c", "m_c.md")])
+    _write_transcript(transcript, ["/x/m_c.md"], None)
+    mac.capture(session_id="s8", transcript_path=transcript, recall_path=recall,
+                log_path=log, date="2026-07-04")
+    _seed_recall(recall, "s8", [("m_c", "m_c.md")])
+    mac.capture(session_id="s8", transcript_path=transcript, recall_path=recall,
+                log_path=log, date="2026-07-05")  # next day
+    assert len(_outcomes(log)) == 1
+
+
 def test_silent_safe(tmp_path):
     log = tmp_path / "outcomes.jsonl"
     # No recall file, no transcript file: must not raise, must not write.

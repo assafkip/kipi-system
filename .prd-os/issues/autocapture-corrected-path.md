@@ -1,7 +1,7 @@
 ---
 id: autocapture-corrected-path
 title: corrected outcome via learn-from-correction: conservative memory_id mapping with a deterministic check
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:

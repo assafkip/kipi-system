@@ -150,9 +150,11 @@ def capture(*, session_id: str, transcript_path: Path,
         outcome = _classify(entry.get("source_file"), reads, touched)
         if not memory_id or outcome is None:
             continue
-        # Session-stable, content-hash event_id: replay dedups; a distinct session
-        # is a distinct corroborating event.
-        event_id = mo._auto_event_id(memory_id, outcome, day, session_id)
+        # Session-stable, content-hash event_id keyed on session_id, NOT the day:
+        # a session replayed across UTC midnight still dedups to one event, while a
+        # DISTINCT session is a distinct corroborating event (amend: date-free key,
+        # matching correction_outcome.py after the sibling adversarial finding-2).
+        event_id = mo._auto_event_id(memory_id, outcome, session_id, f"autocapture-{outcome}")
         try:
             result = mo.record_outcome(
                 memory_id, outcome, event_id=event_id, date=day,
