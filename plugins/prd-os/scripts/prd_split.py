@@ -209,10 +209,73 @@ def _validate_entry(entry: object, index: int) -> dict:
                     raise ValueError(f"entry #{index}: deletes must be a list of regex strings")
             elif not isinstance(entry[key], str) or not entry[key].strip():
                 raise ValueError(f"entry #{index}: {key} must be a non-empty string")
+    # Deliverable-count lock (prd-fable-discipline-2026-07-04): every generated
+    # spec promises an explicit deliverable count; kipi-dsse close refuses
+    # until that many boxes are checked. Optional keys: `deliverables` (list of
+    # strings) and/or `deliverables_count` (int >= 1); both present must agree.
+    deliverables = entry.get("deliverables")
+    def _is_single_line(value: str) -> bool:
+        # same line-boundary semantics as issue_runner's checkbox counter
+        # (str.splitlines covers \n, \r, \u2028 and every other Unicode
+        # line boundary); a multi-line value would inject extra checkbox
+        # lines into the generated section
+        return len(value.splitlines()) == 1
+
+    if deliverables is not None and (
+        not isinstance(deliverables, list)
+        or not deliverables
+        or not all(
+            isinstance(d, str) and d.strip() and _is_single_line(d)
+            for d in deliverables
+        )
+    ):
+        raise ValueError(
+            f"entry #{index}: deliverables must be a non-empty list of "
+            "single-line non-empty strings"
+        )
+    raw_count = entry.get("deliverables_count")
+    if raw_count is not None and (
+        isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 1
+    ):
+        raise ValueError(
+            f"entry #{index}: deliverables_count must be an integer >= 1"
+        )
+    if deliverables is not None and raw_count is not None and raw_count != len(deliverables):
+        raise ValueError(
+            f"entry #{index}: deliverables_count ({raw_count}) does not match "
+            f"the deliverables list ({len(deliverables)} item(s))"
+        )
+    if deliverables is not None:
+        resolved_deliverables = [d.strip() for d in deliverables]
+    elif raw_count is not None:
+        resolved_deliverables = [f"deliverable {i + 1}" for i in range(raw_count)]
+    else:
+        resolved_deliverables = [title.strip()]
+    # uniform post-resolution guard: the title fallback goes through the same
+    # single-line validation as explicit deliverables (codex adversarial:
+    # a multi-line title injected a checked box while count stayed 1)
+    if not all(_is_single_line(d) for d in resolved_deliverables):
+        raise ValueError(
+            f"entry #{index}: a deliverable resolved to a multi-line string "
+            "(check the title); single-line only"
+        )
+    # the counter reads the FIRST column-0 '## Deliverables' section, so
+    # free-form acceptance text must not smuggle one in above the generated
+    # section (codex adversarial: acceptance hijacked the count)
+    if any(
+        line.strip().lower().startswith("## deliverables")
+        for line in acceptance.splitlines()
+    ):
+        raise ValueError(
+            f"entry #{index}: acceptance must not contain a '## Deliverables' "
+            "heading; that section is generated and counted at close"
+        )
+
     return {
         "id": issue_id,
         "title": title.strip(),
         "finding_id": finding_id.strip(),
+        "deliverables": resolved_deliverables,
         "priority": priority,
         "allowed_files": list(entry["allowed_files"]),
         "disallowed_files": list(entry.get("disallowed_files", [])),
@@ -293,9 +356,18 @@ def _render_spec(
         extra.append("deletes:" + _yaml_list(entry["deletes"]))
     if entry.get("bypass_exempt"):
         extra.append(f"bypass_exempt: {json.dumps(entry['bypass_exempt'])}")
+    deliverables = entry.get("deliverables") or [entry["title"]]
+    extra.append(f"deliverables_count: {len(deliverables)}")
     if extra:
         end = rendered.find("\n---", 3)
         rendered = rendered[:end] + "\n" + "\n".join(extra) + rendered[end:]
+    boxes = "\n".join(f"- [ ] {d}" for d in deliverables)
+    rendered = rendered.rstrip("\n") + (
+        "\n\n## Deliverables\n\n"
+        "<!-- Check each box when it ships; close refuses until checked count"
+        " equals deliverables_count (locked at issue-start). -->\n"
+        f"{boxes}\n"
+    )
     return _inject_marker(rendered, marker)
 
 

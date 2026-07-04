@@ -1,7 +1,7 @@
 ---
 id: dsse-deliverable-count-lock
 title: deliverables_count in issue spec schema; closeout refuses on receipt mismatch
-status: open
+status: closed
 priority: p1
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:

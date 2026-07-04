@@ -357,6 +357,57 @@ def _append_receipt(path: Path, entry: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _validate_deliverables_count(fm: dict) -> int | None:
+    """Deliverable-count lock (prd-fable-discipline-2026-07-04): None when the
+    spec has no `deliverables_count` (every pre-lock spec closes under the old
+    rules, check skipped entirely); the int when present. A malformed value
+    (non-integer, < 1) raises at LOAD so the defect surfaces at issue-start,
+    never as a surprise refusal at closeout."""
+    if "deliverables_count" not in fm:
+        return None
+    raw = fm.get("deliverables_count")
+    # present-but-empty (`deliverables_count:`) and quoted values are
+    # malformed, not absent: only an ABSENT key opts a spec out of the lock,
+    # and the schema says bare integer (a quoted "2" is a string)
+    text = str(raw).strip() if not isinstance(raw, list) else ""
+    if not text.isdigit() or int(text) < 1:
+        raise ValueError(
+            f"deliverables_count must be a bare integer >= 1, got {raw!r}. "
+            "Fix the spec before /issue-start."
+        )
+    return int(text)
+
+
+def _count_checked_deliverables(text: str) -> tuple[int, int]:
+    """(checked, listed) checkbox lines in the FIRST '## Deliverables'
+    section, top-level boxes only. One section, column-0 boxes: an indented
+    nested subtask or a second injected Deliverables section must not be able
+    to satisfy the locked count (codex major, dsse-deliverable-count-lock).
+    (0, 0) when the section is absent."""
+    in_section = False
+    section_seen = False
+    checked = listed = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_section:
+                break
+            if stripped.lower() == "## deliverables" and not section_seen:
+                in_section = True
+                section_seen = True
+            continue
+        if not in_section:
+            continue
+        if line != stripped:
+            continue  # indented = nested subtask, not a deliverable
+        if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
+            checked += 1
+            listed += 1
+        elif stripped.startswith("- [ ]"):
+            listed += 1
+    return checked, listed
+
+
 def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     # Cross-runner concurrency: refuse to load an issue while a non-archived PRD
     # is active. Symmetric with prd-os's prd_runner, which refuses to start a
@@ -377,6 +428,11 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     checks = fm.get("required_checks", []) or []
     disallowed = fm.get("disallowed_files", []) or []
     reviews = fm.get("required_reviews", [])
+    try:
+        deliverables_count = _validate_deliverables_count(fm)
+    except ValueError as exc:
+        sys.stderr.write(f"cannot load {args.issue_id}: {exc}\n")
+        return 2
     state = {
         "issue_id": fm.get("id", args.issue_id),
         "loaded_at": _now_iso(),
@@ -386,6 +442,7 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         "allowed_files_snapshot": list(allowed),
         "required_checks_snapshot": list(checks),
         "disallowed_files_snapshot": list(disallowed),
+        "deliverables_count_snapshot": deliverables_count,
         "amendments": [],
     }
     _write_state(paths, state)
@@ -527,6 +584,13 @@ def cmd_approve(paths: Paths, args: argparse.Namespace) -> int:
             f"cannot approve {issue_id}: status is {current!r}, expected 'open'\n"
         )
         return 2
+    try:
+        approved_count = _validate_deliverables_count(fm)
+    except ValueError as exc:
+        # validate before the status flip: a failed approve must not leave the
+        # spec mutated to in-progress with a stale deliverables snapshot
+        sys.stderr.write(f"cannot approve: {exc}\n")
+        return 2
     new_text = re.sub(r"(?m)^status:\s*.+$", "status: in-progress", text, count=1)
     path.write_text(new_text)
     state["receipts"] = {k: None for k in RECEIPT_FIELDS}
@@ -534,6 +598,7 @@ def cmd_approve(paths: Paths, args: argparse.Namespace) -> int:
     state["allowed_files_snapshot"] = list(fm.get("allowed_files", []) or [])
     state["required_checks_snapshot"] = list(fm.get("required_checks", []) or [])
     state["disallowed_files_snapshot"] = list(fm.get("disallowed_files", []) or [])
+    state["deliverables_count_snapshot"] = approved_count
     state.setdefault("amendments", [])
     _write_state(paths, state)
     print(json.dumps({"approved": issue_id, "status": "in-progress"}))
@@ -555,15 +620,23 @@ def cmd_amend(paths: Paths, args: argparse.Namespace) -> int:
         "allowed_files": list(state.get("allowed_files_snapshot", []) or []),
         "required_checks": list(state.get("required_checks_snapshot", []) or []),
         "disallowed_files": list(state.get("disallowed_files_snapshot", []) or []),
+        "deliverables_count": state.get("deliverables_count_snapshot"),
     }
+    try:
+        amended_count = _validate_deliverables_count(fm)
+    except ValueError as exc:
+        sys.stderr.write(f"cannot amend: {exc}\n")
+        return 2
     new_snapshot = {
         "allowed_files": list(fm.get("allowed_files", []) or []),
         "required_checks": list(fm.get("required_checks", []) or []),
         "disallowed_files": list(fm.get("disallowed_files", []) or []),
+        "deliverables_count": amended_count,
     }
     state["allowed_files_snapshot"] = new_snapshot["allowed_files"]
     state["required_checks_snapshot"] = new_snapshot["required_checks"]
     state["disallowed_files_snapshot"] = new_snapshot["disallowed_files"]
+    state["deliverables_count_snapshot"] = amended_count
     receipts = state.setdefault("receipts", {k: None for k in RECEIPT_FIELDS})
     receipts["verified"] = None
     receipts["reviewed"] = None
@@ -643,6 +716,22 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     if wiring_err:
         sys.stderr.write(wiring_err)
         return 2
+
+    # Deliverable-count lock: the count was snapshotted at load/approve, so a
+    # mid-issue spec edit cannot shrink the promise; only an explicit
+    # founder-gated amend re-snapshots it. Absent snapshot = pre-lock spec,
+    # old rules, no check.
+    locked_count = state.get("deliverables_count_snapshot")
+    if locked_count is not None:
+        checked, listed = _count_checked_deliverables(text)
+        if checked != locked_count:
+            sys.stderr.write(
+                f"cannot close {issue_id}: deliverables lock — the spec "
+                f"promises {locked_count} deliverable(s), {checked} checked "
+                f"under '## Deliverables' ({listed} listed). Check off what "
+                "shipped, or amend the spec via /issue-amend (founder-gated).\n"
+            )
+            return 2
 
     closed_at = _now_iso()
     receipt = {
