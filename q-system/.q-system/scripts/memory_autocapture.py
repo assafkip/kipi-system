@@ -51,13 +51,16 @@ _TOUCH_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 
 
 def _current_instance(instance_id: str | None = None) -> str:
-    """The instance this session runs in. Env override wins; else the project dir
-    name (q-system/..'s parent), e.g. `4_points_consulting` or `kipi-system`."""
+    """The instance this session runs in: the project directory name (q-system/..'s
+    parent), e.g. `4_points_consulting` or `kipi-system`.
+
+    Identity comes ONLY from the durable repo path, never from a mutable env var:
+    a design-partner gate that trusted $KIPI_INSTANCE could be spoofed by any
+    instance setting it to the allowlisted name (instance-guard adversarial
+    finding). The `instance_id` param is an explicit injection point for tests,
+    not an ambient override."""
     if instance_id:
         return instance_id
-    env = os.environ.get("KIPI_INSTANCE")
-    if env and env.strip():
-        return env.strip()
     return QROOT.parent.name
 
 

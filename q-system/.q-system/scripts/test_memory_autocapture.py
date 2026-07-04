@@ -147,6 +147,15 @@ def test_only_record_outcome_writes(tmp_path):
         assert row["outcome"] in mo.VALID_OUTCOMES
 
 
+def test_env_cannot_spoof_instance(tmp_path, monkeypatch):
+    # $KIPI_INSTANCE must NOT enable a non-allowlisted instance. Identity comes
+    # only from the real repo dir (kipi-system here), which is not allowlisted.
+    cfg = tmp_path / "autocapture_config.json"
+    cfg.write_text(json.dumps({"enabled_instances": ["4_points_consulting"]}))
+    monkeypatch.setenv("KIPI_INSTANCE", "4_points_consulting")
+    assert mac.is_enabled(config_path=cfg) is False
+
+
 def test_gate_default_off(tmp_path):
     # No config -> disabled (design-partner-first, default off fleet-wide).
     assert mac.is_enabled(config_path=tmp_path / "none.json", instance_id="anything") is False
