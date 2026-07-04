@@ -1,9 +1,9 @@
 ---
 id: prd-memory-autocapture-2026-07-04
 title: Memory Outcome Auto-Capture (the referee)
-status: approved
+status: archived
 created_at: 2026-07-04T20:59:26Z
-updated_at: 2026-07-04T21:08:27Z
+updated_at: 2026-07-04T21:39:15Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-memory-autocapture-2026-07-04-findings.jsonl
