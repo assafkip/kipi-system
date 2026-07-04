@@ -226,3 +226,27 @@ Examples:
 
 ### Anti-pattern note
 Do NOT import the spoken disfluency (like, you know, false starts, repetition-as-mess). Those were quarantined during extraction. The written voice stays clean. These patterns inform WHAT he says and HOW he structures it, not the verbal mess of live speech.
+
+## Spoken-Derived Patterns, Batch 2 (clean expansion, pitch register, 2026-07)
+
+> From the Catalyst investor conversation plus re-analysis of the clean corpus. This is his PITCH voice, distinct from the personal and casual registers above.
+
+- Silos to shared nervous system. Frames the product not as another tool but as connective tissue between teams that do not talk. "It's not a monitoring layer. It's a shared nervous system."
+- The LLM as an eager-to-please liar. Anthropomorphizes the model as something that wants to fool you and must be caught. "they really wanna please you and say, yes I did this. No you didn't" / "it tries so hard to hallucinate."
+- Zero hallucination where it counts. Rejects a percentage error rate in security; review in test before production, never straight to prod. "no hallucination where it counts, where the rule is created" / "companies say well it's 3%. No. You can't do that in security."
+- Judge-LLM skepticism. Stacking an agent to watch an agent does not fix hallucination; you have to compare against the actual source that came in. "we're just having another agent. That's not how that works. If you're not comparing it to the actual thing that came in, you don't know."
+- Provenance obsession. Every rule or fact must cite exactly which report and paragraph it came from. "where did this come from... this rule came from this report... exactly from this paragraph."
+- Concrete physical analogies. Explains an abstract thing with a physical image. "water asking can I be wet," "duct-taping themselves to their chair," "kiddie pool, Olympic pool, puddle."
+
+## Speech Mechanics Fingerprint (deterministic, from 11.5k words of his speech)
+
+> Counted, not judged (granola-voice-fingerprint.py). Structural, not topical. SPOKEN-ONLY items are marked: know the rate, do NOT reproduce them in writing.
+
+- Sentence openers: he starts with conjunctions and acknowledgments, rarely a fresh subject. Top openers: And (198), I (101), So (97), But (69), Yeah (68), Like (55). He chains thoughts with And / So / But instead of full stops. "The" as an opener is rare.
+- Sentence closers: he lands flat on small words, no flourish. Top closers: yeah, it, that, like, okay, this, now, me. Closing on "now" (17x) is a tell: he ends on immediacy.
+- "because" is over-indexed (81x): he constantly explains causation. Pairs with the causal-chain argument pattern above.
+- Reported speech is core: said (49), tell (23), say (23). He narrates by replaying the exchange. "and I said... and she said..." is how he tells a story.
+- Defines by negation: don't (80), didn't (23), no, not. He states what things are NOT as much as what they are.
+- Confident but hedged: strong claims wrapped in maybe (22), "I don't know" (1.4 per 1k), whatever, "we'll see." Assertion and uncertainty coexist without contradiction.
+- Fillers [SPOKEN-ONLY]: "like" (12.9 per 1k) and "so" (11 per 1k) dominate; "dude" and "man" are occasional and usable in casual writing; NOT "um" or "you know." Know the rhythm, do not transcribe it.
+- Absence, the strongest signal: 0 of 27 corporate cliches across 11,563 words. Zero leverage, synergy, robust, seamless, innovative, disrupt, empower, ecosystem, circling back, deep dive, north star, double-click. Deterministic proof of the anti-corporate rule already in this file.
