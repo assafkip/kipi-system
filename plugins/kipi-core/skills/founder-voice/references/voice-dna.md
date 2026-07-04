@@ -194,3 +194,35 @@ Examples:
 - "Here's what happened to me. Here's what it taught me."
 
 **Default to Analytical Mode unless the content specifically calls for personal storytelling.**
+
+## Spoken-Derived Patterns (from meeting transcripts, 2026-07)
+
+> Extracted from ~16,600 words of Assaf's own speech across three meetings (his lines only, isolated deterministically via the `Me:` speaker marker). These survived an adversarial "distinctively-Assaf, not generic" critic. They belong to the SAME voice as the writing above. Speech disfluency (filler, false starts) was stripped; what remains is how he actually thinks out loud.
+
+### Coined vocabulary (extends The Namer)
+- "skeleton" then "instantiate": his build method. Builds a reusable skeleton, then instantiates it into a specific product. "what I do is I build something that's a skeleton, and then I instantiate."
+- "token guards": his own coined enforcement mechanism. "I made these deterministic hooks. That are called token guards. So you try three times, and after three times, you can't try anymore."
+
+### Stances (positions he returns to)
+- Deterministic code for deterministic decisions. If the answer is one or zero, write code, do not ask an LLM. "python's a thing. Like, rust is a thing... Is it one or is it zero? Let's ask the llm. Why?"
+- Drift over hallucination. The real danger is the model silently canonicalizing a wrong decision, not a one-off hallucination. "it canonicalized a decision that was wrong. Go figure out the decision that was wrong."
+- Learn a tool by asking the tool how to use itself. "I don't know how to ask you this so tell me how to ask you this."
+
+### Argument structures (how he builds a point)
+- Sequential gates. Anti-hallucination design described as checking at each step. "gate after gate after gate... I'm gonna check you at a. I'm gonna check you at b. I'm gonna check you at c."
+- Causal chain for dysfunction. Names a mechanism, not a complaint (layoffs to fear to posturing to people stop innovating). "posturing comes from fear. Fear comes from layoffs."
+
+### Rhythm and humor mechanics (extends Rhythm and Pacing)
+- Repetition for emphasis instead of a bigger adjective. "Google is terrible. It's terrible." Triples a word rather than reaching for intensifiers.
+- Deadpan absurdity capper. Recounts institutional nonsense in clipped fragments, lands it flat. "So you flew me to Florida. To talk to you for an hour. And fly back. Cool. It was very stupid."
+
+### Stories and scars (concrete, reusable)
+- Three in a row: laid off twice, fired once, across Meta, Google, ElevenLabs. "This has been, like, three times in a row. And I'm done with this."
+- Ownership guard, when a would-be design partner tried to claim his product. "this is my project. And it's mine."
+
+### Values (reinforce existing DNA)
+- RCA reflex. Wants root cause so a failure never recurs, does not patch and move on. "Let's do an RCA and let's make sure this never, ever happens again."
+- ESL / ADHD / visual, picks no-reading learning media. "I am very visual. It's very hard for me to read. ESL, ADHD."
+
+### Anti-pattern note
+Do NOT import the spoken disfluency (like, you know, false starts, repetition-as-mess). Those were quarantined during extraction. The written voice stays clean. These patterns inform WHAT he says and HOW he structures it, not the verbal mess of live speech.
