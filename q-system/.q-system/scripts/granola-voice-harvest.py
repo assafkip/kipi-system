@@ -66,6 +66,14 @@ def extract_me(t):
     return out
 
 
+# A single spoken turn longer than this many words usually means Granola's
+# speaker diarization dropped its markers mid-transcript, so one "Me:" chunk has
+# silently swallowed the other speaker's lines. Warn (do NOT auto-skip: Assaf
+# genuinely gives long monologues, so a hard cut would drop real signal). The
+# flag routes the meeting to a human eyeball before it feeds Stage 2.
+MAX_TURN_WORDS = 700
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("usage: granola-voice-harvest.py <in_dir> <out_dir>")
@@ -83,11 +91,18 @@ def main():
             continue
         segs = extract_me(t)
         words = sum(len(s.split()) for s in segs)
-        ranking.append({"title": title, "utterances": len(segs), "words": words})
+        max_turn = max((len(s.split()) for s in segs), default=0)
+        row = {"title": title, "utterances": len(segs), "words": words, "max_turn_words": max_turn}
+        if max_turn > MAX_TURN_WORDS:
+            row["review_flag"] = (f"a single turn is {max_turn} words (> {MAX_TURN_WORDS}); "
+                                  "diarization may have dropped markers, mixing the other "
+                                  "speaker into this meeting's Me: text. Eyeball before trusting.")
+        ranking.append(row)
         corpus.append(f"\n\n===== {title} ({len(segs)} utterances, {words} words) =====\n")
         corpus.extend(s + "\n" for s in segs)
 
     ranking.sort(key=lambda r: -r["words"])
+    flagged = [r for r in ranking if "review_flag" in r]
     open(os.path.join(out_dir, "me-corpus.txt"), "w", encoding="utf-8").write("".join(corpus))
     json.dump({"ranking": ranking, "skipped": skipped},
               open(os.path.join(out_dir, "talk-ranking.json"), "w"), indent=2)
@@ -95,6 +110,7 @@ def main():
         "meetings_used": len(ranking),
         "skipped": len(skipped),
         "total_words": sum(r["words"] for r in ranking),
+        "review_flagged": [{"title": r["title"], "max_turn_words": r["max_turn_words"]} for r in flagged],
         "ranking": ranking,
         "skipped_detail": skipped,
     }, indent=2))
