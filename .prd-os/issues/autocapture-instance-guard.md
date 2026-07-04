@@ -1,7 +1,7 @@
 ---
 id: autocapture-instance-guard
 title: Design-partner-only enforcement: self-gating allowlist + guarded advisory Stop-hook wiring (settings + template sync)
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:

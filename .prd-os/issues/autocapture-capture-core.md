@@ -30,3 +30,18 @@ Reads .session-recall.json + the session tool-transcript; emits useful (source_f
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [x] memory_autocapture.py Stop-hook: deterministic useful/dead_end via record_outcome, transcript-or-mtime read
+
+## Amendments
+
+### 2026-07-04T21:27:29Z
+Reason: Fix date-in-event_id idempotency bug found by adversarial review of the sibling corrected-path issue: a session replayed across UTC midnight would double-write because event_id hashed the day. Make the dedup key session-based (date-free), matching correction_outcome.py.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/memory_autocapture.py', 'q-system/.q-system/scripts/test_memory_autocapture.py']
+- required_checks: ['python3 -m pytest q-system/.q-system/scripts/test_memory_autocapture.py -q']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/memory_autocapture.py', 'q-system/.q-system/scripts/test_memory_autocapture.py']
+- required_checks: ['python3 -m pytest q-system/.q-system/scripts/test_memory_autocapture.py -q']
+- disallowed_files: []
