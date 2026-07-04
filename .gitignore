@@ -49,6 +49,11 @@ q-system/sources/*.md
 # Pruned markdown archives (historical, not loaded in context)
 q-system/memory/archives/
 
+# Session-scoped recall artifact for memory auto-capture (PRD prd-memory-autocapture)
+q-system/memory/.session-recall.json
+q-system/memory/.session-recall.json.lock
+q-system/memory/.session-recall.json.tmp-*
+
 # Node
 node_modules/
 

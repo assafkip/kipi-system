@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memory_outcomes as mo  # noqa: E402
 import memory_reflect as mr  # noqa: E402
+import session_recall as sr  # noqa: E402
 
 QROOT = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")).resolve()
 DEFAULT_SIDECAR = QROOT / "memory" / ".memory-scores.json"
@@ -129,14 +130,47 @@ def _refresh_sidecar() -> None:
                 pass
 
 
+def surfaced_ids(scores: dict[str, dict]) -> list[tuple[str, str]]:
+    """The memory_ids render_block actually surfaces (recalled this session):
+    preferred, contested, or stale. Same predicate as render_block so the recorded
+    recall set matches exactly what the model saw, never more. Returns
+    (memory_id, source_file) pairs; the source file for a slug is `<slug>.md`."""
+    out: list[tuple[str, str]] = []
+    for mid, e in sorted(scores.items()):
+        status = e.get("status")
+        if status in ("preferred", "contested") or e.get("stale"):
+            out.append((mid, f"{mid}.md"))
+    return out
+
+
+def record_surfaced_from_scores(scores: dict[str, dict], *,
+                                session_id: str | None = None,
+                                recall_path=None) -> None:
+    """Producer: record the surfaced ids into the session-recall artifact so the
+    Stop-hook capture knows what was recalled. Best-effort: never crash SessionStart."""
+    entries = surfaced_ids(scores)
+    if not entries:
+        return
+    try:
+        sid = session_id or sr.resolve_session_id()
+        sr.record_surfaced(entries, session_id=sid, path=recall_path)
+    except (OSError, ValueError):
+        # A recall write must never block a session close, but only the EXPECTED
+        # failures are swallowed (disk/permission = OSError, bad input = ValueError)
+        # so an unexpected bug still surfaces instead of hiding (Codex finding-2).
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Print the earned-trust block to stdout for SessionStart context injection.
     Refreshes the sidecar from the log first, then reads it. Silent (exit 0, no
     output) when there are no events / the sidecar is absent, empty, or malformed."""
     _refresh_sidecar()
-    block = render_block(_safe_load(DEFAULT_SIDECAR))
+    scores = _safe_load(DEFAULT_SIDECAR)
+    block = render_block(scores)
     if block:
         print(block)
+        record_surfaced_from_scores(scores)
     return 0
 
 
