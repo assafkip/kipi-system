@@ -1,9 +1,9 @@
 ---
 id: prd-fable-discipline-2026-07-04
 title: Fable Discipline
-status: approved
+status: archived
 created_at: 2026-07-04T01:37:52Z
-updated_at: 2026-07-04T01:45:20Z
+updated_at: 2026-07-04T02:42:40Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-fable-discipline-2026-07-04-findings.jsonl
