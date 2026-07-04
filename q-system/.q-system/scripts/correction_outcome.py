@@ -71,10 +71,14 @@ def record_correction(memory_id: str, *, session_id: str,
 
 
 if __name__ == "__main__":
-    # CLI for the skill / manual use: correction_outcome.py <memory_id> <session_id>
-    if len(sys.argv) >= 3:
-        result = record_correction(sys.argv[1], session_id=sys.argv[2])
+    # CLI for the skill / manual use: correction_outcome.py <memory_id> [<session_id>]
+    # session_id is optional: when omitted it resolves the same id the producer and
+    # the Stop-hook consumer use (sr.resolve_session_id), so the skill does not have
+    # to know the session UUID.
+    if len(sys.argv) >= 2:
+        sid = sys.argv[2] if len(sys.argv) >= 3 else sr.resolve_session_id()
+        result = record_correction(sys.argv[1], session_id=sid)
         print("recorded" if result else "no-op (memory not surfaced this session)")
     else:
-        print("usage: correction_outcome.py <memory_id> <session_id>", file=sys.stderr)
+        print("usage: correction_outcome.py <memory_id> [<session_id>]", file=sys.stderr)
         raise SystemExit(2)

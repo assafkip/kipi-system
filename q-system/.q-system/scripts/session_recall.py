@@ -40,10 +40,17 @@ DEFAULT_PATH = QROOT / "memory" / ".session-recall.json"
 
 
 def resolve_session_id() -> str:
-    """The current session's id, from the env the harness sets. Falls back to a
-    stable per-process token so a missing id never crashes the producer; a
-    fallback session simply never matches a real Stop-hook read, which is safe."""
-    for var in ("CLAUDE_SESSION_ID", "KIPI_SESSION_ID"):
+    """The current session's id, from the env Claude Code sets for hooks. MUST
+    match the `session_id` the Stop-hook consumer reads from its stdin payload,
+    or the producer keys recall under one id and the consumer reads another and
+    captures nothing.
+
+    Claude Code exports the session UUID as `CLAUDE_CODE_SESSION_ID` (verified:
+    it equals the Stop payload session_id and the transcript filename). The old
+    `CLAUDE_SESSION_ID` name does NOT exist in the hook env, so it is kept only as
+    a defensive alias. Falls back to a per-process token so a missing id never
+    crashes the producer (that fallback simply never matches a real read)."""
+    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "KIPI_SESSION_ID"):
         val = os.environ.get(var)
         if val and val.strip():
             return val.strip()
