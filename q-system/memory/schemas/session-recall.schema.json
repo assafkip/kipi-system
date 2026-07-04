@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "session-recall.schema.json",
+  "title": "Session recall artifact (.session-recall.json)",
+  "description": "The surfaced-set for memory auto-capture (PRD prd-memory-autocapture-2026-07-04, finding-5). Records which memories were surfaced (recalled) per session so the Stop-hook capture knows the candidate set. Producer: SessionStart surface scripts via session_recall.record_surfaced. Consumer: memory_autocapture.py via read_recall, then clear_session. Gitignored, session-scoped. On-disk shape is a MAP keyed by session_id so overlapping sessions never mix or truncate each other; each value is one per-session record.",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "required": ["session_id", "surfaced"],
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "description": "The Claude session id this record belongs to. Matches the map key."
+      },
+      "surfaced": {
+        "type": "array",
+        "description": "The memories recalled this session, de-duplicated by memory_id.",
+        "items": {
+          "type": "object",
+          "required": ["memory_id", "surfaced_at"],
+          "properties": {
+            "memory_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+              "description": "Flat slug of an in-scope memory (v1 scores only q-system/memory)."
+            },
+            "source_file": {
+              "type": "string",
+              "description": "The memory's source file (usually <slug>.md); capture checks whether it was read this session."
+            },
+            "surfaced_at": {
+              "type": "string",
+              "description": "ISO-8601 UTC timestamp when the memory was surfaced."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "additionalProperties": false
+  }
+}

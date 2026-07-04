@@ -1,7 +1,7 @@
 ---
 id: autocapture-recall-artifact
 title: Session-scoped .session-recall.json: single-writer producer + schema + atomic keyed write
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:
@@ -33,4 +33,4 @@ Surface scripts append surfaced memory_ids via a single-writer helper. .session-
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Session-scoped .session-recall.json: single-writer producer + schema + atomic keyed write
+- [x] Session-scoped .session-recall.json: single-writer producer + schema + atomic keyed write
