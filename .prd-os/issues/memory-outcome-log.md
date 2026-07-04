@@ -24,9 +24,13 @@ Parent PRD: `.prd-os/prds/prd-memory-outcome-scoring-2026-07-04.md`
 
 ## Acceptance
 
-<!-- fill in -->
+- [x] `record_outcome` is the only writer; appends one JSONL line per event to
+  `q-system/memory/outcomes.jsonl`.
+- [x] A duplicate `event_id` is refused (idempotent, no second line).
+- [x] `read_events` skips malformed AND parseable-but-incomplete lines.
+- [x] `pytest test_memory_outcomes.py -q` green (8 tests, incl. `-k dedup`).
 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Outcome event log + single-writer record_outcome with event_id dedup
+- [x] Outcome event log + single-writer record_outcome with event_id dedup
