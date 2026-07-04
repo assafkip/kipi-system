@@ -4,9 +4,9 @@
     {
       "id": "cc-spex-pr",
       "title": "cc-spex closeout-gate PR",
-      "next_action": "Issue FILED + OPEN: github.com/rhuss/cc-spex/issues/9 (0 maintainer comments as of 2026-06-20). When a maintainer approves/invites the PR: fork rhuss/cc-spex, push branch chore/closeout-gate, gh pr create with the STEP 2 body in q-system/output/cc-spex-pr-drafts-2026-06-16.md. Then close this loop.",
+      "next_action": "CLOSED (idea landed upstream): maintainer rhuss (OWNER) shipped the deterministic closeout gate himself in v5.9.0 on 2026-07-04 -- spex/scripts/spex-closeout-gate.sh wired into verify as Step 0, reads REVIEW-CODE.md severity table, exits non-zero on unresolved Critical/Important, fail-open by default with SPEX_CLOSEOUT_STRICT=1 for fail-closed. Issue #9 now CLOSED. No PR needed; the contribution converged with the shipped feature.",
       "needs_founder": true,
-      "status": "open",
+      "status": "closed",
       "added": "2026-06-20",
       "github": "https://github.com/rhuss/cc-spex/issues/9"
     },
