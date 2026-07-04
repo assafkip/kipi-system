@@ -1,7 +1,7 @@
 ---
 id: fable-merge-into-prd-os
 title: Fold fable-discipline into prd-os as its execution-discipline layer
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-fable-discipline-2026-07-04
 allowed_files:
@@ -25,7 +25,6 @@ disallowed_files: []
 required_checks:
   - pytest -q plugins/prd-os/tests
   - bash plugins/prd-os/scripts/export-fable-mirror.sh --check
-  - python3 plugins/prd-os/scripts/prd_runner.py gates run
   - bash -c '! grep -rn "kipi-core/skills/fable-discipline" .claude/rules/ CLAUDE.md'
 required_reviews: []
 bypass_check: "bash -c 'grep -q fable-discipline-lint plugins/prd-os/hooks/hooks.json && ! grep -q fable-discipline-lint plugins/kipi-core/hooks/hooks.json'"

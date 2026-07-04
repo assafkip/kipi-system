@@ -14,6 +14,22 @@ Most of it is judgment the skill teaches. One slice is enforced by a hook, becau
 a rule a model can talk itself out of is a suggestion, not a gate. The skill
 teaches; the hook makes the one checkable habit non-optional.
 
+<!-- kipi-only:start -->
+## Position: the execution-discipline layer of prd-os
+
+This skill is not a sibling system to prd-os; it is prd-os's execution-discipline
+layer (merged 2026-07-04, see the plugin CHANGELOG). Two load paths, one skill:
+
+- **PRD work:** `/issue-start` loads this skill before the first edit of every
+  DSSE issue. The issue's receipts (verified, reviewed, findings_triaged) are the
+  task-level half of the same contract this skill states per-edit.
+- **Non-PRD work:** the quick-plan fast path and the fable-discipline auto-invoke
+  rule load it for any coding task bigger than a one-line change.
+
+The public standalone export (github.com/assafkip/fable-discipline) mirrors this
+copy; `scripts/export-fable-mirror.sh --check` is the drift blocker.
+<!-- kipi-only:end -->
+
 ## When NOT to use this
 
 One-line changes, typo fixes, a task with one obvious approach that fits in a

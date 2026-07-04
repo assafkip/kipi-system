@@ -43,7 +43,13 @@ pytestmark = pytest.mark.skipif(
     reason="kipi-update.sh is a kipi-system skeleton artifact, absent in a portable extraction",
 )
 
-PROTECTED_EXCLUSIONS = ("memory/", "output/", "my-project/")
+# Root-anchored form ("/memory/" not "memory/"): the 2026-07-01 fleet
+# flattening made the excludes anchor at the transfer root so a nested
+# shadow tree (q-system/q-system/memory/) is no longer silently protected
+# from deletion — unanchored excludes matched at ANY depth and left the
+# shadow copies rsync could not remove. Anchored still protects the real
+# top-level instance state, which is the contract this test holds.
+PROTECTED_EXCLUSIONS = ("/memory/", "/output/", "/my-project/")
 
 
 def _read_update_script() -> str:

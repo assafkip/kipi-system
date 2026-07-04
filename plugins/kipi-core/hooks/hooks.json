@@ -7,10 +7,6 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/rca/scripts/rca-lint.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/fable-discipline/scripts/fable-discipline-lint.py\""
           }
         ]
       },
