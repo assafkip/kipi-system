@@ -3,6 +3,8 @@ name: learn-from-correction
 description: "Propose a principle edit to a skill or persona file based on a (agent_output, human_output) correction pair. Outputs a proposal markdown for human review - never auto-edits the target file."
 ---
 
+<!-- prompt-only-enforcement-skip: this is an interpretive skill spec (skill-hook-pairing classifies the learn-from-correction family as "no hook"); its one deterministic slice is backed by correction_outcome.py + test_correction_outcome.py, not by prose. -->
+
 # Learn From Correction
 
 You take a correction (what an agent proposed vs. what the human actually did) and propose a principle edit to the skill/persona file that should have caught it. The proposal goes to `q-system/output/skill-proposals/` for the founder to review and merge through normal git flow.
@@ -138,6 +140,30 @@ Write the refusal as a short proposal file (1-2 paragraphs) so the founder can s
 - **Over-generalizing from one case.** One correction is not a pattern. The 5-future-situations test (Step 3) is mandatory, not optional.
 - **Skipping the source quote.** Without the source quote, the founder cannot verify interpretation. The proposal is incomplete.
 - **Auto-applying the edit.** Even when the proposal feels obviously right, the founder reviews and merges manually. The skill writes proposals, not commits.
+
+## Memory correction: record a `corrected` outcome
+
+Separate from the principle-proposal flow above, one narrow case also feeds the
+memory earned-trust log. When the correction is the founder contradicting a
+**surfaced memory** (one recalled this session, listed in
+`q-system/memory/.session-recall.json`) rather than an agent draft, the recall is
+also an outcome signal: that memory was `corrected`.
+
+The recording is deterministic, not a judgment for prose to hold. The single
+step here is interpretive: pick which surfaced `memory_id` the contradiction
+refers to. Only pick one when the map is confident; an uncertain map is left
+unrecorded (a missed `corrected` is safe, a wrong one is a spurious signal). Then
+hand that id to the script that owns the write:
+
+```bash
+python3 q-system/.q-system/scripts/correction_outcome.py <memory_id> <session_id>
+```
+
+The script (`correction_outcome.py`) re-checks that the id was actually surfaced
+this session and no-ops otherwise, routes the write through the single-writer
+`record_outcome`, and dedups on replay. Nothing is recorded when the map is not
+confident. This does not replace the principle proposal; a correction can produce
+both a proposal and a `corrected` outcome.
 
 ## Related
 

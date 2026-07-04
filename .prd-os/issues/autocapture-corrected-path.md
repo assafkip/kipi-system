@@ -1,7 +1,7 @@
 ---
 id: autocapture-corrected-path
 title: corrected outcome via learn-from-correction: conservative memory_id mapping with a deterministic check
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:
@@ -30,4 +30,4 @@ learn-from-correction, when a contradicted belief maps to a surfaced memory_id, 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] corrected outcome via learn-from-correction: conservative memory_id mapping with a deterministic check
+- [x] corrected outcome via learn-from-correction: conservative memory_id mapping with a deterministic check

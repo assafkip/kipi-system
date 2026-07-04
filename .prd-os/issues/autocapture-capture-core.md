@@ -1,7 +1,7 @@
 ---
 id: autocapture-capture-core
 title: memory_autocapture.py Stop-hook: deterministic useful/dead_end via record_outcome, transcript-or-mtime read
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-memory-autocapture-2026-07-04
 allowed_files:
