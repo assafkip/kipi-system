@@ -1,9 +1,9 @@
 ---
 id: prd-voice-refresh-monthly-2026-07-04
 title: Voice Refresh Monthly
-status: in-review
+status: approved
 created_at: 2026-07-04T23:12:15Z
-updated_at: 2026-07-04T23:17:42Z
+updated_at: 2026-07-04T23:47:31Z
 owner: assafkip
 reviewers: []
 findings_path: .prd-os/findings/prd-voice-refresh-monthly-2026-07-04-findings.jsonl
@@ -143,6 +143,7 @@ Decomposition (formalized into the Issues block at split time):
     "finding_id": "finding-4",
     "allowed_files": ["automation/voice_refresh.py", "automation/test_voice_refresh.py"],
     "required_checks": ["python3 -m pytest automation/test_voice_refresh.py -q"],
+    "bypass_check": "python3 -m pytest automation/test_voice_refresh.py -q -k contamination_or_headless",
     "acceptance": "WRAPS (never modifies) granola-voice-synthesize.py + granola-voice-fingerprint.py; checks claude -p availability and stops with an environmental-trigger diagnosis if absent; REFUSES Stage 2 on any corpus containing a review-flagged (>700-word turn) meeting; logs each step; a second run on an unchanged corpus is a no-op."
   },
   {
@@ -151,6 +152,7 @@ Decomposition (formalized into the Issues block at split time):
     "finding_id": "finding-7",
     "allowed_files": ["plugins/kipi-core/commands/voice-refresh.md", "automation/test_voice_refresh_command.py"],
     "required_checks": ["python3 automation/test_voice_refresh_command.py"],
+    "bypass_check": "python3 automation/test_voice_refresh_command.py",
     "acceptance": "Pulls since-last-refresh Granola meetings, runs harvest, invokes the orchestrator, emits a voice-delta.md proposal; NEVER writes voice-dna.md directly; test asserts frontmatter, CLAUDE.md registration, and no voice-dna.md write path."
   },
   {
@@ -159,6 +161,7 @@ Decomposition (formalized into the Issues block at split time):
     "finding_id": "finding-9",
     "allowed_files": ["automation/voice-refresh-nudge.sh", "automation/com.kipi.voice-refresh.plist", "automation/install-voice-refresh.sh", "automation/test_voice_refresh_schedule.py"],
     "required_checks": ["python3 automation/test_voice_refresh_schedule.py"],
+    "bypass_check": "python3 automation/test_voice_refresh_schedule.py",
     "acceptance": "plist is valid XML scheduling the nudge on the 1st monthly; nudge routes the founder ping ONLY through slack-notify.sh (no osascript); installer registers with launchd-health; test asserts all three."
   }
 ]
