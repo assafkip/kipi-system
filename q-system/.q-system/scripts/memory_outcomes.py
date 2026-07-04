@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 try:
@@ -47,6 +48,26 @@ MEMORY_DIR = QROOT / "memory"
 DEFAULT_LOG = MEMORY_DIR / "outcomes.jsonl"
 
 VALID_OUTCOMES = ("useful", "dead_end", "corrected")
+
+
+# A memory_id is a flat slug like `feedback_rate_floor_250` — the basename kipi
+# gives its memory files. ALLOWLIST, not denylist (review finding, issue
+# memory-scope-boundary): a denylist of "/" + leading-dot let fullwidth-Unicode
+# separators (U+FF0F), NUL/control bytes, and trailing whitespace through, any of
+# which could NFKC-normalise into a separator or traversal. Only ASCII
+# [A-Za-z0-9_-] with an alphanumeric first char is a valid slug; everything else
+# — paths, dotfiles, Unicode lookalikes, whitespace, control chars — fails.
+_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _is_in_scope_memory_id(memory_id: str) -> bool:
+    """True only for a memory_id that names a single memory within the scored
+    store (finding-1). v1 scores ONLY q-system/memory.
+
+    Matched against the RAW value (no strip) so trailing/leading whitespace is
+    itself a rejection, and the stored id is guaranteed clean.
+    """
+    return isinstance(memory_id, str) and bool(_MEMORY_ID_RE.match(memory_id))
 
 
 def _is_valid_event(obj: object) -> bool:
@@ -111,6 +132,10 @@ def record_outcome(memory_id: str, outcome: str, *, event_id: str,
             f"outcome must be one of {VALID_OUTCOMES}, got {outcome!r}")
     if not event_id or not str(event_id).strip():
         raise ValueError("event_id is required and must be non-empty")
+    if not _is_in_scope_memory_id(memory_id):
+        raise ValueError(
+            f"memory_id {memory_id!r} is out of scope: v1 scores only flat "
+            f"slugs within q-system/memory (no paths, traversal, or dotfiles)")
     if isinstance(source_file, (list, tuple)):
         # One source per memory in v1 (finding-4); a list is rejected so the
         # fingerprint resolver never has to guess which file to hash.

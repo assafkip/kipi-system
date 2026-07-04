@@ -1,7 +1,7 @@
 ---
 id: memory-scope-boundary
 title: Scope scoring to q-system/memory only; record_outcome rejects out-of-scope memory_id
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-memory-outcome-scoring-2026-07-04
 allowed_files:
@@ -24,9 +24,12 @@ Parent PRD: `.prd-os/prds/prd-memory-outcome-scoring-2026-07-04.md`
 
 ## Acceptance
 
-<!-- fill in -->
+- [x] `record_outcome` rejects an out-of-scope `memory_id` (paths, traversal,
+  dotfiles, Unicode separators, control/whitespace) via an ASCII allowlist.
+- [x] A normal slug (`feedback_rate_floor_250`) is accepted.
+- [x] `pytest test_memory_outcomes.py -q` green (23 tests, incl. `-k scope`).
 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Scope scoring to q-system/memory only; record_outcome rejects out-of-scope memory_id
+- [x] Scope scoring to q-system/memory only; record_outcome rejects out-of-scope memory_id

@@ -84,6 +84,26 @@ def test_incomplete_dict_not_counted_as_event(tmp_path):
     assert len(mo.read_events(log)) == 1
 
 
+@pytest.mark.parametrize("bad_id", [
+    "a/b", "../evil", "/etc/passwd", "a\\b", "..", "",
+    "fooÿbar", "foo／bar", "．．secret", "foo\x00bar",
+    "m1 ", " m1", ".hidden", "foo bar",
+])
+def test_scope_rejects_out_of_scope_memory_id(tmp_path, bad_id):
+    """record_outcome refuses a memory_id that escapes the scored store, so the
+    log never accumulates outcomes the surface cannot cover (finding-1)."""
+    log = tmp_path / "outcomes.jsonl"
+    with pytest.raises(ValueError):
+        mo.record_outcome(bad_id, "useful", event_id="e1", log_path=log)
+    assert not log.exists() or _read(log) == []
+
+
+def test_scope_accepts_normal_slug(tmp_path):
+    log = tmp_path / "outcomes.jsonl"
+    ev = mo.record_outcome("feedback_rate_floor_250", "useful", event_id="e1", log_path=log)
+    assert ev is not None
+
+
 def test_append_after_line_without_trailing_newline(tmp_path):
     """A prior line with no trailing newline must not swallow the new event
     (review finding-3 adversarial)."""
