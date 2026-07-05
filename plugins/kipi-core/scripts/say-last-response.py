@@ -13,18 +13,15 @@ What it does:
   3. Strip markdown so punctuation is not read aloud.
   4. Chunk to <=4000 chars (OpenAI hard limit is 4096/request) and synthesize
      each chunk via POST https://api.openai.com/v1/audio/speech.
-  5. Write the mp3 to a STABLE path. When local (not SSH) with mpv present,
-     AUTOPLAY it by opening a NEW Terminal.app window (via `open`) running mpv —
-     a real terminal so the founder's speed/seek/pause keys reach the player. A
-     player Claude spawns detached takes no key presses; a real window does. The
-     window MUST come from `open`, not AppleScript: /say runs in a seatbelt
-     sandbox that blocks AppleEvents (iTerm, driven only by AppleEvents, times
-     out there), but `open -a Terminal <file>.command` is allowed. Over SSH (the
-     server cannot open a window on the laptop) or without mpv, fall back to
-     printing the play command. Same stable file is what makes over-SSH playback
-     work — pull it to the laptop and play there. (2026-06-21: controls need a
-     real terminal; autoplay opens one via `open`. Tested: AppleScript->iTerm
-     times out sandboxed; the `open`->Terminal path fires.)
+  5. Write the mp3 to a STABLE path and, when local (not SSH), PLAY IT NOW in
+     the background — no window, no controls. afplay (a macOS built-in) is the
+     fastest path; mpv --no-video is the Linux fallback. Over SSH (the server
+     cannot play on the founder's laptop) or with no player, fall back to
+     printing the replay command. The stable file is what makes over-SSH
+     playback work — pull it to the laptop and play there. (2026-07-04: dropped
+     the old Terminal-window autoplay. It existed only to give speed/seek/pause
+     keys, at the cost of a slow window launch on every invoke; the founder
+     wants /say to just play once, so direct background playback wins.)
 
 API key: read from $OPENAI_API_KEY, else ~/.config/kipi/openai-key. No key is a
 clean one-line error, not a traceback.
@@ -32,11 +29,11 @@ clean one-line error, not a traceback.
 Flags:
   --dry-run       Print the extracted, markdown-stripped text. No API call.
   --dump-chunks   Print chunk count and sizes. No API call. (length-handling proof)
-  --no-play       Synthesize + write the file but do NOT open the autoplay window.
+  --no-play       Synthesize + write the file but do NOT play it.
   stop            Clear any stray playback (afplay/mpv).
 
-Stdlib only (urllib for HTTP). Autoplay opens a Terminal window via `open` so the
-founder's keyboard drives the player; over SSH it is the founder's own mpv run.
+Stdlib only (urllib for HTTP). Playback starts in the background via afplay (or
+mpv --no-video); over SSH it is the founder's own replay run.
 
 Exit codes: 0 = ok, 1 = user-facing error (no key, no transcript, API failure).
 """
@@ -44,7 +41,6 @@ Exit codes: 0 = ok, 1 = user-facing error (no key, no transcript, API failure).
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -56,19 +52,11 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "kipi"
 KEY_FILE = CONFIG_DIR / "openai-key"
 PID_FILE = CONFIG_DIR / ".say-playing.pid"
-# Stable output path (NOT a random tempfile). Local autoplay opens this file in
-# a NEW Terminal.app window so the founder gets a keyboard for speed/seek/pause
-# controls — a player Claude launches DETACHED can never take key presses, but a
-# real terminal window can. The stable path is also what makes over-SSH playback
-# work: pull THIS file to the laptop and play it there. (2026-06-21: controls
-# need a real terminal; autoplay opens one via `open`. controls + ssh + autoplay
-# are one design.)
+# Stable output path (NOT a random tempfile). Playback plays THIS file in the
+# background; the stable path is also what makes over-SSH playback work: pull it
+# to the laptop and play it there. (2026-07-04: the Terminal-window autoplay was
+# dropped, so this path no longer feeds a launcher — it is just the audio file.)
 SAY_MP3 = CONFIG_DIR / "say-last.mp3"
-# Generated launcher that the autoplay Terminal window runs. `open` hands a
-# .command file to Terminal, which executes it; that is the sandbox-safe way to
-# get a real terminal window (AppleScript->terminal is blocked by the seatbelt
-# sandbox /say runs in).
-PLAY_LAUNCHER = CONFIG_DIR / "say-play.command"
 
 TTS_URL = "https://api.openai.com/v1/audio/speech"
 DEFAULT_MODEL = os.environ.get("KIPI_TTS_MODEL", "gpt-4o-mini-tts")
@@ -237,83 +225,82 @@ def ssh_server_ip():
     return parts[2] if len(parts) >= 3 else None
 
 
-def autoplay_in_terminal(path):
-    """Autoplay mpv in a NEW Terminal.app window so the founder's keys reach it.
+def resolve_player():
+    """Return the background-playback command as an argv prefix, or None.
 
-    A detached player Claude spawns takes no key presses; a real terminal window
-    does. The window MUST come from `open` (LaunchServices), NOT AppleScript:
-    /say runs in a seatbelt sandbox that blocks AppleEvents, so AppleScript->iTerm
-    times out (-1712), but `open -a Terminal <file>.command` is allowed and
-    Terminal executes the .command. Local + mpv only: over SSH the server cannot
-    open a window on the laptop, and without mpv there is no controllable player —
-    both keep the printed-instructions fallback. (2026-06-21, tested: iTerm via
-    AppleScript times out in the sandbox; this `open`->Terminal path fires.)
+    afplay (a macOS built-in, zero deps) first; mpv --no-video (Linux or manual
+    installs) next. Both play the file start-to-finish with no window and need no
+    foreground shell.
+    """
+    afplay = shutil.which("afplay")
+    if afplay:
+        return [afplay]
+    mpv = shutil.which("mpv")
+    if mpv:
+        return [mpv, "--no-video", "--really-quiet"]
+    return None
 
-    Returns True if the autoplay window was launched, False otherwise.
+
+def play_now(path):
+    """Play the mp3 immediately in the background — no window, no controls.
+
+    The founder wants /say to just play on invoke. The old Terminal-window
+    autoplay existed only to give speed/seek/pause keys, and paid for them with a
+    slow window launch (app activation + shell + player startup) on every call.
+    Direct background playback removes that lag. Over SSH the server cannot play
+    on the founder's laptop, so fall back to the printed replay command. The PID
+    is recorded so `stop` can end playback. (2026-07-04: the controls were
+    solving a problem the founder does not have.)
+
+    Returns True if playback started, False otherwise.
     """
     if ssh_server_ip() is not None:
         return False
-    mpv = shutil.which("mpv")
-    if not mpv or not shutil.which("open"):
+    player = resolve_player()
+    if player is None:
         return False
-    # mpv path is resolved to an absolute here so the .command does not depend on
-    # the new window's PATH; `exec` so the shell exits when mpv quits (q).
-    PLAY_LAUNCHER.write_text(
-        "#!/bin/bash\n"
-        f"exec {shlex.quote(mpv)} {shlex.quote(str(path))}\n",
-        encoding="utf-8",
-    )
-    PLAY_LAUNCHER.chmod(0o755)
     try:
-        subprocess.run(
-            ["open", "-a", "Terminal", str(PLAY_LAUNCHER)],
-            check=True,
+        process = subprocess.Popen(
+            player + [str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
         )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except OSError:
         return False
+    PID_FILE.write_text(str(process.pid), encoding="utf-8")
+    return True
 
 
-def play_instructions(minutes, autoplayed=False):
-    """Build the founder-facing status + play commands.
+def play_instructions(minutes, played=False):
+    """Build the founder-facing status + replay command.
 
-    On local autoplay we confirm the Terminal window opened (keys work there).
-    The full play commands still print as a reference and as the fallback when
-    autoplay did not fire (SSH, no mpv, or --no-play). mpv is the only common
-    player that does speed+seek+pause; ffplay is offered as a no-speed fallback.
+    On success playback has already started in the background (no window). The
+    replay command prints as a reference and as the fallback when playback did
+    not start (SSH, no player, or --no-play). `/say stop` ends playback.
     """
     lines = []
-    if autoplayed:
-        lines.append(
-            "say: autoplaying in a new Terminal window — your "
-            "[ ] speed / seek / pause keys work there."
-        )
+    if played:
+        lines.append("say: playing now.")
     lines.append(f"say: ready (~{minutes} min) at {SAY_MP3}")
-    if shutil.which("mpv"):
-        lines.append(f"  play: mpv {SAY_MP3}")
-    else:
-        lines.append(f"  for controls: brew install mpv  ->  mpv {SAY_MP3}")
-        if shutil.which("ffplay"):
-            lines.append(
-                f"  or now (seek+pause, no speed): "
-                f"ffplay -nodisp -autoexit {SAY_MP3}"
-            )
+    if shutil.which("afplay"):
+        lines.append(f"  replay: afplay {SAY_MP3}")
+    elif shutil.which("mpv"):
+        lines.append(f"  replay: mpv {SAY_MP3}")
     server = ssh_server_ip()
     if server:
         lines.append(
             f"  laptop audio over ssh: ssh {server} 'cat {SAY_MP3}' | mpv -"
         )
-    lines.append("  keys: [ ] speed | <-/-> seek 5s | up/down 60s | space pause | q quit")
+    lines.append("  stop: /say stop")
     return "\n".join(lines)
 
 
 def stop_playback():
     """Clear any stray playback. Returns a one-line status string.
 
-    Autoplay runs mpv inside a Terminal window the founder quits with q; this is
-    a best-effort cleanup of any leftover afplay/mpv process.
+    Playback runs detached in the background (afplay/mpv); this ends the tracked
+    PID if present, then sweeps any leftover afplay/mpv process.
     """
     pid = None
     if PID_FILE.is_file():
@@ -340,11 +327,11 @@ def usage():
     """One-screen usage text. Printed for --help and on an unrecognized arg."""
     return (
         "say: usage: say-last-response.py [stop|--dry-run|--dump-chunks|--no-play]\n"
-        "  (no args)      synthesize the last response, autoplay it in a new Terminal window\n"
+        "  (no args)      synthesize the last response and play it now (background)\n"
         "  stop           clear any stray playback\n"
         "  --dry-run      print the extracted text only (no API call)\n"
         "  --dump-chunks  print chunk count and sizes (no API call)\n"
-        "  --no-play      synthesize + write the file but do NOT open the autoplay window\n"
+        "  --no-play      synthesize + write the file but do NOT play it\n"
         "  --help, -h     show this and exit"
     )
 
@@ -416,10 +403,10 @@ def main():
 
     write_audio(audio)
     minutes = max(1, round(len(text) / 950))  # ~950 chars/min spoken
-    # Default autoplays in a real Terminal window so the founder's keys drive the
-    # player; --no-play suppresses the window (synthesize + write only).
-    autoplayed = "--no-play" not in args and autoplay_in_terminal(SAY_MP3)
-    print(play_instructions(minutes, autoplayed=autoplayed))
+    # Default plays now in the background (no window); --no-play suppresses
+    # playback (synthesize + write only).
+    played = "--no-play" not in args and play_now(SAY_MP3)
+    print(play_instructions(minutes, played=played))
 
 
 if __name__ == "__main__":
