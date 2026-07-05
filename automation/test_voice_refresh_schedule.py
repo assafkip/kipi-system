@@ -37,6 +37,17 @@ def test_installer_registers_health():
     body = open(INSTALLER).read()
     assert "launchd-health" in body, "installer must register with launchd-health"
     assert "launchctl load" in body, "installer must load the launchd job"
+    # honest message: no unconditional "registered" claim
+    assert "registration skipped" in body, "installer must not falsely claim health registration"
+
+
+def test_rendered_plist_parses_with_tricky_path():
+    # Mirror the installer's render (XML-escape) so a path with #, &, < survives.
+    import xml.sax.saxutils as sx
+    tricky = "/tmp/re&po#dir"
+    rendered = open(PLIST).read().replace("__ROOT__", sx.escape(tricky))
+    pl = plistlib.loads(rendered.encode())
+    assert tricky in pl["ProgramArguments"][-1], "rendered path must survive intact"
 
 
 def _main():

@@ -30,7 +30,10 @@ SCRIPTS = os.environ.get(
     "VOICE_REFRESH_SCRIPTS",
     os.path.join(_HERE, "..", "q-system", ".q-system", "scripts"),
 )
-CLAUDE = os.environ.get("VOICE_REFRESH_CLAUDE", "claude")
+# Hardcoded to match the CLI that granola-voice-synthesize.py actually invokes.
+# A configurable preflight binary could pass here and then fail inside Stage 2,
+# defeating the promised environmental-trigger stop.
+CLAUDE = "claude"
 
 
 class RefreshError(Exception):
@@ -95,16 +98,19 @@ def emit_delta(corpus_dir):
 
 def refresh(corpus_dir):
     log("start", corpus_dir)
-    h = corpus_hash(corpus_dir)
-    stamp = os.path.join(corpus_dir, ".voice-refresh-hash")
-    outputs_present = os.path.exists(os.path.join(corpus_dir, "voice-findings.json")) and \
-        os.path.exists(os.path.join(corpus_dir, "voice-fingerprint.json"))
-    if h and outputs_present and os.path.exists(stamp) and open(stamp).read().strip() == h:
-        log("idempotent", "corpus unchanged and outputs present; no-op")
-        return "noop"
 
+    # Contamination gate runs FIRST, before any idempotency short-circuit, so a
+    # contaminated corpus can never be silently declared "unchanged and fine."
     contamination_gate(corpus_dir)
     log("contamination", "clean")
+
+    h = corpus_hash(corpus_dir)
+    stamp = os.path.join(corpus_dir, ".voice-refresh-hash")
+    outputs = ("voice-findings.json", "voice-fingerprint.json", "voice-delta.md")
+    outputs_present = all(os.path.exists(os.path.join(corpus_dir, f)) for f in outputs)
+    if h and outputs_present and os.path.exists(stamp) and open(stamp).read().strip() == h:
+        log("idempotent", "corpus unchanged and all outputs present; no-op")
+        return "noop"
 
     if not claude_available():
         raise RefreshError(
