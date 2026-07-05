@@ -1,7 +1,7 @@
 ---
 id: voice-refresh-orchestrator
 title: Repo-root orchestrator chaining Stages 2-3 over a corpus, idempotent and retry-safe
-status: open
+status: closed
 priority: p1
 parent_prd: prd-voice-refresh-monthly-2026-07-04
 allowed_files:

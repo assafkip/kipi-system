@@ -1,9 +1,9 @@
 ---
 id: prd-voice-refresh-monthly-2026-07-04
 title: Voice Refresh Monthly
-status: approved
+status: archived
 created_at: 2026-07-04T23:12:15Z
-updated_at: 2026-07-04T23:47:31Z
+updated_at: 2026-07-05T00:08:12Z
 owner: assafkip
 reviewers: []
 findings_path: .prd-os/findings/prd-voice-refresh-monthly-2026-07-04-findings.jsonl

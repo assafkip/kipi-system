@@ -1,7 +1,7 @@
 ---
 id: voice-refresh-command
 title: /voice-refresh interactive command: Granola pull, harvest, orchestrate, gated merge proposal
-status: open
+status: closed
 priority: p1
 parent_prd: prd-voice-refresh-monthly-2026-07-04
 allowed_files:

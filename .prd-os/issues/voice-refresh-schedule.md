@@ -1,7 +1,7 @@
 ---
 id: voice-refresh-schedule
 title: Monthly launchd nudge (repo-root) via slack-notify.sh, registered with launchd-health
-status: open
+status: closed
 priority: p1
 parent_prd: prd-voice-refresh-monthly-2026-07-04
 allowed_files:
