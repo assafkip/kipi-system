@@ -8,7 +8,7 @@
 The compounding founder operating system. Lives in `~/projects/kipi-system/`.
 
 ### kipi-investigations (NEW — 2026-05-27)
-Productized version of the kipi-core investigation memory layer, for boutique intel / small T&S teams. Lives in `~/projects/intel/projects/kipi-investigations/`.
+Productized version of the kipi-core investigation memory layer, for boutique intel / small T&S teams. Lives in `~/projects/kipi-investigations/`.
 - **Design partner:** Ally (see relationships.md)
 - **Wedge use case:** Ingest multiple intel reports; auto-build a compounding knowledge graph; visualize in Obsidian.
 - **ICP:** Boutique intel firms, resource-constrained T&S teams, PI shops, freelance OSINT investigators.
