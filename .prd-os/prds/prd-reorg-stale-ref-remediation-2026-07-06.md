@@ -1,9 +1,9 @@
 ---
 id: prd-reorg-stale-ref-remediation-2026-07-06
 title: Reorg Stale Ref Remediation
-status: in-review
+status: approved
 created_at: 2026-07-06T21:53:40Z
-updated_at: 2026-07-06T22:09:15Z
+updated_at: 2026-07-06T22:35:36Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-reorg-stale-ref-remediation-2026-07-06-findings.jsonl
@@ -191,5 +191,38 @@ rejected at approve. The template-vs-runner contract test enforces this list.
 -->
 
 ```json
-[]
+[
+  {
+    "id": "harden-audit-gate",
+    "finding_id": "finding-6",
+    "title": "Harden reorg-stale-ref-audit.py: single-source map, new-path existence, ${HOME} form, wider gating set, docstring (consolidates findings 2/4/5/10)",
+    "allowed_files": ["scripts/reorg-stale-ref-audit.py", "scripts/persona-reorg.py"],
+    "required_checks": ["python3 scripts/reorg-stale-ref-audit.py"],
+    "bypass_check": "python3 scripts/reorg-stale-ref-audit.py"
+  },
+  {
+    "id": "harden-rewriter-and-bak",
+    "finding_id": "finding-7",
+    "title": "rewrite_selfrefs_in covers all four path forms + .mjs/.cjs; _bak gains a distinct remediation backup namespace",
+    "allowed_files": ["scripts/persona-reorg.py", "scripts/test_persona_reorg.py"],
+    "required_checks": ["python3 scripts/test_persona_reorg.py"],
+    "bypass_check": "python3 scripts/reorg-stale-ref-audit.py"
+  },
+  {
+    "id": "cross-project-remediation-mode",
+    "finding_id": "finding-8",
+    "title": "New --remediate mode: cross-project sweep over already-moved dirs, dry-first, .remediation.bak-backed, with a fixture unit test",
+    "allowed_files": ["scripts/persona-reorg.py", "scripts/test_persona_reorg.py"],
+    "required_checks": ["python3 scripts/test_persona_reorg.py"],
+    "bypass_check": "python3 scripts/reorg-stale-ref-audit.py"
+  },
+  {
+    "id": "remediate-and-fix-prose",
+    "finding_id": "finding-9",
+    "title": "Run the remediation to 0 gating refs and fix operator-facing prose (kipi-investigations docs + current-state fan-out); leave dated records",
+    "allowed_files": ["scripts/reorg-stale-ref-audit.py", "**/current-state.md", "**/kipi-investigations/docs/*.md"],
+    "required_checks": ["python3 scripts/reorg-stale-ref-audit.py"],
+    "bypass_check": "python3 scripts/reorg-stale-ref-audit.py"
+  }
+]
 ```
