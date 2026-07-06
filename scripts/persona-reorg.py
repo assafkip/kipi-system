@@ -168,6 +168,55 @@ PERSONAS = {
     },
 }
 
+def _pj(bucket, name):
+    """PROJECTS/<bucket>/projects/<name> — a project's home inside a persona bucket."""
+    return os.path.join(PROJECTS, bucket, "projects", name)
+
+
+# ktlyst-hub dissolution — the FINAL reorg batch. NOT a persona migration (one
+# parent) but a DISSOLUTION: 6 instances scatter into 4 buckets, and the KTLYST
+# product is PROMOTED out of a worktree. product-baseline is the live successor
+# (v5 canonical port); product is the deprecated old line AND product-baseline is
+# a linked worktree of it, so the good product's git is trapped inside the repo we
+# retire. See prd-ktlyst-hub-dissolution-2026-07-06.md.
+KTLYST_HUB = {
+    "label": "dissolve ktlyst-hub cluster (Tier-2)",
+    "bucket": {"name": "ktlyst-saas", "dst": os.path.join(PROJECTS, "ktlyst-saas")},
+    "projects": [
+        {"name": "accountant", "src_sub": "ktlyst-hub/accountant",
+         "dst": _pj("consulting", "accountant"), "registry": "accountant"},
+        {"name": "lawyer", "src_sub": "ktlyst-hub/lawyer",
+         "dst": _pj("consulting", "lawyer"), "registry": "ktlyst_lawyer",
+         "rule": "ktlyst-cluster"},
+        {"name": "strategy", "src_sub": "ktlyst-hub/strategy",
+         "dst": _pj("cole-gtm", "strategy"), "registry": "KTLYST_strategy",
+         "rule": "ktlyst-cluster"},
+        {"name": "deliverables", "src_sub": "ktlyst-hub/deliverables",
+         "dst": _pj("intel", "deliverables")},
+        # PROMOTE: the successor (product-baseline) becomes the standalone product;
+        # the old product line is archived. src_sub is the SUCCESSOR worktree.
+        {"name": "product", "src_sub": "ktlyst-hub/product-baseline",
+         "dst": _pj("ktlyst-saas", "product"), "registry": "ktlyst",
+         "rule": "ktlyst-cluster",
+         "promote": {"branch": "feat/v5-canonical-port",
+                     "old_main_sub": "ktlyst-hub/product",
+                     "archive_to": os.path.join(PROJECTS, "_archive",
+                                                "product-ktlyst-old-2026-07-06")}},
+    ],
+    "plists": ["com.ktlyst.q-morning.plist.disabled"],   # rewrite only, NO reload
+    # Bridge writer DEFAULT constants (already stale ~/Desktop paths; auto-detect
+    # covers them — fixed for correctness, low risk). (file, old_substr, new_substr).
+    "bridge_defaults": [
+        (os.path.join(BRIDGE, "bridge-sync.py"),
+         '"Desktop" / "ktlyst-hub" / "strategy"',
+         '"projects" / "cole-gtm" / "projects" / "strategy"'),
+        (os.path.join(BRIDGE, "write-legal-flags.py"),
+         '"Desktop" / "ktlyst-hub" / "lawyer"',
+         '"projects" / "consulting" / "projects" / "lawyer"'),
+    ],
+}
+
+
 # Part 1 of the ASK split: extract the GTM/content operation (products/) OUT of
 # ASK and INTO cole-gtm. This deliberately GROWS Cole (founder call: Cole owns all
 # GTM). One substitution everywhere: the old ASK root -> the cole-gtm root.
@@ -627,6 +676,13 @@ def build_oldnew_map():
         for proj in P["projects"]:
             src = os.path.join(PROJECTS, proj.get("src_sub", proj["name"]))
             m[src] = os.path.join(projects_root, proj["name"])
+    # ktlyst-hub dissolution: explicit per-project dst (a scatter, not one parent).
+    for proj in KTLYST_HUB["projects"]:
+        m[os.path.join(PROJECTS, proj["src_sub"])] = proj["dst"]
+        # both old product NAMES (the deprecated main AND the successor worktree)
+        # now resolve to the one promoted standalone product.
+        if proj.get("promote"):
+            m[os.path.join(PROJECTS, proj["promote"]["old_main_sub"])] = proj["dst"]
     return m
 SELFREF_SKIP_DIRS = {".venv", "venv", ".git", "node_modules", "__pycache__",
                      ".next", "dist", "build", ".pytest_cache", ".mypy_cache",
@@ -825,6 +881,64 @@ def _repair_git_worktrees(repo_src, repo_dst):
                 f"re-linked to new path", "32" if code == 0 else "1;31"))
     else:
         print(c("    git worktree repair: main linkage repaired", "32"))
+
+
+# --- Promote-and-archive (ktlyst-hub dissolution) ----------------------------
+# product-baseline is the LIVE successor (v5 canonical port); product is the
+# deprecated old line, and product-baseline is a LINKED WORKTREE of it — so the
+# good product's git metadata is trapped inside the repo we retire. The fix is a
+# git-correct detach (clone the successor into its own repo), NOT preserving the
+# worktree link. See prd-ktlyst-hub-dissolution-2026-07-06.md.
+
+def salvage_check(main_repo, keep_branch, drop_ref):
+    """Files present in drop_ref's tree but ABSENT from keep_branch's tree — work
+    that archiving drop_ref would lose. Empty list == safe to archive. The
+    deterministic guard behind the manual salvage-check (a file on the OLD product
+    line that never made it to the successor). Content-level divergence is out of
+    scope; a missing FILE is the loss that matters for archive safety."""
+    def tree(ref):
+        code, out = sh(["git", "-C", main_repo, "ls-tree", "-r", "--name-only", ref])
+        return set(l for l in out.splitlines() if l.strip()) if code == 0 else set()
+    return sorted(tree(drop_ref) - tree(keep_branch))
+
+
+def promote_worktree_to_standalone(worktree_dir, main_repo, branch, new_repo):
+    """Promote a linked worktree into a standalone repo. git-correct detach:
+      1. commit pending work in the worktree (a clone never carries uncommitted state)
+      2. clone `branch` from main_repo into new_repo via file:// (no hardlinked
+         objects — a truly independent object store + .git)
+      3. rename the branch to `main` (it is THE product now)
+    Returns (ok, msg). No archive / no manifest — the caller orchestrates those."""
+    _, dirty = sh(["git", "-C", worktree_dir, "status", "--porcelain"])
+    if dirty.strip():
+        sh(["git", "-C", worktree_dir, "add", "-A"])
+        code, out = sh(["git", "-C", worktree_dir, "commit", "-m",
+                        "chore: preserve in-flight work before standalone detach (persona-reorg)"])
+        if code != 0:
+            return False, f"pending-commit failed: {out}"
+    code, out = sh(["git", "clone", "--quiet", "--single-branch", "--branch", branch,
+                    "file://" + os.path.abspath(main_repo), new_repo])
+    if code != 0:
+        return False, f"clone failed: {out}"
+    code, out = sh(["git", "-C", new_repo, "branch", "-m", branch, "main"])
+    if code != 0:
+        return False, f"branch rename failed: {out}"
+    return True, f"standalone at {new_repo} (branch main, independent .git)"
+
+
+def verify_repo_independent(repo):
+    """True if `repo` is a real standalone repo depending on no other working tree:
+    its .git is a DIRECTORY (not a `gitdir:` pointer file), git log resolves, and no
+    foreign /Users/<other-home> path is recorded (the assafkip symlink dependency
+    must be gone). Called AFTER the source is removed to PROVE independence."""
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        return False
+    code, _ = sh(["git", "-C", repo, "log", "-1", "--oneline"])
+    if code != 0:
+        return False
+    _, wl = sh(["git", "-C", repo, "worktree", "list"])
+    foreign = any(("/Users/" in ln and HOME not in ln) for ln in wl.splitlines())
+    return not foreign
 
 
 def verify_kipi_check():
@@ -1100,6 +1214,203 @@ def gtm_extract_apply():
             f"(--rollback --persona gtm-extract reverses this)", "36"))
     print(c("  NEXT: confirm a claudedaddy job fires from cole-gtm, then Part 2 "
             "(ASK->consulting) + retire the bridge.", "33"))
+
+
+def dissolve_preview():
+    """DRY run for the ktlyst-hub dissolution. Reads live registry/git and runs the
+    salvage-check read-only. Changes NOTHING."""
+    K = KTLYST_HUB
+    prod = next(p for p in K["projects"] if p.get("promote"))
+    pm = prod["promote"]
+    old_main = os.path.join(PROJECTS, pm["old_main_sub"])
+    baseline = os.path.join(PROJECTS, prod["src_sub"])
+    print(c(f"\n### persona-reorg DISSOLUTION DRY RUN — {K['label']} ###", "1;35"))
+    print("Reads live registry/git/salvage-check. Changes nothing.")
+
+    hdr("PHASE 1 — create ktlyst-saas bucket")
+    bkt = K["bucket"]["dst"]
+    flag = c("will CREATE", "32") if not os.path.isdir(bkt) else c("ALREADY EXISTS!", "1;31")
+    print(f"\n  {K['bucket']['name']}  ->  {bkt}   [{flag}]")
+
+    hdr("PHASE 2 — plain moves (4 instances)")
+    for proj in K["projects"]:
+        if proj.get("promote"):
+            continue
+        src = os.path.join(PROJECTS, proj["src_sub"])
+        e = os.path.isdir(src)
+        print(f"\n  {proj['name']:<14} {src}")
+        print(f"      {'':<14} -> {proj['dst']}   [{c('OK','32') if e else c('MISSING!','1;31')}]")
+        if proj.get("registry"):
+            print(f"      {'':<14} registry '{proj['registry']}' -> new path")
+        if proj.get("rule"):
+            print(f"      {'':<14} {c('cluster-rule row (HELD)','33')}")
+        wt = _git_worktree_count(src) if e else 0
+        if wt:
+            print(f"      {'':<14} {c(f'{wt} git worktree(s) — repair runs post-move','33')}")
+
+    hdr("PHASE 3 — promote product (successor) + archive old line")
+    print(f"\n  successor worktree : {baseline}  "
+          f"[{c('OK','32') if os.path.isdir(baseline) else c('MISSING','1;31')}]")
+    print(f"  clone -> standalone: {prod['dst']}  (branch {pm['branch']} -> main)")
+    print(f"  archive old product: {old_main}")
+    print(f"                    -> {pm['archive_to']}")
+    print(f"  registry 'ktlyst'  -> {prod['dst']}")
+    if os.path.isdir(old_main):
+        strands = [s for s in salvage_check(old_main, pm["branch"], "main") if s]
+        if strands:
+            print(c(f"\n  SALVAGE-CHECK: {len(strands)} file(s) on the old line NOT on the "
+                    f"successor — apply will ABORT:", "1;31"))
+            for s in strands[:10]:
+                print(f"      - {s}")
+        else:
+            print(c("\n  salvage-check: nothing stranded on the old product line — safe to archive.", "32"))
+    else:
+        print(c(f"\n  old product missing at {old_main} — cannot salvage-check.", "1;31"))
+
+    hdr("PHASE 4 — disabled plist + bridge DEFAULTs")
+    for pl in K["plists"]:
+        path = os.path.join(LAUNCHAGENTS, pl)
+        n = 0
+        if os.path.isfile(path):
+            body = open(path).read()
+            for proj in K["projects"]:
+                n += body.count(os.path.join(PROJECTS, proj["src_sub"]))
+            n += body.count(old_main)
+        print(f"\n  {pl}: {n} ktlyst-hub path refs  [{c('rewrite only — no reload (disabled)','33')}]")
+    for fp, old, _new in K["bridge_defaults"]:
+        present = os.path.isfile(fp) and old in open(fp).read()
+        print(f"  bridge {os.path.basename(fp)}: DEFAULT "
+              f"{c('found','32') if present else c('not found','33')} (low-risk; auto-detect covers)")
+
+    hdr("PHASE 5 — HELD global rule (founder confirm)")
+    print(f"\n  {KTLYST_RULE}")
+    movers = [p["name"] for p in K["projects"] if p.get("rule")]
+    print(f"  rows referencing: {', '.join(movers)}")
+    print(c("  ACTION (held): retire the ktlyst-hub cluster topology — founder confirm.", "1;31"))
+
+    hdr("SUMMARY — ktlyst-hub dissolution dry run")
+    n_plain = sum(1 for p in K["projects"] if not p.get("promote"))
+    n_reg = sum(1 for p in K["projects"] if p.get("registry"))
+    missing = [os.path.join(PROJECTS, p["src_sub"]) for p in K["projects"]
+               if not os.path.isdir(os.path.join(PROJECTS, p["src_sub"]))]
+    print(f"""
+  1 bucket created        -> ktlyst-saas/
+  {n_plain} plain moves           -> consulting(2), cole-gtm(1), intel(1)
+  1 product PROMOTED       product-baseline -> ktlyst-saas/projects/product (standalone)
+  1 old product ARCHIVED   -> _archive/  (reversible, never rm)
+  {n_reg} registry rewrites
+  {len(K['plists'])} disabled plist         rewrite only (no reload)
+  {len(K['bridge_defaults'])} bridge DEFAULTs        low-risk correctness fix
+  1 global rule            ktlyst-cluster.md [HELD — retire]
+""")
+    if missing:
+        print(c(f"  MISSING source dirs: {missing}", "1;31"))
+    else:
+        print(c("  all source dirs present on disk.", "32"))
+    print(c("\n  NOTHING WAS CHANGED. Founder approval gates the real run.", "1;36"))
+
+
+def run_dissolve():
+    """APPLY the ktlyst-hub dissolution: salvage-gate -> create bucket -> 4 plain
+    moves -> promote product + archive old line -> registry/plist/bridge -> kipi
+    check. Own manifest; reversible via --rollback --persona ktlyst-hub."""
+    persona = "ktlyst-hub"
+    if persona in MIGRATED:
+        print(c(f"REFUSED: '{persona}' already migrated. Use --rollback --persona {persona}.", "1;31"))
+        sys.exit(3)
+    global _MANIFEST_FILE, _manifest
+    _MANIFEST_FILE = manifest_path(persona)
+    _manifest = {"moves": [], "baks": []}
+    K = KTLYST_HUB
+    prod = next(p for p in K["projects"] if p.get("promote"))
+    pm = prod["promote"]
+    old_main = os.path.join(PROJECTS, pm["old_main_sub"])
+    baseline_wt = os.path.join(PROJECTS, prod["src_sub"])
+    new_repo = prod["dst"]
+    print(c("\n### persona-reorg APPLY — ktlyst-hub dissolution (reversible) ###", "1;35"))
+
+    # PHASE 0: salvage-gate + topology snapshot BEFORE any move
+    hdr("APPLY PHASE 0 — salvage-check gate + topology snapshot")
+    if not os.path.isdir(old_main):
+        return _abort(f"old product missing: {old_main}")
+    strands = salvage_check(old_main, pm["branch"], "main")
+    if strands:
+        return _abort(f"salvage-check: {len(strands)} file(s) stranded on old product "
+                      f"{strands[:3]} — refusing to archive.")
+    print(c("    salvage-check: clean (nothing stranded on old product)", "32"))
+    _, topo = sh(["git", "-C", old_main, "worktree", "list", "--porcelain"])
+    _manifest["before_worktrees"] = topo
+    _save_manifest()
+
+    # PHASE 1: create ktlyst-saas bucket
+    hdr("APPLY PHASE 1 — create ktlyst-saas bucket")
+    bkt = K["bucket"]["dst"]
+    _mkdir(bkt); _mkdir(os.path.join(bkt, "projects"))
+    _create_file(os.path.join(bkt, ".gitignore"), "projects/\n")
+    _create_file(os.path.join(bkt, "CLAUDE.md"),
+                 "# ktlyst-saas portfolio\n\nKTLYST-branded SaaS products (bucket persona, "
+                 "no brain repo).\n\n- `projects/product/`  (v5 — promoted from the former "
+                 "ktlyst-hub/product-baseline)\n")
+    _save_manifest()
+
+    # PHASE 2: plain moves
+    hdr("APPLY PHASE 2 — plain moves (accountant, lawyer, strategy, deliverables)")
+    reg_pairs = []
+    for proj in K["projects"]:
+        if proj.get("promote"):
+            continue
+        src = os.path.join(PROJECTS, proj["src_sub"])
+        _move(src, proj["dst"])
+        _repair_git_worktrees(src, proj["dst"])
+        rewrite_selfrefs_in(proj["dst"], src, proj["dst"])
+        if proj.get("registry"):
+            reg_pairs.append((proj["registry"], proj["dst"]))
+        _save_manifest()
+
+    # PHASE 3: promote successor + archive old product
+    hdr("APPLY PHASE 3 — promote successor to standalone, archive old product")
+    ok, msg = promote_worktree_to_standalone(baseline_wt, old_main, pm["branch"], new_repo)
+    print(f"    {msg}")
+    if not ok:
+        return _abort(f"promote failed: {msg}")
+    sh(["git", "-C", old_main, "worktree", "remove", "--force", baseline_wt])
+    _move(old_main, pm["archive_to"])
+    _manifest.setdefault("promotions", []).append(
+        {"new_repo": new_repo, "archived": pm["archive_to"], "orig_main": old_main,
+         "orig_worktree": baseline_wt, "branch": pm["branch"]})
+    _save_manifest()
+    if not verify_repo_independent(new_repo):
+        return _abort("promoted product not independent (verify_repo_independent failed)")
+    print(c("    standalone verified independent (survives old product archive)", "32"))
+    reg_pairs.append((prod["registry"], new_repo))
+    rewrite_registry_entries(reg_pairs)
+    _save_manifest()
+
+    # PHASE 4: disabled plist + bridge DEFAULTs
+    hdr("APPLY PHASE 4 — disabled plist rewrite + bridge DEFAULTs")
+    for pl in K["plists"]:
+        path = os.path.join(LAUNCHAGENTS, pl)
+        total = 0
+        for proj in K["projects"]:
+            total += _replace_in_file(path, os.path.join(PROJECTS, proj["src_sub"]), proj["dst"])
+        total += _replace_in_file(path, old_main, new_repo)
+        print(f"    plist {pl}: {total} refs rewritten (disabled — no reload)")
+    for fp, old, new in K["bridge_defaults"]:
+        n = _replace_in_file(fp, old, new)
+        print(f"    bridge {os.path.basename(fp)}: {n} DEFAULT rewritten")
+    _save_manifest()
+
+    # PHASE 5: kipi check gate
+    hdr("APPLY PHASE 5 — verify kipi check")
+    if not verify_kipi_check():
+        return _abort("kipi check regression after dissolution")
+
+    hdr("HELD — global rule ktlyst-cluster.md (founder confirm)")
+    print(c("    ktlyst-cluster.md: retire the ktlyst-hub topology — NOT applied (founder confirm).", "1;33"))
+    hdr("DISSOLUTION COMPLETE")
+    print(c(f"  Manifest: {_MANIFEST_FILE}  (--rollback --persona ktlyst-hub reverses this)", "36"))
+    print(c("  NEXT: confirm ktlyst-cluster.md retirement; --remediate; audit; add 'ktlyst-hub' "
+            "to MIGRATED; update fleet-map + decisions.", "33"))
 
 
 def main():
