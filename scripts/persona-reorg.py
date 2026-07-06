@@ -297,19 +297,270 @@ def phase_summary(persona):
     print(c("\n  NOTHING WAS CHANGED. Founder approval gates the real run.", "1;36"))
 
 
+# =============================================================================
+# APPLY — real moves, phased, reversible. Every rewrite is .bak'd; every move is
+# recorded to a manifest so --rollback reverses the batch.
+# =============================================================================
+import shutil
+
+MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "persona-reorg-manifest.json")
+
+# Curated LIVE self-ref files inside random-stuff-ideas to rewrite on rename.
+# Dated historical records (podcast distribution logs, rca/, prd-os/, output/
+# plans, codex-handoff, skill-proposals) are point-in-time truth — left as-is.
+LIVE_SELFREF = [
+    "README.md",
+    ".codex/hooks.json",
+    "gtm/stores/_starter/build-stores.workflow.js",
+    "gtm/stores/_starter/rebuild-stores.workflow.js",
+    "gtm/stores/_starter/rebuild-scratch.workflow.js",
+    "gtm/stores/_starter/rebuild-on-kit.workflow.js",
+]
+# Skeleton vendored copies that ref the competitive-analysis path (instances
+# re-sync via kipi update, so only the skeleton source of truth is rewritten).
+VENDORED_SKELETON = [
+    "plugins/kipi-core/kipi-mcp/docs/competitive-intel-analyst.md",
+    "plugins/kipi-core/kipi-mcp/examples/competitive-intel/ai-live-sources.json",
+]
+BASELINE_FAIL = 2  # kipi check FAILs pre-existing before this reorg (verified)
+
+_manifest = {"moves": [], "baks": []}
+
+
+def _save_manifest():
+    with open(MANIFEST, "w") as f:
+        json.dump(_manifest, f, indent=2)
+
+
+def _bak(path):
+    """Snapshot a file before rewriting it (for rollback). Idempotent."""
+    b = path + ".persona-reorg.bak"
+    if os.path.exists(path) and not os.path.exists(b):
+        shutil.copy2(path, b)
+        _manifest["baks"].append({"orig": path, "bak": b})
+
+
+def _move(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
+    _manifest["moves"].append({"src": src, "dst": dst})
+    print(f"    moved {src}\n       -> {dst}")
+
+
+def _replace_in_file(path, old, new):
+    if not os.path.isfile(path):
+        return 0
+    with open(path) as f:
+        body = f.read()
+    if old not in body:
+        return 0
+    _bak(path)
+    with open(path, "w") as f:
+        f.write(body.replace(old, new))
+    return body.count(old)
+
+
+def rewrite_registry_entries(pairs):
+    """pairs: list of (registry_entry_name, new_abs_path). Rewrites only those
+    entries — called right after each dir actually moves, so kipi check never
+    sees a registry path pointing at a not-yet-moved dir."""
+    _bak(REGISTRY)
+    with open(REGISTRY) as f:
+        reg = json.load(f)
+    want = dict(pairs)
+    n = 0
+    for inst in reg.get("instances", []):
+        if inst["name"] in want:
+            inst["path"] = want[inst["name"]]; n += 1
+    with open(REGISTRY, "w") as f:
+        json.dump(reg, f, indent=2)
+    print(f"    registry: {n} entries rewritten ({', '.join(k for k, _ in pairs)})")
+
+
+def sh(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def verify_kipi_check():
+    code, out = sh(["kipi", "check"])
+    import re as _re
+    m = _re.search(r"FAIL:\s*(\d+)", out)
+    fails = int(m.group(1)) if m else -1
+    ok = 0 <= fails <= BASELINE_FAIL
+    print(c(f"    verify kipi check: FAIL={fails} (baseline {BASELINE_FAIL}) "
+            f"{'OK' if ok else 'REGRESSION'}", "32" if ok else "1;31"))
+    return ok
+
+
+def verify_launchd(label):
+    code, out = sh(["launchctl", "list"])
+    ok = label in out
+    print(c(f"    verify launchd '{label}' loaded: {'OK' if ok else 'MISSING'}",
+            "32" if ok else "1;31"))
+    return ok
+
+
+def rewrite_reload_plist(pl, src, dst, do_reload):
+    path = os.path.join(LAUNCHAGENTS, pl)
+    label = pl.replace(".plist", "").replace(".disabled", "")
+    if do_reload:
+        sh(["launchctl", "unload", path])          # ignore if not loaded
+    n = _replace_in_file(path, src, dst)
+    print(f"    plist {pl}: {n} refs rewritten")
+    if do_reload:
+        code, out = sh(["launchctl", "load", path])
+        if code != 0 and out:
+            print(c(f"      load warning: {out}", "33"))
+        verify_launchd(label)
+
+
+def run_apply(persona):
+    p = PERSONAS[persona]["parent"]
+    projects_root = os.path.join(p["dst"], "projects")
+    print(c(f"\n### persona-reorg APPLY — {persona} (reversible, manifested) ###", "1;35"))
+
+    # ---- PHASE 2: parent rename + com.cole.* plists + registry + self-refs ----
+    hdr("APPLY PHASE 2 — rename parent, rewrite cole plists, registry, self-refs")
+    _move(p["src"], p["dst"])
+    for pl in p["plists"]:
+        rewrite_reload_plist(pl, p["src"], p["dst"], do_reload=not pl.endswith(".disabled"))
+    # registry: rewrite ONLY the parent's entry now (its dir just moved). The
+    # other 4 entries are rewritten in their own phases, after their dirs move.
+    rewrite_registry_entries([(p["registry_name"], p["dst"])])
+    # live self-refs inside the renamed dir
+    sref = 0
+    for rel in LIVE_SELFREF:
+        sref += _replace_in_file(os.path.join(p["dst"], rel), p["src"], p["dst"])
+    print(f"    self-refs: {sref} refs rewritten across {len(LIVE_SELFREF)} live files")
+    # gitignore projects/
+    gi = os.path.join(p["dst"], ".gitignore")
+    _bak(gi)
+    with open(gi, "a") as f:
+        f.write("\nprojects/\n")
+    print("    .gitignore: added projects/")
+    _save_manifest()
+    if not verify_kipi_check():
+        return _abort("Phase 2 kipi check regression")
+
+    # ---- PHASE 3: move 4 low-risk (no registry / no launchd) ----
+    hdr("APPLY PHASE 3 — move 4 low-risk projects")
+    for name in ("notebooklm-daily-podcast", "vc-signals",
+                 "founder-signal-engine", "signal-desk"):
+        _move(os.path.join(PROJECTS, name), os.path.join(projects_root, name))
+    _save_manifest()
+
+    # ---- PHASE 4: competitive-analysis + its plist ----
+    hdr("APPLY PHASE 4 — move competitive-analysis, rewrite+reload its plist")
+    ca_src = os.path.join(PROJECTS, "competitive-analysis")
+    ca_dst = os.path.join(projects_root, "competitive-analysis")
+    _move(ca_src, ca_dst)
+    rewrite_reload_plist("com.assaf.competitive-analysis.morning.plist",
+                         ca_src, ca_dst, do_reload=True)
+    _save_manifest()
+
+    # ---- PHASE 5: reddit-build-radar + its registry entry ----
+    hdr("APPLY PHASE 5 — move reddit-build-radar, rewrite its registry entry")
+    rbr_dst = os.path.join(projects_root, "reddit-build-radar")
+    _move(os.path.join(PROJECTS, "reddit-build-radar"), rbr_dst)
+    rewrite_registry_entries([("reddit-build-radar", rbr_dst)])
+    _save_manifest()
+    if not verify_kipi_check():
+        return _abort("Phase 5 kipi check regression")
+
+    # ---- PHASE 6: 3 ktlyst-hub instances + their registry entries ----
+    hdr("APPLY PHASE 6 — move website, personal-brand, event_coordinator + registry")
+    # registry entry name differs from dir name for website (ktlyst-website).
+    reg_names = {"website": "ktlyst-website", "personal-brand": "personal-brand",
+                 "event_coordinator": "event_coordinator"}
+    pairs = []
+    for name in ("website", "personal-brand", "event_coordinator"):
+        dst = os.path.join(projects_root, name)
+        _move(os.path.join(PROJECTS, "ktlyst-hub", name), dst)
+        pairs.append((reg_names[name], dst))
+    rewrite_registry_entries(pairs)
+    _save_manifest()
+    if not verify_kipi_check():
+        return _abort("Phase 6 kipi check regression")
+
+    # ---- PHASE 7: vendored skeleton rewrite + Cole roster ----
+    hdr("APPLY PHASE 7 — skeleton vendored refs + Cole roster")
+    skroot = os.path.join(PROJECTS, "kipi-system")
+    vn = 0
+    for rel in VENDORED_SKELETON:
+        vn += _replace_in_file(os.path.join(skroot, rel), ca_src, ca_dst)
+    print(f"    vendored skeleton: {vn} refs rewritten (fleet re-syncs via kipi update)")
+    _write_roster(persona)
+    _save_manifest()
+
+    # ---- HELD: global rule edit (cross-instance preflight — founder confirm) ----
+    hdr("HELD — ktlyst-cluster.md global rule edit (NOT applied)")
+    print(c("  This edit to ~/.claude/rules/ktlyst-cluster.md is held per the "
+            "cross-instance preflight rule.", "1;33"))
+    for proj in ("website", "event_coordinator"):
+        print(f"    rewrite: ~/projects/ktlyst-hub/{proj} "
+              f"-> ~/projects/cole-gtm/projects/{proj}")
+
+    hdr("APPLY COMPLETE")
+    print(c("  Manifest: " + MANIFEST + "  (--rollback reverses this batch)", "36"))
+    print(c("  venv note: recreate .venv in competitive-analysis + signal-desk "
+            "(absolute paths went stale on move).", "33"))
+
+
+def _write_roster(persona):
+    p = PERSONAS[persona]["parent"]
+    claude = os.path.join(p["dst"], "CLAUDE.md")
+    if not os.path.isfile(claude):
+        print(c("    CLAUDE.md missing — roster skipped", "31"))
+        return
+    _bak(claude)
+    roster = ["\n\n## Cole's portfolio (projects/*) — route here\n"]
+    for proj in PERSONAS[persona]["projects"]:
+        roster.append(f"- `projects/{proj['name']}/`\n")
+    with open(claude, "a") as f:
+        f.write("".join(roster))
+    print(f"    roster: {len(PERSONAS[persona]['projects'])} projects added to CLAUDE.md")
+
+
+def _abort(why):
+    print(c(f"\n  ABORT: {why}. Manifest saved; run --rollback to reverse.", "1;31"))
+    _save_manifest()
+    sys.exit(2)
+
+
+def run_rollback():
+    if not os.path.isfile(MANIFEST):
+        print(c("No manifest — nothing to roll back.", "31"))
+        sys.exit(1)
+    with open(MANIFEST) as f:
+        man = json.load(f)
+    print(c("### persona-reorg ROLLBACK ###", "1;35"))
+    for b in reversed(man.get("baks", [])):
+        if os.path.exists(b["bak"]):
+            shutil.copy2(b["bak"], b["orig"])
+            print(f"    restored {b['orig']}")
+    for mv in reversed(man.get("moves", [])):
+        if os.path.isdir(mv["dst"]):
+            shutil.move(mv["dst"], mv["src"])
+            print(f"    moved back {mv['dst']} -> {mv['src']}")
+    print(c("  Rollback done. Reload launchd plists manually if they were live.", "36"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Fleet persona reorg (dry by default).")
     ap.add_argument("--persona", default="cole-gtm", choices=list(PERSONAS))
     ap.add_argument("--dry", action="store_true", default=True)
-    ap.add_argument("--apply", action="store_true",
-                    help="Execute the moves. GUARDED: refuses until dry is approved.")
+    ap.add_argument("--apply", action="store_true", help="Execute the phased, reversible moves.")
+    ap.add_argument("--rollback", action="store_true", help="Reverse the last apply via manifest.")
     args = ap.parse_args()
 
+    if args.rollback:
+        run_rollback()
+        return
     if args.apply:
-        print(c("REFUSED: --apply is not enabled yet.", "1;31"))
-        print("The real move logic lands only after the founder approves this dry run.")
-        print("Re-run without --apply to see the plan.")
-        sys.exit(3)
+        run_apply(args.persona)
+        return
 
     persona = args.persona
     print(c(f"\n### persona-reorg DRY RUN — persona: {persona} ###", "1;35"))

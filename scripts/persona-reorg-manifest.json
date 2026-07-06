@@ -1,0 +1,102 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/random-stuff-ideas",
+      "dst": "/Users/assafkipnis/projects/cole-gtm"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/notebooklm-daily-podcast",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/notebooklm-daily-podcast"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/vc-signals",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/vc-signals"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/founder-signal-engine",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/founder-signal-engine"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/signal-desk",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/signal-desk"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/competitive-analysis",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/competitive-analysis"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/reddit-build-radar",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/website",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/website"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/personal-brand",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/personal-brand"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/event_coordinator",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/event_coordinator"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.cole.daily-podcast.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.cole.daily-podcast.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.cole.podcast-report.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.cole.podcast-report.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.cole.podcast-weekly-report.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.cole.podcast-weekly-report.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.cole.daily-video.plist.disabled",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.cole.daily-video.plist.disabled.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/kipi-system/instance-registry.json",
+      "bak": "/Users/assafkipnis/projects/kipi-system/instance-registry.json.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/README.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/README.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/.codex/hooks.json",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/.codex/hooks.json.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/build-stores.workflow.js",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/build-stores.workflow.js.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-stores.workflow.js",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-stores.workflow.js.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-scratch.workflow.js",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-scratch.workflow.js.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-on-kit.workflow.js",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/stores/_starter/rebuild-on-kit.workflow.js.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/.gitignore",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/.gitignore.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.assaf.competitive-analysis.morning.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.assaf.competitive-analysis.morning.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/CLAUDE.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/CLAUDE.md.persona-reorg.bak"
+    }
+  ]
+}
