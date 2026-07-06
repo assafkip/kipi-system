@@ -1,8 +1,8 @@
-# Dogfood Gate: every website passes eyeball before it ships (ENFORCED)
+# Dogfood Gate: every public page clears our own design bar before it ships (ENFORCED)
 
 We build a tool whose job is catching bad / AI-generated web design. A page we
 ship that fails that bar is the worst possible miss. So no public-facing website
-page is "done" until it has been run through eyeball. This is not a reminder; it
+page is "done" until it has cleared our own design gate. This is not a reminder; it
 is a gate.
 
 ## Fires when
@@ -16,20 +16,20 @@ is a gate.
    `dogfood_gate.py` hook fires PostToolUse on Write/Edit of a public `.html` and
    BLOCKS (exit 2) if it statically detects AI-slop or a missing primary action
    (converged font, gradient-text headline, emoji icons, stock-prompt copy, no
-   interactive element). Internal HTML (dashboards, schedules, logs, templates,
-   tests, system output) is skipped. Bypass one file only when the slop is
-   intentional (a parody/demo): add `<!-- eyeball-gate-skip -->`.
+   interactive element). It runs standalone on a baked/embedded AI-default
+   fingerprint — no external repo required. Internal HTML (dashboards, schedules,
+   logs, templates, tests, system output) is skipped. Bypass one file only when
+   the slop is intentional (a parody/demo): add `<!-- eyeball-gate-skip -->` (the
+   bypass marker keeps its legacy name).
 
-2. **Authoritative render + UX read (required before deploy).** Run the real
-   thing — a browser renders the page and eyeball judges design + UX:
-   ```
-   node ~/projects/eyeball/web/scan.mjs <url-or-file>        # add --vision for the Claude UX read
-   ```
-   It exits non-zero (GATE: FAIL) when the AI-design score is too high OR the
-   primary action is not in the first screen. A website is not done until this
-   passes (or the founder explicitly signs off on an intentional exception).
+2. **Authoritative design + UX read (required before deploy).** Run the
+   `design-room` skill on the page — multi-lens design review + visual-diff critic.
+   It judges the AI-design tells AND the UX read (seconds to understand, primary
+   action in the first screen, bounce risk, conversion fixes). A website is not
+   done until design-room passes (or the founder explicitly signs off on an
+   intentional exception).
 
-## What eyeball checks (design + UX)
+## What the gate checks (design + UX)
 
 AI-design tells (fonts, gradients, cookie-cutter layout, emoji icons, stock copy)
 AND the UX-researcher read: seconds to understand, does a first-time visitor grasp
