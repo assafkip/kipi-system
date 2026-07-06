@@ -88,6 +88,34 @@ check("remediate_cross_project is callable", callable(pr.remediate_cross_project
 check("remediate_cross_project defaults to dry (apply kwarg)",
       inspect.signature(pr.remediate_cross_project).parameters["apply"].default is False)
 
+# --- ktlyst-hub dissolution: per-project scatter map (PRD Change 1) -------------
+K = pr.KTLYST_HUB
+kdst = {p["name"]: p["dst"] for p in K["projects"]}
+check("ktlyst-hub: accountant -> consulting/projects",
+      kdst["accountant"].endswith("consulting/projects/accountant"))
+check("ktlyst-hub: lawyer -> consulting/projects",
+      kdst["lawyer"].endswith("consulting/projects/lawyer"))
+check("ktlyst-hub: strategy -> cole-gtm/projects",
+      kdst["strategy"].endswith("cole-gtm/projects/strategy"))
+check("ktlyst-hub: deliverables -> intel/projects",
+      kdst["deliverables"].endswith("intel/projects/deliverables"))
+check("ktlyst-hub: product -> ktlyst-saas/projects (promoted)",
+      kdst["product"].endswith("ktlyst-saas/projects/product"))
+prod = next(p for p in K["projects"] if p.get("promote"))
+check("ktlyst-hub: product entry sources product-baseline (successor)",
+      prod["src_sub"].endswith("ktlyst-hub/product-baseline"))
+check("ktlyst-hub: promote archives the OLD product line",
+      prod["promote"]["old_main_sub"].endswith("ktlyst-hub/product"))
+
+# 1.2: build_oldnew_map folds in the dissolution — BOTH old product names -> new
+mk = pr.build_oldnew_map()
+pb_old = f"{HOME}/projects/ktlyst-hub/product-baseline"
+pm_old = f"{HOME}/projects/ktlyst-hub/product"
+check("1.2 map: product-baseline -> ktlyst-saas/projects/product",
+      mk.get(pb_old, "").endswith("ktlyst-saas/projects/product"))
+check("1.2 map: old product -> same standalone product",
+      mk.get(pm_old, "").endswith("ktlyst-saas/projects/product"))
+
 print()
 if FAILS:
     print(f"FAIL: {len(FAILS)} check(s) failed: {FAILS}")

@@ -1116,6 +1116,23 @@ def run_rollback(persona):
             # restored path. Worktrees are currently linked to mv["dst"]; the repo
             # now lives at mv["src"]. No-op when the repo has no worktrees.
             _repair_git_worktrees(mv["dst"], mv["src"])
+    # Promotions (ktlyst-hub product): restore the archived old product, re-add the
+    # successor worktree at its original path/branch. The standalone clone is KEPT
+    # and flagged — never auto-deleted (it may hold work done after the detach;
+    # destroying it would violate the non-destructive rollback contract).
+    for prom in reversed(man.get("promotions", [])):
+        if os.path.isdir(prom["archived"]) and not os.path.isdir(prom["orig_main"]):
+            shutil.move(prom["archived"], prom["orig_main"])
+            print(f"    restored old product {prom['orig_main']}")
+        if os.path.isdir(prom["orig_main"]) and not os.path.exists(prom["orig_worktree"]):
+            code, out = sh(["git", "-C", prom["orig_main"], "worktree", "add",
+                            prom["orig_worktree"], prom["branch"]])
+            print(f"    re-added worktree {prom['orig_worktree']}"
+                  + ("" if code == 0 else c(f"  (WARN: {out})", "33")))
+        if os.path.isdir(prom["new_repo"]):
+            print(c(f"    KEPT standalone clone {prom['new_repo']} — review before "
+                    f"deleting (may hold post-detach work)", "33"))
+
     # Anchor-less buckets: remove what the tool created. Files first, then dirs
     # via os.rmdir (empty-only — a non-empty bucket is KEPT and flagged, never
     # rmtree'd; rollback must not destroy anything it did not create).
@@ -1416,7 +1433,7 @@ def run_dissolve():
 def main():
     ap = argparse.ArgumentParser(description="Fleet persona reorg (dry by default).")
     ap.add_argument("--persona", default="cole-gtm",
-                    choices=list(PERSONAS) + ["gtm-extract", "remediation"])
+                    choices=list(PERSONAS) + ["ktlyst-hub", "gtm-extract", "remediation"])
     ap.add_argument("--dry", action="store_true", default=True)
     ap.add_argument("--apply", action="store_true", help="Execute the phased, reversible moves.")
     ap.add_argument("--rollback", action="store_true", help="Reverse the last apply via manifest.")
@@ -1437,6 +1454,9 @@ def main():
         return
     if args.gtm_extract:
         gtm_extract_apply() if args.apply else gtm_extract_preview()
+        return
+    if args.persona == "ktlyst-hub":
+        run_dissolve() if args.apply else dissolve_preview()
         return
     if args.apply:
         run_apply(args.persona)
