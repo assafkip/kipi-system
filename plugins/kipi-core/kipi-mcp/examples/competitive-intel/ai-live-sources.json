@@ -1,5 +1,5 @@
 {
-  "_source": "Adapted from /Users/assafkipnis/projects/random-stuff-ideas/gtm/scripts/podcast/sources.json",
+  "_source": "Adapted from /Users/assafkipnis/projects/cole-gtm/gtm/scripts/podcast/sources.json",
   "_notes": [
     "Keyless public sources only for the first reusable workflow.",
     "Reddit uses /.rss with a browser UA, matching the random-stuff RCA fix.",

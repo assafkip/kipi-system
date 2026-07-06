@@ -1,0 +1,94 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/ASK_AI_consultant/products",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/products"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.x-post.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.x-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.youtube-post.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.youtube-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.repo-distribution.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.repo-distribution.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.pinterest-post.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.pinterest-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.refill.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.claudedaddy.refill.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/com.claudedaddy.youtube-post.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/com.claudedaddy.youtube-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/post-video.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/post-video.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/queue.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/youtube-engine/queue.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/ai-news-podcast/com.ask.ai-podcast.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/ai-news-podcast/com.ask.ai-podcast.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/ai-news-podcast/make-podcast.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/ai-news-podcast/make-podcast.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/queue.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/queue.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/com.claudedaddy.pinterest-post.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/com.claudedaddy.pinterest-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/post-pin.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/pinterest-engine/post-pin.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/distribution-engine/distribute.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/distribution-engine/distribute.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/distribution-engine/com.claudedaddy.repo-distribution.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/distribution-engine/com.claudedaddy.repo-distribution.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/com.claudedaddy.x-post.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/com.claudedaddy.x-post.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/queue.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/queue.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/post-now.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/x-engine/post-now.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/refill-preview.md",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/refill-preview.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/refill.sh",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/refill.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/com.claudedaddy.refill.plist",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/products/refill-engine/com.claudedaddy.refill.plist.persona-reorg.bak"
+    }
+  ]
+}

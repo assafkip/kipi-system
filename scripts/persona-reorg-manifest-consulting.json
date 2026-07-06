@@ -1,0 +1,74 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/ASK_AI_consultant",
+      "dst": "/Users/assafkipnis/projects/consulting"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/Pure_spectrum_Q",
+      "dst": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/4_points_consulting",
+      "dst": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/Alice",
+      "dst": "/Users/assafkipnis/projects/consulting/projects/Alice"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/plugins/kipi-core/kipi-mcp/docs/competitive-intel-analyst.md",
+      "bak": "/Users/assafkipnis/projects/consulting/plugins/kipi-core/kipi-mcp/docs/competitive-intel-analyst.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/.claude/rules/cole-gtm-bridge.md",
+      "bak": "/Users/assafkipnis/projects/consulting/.claude/rules/cole-gtm-bridge.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/.gitignore",
+      "bak": "/Users/assafkipnis/projects/consulting/.gitignore.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_Threat_Intel_Agent/threat-intel-agent/deploy/com.purespectrum.ti-weekly.plist",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_Threat_Intel_Agent/threat-intel-agent/deploy/com.purespectrum.ti-weekly.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_Threat_Intel_Agent/threat-intel-agent/scripts/retime_weekly_to_7am.sh",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_Threat_Intel_Agent/threat-intel-agent/scripts/retime_weekly_to_7am.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_QEP_Agent_Automation/progress.md",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_QEP_Agent_Automation/progress.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_QEP_Agent_Automation/qep_agent/scripts/purge-stale-pii-bundles.sh",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/projects/2026_QEP_Agent_Automation/qep_agent/scripts/purge-stale-pii-bundles.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/q-pure/automation/ps-slack-sync.sh",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/q-pure/automation/ps-slack-sync.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/q-pure/automation/ps-slack-sync-prompt.txt",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q/q-pure/automation/ps-slack-sync-prompt.txt.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.ktlyst.ps-slack-sync.plist",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.ktlyst.ps-slack-sync.plist.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/.claude/settings.local.json",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/.claude/settings.local.json.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/q-investigate/skills/osint/face-env/pyvenv.cfg",
+      "bak": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/q-investigate/skills/osint/face-env/pyvenv.cfg.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/consulting/CLAUDE.md",
+      "bak": "/Users/assafkipnis/projects/consulting/CLAUDE.md.persona-reorg.bak"
+    }
+  ]
+}

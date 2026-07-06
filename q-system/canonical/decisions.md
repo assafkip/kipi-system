@@ -99,3 +99,45 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Reason:** A cross-client data leak is irreversible for a threat-intel shop; it cannot rest on model judgment. Over-holding is a safe false positive; leaking is not.
 - **Date:** 2026-06-30
 - **Revisit:** Permanent (tighten the roster/patterns as needed; never loosen fail-closed).
+
+### RULE-2026-07-06-A: Fleet organizes under top-level personas; Cole owns ALL GTM
+- **Origin:** [USER-DIRECTED]
+- **Decision:** ~48 flat projects reorganize under top-level PERSONA folders (a partner per line of work), migrated by the reversible `scripts/persona-reorg.py` (dry-first, per-persona manifest, kipi-check-gated). Cole (`cole-gtm`) is the single GTM brain for the whole fleet: any GTM asset in any instance moves into Cole. Done: `random-stuff-ideas`→`cole-gtm` + 9 GTM projects nested; ASK's `products/` → `cole-gtm/products/`; ASK core → `consulting` persona (Pure_spectrum_Q + 4_points_consulting + Alice cascaded); Cole↔ASK bridge retired both sides.
+- **Reason:** Flat pile had no home per line of work; GTM was scattered across ASK + Cole. One brain per function; GTM consolidates in Cole.
+- **Date:** 2026-07-06
+- **Revisit:** After all personas migrated; then re-evaluate whether the type-grouped fleet-map folds into the persona view.
+
+### RULE-2026-07-06-B: Post-consolidation dedup — one engine per job in Cole
+- **Origin:** [USER-DIRECTED]
+- **Decision:** Merging ASK's `products/` into Cole exposed duplicates; consolidated. ARCHIVED to `~/projects/_archive/` (reversible): `ai-news-podcast` (dead TTS podcast, superseded by the live NotebookLM `gtm/scripts/podcast/`), `founder-signal-engine` (dormant subset of `competitive-analysis`), the `x/youtube/pinterest` posters + jobs (didn't work), and `refill-engine` (only fed the posters). KEPT: `distribution-engine` (ships repos), the video catalog, `competitive-analysis` (canonical signal superset), `signal-desk` / `vc-signals` / `reddit-build-radar` (distinct jobs). PODCAST (decided 2026-07-06 — PARK, do not merge): live `gtm/scripts/podcast/` and public OSS `projects/notebooklm-daily-podcast/` share only a small STABLE mechanism (dedup.py 4-line diff, make_podcast.sh 7-line diff); their show-specific files diverged hard (fetch_sources 260, build_email_html 377) into two real products. A full merge = reconciling diverged code against a LIVE show for modest payoff; a shared-lib extract = coupling a live branded show to a public repo — both worse than the copy-paste. Boundary declared instead: live = source of truth, repo = sanitized export, sync-on-change note added to the two shared files.
+- **Reason:** Founder: no multiple engines doing the same thing / multiple versions of one thing.
+- **Date:** 2026-07-06
+- **Revisit:** When the podcast one-engine merge is scheduled; and if a shared Reddit-collector lib is extracted (3 copies today).
+
+### RULE-2026-07-06-C: micro-saas persona — anchor-less bucket pattern
+- **Origin:** [CLAUDE-RECOMMENDED -> APPROVED]
+- **Decision:** The 6 $29 micro-SaaS repos (cheapcheck, briefonce, authorvoice, feedbackpin, runreceipts, shipgate) now cascade under a new top-level `micro-saas/projects/` bucket. Named `micro-saas` (not `products`) to avoid overloading `cole-gtm/products/` (the content machine). Unlike cole-gtm/consulting there was no anchor repo to rename, so `persona-reorg.py` gained a `create=True` parent mode: it CREATES an empty bucket + `projects/` + `.gitignore` + a roster `CLAUDE.md`, moves the 6 in, rewrites live self-ref paths (13 refs / 8 files). Zero registry / launchd / bridge / cluster-rule touches — pure Tier-0. Reversible via `persona-reorg-manifest-micro-saas.json`. Also: `consulting` added to the tool's `MIGRATED` set so `run_apply` exits early on a re-run (it was migrated 2026-07-06 but omitted from that set).
+- **Reason:** Continues RULE-2026-07-06-A (fleet under personas). Anchor-less personas (Products, Dev-tools, Intel) have no brain repo; the bucket pattern is how they migrate.
+- **Date:** 2026-07-06
+- **Revisit:** After all personas migrated (per RULE-2026-07-06-A).
+
+### RULE-2026-07-06-D: intel persona + two tool hardenings (runs/ skip, worktree repair)
+- **Origin:** [CLAUDE-RECOMMENDED -> APPROVED]
+- **Decision:** kipi-investigations (registry `investigations`), ktlyst-extract, facebook-ads-library-search cascade under a new anchor-less `intel/projects/` bucket. 1 registry rewrite, 1 live self-ref (`.codex/hooks.json`), 0 launchd/cron/bridge. The KTLYST product you sell (`ktlyst-hub/product`) also belongs in `intel` but stays put until the ktlyst-hub split. Two `persona-reorg.py` hardenings surfaced and landed: (1) `/runs/` added to the forensic path-skip list — 86 facebook-ads scraper capture files + run-manifests are point-in-time evidence, not live code, so the rewriter leaves them intact; (2) a two-step `git worktree repair` after each move — kipi-investigations had 3 nested codex agent worktrees whose absolute-path linkage a move breaks; a bare repair only fixes the main tree, so the tool now re-links each moved worktree at its new path (verified: bare repair left 3 `prunable`, explicit-path repair cleared them).
+- **Reason:** Continues RULE-2026-07-06-A. A threat-intel shop's run captures are evidence — falsifying their paths is worse than stale internal refs. Orphaned worktrees are a silent breakage a deterministic step prevents.
+- **Date:** 2026-07-06
+- **Revisit:** After all personas migrated (per RULE-2026-07-06-A).
+
+### RULE-2026-07-06-E: dev-tools persona — cleanest Tier-0 batch; kipi-system stays meta
+- **Origin:** [CLAUDE-RECOMMENDED -> APPROVED]
+- **Decision:** The 7 shippable/OSS plugin + dev-tool repos (claude-focus, fable-discipline, kipi-rca, huntkit, tokentrim, founder-voice-kit, interview-coach-public) cascade under a new anchor-less `dev-tools/projects/` bucket (`create=True`, same pattern as micro-saas/intel). Recon proved pure Tier-0: 0 registry, 0 launchd (plist name AND body scan), 0 linked worktrees, 0 bridge. Only rewrite was 3 tokentrim `_setup_*.py` self-refs (absolute build paths inside the moved dir). `kipi-system` is deliberately excluded — it stays top-level/meta because every persona depends on the factory (plan open-decision #3); nesting it under one persona is wrong. Reversible via `persona-reorg-manifest-dev-tools.json`; `dev-tools` added to the tool's `MIGRATED` set (re-apply refused, verified exit 3). *(Superseded in part by RULE-F: interview-coach-public later re-homed to micro-saas — dev-tools now holds 6.)*
+- **Reason:** Continues RULE-2026-07-06-A. Dev-tools is the anchor-less bucket pattern with zero automation deps — the low-risk proof that the pattern generalizes cleanly.
+- **Date:** 2026-07-06
+- **Revisit:** After all personas migrated (per RULE-2026-07-06-A).
+
+### RULE-2026-07-06-F: interview-coach-public re-homed dev-tools -> micro-saas
+- **Origin:** [USER-DIRECTED]
+- **Decision:** `interview-coach-public` moves out of `dev-tools/projects/` into `micro-saas/projects/`. It is a friend's shipped product (the $29 micro-SaaS class), not an OSS dev-tool plugin. Zero-dep move (0 self-refs / registry / launchd / worktree). Both manifests were rewritten so each bucket's rollback stays honest: the dev-tools manifest drops the record; the micro-saas manifest gains it pointed at the project's TRUE origin (`~/projects/interview-coach-public`), so a micro-saas rollback restores it there, not to dev-tools. PERSONAS map + both rosters + fleet-map updated to match.
+- **Reason:** Persona = kind of work, not licensing. It ships to a user like cheapcheck/briefonce, so it belongs with the products.
+- **Date:** 2026-07-06
+- **Revisit:** With the interview-coach consolidation (5 variants -> 1, fleet-map open item #1).
