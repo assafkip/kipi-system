@@ -1,0 +1,12 @@
+---
+id: a-scheduled-job-runs-in-a-bare-environment-not-your-shell
+kind: pattern
+title: A scheduled job runs in a bare environment, not your shell
+date: 2026-07-06
+---
+
+A task that succeeds when you run it by hand and fails when a scheduler runs it is almost never random. A timer, cron, service manager, or CI runner starts each job from a minimal, non-interactive environment: it does not source your login shell, your profile, or the variables you exported into your terminal. Any credential, path, or flag that lives only in your interactive session is invisible to the automated run. The by-hand success is the trap, not the reassurance. It proves the code works when the missing config happens to be present, which is exactly the condition that never holds under the scheduler. So a manual test can pass indefinitely while every scheduled run is silently degraded.
+
+The fix is to make the job read every input it needs from a durable, checked-in-or-deployed source that the runtime actually loads, and to route no configuration through ambient shell state. Pick one authoritative config location (an env file the job sources, a secrets store it queries, a config the deploy injects) and treat that file as the only supported way to supply a value. When you add a new credential or setting, add it to that source, not to your shell. The test that matters is not 'does it work in my terminal' but 'does it work when launched exactly the way the scheduler launches it' — same working directory, same empty environment, same user. Reproduce that launch context when you verify, or you are testing a different program than the one that ships.
+
+The second half of this failure class: when a required input goes missing because of such a config gap, the job must not degrade in silence. A pipeline that treats a missing credential as a per-item skip and continues with a smaller pool produces a run that is smaller-but-green, and a degraded-but-passing run is indistinguishable from a healthy one to anyone reading the status. Two guards close this. First, put a floor on the work: if an enabled input yields zero, that is a distinct outcome from a genuinely quiet period, and it must alert rather than pass. Second, distinguish 'this input was disabled or absent' from 'this input ran and returned nothing' — only the second is legitimately empty. Without the floor and the distinction, a config gap in one input rots quietly across many runs, because each individual run still finished.
