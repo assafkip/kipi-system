@@ -890,16 +890,27 @@ def _repair_git_worktrees(repo_src, repo_dst):
 # git-correct detach (clone the successor into its own repo), NOT preserving the
 # worktree link. See prd-ktlyst-hub-dissolution-2026-07-06.md.
 
-def salvage_check(main_repo, keep_branch, drop_ref):
+# kipi-skeleton-managed roots: synced into every instance by `kipi update`, so a
+# copy on the old line but not the successor is a sync-delta that self-heals on the
+# new product's next update — NOT lost product work. salvage_check skips them.
+SKELETON_MANAGED = ("plugins/", "q-system/", ".claude/", "CLAUDE.md")
+
+
+def salvage_check(main_repo, keep_branch, drop_ref, include_skeleton=False):
     """Files present in drop_ref's tree but ABSENT from keep_branch's tree — work
-    that archiving drop_ref would lose. Empty list == safe to archive. The
-    deterministic guard behind the manual salvage-check (a file on the OLD product
-    line that never made it to the successor). Content-level divergence is out of
-    scope; a missing FILE is the loss that matters for archive safety."""
+    that lives ONLY on the old line. Empty == the live product loses nothing real.
+    The deterministic guard behind the manual salvage-check. kipi-SKELETON files
+    (SKELETON_MANAGED) re-sync via `kipi update`, so they are skipped unless
+    include_skeleton=True. NOTE the old line is ARCHIVED, never deleted — anything
+    flagged is preserved + retrievable; this guard INFORMS, it is not proof of loss.
+    Content-level divergence is out of scope; a missing FILE is what matters."""
     def tree(ref):
         code, out = sh(["git", "-C", main_repo, "ls-tree", "-r", "--name-only", ref])
         return set(l for l in out.splitlines() if l.strip()) if code == 0 else set()
-    return sorted(tree(drop_ref) - tree(keep_branch))
+    diff = sorted(tree(drop_ref) - tree(keep_branch))
+    if include_skeleton:
+        return diff
+    return [f for f in diff if not f.startswith(SKELETON_MANAGED)]
 
 
 def promote_worktree_to_standalone(worktree_dir, main_repo, branch, new_repo):
@@ -1273,14 +1284,17 @@ def dissolve_preview():
     print(f"                    -> {pm['archive_to']}")
     print(f"  registry 'ktlyst'  -> {prod['dst']}")
     if os.path.isdir(old_main):
-        strands = [s for s in salvage_check(old_main, pm["branch"], "main") if s]
+        strands = salvage_check(old_main, pm["branch"], "main")
+        skel = len(salvage_check(old_main, pm["branch"], "main", include_skeleton=True)) - len(strands)
+        print(c(f"\n  salvage-check: {skel} skeleton-sync files skipped "
+                f"(re-sync via kipi update — not lost work)", "36"))
         if strands:
-            print(c(f"\n  SALVAGE-CHECK: {len(strands)} file(s) on the old line NOT on the "
-                    f"successor — apply will ABORT:", "1;31"))
-            for s in strands[:10]:
+            print(c(f"  salvage-check: {len(strands)} NON-skeleton file(s) live only on the old "
+                    f"line — PRESERVED in the archive (retrievable), not carried to the live product:", "33"))
+            for s in strands:
                 print(f"      - {s}")
         else:
-            print(c("\n  salvage-check: nothing stranded on the old product line — safe to archive.", "32"))
+            print(c("  salvage-check: no real product work stranded — clean.", "32"))
     else:
         print(c(f"\n  old product missing at {old_main} — cannot salvage-check.", "1;31"))
 
@@ -1346,15 +1360,23 @@ def run_dissolve():
     new_repo = prod["dst"]
     print(c("\n### persona-reorg APPLY — ktlyst-hub dissolution (reversible) ###", "1;35"))
 
-    # PHASE 0: salvage-gate + topology snapshot BEFORE any move
-    hdr("APPLY PHASE 0 — salvage-check gate + topology snapshot")
+    # PHASE 0: salvage-check (INFORM) + topology snapshot BEFORE any move. This is
+    # a soft gate: the old line is ARCHIVED not deleted, so real strands stay
+    # retrievable — we report them, we do not abort. (Skeleton files re-sync.)
+    hdr("APPLY PHASE 0 — salvage-check + topology snapshot")
     if not os.path.isdir(old_main):
         return _abort(f"old product missing: {old_main}")
     strands = salvage_check(old_main, pm["branch"], "main")
+    skel = len(salvage_check(old_main, pm["branch"], "main", include_skeleton=True)) - len(strands)
+    print(c(f"    salvage-check: {skel} skeleton-sync files skipped (self-heal via kipi update)", "36"))
     if strands:
-        return _abort(f"salvage-check: {len(strands)} file(s) stranded on old product "
-                      f"{strands[:3]} — refusing to archive.")
-    print(c("    salvage-check: clean (nothing stranded on old product)", "32"))
+        print(c(f"    salvage-check: {len(strands)} non-skeleton file(s) live only on the old "
+                f"line — PRESERVED in the archive, not carried to the live product:", "33"))
+        for s in strands:
+            print(f"      - {s}")
+    else:
+        print(c("    salvage-check: no real product work stranded — clean.", "32"))
+    _manifest["salvage_strands"] = strands
     _, topo = sh(["git", "-C", old_main, "worktree", "list", "--porcelain"])
     _manifest["before_worktrees"] = topo
     _save_manifest()

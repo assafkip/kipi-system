@@ -62,9 +62,11 @@ def build_fixture(root):
     git(main_repo, "config", "commit.gpgsign", "false")
     write(os.path.join(main_repo, "shared.py"), "# shared history\n")
     git(main_repo, "add", "-A"); git(main_repo, "commit", "-q", "-m", "base")
-    # a file that lives ONLY on old main (the salvage-check target)
+    # a real product file that lives ONLY on old main (the salvage-check target)
     write(os.path.join(main_repo, "old_only.py"), "# stranded on the old line\n")
-    git(main_repo, "add", "-A"); git(main_repo, "commit", "-q", "-m", "old-only work")
+    # a SKELETON file synced onto main after the fork (must be SKIPPED by salvage)
+    write(os.path.join(main_repo, "q-system", "synced.md"), "# skeleton sync, re-heals\n")
+    git(main_repo, "add", "-A"); git(main_repo, "commit", "-q", "-m", "old-only + skeleton sync")
     # the successor branch forks BEFORE old_only, then diverges
     git(main_repo, "branch", "successor", "HEAD~1")
     wt = os.path.join(root, "product-baseline")          # the successor worktree
@@ -99,6 +101,13 @@ try:
     # positive: a file on the successor is NOT reported as stranded
     check("2.5 salvage_check does not flag successor-only work",
           not any("v5_feature.py" in s for s in strands))
+    # skeleton files re-sync via kipi update — must be SKIPPED (not real loss)
+    check("2.5 salvage_check SKIPS skeleton-managed paths (q-system/)",
+          not any("q-system/synced.md" in s for s in strands))
+    check("2.5 include_skeleton=True DOES see the skeleton delta",
+          any("q-system/synced.md" in s
+              for s in pr.salvage_check(main_repo, keep_branch="successor",
+                                        drop_ref="main", include_skeleton=True)))
 
     # promote the successor worktree into a standalone repo
     new_repo = os.path.join(work, "ktlyst-saas-product")
