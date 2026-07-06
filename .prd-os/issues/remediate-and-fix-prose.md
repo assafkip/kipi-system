@@ -1,7 +1,7 @@
 ---
 id: remediate-and-fix-prose
 title: Run the remediation to 0 gating refs and fix operator-facing prose (kipi-investigations docs + current-state fan-out); leave dated records
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-reorg-stale-ref-remediation-2026-07-06
 allowed_files:

@@ -1,9 +1,9 @@
 ---
 id: prd-reorg-stale-ref-remediation-2026-07-06
 title: Reorg Stale Ref Remediation
-status: approved
+status: archived
 created_at: 2026-07-06T21:53:40Z
-updated_at: 2026-07-06T22:35:36Z
+updated_at: 2026-07-06T22:40:47Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-reorg-stale-ref-remediation-2026-07-06-findings.jsonl
