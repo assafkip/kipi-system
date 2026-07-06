@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Watchdog for kipi launchd jobs -- surfaces silent job deaths.
+"""Watchdog for the founder's launchd jobs -- surfaces silent job deaths.
 
-Auto-discovers every ~/Library/LaunchAgents/com.kipi.*.plist, reads each job's
-LastExitStatus via `launchctl list`, and Slack-pings (deduped) when a job's last
-run exited non-zero.
+Auto-discovers every ~/Library/LaunchAgents/<prefix>*.plist for the founder's
+job families (WATCHED_PREFIXES: kipi, cole, claudedaddy, ask, assaf, ktlyst,
+purespectrum) and Slack-pings (deduped) on TWO silent-death modes:
+  1. loaded but its last run exited non-zero (LastExitStatus via `launchctl list`)
+  2. installed on disk but NOT loaded into launchd -- so it silently never runs.
+     Scar 2026-07-05: com.cole.daily-video was present + scheduled 07:00 but
+     unloaded, so it produced no video AND no failure ping (an unloaded job
+     cannot ping). Mode 1 alone -- the old com.kipi.*-only check -- was blind to
+     both the non-kipi families and the entirely-unloaded case.
 
 Scar: the fractional-cxo income scanners (opp-scan, bolt-on-discovery) exited 127
 every day for 6 days (2026-06-24..2026-06-30) after a `kipi update` rsync --delete
@@ -34,6 +40,20 @@ NOTIFY_SCRIPT = HERE / "slack-notify.sh"
 STATE_FILE = Path.home() / ".config" / "kipi" / "launchd-health-state.json"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 
+# Founder-owned launchd job families this watchdog covers. A prefix that matches
+# nothing on a given machine is a harmless no-op, so this list is safe to
+# propagate fleet-wide (only kipi-system actually runs the watchdog). Add a new
+# family here when a new automation prefix appears.
+WATCHED_PREFIXES = (
+    "com.kipi.",
+    "com.cole.",         # daily podcast/video GTM pipeline
+    "com.claudedaddy.",  # social posters (Pinterest/X/YouTube/refill/repo)
+    "com.ask.",          # ASK AI podcast
+    "com.assaf.",        # competitive-analysis morning
+    "com.ktlyst.",       # PureSpectrum slack sync
+    "com.purespectrum.", # threat-intel weekly
+)
+
 
 def normalize_exit(raw):
     """launchctl reports LastExitStatus as a raw wait(2) status. Decode to the
@@ -48,30 +68,45 @@ def normalize_exit(raw):
     return 128 + signal_num if signal_num else raw
 
 
-def last_exit_status(label):
-    """Return decoded LastExitStatus for a launchd label, or 0 if unknown/never-ran."""
+def job_status(label):
+    """Classify a launchd label:
+      ('failing', code)     loaded, last run exited non-zero
+      ('not_loaded', None)  plist on disk but not bootstrapped -> never runs
+      ('ok', 0)             loaded, last run clean
+      ('unknown', None)     launchctl unavailable -- do not alert
+    `launchctl list <label>` exits non-zero when the label is not loaded, which
+    is how a silently-unloaded job (present plist, absent from launchd) is caught."""
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
             capture_output=True, text=True, timeout=10,
         )
     except Exception:
-        return 0
+        return ("unknown", None)
+    if result.returncode != 0:
+        return ("not_loaded", None)
     match = re.search(r'"LastExitStatus"\s*=\s*(-?\d+)', result.stdout)
-    return normalize_exit(int(match.group(1))) if match else 0
+    code = normalize_exit(int(match.group(1))) if match else 0
+    return ("failing", code) if code != 0 else ("ok", 0)
 
 
-def discover_failing_jobs():
-    """List (label, exit_code) for every com.kipi.* job whose last run failed."""
-    failing = []
-    for plist in sorted(LAUNCH_AGENTS.glob("com.kipi.*.plist")):
-        label = plist.stem
-        if label == SELF_LABEL:
-            continue
-        exit_code = last_exit_status(label)
-        if exit_code != 0:
-            failing.append((label, exit_code))
-    return failing
+def discover_problems():
+    """List (label, kind, detail) for every watched job that is failing or
+    installed-but-unloaded. Watched = any WATCHED_PREFIXES plist, minus self."""
+    problems = []
+    seen = set()
+    for prefix in WATCHED_PREFIXES:
+        for plist in sorted(LAUNCH_AGENTS.glob(f"{prefix}*.plist")):
+            label = plist.stem
+            if label == SELF_LABEL or label in seen:
+                continue
+            seen.add(label)
+            kind, code = job_status(label)
+            if kind == "failing":
+                problems.append((label, "failing", f"exit {code}"))
+            elif kind == "not_loaded":
+                problems.append((label, "not_loaded", "installed but not running"))
+    return problems
 
 
 def load_state():
@@ -95,45 +130,52 @@ def send_ping(message):
         pass
 
 
-def jobs_to_ping(failing, state, now):
-    """Failing jobs whose last ping is older than the TTL (dedupe spam)."""
+def problems_to_ping(problems, state, now):
+    """Problems whose kind changed since the last ping, or whose last ping is
+    older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
     due = []
-    for label, exit_code in failing:
-        last_pinged = state.get(label, {}).get("pinged_at", 0)
-        if now - last_pinged >= FAIL_PING_TTL_SECONDS:
-            due.append((label, exit_code))
+    for label, kind, detail in problems:
+        prev = state.get(label, {})
+        kind_changed = prev.get("kind") != kind
+        last_pinged = prev.get("pinged_at", 0)
+        if kind_changed or now - last_pinged >= FAIL_PING_TTL_SECONDS:
+            due.append((label, kind, detail))
     return due
 
 
 def run(dry_run):
-    failing = discover_failing_jobs()
+    problems = discover_problems()
 
-    if not failing:
+    if not problems:
         if dry_run:
-            print("all kipi launchd jobs healthy (exit 0)")
+            print("all watched launchd jobs healthy (loaded, exit 0)")
         elif STATE_FILE.exists():
             write_state({})  # everything recovered; clear ping history
         return
 
-    for label, exit_code in failing:
-        print(f"FAILING: {label} exit {exit_code}")
+    for label, kind, detail in problems:
+        print(f"{kind.upper()}: {label} -- {detail}")
 
     state = load_state()
     now = int(time.time())
-    due = jobs_to_ping(failing, state, now)
+    due = problems_to_ping(problems, state, now)
 
     if dry_run:
         print(f"[dry] would ping {len(due)} job(s)")
         return
 
     if due:
-        summary = ", ".join(f"{label} (exit {code})" for label, code in due)
-        send_ping(f"launchd watchdog: {len(due)} job(s) failing -- {summary}")
-        for label, exit_code in due:
-            state[label] = {"pinged_at": now, "exit": exit_code}
+        parts = [
+            f"{label} (installed but NOT running)" if kind == "not_loaded"
+            else f"{label} ({detail})"
+            for label, kind, detail in due
+        ]
+        send_ping(f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts))
+        for label, kind, detail in due:
+            state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
 
-    failing_labels = {label for label, _ in failing}
-    for label in [k for k in state if k not in failing_labels]:
+    problem_labels = {label for label, _, _ in problems}
+    for label in [k for k in state if k not in problem_labels]:
         state.pop(label)  # recovered since last run
 
     write_state(state)
