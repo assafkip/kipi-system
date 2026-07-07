@@ -138,7 +138,7 @@ def test_xlsx_losses() -> None:
     except ImportError:
         print("  [SKIP] openpyxl absent")
         return
-    from kipi_ingest.readers.xlsx_reader import read_xlsx
+    from kipi_ingest.readers import read_xlsx  # via public API (guards the export)
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "book.xlsx"
         wb = Workbook()
