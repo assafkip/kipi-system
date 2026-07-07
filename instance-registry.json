@@ -6,7 +6,7 @@
   "instances": [
     {
       "name": "KTLYST_strategy",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/strategy",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/strategy",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-ktlyst",
       "type": "subtree",
@@ -14,7 +14,7 @@
     },
     {
       "name": "ktlyst",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/product",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas/projects/product",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -22,7 +22,7 @@
     },
     {
       "name": "ASK_AI_consultant",
-      "path": "/Users/assafkipnis/projects/ASK_AI_consultant",
+      "path": "/Users/assafkipnis/projects/consulting",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-consult",
       "type": "subtree",
@@ -30,7 +30,7 @@
     },
     {
       "name": "ktlyst-website",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/website",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/website",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -40,7 +40,7 @@
     },
     {
       "name": "4_points_consulting",
-      "path": "/Users/assafkipnis/projects/4_points_consulting",
+      "path": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-investigate",
       "type": "subtree",
@@ -49,7 +49,7 @@
     },
     {
       "name": "Pure_spectrum_Q",
-      "path": "/Users/assafkipnis/projects/Pure_spectrum_Q",
+      "path": "/Users/assafkipnis/projects/consulting/projects/Pure_spectrum_Q",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-pure",
       "type": "subtree",
@@ -58,7 +58,7 @@
     },
     {
       "name": "ktlyst_lawyer",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/lawyer",
+      "path": "/Users/assafkipnis/projects/consulting/projects/lawyer",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -66,7 +66,7 @@
     },
     {
       "name": "personal-brand",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/personal-brand",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/personal-brand",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -82,7 +82,7 @@
     },
     {
       "name": "event_coordinator",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/event_coordinator",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/event_coordinator",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -98,7 +98,7 @@
     },
     {
       "name": "investigations",
-      "path": "/Users/assafkipnis/projects/kipi-investigations",
+      "path": "/Users/assafkipnis/projects/intel/projects/kipi-investigations",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -106,7 +106,7 @@
     },
     {
       "name": "accountant",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/accountant",
+      "path": "/Users/assafkipnis/projects/consulting/projects/accountant",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -123,7 +123,7 @@
     },
     {
       "name": "gtm-partner",
-      "path": "/Users/assafkipnis/projects/random-stuff-ideas",
+      "path": "/Users/assafkipnis/projects/cole-gtm",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -163,7 +163,7 @@
     },
     {
       "name": "reddit-build-radar",
-      "path": "/Users/assafkipnis/projects/reddit-build-radar",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar",
       "subtree_prefix": null,
       "instance_q_dir": null,
       "type": "standalone",
@@ -173,7 +173,7 @@
     },
     {
       "name": "Alice",
-      "path": "/Users/assafkipnis/projects/Alice",
+      "path": "/Users/assafkipnis/projects/consulting/projects/Alice",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",

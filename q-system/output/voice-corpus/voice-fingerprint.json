@@ -1,0 +1,335 @@
+{
+  "total_words": 11563,
+  "top_content_words": [
+    [
+      "it's",
+      157
+    ],
+    [
+      "i'm",
+      139
+    ],
+    [
+      "because",
+      81
+    ],
+    [
+      "don't",
+      80
+    ],
+    [
+      "that's",
+      77
+    ],
+    [
+      "know",
+      53
+    ],
+    [
+      "said",
+      49
+    ],
+    [
+      "people",
+      41
+    ],
+    [
+      "something",
+      40
+    ],
+    [
+      "want",
+      37
+    ],
+    [
+      "think",
+      36
+    ],
+    [
+      "need",
+      36
+    ],
+    [
+      "you're",
+      32
+    ],
+    [
+      "make",
+      32
+    ],
+    [
+      "working",
+      31
+    ],
+    [
+      "where",
+      31
+    ],
+    [
+      "time",
+      29
+    ],
+    [
+      "doing",
+      28
+    ],
+    [
+      "well",
+      27
+    ],
+    [
+      "right",
+      27
+    ],
+    [
+      "way",
+      25
+    ],
+    [
+      "see",
+      25
+    ],
+    [
+      "tell",
+      23
+    ],
+    [
+      "some",
+      23
+    ],
+    [
+      "say",
+      23
+    ],
+    [
+      "didn't",
+      23
+    ],
+    [
+      "yes",
+      22
+    ],
+    [
+      "team",
+      22
+    ],
+    [
+      "work",
+      22
+    ],
+    [
+      "maybe",
+      22
+    ]
+  ],
+  "discourse_markers_per_1k_words": {
+    "like": 12.89,
+    "so": 10.98,
+    "right": 1.73,
+    "i don't know": 1.38,
+    "kind of": 1.21,
+    "i think": 1.21,
+    "actually": 1.12,
+    "whatever": 0.61,
+    "you know": 0.43,
+    "cool": 0.26,
+    "dude": 0.17,
+    "literally": 0.17,
+    "basically": 0.17,
+    "man": 0.09
+  },
+  "sentence_openers_top": [
+    [
+      "and",
+      198
+    ],
+    [
+      "i",
+      101
+    ],
+    [
+      "so",
+      97
+    ],
+    [
+      "but",
+      69
+    ],
+    [
+      "yeah",
+      68
+    ],
+    [
+      "like",
+      55
+    ],
+    [
+      "it's",
+      44
+    ],
+    [
+      "it",
+      25
+    ],
+    [
+      "i'm",
+      24
+    ],
+    [
+      "because",
+      23
+    ],
+    [
+      "no",
+      20
+    ],
+    [
+      "that's",
+      18
+    ],
+    [
+      "that",
+      18
+    ],
+    [
+      "you",
+      17
+    ],
+    [
+      "yes",
+      16
+    ],
+    [
+      "the",
+      16
+    ],
+    [
+      "oh",
+      14
+    ],
+    [
+      "okay",
+      12
+    ],
+    [
+      "what",
+      12
+    ],
+    [
+      "or",
+      12
+    ]
+  ],
+  "sentence_closers_top": [
+    [
+      "yeah",
+      46
+    ],
+    [
+      "it",
+      45
+    ],
+    [
+      "that",
+      35
+    ],
+    [
+      "like",
+      29
+    ],
+    [
+      "okay",
+      22
+    ],
+    [
+      "this",
+      19
+    ],
+    [
+      "it's",
+      18
+    ],
+    [
+      "now",
+      17
+    ],
+    [
+      "yes",
+      15
+    ],
+    [
+      "me",
+      15
+    ],
+    [
+      "just",
+      14
+    ],
+    [
+      "on",
+      12
+    ],
+    [
+      "the",
+      12
+    ],
+    [
+      "is",
+      11
+    ],
+    [
+      "know",
+      11
+    ],
+    [
+      "i",
+      11
+    ],
+    [
+      "you",
+      11
+    ],
+    [
+      "was",
+      10
+    ],
+    [
+      "something",
+      10
+    ],
+    [
+      "no",
+      9
+    ]
+  ],
+  "corporate_cliches_absent": [
+    "leverage",
+    "synergy",
+    "excited to",
+    "thrilled",
+    "humbled",
+    "circling back",
+    "touch base",
+    "low-hanging",
+    "move the needle",
+    "best practice",
+    "stakeholder",
+    "paradigm",
+    "robust",
+    "seamless",
+    "cutting-edge",
+    "cutting edge",
+    "game-changing",
+    "game changing",
+    "innovative",
+    "disrupt",
+    "empower",
+    "holistic",
+    "ecosystem",
+    "value-add",
+    "deep dive",
+    "north star",
+    "double-click"
+  ],
+  "corporate_cliches_present": {}
+}

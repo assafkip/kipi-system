@@ -1,0 +1,45 @@
+{
+  "moves": [],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/artifacts/stabilization-real-run-output/summary.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/artifacts/stabilization-real-run-output/summary.json.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/ktlyst/packaging/artifact_policy.py",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/ktlyst/packaging/artifact_policy.py.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/tests/v2/packaging/test_summary_path_scrub.py",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/tests/v2/packaging/test_summary_path_scrub.py.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/stranded-code-audit.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/stranded-code-audit.js.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/eng-persona-output-review.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/eng-persona-output-review.js.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-123030_ece32447ab1a_8e2fa113d40e/.ktlyst/build_meta.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-123030_ece32447ab1a_8e2fa113d40e/.ktlyst/build_meta.json.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-105952_ce9166778a66_8e2fa113d40e/.ktlyst/build_meta.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-105952_ce9166778a66_8e2fa113d40e/.ktlyst/build_meta.json.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/strategy/.claude/settings.local.json",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/strategy/.claude/settings.local.json.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/stranded-code-audit.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/stranded-code-audit.js.remediation.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/eng-persona-output-review.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/eng-persona-output-review.js.remediation.bak"
+    }
+  ]
+}

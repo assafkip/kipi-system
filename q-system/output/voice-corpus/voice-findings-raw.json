@@ -1,0 +1,290 @@
+[
+  {
+    "category": "metaphor",
+    "pattern": "Security work as endless firefighting with whack-a-mole fixes that never accumulate into learning",
+    "classification": "durable",
+    "evidence_quotes": [
+      "And you always continue fighting the same fires again and again.",
+      "And there would be some whacK-A-Mole fix and then we would do it again and again."
+    ],
+    "why_distinctive": "This is his founding thesis, tied to investigator burnout he personally lived through across LinkedIn/Meta/Google, not a borrowed industry talking point."
+  },
+  {
+    "category": "metaphor",
+    "pattern": "Coined critique 'polishing the silos': AI vendors make each security team faster without making teams learn from each other",
+    "classification": "durable",
+    "evidence_quotes": [
+      "everybody is polishing the silos, making SOC faster, making red teams faster. They're still not talking to each other.",
+      "Were built as silos. So you have the, the threat Intel team that just makes reports. And nobody really reads those reports."
+    ],
+    "why_distinctive": "'Polishing the silos' is an original coinage that carries his whole competitive positioning in three words; the silo diagnosis recurs as the root cause behind burnout and CISO blindness."
+  },
+  {
+    "category": "vocabulary",
+    "pattern": "Describes anti-hallucination architecture in physical-barrier vocabulary: gates, loops, backstops, checked at every step",
+    "classification": "durable",
+    "evidence_quotes": [
+      "I obviously don't tell it. You can't hallucinate, but it's gate after gate after gate.",
+      "it's continuous loops and gates in the way that check it against the source material",
+      "Because there's so many backstops."
+    ],
+    "why_distinctive": "Generic founders say 'guardrails' or 'evals'; Assaf consistently uses gate/loop/backstop imagery of sequential physical checkpoints, matching how he actually builds (deterministic hooks, token guards)."
+  },
+  {
+    "category": "stance",
+    "pattern": "Anthropomorphizes the LLM as an adversary that actively wants to please and deceive, and must be interrogated like a suspect",
+    "classification": "durable",
+    "evidence_quotes": [
+      "And they really wanna please you and say, yes. I did this. No. You didn't.",
+      "the llm wants to hallucinate. Like, bro. A, b, c. I'm gonna check you at a. I'm gonna check you at b. I'm gonna check you at c.",
+      "And it tries. Tries so hard. To hallucinate."
+    ],
+    "why_distinctive": "He treats the model like an adversarial actor under investigation, a direct transfer of his threat-intel investigator instincts onto AI engineering; most founders describe hallucination as a passive error rate."
+  },
+  {
+    "category": "stance",
+    "pattern": "Rejects 'agents judging agents' as verification; the only real check is comparison against the original source material",
+    "classification": "durable",
+    "evidence_quotes": [
+      "oh, just multiple llms, and then we put on a judge llm. And. And I'm seeing that all the time.",
+      "that's my biggest problem with with agents over agents that there could be some hallucinations But when are you gonna find out?",
+      "if you're not comparing it to the actual thing that came in, you don't know"
+    ],
+    "why_distinctive": "He pushes back on this pattern even when it comes from the Meta CSO and Guy Rosen; contrarian to the prevailing 2026 judge-LLM consensus and specific about the failure mode (late detection)."
+  },
+  {
+    "category": "argument-structure",
+    "pattern": "Argues for deterministic code over LLM calls via reductio: the intersection one-or-zero bit, and the r's-in-strawberry test",
+    "classification": "durable",
+    "evidence_quotes": [
+      "you know, there's code, right? Like, python's a thing. Like, rust is a thing. Why are we making.",
+      "I'm at an intersection. Do I. Is it one or is it zero? Let's try. Let's ask the llm. Why?",
+      "when people ask it how many r's are in strawberry, it doesn't work because it's not Google. It drives me crazy when people do that."
+    ],
+    "why_distinctive": "The specific move is mockery-by-absurd-example applied to LLM misuse; 'python's a thing, rust is a thing' is his recurring shorthand for 'stop asking a nondeterministic system a deterministic question'."
+  },
+  {
+    "category": "stance",
+    "pattern": "Failure demands a root-cause analysis and a structural fix so it can never recur; patch-and-move-on is the enemy",
+    "classification": "durable",
+    "evidence_quotes": [
+      "If that didn't work, I want the AI to tell me why? Let's do an RCA and let's make sure this never, ever happens again.",
+      "okay, this broke. But why? And then let me build something so this doesn't break again"
+    ],
+    "why_distinctive": "He names RCA explicitly as his personal working method with AI agents and contrasts it with people who 'work really linearly and don't learn anything'; it is a practiced discipline, not a slogan."
+  },
+  {
+    "category": "stance",
+    "pattern": "Every claim and every generated rule must carry provenance back to the exact source paragraph",
+    "classification": "durable",
+    "evidence_quotes": [
+      "Cite back exactly where you got this from. That's how my work is.",
+      "part of the rule is exactly that, is where did this come from? And that's where the provenance comes in because it because it can say this rule came from this report that talks about this, very short. And exactly from this paragraph."
+    ],
+    "why_distinctive": "Provenance-to-the-paragraph is both his product feature and his personal epistemics; he applies the same citation demand to LLM outputs in casual conversation as in his pitch."
+  },
+  {
+    "category": "story-scar",
+    "pattern": "Founding scar: investigator burnout from re-investigating the same actors while intelligence dies in reports nobody reads",
+    "classification": "durable",
+    "evidence_quotes": [
+      "it starts with the personal issue of. Investigators getting, getting burnt out. And I tried to figure out why are people getting burnt out?",
+      "kind of the byproduct is that people get burnt out less"
+    ],
+    "why_distinctive": "His company origin story starts with a human cost (burnout) rather than a market gap; the burnout-to-silos causal chain is autobiographical, drawn from running investigations teams through the 2020 elections and Covid."
+  },
+  {
+    "category": "story-scar",
+    "pattern": "Recurring scar told bluntly and without shame: laid off twice, fired once, mental health leave at Google, fired by ElevenLabs over a public-git mistake",
+    "classification": "durable",
+    "evidence_quotes": [
+      "So I got laid off twice and fired once. So i've been through this.",
+      "They tried to fire me.",
+      "I was assuming that when I'm putting my git on public, that it's public to my team, and they're like, oh, no, we didn't tell you we're using personal kits.",
+      "Google tried to fire me. I went on, on mental health leave, and at the end of the leave, they laid me off, which was awesome because that I got severance."
+    ],
+    "why_distinctive": "He recounts firings with a ledger-like scorecard and even finds the win in it ('which was awesome because that I got severance'); most founders sanitize this history rather than deploying it to comfort a laid-off friend."
+  },
+  {
+    "category": "vocabulary",
+    "pattern": "'Shiny hunters' as the default concrete threat-actor example whenever he needs to make an abstract security point tangible",
+    "classification": "durable",
+    "evidence_quotes": [
+      "oh. Shiny hunters? Yeah, we had multiple pieces of intel about that.",
+      "I don't know what to tell the board about shiny hunters.",
+      "Let's say shiny hunters they're doing some things that there's a report that says, here is how you could detect shiny hunters coming in."
+    ],
+    "why_distinctive": "He reaches for the same named real-world actor three separate times in one pitch instead of saying 'a threat actor'; the habit of grounding every abstraction in one recurring concrete case is his signature."
+  },
+  {
+    "category": "humor",
+    "pattern": "Absurdist physical analogies to skewer social dynamics",
+    "classification": "durable",
+    "evidence_quotes": [
+      "It's like water asking can I be wet but yeah you're here",
+      "everybody's, like, basically duct taping themselves to their chair, and that's where the posturing comes from"
+    ],
+    "why_distinctive": "The humor is a compressed visual absurdity that doubles as the argument (his daughter asking to disturb him when she already has; Googlers frozen by layoff fear); it appears across both family and corporate contexts."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Self-posed question answered with a blunt one-word verdict",
+    "classification": "durable",
+    "evidence_quotes": [
+      "Will it happen? I don't know. I don't care.",
+      "Do I expect her to do it? No. Will it be nice if she did? Yes"
+    ],
+    "why_distinctive": "The question-then-monosyllable cadence shows up in shipping decisions and marriage arguments alike; it encodes his effort-over-outcome value (ship it, detach from the result) in sentence rhythm."
+  },
+  {
+    "category": "argument-structure",
+    "pattern": "Makes points by reenacting dialogue verbatim, voicing both sides with 'I'm like / she's like / he's like'",
+    "classification": "durable",
+    "evidence_quotes": [
+      "he's like, I don't go to meetings. All I do is lie. I hate it.",
+      "she said well I would hope that I would have a say in that.",
+      "they're like, oh, no, we didn't tell you we're using personal kits"
+    ],
+    "why_distinctive": "Almost every argument he makes is delivered as a reconstructed scene with quoted lines rather than a summarized claim; the receipts-style reenactment mirrors his investigator training (show the evidence, not the interpretation)."
+  },
+  {
+    "category": "stance",
+    "pattern": "Unhedged absolute verdicts on companies and cultures, named on the record",
+    "classification": "durable",
+    "evidence_quotes": [
+      "Google is terrible. It's terrible.",
+      "I hated it. With. Passion. It's awful.",
+      "They don't care at all about that safety. At all."
+    ],
+    "why_distinctive": "He names Google and ElevenLabs and delivers total verdicts where nearly all founders hedge about former employers; the directness includes telling three directors to their faces they had a conflict of interest."
+  },
+  {
+    "category": "argument-structure",
+    "pattern": "Diagnoses org culture through explicit stepwise causal chains ending in innovation death",
+    "classification": "durable",
+    "evidence_quotes": [
+      "So posturing comes from fear. Fear comes from layoffs.",
+      "it shifts into you broke. I don't trust you anymore. I'm gonna try to get you out of my team. And then I'm gonna put you on pip. Because you broke a couple of things, and then people stop innovating."
+    ],
+    "why_distinctive": "He builds A-causes-B-causes-C chains sentence by sentence, each link stated as its own short declarative, and runs the same chain structure on Google, Meta, and AI-era risk culture."
+  },
+  {
+    "category": "value",
+    "pattern": "Learning per iteration is the scoreboard; building and breaking things is intrinsically the point, income secondary",
+    "classification": "durable",
+    "evidence_quotes": [
+      "Some of it makes money, some of it doesn't. But in every iteration I learn",
+      "I I really like learning about myself. And, like, learning in general",
+      "I'm just building all the time, and it's so much fun."
+    ],
+    "why_distinctive": "He explicitly tracks effort and learning rather than outcomes ('Will it happen? I don't know. I don't care.') and warns against the opposite trap in others (the LinkedIn director stuck 'learning and learning and learning' without shipping)."
+  },
+  {
+    "category": "value",
+    "pattern": "Self-identifies as a visual, non-reading learner (ESL, ADHD) and routes all learning through audio/visual pipelines he builds himself",
+    "classification": "durable",
+    "evidence_quotes": [
+      "So I am very visual. It's very hard for me to read. ESL, ADHD.",
+      "Instagram just works for me because it's. It's fast. It's consumable. I don't need to read.",
+      "every morning at, like, seven in the morning or 6 30, I get a five minute podcast."
+    ],
+    "why_distinctive": "He states the neurodivergent + ESL constraint plainly as a design input and then engineers around it (auto-podcast news pipeline, NotebookLM prep podcasts about people he is meeting) instead of apologizing for it."
+  },
+  {
+    "category": "vocabulary",
+    "pattern": "Casual peer address with 'dude' and 'man', including at people and at the LLM itself",
+    "classification": "durable",
+    "evidence_quotes": [
+      "So, dude, just. Whatever, man.",
+      "Like, all right, dude, you're not gonna be actually doing anything.",
+      "All right, man, I really have to go"
+    ],
+    "why_distinctive": "The register stays 'dude/man' even in professional and technical contexts and even when addressing the model ('No, dude.'); it is his stated casual baseline rather than code-switching for the audience."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Escalating word repetition for emphasis (doubling and tripling the same word)",
+    "classification": "durable",
+    "evidence_quotes": [
+      "when it's much, much, much later down the line when something explodes",
+      "just spends months and months and months just learning and learning and learning",
+      "make sure this never, ever happens again"
+    ],
+    "why_distinctive": "Intensity is carried by literal repetition rather than adjectives; the tripled-word crescendo is his emphasis mechanism across pitch, rant, and advice registers."
+  },
+  {
+    "category": "stance",
+    "pattern": "Bootstrap through consulting rather than chase VC; deliberately not hungry, deliberately nonchalant in sales language",
+    "classification": "durable",
+    "evidence_quotes": [
+      "trying to right now bootstrap and get to design partners, but I haven't got. I haven't gotten to the point that I'm really considering funding yet",
+      "get me to a point that I'm not hungry for. Any VC",
+      "I'm trying to be a lot more. Nonchalant about it."
+    ],
+    "why_distinctive": "He monitors his own outreach language for neediness and treats consulting income as the mechanism that buys negotiating posture, an explicit self-observed strategy rather than generic bootstrapping talk."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Dense 'like' filler laced through nearly every extended sentence",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "Like, working with the AI, people are. Like, oh, this didn't work. Just patch it and move on.",
+      "And, like, it's. It's expensive. Like, I pay a lot of money for cloths."
+    ],
+    "why_distinctive": "Pure speech disfluency; his written voice is compressed and filler-free, so 'like' must be stripped entirely from written output."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Word and phrase doubling from false starts ('it's it's', 'with with', 'the the', restarted clauses)",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "I see what you're doing, but that's not how that's not how that works.",
+      "it's it's no hallucination where it counts",
+      "my biggest problem with with agents over agents"
+    ],
+    "why_distinctive": "Real-time speech repair, not a stylistic choice; reproducing it in writing would read as a typo, not as voice."
+  },
+  {
+    "category": "vocabulary",
+    "pattern": "Bare backchannel and acknowledgment strings as complete turns",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "Yep. Yes.",
+      "Mhmm. Yeah.",
+      "Yeah. Yeah."
+    ],
+    "why_distinctive": "Conversational listening signals with no informational content; they exist only because a second speaker was talking and have no written equivalent."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Trailing 'I don't know' loops when a topic is unresolved, often bracketing the same thought",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "Maybe that's the way I don't know",
+      "I'll bring it there see if it works. I don't know.",
+      "And if we can do something together, I don't know."
+    ],
+    "why_distinctive": "In speech it is a soft topic-closer while thinking aloud; in writing his uncertainty is expressed as an explicit open question or a marked unvalidated claim, never as a trailing hedge."
+  },
+  {
+    "category": "vocabulary",
+    "pattern": "Transcription mangles of product and company names (Claude rendered as clawed/cloths/clogged, ElevenLabs as 11 labs/11 laps/levels)",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "Four clogged code instances working.",
+      "I pay a lot of money for cloths.",
+      "at 11 laps for a short time running their investigation"
+    ],
+    "why_distinctive": "ASR artifacts, not vocabulary; written output uses the correct names (Claude, Claude Code, ElevenLabs) and must never inherit these corruptions."
+  },
+  {
+    "category": "rhythm",
+    "pattern": "Mid-clause sentence fragmentation: transcription breaks single spoken sentences into strings of one- and two-word fragments",
+    "classification": "spoken-only",
+    "evidence_quotes": [
+      "it starts with the personal issue of. Investigators getting, getting burnt out.",
+      "That's gonna be that's on the needs to be on the calendar and it will be on the calendar."
+    ],
+    "why_distinctive": "The underlying pauses are real speech pacing, but the choppy punctuation is an artifact of the transcript; written output should carry the underlying directness in complete sentences, not imitate the fragment shrapnel."
+  }
+]

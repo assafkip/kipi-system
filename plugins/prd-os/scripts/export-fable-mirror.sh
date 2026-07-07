@@ -29,7 +29,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SRC="$REPO_ROOT/plugins/prd-os/skills/fable-discipline"
-MIRROR="${FABLE_MIRROR_DIR:-$HOME/projects/fable-discipline}"
+MIRROR="${FABLE_MIRROR_DIR:-$HOME/projects/dev-tools/projects/fable-discipline}"
 DEST="$MIRROR/skills/fable-discipline"
 
 FILES=(

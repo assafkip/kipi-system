@@ -1,0 +1,12 @@
+---
+id: a-hook-that-fails-closed-on-a-missing-script-blocks-the-fix-too
+kind: pattern
+title: A hook that fails closed on a missing script blocks the fix, too
+date: 2026-07-07
+---
+
+A PreToolUse (or any fail-closed) hook that shells out to its own dependency by a hardcoded absolute path carries a landmine: rename or move the project, and the path silently goes stale. Nothing surfaces until the hook actually fires. Because the hook's job is to gate every tool call, and because failing closed when a hook itself cannot run is the correct default for safety, the blast radius is total — not just the one automation the hook was guarding, but every tool available, including the tools that would normally be used to inspect and repair the broken hook. This is a uniquely bad failure mode because the standard recovery path (read the config, patch it, verify) is itself gated by the same broken hook, so the agent cannot self-heal and must route the fix through an out-of-band channel.
+
+The upstream root cause is usually a rewrite or migration script that patches only the path shapes it was told to expect — an authored old-to-new mapping — rather than deriving broken references from what actually fails to resolve on disk. A prior reorg can run cleanly against a file, correctly fix every reference matching its known old-path pattern, and still leave a different-vintage stale path untouched because that shape was never in its rewrite table. The miss is invisible until something invokes the missed path. This is the same shape as an authored routing allowlist: a rewrite that recognizes only the patterns you thought to enumerate will miss anything outside that set.
+
+Two independent defenses close this class. First, any hook command that shells out to a project-relative script should reference it through a portable variable the harness provides (e.g. a project-root variable) rather than a baked absolute path, and should guard execution with an existence check so a missing dependency degrades to a silent no-op instead of an unconditional block. Second, any migration or reorg script that rewrites embedded paths should validate its own completeness after running — re-scan every file it touched for any remaining absolute path that no longer resolves — rather than trusting that its authored set of before/after patterns was exhaustive. A migration is not done because its rewrite rules ran; it is done when a fresh existence-check pass over the touched files comes back clean.

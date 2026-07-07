@@ -1,0 +1,60 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/claude-focus",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/claude-focus"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/fable-discipline",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/fable-discipline"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/kipi-rca",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/kipi-rca"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/huntkit",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/huntkit"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/tokentrim",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/founder-voice-kit",
+      "dst": "/Users/assafkipnis/projects/dev-tools/projects/founder-voice-kit"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_build.py",
+      "bak": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_build.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_verify.py",
+      "bak": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_verify.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_copy.py",
+      "bak": "/Users/assafkipnis/projects/dev-tools/projects/tokentrim/_setup_copy.py.persona-reorg.bak"
+    }
+  ],
+  "created": [
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/dev-tools"
+    },
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/dev-tools/projects"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/dev-tools/.gitignore"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/dev-tools/CLAUDE.md"
+    }
+  ]
+}

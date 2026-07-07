@@ -95,7 +95,7 @@ maps common AI discovery feeds into newsletter entities:
 ## Random-Stuff Extraction Notes
 
 The live collector reuses the safe parts of the existing AI news podcast ingestor
-in `/Users/assafkipnis/projects/random-stuff-ideas/gtm/scripts/podcast`:
+in `/Users/assafkipnis/projects/cole-gtm/gtm/scripts/podcast`:
 
 - `sources.json` provides the source strategy: HN, Reddit, RSS feeds, Hugging
   Face, maker release feeds, and AI lab feeds.

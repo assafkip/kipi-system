@@ -1,0 +1,308 @@
+
+
+===== catalyst-duffy (75 utterances, 2118 words) =====
+I'm in San Jose.
+San Jose.
+You're in New York is looking like. Are you in New York?
+Is it Vancouver?
+It's Minneapolis. Yeah, I wasn't even. I was like, that parking lot's too big to be in New York.
+Yeah. Yeah.
+Don't know that many cities that well.
+Sure. Yeah, yeah, that's great. I love that.
+Yes.
+Catalyst.
+Yes, in January.
+No. And not yet. I'm kind of thinking I'm working on multiple things at the same time while trying to right now bootstrap and get to design partners, but I haven't got. I haven't gotten to the point that I'm really considering funding yet.
+Okay.
+Yeah.
+Yep. Yes.
+Okay.
+Yeah.
+Okay.
+I'll tell you about myself, and I'll tell you about Catalyst and where I stand. I have a few. I don't know if you can hear my dog barking, but he is.
+A whole family in the house and his dog has decided to make.
+So I've been in the threat intelligence security trust and safety space. Almost 15 years now. I spent time at LinkedIn five years at Facebook running multiple investigations teams. Throughout the elections in 2020 covid, all kinds of fun stuff looking into really complex adversarial actors. And then I did that again at Google. I was building some stuff for their scams across products. And then at 11 laps for a short time running their investigation in the safety space. After I finished working in those places, I kind of took a step back and really tried to think about. What, what is the main issue that has been bothering me throughout my career. And it starts with the personal issue of. Investigators getting, getting burnt out. And I tried to figure out why are people getting burnt out? It's so hard. And you always continue fighting the same fires again and again. And that's why people get burnt out. So my thinking was. Looking back is we would. Investigate the same actor or the same tactic. Or the same strategy. And there would be some whacK-A-Mole fix and then we would do it again and again. And what I knew that was happening is that we as companies, big small medium. Were built as silos. So you have the, the threat Intel team that just makes reports. And nobody really reads those reports. And the same with the red team and the sock. And everybody. Creates a lot of intelligence. And it's either in their heads. Or on paper, but it doesn't translate. I actually was just talking to a red teamer who was doing a webinar. How do I make my documentation better? So people actually do something about it?
+So I was thinking with the help of an of AI, what we can, what I could do is turn all this intelligence that sits in people's heads and in documentation.
+And turn it into something they can just hand off to each team and say, don't read anything. Here are the rules you need to deploy. Here are the hunts you need to deploy. Here's the red team exercise you need to act. To act on. Or. And then each one of them will create their own intelligence. And then it just continues to grow and accumulate. And then the company actually learns from the intelligence. And just continuously learns from it. And in the end, kind of the byproduct is that people get burnt out less. But the big thing is that. As a CISO, you can come in and say, oh. Shiny hunters? Yeah, we had multiple pieces of intel about that. I can tell you exactly where it got the plug, what got deployed and when it got deployed. And how we're looking at it from, for the next time they come in.
+So.
+Okay.
+That's a great question and a great way to put it. So the way it works is each team produces intelligence, but intelligence doesn't all look the same. Not not everybody, almost nobody makes postmortems, so we can beat anything. Could be external intel, internal things that you wrote, or in Slack or in Jira that's just sits there that the red team wrote a Jira ticket and it just sits there. All of those get aggregated, But the main thing is in how I built it, is none of the team actually see this tool. They're not getting an additional tool to look at. Every insight, every rule or, playbook goes directly into their tools. So I'll do the SOC and thread intel, which is the easiest one. ThreadIntel writes a report, in let's say they use OpenCTI, goes directly through OpenCTI. It goes into Catalyst on the back end. And then the SOC gets the actual, KQL that they need to deploy that was derived from that. And then with regards to how it's, aggregates, yes. All of the insights and all of the rules get aggregated into kind of a main brain that all very much this is what Claude does. In in a folder system. And as it grows, it it goes into into a bigger database. Then it does what AI does really best, really well. So AI AI really, does inference. Then it starts doing inference, and that's what the CSO gets. So CSO gets the inferences of everything. And then a high level view of any Intel derivative, any work item that actually got to the teams. And the teams can say, okay. I received this. I deployed this. Or I tested it and I didn't deploy this. And that's how the the CISO themselves gets to see it.
+Okay. So I yes. But I'll I'll answer in a in a better way. Let's say shiny hunters they're doing some things that there's a report that says, here is how you could detect shiny hunters coming in. There's an IOC. This is this is how they hop from one, surface to the other. No rules that you're gonna change are gonna make any difference here. So here you need detection rules. That you get that catalyst derives. But for the email team, maybe they need to change their posture. Maybe they need to add some, changes in how they look at their logs.
+So that's what I go to the email team. And the same for the cloud team. The cloud team there are indicators that they are not monitoring the right thing. So with understanding of which platform you live in, Catalyst will say, okay. You actually need to monitor these things. So it's it's able to do to provide whatever the team that ingest it within the security organization, whatever artifact they ingest.
+I'm thinking, meat small is not gonna be a right fit because they're they're too small. They don't need
+that
+Yeah. They can just talk to each other. So we have the large enterprise.
+Where we have a CISO or a head of security or head of detection engineering that really feels the pain of I don't know what's going on in my organization. I don't know what to tell the board about shiny hunters.
+Or or my teams are just not talking to each other.
+So that that's who I'm looking at.
+It's not a monitoring layer. It's it's a shared nervous system. Because you have all of the teams that connect What I'm seeing with AI right now, everybody is polishing the silos, making SOC faster, making red teams faster. They're still not talking to each other. They still don't don't learn from each other, then the CISO only knows what happens in each silo by itself. And the knowledge doesn't transfer. So I see it as a way that all of the teams can learn continuously and then it starts becoming a prevention mechanism. Which is kinda
+Mhmm. Yeah.
+So so your question, if I understand it correctly, yeah, I got rule to put somewhere, but I have no idea where this rule came from. So a
+part of the rule is exactly that, is where did this come from? And that's where the provenance comes in because it because it can say this rule came from this report that talks about this, very short. And exactly from this paragraph. So if you do wanna go back, you don't have to sift through the entire thing. And start figuring out the context because the context is where everybody kinda disappears because I'm a red team engineer I don't understand the context for for the whatever the threat intel team wrote. So it provides you some context, but more of what can I do right now?
+Cool.
+Mhmm.
+Yep.
+Mhmm.
+Yeah. And this is where I stand right now. Right now, my goal is start getting design partners. I I really needed to get the product into a place where I can trust it because it's AI,
+because I cannot have it hallucinate, that that's
+the cornerstone. So now I'm I'm talking to CSOs and trying to get to see what's the best way to get in to start working with sign partner.
+I can never take
+yeah. I could never say zero hallucinations, but it's it's no hallucination where it counts.
+In in the end, where the rule is created, not hallucinating. Because there's so many backstops.
+And it tries. Tries so hard. To hallucinate. But there's so many, loops it has to go through in order to be very true to the So that's been my my biggest thing of I'm not gonna give you something that's gonna give because there's companies that say, well, it's 3%. No. You can't you can't do that in security. So it needs to be
+a completely, to the point that you can review and deploy.
+I I I keep seeing people putting and even when I was talking to the Facebook CSO or Meta, they were telling me, oh, we're just having another agent. Which is I see what you're doing, but that's not how that's not how that works. It's in the end, if you're not comparing it to the actual thing that came in, you don't know. And that's my biggest problem with with agents over agents that there could be some hallucinations But when are you gonna find out? You're gonna find out when it's much, much, much later down the line when something explodes.
+Not going to because that's just how LLMs are. Just nondeterministic.
+And they really wanna please you and say, yes. I did this. No. You didn't. Or
+yeah.
+No.
+No. Because it's against how the model is built. The model is built on nondeterminism. And it's not going to be deterministic at least in the way that it is now because it's it's it continuously it what's the next letter I should put in here? That's why when people ask it how many r's are in strawberry, it doesn't work because it's not Google. It drives me crazy when people do that. Just not going to do that. That's why you couldn't even when he gives you a fact, you should say, okay. Explore it. Cite back exactly where you got this from. That's how my work is. I work very strongly on it needs to be as close as possible to determinism. But I'm not gonna
+yes. It's continuous loops and gates in the way that check it against the source material and it's a lot, but, in the end, it produces the results at scale that you can trust. But again, even with Catalyst, I'm not gonna tell people go deploy this in production. I would say go review in in in in test and then deploy to production.
+No. When so for example, you got a report, now you have detection rules. Detection rules should not go directly from the AI to production. They should get reviewed by an engineer and sampled and then sent over because you never know. It's gonna think something that it we missed, and it you're it's gonna shut down your email completely or it's gonna block lock down your
+enterprise. It could happen. Oh, yeah.
+When
+yeah. And people are like, oh, my my agent deleted our entire code base. That yeah. That happens. Yeah. It's nuts.
+Same here.
+For
+Yeah. That sounds great.
+Alright.
+Sure. And if anybody in your portfolio, if there are any CISOs you could connect me with, that would be great for design partners. That would be really interesting.
+Happy to send you anything.
+Yeah. No.
+Yeah.
+Yep. Yep.
+Yeah.
+Alright. I'll
+Alright. Awesome. Thank you so much.
+You too. Alright. Thanks, Duffy.
+Bye.
+
+
+===== laid-off-from-meta (56 utterances, 4202 words) =====
+What's going on?
+You too. It's been a while.
+Yeah. Month in, you're still not. In full ramp down mode. It's still hustle hustle.
+Yeah, I remember it took about a month or so. To. Get over this feeling that I should be doing something. What am I doing? Should be doing something. I should be doing something. It's like, no, you're not. Specifically because you have, like, severance, and I assume the severance is similar to what I got, like, severance and all that other stuff that keeps for a really long time. So, dude, just. Whatever, man. It's just. It's just your brain. Like, I'm supposed to be doing stuff. Yeah, I'm familiar.
+Oh, yeah. Yeah. It was interesting to talk to call. Yeah, he built something that's similar to something that I built. So I'll tell you about my. Post meta. So after meta. I went to google. And I was there for a year and a half. I hated it. With. Passion. It's awful.
+Google is terrible. It's terrible.
+First of all, you come in there and you're like, oh, they're gonna have their together, right? And the trust and safety organization. No, no, they don't do. So I worked at LinkedIn before facebook, and I remember moving from LinkedIn to Facebook was like, oh, I was at a kiddie pool now, but the Olympic pool. Then it's a puddle. It's like LinkedIn is, like, way far beyond Google. Google is just. Cues in moderation. That's all they care about. Like, how do we block a thing today? And we just send more people to it and make the. Make the news cycle go away. That's all they care about. The other thing is the hierarchy, and it's extremely not flat. It's. So. So at Facebook, guy rosen would email me every once in a while and say, hey, I have this investigation that I'm interested in. But don't do it because it's me. And I remember saying, like, oh, yeah, this thing. No, not interesting. I'm not doing that. And he's like, cool. At. Google. If a VP says something. Immediately three directors starts spinning around, spinning around their entire organization. And the deliverable 100 of the time is some sort of deck. That has nothing to do with the real work. And. And then. And then it's just like beyond that, it was. Like, just do what I say. And people had no idea about trust and safety. Like, my director asked me what an emulator was. Okay. It was awful. Like, I got. I actually went on mental health late because it was really bad. They tried to fire me.
+Because I. Because I told three directors at a big meeting that they are operating on a conflict of interest. And they didn't like hearing that. So I don't know if meta got this bad, but google is bad.
+Yeah. Yeah.
+Oh, it dissolved.
+Yeah.
+Yeah.
+No, that is a big change.
+Yes.
+K. Rux.
+Talk about meta. I I'm interested in, like, how meta works. Like, how the AI works internally. But I'll finish my story. So after Google, I went to 11 labs. That was a weird. Place.
+They don't care at all about that safety. At all. And they ended up firing me for a mistake, for, like, a mistake I did on a git. Because. I submitted my, like, python code on a git was just, like, investigation notebook. Notebooks. And with no, like, interesting data in there. And I was assuming that when I'm putting my git on public, that it's public to my team, and they're like, oh, no, we didn't tell you we're using personal kits. So if you put stuff public, it's public. That would have been nice to know. And they should be like security training on that. So instead of, like, dealing with that, they just fired me.
+Which I was fine with because it was just extremely toxic.
+It. Was. It was weird. And it's like, oh, we don't want to deal with this. We're just gonna fire you. And, like, okay, that's fine. And then I decided after that, I was like, you know what? This has been, like, three times in a row. And I'm done with this. So I. Went and decided two things. One, I was like, okay, let's see if I can. Start a product on my own. Because I really at 11 labs, I really got into AI, and I really noticed how much I don't know. Like, when I joined the levels, it was just asking questions, like, hey, what is this? So what's the answer to that? And then I started building with it. And then I was like, oh, I can actually build with this. That's cool. I didn't even have clawed when I was in open in 11 labs. That was only for engineers. That was part of it. That was the culture. You're not an engineer. Why are you even here? Oh, by the way, after they fired me, they moved safety under security, which was. I could tell you from day one that that's what the head of security wanted anyway. Where everybody was like, oh, but he's so nice. I'm like, yeah. He's nice. But it's a scam. But sure, believe him. So bad. And then I started working on. So the big pain I had at 11 labs, because I remember Artemis, if you ever worked with her.
+Policy. So she was my manager. And the main thing I got, I heard all the time was. Yes, you can do the investigation, but you can't. You're not an engineer, so you can't write that the texture logic. And I said, okay. I can make a tool that writes detection logic. So I worked. On creating a tool that you give it intelligence or anything that's, like, natural language, and it turns it into detection logic and red team exercises. And hunt exercises and things like that. And I was working on that for a really long time, like, for six months I was working on that. And it's. I'm still working on it, but I noticed that. I wasn't really enjoying that. Because it became, like, first of all, it pushed me into the security space, which I don't like. I like these security Pros on. On Twitter are. And then talking to sees. But then I also, at the same time, started Consulting. So, for example, I'm Consulting. Part-time like 15 hours a week at this. Weird company that needs, like, fraud help. So I'm a fractional fraud, whatever for them. And I'm also creating AI tools. To help them with their investigations. So in doing that. And very recently, I was like, so I keep creating new things on AI. I create. I created that thing you sent cold to me about the. The link, like the. I created something that's kind of like maltego, but it's AI driven. And I created. So a friend of mine came to me on Friday and she's like, I'm a horrible interviewer. Can you create something for me that I ask a question and then, like, I give it. What I'm interviewing for, and it will ask me questions and then grade my. My answers. And I was. Like, sure, I have a skeleton for that. Essentially, what I do is I build something that's a skeleton, and then I instantiate and I can say, oh, just take the skeleton how it's already built and instantiate. So I just made that. So. And I.
+Was like, yeah, I'll put it on. I added stripe to it, and if someone wants to use it, they can use it for 29. Will it happen? I don't know. I don't care. But that's what I'm doing. So right now, for example, I have. One, two, three, four. Four clogged code instances working. Each one of them is working on a different product. And I'm just building all the time, and it's so much fun.
+So, yeah, and that's like, I'm still not getting a lot of money from it, and it's still difficult, and I'm still, like, after 11 labs, I didn't really get severance from them, so I'm pulling from. From savings. But now I'm at a place that I'm getting a client, I'm getting another client, I'm working with active fans. And other people. It's kind of like months and months of seeding it. And now it's starting to happen. But the main thing for me is that I have the. Mental space to actually build stuff with AI and learn a ton, which I don't know if I was at a company right now. That's what I'm interested in hearing from you. Do you have time? To learn how to use or just, like, use build this for this project and move on?
+Yes. Yes.
+Of course.
+Yes.
+It happened. At Google. Way before.
+I think it happened, like, before the layoffs. And it became. And it's sad to see that from Engineers you respect. The. The thing for me that was lucky, I didn't respect anybody there. When literally when someone tells me, oh, I was at Google, I'm. Like, okay. Like, if you told me I was at meta, I'm like, cool. You know what you're talking, especially in the. In this space. By the way, it's in all spaces. I I talked to a director in security at Google, and he is. And you don't think directors are as beat down. Dude, he's like, I don't go to meetings. All I do is lie. I hate it. He said that someone came to him from trust and safety at PM and did wanted to do a security review on a trust and safety product. And he's like, oh, it's this and this. And this person was like, it doesn't really matter. This is just a pretend. We're not really gonna make this product. It's. But. Yeah, I. What I'm noticing. So right now I'm working on a product, and I was like, yeah, it's working great. I'm sending it. And they're like, oh, well. This doesn't do this. It actually doesn't do what we want it to do. And then the problem that I run into is. I make a certations. And then. And then the AI runs. And your brain can't be like, hold on. Maybe. Maybe something that I said is not 100 accurate. Now you're building this entire building. So I built this whole thing.
+For, for example, it consumes tickets from a place. And then compares it against a database. Right? Very simple. But at some point, it was like, it says, oh, no, I think I'm consuming the tickets from the database, and I didn't catch that. And then it's like, well. I need to refactor this. This is all f now because the. The speed, and I. This is what concerns me on a corporate level. Like, you're gonna make mistakes. That's okay. But if you're building. Like, Enterprise stuff. And it's not that you're dumb, it's this thing works way faster than you. And then maybe it's not even about, like, drift and hallucinations. That the more I work on it, the worse it is. It's about. Like, at one point, the direction drifted. And then it's. It. It canonicalized a decision that was wrong. Go figure out the decision that was wrong. Beyond that, the hallucination. Like, the products I'm building are very much like you can't hallucinate. Well, I obviously don't tell it. You can't hallucinate, but it's gate after gate after gate. And as I'm building it, it's. Like. It's. It's like the llm wants to hallucinate. Like, bro. A, b, c. I'm gonna check you at a. I'm gonna check you at b. I'm gonna check you at c. And then at a, it's like v. No, dude. And. And it's just these hallucinations that make no sense of, like. And it tries to cut shortcuts and all kinds of. So everything that I'm working on. Is doing that. But the main thing that I'm really interested in how people are thinking of. So I got an opportunity to talk to guy rosen, and I asked him. So he said that Chad's team was building this thing to take natural language and turn it into detection. And I said, okay. How do you make it? Close enough to the deterministic, though? It doesn't make errors. And he said, oh, just multiple llms, and then we put on a judge llm. And. And I'm seeing that all the time. And my answer is, you know, there's code, right? Like, python's a thing. Like, rust is a thing. Why are we making. Like, people want to ask, like, I'm at an intersection. Do I. Is it one or is it zero? Let's try. Let's ask the llm. Why?
+Really?
+Yes.
+You find out.
+Yes. But I think. Yeah, go ahead.
+People are not using it as a tool because that everything I'm saying, it's just the tool. It's just one of the tools.
+Yeah.
+This is the point I was trying to. And I got. I got lost, but this is where I was comparing it to. To where google is. So where Google is right now. And I think this is. This sounds like this is where meta is going with the posturing. So posturing comes from fear. Fear comes from layoffs. At Google, the way they do layoffs. The thing is, it's not in the news, and people don't say 8,000 people. Less people get laid off. But it's every week.
+And it's every. Every. This guy, the director was like, I'm gonna get to reviews. And maybe I have a job, maybe I don't. So everybody's, like, basically duct taping themselves to their chair, and that's where the posturing comes from. But that's also where. The risk of being wrong. Comes from. And when you're working with AI. You're going to be wrong a lot. Like, I create something, and if I had to put this in production, it would have broken a bunch of. And I would put it back, and that's what you're saying. Like, move fast, break all the time. But if you're so scared all the time, especially if you're a director, if your people start breaking. That's what I worry about the culture, because that's where. Facebook's culture was also always like, you're don't like, you broke. Okay. No, no, nobody gets blamed. It shifts into you broke. I don't trust you anymore. I'm gonna try to get you out of my team. And then I'm gonna put you on pip. Because you broke a couple of things, and then people stop innovating. This is what I noticed, that at least. I don't know. Maybe it hasn't happened in meta yet, but people just stop innovating because they're scared. Because they don't want to shake the status quo.
+Yeah.
+Yeah. So. So what are you thinking about doing now? Do you have plans or just, like, hanging out. Like, honestly. I think what you're doing right now is probably the best thing you can do is just. Like, you know, when. When you started writing code, people said, just do you have a lab at home? Do you automate your stuff? And now you have an opportunity to automate a bunch of stuff that you want to automate. And there's a trap there. Like, I talked to someone who got laid off from LinkedIn. He was a director. But he's in the Trap. Of. He's like, I just want to learn and build my skills. So at one point, I can go find another job. But he never goes there. He's just spends months and months and months just learning and learning and learning. And he's like, oh, I'm gonna build the internet from scratch. Like, all right, dude, you're not gonna be actually doing anything. So. But I I do think that this is a great opportunity, like, now. To. To just learn. And just build and see how it breaks. And, like, it's. It's expensive. Like, I pay a lot of money for cloths. But.
+Oh, my God. I paid. I have the max 20. And because I have things with api in them, so I pay for the API. And every once in a while, I get that your API got depleted. I'm like,
+Did you try Fable? Fable was. Like.
+No, when it was for the three days, I used it. It was crazy. It was. It used, like, 70 of my quota in two days. But the way I. So there's a bunch of things that I can share my GitHub with you, which is really funny that I have a github.
+But I built a bunch of things to, like, an example would be. I noticed that. I don't know if clawed even does it anymore because it doesn't do it for me. But it will get into a loop and it will try things. 10 times. 20 times, 30 times.
+Yeah, but yes, that you can do that with a goal, but it used to do it before.
+And I was like, this is draining my. My credits. So I made these deterministic hooks. That are called token guards. So you try three times, and after three times, you can't try anymore. But also. Like, for the. The interview thing that I built. It doesn't need opus. You can always ask it. Does this need opus? No, it's good with haiku. Cool. Opus is for big stuff. But I always keep opus on. When I code. But I'll tell you, if you're looking for resources to learn about. AI, it's a very weird resource. But I really like Instagram for it.
+Can really work for me.
+Instagram just works for me because it's. It's fast. It's consumable. I don't need to read.
+Yeah. I'll send you this one guy. He's. He made a series of 100 days of code. 100 days of claw. Ed. And, you know, I watched it, and I'm like, oh, you don't need to do anything. He tells you, oh, you can make this with this repo and this repo and this repo. I pause it. I. I find the repos, I drop them into cloth code and say read these repos and build the thing I want from it. So the actually, the other thing I did is because I decided. Well, I don't need these people. I made a. A tool that collects all the news about AI that I'm interested in from the last 48 hours. And then every 24 hours, it sends you up. So it takes all the. It takes, like, five or six articles. Throws them into notebook LM, makes a podcast. And then since, like, I'm sending it to people, I'm like, sure. Here's give me your email. I'll send it to you. So every morning at, like, seven in the morning or 6 30, I get a five minute podcast. About the things that happen today. And in it, there's like, oh. Like, for example, it will follow the most, the highest rated creators on github, the highest rated repos on github or the highest. Starred, and then it would just. Tell me, oh, this tool does that and I could click it and then just add it to my system. I did that today. It's really nice.
+Oh. Oh, you haven't used notebook lm?
+Dude. Just for. So I am very visual. It's very hard for me to read. ESL, ADHD.
+And it's. Like a white paper, or I want to learn about something. Or my daughter wants to learn about something. The nice thing about notebook lm is you can give its resources and it doesn't go out further beyond those resources. It constraints to those resources, and then you can say make a podcast about it. And it's two people talking, and it's really good quality. Or make slides. And it makes amazing slides. Or make a research paper. It's awesome. Like notebook lm, you should really get into that. Because it's. It's. It's a great way to learn. For example, if I'm talking, let's say you are someone that's. That I need something from, like an executive or a VC or something. I find all the information about you through their search and make it into a podcast that will explain. What should I talk about with j and what is interesting about what j is doing in, in regards to what I need and how should I speak to him? And it will just make a podcast for me. And now go and listen to it. Yeah. You should definitely play with notebook lm. It's really, really nice. But I can send you. Yeah, I can talk about this forever, but I gotta go get my son, but I'm happy to talk about this. As you can see, I get really excited about and I really like it.
+But I'm also happy to talk about, like, how to deal with this. Like, it's. I got. Google tried to fire me. I went on, on mental health leave, and at the end of the leave, they laid me off, which was awesome because that I got severance. So I got laid off twice and fired once. So i've been through this. I will say the meta one was the hardest because I really wanted to leave google. And i'm not saying that my path is the best path, but, like, and I see now people on linked dealing with it in different ways. And one of the biggest things beyond, like, ai and bullshit is I remember talking to my therapist, and she's like, you're not doing anything now. You don't have, like, anything that's on you. Who are you? What do you. So I started playing drums. So now I have a drum set and I play drums, and people ask me to be in a band. And because that's what. And. And I get to be with my kids. But finding who you are beyond going to work working, coming home, sleeping, going to work, working. Is big. And I think that's. I'm happy to keep talking about that because that was a huge thing for me. Kind of. I I really like learning about myself. And, like, learning in general, and you have to. Now, I I wrote something on LinkedIn a while back, and I said, this is. If you get laid off now, this is a good time to get laid off. I know it.
+Yeah. Just. Just. I get up in the morning. Dude, I don't have a job job, but I wake up in the morning, I sit here, and then I am working until I worked yesterday until six because I was iterating on products. And I am enjoying it. Some of it makes money, some of it doesn't. But in every iteration I learn, and especially for someone that comes from meta. Because I remember people like, oh, meta, you should tell people. I'm like, what's special about me? But people look at you, and. And I will tell you, from going to other companies, you think about things differently. Like, working with the AI, people are. Like, oh, this didn't work. Just patch it and move on. I don't think that way. If that didn't work, I want the AI to tell me why? Let's do an RCA and let's make sure this never, ever happens again. And that's how I learn, and that's how I push myself and the agent instead of just, like, a lot of people work really linearly and don't learn anything. But you can use it as a. As a. As a tool to, like, okay, this broke. But why? And then let me build something so this doesn't break again, which is exactly what you do it better.
+Yeah. Sorry. I have to go get my son. But I'm. I'm happy to keep talking if this is interesting to you, because as you can see, I like it. But, yeah. Let's keep talking. And if we can do something together, I don't know.
+Yeah. Thanks for letting me jibber jabber.
+Yes. Yes. And that's what I saw on LinkedIn. And I remember me being the same. Okay, gotta go interview. And you see people like, I'm looking for this and this and this. I'm like. I know you're not gonna hear me. And I've been there. But. But. People are gonna think I got late. Everybody gets laid off. Nobody gives a. Yeah, this is a great thing. Like, in the beginning, it's just how it is. And then you, like, let me just. Figure out myself. All right, man, I really have to go because I'm gonna get yelled at.
+You, too. Man. All right, we'll talk to you soon. Cool.
+
+
+===== personal-check-in (168 utterances, 5271 words) =====
+Hello. Hello. Okay the camera was off. And the thing was off. I don't know why.
+I don't know.
+And then it didn't. Plug anything in.
+I'm okay with it. I'm ready for a long weekend.
+Good. Got a lot of things that I wanted to get done. Finally done this week.
+So. The product is in a place that I'm happy. Finally. Sent it to people got some feedback not a lot of feedback. And then this other product I was working on for fun. That. Like. Got me excited so I was working on that. I don't know did I tell you that I was working with this woman. She reached out to me to create she's like do you know where I can get a tool that does this and this and this for investigations and I said well I can just make that.
+And then and then it got a little weird because she started talking about it like it was our project.
+And I was very clear like yeah you can be a design partner and I'll just make it for you and you can give me feedback and she was like telling me how I should post about it. And what I should name it and then I was like okay this is weird so I'm gonna I'm gonna make this more awkward and kind of like make it very clear and I said yeah I'm not sure if I want to sell it or if I want to just use it for my consultancy. And I wanted to see how she responds and she said well I would hope that I would have a say in that.
+And I said.
+Yeah. I knew it was coming but it was like.
+What. It was very obviously coming because of the things that she said and she also said I was like oh okay this is what's happening because she also said that. She her team worked with someone on a product and then he went on his own and kind of ditched them and I said aha so that makes that story a little different. Because yeah she gave me some stuff to think about she gave me ideas but she didn't. Do any of the work. So I said hey I really appreciate your feedback but this is my project. And it's mine. And then she responded she's like well. We spent a lot of time with you working on this. No you didn't like even if it was full two weeks which it wasn't that's still not a lot of time of you just like looking at it and telling me what you like and don't like.
+And we shared some information with you and I told my team we could trust you and I said. Okay. Listen. I was very clear with you in the beginning that you can be a design partner you came to me and said. Where can I get a tool like this and I said. I'll just build it for you and you can be a design partner and you can tell me and I can just build it for you. And that's how a design partnership works. It's not your product I'm just building it for you and you're getting a free product.
+And she said oh okay I just want to make sure that my team gets this product for free. And I'm like. Sure. As long as you keep giving me feedback I don't care. But it was just so weird.
+Yeah. Initially I was saying to myself well okay this relationship is done I'm never going to talk again to this lady but then she was able to recover. And I don't really care and she actually reached out to me earlier in the week she's like well so what's going on?
+And I said. That I'm still working on it because I was and I'll get to her by maybe by the end of the week. Which maybe I will maybe I won't. And it's yeah it wasn't very disturbing to me because she had no like to stand on anyway.
+I'm like okay. Here I will send it to them so they can use it and then they can talk to people about it.
+But that was weird. And uncomfortable.
+But yeah that was the end of that it was just very odd.
+Beyond that I was just like getting ideas this guy that I know from instagram gave me an idea about gave me a custom a possible customer or client. And I was looking into them and I was I thought I said to him he didn't respond but I said to him I don't understand this is not a customer I would be looking for I will be looking at because it's an established company that's like a startup and they basically connect.
+I don't know connect like your tools. And whatever and put documents together and then after I talk to so I talk to them and their AI setup is very bad.
+And I was very confused I said well I said to myself. How do they have a company that gets funding and the AI setup is so bad? But then I did the research that's not their product they're one of those companies that are now. Saying now we added ai to our core product. And they do not know how to do that.
+So I said I'm like oh. This is a great customer to have someone that does not know how to bolt AI on top of things.
+And they did it very poorly and it will it's not good so maybe they'll get back to me. I also talked to this Israeli company that wants like freelance investigators. Which was one conversation was fine the other conversation they never I hate when this happens I got on the call and then nobody else got on the call.
+And then I sent an email and I didn't hear back which was just. Weird.
+So the way that this works though how it affects my mood is really interesting I get a bunch of things happening and I get really excited but then they kind of.
+Take time to happen or don't.
+And I get like oh crap. So there isn't anything really happening it's just. But so that's one thing but the other thing also. I made. Or I made a decision or kind of noticed something that when I started working on the startup I was seeing that as what's going to make me money and what's going to help in the short run. And now with consulting slowly happening a little bit. I started thinking about it and I was like.
+That's not the right way for me.
+The right way for me is to get comfortable with consulting while I'm working on the product. Not necessarily try to get any VC funding right now. Get money from consulting.
+And then. Now that I have the product out try to get design partners and stuff like that and you have them pay me and see how it works.
+Because before I was like so stressed out getting getting design partners getting VC money and now I think it just makes a lot more sense to focus on. Consulting a little bit.
+Getting that going getting money coming from that and and at the same time do the startup thing.
+I think it will just be a little more. A little healthier and also like get me to a point that I'm not hungry for.
+Any VC or and I'm noticing it in the in the language I use I reached out to someone I'm like hey.
+If you want to try to use this that would be cool to get some your team testing it out not like. Salesy like try. Try to get them to use it I'm trying to be a lot more. Nonchalant about it.
+Yeah.
+We'll see like.
+It. Feels it feels good because I feel like I have.
+Things that can start attracting people and I also found I saw someone posted some clawed plugins that they made on this website that you can sell them for them on so I was like okay clog go make me this website made me the website maybe everything.
+I was able to sell to one person sell two things. Right then spend a whole day making sure that it's as visible as possible online that everybody can see it. And I I got it I got a chuckle from I thought about it how do I get this. On in front of more eyes and I said oh I know how bad actors do this. So I can just do that like not a none of the malicious way just use their tactics in a good way. So I'm trying to do that but it.
+S just. It's. It's more fun to do that and kind of get trying to get so for example I made this tool that I'm really excited about that I made it with that lady's help.
+And just today like today I was able to finally get it to where I wanted and post it and I talked to that Instagram guy and I said so how do I. How do I market this do I put it like on github is like open source and he said yes just put it on open source people don't want to install it they want to pay you to install it they want you to make it for them. That's how a lot of people are doing it they're putting it out there and then just people reach out to them. So maybe will happen so I'm putting a lot of things out there.
+And I don't know. It. Again it's it depends on the day. Like one day that I get a lot of phone calls and things are happening and one day. Like yesterday or today nothing is happening. And people are being annoying online. But we'll see. As a child. The door opens. Child. Goodbye to how much room. No okay I was looking for. You okay. Yeah let's just woke up now impressive. Yeah they've been sleeping in oh the other thing is they've been home all week. That's been really hard.
+It's a lot because it's. A lot of distractions and while I'm working it's very distracting. And they're.
+Gonna. I think galia is gonna be home most of the summer she has she has something next week but I'm not here next week. Because I'm going to Florida.
+That's gonna be interesting. But. They have some camps. It it's just going to be I'm noticing how it's.
+Like. Weighing on me and I get more tired and I get more distracted.
+And Molly.
+Keeps. Yeah it's very noticeable. And my least still does this thing when she. Comes here and stands next to me and she said can I can I disturb you. Like. It's like water asking can I be wet but yeah you're here. Like that is sailed she did one thing. I wanted to talk to her about it but I know that she knows she did one thing and she asked me if I could she could talk to me about something which what am I gonna say no you already.
+I'm done.
+Yeah that is.
+True. But then she asked her question and then she went into a whole other thing and I said what's going on she said well I can never find the time to talk to you about it and I said. It's definitely not now. She's just like got comfortable and started talking to me about something about gallias but mitzvah and I'm like. You can't do this please leave.
+The other thing is I have the v that keeps coming in here drinking my water talking to me hugging me asking me if we can go do this or I can go do that and I got we got they got skateboards so they want to ride their skateboards and like dude. I need you to stay out of here.
+And if Molly's not home because like today she's today's not is a dead day like I'm gonna stop working but she went to get a haircut and then she's meeting with her friend and then she's going somewhere else. So I know today is dead.
+But. That's been hard.
+Especially with them coming in or la vie does this thing where he.
+No it's the it's the storage room so there's like food here all the snacks are here. But then.
+So the problem with that is that they will try to open the door and once they try to open the door it's done like I'm already distracted so this is a thing La Vid does and opens the door and stands in the doorway. And that's so much worse I said to them I was like dude I hate when you do that stop doing that if you want to talk to me come talk to me.
+Don't stand in the doorway and breathe. Because that's so distracting because then I have to figure out if you're here.
+I don't. Think so I think he just doesn't know what to do at that point he's like well maybe he's listening if I'm doing something.
+Oh my god. Yeah and he's trying to trying to get my attention and it's like dude I can't you can't do this this is very.
+Me because he when he wants something for me he gets it. He always gets like if he asks for something I feel I don't want to tell him no so eventually he gets it. And it's. In the work day it's really hard when they're home when galliard helmets whatever Gary also likes to show up here with a guinea pig and put them on my shoulder dude.
+I did have one evening that I just wanted to sit by myself and play a video game. And both girls came and sat with me and it was 9 p.m. And I lost my cool and I said listen I need some time alone you need to give me some personal time. So that was. They apologized and they left but still. But that.
+Oh. Yeah and then I don't know Molly's probably wanted want me to take.
+She's just gonna need help taking him here and there. And it's all fine it's just.
+Well.
+The expectation is just if it's impossible for her to do that.
+If they need to be at the same place at the same time that she can't do it and I said I can do that.
+Yeah.
+That's gonna be that's on the needs to be on the calendar and it will be on the calendar.
+We had we had an argument where. She came to the kitchen and the kitchen was a mess and she got really frustrated and she said I left the kitchen clean and now there's a bunch of stuff like the dishwasher was full and clean and she said there's a bunch of stuff out here and blah blah blah blah. So then I said to her listen.
+Well who else would it be director that exactly because they're not going to clean the dishes.
+I know but we're not yeah yeah we didn't get there yet.
+So but.
+They should but they're not gonna like take the stuff out of the dishwasher so for the purposes of this interaction it's at me and I said to her later I said.
+You have three kids not four. And I am not I never leave stuff for you to clean. And she said well that's how it feels I said that's fine but that's. Not what's happening and then she got on all the like I accommodate you and I work as much as I can to accommodate like your stuff and you don't communicate with me and in my mind like do you want me to communicate hey I'm putting stuff in the in the. Sink. Youg don't need to clean it. Because I guess.
+Like. Right now that the thing is full. Do I expect her to do it? No. Will it be nice if she did? Yes but when I get to it then I need to use the kitchen then the first thing I do is I got to clean because that's what it is.
+But she has this perception of if it's dirty. It's a sign for her to clean. Because it bothers her when it's dirty.
+Yes because.
+Yeah but I didn't really know how to work with that because I'm not thinking about it like I can try to think about it but I'm not really thinking about it as like. Maybe I need to tell her like hey the kitchen is the sink is full but I'm not expecting you to do it. But it's not going to make it less dirty.
+Yeah. I get that because the thing is it so doesn't go into my mind that this is her mess to clean I don't think of the kitchen that well she should clean it.
+For some reason she does and she gets really angry.
+Yeah I can.
+Yeah.
+I don't know she does this mid argument that should she just kind of like.
+Shift the argument into a different thing and in my mind I see it and I'm like well you figured out that you don't have a leg to stand on so you're moving to something else. And so we were arguing we were yelling we were arguing and the kids were there and I think Ayelet got really uncomfortable and she came to Mali she's like are you guys getting into force? She's like no like we literally when we finish the argument we sat down to eat dinner and everything was fine.
+Yeah.
+That's not what that looks like.
+Yeah.
+I think and Molly told her like it's okay that you see us having conflict and arguing and then resolving it and it's fine.
+Yeah and I know a yellet has a hard time with that when she thinks she has the all or nothing perspective.
+She thinks that everything is the end.
+She does. Yeah. It wasn't a big deal it was just an interesting thing that she said and I thought it was funny.
+I think it was a good it was a healthy thing for her.
+Oh by the way don't let your kids write a skateboard in the house.
+Yet it was right again in the house and then she kind of flew forward and kicked the skateboard back and it smashed me in the. Ankle. And it hurts so bad. But all I could think I was like thank god that didn't hit anybody else. Like that dog.
+Or guy or anybody.
+Like they would have broken someone's foot. But it hurts so bad.
+So yeah they're not.
+Then they really like ayelet is really good at it which is really interesting she she catches things up real quickly La vie is like he was having a hard time and then he's like I don't want to do this anymore and I said. I'm trying to. Explain to him that the struggle is the fun part. You have to like do it immediately.
+So it worked.
+But again they want me to go outside with them and write skateboards all the time.
+It's like. I don't. Want to go outside and write skateboards on the streets I also can't give you any instructions about skateboards because I never written a skateboarder and I do not plan on on it because I will not survive.
+I think. They're like normal size they're not like huge I'm very worried that they're gonna really hurt themselves like they have pads and everything but like if it flies and into your face.
+And I'm always worried about teeth because I broke some teeth when I was in the sixth grade and I like watch your teeth. I hope you have all your teeth.
+Oh the overnight no.
+And this is why kids have no perception of consequences and when they do have consequences. Why did I get consequences? I remember when I was in school again I was 30 and this kid was so annoyed that the guy that he knows was doing stuff on his work computer and he got in trouble. What? It's not your computer dude. What are you doing? Like how could he get in trouble for that? What do you mean?
+Yes and they do and they fall and they hurt themselves and it's like okay.
+Fine. Yeah for now.
+Really expensive health insurance.
+Yeah have until october.
+Oh I don't know why that's that's not related but I. Schedule the RV trip. Sisters.
+So the plan is to have two nights on the way there.
+Like we can do one but why like we have an RV.
+Yeah to Washington state and stay there for four days and the plan is that Molly and me and the dog stay in the RV.
+And the kids stay at my sister's house it's kind of.
+I'm done with that. Because I'm not gonna I'm freezing my sister's house. And then I was thinking do I want to do two nights back or one night back. But I thought about it one night back makes a lot more sense. Because. At that point you want to go home.
+Commas just by Portland. So it's like.
+Seven hours. Legs. But I think on the way back it's worth it to just do one night stop. Because it's like we're gonna be done.
+Yeah.
+I scheduled the RV but we'll see I need to wait for them it's like kind of like an Airbnb so they'll get back to me on that.
+Then. Molly keeps telling me like oh we're gonna spend this money on that and this money on that it's gonna that's gonna be a lot of money and I'm. Like. What do you think this money is coming from? You know where this money is coming from right and she said yeah I know but so why are you coming to me? I did see a video about it about when the person in the relationship that's not in charge of the money it's like I want to be aware of the loop. But I. Want to be in the loop.
+Want to be aware that the loop exists. But. I don't want to be in the loop. So I am.
+Right now it is it was flipped before but now it like when she was working but now I'm in charge of financing which is why her one time I didn't pay the credit card because I forgot and her credit score took a really big hit. A lot of the times I'm on past on past do a lot.
+So I'm trying to deal like the car I'm pretty sure is past due right now.
+Because the if it comes if it comes out of the credit card fine but the automatic payment never comes out of the credit card comes as a bank account and constantly mess up on the on the bank account and then I'm in the negative bounce.
+Now I need. To move stuff. But about the money I did think about it's like I was grinding for like over 10 years. And we're and it's okay and Molly says that she's like this is what our savings is for.
+It's okay for us to use our savings now.
+As long as we're not depleting them which we are not but it's okay to use our savings now. So we have. A nicer life and more like. Like I'm still constantly worried about money but if we're not stopping like spending money I need to we definitely need to get more money out of savings now.
+To cover some stuff but it's kind of like. That's okay.
+Yeah. I'm really really hoping that I get some consulting things actually happening it's been taking a while but I think that's normal. Oh. That the consulting thing I'm doing with the. Survey company that woman is so aggravating.
+Yeah because it's a very. Small amount of time like she's aggravating but not that aggravating like she asked make the thing and I said I will and then she's like where is it I need to see it I need to see it okay here it is a week later we have a meeting and she's like yeah I turned it on and it wasn't really working well. Okay. Youy paid me for this week sure. So then she sent it I I looked at it I fixed it sent it back I'm like if you have if you needed it to test it now now now now now. Why don't you respond for like I didn't ask but you're not responding for a week. And then. She's like well where is this and where is that like oh my god lady. Like if you never worked in like developing software let's make one thing work and let's then make the other thing work I know it. I think what's saving me is that the man the guy in charge is happy with the work even though like this week I barely did anything I think he's just happy with the work and even if she doesn't want me there which I don't know if she does or doesn't.
+She can't do anything about it.
+No not at all and like I just sent them I was like crap I didn't do anything for them this week beyond send them that thing and it's Friday and then I noticed that I needed to send something so I sent it and then I get a message back from this other person saying oh and here's the thing that you asked me for on Monday. It's it's it's Friday. I'm not doing this like not that she's saying that I need to do it and then we'll have a meeting on Monday morning well where the meetings are really funny when they're. Like finally tell me what the what's the deal? And then. 20 minutes meeting and then I'm like okay cool I'll get to it.
+They present it as they have like things deadlines and things need to happen but it doesn't seem like it.
+Yeah I'm like sure guys whatever like and that's why. Like it would not be great if I couldn't continue working with them because that would be a problem. But for now I think they get what they need and I get what I need. And I get a really nice deal.
+I don't think they pay me enough. But also I don't do anything.
+So. Yeah I do stuff but it doesn't take long.
+Yeah exactly.
+Yeah well yeah now she sent me all this oh.
+That lady also sent something like okay here are some things. Okay. What do you want? Like.
+Friday yeah I'm not doing anything about this and I'm almost up with my clawed quota this week.
+So I am not. Doing that. So it's fine they can they can tell me oh we sent you and I'll say yeah you sent it and and then Molly asked me if I'm going to tell them that I'm not going to be around Tuesday Wednesday Thursday.
+Yeah. Yeah I'm flying out I don't even remember when.
+Oh that's in in a month the the thing I do get in my mind is my fear of flying starts and I'm like oh my god if something.
+Yeah it's it's more of like. Fear of the unknown it's like well if something happens to me I don't have health insurance and the kid and the family is going to be completely screwed so that's like my new thing for me to sit and marinate in marinate on the plane when there's turbulence.
+They'll be fine okay.
+Works for me.
+Maybe that will help I do need to get life insurance but I'm like how am I going to spend more money and that's really expensive.
+And it's.
+Like a margin loan.
+Yes.
+Yeah yeah yeah well because I always had it from work.
+We'll see well.
+It is what it is I'm really hoping to make something happen with the FBI like I'm trying to figure out how this works.
+Like. Don't know like after being there for a full day I'm like I don't have anything else to tell you like what else would you like to talk to me about? And and. Are they just coming into it with like a perspective of like where the FBI you should want to come and do stuff for free. Like. It's so weird like is this leading to something. Or is it the perspective of like yeah we just want to talk to you so we're going to bring you over because we're the FBI and we're not having any expectation of you working with us. I don't know like if it was a company it would be like it would probably be like okay eventually we'll do something with you. I would love to do something with them like I also that. Weird lady that wanted to take over my product said that she knows someone that made a product that's not even remotely as good as mine and the FBI gave him $700,000. To develop it so I sent the agent I'm like here look at this video product that I made tell me what you think.
+Yeah I'll take $700,000 to build something that's really easy to build. And the FBI is so low tech it is shocking. So what I made I think would really be helpful for them but I don't know I'll bring it there see if it works. I don't know.
+Maybe that's the way I don't know because after meeting with them it was like yeah we'll get you to Florida and then I didn't hear anything for two months.
+And and.
+Maybe this is the route.
+I looked for it I didn't find anything but I can keep looking.
+Maybe I can ask a different question but it's just.
+So weird and. I don't know maybe maybe. They'll be like yeah we want to because they do have contractors that do stuff for them.
+And I'm definitely better at most of and I have better tools and better abilities.
+And if they want to ask me about 11 labs it's like guys like I got nothing left it's been it's been a year. I don't know what they're doing if that's their deal. But I don't know.
+In the end it's two days that at the end of the day I just take a flight back home and I'll be home by midnight.
+Because I don't want to hang out in Fort Lauderdale.
+But yeah I'll let you know when it when it happens I'm just. Totally clueless.

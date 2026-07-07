@@ -1,0 +1,80 @@
+# Lefthook template — copy into repo root as lefthook.yml, then `lefthook install`
+# Gate 1: secrets. Gate 2: huge files. Gate 3: gitignored files trying to sneak in.
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      # ~/.gitleaks.toml extends the defaults with kipi-specific rules (ntn_ etc.).
+      # It used to ride a hand-chained .git/hooks/pre-commit; when lefthook took
+      # the hook back (2026-07-02) the custom config had to move here or be lost.
+      run: |
+        CFG="$HOME/.gitleaks.toml"
+        if [ -f "$CFG" ]; then
+          gitleaks protect --staged --redact --no-banner --config="$CFG"
+        else
+          gitleaks protect --staged --redact --no-banner
+        fi
+      fail_text: "Secret detected. Run 'gitleaks protect --staged -v' for details."
+
+    large-files:
+      run: |
+        staged=$(git diff --cached --name-only --diff-filter=A)
+        [ -z "$staged" ] && exit 0
+        for f in $staged; do
+          [ -f "$f" ] || continue
+          size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+          if [ "$size" -gt 10485760 ]; then
+            echo "BLOCK: $f is $((size / 1048576))MB (>10MB). Use git-lfs or exclude."
+            exit 1
+          fi
+        done
+
+    blocked-paths:
+      run: |
+        # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,
+        # and known AI-tooling caches. Allow .env.example / .env.sample / .env.template.
+        # Gitleaks is the deeper safety-net for anything that slips through.
+        # --diff-filter=ACMRT: only inspect adds, copies, modifies, renames, type-changes.
+        # Deletions (D) are allowed through; cleanup commits that remove an
+        # accidentally-tracked .env or __pycache__/ should not be blocked.
+        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' || true)
+        if [ -n "$blocked" ]; then
+          echo "BLOCK: these paths should not be committed:"
+          echo "$blocked"
+          echo "Rename .env.example/.env.sample/.env.template if you meant to commit an example file."
+          exit 1
+        fi
+
+    # Derived-copy-drift guards (RCA rca-derived-copy-drift-2026-06-30). Added to
+    # lefthook (the ACTIVE framework) rather than .githooks (which core.hooksPath
+    # does not point at) so they actually run on commit. Skeleton-only by nature.
+    plugin-version-bump:
+      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged
+      fail_text: "A changed plugin must bump its .claude-plugin/plugin.json version (else the version-keyed cache serves the stale copy)."
+
+    settings-template-sync:
+      run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
+      fail_text: "settings.json and settings-template.json are out of sync — a hook would ship dead to the fleet or run dead in the skeleton."
+
+    # Resurrected from a dead .git/hooks/pre-commit.old backup (sp-b417481b).
+    # Ratchet, not absolute: the 300-line target was 214 under water when revived,
+    # so this gates REGRESSION of the always-on total (baseline auto-tightens).
+    # The 514->300 trim is its own spillover item.
+    instruction-budget:
+      run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
+      fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."
+
+post-commit:
+  commands:
+    # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).
+    # Any commit touching that data re-syncs the tool so it never drifts from the
+    # source of truth. Founder-picked mechanism 2026-07-02 (vs kipi-update / CI).
+    # Silent no-op when the commit didn't touch the data or cheapcheck is absent.
+    cheapcheck-design-sync:
+      run: |
+        git diff-tree --no-commit-id --name-only -r HEAD \
+          | grep -q '^plugins/kipi-design/skills/ui-ux-pro-max/data/' || exit 0
+        SYNC="$HOME/projects/cheapcheck/q-design/sync-from-kipi.sh"
+        [ -x "$SYNC" ] || { echo "cheapcheck-design-sync: sync script missing, skipped"; exit 0; }
+        bash "$SYNC"

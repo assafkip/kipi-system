@@ -1,0 +1,84 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/cheapcheck",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/cheapcheck"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/briefonce",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/briefonce"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/authorvoice",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/authorvoice"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/feedbackpin",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/feedbackpin"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/runreceipts",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/shipgate",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/shipgate"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/interview-coach-public",
+      "dst": "/Users/assafkipnis/projects/micro-saas/projects/interview-coach-public"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-build.py",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-build.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-tests-only.py",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-tests-only.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_visual-gate.py",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_visual-gate.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_mobile-shot-cdp.py",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_mobile-shot-cdp.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-checks.py",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/_run-checks.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/feedbackpin/gtm/outreach-posters.md",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/feedbackpin/gtm/outreach-posters.md.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/restart.sh",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/restart.sh.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/gate.sh",
+      "bak": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/gate.sh.persona-reorg.bak"
+    }
+  ],
+  "created": [
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/micro-saas"
+    },
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/micro-saas/projects"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/micro-saas/.gitignore"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/micro-saas/CLAUDE.md"
+    }
+  ]
+}

@@ -73,7 +73,10 @@ work_instance() {
   fi
   echo "$(TS) heartbeat[$name]: $count open loop(s) -> waking headless agent" >> "$LOG"
   local prompt; prompt="$(build_prompt "$script" "$qroot")"
-  if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" >> "$LOG" 2>&1 ); then
+  # </dev/null: claude -p reads stdin; without this it drains the while-read loop's
+  # process-substitution feed (lines below) and truncates the sweep after the first
+  # agent-waking instance. See rca-heartbeat-tail-skip-2026-07-05.md.
+  if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null >> "$LOG" 2>&1 ); then
     log_step "$name" completed "agent ran ($count loops)"
   else
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"

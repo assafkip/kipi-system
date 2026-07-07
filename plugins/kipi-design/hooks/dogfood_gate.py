@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-dogfood_gate.py  (pairs with the eyeball design/UX gate + .claude/rules/dogfood-gate.md)
+dogfood_gate.py  (the deterministic layer of the dogfood gate; see .claude/rules/dogfood-gate.md)
 
 Deterministic FAST layer of the "never ship a website without running it through
 our own tool" gate. PostToolUse on Write|Edit: when a PUBLIC-FACING .html page is
 written, statically scan it for the AI-slop + UX tells and BLOCK (exit 2) so the
-page cannot ship unseen. The authoritative deep check is the rendered read:
-`node ~/projects/eyeball/web/scan.mjs <file>`.
+page cannot ship unseen. The authoritative deep design/UX read is the design-room
+skill (multi-lens review + visual-diff critic) — run it on the page before deploy.
 
 FINGERPRINT-DRIVEN (2026-06-20). The tell lists (fonts, palette hues, copy
-phrases, badge text) are NOT hardcoded here anymore — they are read from the baked
-default-fingerprint.json that the eyeball harvest produces. A hardcoded blocklist
+phrases, badge text) are NOT hardcoded here anymore — they are read from a baked
+default-fingerprint.json when present (else the embedded fallback below). A hardcoded blocklist
 is always one model-generation behind: a warm-cream / serif / amber page sailed
 past the old gate that only knew the garish violet/Inter/emoji tells. The RULE
 ("never reach for the current default") is this code; the LIST rotates in the
 fingerprint. The fingerprint is DATA ONLY (strings, numbers, HSL ranges); nothing
 read from it is ever exec'd.
 
-Fingerprint path: $EYEBALL_FINGERPRINT, else ~/projects/eyeball/web/fingerprint/
-default-fingerprint.json, else a small embedded fallback so the gate never breaks.
+Fingerprint path: $DOGFOOD_FINGERPRINT (optional external override), else a
+plugin-local default-fingerprint.json, else a small embedded fallback so the gate never breaks.
 
 Scope: only public-facing landing/marketing HTML. Internal HTML (dashboards,
 schedules, logs, templates, tests, system output, node_modules) is skipped fast.
@@ -28,9 +28,9 @@ Exit codes: 2 = block (findings to stderr), 0 = pass / out-of-scope.
 """
 import json, os, re, sys
 
-DEFAULT_FP_PATH = os.path.expanduser("~/projects/eyeball/web/fingerprint/default-fingerprint.json")
+DEFAULT_FP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default-fingerprint.json")
 
-# last-known-good net so the gate works even with no eyeball repo on disk. NOT the
+# last-known-good net so the gate works even with no external fingerprint on disk. NOT the
 # source of truth (the JSON is) — just the high-pull tells incl. the warm-cream fix.
 EMBEDDED_FALLBACK = {
     "active_threshold": 0.25,
@@ -76,7 +76,7 @@ EMBEDDED_FALLBACK = {
 
 
 def load_fingerprint():
-    path = os.environ.get("EYEBALL_FINGERPRINT") or DEFAULT_FP_PATH
+    path = os.environ.get("DOGFOOD_FINGERPRINT") or DEFAULT_FP_PATH
     try:
         with open(path, "r", encoding="utf-8") as f:
             fp = json.load(f)
@@ -315,17 +315,17 @@ def main():
         findings = scan_html(content, fp)
     except Exception as e:
         sys.stderr.write(
-            "eyeball gate errored on %s (%s). Failing CLOSED — run the render check manually:\n"
-            "  node ~/projects/eyeball/web/scan.mjs %s\n" % (path, e, path))
+            "dogfood gate errored on %s (%s). Failing CLOSED — run the deep read manually:\n"
+            "  invoke the design-room skill on %s before shipping\n" % (path, e, path))
         sys.exit(2)
 
     if findings:
-        msg = ["eyeball gate BLOCKED a public page: " + path,
+        msg = ["dogfood gate BLOCKED a public page: " + path,
                "Tells found (static check vs the current AI-default fingerprint):"]
         msg += ["  - %s  ->  %s" % (f["label"], f["fix"]) for f in findings]
         msg += ["",
-                "Run the authoritative render+UX read before shipping:",
-                "  node ~/projects/eyeball/web/scan.mjs " + path,
+                "Run the authoritative design/UX read before shipping:",
+                "  invoke the design-room skill on " + path,
                 "If the slop is intentional (a parody/demo), add  <!-- eyeball-gate-skip -->  to the file."]
         sys.stderr.write("\n".join(msg) + "\n")
         sys.exit(2)

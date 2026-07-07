@@ -75,6 +75,6 @@ post-commit:
       run: |
         git diff-tree --no-commit-id --name-only -r HEAD \
           | grep -q '^plugins/kipi-design/skills/ui-ux-pro-max/data/' || exit 0
-        SYNC="$HOME/projects/cheapcheck/q-design/sync-from-kipi.sh"
+        SYNC="$HOME/projects/micro-saas/projects/cheapcheck/q-design/sync-from-kipi.sh"
         [ -x "$SYNC" ] || { echo "cheapcheck-design-sync: sync script missing, skipped"; exit 0; }
         bash "$SYNC"

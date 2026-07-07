@@ -1,0 +1,201 @@
+{
+  "skeleton": {
+    "path": "/Users/assafkipnis/projects/kipi-system",
+    "remote": "https://github.com/assafkip/kipi-system.git"
+  },
+  "instances": [
+    {
+      "name": "KTLYST_strategy",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/strategy",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-ktlyst",
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "ktlyst",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/product",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "ASK_AI_consultant",
+      "path": "/Users/assafkipnis/projects/ASK_AI_consultant",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-consult",
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "ktlyst-website",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/website",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true,
+      "skip_agent_check": true,
+      "note": "Website project, no agent pipeline needed"
+    },
+    {
+      "name": "4_points_consulting",
+      "path": "/Users/assafkipnis/projects/4_points_consulting",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-investigate",
+      "type": "subtree",
+      "has_git": true,
+      "note": "OSINT investigation system with custom q-investigate/ pipeline"
+    },
+    {
+      "name": "Pure_spectrum_Q",
+      "path": "/Users/assafkipnis/projects/Pure_spectrum_Q",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-pure",
+      "type": "subtree",
+      "has_git": true,
+      "note": "Client advisory hub, instance content in q-pure/"
+    },
+    {
+      "name": "ktlyst_lawyer",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/lawyer",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "personal-brand",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/personal-brand",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "AUDHD_KIDS",
+      "path": "/Users/assafkipnis/projects/AUDHD_KIDS",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "event_coordinator",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/event_coordinator",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "school-idf",
+      "path": "/Users/assafkipnis/projects/school-idf",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "investigations",
+      "path": "/Users/assafkipnis/projects/kipi-investigations",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "accountant",
+      "path": "/Users/assafkipnis/projects/ktlyst-hub/accountant",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "school-negotiator",
+      "path": "/Users/assafkipnis/projects/school-negotiator",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-negotiate",
+      "type": "subtree",
+      "has_git": true,
+      "note": "Single-purpose tuition-negotiation coach. Domain in q-negotiate/. No routines."
+    },
+    {
+      "name": "gtm-partner",
+      "path": "/Users/assafkipnis/projects/random-stuff-ideas",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "travel-agent",
+      "path": "/Users/assafkipnis/projects/travel-agent",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "fractional-cxo",
+      "path": "/Users/assafkipnis/projects/fractional-cxo",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "interview-coach",
+      "path": "/Users/assafkipnis/projects/interview-coach",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "negotiator",
+      "path": "/Users/assafkipnis/projects/negotiator",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "reddit-build-radar",
+      "path": "/Users/assafkipnis/projects/reddit-build-radar",
+      "subtree_prefix": null,
+      "instance_q_dir": null,
+      "type": "standalone",
+      "has_git": true,
+      "skip_agent_check": true,
+      "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree."
+    },
+    {
+      "name": "Alice",
+      "path": "/Users/assafkipnis/projects/Alice",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    }
+  ],
+  "standalone": [
+    {
+      "name": "q-investigate-osint-bot",
+      "path": "/Users/assafkipnis/Desktop/q-investigate-osint-bot",
+      "purpose": "Standalone OSINT collection system",
+      "has_skeleton": false
+    }
+  ],
+  "eliminated": [
+    {
+      "name": "kipi-pipeline-plugin",
+      "archived_to": "/Users/assafkipnis/Desktop/_archived/kipi-pipeline-plugin"
+    },
+    {
+      "name": "q-founder-os",
+      "status": "already removed"
+    }
+  ]
+}

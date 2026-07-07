@@ -1,0 +1,393 @@
+diff --git a/bin/claude-guardrails b/bin/claude-guardrails
+index 04a12d7..696a8b8 100755
+--- a/bin/claude-guardrails
++++ b/bin/claude-guardrails
+@@ -25,6 +25,8 @@ Hardened security configuration for Claude Code.
+ Usage:
+   claude-guardrails install [lite|full]   Install guardrails (default: lite)
+   claude-guardrails uninstall [lite|full] Remove guardrails (default: lite)
++  claude-guardrails keygen                Create the approval signing key (once)
++  claude-guardrails approve "<command>"   Mint a one-time token approving a command
+   claude-guardrails --help                Show this help
+   claude-guardrails --version             Show version
+ 
+@@ -50,6 +52,13 @@ case "${1:-}" in
+     shift
+     exec bash "$PACKAGE_DIR/uninstall.sh" "${1:-lite}"
+     ;;
++  keygen)
++    exec bash "$PACKAGE_DIR/full/capability-token.sh" keygen
++    ;;
++  approve)
++    shift
++    exec bash "$PACKAGE_DIR/full/capability-token.sh" approve "$@"
++    ;;
+   --version|-v)
+     echo "claude-guardrails v${VERSION}"
+     ;;
+diff --git a/full/CAPABILITY-APPROVAL.md b/full/CAPABILITY-APPROVAL.md
+new file mode 100644
+index 0000000..b49038c
+--- /dev/null
++++ b/full/CAPABILITY-APPROVAL.md
+@@ -0,0 +1,75 @@
++# Capability approval tokens
++
++claude-guardrails blocks destructive commands. This adds the missing piece: a
++safe way to **approve one** when you actually mean it, without weakening the
++guardrails.
++
++## The problem it solves
++
++Today, to run a blocked command you edit settings or reach for
++`--dangerously-skip-permissions` (which the guardrails also block). And when an
++agent asks "may I run this?", a human running several sessions tends to reflex
++"yes." Both routes are unsafe.
++
++## How it works
++
++A human mints a **one-time, command-scoped, signed token** for an exact command.
++The `approve-gate` PreToolUse hook honors a destructive command only if a valid
++token for that exact command (and working directory) is present. The token is
++consumed on use: one approval, one execution.
++
++The agent **cannot forge a token**: it does not hold the signing key. By default
++the private key is a `0600` file that claude-guardrails' own `Read **/*.key` deny
++rule keeps the agent from reading. For hardware-rooted keys, point
++`CAPABILITY_SIGNER` at a Secure Enclave / Touch ID signer.
++
++## Setup
++
++```bash
++# one time: create the signing key
++claude-guardrails keygen
++```
++
++Wire the hook (alongside the other PreToolUse Bash hooks in your settings):
++
++```json
++{
++  "matcher": "Bash",
++  "hooks": [
++    { "type": "command", "command": "~/.claude/hooks/approve-gate/approve-gate.sh", "timeout": 10 }
++  ]
++}
++```
++
++`approve-gate.sh` and `capability-token.sh` install into the same hook directory;
++the hook finds the token CLI next to itself.
++
++## Use
++
++When the agent hits a blocked destructive command, a human approves that exact
++command, from the project directory:
++
++```bash
++claude-guardrails approve "git push --force origin main"
++```
++
++The agent's next attempt at that exact command is allowed once, then the token is
++gone.
++
++## Configuration (env)
++
++| Variable | Default | Meaning |
++|---|---|---|
++| `CLAUDE_GUARDRAILS_DIR` | `~/.claude/guardrails` | keys, approvals, audit log |
++| `CLAUDE_GUARDRAILS_TTL` | `300` | token lifetime in seconds |
++| `CAPABILITY_SIGNER` | (unset) | hardware signer override; reads payload on stdin, emits base64 signature |
++
++## Security properties
++
++- **Forgery-resistant.** No signing key, no valid token. The agent has neither.
++- **Command-scoped.** A token for one command does not authorize another, or the
++  same command in a different directory.
++- **Single-use.** Consumed on first match (atomic claim before verify).
++- **Time-boxed.** Expires after the TTL.
++- **Fails closed.** Missing/expired/tampered token, or missing public key, denies.
++  There is no downgrade to unsigned acceptance.
+diff --git a/full/approve-gate.sh b/full/approve-gate.sh
+new file mode 100755
+index 0000000..ba318a6
+--- /dev/null
++++ b/full/approve-gate.sh
+@@ -0,0 +1,48 @@
++#!/usr/bin/env bash
++# approve-gate.sh — Claude Code PreToolUse hook (matcher: Bash).
++#
++# claude-guardrails hard-blocks destructive commands. This hook adds a safe
++# approval path: a destructive command is allowed only if a human has minted a
++# valid one-time capability token for that EXACT command (see
++# capability-token.sh). No token, expired, tampered, or wrong-key => exit 2.
++#
++# The agent cannot forge a token: it lacks the signing key (protected by the
++# "Read **/*.key" deny rule, or held in a Secure Enclave). A reflexive "yes"
++# is replaced by a cryptographic, command-scoped, single-use approval.
++set -u
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++TOKEN="${CLAUDE_GUARDRAILS_TOKEN_CLI:-$SCRIPT_DIR/capability-token.sh}"
++
++INPUT="$(cat)"
++# Fail-open on malformed JSON (consistent with scan-commit.sh).
++echo "$INPUT" | jq -e . >/dev/null 2>&1 || exit 0
++
++CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
++CWD="$(echo "$INPUT" | jq -r '.cwd // .tool_input.cwd // empty')"
++[ -n "$CMD" ] || exit 0
++
++# Destructive patterns that require an approval token. Mirrors the set
++# claude-guardrails already blocks, made approvable instead of absolute.
++DESTRUCTIVE='(^|[^a-zA-Z0-9_-])rm[[:space:]]+-[a-zA-Z]*[rf]'
++DESTRUCTIVE="$DESTRUCTIVE"'|(^|[^a-zA-Z0-9_-])dd[[:space:]]+'
++DESTRUCTIVE="$DESTRUCTIVE"'|mkfs'
++DESTRUCTIVE="$DESTRUCTIVE"'|(^|[^a-zA-Z0-9_-])git[[:space:]]+reset[[:space:]]+--hard'
++DESTRUCTIVE="$DESTRUCTIVE"'|(^|[^a-zA-Z0-9_-])git[[:space:]]+push[[:space:]].*(--force|-f([[:space:]]|$))'
++DESTRUCTIVE="$DESTRUCTIVE"'|(^|[^a-zA-Z0-9_-])git[[:space:]]+push[[:space:]].*([^a-zA-Z0-9_-])(main|master|production)([^a-zA-Z0-9_-]|$)'
++
++echo "$CMD" | grep -qEi "$DESTRUCTIVE" || exit 0   # not destructive: not our concern
++
++# Destructive: require a valid one-time token for this exact command.
++# A passing check CONSUMES the token (one approval == one execution).
++if [ -x "$TOKEN" ] && "$TOKEN" check "$CMD" "$CWD" >/dev/null 2>&1; then
++  exit 0
++fi
++
++{
++  echo "BLOCKED: this destructive command needs a one-time approval token."
++  echo "A human approves THIS exact command, outside the agent, with:"
++  echo "    claude-guardrails approve \"$CMD\""
++  echo "The agent cannot mint it: the signing key is not readable by the agent."
++} >&2
++exit 2
+diff --git a/full/capability-token.sh b/full/capability-token.sh
+new file mode 100755
+index 0000000..1eb09f8
+--- /dev/null
++++ b/full/capability-token.sh
+@@ -0,0 +1,172 @@
++#!/usr/bin/env bash
++# capability-token.sh — forgery-resistant, command-scoped, single-use approval
++# tokens for claude-guardrails.
++#
++# claude-guardrails blocks destructive commands (exit 2) with no safe way to
++# approve one. This adds that path: a human mints a one-time token bound to an
++# exact command; the approve-gate hook honors a destructive command only if it
++# carries a valid signature over that command from the trusted key. An agent
++# that merely writes a token file cannot forge a valid signature.
++#
++# Forgery resistance:
++#   - default (openssl): the private key is a 0600 file. claude-guardrails' own
++#     "Read **/*.key" deny rule keeps the agent from reading it, so it cannot
++#     sign. Strong, not hardware-rooted.
++#   - optional: set CAPABILITY_SIGNER to a Secure Enclave / Touch ID signer
++#     (reads payload on stdin, emits base64 signature) for non-exportable keys.
++#
++# Subcommands: keygen | approve <cmd> [cwd] | hash <cmd> [cwd] | mint <hash> | check <cmd> [cwd]
++# Everything fails closed. There is no downgrade to unsigned acceptance.
++
++set -uo pipefail
++
++# Pin PATH so security-critical externals (openssl, mv, sed, base64) cannot be
++# hijacked via a caller-controlled PATH.
++export PATH=/usr/bin:/bin:/usr/sbin:/sbin
++
++GUARD_DIR="${CLAUDE_GUARDRAILS_DIR:-$HOME/.claude/guardrails}"
++APPROVALS_DIR="${CLAUDE_GUARDRAILS_APPROVALS:-$GUARD_DIR/approvals}"
++PRIVKEY="${CLAUDE_GUARDRAILS_PRIVKEY:-$GUARD_DIR/capability-token.key}"
++PUBKEY="${CLAUDE_GUARDRAILS_PUBKEY:-$GUARD_DIR/capability-token.pub}"
++AUDIT_LOG="${CLAUDE_GUARDRAILS_LOG:-$GUARD_DIR/audit.log}"
++TTL="${CLAUDE_GUARDRAILS_TTL:-300}"
++# Override to use a hardware signer instead of the openssl default.
++SIGNER="${CAPABILITY_SIGNER:-}"
++
++_sha256() {
++  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'
++  else shasum -a 256 | awk '{print $1}'; fi
++}
++_now() { date +%s; }
++
++_log() {
++  local event="$1" hash="$2" detail="$3" ts
++  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
++  { mkdir -p "$(dirname "$AUDIT_LOG")" 2>/dev/null \
++      && printf '{"ts":"%s","event":"%s","hash":"%s","detail":"%s"}\n' \
++         "$ts" "$event" "$hash" "$detail" >> "$AUDIT_LOG"; } 2>/dev/null || true
++}
++
++# Domain-separated, versioned payload. Binding the version + both fields
++# prevents cross-protocol signature reuse.
++_payload() { printf 'claude-guardrails-capability.v1\n%s\n%s' "$1" "$2"; }  # hash, expiry
++
++_sign() {
++  # stdin: payload bytes. stdout: base64 signature. openssl default, or the
++  # configured hardware signer.
++  if [ -n "$SIGNER" ]; then
++    # shellcheck disable=SC2086 -- SIGNER is a trusted command line.
++    $SIGNER
++    return
++  fi
++  [ -r "$PRIVKEY" ] || { echo "sign: no readable private key at $PRIVKEY (run: keygen)" >&2; return 1; }
++  openssl dgst -sha256 -sign "$PRIVKEY" | openssl base64 -A
++}
++
++cmd_keygen() {
++  mkdir -p "$GUARD_DIR" || { echo "keygen: cannot create $GUARD_DIR" >&2; return 1; }
++  chmod 0700 "$GUARD_DIR" 2>/dev/null || true
++  if [ -f "$PRIVKEY" ]; then
++    echo "keygen: key already exists at $PRIVKEY (leaving as-is)"
++    return 0
++  fi
++  ( umask 077; openssl ecparam -genkey -name prime256v1 -noout -out "$PRIVKEY" 2>/dev/null ) \
++    || { echo "keygen: private key generation failed" >&2; return 1; }
++  chmod 0600 "$PRIVKEY"
++  openssl ec -in "$PRIVKEY" -pubout -out "$PUBKEY" 2>/dev/null \
++    || { echo "keygen: public key export failed" >&2; return 1; }
++  echo "keygen: created $PRIVKEY (keep it unreadable by agents) and $PUBKEY"
++}
++
++cmd_hash() {
++  # hash(sha256(command) : sha256(cwd)) -> single 64-hex id.
++  local command="${1-}" cwd="${2-}" hc hd
++  hc="$(printf '%s' "$command" | _sha256)" || return 1
++  hd="$(printf '%s' "$cwd" | _sha256)" || return 1
++  printf '%s:%s' "$hc" "$hd" | _sha256
++}
++
++cmd_mint() {
++  # mint <hash>: sign the v1 payload, write a two-line token (expiry, sig-b64).
++  local hash="${1-}"
++  case "$hash" in ''|*[!0-9a-f]*) echo "mint: hash must be 64 lowercase hex chars" >&2; return 2 ;; esac
++  [ "${#hash}" -eq 64 ] || { echo "mint: hash must be 64 lowercase hex chars" >&2; return 2; }
++  mkdir -p "$APPROVALS_DIR" 2>/dev/null || { echo "mint: cannot create $APPROVALS_DIR" >&2; return 1; }
++  chmod 0700 "$APPROVALS_DIR" 2>/dev/null || true
++  _prune_expired
++  local now expiry payload sig tmp
++  now="$(_now)"
++  expiry=$(( now + TTL ))
++  payload="$(_payload "$hash" "$expiry")"
++  sig="$(printf '%s' "$payload" | _sign)" || { echo "mint: signing failed" >&2; return 1; }
++  [ -n "$sig" ] || { echo "mint: signer produced no signature" >&2; return 1; }
++  tmp="$APPROVALS_DIR/$hash.token.minting.$$"
++  printf '%s\n%s\n' "$expiry" "$sig" > "$tmp" || { echo "mint: write failed" >&2; return 1; }
++  mv "$tmp" "$APPROVALS_DIR/$hash.token" || { rm -f "$tmp" 2>/dev/null || true; echo "mint: install failed" >&2; return 1; }
++  _log grant "$hash" "$expiry"
++  echo "approved one command (hash ${hash:0:12}...), expires in ${TTL}s"
++}
++
++cmd_approve() {
++  # approve <command> [cwd]: hash then mint. The human-facing entry point.
++  local command="${1-}" cwd="${2-$PWD}" hash
++  [ -n "$command" ] || { echo "approve: usage: approve <command> [cwd]" >&2; return 2; }
++  hash="$(cmd_hash "$command" "$cwd")" || return 1
++  cmd_mint "$hash"
++}
++
++cmd_check() {
++  # check <command> [cwd]: exit 0 iff a token exists whose signature over the
++  # v1 payload verifies against the trusted pubkey AND is unexpired. Atomically
++  # claim first (single winner), then verify before allowing.
++  local command="${1-}" cwd="${2-$PWD}"
++  local hash tokenfile claim expiry sig payload now sigder payfile rc
++  hash="$(cmd_hash "$command" "$cwd")" || return 1
++  tokenfile="$APPROVALS_DIR/$hash.token"
++  claim="$tokenfile.consuming.$$"
++  mv "$tokenfile" "$claim" 2>/dev/null || return 1     # atomic single-use claim
++  expiry="$(sed -n '1p' "$claim" 2>/dev/null)"
++  sig="$(sed -n '2p' "$claim" 2>/dev/null)"
++  rm -f "$claim" 2>/dev/null || true
++  case "$expiry" in ''|*[!0-9]*) _log consume "$hash" malformed; return 1 ;; esac
++  [ -n "$sig" ] || { _log consume "$hash" no-sig; return 1; }
++  [ -r "$PUBKEY" ] || { _log consume "$hash" no-pubkey; return 1; }   # no downgrade
++  payload="$(_payload "$hash" "$expiry")"
++  sigder="$(mktemp)" || return 1
++  payfile="$(mktemp)" || { rm -f "$sigder"; return 1; }
++  printf '%s' "$sig" | openssl base64 -d -A > "$sigder" 2>/dev/null
++  printf '%s' "$payload" > "$payfile"
++  openssl dgst -sha256 -verify "$PUBKEY" -signature "$sigder" "$payfile" >/dev/null 2>&1
++  rc=$?
++  rm -f "$sigder" "$payfile" 2>/dev/null || true
++  if [ "$rc" -ne 0 ]; then _log consume "$hash" bad-sig; return 1; fi
++  now="$(_now)"
++  if [ "$expiry" -gt "$now" ]; then _log consume "$hash" "allowed:$expiry"; return 0; fi
++  _log consume "$hash" "expired:$expiry"
++  return 1
++}
++
++_prune_expired() {
++  local f exp now
++  now="$(_now)"
++  for f in "$APPROVALS_DIR"/*.token; do
++    [ -e "$f" ] || continue
++    exp="$(sed -n '1p' "$f" 2>/dev/null)"
++    case "$exp" in ''|*[!0-9]*) rm -f "$f" 2>/dev/null || true; continue ;; esac
++    [ "$exp" -gt "$now" ] || rm -f "$f" 2>/dev/null || true
++  done
++}
++
++main() {
++  local sub="${1-}"; shift 2>/dev/null || true
++  case "$sub" in
++    keygen)  cmd_keygen ;;
++    hash)    cmd_hash "${1-}" "${2-}" ;;
++    mint)    cmd_mint "${1-}" ;;
++    approve) cmd_approve "${1-}" "${2-}" ;;
++    check)   cmd_check "${1-}" "${2-}" ;;
++    *) echo "usage: capability-token.sh {keygen|approve <cmd> [cwd]|hash <cmd> [cwd]|mint <hash>|check <cmd> [cwd]}" >&2; return 2 ;;
++  esac
++}
++
++main "$@"
+diff --git a/tests/test-capability-approval.sh b/tests/test-capability-approval.sh
+new file mode 100755
+index 0000000..5dc940a
+--- /dev/null
++++ b/tests/test-capability-approval.sh
+@@ -0,0 +1,47 @@
++#!/usr/bin/env bash
++# test-capability-approval.sh — unit tests for the capability approval token
++# (full/capability-token.sh) and the approve-gate hook (full/approve-gate.sh).
++#
++# Safe: runs entirely inside a throwaway CLAUDE_GUARDRAILS_DIR and never touches
++# a real ~/.claude. Uses openssl only (no Secure Enclave required).
++set -euo pipefail
++
++REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
++TOKEN="$REPO_DIR/full/capability-token.sh"
++GATE="$REPO_DIR/full/approve-gate.sh"
++
++CLAUDE_GUARDRAILS_DIR="$(mktemp -d -t cg-captoken-test.XXXXXX)"
++export CLAUDE_GUARDRAILS_DIR
++cleanup() { rm -rf "$CLAUDE_GUARDRAILS_DIR"; }
++trap cleanup EXIT
++
++PASS=0; FAIL=0
++expect() { # <actual> <want> <label>
++  if [ "$1" = "$2" ]; then echo "  ok   $3"; PASS=$((PASS+1));
++  else echo "  FAIL $3 (got=$1 want=$2)"; FAIL=$((FAIL+1)); fi
++}
++run()  { bash "$TOKEN" "$@" >/dev/null 2>&1; echo $?; }
++gate() { printf '{"tool_input":{"command":"%s"},"cwd":"/w"}' "$1" | bash "$GATE" >/dev/null 2>&1; echo $?; }
++
++echo "capability-token core:"
++expect "$(run keygen)" 0 "keygen creates a keypair"
++expect "$(run approve 'CMD-A' /w)" 0 "approve mints a token"
++expect "$(run check 'CMD-A' /w)" 0 "valid token allows once"
++expect "$(run check 'CMD-A' /w)" 1 "token is single-use"
++run approve 'CMD-A' /w >/dev/null 2>&1
++expect "$(run check 'CMD-B' /w)" 1 "token is command-scoped"
++expect "$(run check 'NEVER' /w)" 1 "cold check denies"
++CLAUDE_GUARDRAILS_TTL=0 bash "$TOKEN" approve 'CMD-X' /w >/dev/null 2>&1
++expect "$(run check 'CMD-X' /w)" 1 "expired token denies"
++
++echo "approve-gate hook:"
++expect "$(gate 'ls -la')" 0 "benign command ignored"
++expect "$(gate 'git push origin main')" 2 "destructive blocked without token"
++run approve 'git push origin main' /w >/dev/null 2>&1
++expect "$(gate 'git push origin main')" 0 "destructive allowed with token"
++expect "$(gate 'git push origin main')" 2 "destructive single-use enforced"
++expect "$(printf 'not json' | bash "$GATE" >/dev/null 2>&1; echo $?)" 0 "malformed JSON fails open"
++
++echo ""
++echo "RESULT: $PASS passed, $FAIL failed"
++[ "$FAIL" -eq 0 ]

@@ -1,0 +1,40 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/kipi-investigations",
+      "dst": "/Users/assafkipnis/projects/intel/projects/kipi-investigations"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-extract",
+      "dst": "/Users/assafkipnis/projects/intel/projects/ktlyst-extract"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/facebook-ads-library-search",
+      "dst": "/Users/assafkipnis/projects/intel/projects/facebook-ads-library-search"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/.codex/hooks.json",
+      "bak": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/.codex/hooks.json.persona-reorg.bak"
+    }
+  ],
+  "created": [
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/intel"
+    },
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/intel/projects"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/intel/.gitignore"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/intel/CLAUDE.md"
+    }
+  ]
+}
