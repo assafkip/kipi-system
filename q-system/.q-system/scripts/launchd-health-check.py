@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Watchdog for the founder's launchd jobs -- surfaces silent job deaths.
 
-Auto-discovers every ~/Library/LaunchAgents/<prefix>*.plist for the founder's
-job families (WATCHED_PREFIXES: kipi, cole, claudedaddy, ask, assaf, ktlyst,
-purespectrum) and Slack-pings (deduped) on TWO silent-death modes:
+Auto-discovers every ~/Library/LaunchAgents/<prefix>*.plist for the OS's base
+job families (WATCHED_PREFIXES) plus any instance-local families listed in
+EXTRA_PREFIXES_FILE, and Slack-pings (deduped) on TWO silent-death modes:
   1. loaded but its last run exited non-zero (LastExitStatus via `launchctl list`)
   2. installed on disk but NOT loaded into launchd -- so it silently never runs.
      Scar 2026-07-05: com.cole.daily-video was present + scheduled 07:00 but
@@ -40,19 +40,38 @@ NOTIFY_SCRIPT = HERE / "slack-notify.sh"
 STATE_FILE = Path.home() / ".config" / "kipi" / "launchd-health-state.json"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 
-# Founder-owned launchd job families this watchdog covers. A prefix that matches
-# nothing on a given machine is a harmless no-op, so this list is safe to
-# propagate fleet-wide (only kipi-system actually runs the watchdog). Add a new
-# family here when a new automation prefix appears.
+# Base launchd job families this OS's own automation uses. A prefix that matches
+# nothing on a given machine is a harmless no-op. Instance- or client-specific
+# families (client slack syncs, brand jobs) live in EXTRA_PREFIXES_FILE below, NOT
+# here -- the skeleton propagates fleet-wide via kipi update and must carry no
+# single instance's brand names.
 WATCHED_PREFIXES = (
     "com.kipi.",
     "com.cole.",         # daily podcast/video GTM pipeline
     "com.claudedaddy.",  # social posters (Pinterest/X/YouTube/refill/repo)
     "com.ask.",          # ASK AI podcast
     "com.assaf.",        # competitive-analysis morning
-    "com.ktlyst.",       # PureSpectrum slack sync
-    "com.purespectrum.", # threat-intel weekly
 )
+
+# Instance-local additions, one prefix per line ('#' starts a comment). Lives in
+# the founder's live env (~/.config/kipi/), outside the repo, so client/brand job
+# families are watched without being baked into the propagated skeleton. Missing
+# file = base set only (harmless no-op).
+EXTRA_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "launchd-watch-prefixes.txt"
+
+
+def load_watched_prefixes():
+    """Base families plus any instance-local additions from EXTRA_PREFIXES_FILE."""
+    prefixes = list(WATCHED_PREFIXES)
+    try:
+        lines = EXTRA_PREFIXES_FILE.read_text().splitlines()
+    except FileNotFoundError:
+        return tuple(prefixes)
+    for line in lines:
+        entry = line.split("#", 1)[0].strip()
+        if entry and entry not in prefixes:
+            prefixes.append(entry)
+    return tuple(prefixes)
 
 
 def normalize_exit(raw):
@@ -92,10 +111,10 @@ def job_status(label):
 
 def discover_problems():
     """List (label, kind, detail) for every watched job that is failing or
-    installed-but-unloaded. Watched = any WATCHED_PREFIXES plist, minus self."""
+    installed-but-unloaded. Watched = any watched-prefix plist, minus self."""
     problems = []
     seen = set()
-    for prefix in WATCHED_PREFIXES:
+    for prefix in load_watched_prefixes():
         for plist in sorted(LAUNCH_AGENTS.glob(f"{prefix}*.plist")):
             label = plist.stem
             if label == SELF_LABEL or label in seen:

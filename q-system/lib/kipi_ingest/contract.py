@@ -14,7 +14,7 @@ Two composable layers, each distilled from a real sibling tool (audited
     A cap or per-unit failure is COUNTED, never silent. reconcile() raises and
     names any enumerated unit with no result.
 
-  Layer 2 PROVENANCE (from the KTLYST product) -- is every kept unit real?
+  Layer 2 PROVENANCE (from the source product) -- is every kept unit real?
     Block(block_id, text-derived-from-source) + index_blocks() + ground().
     A downstream reference to a unit that was not read raises; "captured"
     becomes unfakeable.
