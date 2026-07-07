@@ -6,7 +6,7 @@
   "instances": [
     {
       "name": "KTLYST_strategy",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/strategy",
+      "path": "/Users/assafkipnis/projects/cole-gtm/projects/strategy",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-ktlyst",
       "type": "subtree",
@@ -14,7 +14,7 @@
     },
     {
       "name": "ktlyst",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/product",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas/projects/product",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -58,7 +58,7 @@
     },
     {
       "name": "ktlyst_lawyer",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/lawyer",
+      "path": "/Users/assafkipnis/projects/consulting/projects/lawyer",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -106,7 +106,7 @@
     },
     {
       "name": "accountant",
-      "path": "/Users/assafkipnis/projects/ktlyst-hub/accountant",
+      "path": "/Users/assafkipnis/projects/consulting/projects/accountant",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",

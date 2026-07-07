@@ -1,0 +1,69 @@
+{
+  "moves": [
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/accountant",
+      "dst": "/Users/assafkipnis/projects/consulting/projects/accountant"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/lawyer",
+      "dst": "/Users/assafkipnis/projects/consulting/projects/lawyer"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/strategy",
+      "dst": "/Users/assafkipnis/projects/cole-gtm/projects/strategy"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/deliverables",
+      "dst": "/Users/assafkipnis/projects/intel/projects/deliverables"
+    },
+    {
+      "src": "/Users/assafkipnis/projects/ktlyst-hub/product",
+      "dst": "/Users/assafkipnis/projects/_archive/product-ktlyst-old-2026-07-06"
+    }
+  ],
+  "baks": [
+    {
+      "orig": "/Users/assafkipnis/Library/LaunchAgents/com.ktlyst.q-morning.plist.disabled",
+      "bak": "/Users/assafkipnis/Library/LaunchAgents/com.ktlyst.q-morning.plist.disabled.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/.ktlyst/bridge/bridge-sync.py",
+      "bak": "/Users/assafkipnis/.ktlyst/bridge/bridge-sync.py.persona-reorg.bak"
+    },
+    {
+      "orig": "/Users/assafkipnis/.ktlyst/bridge/write-legal-flags.py",
+      "bak": "/Users/assafkipnis/.ktlyst/bridge/write-legal-flags.py.persona-reorg.bak"
+    }
+  ],
+  "salvage_strands": [
+    "scripts/eng_persona_review_workflow.js"
+  ],
+  "before_worktrees": "worktree /Users/assafkipnis/projects/ktlyst-hub/product\nHEAD d69272ea3eb76f34b0506fdda45e9bc6653a4626\nbranch refs/heads/main\n\nworktree /Users/assafkip/projects/ktlyst-hub/product-baseline\nHEAD 9628ab1971d2c1a885af0a6abf4dc5b115ab8448\nbranch refs/heads/feat/v5-canonical-port\n\nworktree /Users/assafkipnis/projects/ktlyst-hub/product/.claude/worktrees/agent-ac1bc694328f51b21\nHEAD 688db128c83d2a731e1c438602df4c88eacc3f0d\nbranch refs/heads/worktree-agent-ac1bc694328f51b21\nlocked claude agent agent-ac1bc694328f51b21 (pid 66261)\n\nworktree /Users/assafkipnis/projects/ktlyst-hub/product/.claude/worktrees/prd-b\nHEAD 4b2aea9338405bc4c7b88854f64cca50f4c6f362\nbranch refs/heads/worktree-prd-b",
+  "created": [
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas"
+    },
+    {
+      "type": "dir",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas/projects"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas/.gitignore"
+    },
+    {
+      "type": "file",
+      "path": "/Users/assafkipnis/projects/ktlyst-saas/CLAUDE.md"
+    }
+  ],
+  "promotions": [
+    {
+      "new_repo": "/Users/assafkipnis/projects/ktlyst-saas/projects/product",
+      "archived": "/Users/assafkipnis/projects/_archive/product-ktlyst-old-2026-07-06",
+      "orig_main": "/Users/assafkipnis/projects/ktlyst-hub/product",
+      "orig_worktree": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline",
+      "branch": "feat/v5-canonical-port"
+    }
+  ]
+}

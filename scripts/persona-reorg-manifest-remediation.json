@@ -2,76 +2,44 @@
   "moves": [],
   "baks": [
     {
-      "orig": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/run-analyze.sh",
-      "bak": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/run-analyze.sh.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/artifacts/stabilization-real-run-output/summary.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/artifacts/stabilization-real-run-output/summary.json.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/serve-debug.sh",
-      "bak": "/Users/assafkipnis/projects/intel/projects/kipi-investigations/serve-debug.sh.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/ktlyst/packaging/artifact_policy.py",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/ktlyst/packaging/artifact_policy.py.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/dogfood.mjs",
-      "bak": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/dogfood.mjs.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/tests/v2/packaging/test_summary_path_scrub.py",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/tests/v2/packaging/test_summary_path_scrub.py.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/cdp-shot.mjs",
-      "bak": "/Users/assafkipnis/projects/micro-saas/projects/runreceipts/.artdir-tools/cdp-shot.mjs.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/stranded-code-audit.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/stranded-code-audit.js.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/consolidate-kipi-system.py",
-      "bak": "/Users/assafkipnis/projects/micro-saas/projects/briefonce/webapp/scripts/consolidate-kipi-system.py.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/eng-persona-output-review.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-saas/projects/product/.claude/workflows/eng-persona-output-review.js.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/micro-saas/projects/cheapcheck/pipeline/build-manifest.json",
-      "bak": "/Users/assafkipnis/projects/micro-saas/projects/cheapcheck/pipeline/build-manifest.json.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-123030_ece32447ab1a_8e2fa113d40e/.ktlyst/build_meta.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-123030_ece32447ab1a_8e2fa113d40e/.ktlyst/build_meta.json.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/scripts/sync-huntkit.py",
-      "bak": "/Users/assafkipnis/projects/consulting/projects/4_points_consulting/scripts/sync-huntkit.py.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-105952_ce9166778a66_8e2fa113d40e/.ktlyst/build_meta.json",
+      "bak": "/Users/assafkipnis/projects/ktlyst-review-panel/inputs/deliverables/run-20260526-105952_ce9166778a66_8e2fa113d40e/.ktlyst/build_meta.json.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/.mcp.json",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/.mcp.json.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/strategy/.claude/settings.local.json",
+      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/strategy/.claude/settings.local.json.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/pipeline/build-manifest.json",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/pipeline/build-manifest.json.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/stranded-code-audit.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/stranded-code-audit.js.remediation.bak"
     },
     {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/launch/products.json",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/launch/products.json.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/tests/test_launch.py",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/tests/test_launch.py.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/radar/inventory/projects.json",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/projects/reddit-build-radar/radar/inventory/projects.json.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/video/promo-journey/full/render.mjs",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/video/promo-journey/full/render.mjs.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/cole-gtm/gtm/scripts/design_spine/tests/test_intent.py",
-      "bak": "/Users/assafkipnis/projects/cole-gtm/gtm/scripts/design_spine/tests/test_intent.py.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/kipi-system/lefthook.yml",
-      "bak": "/Users/assafkipnis/projects/kipi-system/lefthook.yml.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/kipi-system/plugins/prd-os/scripts/export-fable-mirror.sh",
-      "bak": "/Users/assafkipnis/projects/kipi-system/plugins/prd-os/scripts/export-fable-mirror.sh.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/projects/kipi-system/security-remediation/scripts/scrub-git-history.sh",
-      "bak": "/Users/assafkipnis/projects/kipi-system/security-remediation/scripts/scrub-git-history.sh.remediation.bak"
-    },
-    {
-      "orig": "/Users/assafkipnis/.claude/plugins/installed_plugins.json",
-      "bak": "/Users/assafkipnis/.claude/plugins/installed_plugins.json.remediation.bak"
+      "orig": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/eng-persona-output-review.js",
+      "bak": "/Users/assafkipnis/projects/ktlyst-hub/product-baseline/.claude/workflows/eng-persona-output-review.js.remediation.bak"
     }
   ]
 }
