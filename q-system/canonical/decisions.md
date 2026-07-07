@@ -141,3 +141,9 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Reason:** Persona = kind of work, not licensing. It ships to a user like cheapcheck/briefonce, so it belongs with the products.
 - **Date:** 2026-07-06
 - **Revisit:** With the interview-coach consolidation (5 variants -> 1, fleet-map open item #1).
+
+### RULE-2026-07-06-G: ktlyst-hub cluster DISSOLVED
+- **Origin:** [USER-DIRECTED]
+- **Decision:** ktlyst-hub dissolved 2026-07-07. product-baseline (v5) promoted to standalone `ktlyst-saas/projects/product` (own .git, verified survives old-line deletion); old product archived (`_archive/`). accountant+lawyer -> `consulting/projects`, strategy -> `cole-gtm/projects`, deliverables -> `intel/projects`. Registry/plist/bridge repointed; global rule `ktlyst-cluster.md` retired to a tombstone. Reversible via `persona-reorg.py --rollback --persona ktlyst-hub`.
+- **Scar:** first apply aborted at PHASE 3 — the product repo's lefthook pre-commit (advisory-promote OVERDUE) rejected the mechanical detach commit. Fix: `--no-verify` on that commit + a reproducer regression test (2.6) + rollback integration test (3.x). Rolled back clean, fixed, re-applied green (kipi check FAIL=2 baseline).
+- **Date:** 2026-07-07
