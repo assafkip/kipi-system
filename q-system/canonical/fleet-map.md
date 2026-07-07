@@ -40,7 +40,7 @@ open-decision #3). Section 6 reflects the new paths.
 ## 1. KTLYST Core Product (the company product)
 | Project | What it is |
 |---|---|
-| `ktlyst-saas/projects/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline). LIVE v5, standalone. Promoted from the former `ktlyst-hub/product-baseline` (RULE-2026-07-06-G). Origin → `github.com/assafkip/ktlyst.git`; v5 tip not yet backed up remotely (open item). |
+| `ktlyst-saas/projects/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline). LIVE v5, standalone. Promoted from the former `ktlyst-hub/product-baseline` (RULE-2026-07-06-G). Origin → dedicated private repo `github.com/assafkip/ktlyst-saas-product` (v5 backed up 2026-07-07, verified); `ktlyst.git` kept as `legacy` remote for provenance. |
 
 Note: `ktlyst-hub/` is DISSOLVED (RULE-G) — the old `product` + `product-baseline` copies are in `_archive/` (`product-ktlyst-old-2026-07-06`, `ktlyst-hub-dissolved-2026-07-07`). One live product now.
 
@@ -62,8 +62,8 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 |---|---|
 | `consulting` `[persona]` | ASK Consulting business OS, renamed. GTM `products/` moved to `cole-gtm/products/`; keeps q-consult + clients. Registry entry still named `ASK_AI_consultant` → path `consulting`. Pure/4points/Alice cascade under it |
 | `consulting/projects/Pure_spectrum_Q` `[consulting]` | PureSpectrum fractional advisory hub (runs ps-slack-sync + ti-weekly jobs) |
-| `ktlyst-hub/accountant` | Books for KTLYST + ASK (2 cash-basis ledgers) |
-| `ktlyst-hub/lawyer` | In-house legal advisor |
+| `consulting/projects/accountant` `[consulting]` | Books for KTLYST + ASK (2 cash-basis ledgers) |
+| `consulting/projects/lawyer` `[consulting]` | In-house legal advisor |
 | `cole-gtm/projects/event_coordinator` `[cole-gtm]` | Stub (still `{{DESCRIPTION}}` placeholder) |
 | `ktlyst-review-panel` | 9-persona brutal review of deliverables |
 
@@ -75,7 +75,7 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 | ~~`founder-signal-engine`~~ ARCHIVED 2026-07-06 | Was a dormant subset of `competitive-analysis` (same code, couldn't ingest on its own). Archived to `~/projects/_archive/`; competitive-analysis is the canonical superset |
 | `fractional-cxo` | Scans feeds for fractional roles, $250/hr floor, Slack-pings (NOT moved — still top-level) |
 | `cole-gtm/projects/signal-desk` `[cole-gtm]` | Market signals → ranked contact actions |
-| `ktlyst-hub/strategy` | Decks, investor docs, positioning research (NOT moved — still ktlyst-hub) |
+| `cole-gtm/projects/strategy` `[cole-gtm]` | Decks, investor docs, positioning research; canonical positioning source (post-dissolution, RULE-G) |
 | `cole-gtm/projects/notebooklm-daily-podcast` `[cole-gtm]` | Daily AI-news podcast (the "podcast" under Cole) |
 
 ## 5. Website-Gen / $29 Micro-SaaS (Next.js, *.ktlystlabs.com) — persona `micro-saas`
@@ -137,12 +137,12 @@ Eyeball: retired. The `~/projects/eyeball` repo is gone from disk. The determini
 | Project | What it is |
 |---|---|
 | `kipi-system` | The skeleton/OS every instance is built from |
-| `ktlyst-hub/deliverables` | Output / hosting store |
+| `intel/projects/deliverables` `[intel]` | Output / hosting store |
 | `_archive`, `_codex-worktrees` | Housekeeping |
 
 ---
 
 ## Open items surfaced by the scan
 1. Interview coach exists 5 ways (interview-coach, interview-coach-public, freshlist, warmreach, slimcli). Consolidation target.
-2. KTLYST product duplicated (product + product-baseline).
+2. ~~KTLYST product duplicated (product + product-baseline).~~ RESOLVED 2026-07-07 (RULE-G + cleanup): old line archived, product-baseline promoted to `ktlyst-saas/projects/product` (v5, standalone, backed to dedicated private repo).
 3. Eyeball retired — clean up stale references in `dogfood_gate.py` + `.claude/rules/dogfood-gate.md` when convenient.
