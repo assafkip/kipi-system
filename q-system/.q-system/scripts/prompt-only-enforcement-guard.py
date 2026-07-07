@@ -166,25 +166,51 @@ DETERMINISTIC_RE = re.compile(
 )
 
 
-def _hook_paths() -> list[Path]:
+def _read_payload() -> dict:
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        return json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:
-        return []
-
-    tool_input = payload.get("tool_input") or {}
-    candidates = [
-        tool_input.get("file_path"),
-        tool_input.get("path"),
-        tool_input.get("notebook_path"),
-    ]
-    return [Path(path) for path in candidates if path]
+        return {}
 
 
-def _target_paths(argv: list[str]) -> list[Path]:
-    if argv:
-        return [Path(arg) for arg in argv]
-    return _hook_paths()
+def _payload_path(tool_input: dict) -> Path | None:
+    for key in ("file_path", "path", "notebook_path"):
+        val = tool_input.get(key)
+        if val:
+            return Path(val)
+    return None
+
+
+def _diff_added_lines(old_string: str, new_string: str) -> set[str]:
+    """The set of non-blank lines present in new_string but NOT in old_string — the lines an
+    Edit actually ADDS. Content-based (stripped) so it is robust to indentation and to the
+    code-fence stripping that _scan_text applies before it splits lines."""
+    old = {ln.strip() for ln in (old_string or "").splitlines()}
+    return {ln.strip() for ln in (new_string or "").splitlines()
+            if ln.strip() and ln.strip() not in old}
+
+
+def _payload_scan_inputs(tool_input: dict) -> tuple[str, set[str] | None]:
+    """(text_to_scan, only_lines) for a PostToolUse payload. only_lines=None means scan the
+    whole text (Write = a full new file); a set means report a finding ONLY on those added
+    lines (Edit/MultiEdit), so pre-existing enforcement prose the change never touched is not
+    re-flagged. This is the diff-awareness fix: the guard blocks NEWLY-added prompt-only
+    enforcement claims, not the whole file (memory prompt-only-guard-false-positives)."""
+    if "content" in tool_input:                      # Write — full new-file content
+        return str(tool_input.get("content") or ""), None
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):                      # MultiEdit — union of every edit's adds
+        texts, added = [], set()
+        for e in edits:
+            if not isinstance(e, dict):
+                continue
+            new = str(e.get("new_string") or "")
+            texts.append(new)
+            added |= _diff_added_lines(str(e.get("old_string") or ""), new)
+        return "\n".join(texts), added
+    # Edit — the new side, gated to the lines it introduced over the old side.
+    new = str(tool_input.get("new_string") or "")
+    return new, _diff_added_lines(str(tool_input.get("old_string") or ""), new)
 
 
 def _is_target(path: Path) -> bool:
@@ -227,23 +253,17 @@ def _is_violation(window_text: str) -> bool:
     )
 
 
-def scan(path: Path) -> list[str]:
-    if not _is_target(path) or not path.exists() or not path.is_file():
-        return []
-
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return []
-
-    if SKIP_MARKER in text:
-        return []
-
+def _scan_text(path: Path, text: str, only_lines: set[str] | None) -> list[str]:
+    """Report a finding per violating line. only_lines=None scans every line (whole file /
+    Write new-file); a set restricts findings to those (added) lines — the diff-aware path,
+    so pre-existing prose the change never touched is never re-flagged."""
     text = _strip_code_fences(text)
     lines = text.splitlines()
     findings: list[str] = []
     for index, line in enumerate(lines):
         if not line.strip():
+            continue
+        if only_lines is not None and line.strip() not in only_lines:
             continue
         window_text = _window(lines, index)
         if _is_violation(window_text):
@@ -253,10 +273,52 @@ def scan(path: Path) -> list[str]:
     return findings
 
 
+def scan(path: Path) -> list[str]:
+    """Disk / CLI mode (argv): whole-file scan. The PostToolUse path uses the diff instead."""
+    if not _is_target(path) or not path.exists() or not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
+    if SKIP_MARKER in text:
+        return []
+    return _scan_text(path, text, None)
+
+
+def _skip_marker_present(path: Path | None, added_text: str) -> bool:
+    """A per-file skip marker anywhere in the change OR anywhere in the file on disk."""
+    if SKIP_MARKER in added_text:
+        return True
+    if path is not None and path.exists() and path.is_file():
+        try:
+            return SKIP_MARKER in path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return False
+    return False
+
+
+def scan_payload(payload: dict) -> list[str]:
+    """PostToolUse (Edit/Write/MultiEdit) mode: scan only the text the change ADDED, so the
+    guard blocks newly-introduced prompt-only enforcement claims without re-flagging the rest
+    of the file (memory prompt-only-guard-false-positives)."""
+    tool_input = payload.get("tool_input") or {}
+    path = _payload_path(tool_input)
+    if path is None or not _is_target(path):
+        return []
+    text, only_lines = _payload_scan_inputs(tool_input)
+    if _skip_marker_present(path, text):
+        return []
+    return _scan_text(path, text, only_lines)
+
+
 def main(argv: list[str]) -> int:
     findings: list[str] = []
-    for path in _target_paths(argv):
-        findings.extend(scan(path))
+    if argv:                                   # CLI mode: whole-file scan of each path
+        for path in (Path(arg) for arg in argv):
+            findings.extend(scan(path))
+    else:                                      # PostToolUse: diff-aware scan of the change
+        findings.extend(scan_payload(_read_payload()))
 
     if findings:
         message = (
