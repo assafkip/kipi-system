@@ -141,6 +141,85 @@ try:
 finally:
     shutil.rmtree(work, ignore_errors=True)
 
+# --- 2.6 REGRESSION: detach commit bypasses a blocking pre-commit hook ------------
+# Scar 2026-07-07: the live product repo's lefthook pre-commit (advisory-promote
+# kind OVERDUE) REJECTED promote's mechanical detach commit, aborting the whole
+# dissolution at PHASE 3. Fix = --no-verify on that commit. This reproduces it with
+# a fixture repo whose pre-commit hook ALWAYS fails: a normal commit is blocked
+# (negative control), but promote must still succeed.
+work_hook = tempfile.mkdtemp(prefix="persona-hook-test-")
+try:
+    main_repo_h, wt_h = build_fixture(work_hook)
+    hook_path = os.path.join(main_repo_h, ".git", "hooks", "pre-commit")
+    write(hook_path, "#!/bin/sh\necho 'gate: BLOCKED' >&2\nexit 1\n")
+    os.chmod(hook_path, 0o755)
+    # negative control: a normal (verified) commit in the worktree IS blocked
+    pr.sh(["git", "-C", wt_h, "add", "-A"])
+    ctrl_code, _ = pr.sh(["git", "-C", wt_h, "commit", "-m", "control (hook should block)"])
+    check("2.6 control: failing pre-commit hook DOES block a normal commit", ctrl_code != 0)
+    # the fix: promote's detach commit uses --no-verify, so it succeeds anyway
+    new_repo_h = os.path.join(work_hook, "standalone")
+    ok_h, _ = pr.promote_worktree_to_standalone(wt_h, main_repo_h, "successor", new_repo_h)
+    check("2.6 promote succeeds despite the blocking hook (--no-verify fix)", ok_h)
+    check("2.6 in-flight work still preserved into the standalone",
+          ok_h and "pending.py" in tree_files(new_repo_h, "HEAD"))
+finally:
+    shutil.rmtree(work_hook, ignore_errors=True)
+
+# --- 3.x ROLLBACK INTEGRATION: apply-then-rollback restores BEFORE topology -------
+# run_dissolve PHASE 3 (promote successor -> standalone, archive old line) is
+# reversible via run_rollback's promotions loop. This drives the REAL rollback
+# code against a FRESH hermetic fixture (the 2.2 KILLER destroyed the first one).
+# manifest_path is monkeypatched so the manifest lands in the temp dir, never next
+# to the script — same "verify against a copy, touch no live path" isolation.
+import json as _json  # noqa: E402
+
+_orig_manifest_path = pr.manifest_path
+work2 = tempfile.mkdtemp(prefix="persona-rollback-test-")
+try:
+    main_repo2, wt2 = build_fixture(work2)
+    new_repo2 = os.path.join(work2, "ktlyst-saas-product")
+    archived2 = os.path.join(work2, "_archive", "product-old")
+
+    # mirror run_dissolve PHASE 3 apply end-state: promote -> remove worktree ->
+    # archive (move, never rm) the old main line
+    prom_ok, _ = pr.promote_worktree_to_standalone(wt2, main_repo2, "successor", new_repo2)
+    check("3.0 promote succeeded (rollback precondition)", prom_ok)
+    git(main_repo2, "worktree", "remove", "--force", wt2)
+    os.makedirs(os.path.dirname(archived2), exist_ok=True)
+    shutil.move(main_repo2, archived2)
+    check("3.0 apply end-state: old line archived, orig path gone",
+          os.path.isdir(archived2) and not os.path.isdir(main_repo2))
+
+    # write the manifest in the exact shape run_dissolve records (line ~1417)
+    man_file2 = os.path.join(work2, "manifest.json")
+    pr.manifest_path = lambda persona: man_file2
+    with open(man_file2, "w") as f:
+        _json.dump({"moves": [], "baks": [], "created": [], "promotions": [
+            {"new_repo": new_repo2, "archived": archived2, "orig_main": main_repo2,
+             "orig_worktree": wt2, "branch": "successor"}]}, f)
+
+    pr.run_rollback("ktlyst-hub")
+
+    # 3.1 BEFORE topology restored: old main back + successor worktree re-linked
+    check("3.1 rollback restored the old product main line",
+          os.path.isdir(main_repo2)
+          and git(main_repo2, "log", "-1", "--oneline").returncode == 0)
+    check("3.1 rollback re-added the successor worktree at its original path",
+          os.path.exists(wt2))
+    wt_branch2 = (git(wt2, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+                  if os.path.exists(wt2) else "")
+    check("3.1 re-added worktree is on the successor branch", wt_branch2 == "successor")
+
+    # 3.2 non-destructive: the standalone clone is KEPT and still independent
+    check("3.2 rollback KEEPS the standalone clone (never destroys post-detach work)",
+          os.path.isdir(new_repo2))
+    check("3.2 kept clone is still independent after rollback",
+          pr.verify_repo_independent(new_repo2))
+finally:
+    pr.manifest_path = _orig_manifest_path
+    shutil.rmtree(work2, ignore_errors=True)
+
 print()
 if FAILS:
     print(f"FAIL: {len(FAILS)} check(s) failed: {FAILS}")
