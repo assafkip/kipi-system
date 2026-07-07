@@ -1,0 +1,23 @@
+{
+  "ranking": [
+    {
+      "title": "personal-check-in",
+      "utterances": 168,
+      "words": 5271,
+      "max_turn_words": 220
+    },
+    {
+      "title": "laid-off-from-meta",
+      "utterances": 56,
+      "words": 4202,
+      "max_turn_words": 399
+    },
+    {
+      "title": "catalyst-duffy",
+      "utterances": 75,
+      "words": 2118,
+      "max_turn_words": 306
+    }
+  ],
+  "skipped": []
+}
