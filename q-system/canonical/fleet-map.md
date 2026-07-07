@@ -40,16 +40,15 @@ open-decision #3). Section 6 reflects the new paths.
 ## 1. KTLYST Core Product (the company product)
 | Project | What it is |
 |---|---|
-| `ktlyst-hub/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline, ktlyst_v2 v0.2.0) |
-| `ktlyst-hub/product-baseline` | Reference copy of the same, with zip packaging + disclaimer detail |
+| `ktlyst-saas/projects/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline). LIVE v5, standalone. Promoted from the former `ktlyst-hub/product-baseline` (RULE-2026-07-06-G). Origin → `github.com/assafkip/ktlyst.git`; v5 tip not yet backed up remotely (open item). |
 
-Note: two near-copies of one product.
+Note: `ktlyst-hub/` is DISSOLVED (RULE-G) — the old `product` + `product-baseline` copies are in `_archive/` (`product-ktlyst-old-2026-07-06`, `ktlyst-hub-dissolved-2026-07-07`). One live product now.
 
 ## 2. Investigation / OSINT — persona `intel`
 The 3 standalone investigation/OSINT projects moved under `intel/projects/`
 (persona reorg phase 4, 2026-07-06). 4_points + Alice stay under `consulting`.
-The KTLYST product you SELL (`ktlyst-hub/product`) also fits `intel` but stays in
-ktlyst-hub until that cluster split.
+The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also fits
+`intel` but lives under its own `ktlyst-saas` persona post-dissolution (RULE-G).
 | Project | What it is |
 |---|---|
 | `consulting/projects/4_points_consulting` `[consulting]` | Production investigation OS + client invoicing (27 live cases) |
