@@ -190,12 +190,16 @@ def _diff_added_lines(old_string: str, new_string: str) -> set[str]:
             if ln.strip() and ln.strip() not in old}
 
 
-def _payload_scan_inputs(tool_input: dict) -> tuple[str, set[str] | None]:
+def _payload_scan_inputs(tool_input: dict) -> tuple[str | None, set[str] | None]:
     """(text_to_scan, only_lines) for a PostToolUse payload. only_lines=None means scan the
     whole text (Write = a full new file); a set means report a finding ONLY on those added
     lines (Edit/MultiEdit), so pre-existing enforcement prose the change never touched is not
     re-flagged. This is the diff-awareness fix: the guard blocks NEWLY-added prompt-only
-    enforcement claims, not the whole file (memory prompt-only-guard-false-positives)."""
+    enforcement claims, not the whole file (memory prompt-only-guard-false-positives).
+
+    text=None signals 'no diff info in the payload' — the caller falls back to a whole-file
+    disk scan (fail-closed). Real Edit/Write/MultiEdit payloads always carry their strings, so
+    the fallback only fires on a degenerate/unknown payload, never on a normal edit."""
     if "content" in tool_input:                      # Write — full new-file content
         return str(tool_input.get("content") or ""), None
     edits = tool_input.get("edits")
@@ -208,9 +212,11 @@ def _payload_scan_inputs(tool_input: dict) -> tuple[str, set[str] | None]:
             texts.append(new)
             added |= _diff_added_lines(str(e.get("old_string") or ""), new)
         return "\n".join(texts), added
-    # Edit — the new side, gated to the lines it introduced over the old side.
-    new = str(tool_input.get("new_string") or "")
-    return new, _diff_added_lines(str(tool_input.get("old_string") or ""), new)
+    if "new_string" in tool_input or "old_string" in tool_input:
+        # Edit — the new side, gated to the lines it introduced over the old side.
+        new = str(tool_input.get("new_string") or "")
+        return new, _diff_added_lines(str(tool_input.get("old_string") or ""), new)
+    return None, None                                # no diff info → disk fallback
 
 
 def _is_target(path: Path) -> bool:
@@ -307,6 +313,8 @@ def scan_payload(payload: dict) -> list[str]:
     if path is None or not _is_target(path):
         return []
     text, only_lines = _payload_scan_inputs(tool_input)
+    if text is None:                        # no diff info → whole-file disk scan (fail-closed)
+        return scan(path)
     if _skip_marker_present(path, text):
         return []
     return _scan_text(path, text, only_lines)
