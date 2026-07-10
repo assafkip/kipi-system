@@ -4,7 +4,11 @@
 Founder model (2026-06-30, inverts the prior PRD): EVERY learning is shareable to ALL instances;
 de-identify by SCRUBBING client data, not by requiring recurrence. Fully autonomous — no human queue.
 
-Per new learning (RCA):
+Intake (see new_sources): documented failures (each instance's q-system/output/rca/*.md)
+AND non-failure learnings (q-system/output/learnings/*.md -- a lesson from a build, a
+near-miss, or a self-caught error that never produced an RCA). Both feed one pipeline.
+
+Per new learning:
   1. DISTILL it into a HOW-only lesson via `claude -p` (drop all WHAT / specifics).
   2. GATE (fail-closed, lessons_scrub): find client-data signals; scrub them; a lesson PUBLISHES only
      if the scrubbed text is deterministically clean AND an LLM semantic pass confirms no residual
@@ -54,6 +58,33 @@ def new_rcas(instances, ledger):
                 yield name, str(rca), h, text
 
 
+def new_learnings(instances, ledger):
+    """Yield (instance, path, source_hash, text) for learning notes not yet ledgered.
+
+    Mirror of new_rcas for NON-failure learnings -- a lesson from a build, a
+    near-miss, or a self-caught error that never became an RCA. Same tuple shape,
+    so the distill/scrub/publish/ledger flow treats it identically. Drop notes with
+    lesson-note.sh; q-system/output/ is instance-protected, so they survive updates.
+    """
+    for name, path in instances:
+        learn_dir = Path(path) / "q-system" / "output" / "learnings"
+        if not learn_dir.is_dir():
+            continue
+        for note in sorted(learn_dir.glob("*.md")):
+            if note.name.lower() == "readme.md":
+                continue
+            text = note.read_text(errors="ignore")
+            h = hashlib.sha1(text.encode()).hexdigest()[:16]
+            if h not in ledger:
+                yield name, str(note), h, text
+
+
+def new_sources(instances, ledger):
+    """Every un-ledgered learning: documented failures (RCAs) + non-failure notes."""
+    yield from new_rcas(instances, ledger)
+    yield from new_learnings(instances, ledger)
+
+
 def structural_cause(text):
     m = re.search(r"##\s*Structural root cause\s*\n(.+?)(?:\n##\s|\Z)", text, re.S | re.I)
     return (m.group(1).strip() if m else text[:1500]).strip()
@@ -67,11 +98,11 @@ def rca_title(text):
 def distill_with_claude(title, cause):
     """Return {title, body, kind} HOW-only, or None on failure."""
     prompt = (
-        "Turn this RCA's structural root cause into a REUSABLE, HOW-ONLY lesson for engineers on "
+        "Turn this engineering learning into a REUSABLE, HOW-ONLY lesson for engineers on "
         "unrelated projects. Output STRICT JSON {\"title\":..,\"body\":..,\"kind\":\"pattern|methodology\"}. "
         "RULES: the body is a net-new general restatement; NO client/product/person/company names, NO "
         "file paths, NO specifics that identify the source. Title is short and generic.\n\n"
-        f"RCA title: {title}\nStructural root cause:\n{cause[:1800]}"
+        f"Learning: {title}\nDetail:\n{cause[:1800]}"
     )
     try:
         r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=120)
@@ -151,7 +182,7 @@ def main():
     used_ids = set()
     published, held, scanned = [], [], 0
 
-    for name, path, h, text in new_rcas(load_instances(args.registry), ledger):
+    for name, path, h, text in new_sources(load_instances(args.registry), ledger):
         if args.limit and scanned >= args.limit:
             break
         scanned += 1
