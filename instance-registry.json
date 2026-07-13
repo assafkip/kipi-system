@@ -178,6 +178,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "all_points_setup",
+      "path": "/Users/assafkipnis/projects/consulting/projects/all_points_setup",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
