@@ -251,6 +251,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; fi",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"",
             "timeout": 30
           },
