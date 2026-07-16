@@ -8,10 +8,6 @@
         "TOOLS": "actors,curious_coder/twitter-scraper"
       }
     },
-    "reddit": {
-      "command": "uvx",
-      "args": ["reddit-no-auth-mcp-server"]
-    },
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp@latest"]

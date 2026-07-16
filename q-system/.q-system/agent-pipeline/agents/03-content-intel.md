@@ -25,20 +25,20 @@ You are a content intelligence agent. Your ONLY job is to scrape the founder's o
 - If last run was within 7 days, write minimal JSON and exit: `{"date": "{{DATE}}", "skipped": true, "reason": "ran within 7 days"}`
 
 ### 1. Multi-Platform Scrape
-Scrape the founder's own accounts (last 30 days) using Chrome, Reddit MCP, RSS feeds, and Apify (X only):
+Scrape the founder's own accounts (last 30 days) using Chrome, the canonical Reddit tooling, RSS feeds, and Apify (X only):
 
 | Platform | Method | Tool | Metrics | Engagement data? |
 |----------|--------|------|---------|-----------------|
 | LinkedIn | Navigate to founder's profile via Chrome | `mcp__claude-in-chrome__*` | impressions, likes, comments, reposts | Yes (Chrome shows all) |
 | X/Twitter | Apify Tweet Scraper | `apidojo~tweet-scraper` via MCP | impressions, likes, retweets, replies, quotes | Yes (Apify returns all) |
-| Reddit | Reddit MCP `get_user_posts` | `mcp__reddit__get_user_posts` | title, score (upvotes), comments, subreddit | **Yes.** MCP returns scores directly. |
+| Reddit | canonical Reddit tooling (reddit-build-radar / reddit-fetch.py) | reddit-build-radar / reddit-fetch.py (script, not MCP) | title, score (upvotes), comments, subreddit | **Yes.** Returns scores directly. |
 | Medium | RSS feed for discovery, then Chrome for metrics | WebFetch + Chrome | title, claps, responses per article | **RSS: No.** Claps/responses require Chrome visit to each article page. |
 | Substack | RSS feed `NEWSLETTER.substack.com/feed` | WebFetch | title, publish date | **RSS: No.** Open rate requires Substack dashboard (Chrome). |
 | Instagram | Apify `apify/instagram-post-scraper` | `mcp__apify__call-actor` | likes, comments, views (reels) | Yes (Apify returns all) |
 | TikTok | Apify `clockworks/tiktok-profile-scraper` | `mcp__apify__call-actor` | views, likes, comments, shares, bookmarks | Yes (Apify returns all) |
 
 **Tool loading:** All MCP tools and WebFetch are deferred. Load before first use:
-- `ToolSearch("+reddit")` - for Reddit MCP (`mcp__reddit__*`)
+- Reddit uses the canonical tooling (reddit-build-radar / reddit-fetch.py, or kipi-mcp `fetch_hot_threads`) via Bash/scripts, NOT an MCP — no ToolSearch needed
 - `ToolSearch("select:WebFetch")` - for Medium/Substack RSS feeds
 - `ToolSearch("+apify")` - for X/Twitter
 - Chrome tools: `ToolSearch("select:mcp__claude-in-chrome__navigate")`
@@ -54,7 +54,7 @@ WebFetch(url="https://medium.com/feed/@assafkip", prompt="Extract all articles: 
 1. **Pass 1 (discovery via RSS):** Run WebFetch on RSS feeds to get titles, URLs, dates, and content text.
 2. **Pass 2 (engagement via Chrome):** For each post found in Pass 1, navigate to the post URL via Chrome to read engagement metrics (Medium: claps, responses, read ratio). Cap at top 10 posts per platform.
 
-**Reddit:** No two-pass needed. `mcp__reddit__get_user_posts` returns the founder's posts with scores (upvotes) and comment counts directly.
+**Reddit:** No two-pass needed. The canonical Reddit tooling (reddit-build-radar / reddit-fetch.py, user-posts fetch) returns the founder's posts with scores (upvotes) and comment counts directly.
 
 **Instagram (optional):** Only if founder has an Instagram handle in `founder-profile.md`. Call Apify actor `apify/instagram-post-scraper` with `{"username": "HANDLE", "resultsLimit": 30}`. Returns posts with likes, comments, views. No two-pass needed.
 

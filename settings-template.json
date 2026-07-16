@@ -321,12 +321,6 @@
         "notebooklm-mcp@latest"
       ]
     },
-    "reddit": {
-      "command": "uvx",
-      "args": [
-        "reddit-no-auth-mcp-server"
-      ]
-    },
     "_telegram": {
       "_comment": "Rename to 'telegram' to enable. Get credentials from https://my.telegram.org",
       "command": "telegram-mcp",

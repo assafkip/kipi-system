@@ -17,8 +17,8 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 | **Notion API** | `mcp__claude_ai_Notion__notion-search` with query "Contacts" | Returns matching databases/pages | Cloud Notion integration -- full read/write support via `notion-fetch`, `notion-create-pages`, `notion-update-page` | None. Halt. |
 | **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. Avoid triggering them. | None. Halt. |
 | **Apify (X/Twitter ONLY)** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. Apify is used ONLY for X/Twitter scraping. | **REST API fallback** (X/Twitter only). If Apify is down, fall back to Chrome for X. |
-| **Reddit MCP** | `ToolSearch("+reddit")` then call `mcp__reddit__search` with query "test" | Returns structured post data | No auth needed. Zero-config. Runs via `uvx reddit-no-auth-mcp-server`. | Skip Reddit scraping. Do NOT use Chrome for Reddit. |
-| **RSS Feeds (Medium/Substack)** | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | WebFetch processes via model, not raw XML. Medium/Substack only (Reddit uses its own MCP). | Chrome browser navigation. |
+| **Reddit** | Canonical tooling (a script/ingestion path, NOT an MCP); no preflight ping | N/A (not an MCP check) | Fetch/read via reddit-build-radar (arctic-shift mirror + pullpush fallback), `reddit-fetch.py`, or kipi-mcp `fetch_hot_threads`. The dead `reddit-no-auth-mcp-server` was REMOVED (failed "HTTP error (0)" by design). | Skip Reddit scraping. Do NOT use Chrome for Reddit. |
+| **RSS Feeds (Medium/Substack)** | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | WebFetch processes via model, not raw XML. Medium/Substack only (Reddit uses the canonical Reddit tooling, not RSS). | Chrome browser navigation. |
 
 ### Non-Critical (ask founder before proceeding without)
 
@@ -32,18 +32,15 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 |-------|-------------|-------|
 | `apidojo~tweet-scraper` | Profile mode: pull recent tweets from handles. Search mode: works but limited. | Monitored handles: @BushidoToken, @clintgibler, @RyanGCox_, @obadiahbridges |
 
-### Reddit MCP Tools (validated Apr 2026)
+### Reddit Tooling (canonical, NOT an MCP)
 
-Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). No API key needed. Returns structured data with full post text.
+Reddit is a script/ingestion path, not an MCP tool. The dead `reddit-no-auth-mcp-server` was REMOVED from every config; it failed "HTTP error (0)" by design (a poisoned httpx pool after a rate-limit). Fetch/read Reddit via the canonical tooling instead:
 
-| Tool | Arguments | Returns |
-|------|-----------|---------|
-| `mcp__reddit__search` | query, limit, sort (relevance/hot/top/new/comments) | Posts with title, URL, author, content, score |
-| `mcp__reddit__search_subreddit` | subreddit, query, limit, sort | Posts scoped to one subreddit |
-| `mcp__reddit__get_post` | permalink | Full post content + nested comment tree |
-| `mcp__reddit__get_subreddit_posts` | subreddit, limit, category (hot/top/new/rising), time_filter | Subreddit listing |
-| `mcp__reddit__get_user` | username, limit | User's recent activity |
-| `mcp__reddit__get_user_posts` | username, limit, category, time_filter | User's submitted posts |
+| Path | How | Returns |
+|------|-----|---------|
+| reddit-build-radar engine (`projects/reddit-build-radar/`) | arctic-shift mirror (https://arctic-shift.photon-reddit.com) with a pullpush fallback (https://api.pullpush.io); routes around Reddit's 403 anti-scrape | Posts with title, URL, author, content, score |
+| `reddit-fetch.py` (redd-lib) | batch search over a spec of subreddit+query (reddit.com/search.json is 403 from datacenter IPs, so prefer the radar/arctic-shift path) | Posts scoped to subreddits |
+| kipi-mcp curated-sub sources | `reddit-subs.yaml` / `reddit-leads.yaml`, tool `fetch_hot_threads` | Hot threads from curated subs |
 
 **Subreddits and search terms come from** `my-project/lead-sources.md`.
 
@@ -70,7 +67,7 @@ Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). No API key needed.
 | Actor | Why |
 |-------|-----|
 | `supreme_coder~linkedin-post` | Replaced by Chrome direct scraping. Uses your cookies on datacenter IPs. |
-| `trudax~reddit-scraper-lite` | Replaced by Reddit MCP server (free, no auth, full content). |
+| `trudax~reddit-scraper-lite` | Replaced by the canonical Reddit tooling (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py). |
 | `apify~google-search-scraper` | Replaced by Medium RSS feeds + WebSearch. |
 | `harvestapi~linkedin-post-search` | Returns 0 results |
 | `trudax~reddit-scraper` | Requires paid rental |
@@ -79,7 +76,7 @@ Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). No API key needed.
 | `apify/linkedin-profile-scraper` | Replaced by Chrome. Account safety risk. |
 | `apify/linkedin-posts-scraper` | Replaced by Chrome. Account safety risk. |
 | `apify/linkedin-connections-scraper` | Replaced by Chrome. Account safety risk. |
-| `apify/reddit-scraper` | Replaced by Reddit MCP server. |
+| `apify/reddit-scraper` | Replaced by the canonical Reddit tooling (reddit-build-radar / reddit-fetch.py). |
 | `apify/web-scraper` | Replaced by RSS feeds (Medium, Substack). |
 
 ---
@@ -101,7 +98,7 @@ Things we've hit before. Never re-discover these.
 ### KI-3: Apify MCP tools may not load (X/Twitter only)
 - The Apify MCP server (`@apify/actors-mcp-server`) sometimes doesn't register its tools as deferred tools
 - When this happens, `ToolSearch` for "apify" returns nothing
-- Apify is now used ONLY for X/Twitter (`apidojo~tweet-scraper`). LinkedIn uses Chrome. Reddit uses its own MCP server (`reddit-no-auth-mcp-server`). Medium/Substack use RSS feeds via WebFetch.
+- Apify is now used ONLY for X/Twitter (`apidojo~tweet-scraper`). LinkedIn uses Chrome. Reddit uses the canonical tooling (reddit-build-radar / reddit-fetch.py / kipi-mcp fetch_hot_threads), a script/ingestion path, not an MCP. Medium/Substack use RSS feeds via WebFetch.
 - **Rule:** Test Apify MCP via ToolSearch. If unavailable, only X/Twitter scraping is affected. Fall back to Chrome for X. LinkedIn, Reddit, and Medium are unaffected (they don't use Apify).
 
 ### KI-4: VC Pipeline API requires local server

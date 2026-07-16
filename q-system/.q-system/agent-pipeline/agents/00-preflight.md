@@ -25,7 +25,7 @@ You are a preflight agent for the morning routine. Your job is to verify all too
    - Notion (SKIP if `crm_source: obsidian`): `mcp__claude_ai_Notion__notion-search` with query "Actions" to verify cloud Notion is connected and can see the CRM workspace. If crm_source is obsidian, mark as "skipped" (local files used instead).
    - Chrome: `mcp__claude-in-chrome__tabs_context_mcp` (returns tab list). Load via `ToolSearch("select:mcp__claude-in-chrome__tabs_context_mcp")` first.
    - Apify (X/Twitter only, NON-CRITICAL): `ToolSearch("+apify")` - check if any `mcp__apify__*` tool loads. If not, mark as "fallback_chrome" (not failed). Apify down only affects X/Twitter scraping.
-   - Reddit MCP (NON-CRITICAL): `ToolSearch("+reddit")` then call `mcp__reddit__search` with query "test", limit 1. If it returns post data, PASS. If fails, mark as "skipped" (no Chrome fallback for Reddit).
+   - Reddit (NON-CRITICAL): Reddit is the canonical tooling (reddit-build-radar arctic-shift/pullpush, `reddit-fetch.py`, or kipi-mcp `fetch_hot_threads`), a script/ingestion path, NOT an MCP, so there is no preflight ping. Set `reddit_mcp` to "skipped" (no MCP check; no Chrome fallback for Reddit).
    - RSS feeds for Medium/Substack (NON-CRITICAL): `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles are in this feed?")`. Load WebFetch via `ToolSearch("select:WebFetch")` first. If it returns a count or description, PASS. If fails, mark as "fallback_chrome".
    - VC Pipeline API (OPTIONAL): `curl {{VC_PIPELINE_URL}}` - if not configured, mark as skipped, not failed
 
@@ -64,7 +64,7 @@ You are a preflight agent for the morning routine. Your job is to verify all too
 ```
 
 4. Critical tools (Calendar, Gmail, Notion, Chrome): if ANY is unavailable, set ready=false. The orchestrator will halt.
-5. Non-critical tools: Apify down = set to "fallback_chrome" (X/Twitter uses Chrome instead). Reddit MCP down = set to "skipped" (no Chrome fallback for Reddit). RSS down = set to "fallback_chrome" (Medium uses Chrome instead). None block ready=true.
+5. Non-critical tools: Apify down = set to "fallback_chrome" (X/Twitter uses Chrome instead). Reddit is the canonical tooling (a script/ingestion path, not an MCP), so it is not preflight-checked = set `reddit_mcp` to "skipped" (no MCP check; no Chrome fallback for Reddit). RSS down = set to "fallback_chrome" (Medium uses Chrome instead). None block ready=true.
 6. VC pipeline is optional - if not configured, set vc_pipeline to "skipped" (not false). Do not let it block ready=true.
 
 ## Token budget: <2K tokens output

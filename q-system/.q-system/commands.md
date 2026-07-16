@@ -19,7 +19,7 @@
 | `/q-sync-notion` | Sync local files ↔ Notion CRM. Push new contacts/interactions/pipeline changes to Notion. Pull follow-up date changes and status updates from Notion back to local files. | CALIBRATE |
 | `/q-morning` | Morning briefing. Runs calendar + email + Notion checks in parallel, surfaces unlogged interactions, checks decision rule compliance, flags stale positioning. See workflow below. | — |
 | `/q-engage` | LinkedIn engagement mode. Proactive: generate daily hitlist from Notion targets. Reactive: user shares post screenshot → comment suggestions + auto-log to Notion. See workflow below. | CREATE |
-| `/q-content-intel` | Content intelligence. Scrape own content across all platforms (Chrome for LinkedIn, Reddit MCP for Reddit, RSS for Medium/Substack, Apify for X only). Analyze what works vs. doesn't. Update `canonical/content-intelligence.md`. Cross-reference themes against `canonical/market-intelligence.md` to check if our content topics align with what the market is discussing. Score drafts before publishing. | CALIBRATE |
+| `/q-content-intel` | Content intelligence. Scrape own content across all platforms (Chrome for LinkedIn, canonical Reddit tooling (reddit-build-radar / kipi-mcp fetch_hot_threads) for Reddit, RSS for Medium/Substack, Apify for X only). Analyze what works vs. doesn't. Update `canonical/content-intelligence.md`. Cross-reference themes against `canonical/market-intelligence.md` to check if our content topics align with what the market is discussing. Score drafts before publishing. | CALIBRATE |
 | `/q-investor-update` | Draft a milestone-triggered investor update email for the full VC list. Pulls pipeline, recent wins, metrics. Batch send-ready. | CREATE |
 | `/q-market-plan` | Weekly content planning. Reads theme rotation + editorial calendar. Generates this week's plan. Creates Notion entries in Content Pipeline + Editorial Calendar DBs. | CREATE |
 | `/q-market-create [type] [topic]` | Generate marketing content. Types: linkedin, x, medium, substack, one-pager, outreach, deck, follow-up, reddit, investor-update. Reads canonical files + templates + NotebookLM. Runs guardrails. For deck/one-pager, generates via Gamma MCP. See workflow below. | CREATE |
@@ -340,11 +340,11 @@ When founder reports an action, the system immediately:
 
 **Full run (weekly, or on demand):**
 
-1. **Scrape all platforms** using Chrome (LinkedIn), Reddit MCP, Apify (X only), and RSS feeds (Medium, Substack):
+1. **Scrape all platforms** using Chrome (LinkedIn), the canonical Reddit tooling (reddit-build-radar / reddit-fetch.py / kipi-mcp fetch_hot_threads), Apify (X only), and RSS feeds (Medium, Substack):
    - **LinkedIn:** Navigate to founder's profile via Chrome. Pull last 30 days of posts. Extract: text, impressions, likes, comments, reposts, date/time posted.
    - **X/Twitter:** Apify `apidojo~tweet-scraper` on {{YOUR_X_HANDLE}}. Pull last 30 days. Extract: text, impressions, likes, retweets, replies, quotes, date/time.
    - **Medium:** Pass 1: `WebFetch(url="https://medium.com/feed/@{{YOUR_MEDIUM_HANDLE}}", prompt="Extract all articles: title, URL, author, date, content text. Numbered list.")`. Pass 2: Navigate to each article via Chrome for claps, responses, read ratio (RSS has no engagement metrics).
-   - **Reddit:** Use Reddit MCP `mcp__reddit__get_user_posts` with `username={{YOUR_REDDIT_USERNAME}}`, `limit=20`. Returns posts with title, score, comments, subreddit, full content. No two-pass needed. Pull last 30 days.
+   - **Reddit:** Use the canonical Reddit tooling — the reddit-build-radar engine (`projects/reddit-build-radar/`, arctic-shift mirror with a pullpush fallback), `reddit-fetch.py`, or the kipi-mcp curated-sub sources (`fetch_hot_threads`) — via Bash/scripts (a script/ingestion path, NOT an MCP) to pull the user's posts (`{{YOUR_REDDIT_USERNAME}}`, ~20). Returns posts with title, score, comments, subreddit, full content. Pull last 30 days.
    - **Substack:** `WebFetch(url="https://{{YOUR_SUBSTACK}}.substack.com/feed", prompt="Extract all posts: title, URL, date, content text. Numbered list.")`. Open rate requires Substack dashboard via Chrome.
 
 2. **Normalize and rank:**
@@ -414,7 +414,7 @@ When founder reports an action, the system immediately:
 
 Run `/q-content-intel score` with a draft post. Scores it 1-5 on hook strength, pattern match, platform fit, timing, and novelty using current `canonical/content-intelligence.md` data. Returns pass/revise/rethink recommendation.
 
-**Cost estimate:** Apify ~$0.50 per run (X/Twitter only). Reddit MCP, RSS feeds, and Chrome are free (included in Claude Max plan).
+**Cost estimate:** Apify ~$0.50 per run (X/Twitter only). The canonical Reddit tooling (reddit-build-radar / reddit-fetch.py / kipi-mcp fetch_hot_threads), RSS feeds, and Chrome are free (included in Claude Max plan).
 
 ---
 
@@ -1084,7 +1084,7 @@ Before ANY output that makes a factual claim about {{YOUR_PRODUCT}}, the system 
 | 4 | Chrome | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Steps 2, 3, 3.8, 5, 5.5 (LinkedIn, DMs, GA) |
 | 5 | Apify (MCP, X only) | Any `mcp__apify__*` tool call | Returns response | Steps 2.5, 5.9 (X/Twitter scraping only) |
 | 5b | Apify (REST fallback) | `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` via Bash | Returns JSON with `data` array | Fallback if MCP Apify unavailable (X only) |
-| 5c | Reddit MCP | `ToolSearch("+reddit")` then `mcp__reddit__search` with query "test" | Returns structured post data | Steps 3.7, 5.9 (Reddit content intel + lead sourcing) |
+| 5c | Reddit (canonical tooling) | No preflight ping — Reddit is a script/ingestion path (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py, or kipi-mcp fetch_hot_threads), NOT an MCP | n/a (not a preflight MCP check) | Steps 3.7, 5.9 (Reddit content intel + lead sourcing) |
 | 5d | RSS feeds (Medium/Substack) | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | Steps 3.7, 5.9 (Medium content intel + lead sourcing) |
 | 6 | VC Pipeline API | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON pipeline data | Steps 1, 1.5 (warm intro matching) |
 | 7 | NotebookLM | `mcp__notebooklm__list_notebooks` | Returns notebook list | Research grounding (Step 2) |
@@ -1099,7 +1099,7 @@ CONNECTION CHECK (Step 0f)
 [PASS] Notion API - Actions DB accessible
 [PASS] Chrome - browser connected
 [PASS] Apify MCP - X/Twitter tools loaded
-[PASS] Reddit MCP - search working
+[PASS] Reddit - canonical tooling reachable (reddit-build-radar / kipi-mcp fetch_hot_threads, not an MCP)
 [PASS] RSS feeds - Medium/Substack reachable
 [PASS] VC Pipeline API - pipeline data loaded
 [PASS] NotebookLM - notebooks accessible
@@ -1117,7 +1117,7 @@ MORNING ROUTINE HALTED - CONNECTION CHECK FAILED
 [FAIL] Notion API - Error: "Could not find property..."
 [SKIP] Chrome - not tested (halted)
 [SKIP] Apify (X only) - not tested (halted)
-[SKIP] Reddit MCP - not tested (halted)
+[SKIP] Reddit - canonical tooling not tested (halted)
 [SKIP] RSS feeds - not tested (halted)
 [SKIP] VC Pipeline API - not tested (halted)
 [SKIP] NotebookLM - not tested (halted)
@@ -1134,7 +1134,7 @@ Fix the issue and re-run /q-morning. Do NOT proceed with partial data.
 If a non-critical server fails (NotebookLM, VC Pipeline API), Claude MAY ask:
 "[Server] is down. This blocks [steps]. The rest of the routine can run without it. Proceed without [server], or fix and re-run?"
 
-If the founder says proceed, note the skipped steps in the briefing output. Critical servers (Calendar, Gmail, Notion, Chrome) have NO degraded mode - they halt the routine. Apify failure only blocks X/Twitter scraping (Steps 2.5, 5.9 X portion) and has Chrome fallback. Reddit MCP failure only blocks Reddit in Steps 3.7 and 5.9 (no Chrome fallback - skip Reddit). RSS failure only blocks Medium/Substack in Steps 3.7 and 5.9 and has Chrome fallback.
+If the founder says proceed, note the skipped steps in the briefing output. Critical servers (Calendar, Gmail, Notion, Chrome) have NO degraded mode - they halt the routine. Apify failure only blocks X/Twitter scraping (Steps 2.5, 5.9 X portion) and has Chrome fallback. Reddit canonical-tooling failure (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py, or kipi-mcp fetch_hot_threads — a script/ingestion path, not an MCP) only blocks Reddit in Steps 3.7 and 5.9 (no Chrome fallback - skip Reddit). RSS failure only blocks Medium/Substack in Steps 3.7 and 5.9 and has Chrome fallback.
 
 **This also applies to failures MID-ROUTINE.** If any step fails during execution (API error, timeout, unexpected response, tool call rejected), STOP at that point and report:
 ```

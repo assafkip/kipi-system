@@ -35,7 +35,7 @@
 - **LinkedIn URL:**
 - **X/Twitter handle:**
 - **Medium handle:** (e.g. @yourhandle, used for RSS: medium.com/feed/@handle)
-- **Reddit username:** (used by Reddit MCP: `mcp__reddit__get_user_posts`)
+- **Reddit username:** (used by the canonical Reddit tooling: reddit-build-radar / reddit-fetch.py)
 - **Substack:** (newsletter name, used for RSS: name.substack.com/feed)
 - **GitHub username:**
 - **Instagram:** <!-- @handle or blank -->

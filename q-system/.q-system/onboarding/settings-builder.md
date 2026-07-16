@@ -33,14 +33,14 @@ This file lives at the root of the user's project directory. It tells Claude Cod
 ```
 **Prerequisite:** Node.js + npm installed. Get token from https://www.notion.so/my-integrations
 
-#### Reddit MCP (no auth needed)
-```json
-"reddit": {
-  "command": "uvx",
-  "args": ["reddit-no-auth-mcp-server"]
-}
-```
-**Prerequisite:** Python + uv installed (`pip install uv` or `brew install uv`)
+#### Reddit — canonical tooling, NOT an MCP
+
+Reddit is not connected as an MCP server. The dead `reddit-no-auth-mcp-server` was removed from every config (it failed "HTTP error (0)" by design — a poisoned httpx pool after a rate-limit). Fetch/read Reddit via the canonical tooling instead — a script/ingestion path, not an `.mcp.json` entry:
+- the reddit-build-radar engine (`projects/reddit-build-radar/`): arctic-shift mirror (https://arctic-shift.photon-reddit.com) with a pullpush fallback (https://api.pullpush.io); it routes around Reddit's 403 anti-scrape;
+- `reddit-fetch.py` (redd-lib batch search over a subreddit+query spec);
+- or the kipi-mcp curated-sub sources (`reddit-subs.yaml` / `reddit-leads.yaml`, tool `fetch_hot_threads`).
+
+Nothing to add to `.mcp.json` for Reddit.
 
 #### Apify (X/Twitter only)
 ```json
@@ -82,20 +82,9 @@ This file lives at the root of the user's project directory. It tells Claude Cod
 ```
 **Prerequisite:** `npm install -g google-calendar-mcp` + Google Cloud project with Calendar API + OAuth credentials file
 
-#### Reddit (alternative)
+#### Reddit (alternative) — none; use the canonical tooling
 
-**Note:** The primary Reddit config is the no-auth server above (via uvx). This is an alternative if uvx is not available:
-```json
-"reddit": {
-  "command": "npx",
-  "args": ["reddit-mcp-buddy"],
-  "env": {
-    "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    "HOME": "[user home dir]"
-  }
-}
-```
-**Prerequisite:** Node.js + npm installed (no token needed)
+There is no Reddit MCP alternative. The old `reddit-mcp-buddy` fallback is retired along with the no-auth server. Use the canonical Reddit tooling described above (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py, or kipi-mcp `fetch_hot_threads`) — a script/ingestion path, not an MCP. Nothing goes in `.mcp.json` for Reddit.
 
 #### Telegram (optional)
 ```json
