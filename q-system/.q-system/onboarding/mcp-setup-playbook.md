@@ -159,7 +159,7 @@ Same as CLI - full local access. Friendlier UI than terminal.
 | Notion | Built-in or .mcp.json | .mcp.json | .mcp.json | Token paste | `npx @notionhq/notion-mcp-server` |
 | Apify | .mcp.json | .mcp.json | .mcp.json | Token paste | `npx @apify/actors-mcp-server` |
 | Chrome/LinkedIn | NOT AVAILABLE | Works | Works | Extension install | Claude-in-Chrome extension |
-| Reddit | NOT an MCP | script | script | Canonical tooling (no MCP) | reddit-build-radar (arctic-shift/pullpush) / reddit-fetch.py / kipi-mcp `fetch_hot_threads` |
+| Reddit | NOT an MCP | script | script | Canonical tooling (no MCP) | reddit-build-radar (arctic-shift/pullpush/RSS) |
 | Telegram | NOT AVAILABLE | .mcp.json | .mcp.json | API credentials from my.telegram.org | `npm i -g telegram-mcp` |
 | Playwright | Maybe (sandbox) | Works | Works | No token needed | `npx @playwright/mcp@latest` |
 | Perplexity | .mcp.json | .mcp.json | .mcp.json | `PERPLEXITY_API_KEY` env var (required by research-mode skill) | `npx -y server-perplexity-ask` |

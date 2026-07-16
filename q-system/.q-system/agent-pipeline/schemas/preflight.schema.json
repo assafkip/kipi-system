@@ -28,7 +28,7 @@
         "notion": { "type": ["boolean", "string"], "description": "true, false, or 'skipped' (when crm_source is obsidian)" },
         "chrome": { "type": "boolean" },
         "apify": { "type": ["boolean", "string"], "description": "true, false, or 'fallback_chrome'. X/Twitter only." },
-        "reddit_mcp": { "type": ["boolean", "string"], "description": "true, false, or 'skipped'. Reddit via canonical tooling (reddit-build-radar / reddit-fetch.py / kipi-mcp fetch_hot_threads), NOT an MCP; key name kept for schema compatibility." },
+        "reddit_mcp": { "type": ["boolean", "string"], "description": "true, false, or 'skipped'. Reddit via canonical tooling (reddit-build-radar), NOT an MCP; key name kept for schema compatibility." },
         "rss_feeds": { "type": ["boolean", "string"], "description": "true, false, or 'fallback_chrome'. Medium/Substack only." },
         "vc_pipeline": { "type": ["boolean", "string"] }
       }

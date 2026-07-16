@@ -36,9 +36,8 @@ This file lives at the root of the user's project directory. It tells Claude Cod
 #### Reddit — canonical tooling, NOT an MCP
 
 Reddit is not connected as an MCP server. The dead `reddit-no-auth-mcp-server` was removed from every config (it failed "HTTP error (0)" by design — a poisoned httpx pool after a rate-limit). Fetch/read Reddit via the canonical tooling instead — a script/ingestion path, not an `.mcp.json` entry:
-- the reddit-build-radar engine (`projects/reddit-build-radar/`): arctic-shift mirror (https://arctic-shift.photon-reddit.com) with a pullpush fallback (https://api.pullpush.io); it routes around Reddit's 403 anti-scrape;
-- `reddit-fetch.py` (redd-lib batch search over a subreddit+query spec);
-- or the kipi-mcp curated-sub sources (`reddit-subs.yaml` / `reddit-leads.yaml`, tool `fetch_hot_threads`).
+- the reddit-build-radar engine (`projects/reddit-build-radar/`): arctic-shift mirror (https://arctic-shift.photon-reddit.com) with a pullpush fallback (https://api.pullpush.io) plus a Reddit RSS/search fallback; it routes around Reddit's 403 anti-scrape. Run it via `PYTHONPATH=src python3 -m reddit_build_radar.cli` or `scripts/run_daily.sh`. This is the one verified, working canonical engine.
+- `reddit-fetch.py` (legacy, strategy-instance-only, 403-blocked from datacenter IPs).
 
 Nothing to add to `.mcp.json` for Reddit.
 
@@ -84,7 +83,7 @@ Nothing to add to `.mcp.json` for Reddit.
 
 #### Reddit (alternative) — none; use the canonical tooling
 
-There is no Reddit MCP alternative. The old `reddit-mcp-buddy` fallback is retired along with the no-auth server. Use the canonical Reddit tooling described above (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py, or kipi-mcp `fetch_hot_threads`) — a script/ingestion path, not an MCP. Nothing goes in `.mcp.json` for Reddit.
+There is no Reddit MCP alternative. The old `reddit-mcp-buddy` fallback is retired along with the no-auth server. Use the canonical Reddit tooling described above (the reddit-build-radar engine — arctic-shift/pullpush/RSS) — a script/ingestion path, not an MCP. Nothing goes in `.mcp.json` for Reddit.
 
 #### Telegram (optional)
 ```json

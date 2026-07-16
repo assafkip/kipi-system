@@ -41,7 +41,7 @@ Use ICP pain keywords and language fingerprint as your primary filter across all
 Use Chrome for LinkedIn, the canonical Reddit tooling for Reddit, WebFetch for RSS feeds (Medium), and Apify MCP for X/Twitter, Instagram, and TikTok.
 
 **Tool loading:** All MCP tools and WebFetch are deferred. Use ToolSearch to load them before first use:
-- Reddit uses the canonical tooling (reddit-build-radar arctic-shift/pullpush, reddit-fetch.py, or kipi-mcp `fetch_hot_threads`) via Bash/scripts, NOT an MCP — no ToolSearch needed
+- Reddit uses the canonical tooling (reddit-build-radar arctic-shift/pullpush) via Bash/scripts, NOT an MCP — no ToolSearch needed
 - `ToolSearch("select:WebFetch")` - for Medium RSS feeds
 - `ToolSearch("select:WebSearch")` - for Medium supplement
 - `ToolSearch("select:mcp__claude-in-chrome__navigate")` - for Chrome (LinkedIn)
@@ -62,7 +62,7 @@ Replace {{SEARCH_TERMS}} with terms from market-intelligence.md:
 1. **LinkedIn (Chrome)** - Navigate to `https://www.linkedin.com/search/results/content/?keywords={{SEARCH_TERMS}}&sortBy=date_posted` via `mcp__claude-in-chrome__navigate`. Use `mcp__claude-in-chrome__read_page` or `mcp__claude-in-chrome__get_page_text` to extract the first 10-20 results. Save full post text for each relevant result.
 
 2. **Reddit (canonical tooling)** - Read `{{QROOT}}/my-project/lead-sources.md` for today's subreddit rotation. Fetch via the canonical Reddit tooling (a script/ingestion path, NOT an MCP):
-   - For each target subreddit, fetch recent threads via the reddit-build-radar engine (`projects/reddit-build-radar/`, arctic-shift mirror with a pullpush fallback), `reddit-fetch.py` (subreddit+query spec), or kipi-mcp `fetch_hot_threads`. Query `{{SEARCH_TERMS}}`, limit 10, newest first.
+   - For each target subreddit, fetch recent threads via the reddit-build-radar engine (`projects/reddit-build-radar/`, arctic-shift mirror with a pullpush fallback). Query `{{SEARCH_TERMS}}`, limit 10, newest first.
    - These return structured data with full post text, author, score (upvotes), URL, and comments.
    - For high-scoring leads that need deeper context, fetch the thread permalink via reddit-build-radar (arctic-shift/pullpush) to get the full comment tree.
    - Limit 20 results total across subreddits.

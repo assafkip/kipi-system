@@ -25,7 +25,7 @@ You are a preflight agent for the morning routine. Your job is to verify all too
    - Notion (SKIP if `crm_source: obsidian`): `mcp__claude_ai_Notion__notion-search` with query "Actions" to verify cloud Notion is connected and can see the CRM workspace. If crm_source is obsidian, mark as "skipped" (local files used instead).
    - Chrome: `mcp__claude-in-chrome__tabs_context_mcp` (returns tab list). Load via `ToolSearch("select:mcp__claude-in-chrome__tabs_context_mcp")` first.
    - Apify (X/Twitter only, NON-CRITICAL): `ToolSearch("+apify")` - check if any `mcp__apify__*` tool loads. If not, mark as "fallback_chrome" (not failed). Apify down only affects X/Twitter scraping.
-   - Reddit (NON-CRITICAL): Reddit is the canonical tooling (reddit-build-radar arctic-shift/pullpush, `reddit-fetch.py`, or kipi-mcp `fetch_hot_threads`), a script/ingestion path, NOT an MCP, so there is no preflight ping. Set `reddit_mcp` to "skipped" (no MCP check; no Chrome fallback for Reddit).
+   - Reddit (NON-CRITICAL): Reddit is the canonical tooling (reddit-build-radar arctic-shift/pullpush), a script/ingestion path, NOT an MCP, so there is no preflight ping. Set `reddit_mcp` to "skipped" (no MCP check; no Chrome fallback for Reddit).
    - RSS feeds for Medium/Substack (NON-CRITICAL): `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles are in this feed?")`. Load WebFetch via `ToolSearch("select:WebFetch")` first. If it returns a count or description, PASS. If fails, mark as "fallback_chrome".
    - VC Pipeline API (OPTIONAL): `curl {{VC_PIPELINE_URL}}` - if not configured, mark as skipped, not failed
 
