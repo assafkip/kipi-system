@@ -87,12 +87,40 @@ def normalize_exit(raw):
     return 128 + signal_num if signal_num else raw
 
 
-def job_status(label):
-    """Classify a launchd label:
+def classify_status(returncode, stdout):
+    """Pure classifier for a `launchctl list <label>` result (returncode, stdout):
       ('failing', code)     loaded, last run exited non-zero
       ('not_loaded', None)  plist on disk but not bootstrapped -> never runs
-      ('ok', 0)             loaded, last run clean
+      ('ok', 0)             loaded, last run clean (or a benign KeepAlive restart)
+    Split out from job_status so the SIGTERM/live-PID logic below is unit-testable
+    without shelling launchctl.
+
+    Benign-restart carve-out (scar 2026-07-18): a KeepAlive job restarts on exit,
+    and launchd records the PREVIOUS run's SIGTERM as LastExitStatus while a fresh
+    process (a live PID) is already running. `com.cole.linkedin-session` logged
+    LastExitStatus=15 with a live PID every cycle and the watchdog paged "exit 15"
+    falsely. A SIGTERM (graceful stop, raw wait-status 15) WITH a live PID is that
+    relaunch, not a death -> ok. Kept narrow to SIGTERM: a crash-loop
+    (SIGKILL/SIGSEGV while KeepAlive relaunches) still pages, and a real exit(15)
+    (raw wait-status 15<<8 = 3840, not 15) still pages."""
+    if returncode != 0:
+        return ("not_loaded", None)
+    match = re.search(r'"LastExitStatus"\s*=\s*(-?\d+)', stdout)
+    raw = int(match.group(1)) if match else 0
+    code = normalize_exit(raw)
+    if code == 0:
+        return ("ok", 0)
+    has_live_pid = re.search(r'"PID"\s*=\s*\d+', stdout) is not None
+    terminated_by_sigterm = raw == 15  # raw wait-status 15 = killed by SIGTERM
+    if has_live_pid and terminated_by_sigterm:
+        return ("ok", 0)
+    return ("failing", code)
+
+
+def job_status(label):
+    """Classify a launchd label by shelling `launchctl list <label>`:
       ('unknown', None)     launchctl unavailable -- do not alert
+      otherwise -> classify_status(returncode, stdout)
     `launchctl list <label>` exits non-zero when the label is not loaded, which
     is how a silently-unloaded job (present plist, absent from launchd) is caught."""
     try:
@@ -102,11 +130,7 @@ def job_status(label):
         )
     except Exception:
         return ("unknown", None)
-    if result.returncode != 0:
-        return ("not_loaded", None)
-    match = re.search(r'"LastExitStatus"\s*=\s*(-?\d+)', result.stdout)
-    code = normalize_exit(int(match.group(1))) if match else 0
-    return ("failing", code) if code != 0 else ("ok", 0)
+    return classify_status(result.returncode, result.stdout)
 
 
 def discover_problems():
