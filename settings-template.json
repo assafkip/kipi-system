@@ -123,6 +123,10 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/fleet-board-refresh.py\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-surface.py\" 2>/dev/null || true"
           },
           {
