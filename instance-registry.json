@@ -186,6 +186,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "Prodigy_Gold",
+      "path": "/Users/assafkipnis/projects/consulting/projects/Prodigy_Gold",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
