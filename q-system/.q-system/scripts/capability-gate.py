@@ -426,7 +426,16 @@ def main():
                              f"{e['path']} — {q['reason']}")
     diff_declared_vs_actual(root, manifest, errors)
     check_required_data(root, manifest, mode, errors)
-    check_inert_engines(root, manifest, errors, notes)
+    # Inert-engine detection is a SKELETON-mode check. An instance's synced
+    # scripts are wired by skeleton-root surfaces (validate.yml,
+    # validate-separation.py, the kipi CLI) that do not exist inside the
+    # instance repo — re-judging with that subset flagged 3 false inerts in
+    # all 22 instances on first propagation (sp rollout finding, 2026-07-23).
+    if mode == "skeleton":
+        check_inert_engines(root, manifest, errors, notes)
+    else:
+        notes.append("inert-engine check: skeleton-only (instance wiring is "
+                     "declared and gated in the skeleton)")
     if not args.check_only:
         run_tests(root, manifest, mode, errors, notes)
     report(mode, errors, notes)

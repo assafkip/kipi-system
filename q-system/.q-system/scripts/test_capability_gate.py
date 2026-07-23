@@ -266,6 +266,12 @@ def sec_wiring():
         rc, out = run_gate(root, "--check-only")
         check("wiring: worktree copy is NOT a wiring surface",
               rc == 1 and "wt-only.py" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        engine(root, "q-system/.q-system/scripts/dead-engine.py")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: instance mode SKIPS inert check with loud note",
+              rc == 0 and "inert-engine check: skeleton-only" in out)
 
 
 def sec_runner():
