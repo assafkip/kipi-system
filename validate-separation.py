@@ -272,8 +272,15 @@ def phase_1():
     # (validate.yml); kipi check enforces it here. CAPABILITY_GATE_SKIP=1 is
     # set ONLY by the CI validate-separation step so the suite is not executed
     # twice per CI run (finding-15, prd-silent-absence-capability-gate).
-    if os.environ.get("CAPABILITY_GATE_SKIP") == "1":
-        print("  --- Gate 1.2a: capability gate SKIPPED (CAPABILITY_GATE_SKIP=1; CI runs it directly) ---")
+    # The skip is honored only from a caller that PROVES it runs the gate
+    # elsewhere (CI runs it as its own step; kipi check just ran the instance
+    # suite). A bare ambient CAPABILITY_GATE_SKIP=1 in a founder shell would
+    # otherwise permanently and silently disable the gate (codex adversarial,
+    # sag-callsite) — the exact bypass surface this PRD closes.
+    _skip_proof = (os.environ.get("GITHUB_ACTIONS") == "true"
+                   or os.environ.get("KIPI_GATE_SKIP_CALLER") == "kipi-check-instance")
+    if os.environ.get("CAPABILITY_GATE_SKIP") == "1" and _skip_proof:
+        print("  --- Gate 1.2a: capability gate SKIPPED (CAPABILITY_GATE_SKIP=1; caller runs it directly) ---")
     else:
         gate_script = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts", "capability-gate.py")
         gate_run = subprocess.run([sys.executable, gate_script, "--repo-root", SCRIPT_DIR],
