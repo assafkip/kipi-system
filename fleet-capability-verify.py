@@ -146,6 +146,16 @@ def self_test():
         check("standalone COLLECTION enumerated", row_status("coll-standalone-i") == "SKIPPED(standalone)")
         check("eliminated COLLECTION enumerated", row_status("coll-eliminated-i") == "SKIPPED(eliminated)")
         check("null status tolerated", "AttributeError" not in r.stderr)
+        # Closed vocabulary (finding-16 / sag-fleet-red-schema): there is no
+        # instance-level acceptable-red and no status outside this set. A new
+        # status string added without updating this pin fails here.
+        allowed = {"GREEN", "RED(gate)", "RED(missing-gate)", "RED(missing-tree)",
+                   "SKIPPED(standalone)", "SKIPPED(merged)", "SKIPPED(eliminated)"}
+        statuses = {line.split()[1] for line in r.stdout.splitlines()
+                    if line.strip() and not line.startswith("fleet-capability-verify")
+                    and len(line.split()) > 1 and "—" not in line.split()[1]}
+        check("status vocabulary is closed (no unknown statuses)",
+              statuses <= allowed and len(statuses) >= 5)
 
         regp.write_text(json.dumps({"instances": []}))
         r = subprocess.run([sys.executable, __file__, "--registry", str(regp)],
