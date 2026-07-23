@@ -64,6 +64,38 @@ STALL_MIN_CALLS = 10        # Minimum calls before time-based stall triggers
 # Sensitive file patterns
 SENSITIVE_PATTERNS = (".env", ".pem", ".key", "credentials")
 
+# Read-only browser/desktop observation tools. Repeating one of these with
+# identical input is legitimate polling of a CHANGING screen, not a stuck
+# retry — the hash can't see that the page behind it moved. Scar
+# (sp-ff7611cd, cole-gtm 2026-07): LinkedIn's compose overlay is not in the
+# DOM, so a screenshot is the ONLY way to verify the recipient before
+# typing; check_exact_retry blocked the 3rd identical screenshot, the loop
+# correctly refused to blind-send, and the DM lane went quiet. Exemption is
+# scoped to check_exact_retry ONLY — the volume ceiling still catches a
+# genuinely runaway observation loop.
+OBSERVATION_TOOLS = frozenset((
+    "mcp__computer-use__screenshot",
+    "mcp__computer-use__cursor_position",
+    "mcp__claude-in-chrome__read_page",
+    "mcp__claude-in-chrome__get_page_text",
+    "mcp__claude-in-chrome__tabs_context_mcp",
+    "mcp__playwright__browser_snapshot",
+    "mcp__playwright__browser_take_screenshot",
+    "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot",
+    "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot",
+))
+# Multi-action tools where only the observation action is read-only.
+OBSERVATION_ACTIONS = {"mcp__claude-in-chrome__computer": ("screenshot", "zoom")}
+
+
+def is_readonly_observation(tool_name, tool_input):
+    if tool_name in OBSERVATION_TOOLS:
+        return True
+    actions = OBSERVATION_ACTIONS.get(tool_name)
+    if actions:
+        return (tool_input or {}).get("action") in actions
+    return False
+
 
 CACHE_TTL_DAYS = 7          # Stale guard caches in /tmp older than this are swept
 
@@ -217,7 +249,11 @@ def check_sensitive_file(tool_name, tool_input):
 
 
 def check_exact_retry(tool_name, tool_input, cache):
-    """Block if same tool+input attempted N times."""
+    """Block if same tool+input attempted N times. Read-only observation
+    tools are exempt (see OBSERVATION_TOOLS scar): an identical screenshot
+    of a changing screen is polling, not retrying."""
+    if is_readonly_observation(tool_name, tool_input):
+        return None
     input_hash = hashlib.md5(
         (tool_name + json.dumps(tool_input, sort_keys=True)).encode()
     ).hexdigest()[:12]
@@ -315,11 +351,20 @@ def check_agent_no_output(tool_name, cache):
 
 
 def check_time_stall(cache):
-    """Warn if too much time and too many calls since last write."""
+    """Warn if too much time and too many calls since last write. Re-fires at
+    most once per STALL_TIME_SECONDS: without the rate limit a legitimate
+    read-only stretch (an audit, a reproduction pass) got the SAME warning on
+    EVERY tool call — observed live 2026-07-23, 9 consecutive warns in one
+    session (F4, prd-silent-absence-capability-gate). One nudge per window
+    keeps the detector; the spam killed its signal."""
     last_write = cache.get("last_write_time", time.time())
     elapsed = time.time() - last_write
     calls = cache.get("calls_since_write", 0)
     if elapsed >= STALL_TIME_SECONDS and calls >= STALL_MIN_CALLS:
+        last_warn = cache.get("last_stall_warn_time", 0)
+        if time.time() - last_warn < STALL_TIME_SECONDS:
+            return None
+        cache["last_stall_warn_time"] = time.time()
         minutes = int(elapsed // 60)
         return f"{minutes} minutes and {calls} tool calls since your last write. You may be stuck. Summarize what you've tried and what's blocking you."
     return None

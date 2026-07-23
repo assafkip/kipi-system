@@ -5,11 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 S="$ROOT/q-system/.q-system/scripts/open-loops.py"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# 1. the real seeded registry surfaces both OSS PRs, tagged needs-you
-OUT="$(CLAUDE_PROJECT_DIR="$ROOT" python3 "$S" --report 2>&1)"
-echo "$OUT" | grep -q "cc-spex closeout-gate PR" || fail "cc-spex loop not surfaced: $OUT"
-echo "$OUT" | grep -q "capability-token PR" || fail "captoken loop not surfaced: $OUT"
-echo "$OUT" | grep -q "needs you" || fail "needs-you tag missing: $OUT"
+# 1. report mode runs clean against the live registry (STRUCTURAL check only).
+# Was: grep for two hardcoded loop titles ("cc-spex closeout-gate PR", ...).
+# That pinned live, legitimately-changing registry content into a test — the
+# moment a loop closed, the test went red with nothing broken (caught on the
+# suite's first-ever gated run, 2026-07-23, prd-silent-absence-capability-gate).
+# Content assertions live in section 3 against a fixture registry.
+OUT="$(CLAUDE_PROJECT_DIR="$ROOT" python3 "$S" --report 2>&1)" || fail "report mode exited non-zero: $OUT"
 
 # 2. hook mode emits valid SessionStart additionalContext JSON
 JOUT="$(CLAUDE_PROJECT_DIR="$ROOT" python3 "$S" 2>&1)"
