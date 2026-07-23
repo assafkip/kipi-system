@@ -5,6 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 RB="$ROOT/kipi-rollback.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 G() { git -c user.email=t@t.t -c user.name=test -c commit.gpgsign=false "$@"; }
+# The rollback script under test runs BARE git revert, which needs committer
+# identity. Founder machines always have one; CI runners have none, so the
+# revert failed there and the script's error path mislabeled it a conflict
+# (first CI execution of this suite, 2026-07-23). Hermetic identity for the
+# whole test process, not just the G() wrapper.
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=t@t.t
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=t@t.t
 WORK="$(mktemp -d)"
 
 # Fixture instance: baseline -> a pre-sync auto-commit -> a sync commit that modifies

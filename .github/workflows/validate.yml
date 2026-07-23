@@ -17,6 +17,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      # pytest must exist BEFORE the gate: declared tests import it, and the
+      # gate runs the full suite (first CI execution failed on step order,
+      # 2026-07-23).
+      - name: Install test dependencies
+        run: pip install pytest
+
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
       # BOTH directions, and runs the full declared suite. The hardcoded loop
@@ -36,9 +42,6 @@ jobs:
         env:
           CI: true
           CAPABILITY_GATE_SKIP: "1"
-
-      - name: Install test dependencies
-        run: pip install pytest
 
       - name: Run prd-os tests
         run: pytest plugins/prd-os/tests/ -q
