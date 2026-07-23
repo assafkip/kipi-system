@@ -73,6 +73,16 @@ def sec_schema():
         root = make_repo(tmp, manifest={"schema_version": 99})
         rc, out = run_gate(root, "--check-only")
         check("schema: wrong version RED", rc == 1 and "schema_version" in out)
+    for bad in (True, 1.0, "1"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp, manifest=base_manifest(schema_version=bad))
+            rc, out = run_gate(root, "--check-only")
+            check(f"schema: non-int version {bad!r} RED", rc == 1 and "schema_version" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            skeleton_only=["q-system/a.py", "q-system/a.py"]))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: duplicate in skeleton_only RED", rc == 1 and "duplicate path in skeleton_only" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp, manifest=base_manifest(bogus_key=[]))
         rc, out = run_gate(root, "--check-only")

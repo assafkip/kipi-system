@@ -145,14 +145,22 @@ def validate_manifest(data, errors):
     if not isinstance(data, dict):
         errors.append("manifest must be a JSON object")
         return
-    if data.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"manifest schema_version must be {SCHEMA_VERSION}")
+    sv = data.get("schema_version")
+    # exact-int check: JSON `1.0` and `true` both == 1 in Python, so a bare
+    # equality test accepted them (codex, sag-manifest-schema-validation)
+    if not isinstance(sv, int) or isinstance(sv, bool) or sv != SCHEMA_VERSION:
+        errors.append(f"manifest schema_version must be the integer {SCHEMA_VERSION}")
     unknown = set(data) - ALLOWED_TOP_KEYS
     if unknown:
         errors.append(f"manifest unknown top-level keys: {sorted(unknown)}")
     seen = set()
     for entry in data.get("expected_tests", []):
         validate_test_entry(entry, seen, errors)
+    for set_name in ("required_data", "skeleton_only", "declared_inert"):
+        items = data.get(set_name, [])
+        paths = [i if isinstance(i, str) else (i or {}).get("path", "") for i in items]
+        for dup in {p for p in paths if paths.count(p) > 1}:
+            errors.append(f"duplicate path in {set_name}: {dup}")
     for entry in data.get("required_data", []):
         validate_data_entry(entry, errors)
     for p in data.get("skeleton_only", []):
