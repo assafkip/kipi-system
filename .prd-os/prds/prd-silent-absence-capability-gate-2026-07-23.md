@@ -214,9 +214,11 @@ issue specs enforce the file boundary.
 
 ## Risks and rollback
 
-- Blast radius: additive files (gate, manifest, fleet-verify) + 2 small diffs
-  (validate.yml step, validate-separation.py section) + token-guard.py edits.
-  Rollback = revert the two diffs, delete the three new files.
+- Blast radius: five additive files (capability-gate.py, capability-manifest.json,
+  test_capability_gate.py, test_token_guard_observation.py,
+  fleet-capability-verify.py) + small diffs in validate.yml,
+  validate-separation.py, kipi, kipi-update.sh + token-guard.py edits.
+  Rollback = revert the diffs, delete the five new files.
 - Instance rollback (finding-12): instances receive ONLY synced-tree files via
   `kipi update` (rsync overwrite). Rollback = revert skeleton, re-run
   `kipi update` — the rsync restores every instance's synced tree to the
