@@ -355,7 +355,9 @@ def sec_negative_proof():
         add_test(root, "q-system/.q-system/scripts/test_sneaky.py")
         rc, out = run_gate(root, "--check-only")
         check("F1: present-but-undeclared RED", rc == 1 and "present-but-undeclared" in out)
-    # F3a: declared skeleton_only is SKIPPED in an instance (no crash).
+    # F3a: declared skeleton_only is SKIPPED in an instance (no crash) — and
+    # the skip must be visible via the SKIP path, not an unrelated no-run
+    # (codex, sag-negative-proof-matrix)
     crash = 'open("/settings-template-only-in-skeleton.json")\n'
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp, skeleton=False)
@@ -363,7 +365,8 @@ def sec_negative_proof():
         m = base_manifest(expected_tests=[entry(rel)], skeleton_only=[rel])
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root)
-        check("F3a: declared skeleton-only skipped in instance", rc == 0)
+        check("F3a: declared skeleton-only skipped in instance",
+              rc == 0 and "mode=instance" in out and "skipped-skeleton-only=1" in out)
     # F3b: the SAME artifact undeclared in an instance fails loud (runs+crashes).
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp, skeleton=False)
@@ -393,10 +396,23 @@ def sec_negative_proof():
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("required_data: in-scope missing RED", rc == 1 and "required-data-missing" in out)
+        # scope-LIST positive match: names the sandbox's own basename, so an
+        # implementation that ignores list scopes cannot pass (codex,
+        # sag-negative-proof-matrix)
+        m["required_data"][0]["scope"] = [pathlib.Path(tmp).resolve().name]
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root, "--check-only")
+        check("required_data: scope-list match demanded RED",
+              rc == 1 and "required-data-missing" in out)
         m["required_data"][0]["scope"] = ["some-other-instance"]
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("required_data: out-of-scope not demanded", rc == 0)
+    # Token-guard fixes are part of the pre-propagation matrix (finding-7):
+    # the paired suite must be green, executed here, not assumed.
+    tg_test = pathlib.Path(__file__).resolve().parent / "test_token_guard_observation.py"
+    r = subprocess.run([sys.executable, str(tg_test)], capture_output=True, text=True, timeout=60)
+    check("token-guard observation + stall suite green", r.returncode == 0)
 
 
 SECTIONS = {
