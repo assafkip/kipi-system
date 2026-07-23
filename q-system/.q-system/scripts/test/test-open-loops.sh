@@ -13,11 +13,6 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # Content assertions live in section 3 against a fixture registry.
 OUT="$(CLAUDE_PROJECT_DIR="$ROOT" python3 "$S" --report 2>&1)" || fail "report mode exited non-zero: $OUT"
 
-# 2. hook mode emits valid SessionStart additionalContext JSON
-JOUT="$(CLAUDE_PROJECT_DIR="$ROOT" python3 "$S" 2>&1)"
-echo "$JOUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['hookSpecificOutput']['hookEventName']=='SessionStart'; assert 'Open loops' in d['hookSpecificOutput']['additionalContext']" \
-  || fail "hook mode JSON invalid: $JOUT"
-
 # 3. fixture: open surfaced, closed excluded
 T="$(mktemp -d)"; mkdir -p "$T/q-system/memory" "$T/.prd-os/findings"
 cat > "$T/q-system/memory/open-loops.json" <<'JSON'
@@ -26,6 +21,16 @@ cat > "$T/q-system/memory/open-loops.json" <<'JSON'
  {"id":"b","title":"CLOSED LOOP B","next_action":"do B","status":"closed"}
 ]}
 JSON
+
+# 2. hook mode emits valid SessionStart additionalContext JSON — against the
+# FIXTURE registry, not live state. With zero live open loops the script
+# correctly emits nothing ("never blocks on empty", section 5), so the live
+# version of this assertion failed in 9 fleet instances on the first full
+# sweep (2026-07-23) while passing in the skeleton, which had 6 open loops.
+# Same live-data disease as old section 1, second occurrence.
+JOUT="$(CLAUDE_PROJECT_DIR="$T" python3 "$S" 2>&1)"
+echo "$JOUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['hookSpecificOutput']['hookEventName']=='SessionStart'; assert 'Open loops' in d['hookSpecificOutput']['additionalContext']" \
+  || fail "hook mode JSON invalid: $JOUT"
 OUT3="$(CLAUDE_PROJECT_DIR="$T" python3 "$S" --report 2>&1)"
 echo "$OUT3" | grep -q "OPEN LOOP A" || fail "open loop A not surfaced: $OUT3"
 echo "$OUT3" | grep -q "CLOSED LOOP B" && fail "closed loop B wrongly surfaced: $OUT3" || true
