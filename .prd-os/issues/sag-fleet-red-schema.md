@@ -1,7 +1,7 @@
 ---
 id: sag-fleet-red-schema
 title: No instance-level acceptable-red: statuses are green/red/skipped(standalone) only; reasons exist per-test (quarantine), never per-instance
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

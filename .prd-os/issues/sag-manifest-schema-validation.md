@@ -1,7 +1,7 @@
 ---
 id: sag-manifest-schema-validation
 title: Manifest validation contract: schema_version, unknown-key/duplicate/malformed = RED
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

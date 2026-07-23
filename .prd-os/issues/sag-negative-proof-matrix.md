@@ -1,7 +1,7 @@
 ---
 id: sag-negative-proof-matrix
 title: Negative proof is a matrix, not any-one: F1 undeclared-caught, F3 skeleton-only skip + undeclared-fails-in-instance, F2 unwired-caught, token-guard tests green — ALL before propagation
-status: open
+status: closed
 priority: p0
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

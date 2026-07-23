@@ -1,7 +1,7 @@
 ---
 id: sag-mode-detector
 title: Mode detector: registry-present=skeleton, parse-failure=RED, worktree paths refuse (exit 3)
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

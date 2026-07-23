@@ -1,7 +1,7 @@
 ---
 id: sag-runner-contract
 title: Runner contract: cwd=repo root, QROOT env, 60s default timeout, tail-20 on fail, no network assumptions
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

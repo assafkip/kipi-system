@@ -74,7 +74,7 @@
     },
     {
       "name": "AUDHD_KIDS",
-      "path": "/Users/assafkipnis/projects/AUDHD_KIDS",
+      "path": "/Users/assafkipnis/projects/personal/projects/AUDHD_KIDS",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -83,14 +83,6 @@
     {
       "name": "event_coordinator",
       "path": "/Users/assafkipnis/projects/cole-gtm/projects/event_coordinator",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": null,
-      "type": "subtree",
-      "has_git": true
-    },
-    {
-      "name": "school-idf",
-      "path": "/Users/assafkipnis/projects/school-idf",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -114,7 +106,7 @@
     },
     {
       "name": "school-negotiator",
-      "path": "/Users/assafkipnis/projects/school-negotiator",
+      "path": "/Users/assafkipnis/projects/personal/projects/school-negotiator",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-negotiate",
       "type": "subtree",
@@ -131,7 +123,7 @@
     },
     {
       "name": "travel-agent",
-      "path": "/Users/assafkipnis/projects/travel-agent",
+      "path": "/Users/assafkipnis/projects/personal/projects/travel-agent",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -139,7 +131,7 @@
     },
     {
       "name": "fractional-cxo",
-      "path": "/Users/assafkipnis/projects/fractional-cxo",
+      "path": "/Users/assafkipnis/projects/consulting/projects/fractional-cxo",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -147,7 +139,7 @@
     },
     {
       "name": "interview-coach",
-      "path": "/Users/assafkipnis/projects/interview-coach",
+      "path": "/Users/assafkipnis/projects/micro-saas/projects/interview-coach",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -155,7 +147,7 @@
     },
     {
       "name": "negotiator",
-      "path": "/Users/assafkipnis/projects/negotiator",
+      "path": "/Users/assafkipnis/projects/micro-saas/projects/negotiator",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
@@ -194,6 +186,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "thaena",
+      "path": "/Users/assafkipnis/projects/consulting/projects/thaena",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": "q-thaena",
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
@@ -212,6 +212,15 @@
     {
       "name": "q-founder-os",
       "status": "already removed"
+    },
+    {
+      "name": "school-idf",
+      "path": "/Users/assafkipnis/projects/school-idf",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true,
+      "note": "directory gone from disk (searched projects/ + _archive, 2026-07-23); moved to eliminated during silent-absence fleet grounding"
     }
   ]
 }

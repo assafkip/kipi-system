@@ -1,7 +1,7 @@
 ---
 id: sag-fleet-verify-semantics
 title: fleet-capability-verify.py: per-instance green/red/SKIPPED(standalone, reason printed); standalone entries (no q-system/.q-system) never silently pass
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

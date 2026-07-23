@@ -1,7 +1,7 @@
 ---
 id: sag-overlay-add-only
 title: Overlay is add-only: local overlay cannot remove/quarantine/reclassify canonical entries
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

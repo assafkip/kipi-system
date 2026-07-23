@@ -1,9 +1,9 @@
 ---
 id: prd-silent-absence-capability-gate-2026-07-23
 title: Silent Absence Capability Gate
-status: approved
+status: archived
 created_at: 2026-07-23T20:46:57Z
-updated_at: 2026-07-23T20:57:32Z
+updated_at: 2026-07-23T22:07:38Z
 owner: assaf
 reviewers: []
 findings_path: .prd-os/findings/prd-silent-absence-capability-gate-2026-07-23-findings.jsonl

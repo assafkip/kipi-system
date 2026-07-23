@@ -1,7 +1,7 @@
 ---
 id: sag-rollback-instances
 title: Rollback covers propagated instances: revert skeleton + re-run kipi update restores synced trees; no instance-local artifacts created
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

@@ -1,7 +1,7 @@
 ---
 id: sag-wiring-detector-contract
 title: F2 wiring detector: enumerated textual surfaces incl. repo-root kipi/*.sh and py imports; declared heuristic
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

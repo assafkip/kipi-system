@@ -1,7 +1,7 @@
 ---
 id: sag-quarantine-expiry
 title: Quarantine entries require reason + spillover_id + expires; expired = RED; count always printed
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

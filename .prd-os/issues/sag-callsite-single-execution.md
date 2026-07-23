@@ -1,7 +1,7 @@
 ---
 id: sag-callsite-single-execution
 title: CI executes the gate exactly once: validate.yml owns the direct invocation; validate-separation gate section is skippable via env for CI
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

@@ -1,7 +1,7 @@
 ---
 id: sag-quickfix-bounds
 title: Quick-fix bounds encoded: test file itself or <=5-line fix in module under test; larger = quarantine + spillover
-status: open
+status: closed
 priority: p1
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

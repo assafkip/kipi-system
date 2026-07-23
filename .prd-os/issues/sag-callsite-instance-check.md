@@ -1,7 +1,7 @@
 ---
 id: sag-callsite-instance-check
 title: Instance-side call site designed end-to-end: kipi check runs gate in the TARGET repo + kipi update runs gate per instance post-sync
-status: open
+status: closed
 priority: p0
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:

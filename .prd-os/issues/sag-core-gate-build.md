@@ -1,7 +1,7 @@
 ---
 id: sag-core-gate-build
 title: Build capability-gate.py + capability-manifest.json + paired tests + token-guard fixes (atomic decomposition anchor)
-status: open
+status: closed
 priority: p0
 parent_prd: prd-silent-absence-capability-gate-2026-07-23
 allowed_files:
