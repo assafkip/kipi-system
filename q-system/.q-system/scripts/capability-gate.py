@@ -52,7 +52,6 @@ WIRING_SURFACE_GLOBS = (
     "kipi*",
     "*.sh",
     "q-system/.q-system/scripts/*.sh",
-    "q-system/.q-system/scripts/test/*.sh",
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
@@ -330,6 +329,11 @@ def gather_wiring_text(root, exclude_names):
             if not p.is_file():
                 continue
             if "/.claude/worktrees/" in str(p) + "/":
+                continue
+            # test/tests DIRECTORIES too, not just test-prefixed basenames: a
+            # fixture or helper under test/ referencing an engine is still the
+            # its-own-suite trap (codex, sag-wiring-detector-contract)
+            if any(part in ("test", "tests") for part in p.parts):
                 continue
             if p.name.startswith(("test_", "test-")) or p.name in exclude_names:
                 continue

@@ -248,6 +248,24 @@ def sec_wiring():
         rc, out = run_gate(root, "--check-only")
         check("wiring: unwired peer cannot wire its sibling",
               rc == 1 and "orphan-c.py" in out and "orphan-d.py" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = engine(root, "q-system/.q-system/scripts/lonely.py")
+        helper = root / "q-system/.q-system/scripts/test/helper-fixture.sh"
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text("#!/bin/bash\npython3 lonely.py\n")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: file under test/ dir is NOT a wiring surface",
+              rc == 1 and "lonely.py" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = engine(root, "q-system/.q-system/scripts/wt-only.py")
+        wt = root / ".claude/worktrees/copy/note.md"
+        wt.parent.mkdir(parents=True)
+        wt.write_text("run wt-only.py sometimes")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: worktree copy is NOT a wiring surface",
+              rc == 1 and "wt-only.py" in out)
 
 
 def sec_runner():
