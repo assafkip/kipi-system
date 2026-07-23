@@ -24,6 +24,8 @@ The daily heartbeat (`lessons-daily.sh`, launchd-fired; run once by hand with `k
 
 ### Adding a learning by hand
 
+To add a lesson, pick the path that matches where you are standing:
+
 - **From inside an instance** (a build-lesson or a self-caught error) — drop a note; the daily sweep distills, scrubs, and fans it:
   ```
   bash q-system/.q-system/scripts/lesson-note.sh "short title" "the HOW, in your words"

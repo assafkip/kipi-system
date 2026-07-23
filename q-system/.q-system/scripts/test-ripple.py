@@ -51,14 +51,32 @@ def test_graph_valid():
         return {}
 
 
+# Dirs kipi-update deliberately does NOT sync (kipi-update.sh rsync
+# --exclude list): instances OWN these and may trim or rename their canon
+# (q-pure keeps 3 canon files, not the skeleton's 14). The skeleton-authored
+# ripple graph still ships via sync, so demanding skeleton canon exist in an
+# instance failed 6/22 instances on the capability gate's first full fleet
+# sweep (sp-07c9dad8, 2026-07-23). Skeleton stays strict; instances exempt
+# refs under instance-owned prefixes, LOUDLY.
+INSTANCE_OWNED_PREFIXES = ("canonical/", "my-project/", "memory/", "output/")
+REPO_ROOT = os.path.normpath(os.path.join(QROOT, ".."))
+IS_SKELETON = os.path.isfile(os.path.join(REPO_ROOT, "instance-registry.json"))
+
+
 def test_files_exist(graph):
-    missing = []
+    missing, instance_owned_absent = [], []
     for src, targets in graph.items():
-        if not os.path.exists(os.path.join(QROOT, src)):
-            missing.append(src)
-        for tgt in targets:
-            if not os.path.exists(os.path.join(QROOT, tgt)):
-                missing.append(tgt)
+        for ref in [src] + list(targets):
+            if os.path.exists(os.path.join(QROOT, ref)):
+                continue
+            if not IS_SKELETON and ref.startswith(INSTANCE_OWNED_PREFIXES):
+                instance_owned_absent.append(ref)
+            else:
+                missing.append(ref)
+    if instance_owned_absent:
+        skipped = sorted(set(instance_owned_absent))
+        print(f"  SKIP: {len(skipped)} graph ref(s) under instance-owned dirs "
+              f"absent here (canon is instance-owned, not synced): {skipped[:4]}...")
     test("all referenced files exist", len(missing) == 0, f"missing: {missing}")
 
 
