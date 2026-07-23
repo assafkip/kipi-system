@@ -289,11 +289,32 @@ def sec_runner():
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         slow = add_test(root, "q-system/.q-system/scripts/test_slow.py",
-                        "import time; time.sleep(30)")
+                        'print("hanging-on-xyz", flush=True)\nimport time; time.sleep(30)')
         m = base_manifest(expected_tests=[entry(slow, timeout_s=5)])
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root)
-        check("runner: timeout RED", rc == 1 and "test-timeout" in out)
+        check("runner: timeout RED with partial output tail",
+              rc == 1 and "test-timeout" in out and "hanging-on-xyz" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        env_probe = ('import os, sys\nfrom pathlib import Path\n'
+                     'ok = (os.environ.get("QROOT", "").endswith("q-system")\n'
+                     '      and Path.cwd().resolve() == Path(__file__).resolve().parents[3])\n'
+                     'sys.exit(0 if ok else 1)')
+        rel = add_test(root, "q-system/.q-system/scripts/test_envprobe.py", env_probe)
+        m = base_manifest(expected_tests=[entry(rel)])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("runner: cwd=repo root and QROOT set (contract pinned)", rc == 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        noisy = "\n".join(f'print("line{i}")' for i in range(1, 31)) + "\nimport sys; sys.exit(1)"
+        rel = add_test(root, "q-system/.q-system/scripts/test_noisy.py", noisy)
+        m = base_manifest(expected_tests=[entry(rel)])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("runner: exactly last-20-line tail (line30 in, line5 out)",
+              rc == 1 and "line30" in out and "line5\n" not in out and "line10\n" not in out)
 
 
 def sec_mode():

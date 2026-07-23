@@ -302,8 +302,16 @@ def run_tests(root, manifest, mode, errors, notes):
         try:
             r = subprocess.run(cmd, cwd=root, env=env, capture_output=True,
                                text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            errors.append(f"test-timeout ({timeout}s): {path}")
+        except subprocess.TimeoutExpired as exc:
+            # the partial output often names the hang (a prompt, a URL being
+            # polled) — discarding it made timeouts undiagnosable (codex,
+            # sag-runner-contract)
+            partial = ((exc.stdout or b"") if isinstance(exc.stdout, (bytes, bytearray))
+                       else (exc.stdout or "").encode())
+            partial += ((exc.stderr or b"") if isinstance(exc.stderr, (bytes, bytearray))
+                        else (exc.stderr or "").encode())
+            tail = "\n".join(partial.decode(errors="replace").splitlines()[-20:])
+            errors.append(f"test-timeout ({timeout}s): {path}" + (f"\n{tail}" if tail else ""))
             continue
         ran += 1
         if r.returncode != 0:
