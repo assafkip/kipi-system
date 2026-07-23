@@ -164,6 +164,15 @@ def sec_overlay():
             json.dumps({"expected_tests": [{"path": rel, "runner": "cobol"}]}))
         rc, out = run_gate(root, "--check-only")
         check("overlay: invalid runner RED", rc == 1 and "runner" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            required_data=[{"path": "q-system/canonical/x.json", "scope": ["nobody"]}]))
+        (root / "q-system/canonical").mkdir(parents=True)
+        (root / "capability-manifest.local.json").write_text(json.dumps(
+            {"required_data": [{"path": "q-system/canonical/x.json", "scope": ["nobody-else"]}]}))
+        rc, out = run_gate(root, "--check-only")
+        check("overlay: required_data collision with canonical RED",
+              rc == 1 and "collides with canonical required_data" in out)
 
 
 def sec_quarantine():

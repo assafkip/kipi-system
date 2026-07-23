@@ -216,7 +216,14 @@ def load_overlay(root, manifest, errors):
         else:
             validate_test_entry(entry, seen, errors)
             manifest.setdefault("expected_tests", []).append(entry)
+    canonical_data = {e.get("path") for e in manifest.get("required_data", [])}
     for entry in data.get("required_data", []):
+        # a same-path overlay entry could NARROW a canonical scope (e.g.
+        # canonical scope "all" shadowed by scope [nobody]) — add-only means
+        # new paths only (codex, sag-overlay-add-only)
+        if entry.get("path") in canonical_data:
+            errors.append(f"overlay collides with canonical required_data: {entry.get('path')}")
+            continue
         validate_data_entry(entry, errors)
         manifest.setdefault("required_data", []).append(entry)
 
