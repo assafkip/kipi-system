@@ -49,6 +49,7 @@ fi
 PASS=0
 FAIL=0
 SKIP=0
+GATE_FAIL=""
 
 while IFS='|' read -r name path prefix itype; do
   echo "--- $name ($itype) ---"
@@ -289,6 +290,25 @@ while IFS='|' read -r name path prefix itype; do
 
     echo "  Config synced"
   fi
+
+  # Post-sync capability gate (structure/wiring/data diff, no test execution —
+  # the FULL per-instance run is fleet-capability-verify.py's job). This is the
+  # deterministic instance-side call site: a skeleton-only artifact or missing
+  # declared file goes loud HERE, at the moment it ships, not months later
+  # (finding-2, prd-silent-absence-capability-gate-2026-07-23). Failures are
+  # collected, not fatal per-instance, so one red instance cannot block the
+  # fix from reaching the other 23; the run still exits non-zero at the end.
+  GATE_SCRIPT="$path/q-system/.q-system/scripts/capability-gate.py"
+  if [ -f "$GATE_SCRIPT" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+    if python3 "$GATE_SCRIPT" --repo-root "$path" --check-only >/tmp/kipi-gate-$$.log 2>&1; then
+      echo "  capability gate: GREEN"
+    else
+      echo "  capability gate: RED"
+      tail -8 "/tmp/kipi-gate-$$.log" | sed 's/^/    /'
+      GATE_FAIL="$GATE_FAIL $name"
+    fi
+    rm -f "/tmp/kipi-gate-$$.log"
+  fi
   echo ""
 done < <(python3 -c "
 import json
@@ -305,5 +325,8 @@ echo "=== Summary ==="
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
 echo "  Skipped: $SKIP"
+if [ -n "${GATE_FAIL:-}" ]; then
+  echo "  CAPABILITY GATE RED in:$GATE_FAIL"
+fi
 
-[ "$FAIL" -eq 0 ] && exit 0 || exit 1
+[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && exit 0 || exit 1

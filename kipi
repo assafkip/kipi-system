@@ -55,6 +55,16 @@ case "${1:-help}" in
     ;;
   check)
     shift || true
+    # Capability gate runs against the repo you are STANDING in, so an
+    # instance gets ITS tree gated. Without this, `kipi check` cd'd to
+    # KIPI_HOME and only ever validated the skeleton — an instance-side
+    # silent absence had no call site at all (finding-2,
+    # prd-silent-absence-capability-gate-2026-07-23).
+    CALLER_DIR="$PWD"
+    if [ "$CALLER_DIR" != "$KIPI_HOME" ] && [ -f "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" ]; then
+      echo "capability gate (instance: $CALLER_DIR)"
+      python3 "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" --repo-root "$CALLER_DIR" || exit 1
+    fi
     cd "$KIPI_HOME"
     python3 validate-separation.py "${1:-5}"
     ;;

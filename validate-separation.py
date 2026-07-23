@@ -267,6 +267,23 @@ def phase_1():
     print()
     print("  --- Gate 1.2: Scripts ---")
 
+    # --- Gate 1.2a: Capability gate (silent-absence class) ---
+    # One implementation, two callers: CI invokes capability-gate.py directly
+    # (validate.yml); kipi check enforces it here. CAPABILITY_GATE_SKIP=1 is
+    # set ONLY by the CI validate-separation step so the suite is not executed
+    # twice per CI run (finding-15, prd-silent-absence-capability-gate).
+    if os.environ.get("CAPABILITY_GATE_SKIP") == "1":
+        print("  --- Gate 1.2a: capability gate SKIPPED (CAPABILITY_GATE_SKIP=1; CI runs it directly) ---")
+    else:
+        gate_script = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts", "capability-gate.py")
+        gate_run = subprocess.run([sys.executable, gate_script, "--repo-root", SCRIPT_DIR],
+                                  capture_output=True, text=True)
+        check("capability gate: declared-vs-actual diff + full test run exits 0",
+              gate_run.returncode == 0)
+        if gate_run.returncode != 0:
+            print("\n".join(("    " + l) for l in
+                            (gate_run.stdout + gate_run.stderr).splitlines()[-15:]))
+
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
 
