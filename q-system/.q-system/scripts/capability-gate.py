@@ -394,14 +394,18 @@ def main():
         report(mode, errors, notes)
         sys.exit(1)
     load_overlay(root, manifest, errors)
-    if errors:  # fail closed on structural problems before trusting the sets
-        report(mode, errors, notes)
-        sys.exit(1)
+    # counts note BEFORE the structural early-exit: an expired quarantine is a
+    # structural error, and exiting first meant exactly those runs lost the
+    # quarantine count the contract promises in EVERY summary (codex,
+    # sag-quarantine-expiry)
     expected = manifest.get("expected_tests", [])
-    q_count = sum(1 for e in expected if e.get("quarantine"))
+    q_count = sum(1 for e in expected if isinstance(e, dict) and e.get("quarantine"))
     notes.append(f"declared: {len(expected)} tests ({q_count} quarantined), "
                  f"{len(manifest.get('skeleton_only', []))} skeleton-only, "
                  f"{len(manifest.get('declared_inert', []))} declared-inert")
+    if errors:  # fail closed on structural problems before trusting the sets
+        report(mode, errors, notes)
+        sys.exit(1)
     if q_count and args.check_only:
         for e in expected:
             q = e.get("quarantine")

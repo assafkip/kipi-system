@@ -45,9 +45,7 @@
     {"path": "q-system/.q-system/scripts/test/test-voice-lint-topups.sh", "runner": "bash"},
     {"path": "q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh", "runner": "bash"}
   ],
-  "required_data": [
-    {"path": "q-system/canonical/stat-registry.json", "scope": ["KTLYST_strategy"]}
-  ],
+  "required_data": [],
   "skeleton_only": [
     "q-system/.q-system/scripts/test_autocapture_wiring.py",
     "q-system/.q-system/scripts/test/test-auto-update-nudge.sh",
@@ -87,6 +85,7 @@
   ],
   "uncovered_known": [
     "plugins/*/tests — prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
-    "repo-root *.sh utilities are wiring surfaces, not test artifacts"
+    "repo-root *.sh utilities are wiring surfaces, not test artifacts",
+    "stat-registry.json (KTLYST_strategy): NOT expressible as required_data in v1 — that instance keeps canonical under q-ktlyst/ (instance_q_dir), not q-system/, and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision is sp-72b60bff"
   ]
 }
