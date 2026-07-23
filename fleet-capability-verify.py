@@ -36,7 +36,7 @@ GATE_REL = "q-system/.q-system/scripts/capability-gate.py"
 def verify_instance(inst, full):
     name = inst["name"]
     path = Path(inst["path"])
-    if inst.get("status", "").startswith("merged"):
+    if (inst.get("status") or "").startswith("merged"):
         return name, "SKIPPED(merged)", ""
     if inst.get("type", "subtree") == "standalone":
         return name, "SKIPPED(standalone)", "no skeleton subtree by design"
@@ -59,8 +59,19 @@ def verify_instance(inst, full):
 
 
 def run_fleet(registry_path, full):
+    """Every registry collection is enumerated. The verifier's first codex
+    review caught it iterating only `instances` while `standalone` and
+    `eliminated` collections were silently omitted — a silent absence inside
+    the silent-absence verifier (2026-07-23)."""
     reg = json.loads(Path(registry_path).read_text())
     rows = [verify_instance(i, full) for i in reg["instances"]]
+    for coll, label in (("standalone", "SKIPPED(standalone)"),
+                        ("eliminated", "SKIPPED(eliminated)")):
+        for i in reg.get(coll, []):
+            rows.append((i.get("name", "?"), label, f"registry collection: {coll}"))
+    if not rows:
+        print("fleet-capability-verify: registry has zero entries")
+        return 0
     width = max(len(n) for n, _, _ in rows) + 2
     reds = 0
     for name, status, detail in rows:
@@ -105,19 +116,41 @@ def self_test():
             {"name": "standalone-i", "path": str(tmp / "sa"), "type": "standalone"},
             {"name": "merged-i", "path": str(tmp / "m"), "type": "subtree",
              "status": "merged-into-x"},
+            {**mk_instance("nullstatus-i", "import sys; sys.exit(0)"), "status": None},
         ]
         regp = tmp / "registry.json"
-        regp.write_text(json.dumps({"instances": instances}))
+        regp.write_text(json.dumps({
+            "instances": instances,
+            "standalone": [{"name": "coll-standalone-i", "path": str(tmp / "cs")}],
+            "eliminated": [{"name": "coll-eliminated-i", "path": str(tmp / "ce")}],
+        }))
         r = subprocess.run([sys.executable, __file__, "--registry", str(regp)],
                            capture_output=True, text=True, timeout=300)
         out = r.stdout
+
+        def row_status(name):
+            # per-ROW assertion: name and status on the SAME line (the
+            # independent-substring version could not catch a swapped pair)
+            for line in out.splitlines():
+                if line.startswith(name + " "):
+                    return line.split()[1] if len(line.split()) > 1 else ""
+            return "<row missing>"
+
         check("exit non-zero with reds", r.returncode == 1)
-        check("green instance GREEN", "green-i" in out and "GREEN" in out)
-        check("failing gate RED(gate)", "RED(gate)" in out)
-        check("missing gate RED(missing-gate)", "RED(missing-gate)" in out)
-        check("missing tree RED(missing-tree)", "RED(missing-tree)" in out)
-        check("standalone SKIPPED loudly", "SKIPPED(standalone)" in out)
-        check("merged tombstone SKIPPED", "SKIPPED(merged)" in out)
+        check("green instance row GREEN", row_status("green-i") == "GREEN")
+        check("failing gate row RED(gate)", row_status("red-i") == "RED(gate)")
+        check("missing gate row RED(missing-gate)", row_status("nogate-i") == "RED(missing-gate)")
+        check("missing tree row RED(missing-tree)", row_status("notree-i") == "RED(missing-tree)")
+        check("standalone row SKIPPED loudly", row_status("standalone-i") == "SKIPPED(standalone)")
+        check("merged tombstone row SKIPPED", row_status("merged-i") == "SKIPPED(merged)")
+        check("standalone COLLECTION enumerated", row_status("coll-standalone-i") == "SKIPPED(standalone)")
+        check("eliminated COLLECTION enumerated", row_status("coll-eliminated-i") == "SKIPPED(eliminated)")
+        check("null status tolerated", "AttributeError" not in r.stderr)
+
+        regp.write_text(json.dumps({"instances": []}))
+        r = subprocess.run([sys.executable, __file__, "--registry", str(regp)],
+                           capture_output=True, text=True, timeout=300)
+        check("empty registry exits 0 without crash", r.returncode == 0)
 
         all_green = [mk_instance("only-green", "import sys; sys.exit(0)")]
         regp.write_text(json.dumps({"instances": all_green}))
