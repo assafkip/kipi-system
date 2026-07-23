@@ -299,15 +299,22 @@ while IFS='|' read -r name path prefix itype; do
   # collected, not fatal per-instance, so one red instance cannot block the
   # fix from reaching the other 23; the run still exits non-zero at the end.
   GATE_SCRIPT="$path/q-system/.q-system/scripts/capability-gate.py"
-  if [ -f "$GATE_SCRIPT" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-    if python3 "$GATE_SCRIPT" --repo-root "$path" --check-only >/tmp/kipi-gate-$$.log 2>&1; then
-      echo "  capability gate: GREEN"
+  if [ -z "${DRY_RUN:-}" ]; then
+    if [ -f "$GATE_SCRIPT" ]; then
+      if python3 "$GATE_SCRIPT" --repo-root "$path" --check-only >"/tmp/kipi-gate-$$.log" 2>&1; then
+        echo "  capability gate: GREEN"
+      else
+        echo "  capability gate: RED"
+        tail -8 "/tmp/kipi-gate-$$.log" | sed 's/^/    /'
+        GATE_FAIL="$GATE_FAIL $name"
+      fi
+      rm -f "/tmp/kipi-gate-$$.log"
     else
-      echo "  capability gate: RED"
-      tail -8 "/tmp/kipi-gate-$$.log" | sed 's/^/    /'
-      GATE_FAIL="$GATE_FAIL $name"
+      # Post-sync and STILL no gate script = the sync itself failed to deliver
+      # the fix. Silent skip here would be the disease this gate treats.
+      echo "  capability gate: MISSING after sync"
+      GATE_FAIL="$GATE_FAIL $name(missing-gate)"
     fi
-    rm -f "/tmp/kipi-gate-$$.log"
   fi
   echo ""
 done < <(python3 -c "

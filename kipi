@@ -61,12 +61,25 @@ case "${1:-help}" in
     # silent absence had no call site at all (finding-2,
     # prd-silent-absence-capability-gate-2026-07-23).
     CALLER_DIR="$PWD"
-    if [ "$CALLER_DIR" != "$KIPI_HOME" ] && [ -f "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" ]; then
-      echo "capability gate (instance: $CALLER_DIR)"
-      python3 "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" --repo-root "$CALLER_DIR" || exit 1
+    if [ "$CALLER_DIR" != "$KIPI_HOME" ] && [ -d "$CALLER_DIR/q-system/.q-system" ]; then
+      if [ -f "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" ]; then
+        echo "capability gate (instance: $CALLER_DIR)"
+        python3 "$CALLER_DIR/q-system/.q-system/scripts/capability-gate.py" --repo-root "$CALLER_DIR" || exit 1
+      else
+        # A kipi instance without the gate is itself a silent absence — the
+        # exact class this gate exists for. Loud, not skipped.
+        echo "RED: capability-gate.py MISSING in $CALLER_DIR (run kipi update)" >&2
+        exit 1
+      fi
+      # The instance suite just ran in full; skip the skeleton's own gate so a
+      # from-instance check does not execute two full suites (codex finding,
+      # sag-callsite). Skeleton-run `kipi check` still gates the skeleton.
+      cd "$KIPI_HOME"
+      CAPABILITY_GATE_SKIP=1 python3 validate-separation.py "${1:-5}"
+    else
+      cd "$KIPI_HOME"
+      python3 validate-separation.py "${1:-5}"
     fi
-    cd "$KIPI_HOME"
-    python3 validate-separation.py "${1:-5}"
     ;;
   migrate)
     shift
