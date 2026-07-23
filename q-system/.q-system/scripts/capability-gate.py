@@ -31,7 +31,9 @@ ALLOWED_TOP_KEYS = {
 }
 OVERLAY_ALLOWED_KEYS = {"expected_tests", "required_data"}
 TEST_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh")
-SCAN_ROOT = "q-system/.q-system/scripts"
+# Both contracted roots: scripts/ recursive, plus top-level .q-system test
+# files (finding-9/adversarial: token-guard-adjacent tests may land there).
+SCAN_ROOTS = ("q-system/.q-system/scripts", "q-system/.q-system")
 DEFAULT_TIMEOUT_S = 60
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 5, 600
 
@@ -96,6 +98,49 @@ def load_manifest(root, errors):
     return data
 
 
+def unsafe_path(p):
+    """Manifest/overlay paths are repo-root-relative only. An absolute path or
+    a .. escape would let a declaration point OUTSIDE the repo (adversarial
+    finding: overlay entry naming /etc/... must be RED, not silently checked)."""
+    if not isinstance(p, str) or not p:
+        return True
+    if p.startswith(("/", "~")) or "\\" in p:
+        return True
+    return ".." in p.split("/")
+
+
+def validate_test_entry(entry, seen, errors):
+    """One validator for canonical AND overlay entries (finding: overlay
+    entries were appended after validation and never validated themselves)."""
+    p = entry.get("path", "")
+    if unsafe_path(p):
+        errors.append(f"unsafe or non-relative path in expected_tests: {p!r}")
+        return
+    if entry.get("runner") not in ("python3", "bash"):
+        errors.append(f"expected_tests entry needs runner python3|bash: {p}")
+    if p in seen:
+        errors.append(f"duplicate expected_tests path: {p}")
+    seen.add(p)
+    t = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
+    if not (isinstance(t, int) and TIMEOUT_MIN_S <= t <= TIMEOUT_MAX_S):
+        errors.append(f"timeout_s out of bounds [{TIMEOUT_MIN_S},{TIMEOUT_MAX_S}]: {p}")
+    validate_quarantine(entry, errors)
+
+
+def validate_data_entry(entry, errors):
+    """required_data needs a safe path and a well-formed scope: a typo like
+    'skeletn' must be RED, not a silently-never-applies contract (finding-3
+    of the standard review)."""
+    p = entry.get("path", "")
+    if unsafe_path(p):
+        errors.append(f"unsafe or non-relative path in required_data: {p!r}")
+    scope = entry.get("scope", "all")
+    ok = scope in ("all", "skeleton") or (
+        isinstance(scope, list) and scope and all(isinstance(s, str) for s in scope))
+    if not ok:
+        errors.append(f"required_data scope must be 'all'|'skeleton'|[instance...]: {scope!r}")
+
+
 def validate_manifest(data, errors):
     if not isinstance(data, dict):
         errors.append("manifest must be a JSON object")
@@ -107,19 +152,17 @@ def validate_manifest(data, errors):
         errors.append(f"manifest unknown top-level keys: {sorted(unknown)}")
     seen = set()
     for entry in data.get("expected_tests", []):
-        p = entry.get("path", "")
-        if not p or entry.get("runner") not in ("python3", "bash"):
-            errors.append(f"expected_tests entry needs path + runner python3|bash: {entry}")
-        if p in seen:
-            errors.append(f"duplicate expected_tests path: {p}")
-        seen.add(p)
-        t = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
-        if not (TIMEOUT_MIN_S <= t <= TIMEOUT_MAX_S):
-            errors.append(f"timeout_s out of bounds [{TIMEOUT_MIN_S},{TIMEOUT_MAX_S}]: {p}")
-        validate_quarantine(entry, errors)
+        validate_test_entry(entry, seen, errors)
+    for entry in data.get("required_data", []):
+        validate_data_entry(entry, errors)
+    for p in data.get("skeleton_only", []):
+        if unsafe_path(p):
+            errors.append(f"unsafe or non-relative path in skeleton_only: {p!r}")
     for entry in data.get("declared_inert", []):
         if not entry.get("path") or not entry.get("reason") or not entry.get("spillover_id"):
             errors.append(f"declared_inert entry needs path+reason+spillover_id: {entry}")
+        elif unsafe_path(entry["path"]):
+            errors.append(f"unsafe or non-relative path in declared_inert: {entry['path']!r}")
 
 
 def validate_quarantine(entry, errors):
@@ -156,24 +199,38 @@ def load_overlay(root, manifest, errors):
     if unknown:
         errors.append(f"overlay may only ADD {sorted(OVERLAY_ALLOWED_KEYS)}; found: {sorted(unknown)}")
     canonical = {e.get("path") for e in manifest.get("expected_tests", [])}
+    seen = set(canonical)
     for entry in data.get("expected_tests", []):
         if entry.get("path") in canonical:
             errors.append(f"overlay collides with canonical entry: {entry.get('path')}")
         elif entry.get("quarantine"):
             errors.append(f"overlay may not quarantine: {entry.get('path')}")
         else:
+            validate_test_entry(entry, seen, errors)
             manifest.setdefault("expected_tests", []).append(entry)
     for entry in data.get("required_data", []):
+        validate_data_entry(entry, errors)
         manifest.setdefault("required_data", []).append(entry)
 
 
 def discover_tests(root):
-    base = root / SCAN_ROOT
     found = set()
+    scripts_root = root / SCAN_ROOTS[0]
     for pattern in TEST_PATTERNS:
-        for p in base.rglob(pattern):
-            found.add(str(p.relative_to(root)))
+        for p in scripts_root.rglob(pattern):
+            if p.is_file():
+                found.add(str(p.relative_to(root)))
+        # top-level .q-system: non-recursive, or scripts/ would double-scan
+        for p in (root / SCAN_ROOTS[1]).glob(pattern):
+            if p.is_file():
+                found.add(str(p.relative_to(root)))
     return found
+
+
+def in_scan_scope(path):
+    if path.startswith(SCAN_ROOTS[0] + "/"):
+        return True
+    return path.startswith(SCAN_ROOTS[1] + "/") and "/" not in path[len(SCAN_ROOTS[1]) + 1:]
 
 
 def diff_declared_vs_actual(root, manifest, errors):
@@ -181,7 +238,7 @@ def diff_declared_vs_actual(root, manifest, errors):
     that appears without a declaration) or mask a vanished test."""
     declared = {e["path"] for e in manifest.get("expected_tests", []) if e.get("path")}
     discovered = discover_tests(root)
-    in_scope_declared = {p for p in declared if p.startswith(SCAN_ROOT)}
+    in_scope_declared = {p for p in declared if in_scan_scope(p)}
     for missing in sorted(in_scope_declared - discovered):
         errors.append(f"declared-but-missing: {missing}")
     for extra in sorted(discovered - declared):
@@ -275,8 +332,17 @@ def check_inert_engines(root, manifest, errors, notes):
     fixed point so hook -> script A -> script B chains still count."""
     declared = {e["path"]: e for e in manifest.get("declared_inert", [])}
     base = root / "q-system/.q-system"
-    candidates = {p for p in list(base.glob("*.py")) + list((base / "scripts").glob("*.py"))
-                  if not p.name.startswith(("test_", "test-"))}
+    candidates = set()
+    for p in list(base.glob("*.py")) + list((base / "scripts").rglob("*.py")):
+        if not p.is_file() or p.name.startswith(("test_", "test-")):
+            continue
+        if any(part in ("test", "tests") for part in p.parts):
+            continue
+        # runnable contract: exec bit or a __main__ guard; a pure library
+        # module with neither is not an "engine" (standard-review minor)
+        text = p.read_text(errors="ignore")
+        if os.access(p, os.X_OK) or "__main__" in text:
+            candidates.add(p)
     surface = gather_wiring_text(root, {p.name for p in candidates})
     wired = set()
     changed = True
@@ -316,6 +382,17 @@ def main():
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
         sys.exit(1)
+    expected = manifest.get("expected_tests", [])
+    q_count = sum(1 for e in expected if e.get("quarantine"))
+    notes.append(f"declared: {len(expected)} tests ({q_count} quarantined), "
+                 f"{len(manifest.get('skeleton_only', []))} skeleton-only, "
+                 f"{len(manifest.get('declared_inert', []))} declared-inert")
+    if q_count and args.check_only:
+        for e in expected:
+            q = e.get("quarantine")
+            if q:
+                notes.append(f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
+                             f"{e['path']} — {q['reason']}")
     diff_declared_vs_actual(root, manifest, errors)
     check_required_data(root, manifest, mode, errors)
     check_inert_engines(root, manifest, errors, notes)

@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "expected_tests": [
+    {"path": "q-system/.q-system/test_token_guard_runtime.py", "runner": "python3"},
     {"path": "q-system/.q-system/scripts/test_autocapture_e2e.py", "runner": "python3"},
     {"path": "q-system/.q-system/scripts/test_autocapture_wiring.py", "runner": "python3"},
     {"path": "q-system/.q-system/scripts/test_capability_gate.py", "runner": "python3", "timeout_s": 180},

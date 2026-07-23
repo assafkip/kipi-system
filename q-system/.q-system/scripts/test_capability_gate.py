@@ -101,6 +101,21 @@ def sec_schema():
         (root / "q-system/.q-system/capability-manifest.json").unlink()
         rc, out = run_gate(root, "--check-only")
         check("schema: missing manifest RED", rc == 1 and "manifest missing" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            required_data=[{"path": "q-system/x.json", "scope": "skeletn"}]))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: required_data scope typo RED", rc == 1 and "scope must be" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            expected_tests=[{"path": "/etc/passwd", "runner": "bash"}]))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: absolute path RED", rc == 1 and "unsafe" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            expected_tests=[{"path": "q-system/../../x/test_a.py", "runner": "python3"}]))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: dotdot escape RED", rc == 1 and "unsafe" in out)
 
 
 def sec_overlay():
@@ -126,6 +141,19 @@ def sec_overlay():
             json.dumps({"skeleton_only": ["x"]}))
         rc, out = run_gate(root, "--check-only")
         check("overlay: reclassification key RED", rc == 1 and "may only ADD" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        (root / "capability-manifest.local.json").write_text(
+            json.dumps({"expected_tests": [{"path": "/tmp/evil.py", "runner": "python3"}]}))
+        rc, out = run_gate(root, "--check-only")
+        check("overlay: unsafe path RED", rc == 1 and "unsafe" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_extra.py")
+        (root / "capability-manifest.local.json").write_text(
+            json.dumps({"expected_tests": [{"path": rel, "runner": "cobol"}]}))
+        rc, out = run_gate(root, "--check-only")
+        check("overlay: invalid runner RED", rc == 1 and "runner" in out)
 
 
 def sec_quarantine():
@@ -185,18 +213,18 @@ def sec_wiring():
         check("wiring: settings.json reference is wired", rc == 0)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
-        engine(root, "q-system/.q-system/scripts/chain-a.py")
+        main_guard = 'if __name__ == "__main__":\n    pass\n'
+        (root / "q-system/.q-system/scripts/chain-a.py").parent.mkdir(parents=True, exist_ok=True)
         (root / "q-system/.q-system/scripts/chain-a.py").write_text(
-            'import subprocess\nsubprocess.run(["python3", "chain-b.py"])\n')
+            'import subprocess\nsubprocess.run(["python3", "chain-b.py"])\n' + main_guard)
         engine(root, "q-system/.q-system/scripts/chain-b.py")
         (root / ".claude").mkdir()
         (root / ".claude/settings.json").write_text('{"hooks": "chain-a.py"}')
         rc, out = run_gate(root, "--check-only")
         check("wiring: closure wires hook->A->B chain", rc == 0)
         # negative control: unwired C referencing D must NOT wire D
-        engine(root, "q-system/.q-system/scripts/orphan-c.py")
         (root / "q-system/.q-system/scripts/orphan-c.py").write_text(
-            'import subprocess\nsubprocess.run(["python3", "orphan-d.py"])\n')
+            'import subprocess\nsubprocess.run(["python3", "orphan-d.py"])\n' + main_guard)
         engine(root, "q-system/.q-system/scripts/orphan-d.py")
         rc, out = run_gate(root, "--check-only")
         check("wiring: unwired peer cannot wire its sibling",
