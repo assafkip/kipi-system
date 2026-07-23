@@ -328,6 +328,14 @@ def sec_mode():
         check("mode: instance skips skeleton_only (crashing test passes by skip)",
               rc == 0 and "skipped-skeleton-only=1" in out and "mode=instance" in out)
     with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)  # valid registry present
+        rc, out = run_gate(root, "--check-only")
+        check("mode: valid registry detected as skeleton", rc == 0 and "mode=skeleton" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        rc, out = run_gate(root, "--check-only")
+        check("mode: no registry detected as instance", rc == 0 and "mode=instance" in out)
+    with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         (root / "instance-registry.json").write_text("{broken")
         rc, out = run_gate(root, "--check-only")
