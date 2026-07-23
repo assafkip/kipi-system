@@ -20,7 +20,7 @@ jobs:
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
       # BOTH directions, and runs the full declared suite. The hardcoded loop
-      # ran 4 of 38 artifacts while 89.5% never executed anywhere
+      # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
       - name: Capability gate (declared-vs-actual + full test suite)
         run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
