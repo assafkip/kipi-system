@@ -1,9 +1,9 @@
 ---
 id: prd-silent-absence-capability-gate-2026-07-23
 title: Silent Absence Capability Gate
-status: in-review
+status: approved
 created_at: 2026-07-23T20:46:57Z
-updated_at: 2026-07-23T20:52:34Z
+updated_at: 2026-07-23T20:57:32Z
 owner: assaf
 reviewers: []
 findings_path: .prd-os/findings/prd-silent-absence-capability-gate-2026-07-23-findings.jsonl
@@ -122,6 +122,52 @@ had a detection hole:
    prints per-instance rc table, exits non-zero if any instance missing the
    gate/manifest or red without a declared reason.
 
+### Contracts (v1, binding — added at triage, findings 4/5/6/8/10/13)
+
+- **Manifest schema:** top-level `schema_version` (int, v1=1) + the four set
+  keys. Unknown top-level keys, duplicate paths within a set, malformed JSON,
+  or a missing `schema_version` → gate RED (fail closed). Paths are
+  repo-root-relative, normalized, no globs in `expected_tests` (exact paths;
+  discovery uses conventions, declaration is literal). `timeout_s` bounds:
+  5-600.
+- **Overlay is add-only:** `capability-manifest.local.json` may only ADD
+  `expected_tests` and `required_data` entries. Any key colliding with a
+  canonical entry, any `skeleton_only`/`declared_inert`/quarantine content in
+  an overlay → gate RED. The overlay cannot weaken anything.
+- **Quarantine expires:** each quarantine entry requires `reason`,
+  `spillover_id`, and `expires` (ISO date). Past `expires` → gate RED.
+  Quarantine count is printed in every run summary.
+- **Wiring-detector surface (F2 class), textual-reference contract:** a file in
+  `q-system/.q-system/` matching `*.py` with the executable bit or a
+  `__main__` guard is "referenced" iff its basename appears in any of:
+  `.claude/settings.json`, `settings-template.json`, `plugins/*/hooks.json`,
+  `validate-separation.py`, `.github/workflows/*.yml`, repo-root `kipi*` +
+  `*.sh`, `q-system/.q-system/scripts/*.sh`, or another scanned `.py` file
+  (import or subprocess string). Unreferenced + not in `declared_inert` → RED.
+  This is declared as a textual heuristic, not full reachability; false
+  positives are resolved by a `declared_inert` entry or a real call site —
+  both loud.
+- **Runner contract:** cwd = repo root; env = inherited + `QROOT` set to
+  `q-system/`; per-test timeout default 60s (`timeout_s` override); stdout+
+  stderr captured, last 20 lines printed on failure; rc!=0 or timeout → RED.
+  No network assumptions; a test needing live services gets quarantined with
+  reason + expiry.
+- **Mode detector:** skeleton iff `instance-registry.json` exists at repo root.
+  Registry parse failure → RED (never silently instance mode). Paths under
+  `.claude/worktrees/` refuse to run (exit 3, "run from the primary checkout").
+- **Coverage boundary (v1, loud):** scan roots are
+  `q-system/.q-system/scripts/` (recursive) + `q-system/.q-system/*.py` tests.
+  `plugins/*/tests` and repo-root test files are OUT of v1 scope and are
+  listed in the manifest under `uncovered_known` so the boundary itself is
+  declared (finding-9, deferred).
+
+### Quick-fix bounds (finding-11)
+
+Repairing a newly-executed failing test is in scope ONLY within: the test file
+itself, or a ≤5-line fix in the module under test. Anything larger →
+quarantine with reason + expiry + spillover capture. `allowed_files` in the
+issue specs enforce the file boundary.
+
 ## Alternatives considered
 
 - **Fix `sys.exit(0)` + conftest, let pytest be the runner** — Rejected: pytest
@@ -171,6 +217,12 @@ had a detection hole:
 - Blast radius: additive files (gate, manifest, fleet-verify) + 2 small diffs
   (validate.yml step, validate-separation.py section) + token-guard.py edits.
   Rollback = revert the two diffs, delete the three new files.
+- Instance rollback (finding-12): instances receive ONLY synced-tree files via
+  `kipi update` (rsync overwrite). Rollback = revert skeleton, re-run
+  `kipi update` — the rsync restores every instance's synced tree to the
+  reverted state. This PRD creates no instance-local overlays and no
+  instance-repo-root files, so no per-instance cleanup exists to miss. The
+  updater's auto-commit in each instance records both directions.
 - 38 tests in CI may be slow or env-dependent → per-test timeout, quarantine
   with reason (loud in output), measured runtime reported in B6.
 - Post-propagation instance breakage → fleet-verify surfaces per instance;
@@ -233,5 +285,122 @@ Optional keys:
 -->
 
 ```json
-[]
+[
+  {
+    "id": "sag-core-gate-build",
+    "finding_id": "finding-1",
+    "title": "Build capability-gate.py + capability-manifest.json + paired tests + token-guard fixes (atomic decomposition anchor)",
+    "priority": "p0",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/capability-manifest.json", "q-system/.q-system/scripts/test_capability_gate.py", "q-system/.q-system/token-guard.py", "q-system/.q-system/scripts/test_token_guard_observation.py", "q-system/.q-system/scripts/**"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py", "python3 q-system/.q-system/scripts/test_token_guard_observation.py"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only",
+    "acceptance": "Gate discovers all three conventions, runs them as subprocesses, diffs both directions; manifest declares all four sets; token-guard has observation exemption + stall-warn rate limit with paired tests."
+  },
+  {
+    "id": "sag-manifest-schema-validation",
+    "finding_id": "finding-4",
+    "title": "Manifest validation contract: schema_version, unknown-key/duplicate/malformed = RED",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only schema"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-overlay-add-only",
+    "finding_id": "finding-5",
+    "title": "Overlay is add-only: local overlay cannot remove/quarantine/reclassify canonical entries",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only overlay"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-quarantine-expiry",
+    "finding_id": "finding-6",
+    "title": "Quarantine entries require reason + spillover_id + expires; expired = RED; count always printed",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/capability-manifest.json", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only quarantine"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-wiring-detector-contract",
+    "finding_id": "finding-8",
+    "title": "F2 wiring detector: enumerated textual surfaces incl. repo-root kipi/*.sh and py imports; declared heuristic",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/capability-manifest.json", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only wiring"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-runner-contract",
+    "finding_id": "finding-10",
+    "title": "Runner contract: cwd=repo root, QROOT env, 60s default timeout, tail-20 on fail, no network assumptions",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only runner"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-mode-detector",
+    "finding_id": "finding-13",
+    "title": "Mode detector: registry-present=skeleton, parse-failure=RED, worktree paths refuse (exit 3)",
+    "allowed_files": ["q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only mode"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-callsite-instance-check",
+    "finding_id": "finding-2",
+    "title": "Instance-side call site designed end-to-end: kipi check runs gate in the TARGET repo + kipi update runs gate per instance post-sync",
+    "priority": "p0",
+    "allowed_files": ["validate-separation.py", "kipi-update.sh", "kipi", "q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["sh -c 'grep -q capability-gate validate-separation.py'", "sh -c 'grep -q capability-gate kipi-update.sh'"],
+    "bypass_check": "python3 q-system/.q-system/scripts/capability-gate.py --check-only"
+  },
+  {
+    "id": "sag-callsite-single-execution",
+    "finding_id": "finding-15",
+    "title": "CI executes the gate exactly once: validate.yml owns the direct invocation; validate-separation gate section is skippable via env for CI",
+    "allowed_files": [".github/workflows/validate.yml", "validate-separation.py", "q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["sh -c 'grep -c capability-gate .github/workflows/validate.yml'"],
+    "bypass_check": "sh -c 'grep -q capability-gate .github/workflows/validate.yml'"
+  },
+  {
+    "id": "sag-fleet-verify-semantics",
+    "finding_id": "finding-3",
+    "title": "fleet-capability-verify.py: per-instance green/red/SKIPPED(standalone, reason printed); standalone entries (no q-system/.q-system) never silently pass",
+    "allowed_files": ["fleet-capability-verify.py"],
+    "required_checks": ["python3 fleet-capability-verify.py --self-test"],
+    "bypass_exempt": "fleet verifier is skeleton-local tooling; its own --self-test is the no-bypass proof and gates.jsonl must not depend on 24 external repos being reachable"
+  },
+  {
+    "id": "sag-fleet-red-schema",
+    "finding_id": "finding-16",
+    "title": "No instance-level acceptable-red: statuses are green/red/skipped(standalone) only; reasons exist per-test (quarantine), never per-instance",
+    "allowed_files": ["fleet-capability-verify.py"],
+    "required_checks": ["python3 fleet-capability-verify.py --self-test"],
+    "bypass_exempt": "schema-definition slice of sag-fleet-verify-semantics; same self-test covers it"
+  },
+  {
+    "id": "sag-quickfix-bounds",
+    "finding_id": "finding-11",
+    "title": "Quick-fix bounds encoded: test file itself or <=5-line fix in module under test; larger = quarantine + spillover",
+    "allowed_files": [".prd-os/prds/prd-silent-absence-capability-gate-2026-07-23.md", "q-system/.q-system/scripts/**"],
+    "required_checks": ["sh -c 'grep -q \"Quick-fix bounds\" .prd-os/prds/prd-silent-absence-capability-gate-2026-07-23.md'"],
+    "bypass_exempt": "scope-bounding text + per-issue allowed_files enforce it; no runtime surface to bypass"
+  },
+  {
+    "id": "sag-rollback-instances",
+    "finding_id": "finding-12",
+    "title": "Rollback covers propagated instances: revert skeleton + re-run kipi update restores synced trees; no instance-local artifacts created",
+    "allowed_files": [".prd-os/prds/prd-silent-absence-capability-gate-2026-07-23.md"],
+    "required_checks": ["sh -c 'grep -q \"Instance rollback\" .prd-os/prds/prd-silent-absence-capability-gate-2026-07-23.md'"],
+    "bypass_exempt": "rollback procedure documentation; enforcement is the kipi update rsync itself"
+  },
+  {
+    "id": "sag-negative-proof-matrix",
+    "finding_id": "finding-7",
+    "title": "Negative proof is a matrix, not any-one: F1 undeclared-caught, F3 skeleton-only skip + undeclared-fails-in-instance, F2 unwired-caught, token-guard tests green — ALL before propagation",
+    "priority": "p0",
+    "allowed_files": ["q-system/.q-system/scripts/test_capability_gate.py", "q-system/.q-system/scripts/capability-gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py --only negative-proof"],
+    "bypass_check": "python3 q-system/.q-system/scripts/test_capability_gate.py --only negative-proof"
+  }
+]
 ```
