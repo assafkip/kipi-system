@@ -17,30 +17,31 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The capability gate replaces the old hardcoded 4-test loop: it
+      # discovers every test artifact by convention, diffs declared-vs-actual
+      # BOTH directions, and runs the full declared suite. The hardcoded loop
+      # ran 4 of 38 artifacts while 89.5% never executed anywhere
+      # (prd-silent-absence-capability-gate-2026-07-23).
+      - name: Capability gate (declared-vs-actual + full test suite)
+        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+        env:
+          CI: true
+
+      # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
+      # it again inside validate-separation would execute the suite twice per
+      # CI run (finding-15). The skip is honored only with caller proof
+      # (GITHUB_ACTIONS here).
       - name: Run skeleton validation (Phase 1)
         run: python3 validate-separation.py 1 --verbose
         env:
           CI: true
+          CAPABILITY_GATE_SKIP: "1"
 
       - name: Install test dependencies
         run: pip install pytest
 
       - name: Run prd-os tests
         run: pytest plugins/prd-os/tests/ -q
-        env:
-          CI: true
-
-      - name: Run derived-copy-drift guard tests
-        run: |
-          set -e
-          for t in \
-            test_settings_template_sync_check.py \
-            test_plugin_version_bump_check.py \
-            test_memory_confidence_validator.py \
-            test_memory_confidence_surface.py; do
-            echo "--- $t ---"
-            python3 "q-system/.q-system/scripts/$t"
-          done
         env:
           CI: true
 
