@@ -7,6 +7,7 @@ Exit code 0 = all checks pass. Non-zero = failure.
 """
 
 import json
+import importlib.util
 import os
 import re
 import subprocess
@@ -255,7 +256,8 @@ def _synthetic_fixture(text, source_path):
     )
     return (
         first_nonempty == "fixture: synthetic"
-        and "fixtures" in path_parts
+        and path_parts[:5]
+        == ["q-system", ".q-system", "tests", "separation", "fixtures"]
     )
 
 
@@ -345,6 +347,56 @@ def semantic_leakage_findings(text, source_path=None):
                 }
             )
     return findings
+
+
+def _load_containment_targets():
+    script_path = os.path.join(
+        SCRIPT_DIR,
+        "q-system",
+        ".q-system",
+        "scripts",
+        "containment-targets.py",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "kipi_containment_targets",
+        script_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load containment target enumerator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def semantic_separation_violations(repo_root=SCRIPT_DIR):
+    """Run semantic leakage checks over repository-derived generic targets."""
+    root = os.path.abspath(os.fspath(repo_root))
+    target_module = _load_containment_targets()
+    manifest = target_module.enumerate_containment_targets(root)
+    violations = []
+    for relative_path in manifest["targets"]:
+        text = target_module.read_indexed_target(
+            root,
+            relative_path,
+            manifest["target_objects"][relative_path],
+        )
+        findings = semantic_leakage_findings(
+            text,
+            source_path=relative_path,
+        )
+        for finding in findings:
+            violations.append(
+                {
+                    "fact_class": finding["fact_class"],
+                    "line": finding["line"],
+                    "path": relative_path,
+                }
+            )
+    target_module.assert_index_unchanged(
+        root,
+        manifest["index_sha256"],
+    )
+    return violations
 
 
 # ---------- PHASES ----------
@@ -508,6 +560,29 @@ def phase_1():
 
     canonical_ktlyst = grep_count_multi([r"KTLYST", r"ktlyst", r"Assaf", r"CISO.*pain", r"re-breach"], canonical)
     check(f"No KTLYST content in canonical templates ({canonical_ktlyst} files)", canonical_ktlyst == 0)
+
+    # --- GATE 1.3b: Repository-derived semantic containment ---
+    print()
+    print("  --- Gate 1.3b: Semantic containment ---")
+    try:
+        semantic_violations = semantic_separation_violations(SCRIPT_DIR)
+    except Exception as exc:
+        semantic_violations = None
+        warn(f"Semantic containment scope blocked: {exc}")
+    if semantic_violations and verbose:
+        for violation in semantic_violations:
+            warn(
+                "{path}:{line}: {fact_class}".format(**violation)
+            )
+    check(
+        "Repository-derived generic targets contain no semantic instance facts"
+        + (
+            f" ({len(semantic_violations)} findings)"
+            if semantic_violations is not None
+            else " (scope unavailable)"
+        ),
+        semantic_violations == [],
+    )
 
     # --- GATE 1.4: Voice skill framework ---
     print()
