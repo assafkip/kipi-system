@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REGISTRY = os.path.join(SCRIPT_DIR, "instance-registry.json")
@@ -175,6 +176,175 @@ def load_registry():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {"instances": []}
+
+
+SEMANTIC_FIELD_PATTERNS = (
+    re.compile(
+        r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*?)\s*$"
+    ),
+    re.compile(
+        r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?)\*\*:\s*(?P<value>.*?)\s*$"
+    ),
+    re.compile(
+        r"^\s*(?:[-*]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _-]*):"
+        r"\s*(?P<value>.*?)\s*$"
+    ),
+    re.compile(
+        r"^\s*\|\s*(?P<label>[^|]+?)\s*\|\s*(?P<value>[^|]*?)\s*\|"
+    ),
+)
+PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*[A-Za-z][A-Za-z0-9_.-]*\s*\}\}"
+)
+CURRENCY_RE = re.compile(
+    r"(?:[$€£]\s?\d[\d,]*(?:\.\d{1,2})?"
+    r"|\b(?:USD|EUR|GBP)\s+\d[\d,]*(?:\.\d{1,2})?"
+    r"|\b\d[\d,]*(?:\.\d{1,2})?\s+(?:USD|EUR|GBP)\b)",
+    re.IGNORECASE,
+)
+DATE_PATTERNS = (
+    (
+        re.compile(r"\b20\d{2}-\d{2}-\d{2}\b"),
+        ("%Y-%m-%d",),
+    ),
+    (
+        re.compile(r"\b\d{1,2}/\d{1,2}/20\d{2}\b"),
+        ("%m/%d/%Y", "%d/%m/%Y"),
+    ),
+    (
+        re.compile(
+            r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+            r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|"
+            r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"\s+\d{1,2},?\s+20\d{2}\b",
+            re.IGNORECASE,
+        ),
+        ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"),
+    ),
+)
+IDENTITY_FIELDS = {
+    "client",
+    "client name",
+    "company",
+    "name",
+    "organization",
+    "prospect",
+    "prospect name",
+}
+PRICING_FIELDS = {"amount", "package price", "price", "pricing"}
+SOURCE_FIELDS = {"potential source", "source"}
+INTERACTION_FIELDS = {
+    "call",
+    "date",
+    "discussion",
+    "interaction",
+    "meeting",
+}
+GAP_FIELDS = {"case gap", "gaps", "proof gap", "proof gaps"}
+
+
+def _synthetic_fixture(text, source_path):
+    first_nonempty = next(
+        (line.strip().lower() for line in text.splitlines() if line.strip()),
+        "",
+    )
+    path_parts = (
+        str(source_path).replace("\\", "/").split("/")
+        if source_path is not None
+        else []
+    )
+    return (
+        first_nonempty == "fixture: synthetic"
+        and "fixtures" in path_parts
+    )
+
+
+def _semantic_record_lines(text):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = next(
+            (
+                pattern.match(line)
+                for pattern in SEMANTIC_FIELD_PATTERNS
+                if pattern.match(line)
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        value = match.group("value").strip()
+        if (
+            not value
+            and index + 1 < len(lines)
+            and lines[index + 1][:1].isspace()
+        ):
+            value = lines[index + 1].strip()
+        yield index + 1, match.group("label"), value
+
+
+def _has_valid_date(value):
+    for pattern, formats in DATE_PATTERNS:
+        for match in pattern.finditer(value):
+            if any(
+                _date_parses(match.group(0), date_format)
+                for date_format in formats
+            ):
+                return True
+    return False
+
+
+def _date_parses(value, date_format):
+    try:
+        datetime.strptime(value, date_format)
+    except ValueError:
+        return False
+    return True
+
+
+def semantic_leakage_findings(text, source_path=None):
+    """Classify asserted Markdown records without relying on client names."""
+    if not isinstance(text, str):
+        raise TypeError("semantic leakage input must be text")
+    if _synthetic_fixture(text, source_path):
+        return []
+
+    findings = []
+    for line_number, raw_label, value in _semantic_record_lines(text):
+        label = " ".join(raw_label.lower().split())
+        asserted_value = PLACEHOLDER_RE.sub("", value).strip(" \t-:;,")
+        if not asserted_value:
+            continue
+
+        fact_classes = []
+        if label in IDENTITY_FIELDS:
+            fact_classes.append("client_identity")
+        if label == "relationship":
+            fact_classes.append("relationship")
+        if label in PRICING_FIELDS or CURRENCY_RE.search(asserted_value):
+            fact_classes.append("pricing")
+        if label in SOURCE_FIELDS:
+            fact_classes.append(
+                "sourced_interaction"
+                if _has_valid_date(asserted_value)
+                else "source_identity"
+            )
+        if label in INTERACTION_FIELDS and _has_valid_date(asserted_value):
+            fact_classes.append("dated_interaction")
+        if label in GAP_FIELDS:
+            fact_classes.append("case_proof_gap")
+        if not fact_classes:
+            # A populated canonical-style record with no known class is not
+            # evidence of safety. Unknown schema must stop for ownership review.
+            fact_classes.append("unclassified_populated_record")
+
+        for fact_class in fact_classes:
+            findings.append(
+                {
+                    "fact_class": fact_class,
+                    "line": line_number,
+                }
+            )
+    return findings
 
 
 # ---------- PHASES ----------
