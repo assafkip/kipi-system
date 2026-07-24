@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kipi.local/schemas/containment-inventory.schema.json",
+  "title": "Redacted containment inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_count",
+    "records",
+    "schema_version",
+    "target_count",
+    "target_source"
+  ],
+  "properties": {
+    "record_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content_sha256",
+          "fact_class",
+          "line",
+          "owner_sha256",
+          "redacted_identifier",
+          "source_path_sha256"
+        ],
+        "properties": {
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "fact_class": {
+            "type": "string",
+            "enum": [
+              "client",
+              "interaction",
+              "investigation",
+              "pricing",
+              "proof_gap",
+              "prospect",
+              "relationship"
+            ]
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "owner_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "redacted_identifier": {
+            "type": "string",
+            "pattern": "^fact-[0-9a-f]{16}$"
+          },
+          "source_path_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "target_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "target_source": {
+      "const": "git-ls-files"
+    }
+  }
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -42,10 +43,143 @@ EXCLUDED_PREFIXES = {
     "q-system/memory",
     "q-system/output",
 }
+DEFAULT_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "schemas/containment-inventory.schema.json"
+)
 
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_schema_value(value: Any, schema: dict, location: str) -> None:
+    if "const" in schema and (
+        value != schema["const"]
+        or type(value) is not type(schema["const"])
+    ):
+        raise InventoryBlocked(f"{location} violates schema const")
+    if "enum" in schema and value not in schema["enum"]:
+        raise InventoryBlocked(f"{location} violates schema enum")
+
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        if not isinstance(value, dict):
+            raise InventoryBlocked(f"{location} must be an object")
+        required = schema.get("required", [])
+        missing = set(required) - set(value)
+        if missing:
+            raise InventoryBlocked(
+                f"{location} is missing schema fields"
+            )
+        properties = schema.get("properties", {})
+        unexpected = set(value) - set(properties)
+        if schema.get("additionalProperties") is False and unexpected:
+            raise InventoryBlocked(
+                f"{location} contains forbidden persistence fields"
+            )
+        for key, child in value.items():
+            if key in properties:
+                _validate_schema_value(
+                    child,
+                    properties[key],
+                    f"{location}.{key}",
+                )
+    elif expected_type == "array":
+        if not isinstance(value, list):
+            raise InventoryBlocked(f"{location} must be an array")
+        item_schema = schema.get("items", {})
+        for index, item in enumerate(value):
+            _validate_schema_value(
+                item,
+                item_schema,
+                f"{location}[{index}]",
+            )
+    elif expected_type == "string":
+        if not isinstance(value, str):
+            raise InventoryBlocked(f"{location} must be a string")
+        pattern = schema.get("pattern")
+        if pattern is not None and re.fullmatch(pattern, value) is None:
+            raise InventoryBlocked(f"{location} violates schema pattern")
+    elif expected_type == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise InventoryBlocked(f"{location} must be an integer")
+        if "minimum" in schema and value < schema["minimum"]:
+            raise InventoryBlocked(f"{location} violates schema minimum")
+
+
+def _validate_schema_definition(schema: dict, location: str) -> None:
+    if not isinstance(schema, dict):
+        raise InventoryBlocked("containment inventory schema is malformed")
+    if "const" in schema:
+        if set(schema) != {"const"}:
+            raise InventoryBlocked(
+                "containment inventory schema is malformed"
+            )
+        return
+
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        properties = schema.get("properties")
+        required = schema.get("required")
+        if (
+            not isinstance(properties, dict)
+            or not isinstance(required, list)
+            or schema.get("additionalProperties") is not False
+            or set(required) != set(properties)
+        ):
+            raise InventoryBlocked(
+                "containment inventory schema is malformed"
+            )
+        for key, child in properties.items():
+            _validate_schema_definition(child, f"{location}.{key}")
+    elif expected_type == "array":
+        if not isinstance(schema.get("items"), dict):
+            raise InventoryBlocked(
+                "containment inventory schema is malformed"
+            )
+        _validate_schema_definition(schema["items"], f"{location}[]")
+    elif expected_type == "string":
+        if not (
+            isinstance(schema.get("pattern"), str)
+            or (
+                isinstance(schema.get("enum"), list)
+                and schema["enum"]
+                and all(isinstance(item, str) for item in schema["enum"])
+            )
+        ):
+            raise InventoryBlocked(
+                "containment inventory schema is malformed"
+            )
+    elif expected_type == "integer":
+        if (
+            isinstance(schema.get("minimum"), bool)
+            or not isinstance(schema.get("minimum"), int)
+        ):
+            raise InventoryBlocked(
+                "containment inventory schema is malformed"
+            )
+    else:
+        raise InventoryBlocked("containment inventory schema is malformed")
+
+
+def validate_inventory_artifact(
+    inventory: dict[str, Any],
+    schema_path: Path | str = DEFAULT_SCHEMA_PATH,
+) -> None:
+    """Reject any inventory field not permitted by the checked-in schema."""
+    try:
+        schema = json.loads(
+            Path(schema_path).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InventoryBlocked(
+            "cannot load containment inventory schema"
+        ) from exc
+    if not isinstance(schema, dict):
+        raise InventoryBlocked("containment inventory schema is malformed")
+    _validate_schema_definition(schema, "schema")
+    _validate_schema_value(inventory, schema, "inventory")
 
 
 def _is_included_path(relative_path: str) -> bool:
@@ -135,9 +269,7 @@ def _validate_candidate(
     unexpected = set(candidate) - INPUT_FIELDS
     missing = INPUT_FIELDS - set(candidate)
     if unexpected:
-        raise InventoryBlocked(
-            "unexpected fields: " + ", ".join(sorted(unexpected))
-        )
+        raise InventoryBlocked("candidate contains unexpected fields")
     if missing:
         raise InventoryBlocked("missing fields: " + ", ".join(sorted(missing)))
 
@@ -159,7 +291,7 @@ def _validate_candidate(
 
     fact_class = candidate["fact_class"]
     if not isinstance(fact_class, str) or fact_class not in FACT_CLASSES:
-        raise InventoryBlocked(f"unknown fact class: {fact_class!r}")
+        raise InventoryBlocked("unknown fact class")
 
     owner = candidate["owner"]
     if not isinstance(owner, str) or owner not in known_owners:
@@ -202,13 +334,15 @@ def build_inventory(
             item["redacted_identifier"],
         )
     )
-    return {
+    inventory = {
         "record_count": len(records),
         "records": records,
         "schema_version": 1,
         "target_count": len(targets),
         "target_source": "git-ls-files",
     }
+    validate_inventory_artifact(inventory)
+    return inventory
 
 
 def _load_candidates(input_path: str) -> list[dict[str, Any]]:
