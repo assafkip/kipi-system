@@ -50,6 +50,64 @@ PASS=0
 FAIL=0
 SKIP=0
 GATE_FAIL=""
+MODEL_RUN=0
+DRY_MODEL_ROOT=""
+ARCHIVE_TMP=""
+DRY_TMP=""
+
+cleanup_dry_model() {
+  if [ "${MODEL_RUN:-0}" = "1" ] && [ -n "${DRY_MODEL_ROOT:-}" ]; then
+    cd "$SCRIPT_DIR"
+    rm -r -- "$DRY_MODEL_ROOT"
+    DRY_MODEL_ROOT=""
+    MODEL_RUN=0
+  fi
+}
+
+cleanup_updater_temps() {
+  if [ -n "${ARCHIVE_TMP:-}" ] && [ -d "$ARCHIVE_TMP" ]; then
+    rm -r -- "$ARCHIVE_TMP"
+    ARCHIVE_TMP=""
+  fi
+  if [ -n "${DRY_TMP:-}" ] && [ -d "$DRY_TMP" ]; then
+    rm -r -- "$DRY_TMP"
+    DRY_TMP=""
+  fi
+  cleanup_dry_model
+}
+
+worktree_digest() {
+  python3 - "$1" <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+for current, directories, files in os.walk(root, followlinks=False):
+    directories[:] = sorted(name for name in directories if name != ".git")
+    for name in sorted(directories + files):
+        candidate = pathlib.Path(current, name)
+        if candidate == root / ".git":
+            continue
+        relative = candidate.relative_to(root).as_posix()
+        metadata = candidate.lstat()
+        digest.update(relative.encode("utf-8", "surrogateescape") + b"\0")
+        digest.update(f"{stat.S_IFMT(metadata.st_mode):o}:{stat.S_IMODE(metadata.st_mode):o}".encode() + b"\0")
+        if stat.S_ISLNK(metadata.st_mode):
+            digest.update(os.readlink(candidate).encode("utf-8", "surrogateescape"))
+        elif stat.S_ISREG(metadata.st_mode):
+            with candidate.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        digest.update(b"\0")
+print(digest.hexdigest())
+PY
+}
+
+trap cleanup_updater_temps EXIT
 
 while IFS='|' read -r name path prefix itype; do
   echo "--- $name ($itype) ---"
@@ -71,7 +129,179 @@ while IFS='|' read -r name path prefix itype; do
     continue
   fi
 
-  if [ "$DRY_RUN" != "--dry-run" ]; then
+  MODEL_RUN=0
+  DRY_MODEL_ROOT=""
+  ORIGINAL_PATH="$path"
+  ORIGINAL_HEAD=""
+  if [ "$DRY_RUN" = "--dry-run" ]; then
+    DRY_MODEL_ROOT="$(mktemp -d)"
+    MODEL_RUN=1
+    ORIGINAL_HEAD="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
+    if [ -z "$ORIGINAL_HEAD" ]; then
+      echo "  ERROR: could not resolve production HEAD for dry-run model"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
+    if ! python3 - "$path" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+for current, directories, files in os.walk(root, followlinks=False):
+    for name in directories + files:
+        candidate = pathlib.Path(current, name)
+        if not candidate.is_symlink():
+            continue
+        target = os.readlink(candidate)
+        if os.path.isabs(target):
+            print(f"unsafe absolute symlink: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
+            raise SystemExit(1)
+        resolved = (candidate.parent / target).resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            print(f"unsafe symlink escapes instance: {candidate.relative_to(root)} -> {os.readlink(candidate)}", file=sys.stderr)
+            raise SystemExit(1)
+PY
+    then
+      echo "  ERROR: unsafe symlink prevents isolated dry-run modeling"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
+    SOURCE_GIT_DIR="$(
+      git -C "$path" rev-parse --path-format=absolute --git-common-dir \
+        2>/dev/null || true
+    )"
+    SOURCE_WORKTREE_GIT_DIR="$(
+      git -C "$path" rev-parse --path-format=absolute --git-dir \
+        2>/dev/null || true
+    )"
+    if [ -n "$SOURCE_WORKTREE_GIT_DIR" ] &&
+        { [ -f "$SOURCE_WORKTREE_GIT_DIR/MERGE_HEAD" ] ||
+          [ -d "$SOURCE_WORKTREE_GIT_DIR/rebase-merge" ] ||
+          [ -d "$SOURCE_WORKTREE_GIT_DIR/rebase-apply" ]; }; then
+      echo "  ERROR: active merge or rebase cannot be modeled safely"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
+    ORIGINAL_BRANCH="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
+    MODEL_SETUP_FAILED=0
+    if [ -d "$path/.git" ]; then
+      if ! mkdir -p "$DRY_MODEL_ROOT/instance" ||
+          ! rsync -a --delete --exclude=".git" "$path/" \
+            "$DRY_MODEL_ROOT/instance/" ||
+          ! cp -a "$path/.git" "$DRY_MODEL_ROOT/instance/.git"; then
+        MODEL_SETUP_FAILED=1
+      fi
+    else
+      if [ -z "$SOURCE_GIT_DIR" ] ||
+          [ -z "$SOURCE_WORKTREE_GIT_DIR" ] ||
+          ! git init --quiet "$DRY_MODEL_ROOT/instance" ||
+          ! git -C "$DRY_MODEL_ROOT/instance" fetch --quiet --no-tags \
+            "$SOURCE_GIT_DIR" "$ORIGINAL_HEAD"; then
+        MODEL_SETUP_FAILED=1
+      elif [ -n "$ORIGINAL_BRANCH" ]; then
+        git -C "$DRY_MODEL_ROOT/instance" checkout --quiet \
+          -B "$ORIGINAL_BRANCH" "$ORIGINAL_HEAD" ||
+          MODEL_SETUP_FAILED=1
+      else
+        git -C "$DRY_MODEL_ROOT/instance" checkout --quiet \
+          --detach "$ORIGINAL_HEAD" ||
+          MODEL_SETUP_FAILED=1
+      fi
+      if [ "$MODEL_SETUP_FAILED" = "0" ] &&
+          { ! cp "$SOURCE_GIT_DIR/config" \
+              "$DRY_MODEL_ROOT/instance/.git/config" ||
+            ! git -C "$DRY_MODEL_ROOT/instance" config --local \
+              core.bare false ||
+            ! rsync -a --delete --exclude=".git" "$path/" \
+              "$DRY_MODEL_ROOT/instance/"; }; then
+        MODEL_SETUP_FAILED=1
+      fi
+      if [ "$MODEL_SETUP_FAILED" = "0" ] &&
+          [ -f "$SOURCE_WORKTREE_GIT_DIR/index" ] &&
+          ! cp "$SOURCE_WORKTREE_GIT_DIR/index" \
+            "$DRY_MODEL_ROOT/instance/.git/index"; then
+        MODEL_SETUP_FAILED=1
+      fi
+      if [ "$MODEL_SETUP_FAILED" = "0" ] &&
+          [ -f "$SOURCE_WORKTREE_GIT_DIR/config.worktree" ] &&
+          ! cp "$SOURCE_WORKTREE_GIT_DIR/config.worktree" \
+            "$DRY_MODEL_ROOT/instance/.git/config.worktree"; then
+        MODEL_SETUP_FAILED=1
+      fi
+      if [ "$MODEL_SETUP_FAILED" = "0" ] &&
+          [ -f "$SOURCE_WORKTREE_GIT_DIR/info/sparse-checkout" ]; then
+        mkdir -p "$DRY_MODEL_ROOT/instance/.git/info"
+        cp "$SOURCE_WORKTREE_GIT_DIR/info/sparse-checkout" \
+          "$DRY_MODEL_ROOT/instance/.git/info/sparse-checkout" ||
+          MODEL_SETUP_FAILED=1
+      fi
+    fi
+    if [ "$MODEL_SETUP_FAILED" != "0" ]; then
+      echo "  ERROR: could not create disposable dry-run model"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
+    if git -C "$DRY_MODEL_ROOT/instance" config --local \
+        --get-all core.worktree >/dev/null 2>&1; then
+      if ! git -C "$DRY_MODEL_ROOT/instance" config --local \
+          --replace-all core.worktree "$DRY_MODEL_ROOT/instance"; then
+        echo "  ERROR: could not isolate repository worktree config"
+        cleanup_dry_model
+        FAIL=$((FAIL + 1))
+        echo ""
+        continue
+      fi
+    fi
+    if [ -f "$DRY_MODEL_ROOT/instance/.git/config.worktree" ] &&
+        git -C "$DRY_MODEL_ROOT/instance" config --worktree \
+          --get-all core.worktree >/dev/null 2>&1; then
+      if ! git -C "$DRY_MODEL_ROOT/instance" config --worktree \
+          --replace-all core.worktree "$DRY_MODEL_ROOT/instance"; then
+        echo "  ERROR: could not isolate linked-worktree config"
+        cleanup_dry_model
+        FAIL=$((FAIL + 1))
+        echo ""
+        continue
+      fi
+    fi
+    path="$DRY_MODEL_ROOT/instance"
+    if [ "$itype" = "direct-clone" ]; then
+      ORIGINAL_ORIGIN="$(git -C "$ORIGINAL_PATH" remote get-url origin 2>/dev/null || true)"
+      case "$ORIGINAL_ORIGIN" in
+        /*|*://*|*@*:*) ;;
+        *)
+          ORIGINAL_ORIGIN="$(
+            python3 - "$ORIGINAL_PATH" "$ORIGINAL_ORIGIN" <<'PY'
+import os
+import sys
+print(os.path.abspath(os.path.join(sys.argv[1], os.path.expanduser(sys.argv[2]))))
+PY
+          )"
+          ;;
+      esac
+      if [ -z "$ORIGINAL_ORIGIN" ] ||
+          ! git -C "$path" remote set-url origin "$ORIGINAL_ORIGIN"; then
+        echo "  ERROR: could not configure isolated direct-clone origin"
+        cleanup_dry_model
+        FAIL=$((FAIL + 1))
+        echo ""
+        continue
+      fi
+    fi
+  fi
+
+  if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
     cd "$path"
 
     # Clean up stale git lock files from crashed processes
@@ -95,15 +325,31 @@ while IFS='|' read -r name path prefix itype; do
     # Auto-commit tracked modified files so working tree is clean
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
       echo "  Auto-committing modified tracked files..."
-      git add -u 2>/dev/null || true
-      git commit --no-verify --no-gpg-sign -m "chore: auto-commit before kipi update" </dev/null 2>/dev/null || true
+      if ! git add -u 2>/dev/null ||
+          { ! git diff --cached --quiet 2>/dev/null &&
+            ! git commit --no-verify --no-gpg-sign \
+              -m "chore: auto-commit before kipi update" \
+              </dev/null 2>/dev/null; }; then
+        echo "  ERROR: could not auto-commit tracked changes"
+        git status --short 2>/dev/null | sed 's/^/    /' || true
+        cleanup_dry_model
+        FAIL=$((FAIL + 1))
+        echo ""
+        continue
+      fi
     fi
   fi
 
   if [ "$itype" = "direct-clone" ]; then
     echo "  Direct clone - pulling from origin..."
-    if [ "$DRY_RUN" != "--dry-run" ]; then
-      git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null || true
+    if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
+      if ! git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
+        echo "  ERROR: fetch failed"
+        cleanup_dry_model
+        FAIL=$((FAIL + 1))
+        echo ""
+        continue
+      fi
       if git pull --rebase origin "$SKELETON_BRANCH" 2>&1; then
         echo "  OK"
         PASS=$((PASS + 1))
@@ -119,20 +365,11 @@ while IFS='|' read -r name path prefix itype; do
           FAIL=$((FAIL + 1))
         fi
       fi
-    else
-      cd "$path"
-      git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null || true
-      BEHIND=$(git rev-list --count HEAD..origin/"$SKELETON_BRANCH" 2>/dev/null) || BEHIND="?"
-      echo "  $BEHIND commits behind origin/$SKELETON_BRANCH"
-      if [ "$BEHIND" != "0" ] && [ "$BEHIND" != "?" ]; then
-        git log --oneline -5 HEAD..origin/"$SKELETON_BRANCH" 2>/dev/null | while read -r line; do echo "    $line"; done || true
-      fi
-      PASS=$((PASS + 1))
     fi
   else
     # Archive + rsync: fast, reliable, no history walking
     echo "  Syncing $prefix/ from skeleton..."
-    if [ "$DRY_RUN" != "--dry-run" ]; then
+    if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
       ARCHIVE_TMP=$(mktemp -d)
       if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$ARCHIVE_TMP" 2>/dev/null; then
         # Snapshot untracked instance files before the destructive --delete.
@@ -153,6 +390,7 @@ while IFS='|' read -r name path prefix itype; do
             ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
           echo "  ERROR: preservation snapshot inventory failed; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
           continue
@@ -168,6 +406,7 @@ while IFS='|' read -r name path prefix itype; do
         if [ ! -f "$PRESERVE_SCAN" ]; then
           echo "  ERROR: preservation helper missing; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
           continue
@@ -179,6 +418,7 @@ while IFS='|' read -r name path prefix itype; do
           [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
           echo "  ERROR: preservation helper failed; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
           continue
@@ -216,6 +456,7 @@ PY
         then
           echo "  ERROR: preservation receipt incomplete or invalid; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
           continue
@@ -231,6 +472,7 @@ PY
           done < "$SNAP/list" ); then
           echo "  ERROR: preservation snapshot copy failed; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
           continue
@@ -239,31 +481,63 @@ PY
         # patterns also matched inside the nested q-system/q-system/ shadow copy
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete
         # the shadow tree -- "not empty, cannot delete" on every update.
-        rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
-          --exclude="/my-project/" \
-          --exclude="/canonical/" \
-          --exclude="/memory/" \
-          --exclude="/output/" \
-          --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null
+        if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
+            --exclude="/my-project/" \
+            --exclude="/canonical/" \
+            --exclude="/memory/" \
+            --exclude="/output/" \
+            --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null; then
+          echo "  ERROR: q-system sync failed"
+          rm -r -- "$ARCHIVE_TMP"
+          ARCHIVE_TMP=""
+          cleanup_dry_model
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
         # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
-        ( cd "$path" && while IFS= read -r -d '' uf; do
+        if ! ( cd "$path" && while IFS= read -r -d '' uf; do
             if ! { [ -e "$uf" ] || [ -L "$uf" ]; } && { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
               mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && echo "  restored untracked: $uf"
             fi
-          done < "$SNAP/list" )
-        rm -rf "$ARCHIVE_TMP"
+          done < "$SNAP/list" ); then
+          echo "  ERROR: preserved-file restore failed"
+          rm -r -- "$ARCHIVE_TMP"
+          ARCHIVE_TMP=""
+          cleanup_dry_model
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
+        rm -r -- "$ARCHIVE_TMP"
+        ARCHIVE_TMP=""
         cd "$path"
-        git add "$prefix/" 2>/dev/null || true
+        if ! git add "$prefix/" 2>/dev/null; then
+          echo "  ERROR: could not stage q-system sync"
+          cleanup_dry_model
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
-          git commit --no-verify --no-gpg-sign -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" </dev/null 2>/dev/null || true
+          if ! git commit --no-verify --no-gpg-sign \
+              -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" \
+              </dev/null 2>/dev/null; then
+            echo "  ERROR: could not commit q-system sync"
+            cleanup_dry_model
+            FAIL=$((FAIL + 1))
+            echo ""
+            continue
+          fi
           echo "  OK ($CHANGES files updated)"
         else
           echo "  OK (already up to date)"
         fi
         PASS=$((PASS + 1))
       else
-        rm -rf "$ARCHIVE_TMP"
+        rm -r -- "$ARCHIVE_TMP"
+        ARCHIVE_TMP=""
         echo "  WARN: archive export failed"
         FAIL=$((FAIL + 1))
       fi
@@ -283,9 +557,11 @@ PY
         else
           echo "  Up to date"
         fi
-        rm -rf "$DRY_TMP"
+        rm -r -- "$DRY_TMP"
+        DRY_TMP=""
       else
-        rm -rf "$DRY_TMP"
+        rm -r -- "$DRY_TMP"
+        DRY_TMP=""
         echo "  WARN: archive export failed (dry)"
       fi
       PASS=$((PASS + 1))
@@ -293,8 +569,10 @@ PY
   fi
 
   # Sync settings, agents, rules, output styles, and plugins
-  if [ "$DRY_RUN" != "--dry-run" ] && [ -d "$path/.claude" ]; then
+  if { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; } &&
+      [ -d "$path/.claude" ]; then
     echo "  Syncing .claude/ config..."
+    CONFIG_FAILED=0
 
     # Rebuild settings.json from template (preserves instance customizations)
     if [ -f "$path/.claude/settings.json" ]; then
@@ -304,7 +582,12 @@ PY
       # change left BOTH forms in every instance — token-guard ran twice per
       # tool call and its counters doubled. The script dedupes by invoked
       # script basename; template form wins, instance-added hooks survive.
-      python3 "$SCRIPT_DIR/kipi-settings-merge.py" "$SCRIPT_DIR/settings-template.json" "$path/.claude/settings.json" 2>/dev/null || echo "    WARN: settings.json sync failed"
+      if ! python3 "$SCRIPT_DIR/kipi-settings-merge.py" \
+          "$SCRIPT_DIR/settings-template.json" \
+          "$path/.claude/settings.json" 2>/dev/null; then
+        echo "    ERROR: settings.json sync failed"
+        CONFIG_FAILED=1
+      fi
 
       # Path rewriting: previously this section doubled $CLAUDE_PROJECT_DIR/q-system/
       # to $CLAUDE_PROJECT_DIR/q-system/q-system/ for "subtree" instances. That logic
@@ -318,10 +601,17 @@ PY
     fi
 
     # Sync agents, output styles, rules
-    mkdir -p "$path/.claude/agents" "$path/.claude/output-styles" "$path/.claude/rules"
-    cp "$SCRIPT_DIR"/.claude/agents/*.md "$path/.claude/agents/" 2>/dev/null || true
-    cp "$SCRIPT_DIR"/.claude/output-styles/*.md "$path/.claude/output-styles/" 2>/dev/null || true
-    cp "$SCRIPT_DIR"/.claude/rules/*.md "$path/.claude/rules/" 2>/dev/null || true
+    if ! mkdir -p "$path/.claude/agents" "$path/.claude/output-styles" \
+        "$path/.claude/rules"; then
+      CONFIG_FAILED=1
+    fi
+    for config_kind in agents output-styles rules; do
+      if compgen -G "$SCRIPT_DIR/.claude/$config_kind/*.md" >/dev/null &&
+          ! cp "$SCRIPT_DIR"/.claude/"$config_kind"/*.md \
+            "$path/.claude/$config_kind/" 2>/dev/null; then
+        CONFIG_FAILED=1
+      fi
+    done
 
     # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).
     # rsync instead of rm -rf + cp -R: --delete-excluded strips embedded .git dirs
@@ -333,9 +623,11 @@ PY
       for plugin_dir in "$SCRIPT_DIR"/plugins/*/; do
         if [ -d "$plugin_dir" ]; then
           plugin_name="$(basename "$plugin_dir")"
-          rsync -a --delete --delete-excluded \
-            --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
-            "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null || true
+          if ! rsync -a --delete --delete-excluded \
+              --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
+              "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null; then
+            CONFIG_FAILED=1
+          fi
         fi
       done
     fi
@@ -343,12 +635,30 @@ PY
     # Commit the config sync. The updater used to commit only $prefix/, leaving
     # .claude/ and plugins/ permanently dirty in every instance repo.
     if git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
-      ( cd "$path" && \
-        git rm -r -q --cached plugins/memory-lifecycle 2>/dev/null || true; \
-        git add .claude/ plugins/ 2>/dev/null || true; \
-        if ! git diff --cached --quiet 2>/dev/null; then \
-          git commit --no-verify --no-gpg-sign -m "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" </dev/null 2>/dev/null || true; \
-        fi )
+      if ! ( cd "$path" &&
+        if git ls-files --error-unmatch plugins/memory-lifecycle \
+            >/dev/null 2>&1; then
+          git rm -r -q --cached plugins/memory-lifecycle
+        fi &&
+        git add .claude/ plugins/ &&
+        if ! git diff --cached --quiet 2>/dev/null; then
+          git commit --no-verify --no-gpg-sign \
+            -m "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" \
+            </dev/null 2>/dev/null
+        fi
+      ); then
+        CONFIG_FAILED=1
+      fi
+    else
+      CONFIG_FAILED=1
+    fi
+
+    if [ "$CONFIG_FAILED" != "0" ]; then
+      echo "  ERROR: config sync did not reach a complete committed state"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
     fi
 
     echo "  Config synced"
@@ -378,6 +688,25 @@ PY
       echo "  capability gate: MISSING after sync"
       GATE_FAIL="$GATE_FAIL $name(missing-gate)"
     fi
+  fi
+  if [ "$MODEL_RUN" = "1" ]; then
+    MODELED_DIFF="$(git -C "$path" diff --name-status "$ORIGINAL_HEAD" HEAD --)"
+    MODELED_TREE="$(git -C "$path" rev-parse 'HEAD^{tree}')"
+    MODELED_STATE="$(worktree_digest "$path")"
+    if [ -n "$MODELED_DIFF" ]; then
+      echo "  Changes vs skeleton (modeled final state):"
+    else
+      echo "  Up to date"
+    fi
+    echo "  MODELED_FINAL_DIFF_BEGIN $name"
+    if [ -n "$MODELED_DIFF" ]; then
+      printf '%s\n' "$MODELED_DIFF"
+    fi
+    echo "  MODELED_FINAL_DIFF_END $name"
+    echo "  MODELED_FINAL_TREE $name $MODELED_TREE"
+    echo "  MODELED_FINAL_STATE_SHA256 $name $MODELED_STATE"
+    cleanup_dry_model
+    path="$ORIGINAL_PATH"
   fi
   echo ""
 done < <(python3 -c "
