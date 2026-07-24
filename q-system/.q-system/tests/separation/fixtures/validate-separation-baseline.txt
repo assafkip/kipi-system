@@ -1,0 +1,13 @@
+receipt_version: 1
+command: python3 validate-separation.py 3
+commit_sha: 3ec75a79fb1832911572d1ccd438baab1f86a486
+timestamp_utc: 2026-07-24T22:55:57Z
+exit_code: 1
+summary:
+PASS: 70
+FAIL: 2
+WARN: 1
+FAILURES:
+- capability gate: declared-vs-actual diff + full test run exits 0
+- Repository-derived generic targets contain no semantic instance facts (11340 findings)
+GATE FAILED. Do not proceed to Phase 4.
