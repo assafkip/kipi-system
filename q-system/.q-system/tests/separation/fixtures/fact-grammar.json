@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "required_categories": [
+    "case_fact",
+    "currency",
+    "dated_interaction",
+    "placeholder",
+    "populated_field",
+    "source",
+    "synthetic_marker",
+    "unclassified"
+  ],
+  "cases": [
+    {
+      "id": "populated-client-field",
+      "covers": ["populated_field"],
+      "text": "- **Client:** Oriole Systems",
+      "expected_classes": ["client_identity"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "plain-prospect-field",
+      "covers": ["populated_field"],
+      "text": "Prospect: Oriole Systems",
+      "expected_classes": ["client_identity"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "sourced-dated-priced-interaction",
+      "covers": ["currency", "dated_interaction", "source"],
+      "text": "- **Source:** Maren quoted $5,000 on July 24, 2026",
+      "expected_classes": ["pricing", "sourced_interaction"],
+      "expected_lines": [1, 1]
+    },
+    {
+      "id": "case-proof-gap",
+      "covers": ["case_fact"],
+      "text": "- **Proof gap:** Missing attribution proof for the Oriole case",
+      "expected_classes": ["case_proof_gap"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "relationship-fact",
+      "covers": ["populated_field"],
+      "text": "- **Relationship:** Maren introduced Oriole Systems",
+      "expected_classes": ["relationship"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "placeholder-only-template",
+      "covers": ["placeholder"],
+      "text": "- **Client:** {{ client.name }}",
+      "expected_classes": [],
+      "expected_lines": []
+    },
+    {
+      "id": "synthetic-marker-with-fixture-provenance",
+      "covers": ["synthetic_marker"],
+      "source_path": "q-system/.q-system/tests/separation/fixtures/example.md",
+      "text": "fixture: synthetic\n- **Client:** Oriole Systems\n- **Price:** $5,000",
+      "expected_classes": [],
+      "expected_lines": []
+    },
+    {
+      "id": "synthetic-marker-without-provenance",
+      "covers": ["synthetic_marker", "unclassified"],
+      "source_path": "q-system/canonical/discovery.md",
+      "text": "fixture: synthetic\n- **Client:** Oriole Systems",
+      "expected_classes": ["unclassified_populated_record", "client_identity"],
+      "expected_lines": [1, 2]
+    },
+    {
+      "id": "unclassified-populated-record",
+      "covers": ["unclassified"],
+      "text": "- **Engagement detail:** Oriole requested custom deployment",
+      "expected_classes": ["unclassified_populated_record"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "multiline-populated-field",
+      "covers": ["populated_field"],
+      "text": "- **Organization:**\n  Oriole Systems",
+      "expected_classes": ["client_identity"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "source-without-date",
+      "covers": ["source"],
+      "text": "- **Potential source:** Maren",
+      "expected_classes": ["source_identity"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "dated-interaction-without-source-or-currency",
+      "covers": ["dated_interaction"],
+      "text": "- **Meeting:** July 24, 2026",
+      "expected_classes": ["dated_interaction"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "invalid-dated-interaction",
+      "covers": ["dated_interaction", "unclassified"],
+      "text": "- **Meeting:** 2026-99-99",
+      "expected_classes": ["unclassified_populated_record"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "currency-without-source-or-date",
+      "covers": ["currency"],
+      "text": "- **Package:** $5,000",
+      "expected_classes": ["pricing"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "affirmative-case-fact",
+      "covers": ["case_fact", "unclassified"],
+      "text": "- **Investigation case:** Oriole attribution review",
+      "expected_classes": ["unclassified_populated_record"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "fixture-provenance-without-marker",
+      "covers": ["synthetic_marker", "populated_field"],
+      "source_path": "q-system/.q-system/tests/separation/fixtures/example.md",
+      "text": "- **Client:** Oriole Systems",
+      "expected_classes": ["client_identity"],
+      "expected_lines": [1]
+    },
+    {
+      "id": "mixed-placeholder-and-real-content",
+      "covers": ["placeholder", "populated_field"],
+      "text": "- **Client:** {{ client.name }} for Oriole Systems",
+      "expected_classes": ["client_identity"],
+      "expected_lines": [1]
+    }
+  ]
+}
