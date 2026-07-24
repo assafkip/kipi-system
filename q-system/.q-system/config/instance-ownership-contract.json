@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "registry_contract": {
+    "managed_types": [
+      "subtree",
+      "direct-clone"
+    ],
+    "standalone_type": "standalone",
+    "managed_root_field": "subtree_prefix",
+    "state_root_field": "instance_q_dir",
+    "state_root_fallback": "managed_root",
+    "null_managed_root_policy": "skip_any_null_managed_root"
+  },
+  "ownership_classes": {
+    "generic_managed": {
+      "owner": "skeleton",
+      "mutation": "replace_or_merge"
+    },
+    "preserved_state": {
+      "owner": "instance",
+      "mutation": "preserve"
+    },
+    "instance_automation": {
+      "owner": "instance",
+      "mutation": "preserve_when_absent_from_skeleton"
+    }
+  },
+  "managed_destinations": [
+    {
+      "id": "q-root-sync",
+      "path": "{managed_root}",
+      "kind": "directory",
+      "class": "generic_managed",
+      "operation": "replace_with_preservation",
+      "selection": "skeleton_archive_contents",
+      "updater_marker": "rsync -a --delete \"$ARCHIVE_TMP/q-system/\" \"$path/$prefix/\"",
+      "applies_to": [
+        "subtree"
+      ]
+    },
+    {
+      "id": "direct-repository-pull",
+      "path": ".",
+      "kind": "repository",
+      "class": "generic_managed",
+      "operation": "git_pull",
+      "selection": "origin_branch_changes",
+      "updater_marker": "git pull --rebase origin \"$SKELETON_BRANCH\"",
+      "applies_to": [
+        "direct-clone"
+      ]
+    },
+    {
+      "id": "claude-settings",
+      "path": ".claude/settings.json",
+      "kind": "file",
+      "class": "generic_managed",
+      "operation": "merge",
+      "selection": "settings_template_fields",
+      "updater_marker": "\"$path/.claude/settings.json\"",
+      "applies_to": [
+        "subtree",
+        "direct-clone"
+      ]
+    },
+    {
+      "id": "claude-agents",
+      "path": ".claude/agents",
+      "kind": "directory",
+      "class": "generic_managed",
+      "operation": "copy",
+      "selection": "skeleton_matching_markdown",
+      "updater_marker": "\"$path/.claude/agents\"",
+      "applies_to": [
+        "subtree",
+        "direct-clone"
+      ]
+    },
+    {
+      "id": "claude-rules",
+      "path": ".claude/rules",
+      "kind": "directory",
+      "class": "generic_managed",
+      "operation": "copy",
+      "selection": "skeleton_matching_markdown",
+      "updater_marker": "\"$path/.claude/rules\"",
+      "applies_to": [
+        "subtree",
+        "direct-clone"
+      ]
+    },
+    {
+      "id": "claude-output-styles",
+      "path": ".claude/output-styles",
+      "kind": "directory",
+      "class": "generic_managed",
+      "operation": "copy",
+      "selection": "skeleton_matching_markdown",
+      "updater_marker": "\"$path/.claude/output-styles\"",
+      "applies_to": [
+        "subtree",
+        "direct-clone"
+      ]
+    },
+    {
+      "id": "plugins",
+      "path": "plugins",
+      "kind": "directory",
+      "class": "generic_managed",
+      "operation": "replace_each_plugin",
+      "selection": "skeleton_present_plugin_directories",
+      "updater_marker": "\"$path/plugins/$plugin_name/\"",
+      "applies_to": [
+        "subtree",
+        "direct-clone"
+      ]
+    }
+  ],
+  "preserved_state": [
+    {
+      "id": "managed-root-canonical",
+      "path": "{managed_root}/canonical",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "managed-root-my-project",
+      "path": "{managed_root}/my-project",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "managed-root-memory",
+      "path": "{managed_root}/memory",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "managed-root-output",
+      "path": "{managed_root}/output",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "managed-root-agent-pipeline-bus",
+      "path": "{managed_root}/.q-system/agent-pipeline/bus",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "state-root-canonical",
+      "path": "{state_root}/canonical",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "state-root-my-project",
+      "path": "{state_root}/my-project",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "state-root-memory",
+      "path": "{state_root}/memory",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "state-root-output",
+      "path": "{state_root}/output",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    },
+    {
+      "id": "state-root-agent-pipeline-bus",
+      "path": "{state_root}/.q-system/agent-pipeline/bus",
+      "kind": "directory",
+      "class": "preserved_state",
+      "applies_to": ["subtree"]
+    }
+  ],
+  "instance_automation": {
+    "id": "instance-automation",
+    "paths": [
+      "{managed_root}",
+      ".claude/agents",
+      ".claude/rules",
+      ".claude/output-styles",
+      "plugins"
+    ],
+    "kind": "selection",
+    "class": "instance_automation",
+    "applies_to": ["subtree"],
+    "selection": "tracked_or_untracked_paths_not_selected_by_generic_operation",
+    "exclude_preserved_state": true,
+    "excluded_relative_paths": [
+      "q-system",
+      "**/__pycache__",
+      "**/*.pyc"
+    ]
+  }
+}
