@@ -94,6 +94,15 @@ Skeleton (kipi-system)
 
 **Never put instance-specific content in `q-system/`.** The subtree is read-only from the instance's perspective. Changes go upstream through `kipi-push-upstream.sh`, not by editing files in the subtree directly. (Instance-specific *automation* also stays out of `q-system/` — repo-root only — because the subtree is an `rsync --delete` target. See RULE-2026-06-30-A.)
 
+## Public History Containment Decision
+
+- **Decision owner:** Repository owner
+- **Status:** Accepted on 2026-07-24
+- **Decision:** Document current exposure. The containment program moves complete records to the verified instance owner and restores the generic working tree through a separately scoped issue. That working-tree containment does not erase historical objects.
+- **Constraint:** No history rewrite is authorized by this program.
+- **Escalation trigger:** If the repository owner determines that historical exposure requires removal, the work needs a separate approved PRD and a coordinated security response before any repository history or remote reference changes.
+- **Verification:** Record the affected commits, current visibility at the repository host, verified destination receipt, and any known forks or clones in that separate response. Do not claim historical removal from a clean working tree alone.
+
 ## Autonomous Systems
 
 The fleet self-heals (launchd jobs + a watchdog + the updater's warn-and-preserve guard) and self-learns (a nightly loop that distills every instance's RCAs into fleet-wide lessons behind a fail-closed client-data gate). Full design, build story, and operate/verify commands: **[AUTONOMOUS-SYSTEMS.md](AUTONOMOUS-SYSTEMS.md)**. The decisions behind it are logged as RULE-2026-06-30-A..E in `q-system/canonical/decisions.md`.
