@@ -24,6 +24,8 @@ Usage:
       --prefix q-system --skeleton-git DIR
 """
 import argparse
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -51,38 +53,64 @@ def is_excluded(rel):
     return any(rel == p.rstrip("/") or rel.startswith(p) for p in EXCLUDED_PREFIXES)
 
 
+def raise_walk_error(error):
+    raise error
+
+
 def skeleton_files(archive_dir):
     """Relative paths (under q-system/) present in the extracted skeleton archive."""
     root = os.path.join(archive_dir, "q-system") if os.path.isdir(
         os.path.join(archive_dir, "q-system")) else archive_dir
     present = set()
-    for dirpath, _dirs, files in os.walk(root):
-        for name in files:
+    if not os.path.isdir(root):
+        raise OSError(f"skeleton archive root is missing: {root}")
+    for dirpath, dirs, files in os.walk(root, onerror=raise_walk_error):
+        entries = files + [
+            name for name in dirs if os.path.islink(os.path.join(dirpath, name))
+        ]
+        for name in entries:
             present.add(os.path.relpath(os.path.join(dirpath, name), root))
     return present
 
 
 def git_tracked(repo, path):
-    return subprocess.run(
+    result = subprocess.run(
         ["git", "-C", repo, "ls-files", "--error-unmatch", "--", path],
         capture_output=True,
-    ).returncode == 0
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise RuntimeError(
+        f"git tracked-state lookup failed for {path}: rc={result.returncode}"
+    )
 
 
 def skeleton_ever_tracked(skeleton_git, skeleton_path):
-    out = subprocess.run(
+    result = subprocess.run(
         ["git", "-C", skeleton_git, "log", "--all", "--oneline", "-1", "--", skeleton_path],
         capture_output=True, text=True,
-    ).stdout.strip()
-    return bool(out)
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"skeleton history lookup failed for {skeleton_path}: "
+            f"rc={result.returncode}"
+        )
+    return bool(result.stdout.strip())
 
 
 def find_preserve_candidates(skeleton_archive, instance, prefix, skeleton_git):
     skel = skeleton_files(skeleton_archive)
     base = os.path.join(instance, prefix)
+    if not os.path.isdir(base):
+        raise OSError(f"instance prefix is missing: {base}")
     candidates = []
-    for dirpath, _dirs, files in os.walk(base):
-        for name in files:
+    for dirpath, dirs, files in os.walk(base, onerror=raise_walk_error):
+        entries = files + [
+            name for name in dirs if os.path.islink(os.path.join(dirpath, name))
+        ]
+        for name in entries:
             abs_path = os.path.join(dirpath, name)
             rel = os.path.relpath(abs_path, base)             # path under <prefix>/
             if is_excluded(rel):
@@ -104,13 +132,29 @@ def main():
     ap.add_argument("--instance", required=True)
     ap.add_argument("--prefix", default="q-system")
     ap.add_argument("--skeleton-git", required=True)
+    ap.add_argument("--receipt")
     args = ap.parse_args()
 
     found = find_preserve_candidates(
         args.skeleton_archive, args.instance, args.prefix, args.skeleton_git
     )
-    for path in found:
-        print(path)
+    output = "".join(f"{path}\n" for path in found).encode()
+    sys.stdout.buffer.write(output)
+    sys.stdout.buffer.flush()
+    if args.receipt:
+        receipt = {
+            "candidate_count": len(found),
+            "complete": True,
+            "schema_version": 1,
+            "stdout_sha256": hashlib.sha256(output).hexdigest(),
+        }
+        temporary = f"{args.receipt}.tmp.{os.getpid()}"
+        with open(temporary, "x", encoding="utf-8") as handle:
+            json.dump(receipt, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, args.receipt)
     if found:
         print(f"  WARNING: {len(found)} tracked instance-only file(s) would be deleted by "
               f"the skeleton sync -- preserving them:", file=sys.stderr)

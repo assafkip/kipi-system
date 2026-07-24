@@ -145,33 +145,96 @@ while IFS='|' read -r name path prefix itype; do
         # nested $prefix/q-system/ shadow tree (a stale skeleton copy from the old
         # `git subtree add` creation path -- folder-structure.md bans it; restoring
         # it made the shadow tree immortal across updates).
-        ( cd "$path" && git ls-files -z --others -- "$prefix/" \
+        if ! ( cd "$path" && git ls-files -z --others -- "$prefix/" \
             ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
             ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
             ":(exclude)$prefix/.q-system/agent-pipeline/bus/" \
             ":(exclude)$prefix/q-system/" \
-            ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list" || true
+            ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
+          echo "  ERROR: preservation snapshot inventory failed; rsync not started"
+          rm -r -- "$ARCHIVE_TMP"
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
         # Also preserve TRACKED instance-only files the --delete would remove. The
         # ls-files --others snapshot above only covers UNTRACKED files; a script the
         # instance COMMITTED inside the synced tree was deleted with no protection
         # (scar 2026-06-24: fractional-cxo income scanners died this way for 6 days).
         # The helper flags only files the skeleton NEVER tracked (genuinely instance-
-        # added), so skeleton-intended deletions still propagate. Fail-open: a missing
-        # or erroring helper is a no-op, never breaking the update.
+        # added), so skeleton-intended deletions still propagate. It is a hard
+        # precondition: missing or incomplete proof stops before rsync --delete.
         PRESERVE_SCAN="$SCRIPT_DIR/kipi-update-preserve-scan.py"
-        if [ -f "$PRESERVE_SCAN" ]; then
-          python3 "$PRESERVE_SCAN" --skeleton-archive "$ARCHIVE_TMP" \
-            --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
-            > "$SNAP/tracked" 2>"$SNAP/warn" || true
-          [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
-          if [ -s "$SNAP/tracked" ]; then
-            while IFS= read -r tf; do [ -n "$tf" ] && printf '%s\0' "$tf"; done \
-              < "$SNAP/tracked" >> "$SNAP/list"
-          fi
+        if [ ! -f "$PRESERVE_SCAN" ]; then
+          echo "  ERROR: preservation helper missing; rsync not started"
+          rm -r -- "$ARCHIVE_TMP"
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
         fi
-        ( cd "$path" && while IFS= read -r -d '' uf; do
-            mkdir -p "$SNAP/f/$(dirname "$uf")" && cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || true
-          done < "$SNAP/list" )
+        if ! python3 "$PRESERVE_SCAN" --skeleton-archive "$ARCHIVE_TMP" \
+            --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
+            --receipt "$SNAP/preservation-receipt.json" \
+            > "$SNAP/tracked" 2>"$SNAP/warn"; then
+          [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
+          echo "  ERROR: preservation helper failed; rsync not started"
+          rm -r -- "$ARCHIVE_TMP"
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
+        if ! python3 - "$SNAP/preservation-receipt.json" "$SNAP/tracked" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+receipt_path = pathlib.Path(sys.argv[1])
+output_path = pathlib.Path(sys.argv[2])
+try:
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    output = output_path.read_bytes()
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+expected_keys = {
+    "candidate_count",
+    "complete",
+    "schema_version",
+    "stdout_sha256",
+}
+if set(receipt) != expected_keys:
+    raise SystemExit(1)
+if receipt["schema_version"] != 1 or receipt["complete"] is not True:
+    raise SystemExit(1)
+if output and not output.endswith(b"\n"):
+    raise SystemExit(1)
+if receipt["candidate_count"] != len(output.splitlines()):
+    raise SystemExit(1)
+if receipt["stdout_sha256"] != hashlib.sha256(output).hexdigest():
+    raise SystemExit(1)
+PY
+        then
+          echo "  ERROR: preservation receipt incomplete or invalid; rsync not started"
+          rm -r -- "$ARCHIVE_TMP"
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
+        [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
+        if [ -s "$SNAP/tracked" ]; then
+          while IFS= read -r tf; do [ -n "$tf" ] && printf '%s\0' "$tf"; done \
+            < "$SNAP/tracked" >> "$SNAP/list"
+        fi
+        if ! ( cd "$path" && while IFS= read -r -d '' uf; do
+            mkdir -p "$SNAP/f/$(dirname "$uf")" &&
+              cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || exit 1
+          done < "$SNAP/list" ); then
+          echo "  ERROR: preservation snapshot copy failed; rsync not started"
+          rm -r -- "$ARCHIVE_TMP"
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
         # Excludes are ANCHORED (leading /) to the transfer root. Unanchored
         # patterns also matched inside the nested q-system/q-system/ shadow copy
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete

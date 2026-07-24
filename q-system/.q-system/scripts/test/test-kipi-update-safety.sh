@@ -12,6 +12,7 @@ WORK="$(mktemp -d)"; SK="$WORK/skel"; INST="$WORK/inst"
 # skeleton: git repo with committed q-system/ + a copy of the script + a registry
 mkdir -p "$SK/q-system"
 cp "$SCRIPT" "$SK/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK/kipi-update-preserve-scan.py"
 printf 'skeleton content v2\n' > "$SK/q-system/tracked.md"
 ( cd "$SK" && G init -q && G add -A && G commit -qm skel )
 printf '{"instances":[{"name":"testinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' "$INST" > "$SK/instance-registry.json"
