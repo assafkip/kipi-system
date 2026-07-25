@@ -138,11 +138,13 @@ def test_symlinked_source_fingerprint_is_repo_relative(tmp_path):
     assert fingerprints[0] == fingerprints[1]
 
 
-def test_special_file_behind_a_symlink_is_refused(tmp_path):
-    """A FIFO is copied by `rsync -a` (-D) and can never be read.
+def test_special_file_behind_a_symlink_is_excluded_not_refused(tmp_path):
+    """A FIFO carries no content, so refusing on it blocks the fleet for nothing.
 
-    Opening it would block the updater forever, so the gate cannot clear it.
-    Unscannable and copied is exactly the case that must stop the run.
+    `rsync -a` implies -D, so the FIFO is RECREATED at the destination as a
+    FIFO with zero bytes transferred. Nothing can leak through it. This test
+    previously asserted a refusal, which was wrong in the direction that gets
+    a gate switched off.
     """
     gate = load_gate()
     external = tmp_path / "external-repo"
@@ -151,9 +153,109 @@ def test_special_file_behind_a_symlink_is_refused(tmp_path):
     repo = make_repo(tmp_path)
     link_plugin(repo, external)
 
+    sources = gate.enumerate_propagation_sources(repo)
+
+    assert (
+        excluded_reason(sources, "plugins/memory-lifecycle/channel")
+        == "special-file-carries-no-content"
+    )
+    assert gate.scan_propagation_sources(repo) == []
+
+
+def test_paths_the_archive_never_copies_are_not_scanned(tmp_path):
+    """`git archive HEAD -- q-system/` plus five anchored rsync excludes.
+
+    kipi-update.sh:700-705 skips /my-project/, /canonical/, /memory/, /output/
+    and /.q-system/agent-pipeline/bus/, and NO propagation path copies a
+    repo-root file at all. Scanning them anyway blocks fleet updates over facts
+    that cannot leak, and canonical/ + my-project/ are exactly where the real
+    client facts live. That is the shape that gets a gate turned off.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    for relative in (
+        "q-system/canonical/decisions.md",
+        "q-system/my-project/founder-profile.md",
+        "q-system/.q-system/agent-pipeline/bus/bus.md",
+        "README.md",
+        "scripts/helper.md",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(LEAKED_RECORD, encoding="utf-8")
+    (repo / "q-system" / "marketing" / "outreach.md").write_text(
+        LEAKED_RECORD, encoding="utf-8"
+    )
+    track_everything(repo)
+
+    scanned = scanned_paths(gate.scan_propagation_sources(repo))
+
+    assert scanned == {"q-system/marketing/outreach.md"}
+
+
+def test_settings_template_is_read_from_the_worktree(tmp_path):
+    """kipi-update.sh:806 merges settings-template.json into all 23 instances.
+
+    kipi-settings-merge.py json.loads the LIVE file, so an uncommitted edit
+    ships. Reading it from the index means the gate clears bytes the updater
+    will not copy.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    template = repo / "settings-template.json"
+    template.write_text('{"env": {"NOTE": "clean"}}\n', encoding="utf-8")
+    track_everything(repo)
+    template.write_text(
+        '{"env": {"NOTE": "- Client: Northwind Trading"}}\n', encoding="utf-8"
+    )
+
+    read_text = {}
+
+    def record_text(text, source_path=None):
+        read_text[source_path] = text
+        return []
+
+    gate.scan_propagation_sources(repo, classify=record_text)
+
+    # The path alone proves nothing: the index half hands over the same path
+    # with the COMMITTED bytes. What must be true is that the gate judged the
+    # bytes the merge script will actually read.
+    assert "Northwind" in read_text["settings-template.json"]
+
+
+def test_a_container_that_holds_a_record_verbatim_is_refused(tmp_path):
+    """`.tar` stores member files uncompressed, so the record sits in the bytes.
+
+    Calling every archive and database an "asset that cannot carry a record" is
+    false, and it is the fail-open direction.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    plugin = repo / "plugins" / "kipi-core"
+    plugin.mkdir(parents=True)
+    (plugin / "deals.tar").write_bytes(b"\x00\x01" + LEAKED_RECORD.encode("utf-8"))
+
     with pytest.raises(gate.PropagationSourceRefused) as refusal:
         gate.scan_propagation_sources(repo)
-    assert "plugins/memory-lifecycle/channel" in str(refusal.value)
+    assert "deals.tar" in str(refusal.value)
+
+
+def test_utf16_without_a_bom_is_refused_not_read_as_mojibake(tmp_path):
+    """UTF-16-LE decodes as valid UTF-8 because NUL is a legal codepoint.
+
+    So it is neither refused nor flagged: it is scanned as mojibake the
+    classifier cannot read, which is silent blindness rather than a refusal.
+    No legitimate text source carries a NUL.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    plugin = repo / "plugins" / "kipi-core"
+    plugin.mkdir(parents=True)
+    (plugin / "notes.md").write_bytes(LEAKED_RECORD.encode("utf-16-le"))
+
+    with pytest.raises(gate.PropagationSourceRefused) as refusal:
+        gate.scan_propagation_sources(repo)
+    assert "notes.md" in str(refusal.value)
 
 
 @pytest.mark.skipif(

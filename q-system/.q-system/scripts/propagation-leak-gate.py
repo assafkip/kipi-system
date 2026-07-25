@@ -40,6 +40,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import stat
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
@@ -170,8 +171,32 @@ GATE_REPO_ROOT = SCRIPT_DIR.parents[2]
 # at the transfer root, cp because it is not passed -P) and both copy untracked
 # and unstaged content, so neither can be enumerated from the Git index.
 WORKTREE_CONFIG_KINDS = ("agents", "output-styles", "rules")
-WORKTREE_COPIED_PREFIXES = ("plugins",) + tuple(
-    f".claude/{kind}" for kind in WORKTREE_CONFIG_KINDS
+
+# settings-template.json is copied too, by a route that is easy to miss:
+# kipi-update.sh:806 runs kipi-settings-merge.py, which json.loads the LIVE
+# worktree file and writes every template key into each instance's
+# .claude/settings.json. Reading it from the index would clear bytes the
+# updater does not copy, and an UNTRACKED template would be invisible.
+WORKTREE_COPIED_FILES = ("settings-template.json",)
+WORKTREE_COPIED_PREFIXES = (
+    ("plugins",)
+    + tuple(f".claude/{kind}" for kind in WORKTREE_CONFIG_KINDS)
+    + WORKTREE_COPIED_FILES
+)
+
+# The archive half: `git archive HEAD -- q-system/` piped into an rsync that
+# carries five ANCHORED excludes (kipi-update.sh:700-705). Nothing else tracked
+# propagates at all -- no path copies a repo-root file, and .claude/ + plugins/
+# come from the worktree. Scanning outside this set blocks fleet updates over
+# facts that cannot leak, and canonical/ + my-project/ are exactly where the
+# real client facts live, so that misfire lands on the loudest possible files.
+ARCHIVED_ROOT = "q-system"
+ARCHIVE_EXCLUDED_SUBTREES = (
+    ".q-system/agent-pipeline/bus",
+    "canonical",
+    "memory",
+    "my-project",
+    "output",
 )
 
 # Mirrors the updater's rsync filters, INCLUDING their type semantics. A
@@ -190,12 +215,18 @@ RSYNC_EXCLUDED_SUFFIXES = (".pyc",)
 # unlisted extension (a UTF-16 `.rst` holding a client record) would be filed
 # under "binary" and skipped. Anything not listed here that fails to decode is
 # a source the gate cannot read, and refuses.
+# Containers and databases are NOT on this list. A .tar stores its members
+# uncompressed, sqlite stores text verbatim, and a .zip or .pdf can hold an
+# uncompressed stream, so the record sits in the bytes and calling them assets
+# that "cannot carry a record" is false in the fail-open direction. Only
+# formats whose bytes cannot contain the record verbatim belong here:
+# compiled objects, images, fonts, media, and COMPRESSED archives.
 BINARY_ASSET_SUFFIXES = (
-    ".a", ".bin", ".bz2", ".class", ".db", ".dll", ".dylib", ".eot", ".gif",
-    ".gz", ".ico", ".icns", ".idx", ".jar", ".jpeg", ".jpg", ".mov", ".mp3",
-    ".mp4", ".node", ".o", ".otf", ".pack", ".pdf", ".png", ".pyd", ".so",
-    ".sqlite", ".sqlite3", ".tar", ".tgz", ".ttf", ".wasm", ".wav", ".webp",
-    ".whl", ".woff", ".woff2", ".xz", ".zip",
+    ".a", ".bin", ".bz2", ".class", ".dll", ".dylib", ".eot", ".gif",
+    ".gz", ".ico", ".icns", ".idx", ".jpeg", ".jpg", ".mov", ".mp3",
+    ".mp4", ".node", ".o", ".otf", ".pack", ".png", ".pyd", ".so",
+    ".tgz", ".ttf", ".wasm", ".wav", ".webp",
+    ".woff", ".woff2", ".xz",
 )
 
 
@@ -257,7 +288,7 @@ def _read_source_or_refuse(real_path: Path, relative_path: str) -> str | None:
             f"propagation copies a source the gate cannot read: {relative_path}"
         ) from exc
     try:
-        return content.decode("utf-8")
+        text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
         if relative_path.endswith(BINARY_ASSET_SUFFIXES):
             return None
@@ -265,6 +296,16 @@ def _read_source_or_refuse(real_path: Path, relative_path: str) -> str | None:
             f"propagation copies a source the gate cannot decode: "
             f"{relative_path}"
         ) from exc
+    if "\x00" in text:
+        # UTF-16/32 without a BOM decodes CLEANLY as UTF-8, because NUL is a
+        # legal codepoint. So it is neither refused nor flagged: it is scanned
+        # as mojibake the classifier cannot read, which is silent blindness
+        # rather than a refusal. No legitimate text source carries a NUL.
+        raise PropagationSourceRefused(
+            f"propagation copies a source that is not readable text: "
+            f"{relative_path}"
+        )
+    return text
 
 
 def _digest(text: str) -> str:
@@ -305,7 +346,32 @@ def _scandir_or_refuse(real_dir: Path, relative_dir: str):
         ) from exc
 
 
+def _special_file_reason(real_path: Path) -> str | None:
+    """FIFOs, sockets and devices: recreated by `rsync -a` (-D) with NO bytes.
+
+    Nothing can ride a zero-content special into an instance, and opening a
+    FIFO would block the updater forever. Refusing on one stops the whole fleet
+    over content that cannot leak, which is how a gate gets switched off.
+    """
+    try:
+        mode = real_path.lstat().st_mode
+    except OSError:
+        return None  # let the read path produce the refusal, with its message
+    if (
+        stat.S_ISFIFO(mode)
+        or stat.S_ISSOCK(mode)
+        or stat.S_ISCHR(mode)
+        or stat.S_ISBLK(mode)
+    ):
+        return "special-file-carries-no-content"
+    return None
+
+
 def _record_source(real_path: Path, relative_path: str, sources: dict) -> None:
+    special = _special_file_reason(real_path)
+    if special is not None:
+        sources["excluded"].append({"path": relative_path, "reason": special})
+        return
     text = _read_source_or_refuse(real_path, relative_path)
     if text is None:
         sources["excluded"].append(
@@ -380,10 +446,27 @@ def _collect_config_kind(root: Path, kind: str, sources: dict) -> None:
             )
 
 
+def copied_by_archive(relative_path: str) -> bool:
+    """True for a tracked path `git archive HEAD -- q-system/` really delivers."""
+    parts = PurePosixPath(relative_path).parts
+    if len(parts) < 2 or parts[0] != ARCHIVED_ROOT:
+        return False
+    inside = "/".join(parts[1:])
+    return not any(
+        inside == subtree or inside.startswith(subtree + "/")
+        for subtree in ARCHIVE_EXCLUDED_SUBTREES
+    )
+
+
 def _collect_tracked(manifest: dict, sources: dict) -> None:
     """The `git archive` half, minus anything the worktree walk already owns."""
     for relative_path in manifest["targets"]:
         if copied_from_worktree(relative_path):
+            continue
+        if not copied_by_archive(relative_path):
+            sources["excluded"].append(
+                {"path": relative_path, "reason": "not-copied-by-propagation"}
+            )
             continue
         sources["tracked"].append(relative_path)
         sources["tracked_objects"][relative_path] = manifest["target_objects"][
@@ -400,6 +483,10 @@ def _collect_worktree(root: Path) -> dict:
     _collect_plugins(root, collected)
     for kind in WORKTREE_CONFIG_KINDS:
         _collect_config_kind(root, kind, collected)
+    for relative_path in WORKTREE_COPIED_FILES:
+        real_path = root / relative_path
+        if real_path.is_file():
+            _record_source(real_path, relative_path, collected)
     return collected
 
 
