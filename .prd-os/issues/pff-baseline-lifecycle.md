@@ -1,7 +1,7 @@
 ---
 id: pff-baseline-lifecycle
 title: Prune stale baseline entries and report adds separately from removals
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:

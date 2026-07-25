@@ -1,7 +1,7 @@
 ---
 id: pff-baseline-provenance
 title: Require per-entry justification for a baselined high-confidence fact
-status: open
+status: closed
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
@@ -34,4 +34,4 @@ Write the failing bulk-accept reproducer first. Blocking scope is the six high-c
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Require per-entry justification for a baselined high-confidence fact
+- [x] Require per-entry justification for a baselined high-confidence fact

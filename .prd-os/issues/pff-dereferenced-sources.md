@@ -1,7 +1,7 @@
 ---
 id: pff-dereferenced-sources
 title: Scan what rsync actually copies, including dereferenced symlinks
-status: open
+status: closed
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
@@ -33,4 +33,4 @@ Write the failing symlinked-plugin reproducer first. A fact behind a tracked sym
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Scan what rsync actually copies, including dereferenced symlinks
+- [x] Scan what rsync actually copies, including dereferenced symlinks
