@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 
@@ -511,3 +512,226 @@ def scan_propagation_sources(repo_root: Path | str, classify=None) -> list:
     targets.assert_index_unchanged(root, sources["index_sha256"])
     assert_worktree_unchanged(root, sources)
     return findings
+
+
+# --------------------------------------------------------------------------
+# Baseline: what is blessed, and who said why
+# --------------------------------------------------------------------------
+
+# The classes worth blocking on. Measured on this repo: 784 findings across 450
+# files, against 63k `unclassified_populated_record` hits that are mostly YAML
+# frontmatter (`name:` in an agent file) read as client identity. A 784-entry
+# file can be read by a human; a 64k one cannot, and a baseline nobody can read
+# is an unaudited allowlist, not a review.
+BLOCKING_FACT_CLASSES = (
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "source_identity",
+    "sourced_interaction",
+)
+
+BASELINE_SCHEMA_VERSION = 1
+
+
+class BaselineRefused(RuntimeError):
+    """Raised when a baseline would bless something nobody stood behind."""
+
+
+def _fact_class(finding) -> str:
+    """The finding's class, normalized, refusing malformed classifier output.
+
+    Exact string matching fails OPEN here: a `fact_class` of `"pricing "` or a
+    missing one would quietly land in the warning bucket, and a warning never
+    stops a run. Anything the classifier emits that this cannot read is a
+    refusal, not a warning.
+    """
+    if not isinstance(finding, Mapping):
+        raise BaselineRefused(f"finding is not a record: {finding!r}")
+    fact_class = finding.get("fact_class")
+    if not isinstance(fact_class, str) or not fact_class.strip():
+        raise BaselineRefused(
+            f"finding for {finding.get('path')!r} carries no fact_class"
+        )
+    return " ".join(fact_class.lower().split())
+
+
+def blocking_findings(findings) -> list:
+    """The findings that can stop a propagation run, with the class canonical.
+
+    The normalized class is substituted so the fingerprint keys on the canonical
+    form; otherwise `"pricing "` and `"pricing"` would be two different permits.
+    """
+    return [
+        {**finding, "fact_class": _fact_class(finding)}
+        for finding in findings
+        if _fact_class(finding) in BLOCKING_FACT_CLASSES
+    ]
+
+
+def warning_findings(findings) -> list:
+    """Reported, never blocking. Mostly `unclassified_populated_record`."""
+    return [
+        finding
+        for finding in findings
+        if _fact_class(finding) not in BLOCKING_FACT_CLASSES
+    ]
+
+
+def blocking_fingerprints(findings) -> dict:
+    """{fingerprint: count} over the blocking classes only."""
+    return fingerprint_findings(blocking_findings(findings))
+
+
+def _describe(key) -> str:
+    path, fact_class, indent, digest = key
+    return f"{path} [{fact_class}/{indent}] {digest[:12]}"
+
+
+def _materialize_justifications(justifications) -> dict:
+    """A real dict built from real items, never from the caller's `get`.
+
+    A Mapping subclass whose `get` returns a constant reason and whose
+    `__iter__` is empty would otherwise satisfy every per-entry check while
+    being precisely the bulk accept this refuses.
+    """
+    if not isinstance(justifications, Mapping):
+        raise BaselineRefused(
+            "a baseline is built per-entry: pass one justification per "
+            "fingerprint, not a single reason for the whole set"
+        )
+    materialized = {}
+    for key in list(justifications.keys()):
+        materialized[key] = justifications[key]
+    return materialized
+
+
+def _assert_every_entry_is_justified(counts: dict, justifications: dict) -> None:
+    missing = [key for key in counts if not str(justifications.get(key) or "").strip()]
+    if missing:
+        raise BaselineRefused(
+            "every baselined high-confidence fact needs its own written "
+            "justification; missing for:\n  "
+            + "\n  ".join(_describe(key) for key in sorted(missing))
+        )
+    unknown = [key for key in justifications if key not in counts]
+    if unknown:
+        # A permit written before the fact exists is a pre-authorized leak: the
+        # line can be introduced later and the delta gate will already allow it.
+        raise BaselineRefused(
+            "justification given for a fact that is not present:\n  "
+            + "\n  ".join(_describe(key) for key in sorted(unknown))
+        )
+
+
+def build_baseline_document(findings, justifications,
+                            classifier_sha256: str | None = None) -> dict:
+    """The committed baseline, one reviewed entry at a time.
+
+    `justifications` is a mapping from fingerprint to the reason that specific
+    line is known and accepted. A single reason covering the set is refused:
+    bulk acceptance is exactly how a fact that leaked before this gate shipped
+    gets blessed forever without anyone reading it.
+    """
+    justifications = _materialize_justifications(justifications)
+    counts = blocking_fingerprints(findings)
+    _assert_every_entry_is_justified(counts, justifications)
+    entries = [
+        {
+            "path": key[0],
+            "fact_class": key[1],
+            "indent": key[2],
+            "line_sha256": key[3],
+            "count": counts[key],
+            "justification": str(justifications[key]).strip(),
+        }
+        for key in sorted(counts)
+    ]
+    return {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "blocking_classes": list(BLOCKING_FACT_CLASSES),
+        "classifier_sha256": classifier_sha256,
+        "entries": entries,
+    }
+
+
+def _baseline_key(entry: dict, position: int) -> tuple:
+    for field in ("path", "fact_class", "indent", "line_sha256", "justification"):
+        if not str(entry.get(field) or "").strip():
+            raise BaselineRefused(
+                f"baseline entry {position} has no {field}"
+            )
+    if entry["fact_class"] not in BLOCKING_FACT_CLASSES:
+        raise BaselineRefused(
+            f"baseline entry {position} is class {entry['fact_class']!r}, which "
+            "cannot block, so a permit for it grants nothing and hides review"
+        )
+    return (
+        entry["path"],
+        entry["fact_class"],
+        entry["indent"],
+        entry["line_sha256"],
+    )
+
+
+def _assert_document_shape(document) -> None:
+    if not isinstance(document, Mapping):
+        raise BaselineRefused("baseline is not a JSON object")
+    if document.get("schema_version") != BASELINE_SCHEMA_VERSION:
+        raise BaselineRefused(
+            f"baseline schema_version is {document.get('schema_version')!r}, "
+            f"expected {BASELINE_SCHEMA_VERSION}"
+        )
+    if document.get("blocking_classes") != list(BLOCKING_FACT_CLASSES):
+        raise BaselineRefused(
+            "baseline declares a different blocking scope than the gate enforces"
+        )
+    if not isinstance(document.get("entries"), list):
+        raise BaselineRefused("baseline has no entries list")
+
+
+def load_baseline_document(document, classifier_sha256: str | None = None,
+                           current: dict | None = None) -> dict:
+    """{fingerprint: count}, refusing a file that lost its provenance.
+
+    The checks run on LOAD as well as on build, because the file is committed
+    and a hand-edit is the cheapest way to slip an unjustified permit in.
+
+    Pass `current` (the fingerprint counts actually found) to bound each permit.
+    A count is how many copies of a line one written justification covers, so
+    an unbounded count is a bulk accept with one reason attached: `count: 999`
+    on a line found twice pre-authorizes 997 copies nobody reviewed.
+    """
+    _assert_document_shape(document)
+    if classifier_sha256 is not None:
+        recorded = document.get("classifier_sha256")
+        if recorded != classifier_sha256:
+            raise BaselineRefused(
+                f"baseline was built by classifier {recorded!r}, running "
+                f"{classifier_sha256!r}"
+            )
+    counts: dict = {}
+    for position, entry in enumerate(document["entries"]):
+        key = _baseline_key(entry, position)
+        if key in counts:
+            # Two entries for one fingerprint split an inflated permit across
+            # two innocuous-looking rows.
+            raise BaselineRefused(
+                f"baseline entry {position} repeats {_describe(key)}"
+            )
+        counts[key] = _baseline_count(entry, position, key, current)
+    return counts
+
+
+def _baseline_count(entry: dict, position: int, key: tuple,
+                    current: dict | None) -> int:
+    count = entry.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise BaselineRefused(f"baseline entry {position} has no count")
+    if current is not None and count > current.get(key, 0):
+        raise BaselineRefused(
+            f"baseline permits {count} of {_describe(key)} but only "
+            f"{current.get(key, 0)} exist; a permit cannot exceed what was reviewed"
+        )
+    return count

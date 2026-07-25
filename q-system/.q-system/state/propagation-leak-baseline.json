@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": null,
+  "entries": [],
+  "_readme": [
+    "This file is EMPTY on purpose. It grants permits, so it is populated by a",
+    "human review, never by a script and never by an agent.",
+    "",
+    "Measured 2026-07-25 on this repo: 784 findings in the six blocking classes,",
+    "across 450 files. Each one needs its own written justification saying why",
+    "that specific line is a known, accepted, non-leaking record. Nothing in the",
+    "delta design proves those 784 are false positives, so a bulk accept would",
+    "pre-authorize any fact that leaked before this gate shipped.",
+    "",
+    "build_baseline_document() in ../scripts/propagation-leak-gate.py refuses a",
+    "single reason for the set, an empty reason, and a reason for a fact that is",
+    "not present. load_baseline_document() re-runs those checks so a hand-edit",
+    "of this file is caught too.",
+    "",
+    "classifier_sha256 is stamped when the baseline is first populated; the",
+    "preflight refuses a baseline built by a different classifier."
+  ]
+}
