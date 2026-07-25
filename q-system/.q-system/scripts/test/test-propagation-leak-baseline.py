@@ -130,7 +130,8 @@ def test_loaded_document_reproduces_the_fingerprint_counts():
     findings = [finding(), finding()]
     document = gate.build_baseline_document(findings, justify_all(gate, findings))
 
-    assert gate.load_baseline_document(document) == gate.blocking_fingerprints(findings)
+    current = gate.blocking_fingerprints(findings)
+    assert gate.load_baseline_document(document, current=current) == current
 
 
 def test_loading_an_entry_without_a_justification_is_refused():
@@ -141,7 +142,7 @@ def test_loading_an_entry_without_a_justification_is_refused():
     document["entries"][0].pop("justification")
 
     with pytest.raises(gate.BaselineRefused):
-        gate.load_baseline_document(document)
+        gate.load_baseline_document(document, current=gate.blocking_fingerprints(findings))
 
 
 def test_loading_a_non_blocking_class_is_refused():
@@ -152,7 +153,7 @@ def test_loading_a_non_blocking_class_is_refused():
     document["entries"][0]["fact_class"] = "unclassified_populated_record"
 
     with pytest.raises(gate.BaselineRefused):
-        gate.load_baseline_document(document)
+        gate.load_baseline_document(document, current=gate.blocking_fingerprints(findings))
 
 
 def test_classifier_mismatch_is_refused():
@@ -163,9 +164,10 @@ def test_classifier_mismatch_is_refused():
         findings, justify_all(gate, findings), classifier_sha256="a" * 64
     )
 
-    assert gate.load_baseline_document(document, classifier_sha256="a" * 64)
+    current = gate.blocking_fingerprints(findings)
+    assert gate.load_baseline_document(document, "a" * 64, current)
     with pytest.raises(gate.BaselineRefused):
-        gate.load_baseline_document(document, classifier_sha256="b" * 64)
+        gate.load_baseline_document(document, "b" * 64, current)
 
 
 def test_bulk_accept_via_a_hostile_mapping_is_refused():
@@ -214,7 +216,7 @@ def test_duplicate_entries_for_one_fingerprint_are_refused():
     document["entries"].append(dict(document["entries"][0]))
 
     with pytest.raises(gate.BaselineRefused) as refusal:
-        gate.load_baseline_document(document)
+        gate.load_baseline_document(document, current=gate.blocking_fingerprints(findings))
     assert "repeats" in str(refusal.value)
 
 
@@ -223,6 +225,7 @@ def test_malformed_document_metadata_is_refused():
     findings = [finding()]
     good = gate.build_baseline_document(findings, justify_all(gate, findings))
 
+    current = gate.blocking_fingerprints(findings)
     for broken in (
         {},
         {**good, "schema_version": 999},
@@ -230,7 +233,7 @@ def test_malformed_document_metadata_is_refused():
         {**good, "entries": "none"},
     ):
         with pytest.raises(gate.BaselineRefused):
-            gate.load_baseline_document(broken)
+            gate.load_baseline_document(broken, current=current)
 
 
 def test_non_canonical_fact_class_still_blocks():
@@ -249,6 +252,71 @@ def test_finding_without_a_fact_class_is_refused():
 
     with pytest.raises(gate.BaselineRefused):
         gate.warning_findings([{"path": "a.md", "text": "- Client: X", "line": 1}])
+
+
+def test_loading_a_granting_baseline_without_current_is_refused():
+    """`current` is what bounds a permit, so it cannot be optional.
+
+    With no current counts there is nothing for `count` to be measured
+    against, and an unbounded count is one reason covering any number of
+    copies.
+    """
+    gate = load_gate()
+    findings = [finding()]
+    document = gate.build_baseline_document(findings, justify_all(gate, findings))
+    document["entries"][0]["count"] = 999
+
+    with pytest.raises(gate.BaselineRefused) as refusal:
+        gate.load_baseline_document(document)
+    assert "unbounded" in str(refusal.value)
+
+
+def test_hostile_justification_key_is_refused():
+    """A key that merely compares equal to a fingerprint is not one.
+
+    __eq__/__hash__ can make any object satisfy `key in counts`, so the reason
+    is recorded against a fact it was never written for.
+    """
+    gate = load_gate()
+    findings = [finding()]
+    real_key = next(iter(gate.blocking_fingerprints(findings)))
+
+    class EvilKey:
+        def __hash__(self):
+            return hash(real_key)
+
+        def __eq__(self, other):
+            return other == real_key
+
+    with pytest.raises(gate.BaselineRefused) as refusal:
+        gate.build_baseline_document(findings, {EvilKey(): "reason for nothing"})
+    assert "not a fingerprint" in str(refusal.value)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("path", 42),
+        ("indent", "sideways"),
+        ("line_sha256", "not-a-digest"),
+        ("justification", ["reviewed"]),
+    ],
+)
+def test_malformed_entry_fields_are_refused(field, value):
+    """A key built from a non-string never equals a computed fingerprint.
+
+    It would read as reviewed while granting nothing, which is worse than an
+    absent entry: it looks like coverage.
+    """
+    gate = load_gate()
+    findings = [finding()]
+    document = gate.build_baseline_document(findings, justify_all(gate, findings))
+    document["entries"][0][field] = value
+
+    with pytest.raises(gate.BaselineRefused):
+        gate.load_baseline_document(
+            document, current=gate.blocking_fingerprints(findings)
+        )
 
 
 def test_committed_baseline_file_loads():

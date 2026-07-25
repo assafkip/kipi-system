@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
@@ -533,6 +534,8 @@ BLOCKING_FACT_CLASSES = (
 )
 
 BASELINE_SCHEMA_VERSION = 1
+BASELINE_INDENT_VALUES = ("nested", "top")
+LINE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class BaselineRefused(RuntimeError):
@@ -603,6 +606,17 @@ def _materialize_justifications(justifications) -> dict:
         )
     materialized = {}
     for key in list(justifications.keys()):
+        if (
+            type(key) is not tuple
+            or len(key) != 4
+            or not all(type(part) is str for part in key)
+        ):
+            # A key object with a hostile __eq__/__hash__ compares equal to a
+            # real fingerprint, so `key not in counts` passes and the entry is
+            # written with a reason that was never attached to that fact.
+            raise BaselineRefused(
+                f"justification key is not a fingerprint: {key!r}"
+            )
         materialized[key] = justifications[key]
     return materialized
 
@@ -656,16 +670,32 @@ def build_baseline_document(findings, justifications,
     }
 
 
-def _baseline_key(entry: dict, position: int) -> tuple:
+def _baseline_key(entry, position: int) -> tuple:
+    """The fingerprint an entry grants, or a refusal.
+
+    Fields are required to BE strings, not merely to stringify into something
+    non-empty: a key built from a non-string never compares equal to a freshly
+    computed fingerprint, so the permit would silently grant nothing while
+    reading as reviewed.
+    """
+    if not isinstance(entry, Mapping):
+        raise BaselineRefused(f"baseline entry {position} is not a record")
     for field in ("path", "fact_class", "indent", "line_sha256", "justification"):
-        if not str(entry.get(field) or "").strip():
-            raise BaselineRefused(
-                f"baseline entry {position} has no {field}"
-            )
+        value = entry.get(field)
+        if type(value) is not str or not value.strip():
+            raise BaselineRefused(f"baseline entry {position} has no {field}")
     if entry["fact_class"] not in BLOCKING_FACT_CLASSES:
         raise BaselineRefused(
             f"baseline entry {position} is class {entry['fact_class']!r}, which "
             "cannot block, so a permit for it grants nothing and hides review"
+        )
+    if entry["indent"] not in BASELINE_INDENT_VALUES:
+        raise BaselineRefused(
+            f"baseline entry {position} has indent {entry['indent']!r}"
+        )
+    if LINE_SHA256_RE.fullmatch(entry["line_sha256"]) is None:
+        raise BaselineRefused(
+            f"baseline entry {position} has no line digest"
         )
     return (
         entry["path"],
@@ -711,8 +741,16 @@ def load_baseline_document(document, classifier_sha256: str | None = None,
                 f"baseline was built by classifier {recorded!r}, running "
                 f"{classifier_sha256!r}"
             )
+    entries = document["entries"]
+    if entries and current is None:
+        # Without the current counts there is nothing to bound a permit
+        # against, so `count: 999` on a line found twice loads as 999.
+        raise BaselineRefused(
+            "a baseline that grants permits cannot be loaded unbounded; pass "
+            "current=blocking_fingerprints(findings)"
+        )
     counts: dict = {}
-    for position, entry in enumerate(document["entries"]):
+    for position, entry in enumerate(entries):
         key = _baseline_key(entry, position)
         if key in counts:
             # Two entries for one fingerprint split an inflated permit across
