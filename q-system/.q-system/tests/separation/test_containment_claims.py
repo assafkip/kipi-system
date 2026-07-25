@@ -65,14 +65,173 @@ def propagation_contract(prd):
     return match.group(0)
 
 
+def logical_lines(script):
+    """Join backslash-continued shell lines into one logical command each.
+
+    A regex anchored on the invocation's surface form breaks the moment the
+    command is reformatted. This one broke exactly that way: the real sync grew
+    an `if ! ` prefix and per-line `--exclude` continuations, so the locator
+    found nothing and the propagation evidence went unchecked while the gate
+    read RED for a formatting change rather than a missing exclude.
+    """
+    joined = []
+    pending = ""
+    for raw in script.splitlines():
+        # The backslash must be the LAST character. `\` followed by a space is
+        # not a continuation in sh, and treating it as one would let a
+        # separately executed line supply the excludes this gate looks for.
+        if raw.endswith("\\"):
+            pending += raw[:-1].strip() + " "
+            continue
+        joined.append((pending + raw.strip()).strip())
+        pending = ""
+    if pending:
+        joined.append(pending.strip())
+    return joined
+
+
+def shell_commands(script):
+    """Executable command segments: comments dropped, ; && || split apart."""
+    for line in logical_lines(script):
+        if line.startswith("#"):
+            continue
+        for segment in re.split(r";|&&|\|\|", line):
+            segment = segment.strip()
+            if segment:
+                yield segment
+
+
+def normalize_operand(token):
+    """`"${ARCHIVE_TMP}"/q-system/` and `"$ARCHIVE_TMP/q-system/"` are the same path."""
+    token = token.replace('"', "").replace("'", "")
+    return re.sub(r"\$\{(\w+)\}", r"$\1", token)
+
+
+# rsync has to be in COMMAND position, not inside an echo or a string. An
+# unrecognized prefix makes the search find nothing and the gate fail loudly,
+# which is the safe direction.
+COMMAND_POSITION = re.compile(
+    r"^(?:!\s+|if\s+|then\s+|else\s+|elif\s+|while\s+|until\s+|do\s+"
+    r"|\w+=\$\(\s*|\$\(\s*|\(\s*)*rsync\s+(?P<arguments>.*)$"
+)
+
+
+# rsync options whose value is a SEPARATE argument. Without this the value of
+# `--filter '- /tmp/'` would be mistaken for the source path and the gate would
+# fail on a perfectly valid refactor.
+VALUE_OPTIONS = {
+    "--exclude", "--include", "--filter", "-f", "--exclude-from",
+    "--include-from", "--files-from", "-e", "--rsh", "--chmod",
+    "--compare-dest", "--copy-dest", "--link-dest", "--log-file",
+    "--out-format", "--password-file", "--partial-dir", "--temp-dir", "-T",
+    "--timeout", "--bwlimit", "--max-size", "--min-size", "--block-size",
+    "-B", "--modify-window", "--backup-dir", "--suffix", "--rsync-path",
+    "--sockopts", "--iconv", "--info", "--debug", "--outbuf",
+}
+
+
+def shell_tokens(text):
+    """Split on UNQUOTED whitespace only.
+
+    shlex is not usable here: it ends a token at a closing quote, so
+    `"${ARCHIVE_TMP}"/q-system/` came back as `"${ARCHIVE_TMP}"` and the source
+    operand no longer matched. A word is one token even when only part of it is
+    quoted, which is exactly how the shell reads it.
+    """
+    tokens = []
+    current = ""
+    quote = None
+    for char in text:
+        if quote is not None:
+            current += char
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+            current += char
+        elif char.isspace():
+            if current:
+                tokens.append(current)
+                current = ""
+        else:
+            current += char
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+def rsync_tokens(segment):
+    """Arguments of an rsync invocation in command position, or None."""
+    match = COMMAND_POSITION.match(segment)
+    if match is None:
+        return None
+    return shell_tokens(match.group("arguments"))
+
+
+def rsync_source_operand(segment):
+    """First positional operand of an rsync invocation, or None.
+
+    rsync reads its FIRST operand and writes the last, so checking position
+    keeps a destination path from passing as proof that the command reads it.
+    """
+    tokens = rsync_tokens(segment)
+    if tokens is None:
+        return None
+    skip_value = False
+    for token in tokens:
+        if skip_value:
+            skip_value = False
+            continue
+        if token.startswith("-") and token != "-":
+            skip_value = token in VALUE_OPTIONS
+            continue
+        return normalize_operand(token)
+    return None
+
+
+def rsync_flags(segment):
+    """Long options plus every letter of the short bundles: -ain -> -a -i -n."""
+    flags = set()
+    for token in rsync_tokens(segment) or []:
+        if token.startswith("--"):
+            flags.add(token.split("=", 1)[0])
+        elif token.startswith("-") and len(token) > 1:
+            flags.update("-" + letter for letter in token[1:])
+    return flags
+
+
+def rsync_excludes(segment):
+    """Excluded paths, whichever of the four spellings rsync accepts is used."""
+    values = set()
+    tokens = rsync_tokens(segment) or []
+    for index, token in enumerate(tokens):
+        value = None
+        if token.startswith("--exclude="):
+            value = token.split("=", 1)[1]
+        elif token == "--exclude" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+        if value is not None:
+            values.add(normalize_operand(value).rstrip("/"))
+    return values
+
+
 def rsync_command(updater, source):
-    pattern = (
-        rf"(?m)^\s*(?:CHANGED=\$\()?rsync [^\n]*{re.escape(source)}"
-        rf".+?(?:2>/dev/null\)?)"
+    """The single rsync invocation that READS `source`, however it is written.
+
+    Exactly one is required: two would make the assertions below ambiguous
+    about which invocation actually carries the excludes.
+    """
+    wanted = normalize_operand(source)
+    matches = [
+        segment
+        for segment in shell_commands(updater)
+        if rsync_source_operand(segment) == wanted
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one rsync invocation reading {source}, "
+        f"found {len(matches)}"
     )
-    match = re.search(pattern, updater, re.S)
-    assert match is not None
-    return match.group(0)
+    return matches[0]
 
 
 def assert_storage_classification(contract):
@@ -113,10 +272,20 @@ def assert_updater_evidence():
     real_command = rsync_command(updater, '"$ARCHIVE_TMP/q-system/"')
     dry_command = rsync_command(updater, '"$DRY_TMP/q-system/"')
 
-    assert "rsync -a --delete" in real_command
-    assert '--exclude="/canonical/"' in real_command
-    assert "rsync -ain --delete" in dry_command
-    assert '--exclude="/canonical/"' in dry_command
+    # Assert the BEHAVIOUR, not the spelling: `--archive` and `-a`, `-ain` and
+    # `-a -i -n`, `--exclude=X` and `--exclude X` all mean the same thing, and a
+    # gate that only knows one spelling reports RED for a rename.
+    real_flags = rsync_flags(real_command)
+    assert "-a" in real_flags or "--archive" in real_flags
+    assert "--delete" in real_flags
+    assert "/canonical" in rsync_excludes(real_command)
+
+    dry_flags = rsync_flags(dry_command)
+    assert "-a" in dry_flags or "--archive" in dry_flags
+    assert "--delete" in dry_flags
+    assert "-n" in dry_flags or "--dry-run" in dry_flags
+    assert "-i" in dry_flags or "--itemize-changes" in dry_flags
+    assert "/canonical" in rsync_excludes(dry_command)
 
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     managed_direct_clones = [
@@ -153,3 +322,80 @@ def test_storage_and_propagation_have_distinct_evidence_labels():
 
 def test_current_updater_excludes_canonical_in_real_and_dry_paths():
     assert_updater_evidence()
+
+
+SOURCE = '"$ARCHIVE_TMP/q-system/"'
+ONE_LINE = (
+    'rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/" '
+    '--exclude="/my-project/" --exclude="/canonical/" 2>/dev/null'
+)
+GUARDED = (
+    'if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/" \\\n'
+    '    --exclude="/my-project/" \\\n'
+    '    --exclude="/canonical/" 2>/dev/null; then'
+)
+CAPTURED = (
+    'CHANGED=$(rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/" \\\n'
+    '  --exclude="/canonical/" 2>/dev/null)'
+)
+
+
+BRACED = (
+    'rsync -a --delete "${ARCHIVE_TMP}"/q-system/ "$path/" '
+    '--exclude="/canonical/" 2>/dev/null'
+)
+SPELLED_OUT = (
+    'rsync --archive --delete "$ARCHIVE_TMP/q-system/" "$path/" '
+    "--exclude /canonical/ 2>/dev/null"
+)
+# An option whose value is a separate argument, sitting before the source.
+FILTERED = (
+    "rsync -a --filter '- /tmp/' --delete \"$ARCHIVE_TMP/q-system/\" \"$path/\" "
+    '--exclude="/canonical/" 2>/dev/null'
+)
+
+
+def test_rsync_locator_is_format_proof_and_still_has_teeth():
+    """The locator must find the command in any shell form AND still fail loudly.
+
+    A locator that quietly matches nothing turns this whole gate into a
+    formatting check. These fixtures keep both halves honest: reformatting must
+    not break it, and a dropped exclude, a vanished command, or text that only
+    LOOKS like the command must.
+    """
+    for form in (ONE_LINE, GUARDED, CAPTURED, BRACED, SPELLED_OUT, FILTERED):
+        assert "/canonical" in rsync_excludes(rsync_command(form, SOURCE))
+
+    dropped = GUARDED.replace('    --exclude="/canonical/" \\\n', "").replace(
+        '--exclude="/canonical/" ', ""
+    )
+    assert "/canonical" not in rsync_excludes(rsync_command(dropped, SOURCE))
+
+    # Equivalent spellings must read as equivalent, not as a regression.
+    assert rsync_flags(SPELLED_OUT) >= {"--archive", "--delete"}
+    assert rsync_flags('rsync -ain --delete "$ARCHIVE_TMP/q-system/" "$p/"') >= {
+        "-a", "-i", "-n", "--delete"
+    }
+
+    # Nothing that is not an executed rsync reading that source may count.
+    for impostor in (
+        'echo "no rsync here"',
+        f"# {ONE_LINE}",
+        f'echo "{ONE_LINE}"',
+        'rsync -a --delete "$other/" "$ARCHIVE_TMP/q-system/" 2>/dev/null',
+    ):
+        with pytest.raises(AssertionError):
+            rsync_command(impostor, SOURCE)
+
+    # A backslash followed by a space does not continue the command, so the
+    # exclude on the next line belongs to something else.
+    not_continued = (
+        'rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/" 2>/dev/null \\ \n'
+        '--exclude="/canonical/"'
+    )
+    assert '--exclude="/canonical/"' not in rsync_command(not_continued, SOURCE)
+
+    with pytest.raises(AssertionError):
+        rsync_command(ONE_LINE + "\n" + CAPTURED, SOURCE)
+    with pytest.raises(AssertionError):
+        rsync_command(ONE_LINE + " ; " + CAPTURED, SOURCE)
