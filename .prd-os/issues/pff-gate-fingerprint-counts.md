@@ -1,7 +1,7 @@
 ---
 id: pff-gate-fingerprint-counts
 title: Fingerprint leak findings with occurrence counts
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
@@ -33,4 +33,4 @@ Write the failing duplicate-and-reintroduce reproducer first. A baselined line d
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Fingerprint leak findings with occurrence counts
+- [x] Fingerprint leak findings with occurrence counts
