@@ -1,0 +1,586 @@
+{
+  "$id": "https://kipi.local/schemas/updater-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "after": {
+      "$ref": "#/$defs/git_state"
+    },
+    "before": {
+      "$ref": "#/$defs/git_state"
+    },
+    "changes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/change"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/change_path"
+      },
+      "type": "object"
+    },
+    "created_at": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "instance": {
+      "$ref": "#/$defs/instance"
+    },
+    "mode": {
+      "enum": [
+        "dry-run",
+        "apply",
+        "rollback"
+      ]
+    },
+    "phase": {
+      "enum": [
+        "preservation",
+        "sync",
+        "settings",
+        "plugins",
+        "commit",
+        "complete",
+        "restore",
+        "rollback"
+      ]
+    },
+    "producer": {
+      "enum": [
+        "updater",
+        "preservation-helper",
+        "rollback"
+      ]
+    },
+    "receipt_id": {
+      "pattern": "^ur-[a-f0-9]{16}$",
+      "type": "string"
+    },
+    "rollback": {
+      "$ref": "#/$defs/rollback"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "started",
+        "complete",
+        "failed",
+        "skipped",
+        "refused"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "producer",
+    "instance",
+    "mode",
+    "phase",
+    "status",
+    "created_at",
+    "before",
+    "after",
+    "changes",
+    "rollback"
+  ],
+  "title": "Kipi updater and rollback receipt",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "const": "updater"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "dry-run",
+              "apply"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "preservation",
+              "sync",
+              "settings",
+              "plugins",
+              "commit",
+              "complete"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "const": "preservation-helper"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "dry-run",
+              "apply",
+              "rollback"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "preservation",
+              "restore"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "const": "rollback"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "mode": {
+            "const": "rollback"
+          },
+          "phase": {
+            "enum": [
+              "restore",
+              "rollback"
+            ]
+          },
+          "rollback": {
+            "$ref": "#/$defs/rollback_result"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "const": "preservation-helper"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollback": {
+            "$ref": "#/$defs/rollback_ineligible"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "dry-run"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollback": {
+            "$ref": "#/$defs/rollback_ineligible"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "started",
+              "failed",
+              "skipped",
+              "refused"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollback": {
+            "$ref": "#/$defs/rollback_ineligible"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "skipped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "changes": {
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "changes": {
+            "minProperties": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "change": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/change_create"
+        },
+        {
+          "$ref": "#/$defs/change_update"
+        },
+        {
+          "$ref": "#/$defs/change_delete"
+        },
+        {
+          "$ref": "#/$defs/change_mode"
+        }
+      ]
+    },
+    "change_create": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "before_sha256": {
+          "type": "null"
+        },
+        "operation": {
+          "const": "create"
+        }
+      },
+      "required": [
+        "operation",
+        "before_sha256",
+        "after_sha256"
+      ],
+      "type": "object"
+    },
+    "change_delete": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sha256": {
+          "type": "null"
+        },
+        "before_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "operation": {
+          "const": "delete"
+        }
+      },
+      "required": [
+        "operation",
+        "before_sha256",
+        "after_sha256"
+      ],
+      "type": "object"
+    },
+    "change_mode": {
+      "additionalProperties": false,
+      "properties": {
+        "after_mode": {
+          "pattern": "^[0-7]{4}$",
+          "type": "string"
+        },
+        "before_mode": {
+          "pattern": "^[0-7]{4}$",
+          "type": "string"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "operation": {
+          "const": "mode-change"
+        }
+      },
+      "required": [
+        "operation",
+        "content_sha256",
+        "before_mode",
+        "after_mode"
+      ],
+      "type": "object"
+    },
+    "change_path": {
+      "minLength": 1,
+      "pattern": "^(?!/)(?!\\.$)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\/$).+$",
+      "type": "string"
+    },
+    "change_update": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "before_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "operation": {
+          "const": "update"
+        }
+      },
+      "required": [
+        "operation",
+        "before_sha256",
+        "after_sha256"
+      ],
+      "type": "object"
+    },
+    "git_state": {
+      "additionalProperties": false,
+      "properties": {
+        "head": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worktree_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "required": [
+        "head",
+        "worktree_sha256"
+      ],
+      "type": "object"
+    },
+    "hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "instance": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "subtree",
+            "direct-clone",
+            "standalone"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "type"
+      ],
+      "type": "object"
+    },
+    "nullable_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/hash"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recovery_artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "snapshot"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "rollback": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/rollback_eligible"
+        },
+        {
+          "$ref": "#/$defs/rollback_ineligible"
+        }
+      ]
+    },
+    "rollback_eligible": {
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {
+          "const": true
+        },
+        "refusal_reason": {
+          "type": "null"
+        },
+        "recovery_artifact": {
+          "$ref": "#/$defs/recovery_artifact"
+        },
+        "required_head": {
+          "pattern": "^[a-f0-9]{40}$",
+          "type": "string"
+        },
+        "required_worktree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "target_receipt_id": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "eligible",
+        "target_receipt_id",
+        "required_head",
+        "required_worktree_sha256",
+        "refusal_reason",
+        "recovery_artifact"
+      ],
+      "type": "object"
+    },
+    "rollback_ineligible": {
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {
+          "const": false
+        },
+        "refusal_reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recovery_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/recovery_artifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_head": {
+          "type": "null"
+        },
+        "required_worktree_sha256": {
+          "type": "null"
+        },
+        "target_receipt_id": {
+          "anyOf": [
+            {
+              "pattern": "^ur-[a-f0-9]{16}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "eligible",
+        "target_receipt_id",
+        "required_head",
+        "required_worktree_sha256",
+        "refusal_reason",
+        "recovery_artifact"
+      ],
+      "type": "object"
+    },
+    "rollback_result": {
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {
+          "const": false
+        },
+        "refusal_reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recovery_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/recovery_artifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_head": {
+          "type": "null"
+        },
+        "required_worktree_sha256": {
+          "type": "null"
+        },
+        "target_receipt_id": {
+          "pattern": "^ur-[a-f0-9]{16}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eligible",
+        "target_receipt_id",
+        "required_head",
+        "required_worktree_sha256",
+        "refusal_reason",
+        "recovery_artifact"
+      ],
+      "type": "object"
+    }
+  }
+}
