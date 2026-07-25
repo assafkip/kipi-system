@@ -651,22 +651,25 @@ def build_baseline_document(findings, justifications,
     justifications = _materialize_justifications(justifications)
     counts = blocking_fingerprints(findings)
     _assert_every_entry_is_justified(counts, justifications)
-    entries = [
-        {
-            "path": key[0],
-            "fact_class": key[1],
-            "indent": key[2],
-            "line_sha256": key[3],
-            "count": counts[key],
-            "justification": str(justifications[key]).strip(),
-        }
-        for key in sorted(counts)
-    ]
+    return _document(counts, justifications, classifier_sha256)
+
+
+def _document(counts: dict, reasons: dict, classifier_sha256: str | None) -> dict:
     return {
         "schema_version": BASELINE_SCHEMA_VERSION,
         "blocking_classes": list(BLOCKING_FACT_CLASSES),
         "classifier_sha256": classifier_sha256,
-        "entries": entries,
+        "entries": [
+            {
+                "path": key[0],
+                "fact_class": key[1],
+                "indent": key[2],
+                "line_sha256": key[3],
+                "count": counts[key],
+                "justification": str(reasons[key]).strip(),
+            }
+            for key in sorted(counts)
+        ],
     }
 
 
@@ -721,17 +724,12 @@ def _assert_document_shape(document) -> None:
         raise BaselineRefused("baseline has no entries list")
 
 
-def load_baseline_document(document, classifier_sha256: str | None = None,
-                           current: dict | None = None) -> dict:
-    """{fingerprint: count}, refusing a file that lost its provenance.
+def _read_baseline_entries(document, classifier_sha256: str | None = None) -> dict:
+    """{fingerprint: {count, justification}} with every row validated.
 
-    The checks run on LOAD as well as on build, because the file is committed
-    and a hand-edit is the cheapest way to slip an unjustified permit in.
-
-    Pass `current` (the fingerprint counts actually found) to bound each permit.
-    A count is how many copies of a line one written justification covers, so
-    an unbounded count is a bulk accept with one reason attached: `count: 999`
-    on a line found twice pre-authorizes 997 copies nobody reviewed.
+    Unbounded on purpose: this is what re-baselining reads, and at that moment
+    a stale permit legitimately exceeds what exists. Bounding belongs to the
+    GRANTING read in load_baseline_document, not to the rewrite.
     """
     _assert_document_shape(document)
     if classifier_sha256 is not None:
@@ -741,35 +739,104 @@ def load_baseline_document(document, classifier_sha256: str | None = None,
                 f"baseline was built by classifier {recorded!r}, running "
                 f"{classifier_sha256!r}"
             )
-    entries = document["entries"]
+    entries: dict = {}
+    for position, entry in enumerate(document["entries"]):
+        key = _baseline_key(entry, position)
+        if key in entries:
+            # Two rows for one fingerprint split an inflated permit across two
+            # innocuous-looking lines.
+            raise BaselineRefused(f"baseline entry {position} repeats {_describe(key)}")
+        count = entry.get("count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise BaselineRefused(f"baseline entry {position} has no count")
+        entries[key] = {"count": count, "justification": entry["justification"]}
+    return entries
+
+
+def load_baseline_document(document, classifier_sha256: str | None = None,
+                           current: dict | None = None) -> dict:
+    """{fingerprint: count}, refusing a file that lost its provenance.
+
+    The checks run on LOAD as well as on build, because the file is committed
+    and a hand-edit is the cheapest way to slip an unjustified permit in.
+
+    `current` (the fingerprint counts actually found) bounds each permit. A
+    count is how many copies of a line one written justification covers, so an
+    unbounded count is a bulk accept with one reason attached: `count: 999` on
+    a line found twice pre-authorizes 997 copies nobody reviewed.
+    """
+    entries = _read_baseline_entries(document, classifier_sha256)
     if entries and current is None:
-        # Without the current counts there is nothing to bound a permit
-        # against, so `count: 999` on a line found twice loads as 999.
         raise BaselineRefused(
             "a baseline that grants permits cannot be loaded unbounded; pass "
             "current=blocking_fingerprints(findings)"
         )
     counts: dict = {}
-    for position, entry in enumerate(entries):
-        key = _baseline_key(entry, position)
-        if key in counts:
-            # Two entries for one fingerprint split an inflated permit across
-            # two innocuous-looking rows.
+    for key, entry in entries.items():
+        found = current.get(key, 0)
+        if entry["count"] > found:
             raise BaselineRefused(
-                f"baseline entry {position} repeats {_describe(key)}"
+                f"baseline permits {entry['count']} of {_describe(key)} but only "
+                f"{found} exist; a permit cannot exceed what was reviewed"
             )
-        counts[key] = _baseline_count(entry, position, key, current)
+        counts[key] = entry["count"]
     return counts
 
 
-def _baseline_count(entry: dict, position: int, key: tuple,
-                    current: dict | None) -> int:
-    count = entry.get("count")
-    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
-        raise BaselineRefused(f"baseline entry {position} has no count")
-    if current is not None and count > current.get(key, 0):
+def rebaseline_document(document, findings, justifications=None,
+                        classifier_sha256: str | None = None) -> dict:
+    """Rewrite the baseline against what exists now, and say what moved.
+
+    `{"document": ..., "added": [...], "removed": [...]}`. Two properties, both
+    of which the PRD names as the reason this is a separate explicit step:
+
+    - Stale permits are PRUNED. A permit that outlives its fact silently
+      re-authorizes the same line when it comes back months later.
+    - Adds are reported apart from removals. A classifier change retires
+      hundreds of entries at once, and one net number is exactly the cover a
+      real new fact needs to ride along unnoticed.
+
+    Surviving content keeps its existing justification; anything newly blessed,
+    including one more copy of an already-blessed line, needs its own. Re-
+    baselining is not a side door around per-entry provenance.
+    """
+    previous = _read_baseline_entries(document, classifier_sha256)
+    previous_counts = {key: entry["count"] for key, entry in previous.items()}
+    current = blocking_fingerprints(findings)
+    kept = prune_baseline(previous_counts, current)
+    delta = baseline_delta(previous_counts, current)
+    justifications = _materialize_justifications(justifications or {})
+    added_keys = [
+        key for key in sorted(current) if current[key] > previous_counts.get(key, 0)
+    ]
+    _assert_additions_are_justified(added_keys, justifications)
+
+    counts = dict(kept)
+    reasons = {key: previous[key]["justification"] for key in kept}
+    for key in added_keys:
+        counts[key] = current[key]
+        reasons[key] = justifications[key]
+    return {
+        "document": _document(
+            counts, reasons, classifier_sha256 or document.get("classifier_sha256")
+        ),
+        "added": delta["added"],
+        "removed": delta["removed"],
+    }
+
+
+def _assert_additions_are_justified(added_keys: list, justifications: dict) -> None:
+    missing = [
+        key for key in added_keys if not str(justifications.get(key) or "").strip()
+    ]
+    if missing:
         raise BaselineRefused(
-            f"baseline permits {count} of {_describe(key)} but only "
-            f"{current.get(key, 0)} exist; a permit cannot exceed what was reviewed"
+            "re-baselining does not bless new content for free; missing a "
+            "justification for:\n  " + "\n  ".join(_describe(key) for key in missing)
         )
-    return count
+    unknown = [key for key in justifications if key not in added_keys]
+    if unknown:
+        raise BaselineRefused(
+            "justification given for something that is not newly blessed:\n  "
+            + "\n  ".join(_describe(key) for key in sorted(unknown))
+        )

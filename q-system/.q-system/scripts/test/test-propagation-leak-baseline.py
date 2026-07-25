@@ -319,6 +319,130 @@ def test_malformed_entry_fields_are_refused(field, value):
         )
 
 
+# --------------------------------------------------------------------------
+# Lifecycle: re-baselining prunes, and reports adds apart from removals
+# --------------------------------------------------------------------------
+#
+# A permit that outlives its fact is the quiet failure. The line is deleted, the
+# entry stays, and months later the same line comes back already blessed. And a
+# classifier change moves hundreds of entries at once, which is exactly the
+# cover a single "247 changed" number gives a real leak riding along. So:
+# re-baselining prunes, and it reports what was ADDED separately from what was
+# REMOVED.
+
+PRICE = "- Package price: $45,000"
+
+
+def rebaseline(gate, document, findings, justifications=None):
+    return gate.rebaseline_document(document, findings, justifications or {})
+
+
+def baselined(gate, findings):
+    return gate.build_baseline_document(findings, justify_all(gate, findings))
+
+
+def test_stale_entries_are_pruned():
+    """A permit for a line that no longer exists re-authorizes its return."""
+    gate = load_gate()
+    was = [finding(), finding(fact_class="pricing", text=PRICE)]
+    document = baselined(gate, was)
+
+    result = rebaseline(gate, document, [finding()])
+
+    kept = [entry["fact_class"] for entry in result["document"]["entries"]]
+    assert kept == ["client_identity"]
+    assert [entry["fact_class"] for entry in result["removed"]] == ["pricing"]
+
+
+def test_adds_and_removals_are_reported_separately():
+    """One combined number is what lets a real leak ride along with churn."""
+    gate = load_gate()
+    document = baselined(gate, [finding()])
+    arrived = finding(fact_class="pricing", text=PRICE)
+
+    result = rebaseline(
+        gate,
+        document,
+        [arrived],
+        {key: "reviewed 2026-07-25: rate card" for key in gate.blocking_fingerprints([arrived])},
+    )
+
+    assert [entry["fact_class"] for entry in result["added"]] == ["pricing"]
+    assert [entry["fact_class"] for entry in result["removed"]] == ["client_identity"]
+
+
+def test_surviving_entry_keeps_its_justification():
+    """Unchanged content must not need re-justifying, or nobody re-baselines."""
+    gate = load_gate()
+    findings = [finding()]
+    document = baselined(gate, findings)
+
+    result = rebaseline(gate, document, findings)
+
+    assert result["added"] == []
+    assert result["removed"] == []
+    assert result["document"]["entries"][0]["justification"].startswith("reviewed")
+
+
+def test_a_newly_blessed_fingerprint_still_needs_its_own_justification():
+    """Re-baselining is not a side door around per-entry provenance."""
+    gate = load_gate()
+    document = baselined(gate, [finding()])
+    arrived = finding(fact_class="pricing", text=PRICE)
+
+    with pytest.raises(gate.BaselineRefused):
+        rebaseline(gate, document, [finding(), arrived])
+
+
+def test_a_shrunk_count_is_lowered_not_kept():
+    """Two copies blessed, one left: the permit for the second must lapse."""
+    gate = load_gate()
+    twice = [finding(), finding()]
+    document = baselined(gate, twice)
+
+    result = rebaseline(gate, document, [finding()])
+
+    assert result["document"]["entries"][0]["count"] == 1
+    assert result["removed"][0]["baseline_count"] == 2
+    assert result["removed"][0]["current_count"] == 1
+
+
+def test_classifier_churn_cannot_hide_a_new_fact():
+    """The stated reason the two sets are reported apart.
+
+    A classifier change retires many entries at once. If that showed up as one
+    net number, a genuinely new fact would be invisible inside it.
+    """
+    gate = load_gate()
+    retiring = [
+        finding(path=f"q-system/canonical/case-{index}.md") for index in range(5)
+    ]
+    document = baselined(gate, retiring)
+    arrived = finding(fact_class="pricing", text=PRICE)
+
+    result = rebaseline(
+        gate,
+        document,
+        [arrived],
+        {key: "reviewed 2026-07-25: rate card" for key in gate.blocking_fingerprints([arrived])},
+    )
+
+    assert len(result["removed"]) == 5
+    assert len(result["added"]) == 1
+    assert result["added"][0]["fact_class"] == "pricing"
+
+
+def test_rebaselining_a_hand_edited_document_is_refused():
+    """The lifecycle runs the load rules, so an unjustified row cannot survive."""
+    gate = load_gate()
+    findings = [finding()]
+    document = baselined(gate, findings)
+    document["entries"][0]["justification"] = "  "
+
+    with pytest.raises(gate.BaselineRefused):
+        rebaseline(gate, document, findings)
+
+
 def test_committed_baseline_file_loads():
     """The file that ships must satisfy its own rules."""
     gate = load_gate()
