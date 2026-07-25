@@ -1,7 +1,7 @@
 ---
 id: sdc-update-propagation-proof
 title: Prove updater final states reject injected instance facts
-status: open
+status: closed
 priority: p0
 parent_prd: prd-skeleton-data-containment-2026-07-24
 allowed_files:
@@ -34,4 +34,4 @@ Write the failing final-state reproducer first. Do not start until fcu-dry-run-f
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Prove updater final states reject injected instance facts
+- [x] Prove updater final states reject injected instance facts
