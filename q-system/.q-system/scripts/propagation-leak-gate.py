@@ -26,17 +26,26 @@ import hashlib
 
 
 def normalize_line(text: str) -> str:
-    """Surrounding whitespace and line endings are not part of the fact.
-
-    Leading whitespace counts as reformatting too: a list item that moves under
-    a new parent is the same asserted fact at a different indent, and churning
-    the baseline for that is the failure the content hash exists to avoid.
-    """
+    """The asserted text, with line endings and surrounding space removed."""
     return text.replace("\r\n", "\n").strip()
 
 
+def indent_bucket(text: str) -> str:
+    """"top" for an unindented line, "nested" for any indented one.
+
+    Indentation cannot be discarded outright: an indented
+    `- Client: Northwind` inside a fenced example is not the same thing as the
+    same line asserted at top level, and hashing them together lets a baseline
+    for the example bless the assertion. Nor can the exact width be kept, or
+    re-indenting two spaces would churn the baseline. Bucketing keeps the
+    distinction that carries meaning and drops the one that does not.
+    """
+    stripped = text.replace("\r\n", "\n").lstrip("\n")
+    return "nested" if stripped[:1].isspace() else "top"
+
+
 def fingerprint(finding: dict) -> tuple:
-    """(path, fact_class, sha256 of the offending line).
+    """(path, fact_class, indent bucket, sha256 of the offending line).
 
     The finding must carry its own text. Re-reading the line from disk here
     would fingerprint whatever is at that line NOW, which is not necessarily
@@ -54,7 +63,7 @@ def fingerprint(finding: dict) -> tuple:
     if not isinstance(fact_class, str) or not fact_class:
         raise ValueError(f"finding for {path!r} carries no fact_class")
     digest = hashlib.sha256(normalize_line(text).encode("utf-8")).hexdigest()
-    return (path, fact_class, digest)
+    return (path, fact_class, indent_bucket(text), digest)
 
 
 def fingerprint_findings(findings) -> dict:
@@ -77,11 +86,12 @@ def new_findings(baseline: dict, current: dict) -> list:
         allowed = baseline.get(key, 0)
         found = current[key]
         if found > allowed:
-            path, fact_class, digest = key
+            path, fact_class, indent, digest = key
             additions.append(
                 {
                     "path": path,
                     "fact_class": fact_class,
+                    "indent": indent,
                     "line_sha256": digest,
                     "baseline_count": allowed,
                     "current_count": found,
@@ -117,7 +127,8 @@ def baseline_delta(baseline: dict, current: dict) -> dict:
             {
                 "path": key[0],
                 "fact_class": key[1],
-                "line_sha256": key[2],
+                "indent": key[2],
+                "line_sha256": key[3],
                 "baseline_count": allowed,
                 "current_count": current.get(key, 0),
             }

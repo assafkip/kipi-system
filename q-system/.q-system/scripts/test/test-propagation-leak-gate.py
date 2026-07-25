@@ -95,12 +95,41 @@ def test_a_second_record_reusing_the_line_is_new():
     assert gate.new_findings(baseline, both)
 
 
-def test_reindenting_a_record_is_not_new():
-    """Moving a list item under a new parent is a reformat, not a new fact."""
+def test_reindenting_within_the_same_nesting_is_not_new():
+    """Two spaces to four is a reformat, not a new fact."""
     gate = load_gate()
-    baseline = gate.fingerprint_findings(findings(RECORD))
+    baseline = gate.fingerprint_findings(findings("  " + RECORD))
     reindented = gate.fingerprint_findings(findings("    " + RECORD))
     assert gate.new_findings(baseline, reindented) == []
+
+
+def test_promoting_a_nested_line_to_top_level_is_new():
+    """An indented example is not the same thing as a top-level assertion.
+
+    Discarding indentation entirely would let a baseline for a line inside a
+    fenced example bless the same line asserted for real.
+    """
+    gate = load_gate()
+    baseline = gate.fingerprint_findings(findings("    " + RECORD))
+    promoted = gate.fingerprint_findings(findings(RECORD))
+    assert gate.new_findings(baseline, promoted)
+
+
+def test_a_partial_shrink_lowers_the_permit():
+    """Two blessed, one left: the permit drops to one, so a replay is blocked.
+
+    Without counts this passes vacuously, which is why full-removal alone was
+    not enough coverage.
+    """
+    gate = load_gate()
+    baseline = gate.fingerprint_findings(findings(RECORD, RECORD))
+    shrunk = gate.fingerprint_findings(findings(RECORD))
+    assert gate.new_findings(baseline, shrunk) == []
+
+    pruned = gate.prune_baseline(baseline, shrunk)
+    assert list(pruned.values()) == [1]
+    replayed = gate.fingerprint_findings(findings(RECORD, RECORD))
+    assert gate.new_findings(pruned, replayed)
 
 
 def test_unchanged_content_is_not_new():
