@@ -1,0 +1,160 @@
+{
+  "built_at": "2026-07-24T20:35:28Z",
+  "directory_tree": [
+    {
+      "file_count": 992,
+      "path": ".claude"
+    },
+    {
+      "file_count": 672,
+      "path": "q-system"
+    },
+    {
+      "file_count": 434,
+      "path": "plugins"
+    },
+    {
+      "file_count": 170,
+      "path": ".prd-os"
+    },
+    {
+      "file_count": 27,
+      "path": "security-remediation"
+    },
+    {
+      "file_count": 14,
+      "path": ".playwright-mcp"
+    },
+    {
+      "file_count": 12,
+      "path": "scripts"
+    },
+    {
+      "file_count": 11,
+      "path": "sites"
+    },
+    {
+      "file_count": 7,
+      "path": ".codex"
+    },
+    {
+      "file_count": 7,
+      "path": "automation"
+    },
+    {
+      "file_count": 4,
+      "path": "issues"
+    },
+    {
+      "file_count": 2,
+      "path": ".githooks"
+    },
+    {
+      "file_count": 2,
+      "path": "lesson-candidates"
+    },
+    {
+      "file_count": 1,
+      "path": ".claude-plugin"
+    },
+    {
+      "file_count": 1,
+      "path": ".github"
+    },
+    {
+      "file_count": 1,
+      "path": "memory"
+    }
+  ],
+  "entry_points": [
+    ".claude/worktrees/fix-prompt-only-guard-mention-fp/plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py",
+    "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py"
+  ],
+  "env_files_present": [],
+  "git_sha": "f22c32ce3ae1072e7c2de65f1648a8be53a7324d",
+  "ignored_paths": [
+    ".cache",
+    ".coverage",
+    ".git",
+    ".hg",
+    ".idea",
+    ".mypy_cache",
+    ".next",
+    ".nuxt",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".terraform",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "Reports",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "env",
+    "htmlcov",
+    "node_modules",
+    "out",
+    "target",
+    "venv"
+  ],
+  "languages": {
+    "javascript": {
+      "extensions": [
+        ".cjs"
+      ],
+      "file_count": 14
+    },
+    "python": {
+      "extensions": [
+        ".py"
+      ],
+      "file_count": 487
+    },
+    "shell": {
+      "extensions": [
+        ".sh"
+      ],
+      "file_count": 127
+    },
+    "swift": {
+      "extensions": [
+        ".swift"
+      ],
+      "file_count": 2
+    }
+  },
+  "lint_configs": [],
+  "notable_files": {
+    ".github/workflows": true,
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+    "CONTRIBUTING.md": false,
+    "Dockerfile": false,
+    "LICENSE": true,
+    "Makefile": false,
+    "README.md": true,
+    "docker-compose.yaml": false,
+    "docker-compose.yml": false,
+    "package.json": false,
+    "pyproject.toml": true,
+    "tsconfig.json": false
+  },
+  "package_manifests": [
+    {
+      "kind": "pyproject.toml",
+      "path": ".claude/worktrees/fix-prompt-only-guard-mention-fp/plugins/kipi-core/kipi-mcp/pyproject.toml"
+    },
+    {
+      "kind": "pyproject.toml",
+      "path": "plugins/kipi-core/kipi-mcp/pyproject.toml"
+    }
+  ],
+  "repo_root": "/Users/assafkipnis/projects/kipi-system",
+  "schema_version": 1,
+  "test_framework": "pytest",
+  "todo_count": 61,
+  "total_loc": 144742
+}

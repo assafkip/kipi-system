@@ -194,6 +194,14 @@
       "instance_q_dir": "q-thaena",
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "norri ai",
+      "path": "/Users/assafkipnis/projects/consulting/projects/norri-ai",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
