@@ -23,6 +23,7 @@ that cannot leak is a gate someone switches off.
 
 import importlib.util
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -233,6 +234,35 @@ def test_rsync_filtered_paths_are_not_scanned(tmp_path):
 
     assert findings == []
     assert seen == ["plugins/memory-lifecycle/kept.md"]
+
+
+def test_filter_mirror_matches_the_updater():
+    """The mirror is hand-written, so it can silently drift from the real flags.
+
+    Drift in either direction is a defect: excluding something rsync copies
+    hides a source, and scanning something rsync skips inflates the baseline a
+    human has to justify by hand. Scar 2026-07-25: adding `--exclude=".venv/"`
+    to kipi-update.sh left this mirror stale within the same change.
+    """
+    gate = load_gate()
+    updater = (REPO_ROOT / "kipi-update.sh").read_text(encoding="utf-8")
+    plugin_rsync = next(
+        line
+        for line in updater.splitlines()
+        if "--exclude=" in line and "__pycache__" in line
+    )
+    block = plugin_rsync + "".join(
+        updater.splitlines()[updater.splitlines().index(plugin_rsync) + 1:][:2]
+    )
+    declared = set(re.findall(r'--exclude="([^"]+)"', block))
+
+    mirrored = {f"{name}/" for name in gate.RSYNC_EXCLUDED_DIRS}
+    mirrored |= {f"/{name}/" for name in gate.RSYNC_EXCLUDED_ROOT_DIRS}
+    mirrored |= {f"*{suffix}" for suffix in gate.RSYNC_EXCLUDED_SUFFIXES}
+
+    assert declared == mirrored, (
+        f"gate mirror {sorted(mirrored)} != kipi-update.sh {sorted(declared)}"
+    )
 
 
 def test_regular_files_named_like_excluded_dirs_are_scanned(tmp_path):

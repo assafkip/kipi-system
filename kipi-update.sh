@@ -844,8 +844,17 @@ PY
       for plugin_dir in "$SCRIPT_DIR"/plugins/*/; do
         if [ -d "$plugin_dir" ]; then
           plugin_name="$(basename "$plugin_dir")"
+          # .venv/ is a uv-built virtualenv, not source: uv writes a
+          # `.gitignore` of `*` inside it, pyvenv.cfg pins it to ONE machine's
+          # Python (home = /Users/<name>/... macos-aarch64), and nothing
+          # launches it -- plugins/kipi-core/.mcp.json runs `uv run`, which
+          # rebuilds it from the tracked uv.lock (measured: 52 packages, 37ms).
+          # It was 107MB of the 112MB plugin tree, copied into 23 instances
+          # where it could never work. --delete-excluded also clears the stale
+          # copies already there. Pairs with test-kipi-update-build-artifacts.sh.
           if ! rsync -a --delete --delete-excluded \
               --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
+              --exclude=".venv/" \
               "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null; then
             CONFIG_FAILED=1
           fi
