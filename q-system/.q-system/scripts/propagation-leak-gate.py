@@ -367,7 +367,7 @@ def _collect_config_kind(root: Path, kind: str, sources: dict) -> None:
     if not config_dir.is_dir():
         return
     for entry in _scandir_or_refuse(config_dir, f".claude/{kind}"):
-        if not entry.name.endswith(".md"):
+        if not entry.name.endswith(".md") or _skipped_by_shell_glob(entry.name):
             continue
         relative_path = f".claude/{kind}/{entry.name}"
         if entry.is_file():
@@ -392,12 +392,36 @@ def _collect_tracked(manifest: dict, sources: dict) -> None:
             sources["excluded"].append(entry)
 
 
+def _collect_worktree(root: Path) -> dict:
+    """The disk half alone, so the same snapshot can be re-taken and compared."""
+    collected: dict = {"worktree": [], "excluded": []}
+    _collect_plugins(root, collected)
+    for kind in WORKTREE_CONFIG_KINDS:
+        _collect_config_kind(root, kind, collected)
+    return collected
+
+
+def _worktree_sha256(collected: dict) -> str:
+    """A digest of the SOURCE SET, not of each source.
+
+    Per-entry digests only prove that files already seen still say the same
+    thing. A file ADDED to a copied root after enumeration is invisible to
+    them, and the updater copies it regardless.
+    """
+    digest = hashlib.sha256()
+    for entry in sorted(collected["worktree"], key=lambda item: item["path"]):
+        digest.update(f"{entry['path']}\0{entry['sha256']}\0".encode("utf-8"))
+    for entry in sorted(collected["excluded"], key=lambda item: item["path"]):
+        digest.update(f"{entry['path']}\0{entry['reason']}\0".encode("utf-8"))
+    return digest.hexdigest()
+
+
 def enumerate_propagation_sources(repo_root: Path | str) -> dict:
     """Every source a propagation run copies, plus a reason for each exclusion."""
     root = Path(repo_root).resolve()
     manifest = _containment_targets().enumerate_containment_targets(root)
     sources = {
-        "schema_version": 2,
+        "schema_version": 3,
         "index_sha256": manifest["index_sha256"],
         "tracked": [],
         "tracked_objects": {},
@@ -405,9 +429,10 @@ def enumerate_propagation_sources(repo_root: Path | str) -> dict:
         "excluded": [],
     }
     _collect_tracked(manifest, sources)
-    _collect_plugins(root, sources)
-    for kind in WORKTREE_CONFIG_KINDS:
-        _collect_config_kind(root, kind, sources)
+    collected = _collect_worktree(root)
+    sources["worktree"] = collected["worktree"]
+    sources["excluded"].extend(collected["excluded"])
+    sources["worktree_sha256"] = _worktree_sha256(collected)
     return sources
 
 
@@ -456,15 +481,18 @@ def _scan_worktree(sources: dict, classify) -> list:
     return findings
 
 
-def assert_worktree_unchanged(sources: dict) -> None:
+def assert_worktree_unchanged(repo_root: Path | str, sources: dict) -> None:
     """The disk-half twin of containment's assert_index_unchanged.
 
     A verdict is only about the bytes that were read. If a worktree source
-    changed while the scan ran, the verdict describes content the updater will
-    not copy, so it is not a verdict at all.
+    changed, appeared, or vanished while the scan ran, the verdict describes
+    content the updater will not copy, so it is not a verdict at all.
     """
-    for entry in sources["worktree"]:
-        _read_recorded_source(entry)
+    root = Path(repo_root).resolve()
+    if _worktree_sha256(_collect_worktree(root)) != sources["worktree_sha256"]:
+        raise PropagationSourceRefused(
+            "the set of sources propagation copies changed during the scan"
+        )
 
 
 def scan_propagation_sources(repo_root: Path | str, classify=None) -> list:
@@ -481,5 +509,5 @@ def scan_propagation_sources(repo_root: Path | str, classify=None) -> list:
     findings = _scan_tracked(root, sources, targets, classify)
     findings.extend(_scan_worktree(sources, classify))
     targets.assert_index_unchanged(root, sources["index_sha256"])
-    assert_worktree_unchanged(sources)
+    assert_worktree_unchanged(root, sources)
     return findings

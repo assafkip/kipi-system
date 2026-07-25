@@ -235,6 +235,82 @@ def test_rsync_filtered_paths_are_not_scanned(tmp_path):
     assert seen == ["plugins/memory-lifecycle/kept.md"]
 
 
+def test_regular_files_named_like_excluded_dirs_are_scanned(tmp_path):
+    """A trailing slash in an rsync exclude means DIRECTORY ONLY.
+
+    `--exclude="/.git/"` does not exclude a regular FILE named .git, which is
+    exactly the shape a submodule or a linked worktree uses, and rsync copies
+    it. Excluding by name alone hands that file a free pass.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    plugin = repo / "plugins" / "kipi-core"
+    plugin.mkdir(parents=True)
+    (plugin / ".git").write_text(LEAKED_RECORD, encoding="utf-8")
+    (plugin / "__pycache__").write_text(LEAKED_RECORD, encoding="utf-8")
+
+    scanned = scanned_paths(gate.scan_propagation_sources(repo))
+
+    assert "plugins/kipi-core/.git" in scanned
+    assert "plugins/kipi-core/__pycache__" in scanned
+
+
+def test_dot_directory_the_updater_cannot_reach_is_not_refused(tmp_path):
+    """`for d in plugins/*/` never matches a dotdir, so nothing there travels.
+
+    Refusing on content the updater cannot copy is how a gate gets switched
+    off, which protects nothing.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    hidden = repo / "plugins" / ".hidden"
+    hidden.mkdir(parents=True)
+    os.mkfifo(hidden / "channel")
+
+    sources = gate.enumerate_propagation_sources(repo)
+
+    assert excluded_reason(sources, "plugins/.hidden") == "not-matched-by-shell-glob"
+    assert gate.scan_propagation_sources(repo) == []
+
+
+def test_undecodable_unlisted_extension_is_refused(tmp_path):
+    """Binary detection is a deny list; an allowlist of text types fails open.
+
+    A UTF-16 .rst carries a client record and rsync copies it. Filing every
+    unlisted extension under "binary" lets a whole file type walk past.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    plugin = repo / "plugins" / "kipi-core"
+    plugin.mkdir(parents=True)
+    (plugin / "facts.rst").write_bytes(LEAKED_RECORD.encode("utf-16"))
+
+    with pytest.raises(gate.PropagationSourceRefused) as refusal:
+        gate.scan_propagation_sources(repo)
+    assert "plugins/kipi-core/facts.rst" in str(refusal.value)
+
+
+def test_source_added_during_the_scan_is_refused(tmp_path):
+    """Per-entry digests cannot see a file that was not there to digest.
+
+    The updater copies whatever is on disk when it runs, so a source appearing
+    after enumeration is a source the verdict never covered.
+    """
+    gate = load_gate()
+    repo = make_repo(tmp_path)
+    plugin = repo / "plugins" / "kipi-core"
+    plugin.mkdir(parents=True)
+    (plugin / "first.md").write_text("clean\n", encoding="utf-8")
+
+    def add_then_classify(text, source_path=None):
+        (plugin / "arrived-late.md").write_text(LEAKED_RECORD, encoding="utf-8")
+        return []
+
+    with pytest.raises(gate.PropagationSourceRefused) as refusal:
+        gate.scan_propagation_sources(repo, classify=add_then_classify)
+    assert "set of sources" in str(refusal.value)
+
+
 def test_tracked_generic_sources_are_still_scanned(tmp_path):
     """The dereferenced half is an addition, not a replacement."""
     gate = load_gate()
