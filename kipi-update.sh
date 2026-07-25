@@ -1,9 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 trap "" PIPE
-# Never let an instance's git hooks, GPG signing, or a credential prompt hang the
-# updater. These are infra commits made by kipi, not content commits; instance
-# pre-commit hooks (e.g. gitleaks on thousands of staged files) must not run here.
+# Never let GPG signing or a credential prompt hang the updater. Updater commits
+# still run the instance's active hooks and fail closed when a hook rejects them.
 export GIT_TERMINAL_PROMPT=0
 
 # kipi-update.sh - Sync latest kipi-system skeleton into all registered instances
@@ -61,6 +60,8 @@ cleanup_dry_model() {
     rm -r -- "$DRY_MODEL_ROOT"
     DRY_MODEL_ROOT=""
     MODEL_RUN=0
+    # The isolated hooksPath pointed into the model that just went away.
+    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
   fi
 }
 
@@ -107,6 +108,170 @@ print(digest.hexdigest())
 PY
 }
 
+stage_q_system_sync() {
+  local target="$1"
+  local managed_prefix="$2"
+  git -C "$target" add -u -- "$managed_prefix/" || return 1
+  git -C "$SCRIPT_DIR" ls-tree -r --name-only -z HEAD -- q-system/ |
+    python3 -c '
+import os
+import sys
+
+prefix = sys.argv[1]
+for source in sys.stdin.buffer.read().split(b"\0"):
+    if not source:
+        continue
+    relative = source.removeprefix(b"q-system/")
+    target = os.fsencode(prefix) + b"/" + relative
+    sys.stdout.buffer.write(target + b"\0")
+' "$managed_prefix" |
+    git -C "$target" add --pathspec-from-file=- --pathspec-file-nul
+}
+
+stage_config_sync() {
+  local target="$1"
+  local scope source relative
+  for scope in .claude plugins; do
+    if [ -n "$(git -C "$target" ls-files -- "$scope/")" ]; then
+      git -C "$target" add -u -- "$scope/" || return 1
+    fi
+  done
+  if [ -f "$target/.claude/settings.json" ]; then
+    git -C "$target" add -- .claude/settings.json || return 1
+  fi
+  for scope in agents rules output-styles; do
+    if [ -d "$SCRIPT_DIR/.claude/$scope" ]; then
+      while IFS= read -r -d '' source; do
+        relative="${source#"$SCRIPT_DIR/"}"
+        git -C "$target" add -- "$relative" || return 1
+      done < <(
+        find "$SCRIPT_DIR/.claude/$scope" -maxdepth 1 -type f \
+          -name '*.md' -print0
+      )
+    fi
+  done
+  if [ -d "$SCRIPT_DIR/plugins" ]; then
+    while IFS= read -r -d '' source; do
+      relative="${source#"$SCRIPT_DIR/"}"
+      git -C "$target" add -- "$relative" || return 1
+    done < <(
+      find "$SCRIPT_DIR/plugins" \
+        \( -type d -name .git -o -type d -name __pycache__ \) -prune -o \
+        \( -type f ! -name '*.pyc' -o -type l \) -print0
+    )
+  fi
+}
+
+guarded_commit() {
+  local target="$1"
+  local message="$2"
+  local guard_dir original_hooks configured hook index_path rc
+  guard_dir="$(mktemp -d)"
+  index_path="$(git -C "$target" rev-parse --git-path index)"
+  cp "$index_path" "$guard_dir/index.before" || {
+    rm -r -- "$guard_dir"
+    return 1
+  }
+  git -C "$target" diff --cached --name-only -z > "$guard_dir/allowed"
+
+  original_hooks=""
+  if [ "$MODEL_RUN" != "1" ]; then
+    configured="$(git -C "$target" config --path --get core.hooksPath || true)"
+    if [ -n "$configured" ]; then
+      case "$configured" in
+        /*) original_hooks="$configured" ;;
+        *) original_hooks="$target/$configured" ;;
+      esac
+    else
+      original_hooks="$(
+        git -C "$target" rev-parse --path-format=absolute --git-path hooks
+      )"
+    fi
+  fi
+  cat > "$guard_dir/hook-guard" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+hook_name="$(basename "$0")"
+# Invoke the instance's hook by its REAL path. Running it through a renamed
+# symlink (original-pre-commit) changed `basename "$0"` and pointed
+# `dirname "$0"` at the guard dir, so dispatch-on-$0 hooks (lefthook, husky) and
+# hooks that source a sibling (`. "$(dirname "$0")/common.sh"`) either
+# misbehaved or hard-failed -- the active hook lost authority either way.
+original="${GUARDED_ORIGINAL_HOOKS:-}"
+if [ -n "$original" ] && [ -x "$original/$hook_name" ]; then
+  "$original/$hook_name" "$@"
+fi
+case "$hook_name" in
+  pre-commit|prepare-commit-msg|commit-msg)
+    git diff --cached --name-only -z > "$GUARDED_HOOK_DIR/after"
+    if ! cmp -s "$GUARDED_HOOK_DIR/allowed" "$GUARDED_HOOK_DIR/after"; then
+      echo "ERROR: $hook_name changed the updater commit path set" >&2
+      exit 1
+    fi
+    ;;
+esac
+SH
+  chmod +x "$guard_dir/hook-guard"
+  for hook in pre-commit prepare-commit-msg commit-msg post-commit post-rewrite; do
+    ln -s hook-guard "$guard_dir/$hook" || {
+      rm -r -- "$guard_dir"
+      return 1
+    }
+  done
+
+  set +e
+  env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+    GUARDED_HOOK_DIR="$guard_dir" \
+    GUARDED_ORIGINAL_HOOKS="$original_hooks" \
+    git -C "$target" -c core.hooksPath="$guard_dir" \
+      commit --no-gpg-sign -m "$message" </dev/null
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    cp "$guard_dir/index.before" "$index_path" || true
+  fi
+  rm -r -- "$guard_dir"
+  return "$rc"
+}
+
+config_source_manages() {
+  local relative="$1"
+  case "$relative" in
+    .claude/settings.json)
+      return 0
+      ;;
+    .claude/agents/*.md|.claude/rules/*.md|.claude/output-styles/*.md)
+      [ -f "$SCRIPT_DIR/$relative" ]
+      return
+      ;;
+    plugins/*/*)
+      local plugin_name="${relative#plugins/}"
+      plugin_name="${plugin_name%%/*}"
+      [ -d "$SCRIPT_DIR/plugins/$plugin_name" ]
+      return
+      ;;
+  esac
+  return 1
+}
+
+reject_untracked_config_collisions() {
+  local target="$1"
+  local relative
+  while IFS= read -r -d '' relative; do
+    if config_source_manages "$relative"; then
+      echo "  ERROR: untracked WIP collides with managed config: $relative"
+      return 1
+    fi
+  done < <(
+    {
+      git -C "$target" ls-files -z --others --exclude-standard -- \
+        .claude/ plugins/
+      git -C "$target" ls-files -z --others --ignored --exclude-standard -- \
+        .claude/ plugins/
+    }
+  )
+}
+
 trap cleanup_updater_temps EXIT
 
 while IFS='|' read -r name path prefix itype; do
@@ -136,6 +301,39 @@ while IFS='|' read -r name path prefix itype; do
   if [ "$DRY_RUN" = "--dry-run" ]; then
     DRY_MODEL_ROOT="$(mktemp -d)"
     MODEL_RUN=1
+    # Neutralize hooks for the WHOLE modeled iteration, not just the commit. A
+    # direct-clone dry run runs fetch/pull/rebase/merge inside the model, which
+    # fires pre-rebase, post-rewrite, post-merge and post-checkout out of the
+    # COPIED .git (or an absolute core.hooksPath) -- production side effects
+    # escaping a run that is supposed to change nothing. GIT_CONFIG_* env beats
+    # local and worktree config, so it is the only scope the modeled repo cannot
+    # override from inside; `git -c` still beats it, which is what keeps
+    # guarded_commit authoritative.
+    DRY_HOOKS_DIR="$DRY_MODEL_ROOT/no-hooks"
+    if ! mkdir -p "$DRY_HOOKS_DIR"; then
+      echo "  ERROR: could not create the isolated dry-run hooks directory"
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
+    unset GIT_CONFIG_PARAMETERS
+    case "${GIT_CONFIG_COUNT:-}" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$GIT_CONFIG_COUNT" -le 4096 ]; then
+          INHERITED_CONFIG=0
+          while [ "$INHERITED_CONFIG" -lt "$GIT_CONFIG_COUNT" ]; do
+            unset "GIT_CONFIG_KEY_$INHERITED_CONFIG" \
+              "GIT_CONFIG_VALUE_$INHERITED_CONFIG"
+            INHERITED_CONFIG=$((INHERITED_CONFIG + 1))
+          done
+        fi
+        ;;
+    esac
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0=core.hooksPath
+    export GIT_CONFIG_VALUE_0="$DRY_HOOKS_DIR"
     ORIGINAL_HEAD="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
     if [ -z "$ORIGINAL_HEAD" ]; then
       echo "  ERROR: could not resolve production HEAD for dry-run model"
@@ -322,21 +520,19 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
-    # Auto-commit tracked modified files so working tree is clean
-    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-      echo "  Auto-committing modified tracked files..."
-      if ! git add -u 2>/dev/null ||
-          { ! git diff --cached --quiet 2>/dev/null &&
-            ! git commit --no-verify --no-gpg-sign \
-              -m "chore: auto-commit before kipi update" \
-              </dev/null 2>/dev/null; }; then
-        echo "  ERROR: could not auto-commit tracked changes"
-        git status --short 2>/dev/null | sed 's/^/    /' || true
-        cleanup_dry_model
-        FAIL=$((FAIL + 1))
-        echo ""
-        continue
+    # Refuse tracked work in progress. The updater owns only its scoped sync
+    # commits and must never package unrelated founder edits into an infra commit.
+    if ! git diff --cached --quiet 2>/dev/null ||
+        ! git diff --quiet 2>/dev/null; then
+      if [ "$MODEL_RUN" = "1" ]; then
+        echo "  Changes vs skeleton: blocked by dirty working tree"
       fi
+      echo "  ERROR: dirty working tree; refusing to commit unrelated work"
+      git status --short 2>/dev/null | sed 's/^/    /' || true
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
     fi
   fi
 
@@ -390,6 +586,26 @@ PY
             ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
           echo "  ERROR: preservation snapshot inventory failed; rsync not started"
           rm -r -- "$ARCHIVE_TMP"
+          cleanup_dry_model
+          FAIL=$((FAIL + 1))
+          echo ""
+          continue
+        fi
+        COLLISION=0
+        while IFS= read -r -d '' uf; do
+          relative="${uf#"$prefix/"}"
+          if [ "$relative" = "$uf" ]; then
+            continue
+          fi
+          source_path="$ARCHIVE_TMP/q-system/$relative"
+          if [ -e "$source_path" ] || [ -L "$source_path" ]; then
+            echo "  ERROR: untracked WIP collides with skeleton path: $uf"
+            COLLISION=1
+          fi
+        done < "$SNAP/list"
+        if [ "$COLLISION" != "0" ]; then
+          rm -r -- "$ARCHIVE_TMP"
+          ARCHIVE_TMP=""
           cleanup_dry_model
           FAIL=$((FAIL + 1))
           echo ""
@@ -512,7 +728,7 @@ PY
         rm -r -- "$ARCHIVE_TMP"
         ARCHIVE_TMP=""
         cd "$path"
-        if ! git add "$prefix/" 2>/dev/null; then
+        if ! stage_q_system_sync "$path" "$prefix" 2>/dev/null; then
           echo "  ERROR: could not stage q-system sync"
           cleanup_dry_model
           FAIL=$((FAIL + 1))
@@ -521,9 +737,8 @@ PY
         fi
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
-          if ! git commit --no-verify --no-gpg-sign \
-              -m "chore: sync q-system from skeleton $(date +%Y-%m-%d)" \
-              </dev/null 2>/dev/null; then
+          if ! guarded_commit "$path" \
+              "chore: sync q-system from skeleton $(date +%Y-%m-%d)"; then
             echo "  ERROR: could not commit q-system sync"
             cleanup_dry_model
             FAIL=$((FAIL + 1))
@@ -573,6 +788,12 @@ PY
       [ -d "$path/.claude" ]; then
     echo "  Syncing .claude/ config..."
     CONFIG_FAILED=0
+    if ! reject_untracked_config_collisions "$path"; then
+      cleanup_dry_model
+      FAIL=$((FAIL + 1))
+      echo ""
+      continue
+    fi
 
     # Rebuild settings.json from template (preserves instance customizations)
     if [ -f "$path/.claude/settings.json" ]; then
@@ -640,11 +861,10 @@ PY
             >/dev/null 2>&1; then
           git rm -r -q --cached plugins/memory-lifecycle
         fi &&
-        git add .claude/ plugins/ &&
+        stage_config_sync "$path" &&
         if ! git diff --cached --quiet 2>/dev/null; then
-          git commit --no-verify --no-gpg-sign \
-            -m "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" \
-            </dev/null 2>/dev/null
+          guarded_commit "$path" \
+            "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)"
         fi
       ); then
         CONFIG_FAILED=1
