@@ -85,18 +85,22 @@ def test_a_second_record_reusing_the_line_is_new():
     """The same text under a second fact class is a separate permit."""
     gate = load_gate()
     baseline = gate.fingerprint_findings(findings(RECORD))
-    reused = gate.fingerprint_findings(findings(RECORD)) | {}
     extra = [
         {"path": "q-system/marketing/templates/outreach.md",
          "fact_class": "pricing",
          "line": 1,
          "text": RECORD}
     ]
-    both = gate.fingerprint_findings(
-        findings(RECORD) + extra
-    )
-    assert reused == baseline
+    both = gate.fingerprint_findings(findings(RECORD) + extra)
     assert gate.new_findings(baseline, both)
+
+
+def test_reindenting_a_record_is_not_new():
+    """Moving a list item under a new parent is a reformat, not a new fact."""
+    gate = load_gate()
+    baseline = gate.fingerprint_findings(findings(RECORD))
+    reindented = gate.fingerprint_findings(findings("    " + RECORD))
+    assert gate.new_findings(baseline, reindented) == []
 
 
 def test_unchanged_content_is_not_new():

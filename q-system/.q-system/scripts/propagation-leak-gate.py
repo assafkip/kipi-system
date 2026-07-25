@@ -26,8 +26,13 @@ import hashlib
 
 
 def normalize_line(text: str) -> str:
-    """Trailing whitespace and line endings are not part of the fact."""
-    return text.replace("\r\n", "\n").rstrip("\n").rstrip()
+    """Surrounding whitespace and line endings are not part of the fact.
+
+    Leading whitespace counts as reformatting too: a list item that moves under
+    a new parent is the same asserted fact at a different indent, and churning
+    the baseline for that is the failure the content hash exists to avoid.
+    """
+    return text.replace("\r\n", "\n").strip()
 
 
 def fingerprint(finding: dict) -> tuple:
