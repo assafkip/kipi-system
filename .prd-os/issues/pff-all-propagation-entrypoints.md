@@ -1,7 +1,7 @@
 ---
 id: pff-all-propagation-entrypoints
 title: Run the gate on every path that copies generic content into an instance
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
