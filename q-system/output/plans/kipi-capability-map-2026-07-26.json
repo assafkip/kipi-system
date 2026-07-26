@@ -419,7 +419,8 @@
       "trigger": "auto-invoke rule before any non-trivial code edit; /issue-start loads it for PRD work",
       "depends": "prd-os plugin",
       "feeds": "all code changes",
-      "evidence": "Merged into prd-os 2026-07-04 (was kipi-core). Deterministic slice enforced by the lint hook (test isolation); public mirror drift caught by export-fable-mirror.sh --check."
+      "evidence": "Merged into prd-os 2026-07-04 (was kipi-core). Deterministic slice enforced by the lint hook (test isolation); public mirror drift caught by export-fable-mirror.sh --check.",
+      "linear": "ASK-85"
     },
     {
       "layer": "L7 PRD and issue lifecycle",
@@ -430,7 +431,8 @@
       "trigger": "a deferred triage disposition AUTO-creates an item; gates run fails while any item is open",
       "depends": "prd-os",
       "feeds": "kipi check gates",
-      "evidence": "Built for the ADHD failure mode: a backlog that lives only in a scrolled-past message is a silent drop. Two exits only: fixed with a closed-issue ref, or voided with a recorded reason."
+      "evidence": "Built for the ADHD failure mode: a backlog that lives only in a scrolled-past message is a silent drop. Two exits only: fixed with a closed-issue ref, or voided with a recorded reason.",
+      "linear": "ASK-86"
     },
     {
       "layer": "L8 Autonomous loops",
@@ -441,7 +443,8 @@
       "trigger": "com.kipi.launchd-health on a schedule",
       "depends": "python env, claude-under-cron auth",
       "feeds": "founder notifications",
-      "evidence": "Verified 2026-07-26: audit-rotate, fractional-cxo.bolt-on-discovery, fractional-cxo.opp-scan, launchd-health, lessons-daily, openloops-heartbeat. All loaded, all last-exit 0. Scar: income scanners broke silently for 6 days before this watchdog existed."
+      "evidence": "Verified 2026-07-26: audit-rotate, fractional-cxo.bolt-on-discovery, fractional-cxo.opp-scan, launchd-health, lessons-daily, openloops-heartbeat. All loaded, all last-exit 0. Scar: income scanners broke silently for 6 days before this watchdog existed.",
+      "linear": "ASK-87"
     },
     {
       "layer": "L8 Autonomous loops",
@@ -452,7 +455,8 @@
       "trigger": "SessionStart surface; com.kipi.openloops-heartbeat launchd job",
       "depends": "launchd, Slack notify",
       "feeds": "founder attention",
-      "evidence": "7 open loops as of 2026-07-26 (1 live, 6 parked). Heartbeat wraps claude -p in `timeout 1800` (loop exit 4). test-open-loops.sh."
+      "evidence": "7 open loops as of 2026-07-26 (1 live, 6 parked). Heartbeat wraps claude -p in `timeout 1800` (loop exit 4). test-open-loops.sh.",
+      "linear": "ASK-88"
     },
     {
       "layer": "L8 Autonomous loops",
@@ -463,7 +467,8 @@
       "trigger": "SessionStart nudge when the repo drifts from the published signature",
       "depends": "git log, open-loops ledger",
       "feeds": "founder comprehension",
-      "evidence": "Republished 2026-07-26: 162 shipped/14d, 7 open threads, 6/8 exits solid. Self-disabling: no state file means the nudge stays silent."
+      "evidence": "Republished 2026-07-26: 162 shipped/14d, 7 open threads, 6/8 exits solid. Self-disabling: no state file means the nudge stays silent.",
+      "linear": "ASK-89"
     },
     {
       "layer": "L8 Autonomous loops",
@@ -474,7 +479,8 @@
       "trigger": "fires when building or auditing any phased/scheduled job",
       "depends": "token-guard, prd gates, destructive-op hook, heartbeat",
       "feeds": "every new autonomous loop",
-      "evidence": "Solid: goal-met, turn-cap, no-progress, human-stop, error-cap, external-event. On proxies: budget (call/rate proxy, no dollar meter is exposed to a PreToolUse hook) and wall-clock (timeout 1800, autonomous runs only). Documented honestly rather than papered over."
+      "evidence": "Solid: goal-met, turn-cap, no-progress, human-stop, error-cap, external-event. On proxies: budget (call/rate proxy, no dollar meter is exposed to a PreToolUse hook) and wall-clock (timeout 1800, autonomous runs only). Documented honestly rather than papered over.",
+      "linear": "ASK-90"
     },
     {
       "layer": "L8 Autonomous loops",
@@ -485,7 +491,8 @@
       "trigger": "n/a",
       "depends": "a founder-in-the-loop accept step",
       "feeds": "loop health judgement",
-      "evidence": "Structural blind spot: open-loops-heartbeat.sh merges its own PRs under the autonomy contract, so there is no accept signal by construction. The fleet loop board is the stand-in until this is measured. This is the most important open gap in L8."
+      "evidence": "Structural blind spot: open-loops-heartbeat.sh merges its own PRs under the autonomy contract, so there is no accept signal by construction. The fleet loop board is the stand-in until this is measured. This is the most important open gap in L8.",
+      "linear": "ASK-91"
     },
     {
       "layer": "L9 Self-correction",
@@ -496,7 +503,8 @@
       "trigger": "SessionStart on the first session of each month; morning pipeline phase 6; manual standalone",
       "depends": "origin-tagged decisions",
       "feeds": "founder awareness of belief drift",
-      "evidence": "Alert threshold pi >= 0.7 with >= 5 tagged decisions. Scar 2026-07-01: the check only ever ran inside /q-morning, so an instance sat at pi ~= 0.88 and nothing could notice. Hence standalone mode plus the monthly hook."
+      "evidence": "Alert threshold pi >= 0.7 with >= 5 tagged decisions. Scar 2026-07-01: the check only ever ran inside /q-morning, so an instance sat at pi ~= 0.88 and nothing could notice. Hence standalone mode plus the monthly hook.",
+      "linear": "ASK-92"
     },
     {
       "layer": "L9 Self-correction",
@@ -507,7 +515,8 @@
       "trigger": "PostToolUse on Bash watching for non-zero exit, FAIL, BLOCKED, or Traceback",
       "depends": "hook runtime",
       "feeds": "q-system/output/rca/, and often a follow-on PRD",
-      "evidence": "Enforces surface-vs-structural root cause, cause-type tags, evidence-backed verification, and blameless phrasing."
+      "evidence": "Enforces surface-vs-structural root cause, cause-type tags, evidence-backed verification, and blameless phrasing.",
+      "linear": "ASK-93"
     },
     {
       "layer": "L9 Self-correction",
@@ -518,7 +527,8 @@
       "trigger": "founder correction in session",
       "depends": "memory layer",
       "feeds": "rules, memory, skills",
-      "evidence": "test_correction_outcome.py present."
+      "evidence": "test_correction_outcome.py present.",
+      "linear": "ASK-94"
     },
     {
       "layer": "L10 Morning pipeline",
@@ -529,7 +539,8 @@
       "trigger": "/q-morning",
       "depends": "MCP data sources, model allocation",
       "feeds": "daily schedule, engagement hitlist",
-      "evidence": "Every bus file needs a producer, a consumer, and a schema. Verified by verify-bus.py, verify-orchestrator.py, verify-schedule.py, audit-morning.py, run-step-audit.py."
+      "evidence": "Every bus file needs a producer, a consumer, and a schema. Verified by verify-bus.py, verify-orchestrator.py, verify-schedule.py, audit-morning.py, run-step-audit.py.",
+      "linear": "ASK-95"
     },
     {
       "layer": "L10 Morning pipeline",
@@ -540,7 +551,8 @@
       "trigger": "any step failure in a phased job",
       "depends": "run-log discipline",
       "feeds": "morning pipeline, launchd jobs",
-      "evidence": "Extracted 2026-07-01 from morning-pipeline.md where it was encoded while every other job reinvented or omitted it. A job claiming this contract with no coded cap does not comply."
+      "evidence": "Extracted 2026-07-01 from morning-pipeline.md where it was encoded while every other job reinvented or omitted it. A job claiming this contract with no coded cap does not comply.",
+      "linear": "ASK-96"
     },
     {
       "layer": "L10 Morning pipeline",
@@ -551,7 +563,8 @@
       "trigger": "invoked by the orchestrator",
       "depends": "model allocation gate",
       "feeds": "morning pipeline phases",
-      "evidence": "Gate 1.1b validates every model: frontmatter against the tier tables. Model IDs live only here plus the paired validator tables."
+      "evidence": "Gate 1.1b validates every model: frontmatter against the tier tables. Model IDs live only here plus the paired validator tables.",
+      "linear": "ASK-97"
     },
     {
       "layer": "L11 Design and dogfood",
@@ -562,7 +575,8 @@
       "trigger": "PostToolUse on Write/Edit of a public .html; design-room before deploy",
       "depends": "hook runtime",
       "feeds": "every public-facing page",
-      "evidence": "Two layers: a fast deterministic tripwire on an embedded AI-default fingerprint, plus an authoritative design-room read. Scar 2026-06-20: the eyeball landing shipped as a slop-parody with the input buried two-thirds down, never run through our own tool."
+      "evidence": "Two layers: a fast deterministic tripwire on an embedded AI-default fingerprint, plus an authoritative design-room read. Scar 2026-06-20: the eyeball landing shipped as a slop-parody with the input buried two-thirds down, never run through our own tool.",
+      "linear": "ASK-98"
     },
     {
       "layer": "L12 Distribution",
@@ -573,7 +587,8 @@
       "trigger": "loaded per session from ~/.claude/plugins/marketplaces/",
       "depends": "plugin version drift gate",
       "feeds": "every instance",
-      "evidence": "Versions 2026-07-26: kipi-core 1.5.12, kipi-design 1.2.4, kipi-dsse 0.2.1, kipi-notebooklm 0.1.0, kipi-ops 1.2.0, prd-os 0.6.0. Known scope trap: kipi slash commands vanish when the install record is project-scoped to another project (fix: scope:user)."
+      "evidence": "Versions 2026-07-26: kipi-core 1.5.12, kipi-design 1.2.4, kipi-dsse 0.2.1, kipi-notebooklm 0.1.0, kipi-ops 1.2.0, prd-os 0.6.0. Known scope trap: kipi slash commands vanish when the install record is project-scoped to another project (fix: scope:user).",
+      "linear": "ASK-99"
     },
     {
       "layer": "L12 Distribution",
@@ -584,7 +599,8 @@
       "trigger": "manual",
       "depends": "leak gate",
       "feeds": "public template repo",
-      "evidence": "test-kipi-update-build-artifacts.sh covers the build-artifact slice."
+      "evidence": "test-kipi-update-build-artifacts.sh covers the build-artifact slice.",
+      "linear": "ASK-100"
     },
     {
       "layer": "L12 Distribution",
@@ -595,7 +611,8 @@
       "trigger": "n/a until the PR lands",
       "depends": "maintainer response",
       "feeds": "the OSS contribution mission",
-      "evidence": "Issue #14 filed at github.com/dwarvesf/claude-guardrails on 2026-06-20; waiting on a maintainer reply since. Patch and PR body are staged at q-system/output/captoken-*.  Phase 2 (Secure Enclave signing) would give real forgery resistance via a non-extractable key; parked."
+      "evidence": "Issue #14 filed at github.com/dwarvesf/claude-guardrails on 2026-06-20; waiting on a maintainer reply since. Patch and PR body are staged at q-system/output/captoken-*.  Phase 2 (Secure Enclave signing) would give real forgery resistance via a non-extractable key; parked.",
+      "linear": "ASK-101"
     },
     {
       "layer": "L12 Distribution",
@@ -606,7 +623,8 @@
       "trigger": "/say",
       "depends": "OpenAI TTS key, mpv",
       "feeds": "founder consumption of long output",
-      "evidence": "Scar: the slash-command sandbox blocks AppleEvents, so autoplay goes through `open -a Terminal`. Terminal + macOS only."
+      "evidence": "Scar: the slash-command sandbox blocks AppleEvents, so autoplay goes through `open -a Terminal`. Terminal + macOS only.",
+      "linear": "ASK-102"
     },
     {
       "layer": "L13 Research and intake",
@@ -617,7 +635,8 @@
       "trigger": "/q-research; auto for claim-bearing output",
       "depends": "Firecrawl, web access",
       "feeds": "all published claims",
-      "evidence": "Unvalidated claims must carry {{UNVALIDATED}} or {{NEEDS_PROOF}}. test-firecrawl-scrape.sh."
+      "evidence": "Unvalidated claims must carry {{UNVALIDATED}} or {{NEEDS_PROOF}}. test-firecrawl-scrape.sh.",
+      "linear": "ASK-103"
     },
     {
       "layer": "L13 Research and intake",
@@ -628,7 +647,8 @@
       "trigger": "manual",
       "depends": "Granola MCP",
       "feeds": "founder-voice skill",
-      "evidence": "3 scripts forming harvest -> fingerprint -> synthesize."
+      "evidence": "3 scripts forming harvest -> fingerprint -> synthesize.",
+      "linear": "ASK-104"
     },
     {
       "layer": "L13 Research and intake",
@@ -639,7 +659,8 @@
       "trigger": "MCP tools; session-based auth",
       "depends": "a browser session, Google auth",
       "feeds": "research workflows",
-      "evidence": "Version 0.1.0 and no commands directory yet; the least-matured plugin in the marketplace."
+      "evidence": "Version 0.1.0 and no commands directory yet; the least-matured plugin in the marketplace.",
+      "linear": "ASK-105"
     },
     {
       "layer": "L13 Research and intake",
@@ -650,7 +671,8 @@
       "trigger": "auto on significant /q-calibrate changes, conflicting debrief signals, feature requests, competitive moves; Full Debate is founder-initiated",
       "depends": "canonical files",
       "feeds": "canonical/decisions.md with a [COUNCIL-DEBATED] origin tag",
-      "evidence": "Always Quick mode for auto-triggers. Skipped for minor edits and founder-dictated changes."
+      "evidence": "Always Quick mode for auto-triggers. Skipped for minor edits and founder-dictated changes.",
+      "linear": "ASK-106"
     },
     {
       "layer": "L14 Founder interface",
@@ -661,7 +683,8 @@
       "trigger": "called by any script detecting a founder-relevant event",
       "depends": "webhook secret",
       "feeds": "founder attention",
-      "evidence": "osascript desktop notifications are BANNED: they are permission-gated and silently dropped from a sandboxed or background process. Silent no-op when unconfigured, so callers never break."
+      "evidence": "osascript desktop notifications are BANNED: they are permission-gated and silently dropped from a sandboxed or background process. Silent no-op when unconfigured, so callers never break.",
+      "linear": "ASK-108"
     },
     {
       "layer": "L14 Founder interface",
@@ -672,7 +695,8 @@
       "trigger": "auto-loaded per session; propagated to every instance by kipi update",
       "depends": "prompt-only-enforcement-guard.py (PostToolUse blocker script, exit 2)",
       "feeds": "all layers",
-      "evidence": "Counted 2026-07-26 by `ls .claude/rules/ | wc -l`. Root CLAUDE.md does NOT propagate to instances; a rule that must reach the fleet belongs in .claude/rules/, which kipi-update.sh rsyncs."
+      "evidence": "Counted 2026-07-26 by `ls .claude/rules/ | wc -l`. Root CLAUDE.md does NOT propagate to instances; a rule that must reach the fleet belongs in .claude/rules/, which kipi-update.sh rsyncs.",
+      "linear": "ASK-109"
     },
     {
       "layer": "L14 Founder interface",
@@ -683,7 +707,8 @@
       "trigger": "SessionStart, PostCompact",
       "depends": "hook runtime",
       "feeds": "every session",
-      "evidence": "PostCompact hook re-injects mode, loops, and voice reminders. /q-morning auto-detects a missed wrap."
+      "evidence": "PostCompact hook re-injects mode, loops, and voice reminders. /q-morning auto-detects a missed wrap.",
+      "linear": "ASK-110"
     },
     {
       "layer": "L14 Founder interface",
@@ -694,7 +719,8 @@
       "trigger": "founder pastes a bug/idea; any task larger than a one-line change not already in prd-os",
       "depends": "memory, prior plans, anti-hallucination methodology",
       "feeds": "prd-os for anything heavier",
-      "evidence": "output/plans/ is excluded from kipi update sync, so plans stay instance-local. The plan is the agent's homework, not the founder's reading assignment."
+      "evidence": "output/plans/ is excluded from kipi update sync, so plans stay instance-local. The plan is the agent's homework, not the founder's reading assignment.",
+      "linear": "ASK-111"
     }
   ],
   "linear_project": "https://linear.app/ask-consulting/project/kipi-system-c0944236257f"
