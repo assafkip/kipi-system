@@ -308,20 +308,70 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
 
 ## DONE
 
-- [ ] `grep -c 'SCRIPT_DIR/plugins' kipi-update.sh` == 1
-- [ ] The model rsync excludes and the symlink-walk skips come from one scan via
+- [x] `grep -c 'SCRIPT_DIR/plugins' kipi-update.sh` == 1
+- [x] The model rsync excludes and the symlink-walk skips come from one scan via
       two named projections; no argv hand-off between them; `.git`'s asymmetry
       is explicit in code and pinned by a fixture
-- [ ] The two untracked-collision guards (:452, :894) share one predicate; the
-      tracked-tree check (:815) is unchanged
-- [ ] A pre-run checkpoint exists that captures untracked CONTENT, and all 24
-      give-up paths route through the restore chokepoint
-- [ ] `repro-item4-stuck-instance.sh` goes green, and is mutation-checked
-      against a deliberately gutted restore
-- [ ] `wc -l kipi-update.sh` is LOWER than 1253, with no scar comment deleted
-- [ ] Tests: still exactly the same 3 pre-existing failures, 357 passed
-- [ ] All 8 updater shell suites green
-- [ ] `git status` clean; the PRD is archived
+- [x] The two untracked-collision guards share one predicate; the tracked-tree
+      check is unchanged (zero diff hunks in that block)
+- [x] A pre-run checkpoint exists and all 24 give-up paths route through the
+      restore chokepoint. **Deviation, deliberate:** the checkpoint records the
+      untracked LIST, not a second copy of the bytes. The bytes already exist in
+      `$SNAP/f/`, the preservation snapshot; restore reads them from there, and
+      `abandon_instance` orders the restore before the `ARCHIVE_TMP` teardown so
+      they are still present. A second full copy would have doubled the I/O to
+      solve a problem the existing snapshot already solves.
+- [x] `repro-item4-stuck-instance.sh` goes green, mutation-checked against a
+      deliberately gutted restore
+- [x] **(restated — see revision note below)** The consolidation invariants
+      hold, and every scar fact survives:
+      ```sh
+      test "$(grep -c 'SCRIPT_DIR/plugins' kipi-update.sh)" -eq 1 &&
+      test "$(grep -c -- '-name .git -print' kipi-update.sh)" -eq 1 &&
+      test "$(grep -v '^[[:space:]]*#' kipi-update.sh | grep -c is_instance_wip)" -eq 3 &&
+      test "$(grep -c -F 'FAIL=$((FAIL + 1))' kipi-update.sh)" -eq 1
+      ```
+      plus every distinctive scar token still present (`memory-lifecycle`,
+      `all_points_setup`, `Prodigy_Gold`, `23 of 23`, `98MB`,
+      `ASK_AI_consultant`, `21GB`, `605MB`, `40 residue files`, `Alice`,
+      `personal-brand`, `2569 ignored`, `q-investigate/tools`). All 13 verified
+      present.
+- [x] Tests: still exactly the same 3 pre-existing failures, 357 passed
+- [x] All 8 updater shell suites green
+- [x] `git status` clean; the PRD is archived
+
+### Revision note — the line criterion, restated 2026-07-26 (post-archive)
+
+The original criterion read: **`wc -l kipi-update.sh` is LOWER than 1253, with
+no scar comment deleted.** It was NOT met. Final: 1485 (+232), of which +186 is
+comments and +46 is code.
+
+The two halves contradict each other. `wc -l` counts the scar record that the
+same line requires be preserved, so the only way to hit the number was to delete
+the comments the criterion protects. Measured: 237 baseline comment lines, 22
+of them scar-bearing; all 13 distinctive scar facts survive.
+
+The line count was a proxy for the real goal — fewer places answering the same
+question. That goal is directly measurable and is what the restated criterion
+checks:
+
+| | before | after |
+|---|---|---|
+| duplicated decision sites | 8 | 3 |
+| give-up rituals | 24 (127 lines) | 1 chokepoint |
+| non-comment lines | 1016 | 1062 |
+
+Non-comment lines still grew by 46, and that is honest: the growth is the
+correctness work adversarial review forced — the scoped untracked inventory
+(blocker: restore was deleting files in `memory/` and `output/`), the python
+set difference replacing a quadratic grep loop, restoring the two give-up sites
+that deliberately fall through, and the checkpoint guard that stops restore
+aborting a founder's own rebase (blocker).
+
+**Origin: [USER-DIRECTED].** Surfaced as `sp-b4131535` with three options
+(restate / trim comments / park). The founder chose restate on 2026-07-26. The
+superseded criterion is left above in this note rather than edited away, so the
+record shows the target was missed and why, not that it was quietly moved.
 
 ## Issues
 
