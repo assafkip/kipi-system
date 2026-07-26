@@ -260,7 +260,8 @@ unstage_scope() {
 
 stage_config_sync() {
   local target="$1"
-  local scope source relative plugin_top
+  local scope source relative plugin_top ignored_paths
+  local -a plugin_paths=() stage_paths=()
   for scope in .claude plugins; do
     if [ -n "$(git -C "$target" ls-files -- "$scope/")" ]; then
       git -C "$target" add -u -- "$scope/" || return 1
@@ -298,13 +299,41 @@ stage_config_sync() {
       plugin_top="${relative#plugins/}"
       plugin_top="${plugin_top%%/*}"
       [ -d "$SCRIPT_DIR/plugins/$plugin_top" ] || continue
-      git -C "$target" add -- "$relative" || return 1
+      plugin_paths+=("$relative")
     done < <(
       find "$SCRIPT_DIR/plugins" \
         \( -type d -name .git -o -type d -name __pycache__ \
            -o -type d -name .pytest_cache -o -type d -name .venv \) -prune -o \
         \( -type f ! -name '*.pyc' -o -type l \) -print0
     )
+    # A path the INSTANCE ignores cannot be staged, and `git add` treats that
+    # as an error, so ONE stray file in the skeleton fails the entire config
+    # sync on every instance whose .gitignore covers its extension. Skip those
+    # instead: a file the instance ignores was never going to be committed
+    # there, and aborting the sync over it helps nobody.
+    #
+    # Scar 2026-07-25: the skeleton tracks
+    # plugins/prd-os/scripts/export-fable-mirror.sh.remediation.bak -- a backup
+    # committed by accident -- and ASK_AI_consultant's .gitignore line 62 is
+    # `*.bak`. One file, whole fleet. check-ignore runs once over the batch
+    # rather than per file.
+    if [ "${#plugin_paths[@]}" -gt 0 ]; then
+      ignored_paths="$(
+        printf '%s\n' "${plugin_paths[@]}" |
+          git -C "$target" check-ignore --stdin 2>/dev/null || true
+      )"
+      stage_paths=()
+      for relative in "${plugin_paths[@]}"; do
+        if [ -n "$ignored_paths" ] &&
+            printf '%s\n' "$ignored_paths" | grep -Fxq -- "$relative"; then
+          continue
+        fi
+        stage_paths+=("$relative")
+      done
+      if [ "${#stage_paths[@]}" -gt 0 ]; then
+        git -C "$target" add -- "${stage_paths[@]}" || return 1
+      fi
+    fi
   fi
 }
 

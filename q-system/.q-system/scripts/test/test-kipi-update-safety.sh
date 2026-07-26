@@ -355,3 +355,57 @@ grep -q "real plugin content" "$I8/plugins/realplugin/content.txt" 2>/dev/null |
   fail "skipping the dangling plugin also skipped the real one next to it: $REAL8"
 [ -e "$I8/plugins/ghost" ] && fail "a dangling skeleton plugin was materialised in the instance"
 echo "PASS: a dangling skeleton plugin is skipped by BOTH the syncer and the stager"
+
+# --- one instance-ignored skeleton file must not fail the config sync -------
+# stage_config_sync hands git every file under the skeleton's plugins/. If the
+# INSTANCE's .gitignore covers one of them, `git add` refuses with "paths are
+# ignored by one of your .gitignore files" and the whole config sync fails --
+# so a single stray file in the skeleton takes down every instance that ignores
+# its extension.
+#
+# Measured 2026-07-25 on ASK_AI_consultant: the skeleton TRACKS
+# plugins/prd-os/scripts/export-fable-mirror.sh.remediation.bak (a backup
+# committed by accident) and the instance's .gitignore line 62 is `*.bak`.
+# The right behaviour is to skip what the instance cannot track, not to abort:
+# an ignored file was never going to be committed there anyway.
+WORK9="$(mktemp -d)"; SK9="$WORK9/skel"; I9="$WORK9/inst"
+mkdir -p "$SK9/q-system/.q-system/scripts" "$SK9/q-system/.q-system/state" \
+         "$SK9/plugins/realplugin" "$SK9/.claude/rules" "$I9/q-system" "$I9/.claude"
+cp "$SCRIPT" "$SK9/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK9/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK9/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK9/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK9/validate-separation.py"
+cat > "$SK9/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK9/q-system/tracked.md"
+printf 'real plugin content\n' > "$SK9/plugins/realplugin/content.txt"
+printf 'a backup committed by accident\n' > "$SK9/plugins/realplugin/thing.sh.remediation.bak"
+printf 'example rule\n' > "$SK9/.claude/rules/example.md"
+cp "$ROOT/settings-template.json" "$SK9/settings-template.json" 2>/dev/null || printf '{}\n' > "$SK9/settings-template.json"
+cp "$ROOT/kipi-settings-merge.py" "$SK9/kipi-settings-merge.py" 2>/dev/null || true
+( cd "$SK9" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"ignoreinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I9" > "$SK9/instance-registry.json"
+printf 'old\n' > "$I9/q-system/tracked.md"
+printf '{}\n' > "$I9/.claude/settings.json"
+printf '*.bak\n' > "$I9/.gitignore"
+( cd "$I9" && G init -q && G add -A && G commit -qm inst )
+
+OUT9="$(bash "$SK9/kipi-update.sh" --dry-run --only ignoreinst 2>&1 || true)"
+echo "$OUT9" | grep -q "ignored by one of your .gitignore" && \
+  fail "an instance-ignored skeleton file aborted the config sync: $OUT9"
+echo "$OUT9" | grep -q "config sync did not reach a complete committed state" && \
+  fail "one ignored file failed the whole config sync: $OUT9"
+echo "$OUT9" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model with an instance-ignored skeleton file: $OUT9"
+
+REAL9="$(bash "$SK9/kipi-update.sh" --only ignoreinst 2>&1 || true)"
+grep -q "real plugin content" "$I9/plugins/realplugin/content.txt" 2>/dev/null || \
+  fail "skipping the ignored file also skipped the trackable plugin content: $REAL9"
+[ -z "$(git -C "$I9" status --porcelain)" ] || \
+  fail "the ignored file left the instance dirty: $(git -C "$I9" status --porcelain)"
+echo "PASS: an instance-ignored skeleton file is skipped, not fatal, and leaves a clean tree"
