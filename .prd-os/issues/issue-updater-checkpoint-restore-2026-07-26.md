@@ -1,7 +1,7 @@
 ---
 id: issue-updater-checkpoint-restore-2026-07-26
 title: Checkpoint the instance and restore it on every give-up path
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-updater-consolidation-2026-07-26
 allowed_files:

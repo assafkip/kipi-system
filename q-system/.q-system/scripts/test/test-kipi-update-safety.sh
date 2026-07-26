@@ -581,14 +581,34 @@ printf '{"instances":[{"name":"stuck","path":"%s","subtree_prefix":"q-system","t
 printf 'skeleton content v1 (old)\n' > "$I13/q-system/tracked.md"
 ( cd "$I13" && G init -q && G add -A && G commit -qm inst )
 mkdir -p "$I13/.git/hooks"
-printf '#!/usr/bin/env bash\necho "instance pre-commit refuses" >&2\nexit 1\n' \
-  > "$I13/.git/hooks/pre-commit"
+# The hook also WRITES while the run is in flight, into two instance-owned
+# subtrees. Hooks that emit a report or a cache are ordinary, and so are the
+# instance's own launchd jobs, so "nothing else writes during a sync" is not a
+# property this script may assume. Restore must never delete these: they are
+# untracked, so git holds no copy, and the preservation snapshot only covers
+# what existed before the rsync. Deleting them would be silent and permanent.
+mkdir -p "$I13/q-system/memory" "$I13/q-system/output"
+cat > "$I13/.git/hooks/pre-commit" <<'HOOK13'
+#!/usr/bin/env bash
+printf 'written mid-run\n' > "$(git rev-parse --show-toplevel)/q-system/memory/new-note.md"
+printf 'written mid-run\n' > "$(git rev-parse --show-toplevel)/q-system/output/loop-log.md"
+echo "instance pre-commit refuses" >&2
+exit 1
+HOOK13
 chmod +x "$I13/.git/hooks/pre-commit"
 
 bash "$SK13/kipi-update.sh" --only stuck >/dev/null 2>&1 || true
-DIRTY13="$(G -C "$I13" status --porcelain)"
-[ -z "$DIRTY13" ] || \
-  fail "a failed run left the instance dirty; every later run will refuse at the dirty-tree guard: $DIRTY13"
+# The condition that actually strands an instance is the dirty-tree guard's own:
+# staged entries or modified tracked files. Untracked files are deliberately NOT
+# part of it -- the guard ignores them, and the assertions below require two of
+# them to have survived.
+if ! G -C "$I13" diff --cached --quiet || ! G -C "$I13" diff --quiet; then
+  fail "a failed run left tracked/staged debris; every later run will refuse at the dirty-tree guard: $(G -C "$I13" status --porcelain | tr '\n' ' ')"
+fi
+[ -f "$I13/q-system/memory/new-note.md" ] || \
+  fail "restore DELETED an instance-owned file written during the run: q-system/memory/new-note.md"
+[ -f "$I13/q-system/output/loop-log.md" ] || \
+  fail "restore DELETED an instance-owned file written during the run: q-system/output/loop-log.md"
 
 # hook removed, so the ONLY thing that could still block run 2 is run 1's debris
 rm -f "$I13/.git/hooks/pre-commit"

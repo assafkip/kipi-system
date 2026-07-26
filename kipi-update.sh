@@ -320,17 +320,38 @@ cleanup_updater_temps() {
 # something THIS run wrote. No hard reset and no clean subcommand is used.
 CHECKPOINT_DIR=""
 CHECKPOINT_TARGET=""
+CHECKPOINT_PREFIX=""
+
+# The untracked inventory, SCOPED to what this sync is allowed to write.
+# Checkpoint and restore both call it, so their lists are comparable -- and,
+# far more importantly, restore can never even propose deleting a path the
+# sync was never permitted to touch. An unscoped inventory made restore delete
+# files written into memory/ and output/ DURING the run (an instance
+# pre-commit hook emitting a report is enough), which is unrecoverable: they
+# are untracked, so git has no copy, and $SNAP only holds what existed before
+# the rsync.
+#
+# `--others` without `--exclude-standard` on purpose: a gitignored file under
+# the synced tree is still real state that rsync --delete would remove.
+checkpoint_untracked_list() {
+  local target="$1"
+  [ -n "${CHECKPOINT_PREFIX:-}" ] || return 0
+  ( cd "$target" && git ls-files -z --others -- \
+      "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
+      $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null )
+}
 
 checkpoint_instance() {
   local target="$1"
   CHECKPOINT_TARGET=""
+  CHECKPOINT_PREFIX="$2"
+  # Drop the previous instance's dir now rather than at EXIT; cleanup only ever
+  # removed the last one, so a 23-instance run orphaned 22.
+  if [ -n "${CHECKPOINT_DIR:-}" ] && [ -d "$CHECKPOINT_DIR" ]; then
+    rm -r -- "$CHECKPOINT_DIR"
+  fi
   CHECKPOINT_DIR="$(mktemp -d)" || return 1
-  # The LIST only, not the bytes: this is what tells restore which untracked
-  # paths existed before the run, so anything else it finds afterwards is this
-  # run's own output and can go. `--others` without `--exclude-standard` on
-  # purpose -- an ignored file is still not something this run created.
-  ( cd "$target" && git ls-files -z --others ) > "$CHECKPOINT_DIR/untracked" ||
-    return 1
+  checkpoint_untracked_list "$target" > "$CHECKPOINT_DIR/untracked" || return 1
   CHECKPOINT_TARGET="$target"
 }
 
@@ -364,18 +385,47 @@ restore_instance() {
   # dirty tree this function exists to prevent.
   git -C "$target" reset -q HEAD 2>/dev/null || true
   git -C "$target" checkout -q -- . 2>/dev/null || true
-  # Finally, remove files this run created. Only paths that are untracked NOW
-  # and were absent from the checkpoint list -- never a recursive delete of a
+  # Finally, remove files this run created: untracked NOW, absent from the
+  # checkpoint, and inside the sync's own scope. Never a recursive delete of a
   # directory this run was not observed to create.
-  ( cd "$target" && git ls-files -z --others 2>/dev/null | while IFS= read -r -d '' uf; do
-      if ! grep -qzFx -- "$uf" "$CHECKPOINT_DIR/untracked" 2>/dev/null; then
-        [ -f "$uf" ] || [ -L "$uf" ] && rm -f -- "$uf"
-      fi
-    done ) || true
+  #
+  # The set difference is computed once in python rather than by forking a grep
+  # per file. The fork-per-file form was quadratic -- measured 83s on a 20k-file
+  # instance against 1s before -- and it also could not match a path containing
+  # a newline, because `grep -F` splits the PATTERN on newlines, so such a file
+  # was deleted despite being IN the checkpoint. Splitting on NUL fixes both.
+  checkpoint_untracked_list "$target" > "$CHECKPOINT_DIR/now" 2>/dev/null || true
+  python3 - "$CHECKPOINT_DIR/untracked" "$CHECKPOINT_DIR/now" "$target" <<'PY' || true
+import os
+import sys
+
+before = set(open(sys.argv[1], "rb").read().split(b"\0"))
+root = sys.argv[3]
+for record in open(sys.argv[2], "rb").read().split(b"\0"):
+    if not record or record in before:
+        continue
+    candidate = os.path.join(root, os.fsdecode(record))
+    try:
+        if os.path.islink(candidate) or os.path.isfile(candidate):
+            os.unlink(candidate)
+    except OSError:
+        pass
+PY
 }
 
 # The single give-up path. Every one of the 24 sites routes through here, so
 # restore-before-teardown is structural rather than 24 chances to forget it.
+# Two sites record a failure and deliberately FALL THROUGH: a direct-clone
+# whose merge needs manual resolve, and a failed archive export. Both still let
+# the .claude/ and plugins/ config sync run, so the instance keeps receiving
+# config updates even though its repo pull did not land. They must NOT abandon
+# the instance -- doing so also tears down the dry-run model the config sync is
+# still using. They get the counter alone, which is also what keeps the
+# increment itself in exactly one place.
+count_instance_failure() {
+  FAIL=$((FAIL + 1))
+}
+
 abandon_instance() {
   local message="${1:-}"
   [ -n "$message" ] && echo "$message"
@@ -385,7 +435,7 @@ abandon_instance() {
     ARCHIVE_TMP=""
   fi
   cleanup_dry_model
-  FAIL=$((FAIL + 1))
+  count_instance_failure
   echo ""
   return 0
 }
@@ -739,6 +789,7 @@ while IFS='|' read -r name path prefix itype; do
   # bail on instance B restore against instance A's recorded state; a stale
   # SNAP would point restore at a torn-down directory.
   CHECKPOINT_TARGET=""
+  CHECKPOINT_PREFIX=""
   SNAP=""
   ORIGINAL_PATH="$path"
   ORIGINAL_HEAD=""
@@ -1006,7 +1057,7 @@ PY
     # everything a later restore discards is something THIS run wrote. Against
     # a DIRTY checkpoint the restore's `git checkout -- .` would throw away the
     # founder's unstaged edits, which is the opposite of the point.
-    if ! checkpoint_instance "$path"; then
+    if ! checkpoint_instance "$path" "$prefix"; then
       abandon_instance "  ERROR: could not checkpoint the instance; refusing to write" && continue
     fi
   fi
@@ -1029,7 +1080,8 @@ PY
         else
           echo "  WARN: merge failed (needs manual resolve)"
           git merge --abort 2>/dev/null || true
-          abandon_instance && continue
+          # No abandon: fall through so the config sync still runs.
+          count_instance_failure
         fi
       fi
     fi
@@ -1170,7 +1222,11 @@ PY
         fi
         PASS=$((PASS + 1))
       else
-        abandon_instance "  WARN: archive export failed" && continue
+        rm -r -- "$ARCHIVE_TMP"
+        ARCHIVE_TMP=""
+        echo "  WARN: archive export failed"
+        # No abandon: fall through so the config sync still runs.
+        count_instance_failure
       fi
     else
       cd "$path"
