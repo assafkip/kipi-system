@@ -359,6 +359,25 @@ restore_instance() {
   local target="${CHECKPOINT_TARGET:-}" uf
   [ -n "$target" ] || return 0
   [ -d "$CHECKPOINT_DIR" ] || return 0
+  # An interrupted rebase, first, because aborting one restores HEAD and the
+  # worktree wholesale and everything below should run on that result.
+  #
+  # The mixed reset further down already clears MERGE_HEAD and
+  # CHERRY_PICK_HEAD -- measured, both gone afterwards -- so neither needs
+  # handling here. A rebase directory is the one that SURVIVES a reset, which
+  # leaves the instance mid-rebase while `git status` says nothing loud enough
+  # for the next run to act on.
+  #
+  # Anything in flight at this point belongs to THIS run: the zombie-rebase
+  # cleanup at the top of the loop already aborted whatever the founder had,
+  # before the checkpoint was taken. Abort ours the way git wants it aborted.
+  # If that cannot run, say so and leave it -- deleting git's own state by hand
+  # is how a repo gets wrecked, and a human can finish what git could not.
+  if [ -d "$(git -C "$target" rev-parse --git-path rebase-merge 2>/dev/null)" ] ||
+      [ -d "$(git -C "$target" rev-parse --git-path rebase-apply 2>/dev/null)" ]; then
+    git -C "$target" rebase --abort 2>/dev/null ||
+      echo "  WARN: a rebase this run started could not be aborted; the instance is left mid-rebase"
+  fi
   # Untracked files the rsync --delete removed. No git verb can bring one back,
   # and the ONLY copy is the preservation snapshot under $SNAP -- which lives
   # inside ARCHIVE_TMP, so this has to happen before that is torn down. That
