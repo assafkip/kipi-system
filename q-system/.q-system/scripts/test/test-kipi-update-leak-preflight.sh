@@ -33,7 +33,24 @@ build_skeleton() {
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$sk/validate-separation.py"
-  cp "$ROOT/$BASELINE_REL" "$sk/$BASELINE_REL"
+  # NOT the repo's committed baseline: that one is ARMED against THIS repo's
+  # content, so its permits refuse when loaded over a synthetic skeleton.
+  cat > "$sk/$BASELINE_REL" <<'BASELINE_JSON'
+{
+  "schema_version": 1,
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "relationship",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": null,
+  "entries": []
+}
+BASELINE_JSON
   printf 'generic skeleton content\n' > "$sk/q-system/marketing/outreach.md"
   ( cd "$sk" && G init -q && G add -A -f && G commit -qm skel )
   printf '{"instances":[{"name":"testinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
@@ -105,7 +122,24 @@ d['classifier_sha256']='0'*64
 json.dump(d, open(p,'w'), indent=2)
 " "$sk/$BASELINE_REL"
   assert_aborts_untouched "$sk" "$inst" "classifier mismatch"
-  cp "$ROOT/$BASELINE_REL" "$sk/$BASELINE_REL"
+  # NOT the repo's committed baseline: that one is ARMED against THIS repo's
+  # content, so its permits refuse when loaded over a synthetic skeleton.
+  cat > "$sk/$BASELINE_REL" <<'BASELINE_JSON'
+{
+  "schema_version": 1,
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "relationship",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": null,
+  "entries": []
+}
+BASELINE_JSON
 
   # (d) the skeleton is STAGED but not committed. The gate reads the index; the
   # updater copies HEAD via `git archive`. Any divergence means the gate clears
@@ -211,15 +245,31 @@ assert_unarmed_reports_and_says_so() {
 
 # ---------------------------------------------------------------- reporting
 # The unarmed banner is the ONLY signal while the gate is not enforcing, so
-# what it prints has to cover where a real fact would land. A sorted prefix
-# does not: on the real repo the first 20 rows are entirely .claude/ and
-# plugins/, while 138 of 243 fingerprints sit under q-system/ and never appear.
+# what it prints has to cover where a real fact would land. A sorted prefix did
+# not: it printed the alphabetically-first 20 rows, which on the real repo were
+# entirely .claude/ and plugins/ while 138 of 243 fingerprints sat under
+# q-system/ and never appeared. Hence the per-area counts.
+#
+# This ran against the LIVE repo until 2026-07-25, when the baseline was armed
+# and the live gate stopped reporting unarmed at all. A property has to be
+# tested on a fixture that still has it.
 assert_unarmed_report_covers_every_area() {
-  local out
-  out="$(python3 "$ROOT/$GATE_REL" --check --repo-root "$ROOT" 2>&1)" || \
-    fail "gate CLI failed on the real repo: $out"
-  echo "$out" | grep -q "q-system" || \
-    fail "unarmed report never mentions q-system, where real facts land: $out"
+  local work sk out
+  work="$(mktemp -d)"; sk="$work/skel"
+  build_skeleton "$work"
+  mkdir -p "$sk/plugins/demo"
+  printf -- '- Client: Northwind Trading\n' > "$sk/plugins/demo/notes.md"
+  printf -- '- Client: Northwind Trading\n' >> "$sk/q-system/marketing/outreach.md"
+  ( cd "$sk" && G add -A -f && G commit -qm leaks )
+
+  out="$(python3 "$sk/$GATE_REL" --check --repo-root "$sk" 2>&1)" || \
+    fail "gate CLI failed on the fixture: $out"
+  echo "$out" | grep -q "by area:" || \
+    fail "unarmed report has no per-area counts: $out"
+  echo "$out" | grep -q "q-system=" || \
+    fail "unarmed report omits q-system, where real facts land: $out"
+  echo "$out" | grep -q "plugins=" || \
+    fail "unarmed report omits plugins: $out"
 }
 
 # A file carrying reviewed entries but a null stamp reads as armed to a human

@@ -614,20 +614,24 @@ def scan_propagation_sources(repo_root: Path | str, classify=None) -> list:
 # file) read as client identity. A 253-entry file can be read by a human; a
 # 10k one cannot, and a baseline nobody can read is an unaudited allowlist.
 #
-# `validate-separation.py` emits EIGHT classes. Two are absent here:
-# `unclassified_populated_record` for the volume reason above, and
-# `relationship` because the PRD's resolved decision names six classes and
-# does not include it. That is a gap worth naming rather than hiding:
-# `relationship` is the one class that describes PEOPLE, it is not shadowed by
-# `client_identity` (`relationship` is not in IDENTITY_FIELDS), and
-# `_baseline_key` refuses a permit for it, so a human cannot even record having
-# reviewed one. Its count is 0 on this repo today. Changing blocking scope is a
-# PRD-level decision, so this is flagged, not silently changed (sp-6b42ce65).
+# `validate-separation.py` emits EIGHT classes. ONE is absent here:
+# `unclassified_populated_record`, for the volume reason above.
+#
+# `relationship` WAS absent, and that was a hole: it is the one class that
+# describes PEOPLE and it is not shadowed by `client_identity` (`relationship`
+# is not in IDENTITY_FIELDS), so a line naming a person and no company emitted
+# it alone and passed as a warning. Worse, `_baseline_key` refuses a permit for
+# a non-blocking class, so nobody could even record having reviewed one. The
+# PRD's resolved decision names six classes; it gives no reason for excluding
+# this one, which reads as an omission rather than a judgement. Added on the
+# founder's explicit decision 2026-07-25 (sp-6b42ce65). Cost measured before
+# adding: 0 findings on this repo, so it blocks nothing that exists today.
 BLOCKING_FACT_CLASSES = (
     "case_proof_gap",
     "client_identity",
     "dated_interaction",
     "pricing",
+    "relationship",
     "source_identity",
     "sourced_interaction",
 )

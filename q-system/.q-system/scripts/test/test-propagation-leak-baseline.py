@@ -57,16 +57,28 @@ def justify_all(gate, findings, reason="reviewed 2026-07-25: template placeholde
     }
 
 
-def test_blocking_scope_is_the_six_high_confidence_classes():
+def test_blocking_scope_covers_every_class_that_names_a_person_or_a_deal():
+    """Seven, not the PRD's six.
+
+    `relationship` was the eighth class the classifier emits and the only one
+    describing PEOPLE. It is not shadowed by `client_identity`, so a line
+    naming a person with no company emitted it alone and passed as a warning --
+    and `_baseline_key` refuses a permit for a non-blocking class, so nobody
+    could record having reviewed one either. Added on the founder's explicit
+    decision 2026-07-25 (sp-6b42ce65); measured cost 0 findings on this repo.
+    """
     gate = load_gate()
     assert set(gate.BLOCKING_FACT_CLASSES) == {
         "case_proof_gap",
         "client_identity",
         "dated_interaction",
         "pricing",
+        "relationship",
         "source_identity",
         "sourced_interaction",
     }
+    # The only class the classifier emits that is deliberately NOT blocking.
+    assert "unclassified_populated_record" not in gate.BLOCKING_FACT_CLASSES
 
 
 def test_unclassified_records_never_block():
@@ -536,12 +548,46 @@ def test_rebaselining_a_hand_edited_document_is_refused():
         rebaseline(gate, document, findings)
 
 
-def test_committed_baseline_file_loads():
-    """The file that ships must satisfy its own rules."""
+def test_committed_baseline_file_is_armed_and_self_consistent():
+    """The shipped file must satisfy its own rules against the LIVE repo.
+
+    It used to assert `entries == []`, which encoded "ships unarmed" as a
+    property. It was armed on 2026-07-25 once the classifier narrowing brought
+    the blocking set from 253 to 29 -- a count a human can actually read, which
+    253 lines of YAML keys never was.
+    """
+    import hashlib
+
     gate = load_gate()
     document = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
 
-    assert gate.load_baseline_document(document) == {}
-    assert document["entries"] == [], (
-        "an entry landed without going through build_baseline_document"
+    assert document["classifier_sha256"] is not None, "the gate is not armed"
+    assert document["classifier_sha256"] == hashlib.sha256(
+        (REPO_ROOT / "validate-separation.py").read_bytes()
+    ).hexdigest(), (
+        "the baseline was built by a different classifier than the one running; "
+        "re-baseline rather than editing the stamp"
     )
+    current = gate.blocking_fingerprints(
+        gate.scan_propagation_sources(REPO_ROOT)
+    )
+    loaded = gate.load_baseline_document(
+        document, document["classifier_sha256"], current
+    )
+    assert loaded, "an armed baseline that grants nothing is not armed"
+    assert gate.new_findings(loaded, current) == [], (
+        "the repo has a fact the committed baseline does not account for"
+    )
+
+
+def test_every_committed_entry_names_what_it_permits():
+    """A justification that does not name the record is not a per-entry read."""
+    document = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+
+    for entry in document["entries"]:
+        assert entry["path"] in entry["justification"], (
+            f"{entry['path']} has a justification that does not name it"
+        )
+        assert len(entry["justification"].split()) >= 8, (
+            f"{entry['path']} has a justification too short to be a reading"
+        )

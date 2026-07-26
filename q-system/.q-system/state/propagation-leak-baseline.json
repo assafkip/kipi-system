@@ -5,27 +5,259 @@
     "client_identity",
     "dated_interaction",
     "pricing",
+    "relationship",
     "source_identity",
     "sourced_interaction"
   ],
-  "classifier_sha256": null,
-  "entries": [],
+  "classifier_sha256": "e836e1cc39202bb48f1e11bd1098dada30205a1fcc58f4fe0063f8bb65fdec54",
+  "entries": [
+    {
+      "path": "plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml",
+      "fact_class": "client_identity",
+      "indent": "nested",
+      "line_sha256": "798ba272a5ff7d3516b69bda7332c4a6e5fdfd9521a7f3befde0cc2ee75ce23e",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a schema type declaration, not a populated field \u2014 plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml [client_identity] 798ba272"
+    },
+    {
+      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "47338542b859c8e1fa3444d62f3c10554df1af8a5dc0f3794c8e8b6df3e72585",
+      "count": 4,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py [source_identity] 47338542"
+    },
+    {
+      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "cf458e0b434a3dc114a779f0255e20fb8a92becc24e634a0f6c832a02b018c86",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py [source_identity] cf458e0b"
+    },
+    {
+      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/executors/http_executor.py",
+      "fact_class": "client_identity",
+      "indent": "nested",
+      "line_sha256": "80a5631c0ae56e698c84d9c469b6ff15621a5eac3558e2e8e7156789dd9e2063",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/kipi-core/kipi-mcp/src/kipi_mcp/executors/http_executor.py [client_identity] 80a5631c"
+    },
+    {
+      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py",
+      "fact_class": "client_identity",
+      "indent": "nested",
+      "line_sha256": "cf97bf74018497e40c569f103b60cb63ca3f13114d68fed4317bd4610dcfb830",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a docstring parameter description, not an asserted value \u2014 plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py [client_identity] cf97bf74"
+    },
+    {
+      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "cb8af87103aa8da713e8881951ebe3f629bc4181538a30058e8b661c670c448e",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a docstring parameter description, not an asserted value \u2014 plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py [source_identity] cb8af871"
+    },
+    {
+      "path": "plugins/kipi-core/skills/headline-engineering/references/research-receipts.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "020973afde55d94e1067bef3cbdd50d8b530540a431339eaec7783d17fb44036",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 plugins/kipi-core/skills/headline-engineering/references/research-receipts.md [source_identity] 020973af"
+    },
+    {
+      "path": "plugins/kipi-core/skills/headline-engineering/references/research-receipts.md",
+      "fact_class": "sourced_interaction",
+      "indent": "top",
+      "line_sha256": "5b101b8cb6918819307face143e4c81efae0135d6d7a98b714e8a22ef0db60a9",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 plugins/kipi-core/skills/headline-engineering/references/research-receipts.md [sourced_interaction] 5b101b8c"
+    },
+    {
+      "path": "plugins/kipi-core/skills/research-mode/SKILL.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "e78144190ccf405638a06d41076d2893aa901a319c6e0271d8f9acddf88c1968",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 plugins/kipi-core/skills/research-mode/SKILL.md [source_identity] e7814419"
+    },
+    {
+      "path": "plugins/kipi-core/skills/research-mode/references/anthropic-reduce-hallucinations.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "4ff0e9e962e6af6db34c972abcc142145efefe500179f6b6ea1ad83f54384dec",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 plugins/kipi-core/skills/research-mode/references/anthropic-reduce-hallucinations.md [source_identity] 4ff0e9e9"
+    },
+    {
+      "path": "plugins/kipi-design/skills/brand/references/asset-organization.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "83e7b16ee6d25e196858b0ff4fe65a049ff490bde32d4f41af1c01091076f244",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a markdown table row of column labels or tool options, not data \u2014 plugins/kipi-design/skills/brand/references/asset-organization.md [source_identity] 83e7b16e"
+    },
+    {
+      "path": "plugins/kipi-design/skills/brand/scripts/inject-brand-context.cjs",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "eee588fddfce8eaf16fc6f338e6948db83d10e1af855ea1c7b0c8f7213f676a8",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/kipi-design/skills/brand/scripts/inject-brand-context.cjs [source_identity] eee588fd"
+    },
+    {
+      "path": "plugins/kipi-design/skills/design/references/slides-copywriting-formulas.md",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "29663817cb2376651fc778d2548e1a5729db9b05af40cd229173af76f89cfea5",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a markdown table row of column labels or tool options, not data \u2014 plugins/kipi-design/skills/design/references/slides-copywriting-formulas.md [pricing] 29663817"
+    },
+    {
+      "path": "plugins/kipi-design/skills/ui-ux-pro-max/data/design.csv",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: design-style prose whose numerals trip the currency pattern \u2014 plugins/kipi-design/skills/ui-ux-pro-max/data/design.csv [pricing] 5bd26c17"
+    },
+    {
+      "path": "plugins/kipi-design/skills/ui-ux-pro-max/data/draft.csv",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: design-style prose whose numerals trip the currency pattern \u2014 plugins/kipi-design/skills/ui-ux-pro-max/data/draft.csv [pricing] 5bd26c17"
+    },
+    {
+      "path": "plugins/kipi-design/skills/ui-ux-pro-max/src/data/design.csv",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: design-style prose whose numerals trip the currency pattern \u2014 plugins/kipi-design/skills/ui-ux-pro-max/src/data/design.csv [pricing] 5bd26c17"
+    },
+    {
+      "path": "plugins/kipi-design/skills/ui-ux-pro-max/src/data/draft.csv",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: design-style prose whose numerals trip the currency pattern \u2014 plugins/kipi-design/skills/ui-ux-pro-max/src/data/draft.csv [pricing] 5bd26c17"
+    },
+    {
+      "path": "plugins/prd-os/scripts/config.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "ad74d100f79a070611f96728913ca63755400ddbb2a603585f6742db1ab5dbf8",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/prd-os/scripts/config.py [source_identity] ad74d100"
+    },
+    {
+      "path": "plugins/prd-os/tests/test_propose_skeptic_antipatterns.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "beab5768f43633f13a1ea786ed99b0f32a85a525e55e3798863b65fc958d0b92",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 plugins/prd-os/tests/test_propose_skeptic_antipatterns.py [source_identity] beab5768"
+    },
+    {
+      "path": "q-system/.q-system/agent-pipeline/agents/05-lead-sourcing.md",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "5dbf758156a04e4a35ae478c425c67c188b629a34eff03fd64032e40c5c4e13a",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: our own tool spend guidance, not client pricing \u2014 q-system/.q-system/agent-pipeline/agents/05-lead-sourcing.md [pricing] 5dbf7581"
+    },
+    {
+      "path": "q-system/.q-system/agent-pipeline/agents/_cadence-config.md",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "c70e986e5dcec3119c33943ac5c34b9e59810c8042a925f6c527ff8906da8504",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: our own tool spend guidance, not client pricing \u2014 q-system/.q-system/agent-pipeline/agents/_cadence-config.md [pricing] c70e986e"
+    },
+    {
+      "path": "q-system/.q-system/commands.md",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "dacb346ae0cd05c6920ef60ca09d10af5bec2a233a49eb9ddc62d7f4b32b7c35",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: our own tool spend guidance, not client pricing \u2014 q-system/.q-system/commands.md [pricing] dacb346a"
+    },
+    {
+      "path": "q-system/.q-system/onboarding/guides/connect-gamma.md",
+      "fact_class": "pricing",
+      "indent": "top",
+      "line_sha256": "a852b5c00dd02c8bedf03874793a11bda2c3acc199cee657ae25a502f8517b8d",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a markdown table row of column labels or tool options, not data \u2014 q-system/.q-system/onboarding/guides/connect-gamma.md [pricing] a852b5c0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/memory_reflect.py",
+      "fact_class": "source_identity",
+      "indent": "nested",
+      "line_sha256": "ee18816332e769c2b3ac7e6bff26283e544ac6924459048c37090658c4e6f78c",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a type annotation in source code, not an asserted value \u2014 q-system/.q-system/scripts/memory_reflect.py [source_identity] ee188163"
+    },
+    {
+      "path": "q-system/.q-system/state-model.md",
+      "fact_class": "case_proof_gap",
+      "indent": "top",
+      "line_sha256": "1725bf79557b8124b3947c1ac139c18e7aaecbb859192a19e07930be0d1abff2",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a markdown table row of column labels or tool options, not data \u2014 q-system/.q-system/state-model.md [case_proof_gap] 1725bf79"
+    },
+    {
+      "path": "q-system/.q-system/tests/separation/test_template_restoration.py",
+      "fact_class": "case_proof_gap",
+      "indent": "top",
+      "line_sha256": "214e81f9dfabba0c353e1155b91682b8d42be2d8d6922477f81513868610b23b",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a docstring parameter description, not an asserted value \u2014 q-system/.q-system/tests/separation/test_template_restoration.py [case_proof_gap] 214e81f9"
+    },
+    {
+      "path": "q-system/.q-system/tests/separation/test_template_restoration.py",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "fd84ff02767cdc1dba7ccc13ef017aa27be739252d57afa360ece65b8cc63747",
+      "count": 2,
+      "justification": "reviewed 2026-07-25 by hand: a docstring parameter description, not an asserted value \u2014 q-system/.q-system/tests/separation/test_template_restoration.py [source_identity] fd84ff02"
+    },
+    {
+      "path": "q-system/research/cc-workflow-learnings-2026-06-02.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "4e4f1c717ddb2b22e7e18766fbba97bed1052f05486f393b00f529da38bad315",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 q-system/research/cc-workflow-learnings-2026-06-02.md [source_identity] 4e4f1c71"
+    },
+    {
+      "path": "q-system/research/skill-article-skillopt-2026-05-31.md",
+      "fact_class": "source_identity",
+      "indent": "top",
+      "line_sha256": "1707f3047f20c1b000508d9805e4ea8b0c52e05fd7e025ce19583e2fe4019984",
+      "count": 1,
+      "justification": "reviewed 2026-07-25 by hand: a citation of a public source or its public author, not a client and not a private origin \u2014 q-system/research/skill-article-skillopt-2026-05-31.md [source_identity] 1707f304"
+    }
+  ],
   "_readme": [
-    "This file is EMPTY on purpose. It grants permits, so it is populated by a",
-    "human review, never by a script and never by an agent.",
+    "ARMED 2026-07-25. Every entry below was read individually before it was",
+    "written; none is a client name, a deal amount, or a real interaction. They",
+    "are Python type annotations, docstring parameters, public citations (arXiv,",
+    "Anthropic docs, a public article author), markdown table rows, our own",
+    "Apify/Gamma tool-cost guidance, and test-fixture placeholders.",
     "",
-    "Measured 2026-07-25 on this repo: 784 findings in the six blocking classes,",
-    "across 450 files. Each one needs its own written justification saying why",
-    "that specific line is a known, accepted, non-leaking record. Nothing in the",
-    "delta design proves those 784 are false positives, so a bulk accept would",
-    "pre-authorize any fact that leaked before this gate shipped.",
+    "This became reviewable only after narrowing the classifier: `name` and",
+    "`date` were dropped as fact-class signals (118 and 90 of 253 findings, not",
+    "one of them a client) and table header rows are no longer read as records.",
+    "253 -> 29. Justifying 253 lines of YAML keys would have manufactured an",
+    "audit trail that meant nothing.",
     "",
-    "build_baseline_document() in ../scripts/propagation-leak-gate.py refuses a",
-    "single reason for the set, an empty reason, and a reason for a fact that is",
-    "not present. load_baseline_document() re-runs those checks so a hand-edit",
-    "of this file is caught too.",
-    "",
-    "classifier_sha256 is stamped when the baseline is first populated; the",
-    "preflight refuses a baseline built by a different classifier."
+    "To re-baseline use rebaseline_document(): it prunes stale permits and",
+    "reports adds separately from removals. Do not hand-edit."
   ]
 }

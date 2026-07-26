@@ -27,6 +27,22 @@ VALIDATOR = REPO_ROOT / "validate-separation.py"
 REGISTRY = REPO_ROOT / "instance-registry.json"
 UPDATER = REPO_ROOT / "kipi-update.sh"
 
+UNARMED_BASELINE = """{
+  "schema_version": 1,
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "relationship",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": null,
+  "entries": []
+}
+"""
+
 # The gate's own machinery has to sit INSIDE the tree it scans -- the preflight
 # resolves it at q-system/.q-system/scripts/ -- so a fixture that ships a valid
 # skeleton necessarily propagates these files too. They are Python and JSON
@@ -175,10 +191,14 @@ def build_skeleton(root, env, body):
     for gate_file in (
         "q-system/.q-system/scripts/propagation-leak-gate.py",
         "q-system/.q-system/scripts/containment-targets.py",
-        "q-system/.q-system/state/propagation-leak-baseline.json",
         "validate-separation.py",
     ):
         shutil.copy(REPO_ROOT / gate_file, skeleton / gate_file)
+    # NOT the repo's committed baseline: that one is ARMED and its permits
+    # describe THIS repo's content, so loading it over a synthetic skeleton
+    # refuses ("a permit cannot exceed what was reviewed").
+    (skeleton / "q-system/.q-system/state/propagation-leak-baseline.json").write_text(
+        UNARMED_BASELINE, encoding="utf-8")
     (skeleton / "q-system" / GENERIC_SOURCE).write_text(body, encoding="utf-8")
     # The updater treats a missing capability gate as a failed sync.
     (skeleton / "q-system" / ".q-system" / "scripts" / "capability-gate.py").write_text(

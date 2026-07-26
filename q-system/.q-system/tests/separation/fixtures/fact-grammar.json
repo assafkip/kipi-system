@@ -240,7 +240,7 @@
     }
   ],
   "reach_probe": {
-    "why": "One fact -- the client Oriole Systems -- written many ways, each pinned to what the classifier ACTUALLY returns. The first version of this probe was selected to reproduce the PRD's prose claim ('prose, a heading, JSON, shell, Python or most config syntax produces no finding') and so measured 3/33-equivalent. That was flattering: every 'prose' form happened to lack a leading label and every 'config' form happened to use = rather than :. The classifier's real rule is validate-separation.py's SEMANTIC_FIELD pattern -- ANY line shaped `Word(s): value`, whatever syntax surrounds it -- so YAML frontmatter, nested YAML, indented markdown, multi-line HTML comments, labeled log lines and labeled prose are all SEEN. This sample includes the shapes that make the number worse for the claim, not better. It is a SAMPLE bound, not a total one: a green suite means the classifier did not move ON THESE FORMS, never that it did not move.",
+    "why": "One fact -- the client Oriole Systems -- written many ways, each pinned to what the classifier ACTUALLY returns. The first version of this probe was selected to reproduce the PRD's prose claim ('prose, a heading, JSON, shell, Python or most config syntax produces no finding') and so measured 3/33-equivalent. That was flattering: every 'prose' form happened to lack a leading label and every 'config' form happened to use = rather than :. The classifier's real rule is validate-separation.py's SEMANTIC_FIELD pattern -- ANY line shaped `Word(s): value`, whatever syntax surrounds it -- so YAML frontmatter, nested YAML, indented markdown, multi-line HTML comments, labeled log lines and labeled prose are all SEEN. This sample includes the shapes that make the number worse for the claim, not better. It is a SAMPLE bound, not a total one: a green suite means the classifier did not move ON THESE FORMS, never that it did not move. Re-measured after narrowing the classifier: `name` and `date` were removed as fact-class signals (118 and 90 of 253 findings on this repo, none a client), and markdown table header rows are no longer read as records.",
     "fact": "Oriole Systems",
     "measured_on": "2026-07-25",
     "texts_sha256": "c166540c0edccc42daf3a025dd8dc886ea9ba661f3722549d7ca198043f2aff1",
@@ -466,7 +466,7 @@
             "line": 1
           },
           {
-            "fact_class": "client_identity",
+            "fact_class": "unclassified_populated_record",
             "line": 2
           }
         ]

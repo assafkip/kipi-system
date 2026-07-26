@@ -223,20 +223,27 @@ DATE_PATTERNS = (
         ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"),
     ),
 )
+# `name` is deliberately ABSENT. Measured 2026-07-25: it produced 118 of 253
+# blocking findings on this repo and not one was a client -- it is the key every
+# YAML schema, agent frontmatter, Python type annotation and table header uses.
+# A label that generic is not evidence of identity; the specific ones below are.
+# Cost, stated rather than hidden: `- Name: Northwind` now falls through to
+# `unclassified_populated_record`, a warning. Pinned in the reach probe.
 IDENTITY_FIELDS = {
     "client",
     "client name",
     "company",
-    "name",
     "organization",
     "prospect",
     "prospect name",
 }
 PRICING_FIELDS = {"amount", "package price", "price", "pricing"}
 SOURCE_FIELDS = {"potential source", "source"}
+# `date` is deliberately ABSENT, for the same reason: 90 of 253 findings, all
+# document metadata in frontmatter. A bare date is when a file was written, not
+# when someone was spoken to. `call`, `meeting` and `discussion` carry that.
 INTERACTION_FIELDS = {
     "call",
-    "date",
     "discussion",
     "interaction",
     "meeting",
@@ -261,9 +268,33 @@ def _synthetic_fixture(text, source_path):
     )
 
 
+TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")
+
+
+def _is_table_header(lines, index):
+    """A markdown table header row: column LABELS, not asserted data.
+
+    Deterministic rather than a guess: a header is the row immediately above a
+    `|---|---|` separator. Measured 2026-07-25: seventeen findings on this repo
+    were palette and roadmap table headers -- `| Name | Hex | RGB | Usage |` --
+    read as client identities. The data rows underneath stay records.
+    """
+    line = lines[index]
+    if "|" not in line:
+        return False
+    nxt = lines[index + 1] if index + 1 < len(lines) else ""
+    return "-" in nxt and TABLE_SEPARATOR_RE.match(nxt) is not None
+
+
 def _semantic_record_lines(text):
     lines = text.splitlines()
     for index, line in enumerate(lines):
+        # The separator itself is not a record either: skipping only the header
+        # left `|---|---|` being read as label `---`, value `---`.
+        if TABLE_SEPARATOR_RE.match(line) and "|" in line:
+            continue
+        if _is_table_header(lines, index):
+            continue
         match = next(
             (
                 pattern.match(line)

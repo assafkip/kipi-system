@@ -287,3 +287,71 @@ def test_every_probe_form_carries_the_real_fact():
             f"{form['id']} is the bare fact with no surrounding shape, so it "
             "measures nothing"
         )
+
+
+# ---------------------------------------------------------------------------
+# Generic schema labels are not fact signals
+# ---------------------------------------------------------------------------
+#
+# Measured 2026-07-25 on this repo: 208 of 253 blocking findings came from two
+# labels. `name` (118) and `date` (90) are the most generic keys in existence --
+# every YAML schema, every agent frontmatter, every Python type annotation and
+# every markdown table header has them. As evidence of a client fact they are
+# noise, and the specific labels that DO carry the signal (`client`, `company`,
+# `prospect`, `organization`, `call`, `meeting`) are untouched by this.
+#
+# The cost is real and narrow: a leak written as exactly `- Name: Northwind` or
+# `- Date: 2026-03-14` drops from blocking to a warning. That trade buys a
+# baseline a human can actually read, and an unreadable allowlist is not a
+# review. It is recorded in the reach probe above rather than left implicit.
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "name: str,",                        # python type annotation
+        "- name: AI Builds Radar",           # yaml list of feed configs
+        "name: 00-preflight",                # agent frontmatter
+        "date: 2026-07-20",                  # document metadata
+    ],
+)
+def test_generic_schema_labels_are_not_facts(record):
+    assert classes_for(record) == {"unclassified_populated_record"}
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "- **Client:** Oriole Systems",
+        "- **Company:** Oriole Systems",
+        "- **Prospect:** Oriole Systems",
+        "- **Meeting:** 2026-03-14",
+    ],
+)
+def test_specific_labels_still_carry_the_signal(record):
+    """The narrowing must not touch the labels that actually mean something."""
+    assert classes_for(record) != {"unclassified_populated_record"}
+    assert classes_for(record) != set()
+
+
+def test_a_table_header_row_is_not_an_asserted_fact():
+    """`| Name | Hex | RGB | Usage |` is column labels, not data.
+
+    A markdown header row is followed by a `|---|---|` separator, which makes
+    this deterministic rather than a guess. Seventeen of the findings on this
+    repo were palette and roadmap table HEADERS read as client identities.
+    """
+    table = "| Name | Hex | RGB | Usage |\n|---|---|---|---|\n| Ink | #111 | - | text |"
+
+    # The data row underneath is still read (as an unclassified record, which
+    # only warns). What must be gone is the header asserting a client identity.
+    assert "client_identity" not in classes_for(table)
+
+
+def test_a_two_column_table_record_is_still_a_fact():
+    """Only a HEADER is exempt, and a header is the row above a separator.
+
+    The supported two-column record form -- `| Client | Oriole Systems |` with
+    no separator under it -- is a label and its value, and still classifies.
+    """
+    assert "client_identity" in classes_for("| Client | Oriole Systems |")

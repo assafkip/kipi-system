@@ -21,8 +21,26 @@ cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
    "$SK/q-system/.q-system/scripts/containment-targets.py"
 cp "$ROOT/validate-separation.py" "$SK/validate-separation.py"
-cp "$ROOT/q-system/.q-system/state/propagation-leak-baseline.json" \
-   "$SK/q-system/.q-system/state/propagation-leak-baseline.json"
+# NOT the repo's committed baseline: that one is ARMED and its permits
+# describe THIS repo's content, so loading it against a synthetic skeleton
+# refuses ("a permit cannot exceed what was reviewed"). A fixture gets its
+# own unarmed baseline.
+cat > "$SK/q-system/.q-system/state/propagation-leak-baseline.json" <<'BASELINE_JSON'
+{
+  "schema_version": 1,
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "relationship",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": null,
+  "entries": []
+}
+BASELINE_JSON
 printf 'skeleton content v2\n' > "$SK/q-system/tracked.md"
 ( cd "$SK" && G init -q && G add -A && G commit -qm skel )
 printf '{"instances":[{"name":"testinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' "$INST" > "$SK/instance-registry.json"
