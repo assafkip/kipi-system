@@ -503,3 +503,46 @@ OUT11B="$(bash "$SK11/kipi-update.sh" --dry-run --only parent11 2>&1 || true)"
 echo "$OUT11B" | grep -q "unsafe dangling symlink" || \
   fail "a dead link in the instance's own tree was modeled instead of refused: $OUT11B"
 echo "PASS: the symlink guard skips paths the model excludes, still refuses in the instance's own tree"
+
+# --- the model rsync and the symlink walk do NOT skip the same set ----------
+# The two are built from one scan (model_skip_scan) but are DIFFERENT
+# projections of it, and .git is the whole reason. The rsync exclusion carries
+# .git, because the model receives .git by `cp -a` on the has-a-.git branch
+# instead. The walk's projection does NOT carry it, because a dangling link
+# under the instance's own .git/ must still refuse.
+#
+# Nothing pinned that asymmetry before: `grep -n 'ln -s'` across all 8 updater
+# suites planted no link under .git/. So a future "one list for both" cleanup
+# would silently delete this refusal and no test would notice. That is exactly
+# the collapse this fixture exists to block.
+WORK12="$(mktemp -d)"; SK12="$WORK12/skel"; I12="$WORK12/inst"
+mkdir -p "$SK12/q-system/.q-system/scripts" "$SK12/q-system/.q-system/state" \
+         "$I12/q-system"
+cp "$SCRIPT" "$SK12/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK12/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK12/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK12/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK12/validate-separation.py"
+cat > "$SK12/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK12/q-system/tracked.md"
+( cd "$SK12" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"gitlink","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I12" > "$SK12/instance-registry.json"
+printf 'old\n' > "$I12/q-system/tracked.md"
+( cd "$I12" && G init -q && G add -A && G commit -qm inst )
+
+# control: the same instance models fine with no link at all
+OUT12A="$(bash "$SK12/kipi-update.sh" --dry-run --only gitlink 2>&1 || true)"
+echo "$OUT12A" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "control instance did not model: $OUT12A"
+
+# the walk must still see, and refuse on, the instance's OWN .git
+ln -s "$WORK12/never-existed" "$I12/.git/dead-link"
+OUT12B="$(bash "$SK12/kipi-update.sh" --dry-run --only gitlink 2>&1 || true)"
+echo "$OUT12B" | grep -q "unsafe dangling symlink" || \
+  fail "a dangling symlink under the instance's own .git/ was modeled instead of refused -- the walk's projection has wrongly inherited the rsync's .git exclusion: $OUT12B"
+echo "PASS: the walk still vets the instance's own .git/ while the rsync projection excludes it"
