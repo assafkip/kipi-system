@@ -30,6 +30,12 @@ pre-commit:
           fi
         done
 
+    # The by-path exception below lets ONE .jsonl through forever. This checks
+    # its CONTENT, so the exception rests on a runnable gate rather than on the
+    # one-time human read that originally justified it.
+    receipts-ledger:
+      run: python3 q-system/.q-system/scripts/receipts-ledger-check.py
+
     blocked-paths:
       run: |
         # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,
@@ -38,7 +44,19 @@ pre-commit:
         # --diff-filter=ACMRT: only inspect adds, copies, modifies, renames, type-changes.
         # Deletions (D) are allowed through; cleanup commits that remove an
         # accidentally-tracked .env or __pycache__/ should not be blocked.
-        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' || true)
+        #
+        # ONE .jsonl exception, by exact path: .prd-os/receipts.jsonl is the
+        # closure-evidence ledger, not a transcript. test-updater-issue-sequence.py
+        # audits it against real commit ancestry, so with the ledger untracked that
+        # test could never pass in a fresh clone -- it read "no closure receipt" for
+        # every issue in CI while passing locally off an untracked working copy.
+        # A test whose input cannot exist in CI is the silent-absence failure the
+        # capability gate exists to kill, so the input is tracked. Verified
+        # 2026-07-26: the file carries structural ids and ISO timestamps only, no
+        # free text, safe for a public repo. grep -vxF is an exact whole-line match,
+        # so it widens nothing else -- every other .jsonl, .env, .pem and .key stays
+        # blocked, and gitleaks remains the deeper net.
+        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' | grep -vxF '.prd-os/receipts.jsonl' || true)
         if [ -n "$blocked" ]; then
           echo "BLOCK: these paths should not be committed:"
           echo "$blocked"

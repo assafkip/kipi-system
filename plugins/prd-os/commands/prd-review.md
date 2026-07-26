@@ -30,22 +30,31 @@ Capture the `prd_id` and `spec_path` from the JSON output. If no PRD is active, 
 
 4. Record the review.
 
-   - If the array has at least one item, append via the writer. The writer assigns sequential ids, stamps `created_at`, sets `disposition: pending`, validates every field, AND stamps the PRD frontmatter with `codex_reviewed_at` as a side effect. That stamp is the approval gate's proof that Codex actually ran:
+   - If the array has at least one item, append via the writer. The writer assigns sequential ids, stamps `created_at`, sets `disposition: pending`, validates every field, AND stamps the PRD frontmatter with the review proof (`codex_reviewed_at` plus `reviewed_by: <source>`) as a side effect. That stamp is the approval gate's proof that a real reviewer ran:
 
    ```bash
    echo '<JSON_ARRAY>' | \
      python3 "${CLAUDE_PLUGIN_ROOT}/scripts/findings_writer.py" \
-     add "<prd-id>" --source codex-review
+     add "<prd-id>" --source <SOURCE>
    ```
 
-   - If Codex found nothing (clean pass), do NOT fabricate findings. Stamp the PRD with `record-review` so the approval gate can still fire:
+   - If the reviewer found nothing (clean pass), do NOT fabricate findings. Stamp the PRD with `record-review` so the approval gate can still fire:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/findings_writer.py" \
-     record-review "<prd-id>" --source codex-review
+     record-review "<prd-id>" --source <SOURCE>
    ```
 
-   Source must be `codex-review` for a standard pass or `codex-adversarial` for an adversarial one. Without the stamp, `/prd-approve` will refuse to advance the PRD — that is the intended behavior. Do not try to work around it.
+   **`<SOURCE>` names the reviewer that actually ran. Never substitute one for another.**
+
+   | Reviewer that ran | Standard pass | Adversarial pass |
+   |---|---|---|
+   | Codex | `codex-review` | `codex-adversarial` |
+   | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
+
+   Codex is out of credits until 2026-08-24 and Gemini needs auth, so today the reviewer is the Claude subagent and the source is `claude-*`. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. `manual` and `plan` are the author's own words and the writer refuses them here by design.
+
+   Without the stamp, `/prd-approve` will refuse to advance the PRD — that is the intended behavior. Do not try to work around it.
 
 5. Advance the PRD to `in-review` so the findings gate will block approval:
 

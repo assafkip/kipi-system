@@ -408,7 +408,7 @@ def dedupe(caps: list) -> list:
     Linear issue, so disambiguate here rather than letting linear-sync refuse.
 
     The suffix is a hash of the ENTRY PATH, not a counter. A counter collided for
-    real: KTLYST_strategy has a file that legitimately produces "engine core 2",
+    real: one registered instance has a file that legitimately produces "engine core 2",
     and a second "engine core" was being renamed to "engine core (2)", which
     slugifies to the same key. linear-sync's collision guard caught it (exit 3),
     which is the guard working, but the generator should not emit the collision in

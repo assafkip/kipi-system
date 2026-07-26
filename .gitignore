@@ -27,8 +27,20 @@ q-system/output/marketing/linkedin/*
 # Plans (auto-created by Claude Code)
 .claude/plans/
 
+# Agent claim-lock: per-working-tree local state. Committing it would share one
+# session's claim with every clone and the lock would refuse everyone forever.
+.linear-claims.json
+.linear-claims.json.guard
+
 # Session transcripts
 *.jsonl
+# ...but this one is not a transcript, it is the repo's own closure-evidence
+# ledger. test-updater-issue-sequence.py audits it against real commit ancestry,
+# and the blanket ignore above meant it never reached a fresh clone -- so in CI
+# every issue read as "no closure receipt" while passing locally off an untracked
+# working copy. Verified 2026-07-26: structural ids and timestamps only, no
+# free-text, safe for a public repo.
+!.prd-os/receipts.jsonl
 
 # SQLite databases (generated at runtime)
 *.db

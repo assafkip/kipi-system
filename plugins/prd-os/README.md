@@ -133,4 +133,7 @@ Acceptance is a negative invariant, machine-enforced:
   `idea` at archive; replaces issue receipts for those findings).
 - **Plan findings** — `findings_writer.py add --source plan` records the
   author's decomposition for manifest traceability WITHOUT stamping
-  `codex_reviewed_at` (the review proof still requires a codex-* pass).
+  the review proof (which still requires a real independent reviewer pass:
+  `codex-review`, `codex-adversarial`, `claude-review`, or
+  `claude-adversarial`). The stamp records `reviewed_by: <source>` so the
+  ledger names the reviewer that actually ran.

@@ -33,11 +33,20 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    Use `--base origin/main --background` unless the diff is trivially small (1-2 files). When the command returns, wait for completion via `codex:result` / `codex:status`. Paste the full verdict block to the founder verbatim.
 
+   **`$REVIEW_SOURCE` / `$ADVERSARIAL_SOURCE` name the reviewer that actually ran. Never substitute one for another.**
+
+   | Reviewer that ran | `$REVIEW_SOURCE` | `$ADVERSARIAL_SOURCE` |
+   |---|---|---|
+   | Codex | `codex-review` | `codex-adversarial` |
+   | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
+
+   Codex is out of credits until 2026-08-24 and Gemini needs auth, so today the reviewer is the Claude subagent and the sources are `claude-*`. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger, which is worse than being blocked in a repo whose thesis is receipts.
+
    **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
 
    ```bash
    echo '<JSON_ARRAY>' | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_findings.py" \
-     add "$ISSUE_ID" --source codex-review --allowed-files-json "$ALLOWED"
+     add "$ISSUE_ID" --source "$REVIEW_SOURCE" --allowed-files-json "$ALLOWED"
    ```
 
    If the standard review returned approve with no findings, skip the writer call for this source. Do this before invoking the adversarial pass in step 6.
@@ -65,7 +74,7 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    ```bash
    echo '<JSON_ARRAY>' | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_findings.py" \
-     add "$ISSUE_ID" --source codex-adversarial --allowed-files-json "$ALLOWED"
+     add "$ISSUE_ID" --source "$ADVERSARIAL_SOURCE" --allowed-files-json "$ALLOWED"
    ```
 
    If the adversarial review returned approve with no findings, skip the writer call for this source.

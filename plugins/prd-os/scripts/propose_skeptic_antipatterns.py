@@ -78,7 +78,18 @@ ANTIPATTERN_TEMPLATES = {
 }
 
 ACCEPTED_SEVERITIES = {"blocker", "major"}
-ACCEPTED_SOURCE = "codex-review"
+# Every source that represents a real independent review pass, not just Codex's
+# standard one. Was the single literal "codex-review", which silently dropped
+# `codex-adversarial` too. Found by adversarial review 2026-07-26: with Codex
+# out of credits until 2026-08-24, 100% of reviews are `claude-*`, so this loop
+# was discarding every finding and printing "Nothing to learn from this round"
+# -- a false claim, not an empty one.
+ACCEPTED_SOURCES = (
+    "codex-review",
+    "codex-adversarial",
+    "claude-review",
+    "claude-adversarial",
+)
 ACCEPTED_DISPOSITION = "accepted"
 
 
@@ -189,7 +200,7 @@ def select_findings_for_review(records: list[dict]) -> list[dict]:
             continue
         if rec.get("severity") not in ACCEPTED_SEVERITIES:
             continue
-        if rec.get("source") != ACCEPTED_SOURCE:
+        if rec.get("source") not in ACCEPTED_SOURCES:
             continue
         selected.append(rec)
     return selected
@@ -249,7 +260,7 @@ def _render_findings_section(findings: list[dict]) -> str:
     if not findings:
         return (
             "## Findings the Skeptic did not catch\n\n"
-            "Codex flagged no accepted findings of severity blocker or major. "
+            "The reviewer flagged no accepted findings of severity blocker or major. "
             "Nothing to learn from this round.\n"
         )
     lines: list[str] = ["## Findings the Skeptic did not catch\n"]

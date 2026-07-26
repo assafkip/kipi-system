@@ -54,7 +54,18 @@ DEFAULT_ISSUES_DIR = "issues"
 DEFAULT_FINDINGS_SUBDIR = "findings"
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
-SOURCES = ("codex-review", "codex-adversarial", "manual")
+# The issue-level twin of prd-os's REVIEWER_SOURCES. Widened 2026-07-26 for the
+# same reason: Codex is out of credits until 2026-08-24 and the reviewer is a
+# Claude senior-staff-engineer subagent, so accepting only codex-* forced that
+# reviewer to either stamp a false provenance record or record nothing. Fixing
+# this only at the PRD level left the issue path still lying.
+SOURCES = (
+    "codex-review",
+    "codex-adversarial",
+    "claude-review",
+    "claude-adversarial",
+    "manual",
+)
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
 ID_RE = re.compile(r"^finding-([0-9]+)$")

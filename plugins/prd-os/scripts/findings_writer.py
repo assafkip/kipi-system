@@ -19,18 +19,21 @@ Why this lives in Python (not in a command prompt):
 
 Subcommands:
 
-  add <prd-id> --source <codex-review|codex-adversarial|manual|plan>
+  add <prd-id> --source <codex-review|codex-adversarial|claude-review|
+                         claude-adversarial|manual|plan>
       Reads a JSON array on stdin. Each item must be an object with
       {severity, body}. Appends one validated JSONL record per item.
       IDs increment from the current max id in the file (finding-1,
-      finding-2, ...). When source is `codex-review` or `codex-adversarial`
-      the PRD frontmatter is stamped with `codex_reviewed_at` as a side
-      effect — the approval gate requires that stamp before advancing.
+      finding-2, ...). When source is one of REVIEWER_SOURCES the PRD
+      frontmatter is stamped with `codex_reviewed_at` plus `reviewed_by:
+      <source>` as a side effect — the approval gate requires that stamp
+      before advancing.
 
-  record-review <prd-id> --source <codex-review|codex-adversarial>
-      Stamp the PRD frontmatter `codex_reviewed_at` without writing any
-      findings. Use this when a Codex pass returned zero findings; the
-      stamp is still needed for approval.
+  record-review <prd-id> --source <one of REVIEWER_SOURCES>
+      Stamp the PRD frontmatter review proof without writing any findings.
+      Use this when a reviewer pass returned zero findings; the stamp is
+      still needed for approval. `manual` and `plan` are refused here: they
+      are the author's own words, not an independent pass.
 
   list <prd-id> [--only-pending]
       Prints the findings file as a JSON array on stdout. Exits 2 on any
@@ -61,16 +64,50 @@ from config import Config, ConfigError, load as load_config  # noqa: E402
 
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
-SOURCES = ("codex-review", "codex-adversarial", "manual", "plan")
+SOURCES = (
+    "codex-review",
+    "codex-adversarial",
+    "claude-review",
+    "claude-adversarial",
+    "manual",
+    "plan",
+)
 # `plan` records the author's own decomposition as findings so the manifest's
-# 1:1 traceability holds WITHOUT prompting Codex to echo the plan back
-# (prd-os-spine-native). Plan findings NEVER stamp codex_reviewed_at — the
-# approval gate's review proof still requires a real codex-* pass.
-CODEX_SOURCES = ("codex-review", "codex-adversarial")
+# 1:1 traceability holds WITHOUT prompting the reviewer to echo the plan back
+# (prd-os-spine-native). Plan findings NEVER stamp the review proof — the
+# approval gate still requires a real independent reviewer pass.
+#
+# REVIEWER_SOURCES (was CODEX_SOURCES, renamed 2026-07-26) is the set that
+# counts as "an independent review actually ran", which is the property the
+# approval gate cares about — not which vendor ran it. Codex is out of credits
+# until 2026-08-24, so the reviewer is a Claude senior-staff-engineer subagent.
+# With only codex-* accepted, that reviewer had two bad options: stamp
+# `codex-adversarial` and write a provenance record that is false, or skip the
+# stamp and never be able to approve. In a repo whose whole thesis is receipts,
+# faking the stamp is strictly worse than the blocker, so the honest sources
+# exist instead. `manual` and `plan` stay OUT: they are the author's own words,
+# not an independent pass.
+REVIEWER_SOURCES = (
+    "codex-review",
+    "codex-adversarial",
+    "claude-review",
+    "claude-adversarial",
+)
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
 ID_RE = re.compile(r"^finding-([0-9]+)$")
-REVIEWED_AT_RE = re.compile(r"(?m)^codex_reviewed_at:\s*.*$")
+# `[^\n]*`, never `\s*.*` -- under re.M, `\s` STILL matches a newline, so a key
+# with an empty value (`reviewed_by:` with nothing after it) let `\s*` eat the
+# line break and `.*$` consume the FOLLOWING line, which sub() then replaced.
+# Found by adversarial review 2026-07-26 and driven to a real exploit: eating
+# the `findings_path:` line made _findings_gate return "no findings", so a PRD
+# with an untriaged BLOCKER advanced to `approved` with exit 0. When
+# `reviewed_by` was the last key it ate the `codex_reviewed_at` line the same
+# call had just appended, and the writer then reported `stamped: true` for a
+# stamp that was not on disk. A provenance writer emitting a false receipt is
+# the exact failure this file exists to prevent.
+REVIEWED_AT_RE = re.compile(r"(?m)^codex_reviewed_at:[^\n]*$")
+REVIEWED_BY_RE = re.compile(r"(?m)^reviewed_by:[^\n]*$")
 RECORD_FIELDS = (
     "id",
     "prd_id",
@@ -94,13 +131,22 @@ def _prd_spec_path(cfg: Config, prd_id: str) -> Path:
     return cfg.prds_dir / f"{prd_id}.md"
 
 
-def _compute_stamped_spec(text: str, timestamp: str) -> str:
-    """Return new PRD spec text with `codex_reviewed_at` set to `timestamp`.
+def _compute_stamped_spec(text: str, timestamp: str, source: str | None = None) -> str:
+    """Return new PRD spec text with the review stamp set to `timestamp`.
 
     Pure function. Raises ValueError for malformed frontmatter so callers
     can pre-validate before touching any other file. Keeping this stateless
     is how `cmd_add` stays atomic: it can decide whether the stamp will
     succeed before writing findings to disk.
+
+    The timestamp key is still `codex_reviewed_at` because prd_runner.py's
+    approval gate reads that key and every PRD already on disk carries it;
+    renaming it is a migration, not a slice-0 edit (spillover sp-b386aba4).
+    But once a non-Codex reviewer can stamp it, that key NAME is no longer
+    true on its own, and a provenance field that lies is the exact thing this
+    change exists to prevent. So `reviewed_by: <source>` is written beside it
+    and carries the truth. `source` is optional only to keep the older
+    two-argument callers working; every writer path passes it.
     """
     if not text.startswith("---"):
         raise ValueError("missing YAML frontmatter")
@@ -114,6 +160,12 @@ def _compute_stamped_spec(text: str, timestamp: str) -> str:
         header = REVIEWED_AT_RE.sub(stamp_line, header, count=1)
     else:
         header = header.rstrip("\n") + "\n" + stamp_line + "\n"
+    if source is not None:
+        by_line = f"reviewed_by: {source}"
+        if REVIEWED_BY_RE.search(header):
+            header = REVIEWED_BY_RE.sub(by_line, header, count=1)
+        else:
+            header = header.rstrip("\n") + "\n" + by_line + "\n"
     return header + rest
 
 
@@ -129,7 +181,7 @@ def _stamp_prd_reviewed(cfg: Config, prd_id: str, source: str) -> None:
     if not spec_path.is_file():
         raise FileNotFoundError(f"PRD spec not found: {spec_path}")
     try:
-        new_text = _compute_stamped_spec(spec_path.read_text(), _now_iso())
+        new_text = _compute_stamped_spec(spec_path.read_text(), _now_iso(), source)
     except ValueError as exc:
         raise ValueError(f"{spec_path}: {exc}") from exc
     spec_path.write_text(new_text)
@@ -289,16 +341,18 @@ def cmd_add(cfg: Config, args: argparse.Namespace) -> int:
     # operation atomic: no scenario produces findings without the stamp.
     new_spec_text: str | None = None
     spec_path: Path | None = None
-    if args.source in CODEX_SOURCES:
+    if args.source in REVIEWER_SOURCES:
         spec_path = _prd_spec_path(cfg, args.prd_id)
         if not spec_path.is_file():
             sys.stderr.write(
-                f"PRD spec not found: {spec_path}. Codex-sourced findings "
+                f"PRD spec not found: {spec_path}. Reviewer-sourced findings "
                 "must have a PRD to stamp; refusing before any write.\n"
             )
             return 2
         try:
-            new_spec_text = _compute_stamped_spec(spec_path.read_text(), _now_iso())
+            new_spec_text = _compute_stamped_spec(
+                spec_path.read_text(), _now_iso(), args.source
+            )
         except ValueError as exc:
             sys.stderr.write(f"{spec_path}: {exc}\n")
             return 2
@@ -359,10 +413,11 @@ def cmd_record_review(cfg: Config, args: argparse.Namespace) -> int:
     with a codex source stamps automatically as a side-effect. The approval
     gate in prd_runner requires this stamp before advancing to `approved`.
     """
-    if args.source not in CODEX_SOURCES:
+    if args.source not in REVIEWER_SOURCES:
         sys.stderr.write(
-            f"--source must be one of {CODEX_SOURCES}; got {args.source!r}. "
-            "record-review is for documenting a real Codex pass only.\n"
+            f"--source must be one of {REVIEWER_SOURCES}; got {args.source!r}. "
+            "record-review documents a real independent reviewer pass only; "
+            "`manual` and `plan` are the author's own words, not a review.\n"
         )
         return 2
     try:
