@@ -79,3 +79,8 @@ q-system/output/.update-check-*
 # .codex/config.toml carries an apify-token, which gitleaks correctly refused
 # to let through on 2026-07-25. Machine-local tool config, never repo content.
 .codex/
+
+# Session bookkeeping written by the kipi-dsse stop gate: created while an
+# issue is open, removed when it closes, so tracking it churned git on every
+# DSSE cycle and committed one session's firing counts.
+.claude/state/
