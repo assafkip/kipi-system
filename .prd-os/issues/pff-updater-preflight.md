@@ -1,12 +1,19 @@
 ---
 id: pff-updater-preflight
 title: Wire the gate into kipi update fail-closed and version locked
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
   - kipi-update.sh
+  - q-system/.q-system/scripts/propagation-leak-gate.py
   - q-system/.q-system/scripts/test/test-kipi-update-leak-preflight.sh
+  - q-system/.q-system/scripts/test/test-kipi-update-safety.sh
+  - q-system/.q-system/scripts/test/test-kipi-update-dry-final-state.sh
+  - q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh
+  - q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh
+  - q-system/.q-system/scripts/test/test-kipi-update-build-artifacts.sh
+  - q-system/.q-system/scripts/test/test-updater-issue-sequence.py
 disallowed_files:
   - instance-registry.json
   - q-system/canonical/**
