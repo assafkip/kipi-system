@@ -195,6 +195,10 @@ WORKTREE_COPIED_PREFIXES = (
 ARCHIVED_ROOT = "q-system"
 ARCHIVE_EXCLUDED_SUBTREES = (
     ".q-system/agent-pipeline/bus",
+    # Per-instance metrics live here. The skeleton tracks a metrics.db and each
+    # instance generates its own, so syncing it overwrote instance-owned state
+    # -- caught by the collision guard on a real run 2026-07-25, on all 23.
+    ".q-system/data",
     "canonical",
     "memory",
     "my-project",

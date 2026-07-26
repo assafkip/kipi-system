@@ -103,3 +103,41 @@ HB_AFTER="$( cd "$B3" && G rev-parse HEAD )"
 grep -q "old" "$B3/q-system/tracked.md" || fail "--only aaa changed bbb's content"
 echo "PASS: --only targets exactly one instance and leaves the rest untouched"
 
+# --- instance-owned state under .q-system/data/ must survive a sync ---------
+# The skeleton TRACKS q-system/.q-system/data/metrics.db, and every instance
+# generates its own. Measured 2026-07-25 on a real run: the collision guard
+# correctly refused rather than overwrite one instance's metrics with the
+# skeleton's -- and it would have refused on all 23. A per-instance metrics
+# database is instance-owned state, the same class as memory/ and output/,
+# and belongs in the same exclusion set rather than blocking every update.
+WORK4="$(mktemp -d)"; SK4="$WORK4/skel"; I4="$WORK4/inst"
+mkdir -p "$SK4/q-system/.q-system/data" "$I4/q-system/.q-system/data"
+cp "$SCRIPT" "$SK4/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK4/kipi-update-preserve-scan.py"
+mkdir -p "$SK4/q-system/.q-system/scripts" "$SK4/q-system/.q-system/state"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK4/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK4/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK4/validate-separation.py"
+cat > "$SK4/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK4/q-system/tracked.md"
+printf 'SKELETON METRICS\n' > "$SK4/q-system/.q-system/data/metrics.db"
+( cd "$SK4" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"m","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I4" > "$SK4/instance-registry.json"
+printf 'old\n' > "$I4/q-system/tracked.md"
+( cd "$I4" && G init -q && G add -A && G commit -qm inst )
+printf 'INSTANCE OWN METRICS\n' > "$I4/q-system/.q-system/data/metrics.db"   # untracked, local
+
+OUT4="$(bash "$SK4/kipi-update.sh" 2>&1 || true)"
+if echo "$OUT4" | grep -q "untracked WIP collides with skeleton path"; then
+  fail "instance-owned .q-system/data/ blocked the sync: $OUT4"
+fi
+grep -q "skeleton v2" "$I4/q-system/tracked.md" || fail "sync did not run: $OUT4"
+grep -q "INSTANCE OWN METRICS" "$I4/q-system/.q-system/data/metrics.db" || \
+  fail "the instance's own metrics.db was overwritten by the skeleton's"
+echo "PASS: instance-owned .q-system/data/ neither blocks the sync nor is overwritten"
+

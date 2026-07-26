@@ -683,6 +683,7 @@ PY
         if ! ( cd "$path" && git ls-files -z --others -- "$prefix/" \
             ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
             ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
+            ":(exclude)$prefix/.q-system/data/" \
             ":(exclude)$prefix/.q-system/agent-pipeline/bus/" \
             ":(exclude)$prefix/q-system/" \
             ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
@@ -804,6 +805,7 @@ PY
             --exclude="/canonical/" \
             --exclude="/memory/" \
             --exclude="/output/" \
+            --exclude="/.q-system/data/" \
             --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null; then
           echo "  ERROR: q-system sync failed"
           rm -r -- "$ARCHIVE_TMP"
@@ -867,6 +869,7 @@ PY
       if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$DRY_TMP" 2>/dev/null; then
         CHANGED=$(rsync -ain --delete "$DRY_TMP/q-system/" "$path/$prefix/" \
           --exclude="/my-project/" --exclude="/canonical/" --exclude="/memory/" \
+          --exclude="/.q-system/data/" \
           --exclude="/output/" --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null)
         if [ -n "$CHANGED" ]; then
           echo "  Changes vs skeleton (run without --dry to apply):"
