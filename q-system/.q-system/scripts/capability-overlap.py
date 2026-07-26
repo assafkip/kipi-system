@@ -209,13 +209,17 @@ def main() -> int:
           "they are supposed to be identical fleet-wide. Where they are not, some "
           "instances are running a stale copy and nothing announces it.")
         A("")
-        for slug, entries, hashes in sorted(divergent, key=lambda x: -len(x[1]))[:40]:
-            A(f"### `{slug}` in {len(entries)} repos, {len(hashes)} distinct versions")
+        for slug, entries, hashes in sorted(divergent, key=lambda x: -len({r for r, _, _ in x[1]}))[:40]:
+            nrepos = len({r for r, _, _ in entries})
+            A(f"### `{slug}` in {nrepos} repos, {len(hashes)} distinct versions")
             A("")
-            A("| Repo | Entry | Content | Origin |")
-            A("| -- | -- | -- | -- |")
-            for repo, cap, h in sorted(entries, key=lambda e: e[0]):
-                A(f"| `{repo}` | `{cap.get('entry')}` | `{h or 'n/a'}` | {cap.get('origin')} |")
+            A("| Content hash | Repos |")
+            A("| -- | -- |")
+            byhash = defaultdict(set)
+            for repo, cap, h in entries:
+                byhash[h or "n/a"].add(repo)
+            for h, repos in sorted(byhash.items(), key=lambda x: -len(x[1])):
+                A(f"| `{h}` | {len(repos)}: {', '.join(f'`{r}`' for r in sorted(repos))} |")
             A("")
 
     A("## COLLISION: two repos, one external resource")
@@ -275,7 +279,7 @@ def main() -> int:
                 } for r, d in sorted(maps.items())
             },
             "divergent": [
-                {"capability": s, "repos": sorted(r for r, _, _ in e),
+                {"capability": s, "repos": sorted({r for r, _, _ in e}),
                  "distinct_versions": len(h)}
                 for s, e, h in divergent
             ],
