@@ -618,3 +618,59 @@ echo "$OUT13" | grep -q "dirty working tree" && \
 grep -q "skeleton content v2" "$I13/q-system/tracked.md" || \
   fail "run 2 did not converge after run 1 failed: $OUT13"
 echo "PASS: a failed run leaves the instance clean and a later run still converges"
+
+# --- a founder's own in-progress rebase must survive a failed run -----------
+# restore_instance aborts a rebase THIS run started. Deciding which rebases are
+# "ours" by assuming the zombie-rebase cleanup already handled the founder's is
+# wrong, and the wrong version destroyed real work.
+#
+# The cleanup tests "$path/.git/rebase-merge" as a DIRECTORY. In a linked
+# worktree .git is a FILE, so that test is ENOTDIR and the cleanup silently
+# does nothing -- while `rebase -i` paused at `edit` leaves a CLEAN index and
+# worktree, so the dirty-tree guard passes and the run proceeds with the
+# founder's rebase still open. Aborting it discarded their work AND rewound the
+# sync commit the same run had just landed.
+#
+# The instance here is a linked worktree for exactly that reason.
+WORK14="$(mktemp -d)"; SK14="$WORK14/skel"; HOST14="$WORK14/host"; I14="$WORK14/wt"
+mkdir -p "$SK14/q-system/.q-system/scripts" "$SK14/q-system/.q-system/state" "$HOST14"
+cp "$SCRIPT" "$SK14/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK14/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK14/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK14/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK14/validate-separation.py"
+cat > "$SK14/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton content v2\n' > "$SK14/q-system/tracked.md"
+( cd "$SK14" && G init -q && G add -A -f && G commit -qm skel )
+
+# host repo, then the instance as a LINKED WORKTREE of it
+( cd "$HOST14" && G init -q && mkdir -p q-system &&
+  printf 'old\n' > q-system/tracked.md && G add -A && G commit -qm c1 &&
+  printf 'old2\n' > q-system/tracked.md && G add -A && G commit -qm c2 &&
+  G branch work && G worktree add -q "$I14" work ) >/dev/null 2>&1
+printf '{"instances":[{"name":"wt","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I14" > "$SK14/instance-registry.json"
+[ -f "$I14/.git" ] || fail "fixture is wrong: the instance's .git is not a FILE (not a linked worktree)"
+
+# the founder's own rebase, paused at `edit`, leaving a clean tree
+( cd "$I14" && GIT_SEQUENCE_EDITOR="sed -i.bak -e '1s/^pick/edit/'" \
+  G -c core.editor=true rebase -i HEAD~1 ) >/dev/null 2>&1 || true
+instance_rebase_dir() { G -C "$I14" rev-parse --path-format=absolute --git-path rebase-merge 2>/dev/null; }
+[ -d "$(instance_rebase_dir)" ] || fail "fixture is wrong: no rebase is in flight in the worktree"
+WORKTIP_BEFORE="$(G -C "$I14" rev-parse HEAD)"
+
+# make the run fail after it has written and committed
+mkdir -p "$I14/.git-hooks-x"
+G -C "$I14" config core.hooksPath "$I14/.git-hooks-x"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$I14/.git-hooks-x/pre-commit"
+chmod +x "$I14/.git-hooks-x/pre-commit"
+
+bash "$SK14/kipi-update.sh" --only wt >/dev/null 2>&1 || true
+
+[ -d "$(instance_rebase_dir)" ] || \
+  fail "a failed run ABORTED the founder's own in-progress rebase (linked worktree); their work is gone"
+echo "PASS: a founder's in-progress rebase survives a failed run in a linked worktree"

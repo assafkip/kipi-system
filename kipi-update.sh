@@ -322,6 +322,26 @@ CHECKPOINT_DIR=""
 CHECKPOINT_TARGET=""
 CHECKPOINT_PREFIX=""
 
+# Is a rebase in flight in this instance?
+#
+# `--path-format=absolute` is not decoration: the plain `--git-path` form
+# returns a RELATIVE path, which `[ -d ]` would then resolve against the
+# SHELL's cwd instead of the instance -- correct only by accident, and only
+# while the caller happens to have cd'd there.
+instance_rebase_in_flight() {
+  local target="$1" state resolved
+  for state in rebase-merge rebase-apply; do
+    resolved="$(
+      git -C "$target" rev-parse --path-format=absolute --git-path "$state" \
+        2>/dev/null || true
+    )"
+    if [ -n "$resolved" ] && [ -d "$resolved" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # The untracked inventory, SCOPED to what this sync is allowed to write.
 # Checkpoint and restore both call it, so their lists are comparable -- and,
 # far more importantly, restore can never even propose deleting a path the
@@ -352,6 +372,20 @@ checkpoint_instance() {
   fi
   CHECKPOINT_DIR="$(mktemp -d)" || return 1
   checkpoint_untracked_list "$target" > "$CHECKPOINT_DIR/untracked" || return 1
+  # Whether a rebase was ALREADY in flight before this run touched anything.
+  #
+  # It is not enough to assume the zombie-rebase cleanup above already dealt
+  # with it. That cleanup tests "$path/.git/rebase-merge" as a directory, which
+  # is ENOTDIR when .git is a FILE -- a linked worktree -- so it silently does
+  # nothing there. Meanwhile a `rebase -i` paused at `edit` or `break` leaves a
+  # CLEAN index and worktree, so the dirty-tree guard passes and the run
+  # proceeds with the founder's rebase still open. Aborting that would destroy
+  # their work AND rewind this run's own landed commit. Restore clears only
+  # what this run created.
+  : > "$CHECKPOINT_DIR/inflight"
+  if instance_rebase_in_flight "$target"; then
+    printf 'rebase\n' > "$CHECKPOINT_DIR/inflight"
+  fi
   CHECKPOINT_TARGET="$target"
 }
 
@@ -362,19 +396,24 @@ restore_instance() {
   # An interrupted rebase, first, because aborting one restores HEAD and the
   # worktree wholesale and everything below should run on that result.
   #
-  # The mixed reset further down already clears MERGE_HEAD and
-  # CHERRY_PICK_HEAD -- measured, both gone afterwards -- so neither needs
-  # handling here. A rebase directory is the one that SURVIVES a reset, which
-  # leaves the instance mid-rebase while `git status` says nothing loud enough
-  # for the next run to act on.
+  # The mixed reset further down already clears MERGE_HEAD, CHERRY_PICK_HEAD
+  # and REVERT_HEAD -- measured on git 2.54 across every conflicted state -- so
+  # none of those need handling. A rebase directory is the one that SURVIVES a
+  # reset.
   #
-  # Anything in flight at this point belongs to THIS run: the zombie-rebase
-  # cleanup at the top of the loop already aborted whatever the founder had,
-  # before the checkpoint was taken. Abort ours the way git wants it aborted.
-  # If that cannot run, say so and leave it -- deleting git's own state by hand
-  # is how a repo gets wrecked, and a human can finish what git could not.
-  if [ -d "$(git -C "$target" rev-parse --git-path rebase-merge 2>/dev/null)" ] ||
-      [ -d "$(git -C "$target" rev-parse --git-path rebase-apply 2>/dev/null)" ]; then
+  # ONLY a rebase this run started. The checkpoint recorded whether one was
+  # already open, and if it was, it is the founder's and it stays. Assuming
+  # otherwise destroyed real work: the zombie-rebase cleanup above cannot see a
+  # rebase in a linked worktree (it tests "$path/.git/rebase-merge" as a
+  # directory, and there .git is a FILE), while a `rebase -i` paused at `edit`
+  # leaves a clean tree that the dirty-tree guard passes -- so the founder's
+  # open rebase reached this line untouched, and aborting it both discarded
+  # their work and rewound the sync commit this run had just landed.
+  #
+  # If the abort cannot run, say so and leave it. Deleting git's own state by
+  # hand is how a repo gets wrecked, and a human can finish what git could not.
+  if instance_rebase_in_flight "$target" &&
+      ! grep -qxF rebase "$CHECKPOINT_DIR/inflight" 2>/dev/null; then
     git -C "$target" rebase --abort 2>/dev/null ||
       echo "  WARN: a rebase this run started could not be aborted; the instance is left mid-rebase"
   fi
