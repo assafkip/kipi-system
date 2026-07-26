@@ -74,3 +74,8 @@ plugins/*/dist/
 # Session artifacts (browser automation logs, daily update stamps)
 .playwright-mcp/
 q-system/output/.update-check-*
+
+# Codex CLI local config. Holds real credentials -- Pure_spectrum_Q's
+# .codex/config.toml carries an apify-token, which gitleaks correctly refused
+# to let through on 2026-07-25. Machine-local tool config, never repo content.
+.codex/
