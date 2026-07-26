@@ -60,7 +60,41 @@ if [ ! -f "$LEAK_GATE" ]; then
   echo "with 23 instances unchecked."
   exit 1
 fi
-if ! python3 "$LEAK_GATE" --check --repo-root "$SCRIPT_DIR"; then
+# The gate reads the INDEX; this sync copies HEAD via `git archive`. Staging a
+# fix without committing it decouples the two and HEAD wins, so the gate clears
+# bytes nobody is propagating while the leak ships. Worse, a `git rm --cached`
+# file has NO index entry at all and is never even enumerated. Refuse the
+# divergence rather than scan the wrong tree.
+if ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD -- q-system/ 2>/dev/null; then
+  echo ""
+  echo "ABORT: q-system/ is staged but not committed."
+  echo "The leak gate scans the index and this sync copies HEAD, so they must"
+  echo "agree. Commit or reset q-system/ before propagating."
+  exit 1
+fi
+
+# Proof of EXECUTION, not proof of existence. `[ ! -f ]` above only closes the
+# deleted case: a zero-byte .py is a valid program that exits 0, so a truncated
+# or comment-only gate would pass with no output at all -- quieter, and likelier
+# (interrupted write, bad merge, full disk), than deletion. Require the gate to
+# state its own verdict before its exit code is believed.
+# `if` form, not a bare assignment: under `set -e` a failing command
+# substitution kills the script AT the assignment, so the gate's own abort
+# message would never print and the run would die silent.
+if LEAK_OUT="$(python3 "$LEAK_GATE" --check --repo-root "$SCRIPT_DIR" 2>&1)"; then
+  LEAK_RC=0
+else
+  LEAK_RC=$?
+fi
+printf '%s\n' "$LEAK_OUT"
+if ! printf '%s' "$LEAK_OUT" | grep -q "^propagation leak gate: "; then
+  echo ""
+  echo "ABORT: the propagation leak gate did not report a verdict."
+  echo "It exists but did not run as a gate. Restore it or revert; do not"
+  echo "proceed with 23 instances unchecked."
+  exit 1
+fi
+if [ "$LEAK_RC" -ne 0 ]; then
   echo ""
   echo "ABORT: a fact absent from the propagation baseline would be copied into"
   echo "every instance (named above). Remove it, replace it with a placeholder,"

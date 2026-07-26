@@ -997,29 +997,38 @@ def _report(entries: list, label: str) -> None:
 def _check(root: Path, baseline_path: Path) -> int:
     """0 to let propagation proceed, 1 to abort it. Never silent."""
     if not baseline_path.is_file():
-        print(f"ABORT: propagation leak baseline missing at {baseline_path}")
+        print(f"propagation leak gate: ABORT -- propagation leak baseline missing at {baseline_path}")
         return 1
     try:
         document = json.loads(baseline_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        print(f"ABORT: propagation leak baseline is unreadable: {exc}")
+        print(f"propagation leak gate: ABORT -- propagation leak baseline is unreadable: {exc}")
         return 1
     try:
         findings = scan_propagation_sources(root)
     except PropagationSourceRefused as exc:
-        print(f"ABORT: {exc}")
+        print(f"propagation leak gate: ABORT -- {exc}")
         return 1
 
     current = blocking_fingerprints(findings)
     warnings = warning_findings(findings)
+    # Shape FIRST. Checking the stamp before validating the document let any
+    # JSON object at all -- `{}`, `{"hello": "world"}` -- fall into the
+    # not-enforcing branch, which is supposed to require an explicitly
+    # unstamped baseline and nothing else.
+    try:
+        _assert_document_shape(document)
+    except BaselineRefused as exc:
+        print(f"propagation leak gate: ABORT -- {exc}")
+        return 1
     stamped = document.get("classifier_sha256")
     if stamped is None:
-        return _report_unarmed(current, warnings, baseline_path)
+        return _report_unarmed(current, warnings, baseline_path, document)
 
     expected = current_classifier_sha256()
     if stamped != expected:
         print(
-            f"ABORT: baseline was built by classifier {stamped[:12]}, running "
+            f"propagation leak gate: ABORT -- baseline was built by classifier {stamped[:12]}, running "
             f"{expected[:12]}"
         )
         print("  Its entries describe findings this run cannot reproduce.")
@@ -1028,12 +1037,12 @@ def _check(root: Path, baseline_path: Path) -> int:
     try:
         baseline = load_baseline_document(document, expected, current)
     except BaselineRefused as exc:
-        print(f"ABORT: {exc}")
+        print(f"propagation leak gate: ABORT -- {exc}")
         return 1
 
     additions = new_findings(baseline, current)
     if additions:
-        print(f"ABORT: {len(additions)} fact(s) not in the propagation baseline:")
+        print(f"propagation leak gate: ABORT -- {len(additions)} fact(s) not in the propagation baseline:")
         _report(additions, "not shown")
         return 1
     print(
@@ -1043,7 +1052,23 @@ def _check(root: Path, baseline_path: Path) -> int:
     return 0
 
 
-def _report_unarmed(current: dict, warnings: list, baseline_path: Path) -> int:
+def _area_counts(current: dict) -> dict:
+    """{top-level dir: fingerprint count}, so no area can hide behind a cap.
+
+    A sorted prefix is alphabetical, so on this repo the first rows are all
+    `.claude/` and `plugins/` while 138 of 243 fingerprints sit under
+    `q-system/` and never print. The one place a real client fact lands was
+    the one place the operator never saw.
+    """
+    counts: dict = {}
+    for key in current:
+        area = key[0].split("/", 1)[0]
+        counts[area] = counts.get(area, 0) + 1
+    return counts
+
+
+def _report_unarmed(current: dict, warnings: list, baseline_path: Path,
+                    document: dict) -> int:
     """The baseline ships empty because arming it is a human review.
 
     This state is REACHABLE ONLY by an explicitly unstamped committed file. A
@@ -1057,6 +1082,18 @@ def _report_unarmed(current: dict, warnings: list, baseline_path: Path) -> int:
         f"  {len(current)} fingerprint(s) in blocking classes, "
         f"{len(warnings)} warning(s)"
     )
+    areas = _area_counts(current)
+    if areas:
+        print(
+            "  by area: "
+            + ", ".join(f"{area}={areas[area]}" for area in sorted(areas))
+        )
+    entries = document.get("entries") or []
+    if entries:
+        print(
+            f"  WARNING: {len(entries)} reviewed entry(ies) in this file are "
+            "being IGNORED while classifier_sha256 is null"
+        )
     _report(
         [
             {"path": key[0], "fact_class": key[1], "line_sha256": key[3]}
