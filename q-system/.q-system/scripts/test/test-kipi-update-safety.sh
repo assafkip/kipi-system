@@ -409,3 +409,50 @@ grep -q "real plugin content" "$I9/plugins/realplugin/content.txt" 2>/dev/null |
 [ -z "$(git -C "$I9" status --porcelain)" ] || \
   fail "the ignored file left the instance dirty: $(git -C "$I9" status --porcelain)"
 echo "PASS: an instance-ignored skeleton file is skipped, not fatal, and leaves a clean tree"
+
+# --- a TRACKED nested repo (submodule) must stay in the model ---------------
+# The nested-repo exclusion above is right for a separate project living under
+# a parent path, and wrong for a SUBMODULE. A submodule is a gitlink in the
+# parent's index (mode 160000), so dropping it from the model makes git report
+# it DELETED, the dirty-tree guard refuses, and the instance never updates.
+#
+# Scar 2026-07-25: introduced by the exclusion in commit cbd405a and caught on
+# Alice, which carries three submodules under q-investigate/tools/. cole-gtm's
+# nested instances are UNTRACKED, which is why the same exclusion is correct
+# there. Tracked-ness is the line, not nested-ness.
+WORK10="$(mktemp -d)"; SK10="$WORK10/skel"; I10="$WORK10/inst"
+mkdir -p "$SK10/q-system/.q-system/scripts" "$SK10/q-system/.q-system/state" \
+         "$I10/q-system" "$I10/tools/submod" "$I10/projects/separate/q-system"
+cp "$SCRIPT" "$SK10/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK10/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK10/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK10/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK10/validate-separation.py"
+cat > "$SK10/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK10/q-system/tracked.md"
+( cd "$SK10" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"submodinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I10" > "$SK10/instance-registry.json"
+printf 'old\n' > "$I10/q-system/tracked.md"
+# the SUBMODULE: its own repo, then added to the parent index as a gitlink
+printf 'submodule content\n' > "$I10/tools/submod/file.txt"
+( cd "$I10/tools/submod" && G init -q && G add -A && G commit -qm sub )
+# the SEPARATE project: its own repo, never added to the parent index
+printf 'separate project\n' > "$I10/projects/separate/q-system/tracked.md"
+( cd "$I10/projects/separate" && G init -q && G add -A && G commit -qm sep )
+( cd "$I10" && G init -q && G add q-system tools/submod && G commit -qm inst )
+G -C "$I10" ls-files -s -- tools/submod | grep -q '^160000' || \
+  fail "fixture is wrong: tools/submod is not a gitlink"
+
+OUT10="$(bash "$SK10/kipi-update.sh" --dry-run --only submodinst 2>&1 || true)"
+echo "$OUT10" | grep -q "dirty working tree" && \
+  fail "a TRACKED submodule was excluded from the model and read as deleted: $OUT10"
+echo "$OUT10" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model for an instance with a submodule: $OUT10"
+echo "$OUT10" | grep -q "skipped 1 nested repositories" || \
+  fail "the UNTRACKED separate project should still be skipped, exactly one: $OUT10"
+echo "PASS: a tracked submodule stays in the model; an untracked nested project is still skipped"

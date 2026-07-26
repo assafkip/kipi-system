@@ -645,6 +645,18 @@ PY
       nested_rel="${nested_rel%/.git}"
       [ -n "$nested_rel" ] || continue
       [ "$nested_rel" != "$nested_git" ] || continue
+      # Tracked-ness is the line, not nested-ness. A SUBMODULE is a gitlink in
+      # this repo's index (mode 160000), so dropping it from the model makes
+      # git report it DELETED and the dirty-tree guard refuses -- the instance
+      # can never update. A separate project that merely lives under this path
+      # is untracked, and skipping it is the whole point.
+      #
+      # Scar 2026-07-25: the exclusion shipped without this check and bricked
+      # Alice, which carries three submodules under q-investigate/tools/.
+      if git -C "$path" ls-files --error-unmatch -- "$nested_rel" \
+          >/dev/null 2>&1; then
+        continue
+      fi
       MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
       NESTED_COUNT=$((NESTED_COUNT + 1))
     done < <(find "$path" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
