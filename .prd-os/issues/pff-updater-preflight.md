@@ -1,7 +1,7 @@
 ---
 id: pff-updater-preflight
 title: Wire the gate into kipi update fail-closed and version locked
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
@@ -41,4 +41,4 @@ Write the failing no-instance-written reproducer first. A new leak aborts before
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Wire the gate into kipi update fail-closed and version locked
+- [x] Wire the gate into kipi update fail-closed and version locked
