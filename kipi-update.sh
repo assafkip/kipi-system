@@ -45,6 +45,39 @@ if [ ! -f "$REGISTRY" ]; then
   exit 1
 fi
 
+# Instance-owned subtrees: the skeleton never overwrites these, because each
+# instance authors its own. This list was duplicated across four sites (the
+# q-system rsync, the dry-run preview rsync, the untracked-collision scan, and
+# the staging list) and drifted the moment a sixth entry was added -- the sync
+# wrote files it then refused to stage, leaving the instance dirty with no
+# commit. One list, four consumers.
+INSTANCE_OWNED_SUBTREES=(
+  my-project
+  canonical
+  memory
+  output
+  .q-system/data
+  .q-system/agent-pipeline/bus
+)
+
+rsync_owned_excludes() {
+  local sub
+  for sub in "${INSTANCE_OWNED_SUBTREES[@]}"; do printf -- '--exclude=/%s/\n' "$sub"; done
+}
+
+pathspec_owned_excludes() {
+  local sub
+  for sub in "${INSTANCE_OWNED_SUBTREES[@]}"; do printf -- ':(exclude)%s/%s/\n' "$1" "$sub"; done
+}
+
+is_instance_owned() {
+  local relative="$1" sub
+  for sub in "${INSTANCE_OWNED_SUBTREES[@]}"; do
+    case "$relative" in "$sub"/*) return 0 ;; esac
+  done
+  return 1
+}
+
 echo "=== Kipi System Update ==="
 echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
@@ -197,13 +230,19 @@ import os
 import sys
 
 prefix = sys.argv[1]
+owned = sys.argv[2:]
 for source in sys.stdin.buffer.read().split(b"\0"):
     if not source:
         continue
     relative = source.removeprefix(b"q-system/")
+    # Skeleton paths under an instance-owned subtree are NOT synced, so adding
+    # them stages a path that does not exist and the whole stage fails -- which
+    # left the instance written-to but uncommitted.
+    if any(relative.startswith(os.fsencode(o) + b"/") for o in owned):
+        continue
     target = os.fsencode(prefix) + b"/" + relative
     sys.stdout.buffer.write(target + b"\0")
-' "$managed_prefix" |
+' "$managed_prefix" "${INSTANCE_OWNED_SUBTREES[@]}" |
     git -C "$target" add --pathspec-from-file=- --pathspec-file-nul
 }
 
@@ -681,10 +720,7 @@ PY
         # `git subtree add` creation path -- folder-structure.md bans it; restoring
         # it made the shadow tree immortal across updates).
         if ! ( cd "$path" && git ls-files -z --others -- "$prefix/" \
-            ":(exclude)$prefix/my-project/" ":(exclude)$prefix/canonical/" \
-            ":(exclude)$prefix/memory/" ":(exclude)$prefix/output/" \
-            ":(exclude)$prefix/.q-system/data/" \
-            ":(exclude)$prefix/.q-system/agent-pipeline/bus/" \
+            $(pathspec_owned_excludes "$prefix") \
             ":(exclude)$prefix/q-system/" \
             ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
           echo "  ERROR: preservation snapshot inventory failed; rsync not started"
@@ -801,12 +837,7 @@ PY
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete
         # the shadow tree -- "not empty, cannot delete" on every update.
         if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
-            --exclude="/my-project/" \
-            --exclude="/canonical/" \
-            --exclude="/memory/" \
-            --exclude="/output/" \
-            --exclude="/.q-system/data/" \
-            --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null; then
+            $(rsync_owned_excludes) 2>/dev/null; then
           echo "  ERROR: q-system sync failed"
           rm -r -- "$ARCHIVE_TMP"
           ARCHIVE_TMP=""
@@ -868,9 +899,7 @@ PY
       DRY_TMP=$(mktemp -d)
       if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null | tar -x -C "$DRY_TMP" 2>/dev/null; then
         CHANGED=$(rsync -ain --delete "$DRY_TMP/q-system/" "$path/$prefix/" \
-          --exclude="/my-project/" --exclude="/canonical/" --exclude="/memory/" \
-          --exclude="/.q-system/data/" \
-          --exclude="/output/" --exclude="/.q-system/agent-pipeline/bus/" 2>/dev/null)
+          $(rsync_owned_excludes) 2>/dev/null)
         if [ -n "$CHANGED" ]; then
           echo "  Changes vs skeleton (run without --dry to apply):"
           echo "$CHANGED" | sed 's/^/    /'
