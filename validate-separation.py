@@ -651,6 +651,54 @@ def phase_1():
     if file_exists(build_sched):
         check("build-schedule.py has verification gate", file_contains(build_sched, r"verify.schedule"))
 
+    # --- GATE 1.7: plugin version drift ---
+    #
+    # The plugin CACHE is what actually loads, and it is keyed by the version in
+    # plugins/<name>/.claude-plugin/plugin.json. Editing any file under a plugin
+    # WITHOUT bumping that version is a silent no-op fleet-wide: the marketplace
+    # gets the change, every session keeps running the cached old copy, and the
+    # edit is text in a file rather than wired behaviour.
+    #
+    # Hit twice on 2026-07-26 -- a kipi-dsse scope_hook fix and prd-os -- which is
+    # the general form of the 2026-06-20 load-path scar. This is the deterministic
+    # checker for it (no-prompt-only rule).
+    print()
+    print("  --- Gate 1.7: Plugin version drift ---")
+
+    plugins_root = os.path.join(SCRIPT_DIR, "plugins")
+    if not os.path.isdir(plugins_root):
+        warn("Gate 1.7 skipped: no plugins/ directory")
+    elif subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "--git-dir"],
+                        capture_output=True).returncode != 0:
+        warn("Gate 1.7 skipped: not a git repository")
+    else:
+        for name in sorted(os.listdir(plugins_root)):
+            pdir = os.path.join(plugins_root, name)
+            manifest = os.path.join(pdir, ".claude-plugin", "plugin.json")
+            if not os.path.isdir(pdir) or not os.path.isfile(manifest):
+                continue
+            rel_manifest = os.path.relpath(manifest, SCRIPT_DIR)
+            # The commit that last touched this plugin's manifest. Everything under
+            # the plugin changed after it shipped without a version bump.
+            last_bump = subprocess.run(
+                ["git", "-C", SCRIPT_DIR, "log", "-1", "--format=%H", "--", rel_manifest],
+                capture_output=True, text=True).stdout.strip()
+            if not last_bump:
+                warn(f"Gate 1.7: {name} manifest has no commit history")
+                continue
+            changed = subprocess.run(
+                ["git", "-C", SCRIPT_DIR, "diff", "--name-only", f"{last_bump}..HEAD",
+                 "--", f"plugins/{name}/"],
+                capture_output=True, text=True).stdout.split()
+            drifted = [c for c in changed if not c.endswith(".claude-plugin/plugin.json")]
+            check(
+                f"{name}: no file changed since its last version bump "
+                f"({len(drifted)} drifted)",
+                not drifted,
+            )
+            for d in drifted[:5]:
+                print(f"        {d}")
+
     # --- Full skeleton sweep ---
     print()
     print("  --- Full skeleton sweep ---")
