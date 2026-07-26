@@ -1,0 +1,7 @@
+{"project": {"id": "d10d3214-e9be-46cb-8137-eb3cff53db30", "name": "4_points_consulting"},
+ "issues": [
+   {"id":"ASK-115","identifier":"ASK-115","title":"Audit 6 unwired skill/tooling engines",
+    "description":"<!-- kipi-key: 4-points-consulting/unwired-engine-audit -->"},
+   {"id":"ASK-114","identifier":"ASK-114","title":"rule instance-conventions claims ENFORCED",
+    "description":"<!-- kipi-key: 4-points-consulting/rule-instance-conventions -->"}
+ ]}

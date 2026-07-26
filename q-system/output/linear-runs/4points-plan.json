@@ -1,0 +1,320 @@
+{
+  "repo": "4_points_consulting",
+  "generated_at": "2026-07-26T19:23:17Z",
+  "create_project": null,
+  "create_issues": [
+    {
+      "key": "4-points-consulting/rule-instance-conventions",
+      "title": "CAP-14 rule instance-conventions: Investigation system for 4 Points Consulting. OSINT collection, target profiling, e...",
+      "description": "<!-- kipi-key: 4-points-consulting/rule-instance-conventions -->\n\nInvestigation system for 4 Points Consulting. OSINT collection, target profiling, evidence management.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/instance-conventions.md |\n| Trigger | always-on instruction context |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\n.claude/rules/instance-conventions.md: 77 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "needs-evidence"
+      ],
+      "state": "Todo",
+      "capability": "rule instance-conventions"
+    },
+    {
+      "key": "4-points-consulting/engine-sync-huntkit",
+      "title": "CAP-137 engine sync-huntkit: sync-huntkit.py -- build the public huntkit plugin from this instance's",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-sync-huntkit -->\n\nsync-huntkit.py -- build the public huntkit plugin from this instance's\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | scripts/sync-huntkit.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nscripts/sync-huntkit.py: 371 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine sync-huntkit"
+    },
+    {
+      "key": "4-points-consulting/engine-leak-csv",
+      "title": "CAP-139 engine leak_csv: leak_csv.py -- shared scaffold for classifying Maltego D4 leaked-record CSV",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-leak-csv -->\n\nleak_csv.py -- shared scaffold for classifying Maltego D4 leaked-record CSV\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/skills/leak-record-classifier/lib/leak_csv.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/skills/leak-record-classifier/lib/leak_csv.py: 282 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine leak_csv"
+    },
+    {
+      "key": "4-points-consulting/engine-case-classifier-template",
+      "title": "CAP-140 engine case_classifier_template: reformat_csv.py -- <CASE NAME> leaked-record classification.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-case-classifier-template -->\n\nreformat_csv.py -- <CASE NAME> leaked-record classification.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/skills/leak-record-classifier/templates/case_classifier_template.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/skills/leak-record-classifier/templates/case_classifier_template.py: 120 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine case_classifier_template"
+    },
+    {
+      "key": "4-points-consulting/engine-security-stack-extract",
+      "title": "CAP-142 engine security-stack-extract: security-stack-extract.py",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-security-stack-extract -->\n\nsecurity-stack-extract.py\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/skills/osint/scripts/security-stack-extract.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/skills/osint/scripts/security-stack-extract.py: 230 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine security-stack-extract"
+    },
+    {
+      "key": "4-points-consulting/engine-mcp-client",
+      "title": "CAP-144 engine mcp-client: Lightweight MCP client for Streamable HTTP/SSE transport.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-mcp-client -->\n\nLightweight MCP client for Streamable HTTP/SSE transport.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/skills/osint/scripts/mcp-client.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/skills/osint/scripts/mcp-client.py: 136 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine mcp-client"
+    },
+    {
+      "key": "4-points-consulting/engine-check-collision",
+      "title": "CAP-145 engine check-collision: Python engine check-collision.py.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-check-collision -->\n\nPython engine check-collision.py.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/skills/osint/scripts/check-collision.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/skills/osint/scripts/check-collision.py: 115 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine check-collision"
+    },
+    {
+      "key": "4-points-consulting/engine-extract-intake-2",
+      "title": "CAP-150 engine extract_intake (2): Extract all content from Walter Winiarz intake DOCX file.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-extract-intake-2 -->\n\nExtract all content from Walter Winiarz intake DOCX file.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-009-winiarz-background/extract_intake.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-009-winiarz-background/extract_intake.py: 100 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine extract_intake (2)"
+    },
+    {
+      "key": "4-points-consulting/engine-extract-person-reports",
+      "title": "CAP-151 engine extract_person_reports: Extract structured data from IRBsearch / idiCORE person search reports.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-extract-person-reports -->\n\nExtract structured data from IRBsearch / idiCORE person search reports.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-026-ron-grout/investigation/evidence/scripts/extract_person_reports.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-026-ron-grout/investigation/evidence/scripts/extract_person_reports.py: 116 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine extract_person_reports"
+    },
+    {
+      "key": "4-points-consulting/engine-build-final-report",
+      "title": "CAP-152 engine build-final-report: build-final-report.py",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-final-report -->\n\nbuild-final-report.py\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-025-ben_aggarwal/output/build-final-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-025-ben_aggarwal/output/build-final-report.py: 1256 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-final-report"
+    },
+    {
+      "key": "4-points-consulting/engine-build-threat-brief",
+      "title": "CAP-153 engine build-threat-brief: Assemble the All Points Threat Intelligence Brief for case-014.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-threat-brief -->\n\nAssemble the All Points Threat Intelligence Brief for case-014.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-014-trump-coin/output/build-threat-brief.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-014-trump-coin/output/build-threat-brief.py: 735 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-threat-brief"
+    },
+    {
+      "key": "4-points-consulting/engine-build-final-report-2",
+      "title": "CAP-154 engine build-final-report (2): Assemble the All Points OSINT Investigation Report for case-014 Trump Coin ref...",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-final-report-2 -->\n\nAssemble the All Points OSINT Investigation Report for case-014 Trump Coin refresh.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-014-trump-coin/output/build-final-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-014-trump-coin/output/build-final-report.py: 786 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-final-report (2)"
+    },
+    {
+      "key": "4-points-consulting/engine-build-investigation-report",
+      "title": "CAP-155 engine build-investigation-report: Reporter-facing investigation report for case-014.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-investigation-report -->\n\nReporter-facing investigation report for case-014.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-014-trump-coin/output/build-investigation-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-014-trump-coin/output/build-investigation-report.py: 963 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-investigation-report"
+    },
+    {
+      "key": "4-points-consulting/engine-build-analysis",
+      "title": "CAP-156 engine build_analysis: Trump Coin Cluster + Link Analysis",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-analysis -->\n\nTrump Coin Cluster + Link Analysis\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-014-trump-coin/output/analyses/2026-04-26-cluster-analysis/build_analysis.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-014-trump-coin/output/analyses/2026-04-26-cluster-analysis/build_analysis.py: 846 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build_analysis"
+    },
+    {
+      "key": "4-points-consulting/engine-ocr-pass2",
+      "title": "CAP-157 engine ocr_pass2: Intentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-ocr-pass2 -->\n\nIntentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-028-leo-skilliter/investigation/evidence/scripts/ocr_pass2.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-028-leo-skilliter/investigation/evidence/scripts/ocr_pass2.py: 184 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine ocr_pass2"
+    },
+    {
+      "key": "4-points-consulting/engine-extract-all",
+      "title": "CAP-158 engine extract_all: Intentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-extract-all -->\n\nIntentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-013-jennica-pounds/investigation/evidence/scripts/extract_all.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-013-jennica-pounds/investigation/evidence/scripts/extract_all.py: 524 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine extract_all"
+    },
+    {
+      "key": "4-points-consulting/engine-add-screenshots-to-report",
+      "title": "CAP-159 engine add-screenshots-to-report: Patch generate-osint-report-cited.js to embed PNG screenshots",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-add-screenshots-to-report -->\n\nPatch generate-osint-report-cited.js to embed PNG screenshots\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/output/add-screenshots-to-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/output/add-screenshots-to-report.py: 156 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine add-screenshots-to-report"
+    },
+    {
+      "key": "4-points-consulting/engine-build-pdf-screenshots",
+      "title": "CAP-160 engine build-pdf-screenshots: Generate PDF versions of every screenshot/source cited in the final report.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-pdf-screenshots -->\n\nGenerate PDF versions of every screenshot/source cited in the final report.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/output/build-pdf-screenshots.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/output/build-pdf-screenshots.py: 205 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-pdf-screenshots"
+    },
+    {
+      "key": "4-points-consulting/engine-add-citations-to-report",
+      "title": "CAP-161 engine add-citations-to-report: Add source document citation appendix to the OSINT report generator.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-add-citations-to-report -->\n\nAdd source document citation appendix to the OSINT report generator.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/output/add-citations-to-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/output/add-citations-to-report.py: 307 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine add-citations-to-report"
+    },
+    {
+      "key": "4-points-consulting/engine-build-final-report-3",
+      "title": "CAP-162 engine build-final-report (3): Assemble the All Points OSINT Investigation Report for case-010.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-final-report-3 -->\n\nAssemble the All Points OSINT Investigation Report for case-010.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/output/build-final-report.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/output/build-final-report.py: 1487 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-final-report (3)"
+    },
+    {
+      "key": "4-points-consulting/engine-build-citation-map",
+      "title": "CAP-163 engine build-citation-map: Build a citation map from analysis_output.json -> actual evidence dump filenames.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-build-citation-map -->\n\nBuild a citation map from analysis_output.json -> actual evidence dump filenames.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/output/build-citation-map.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/output/build-citation-map.py: 237 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine build-citation-map"
+    },
+    {
+      "key": "4-points-consulting/engine-extract-all-2",
+      "title": "CAP-164 engine extract_all (2): Intentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-extract-all-2 -->\n\nIntentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/investigation/evidence/scripts/extract_all.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/investigation/evidence/scripts/extract_all.py: 574 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine extract_all (2)"
+    },
+    {
+      "key": "4-points-consulting/engine-extract-batch-2026-04-23",
+      "title": "CAP-165 engine extract_batch_2026_04_23: extract_batch_2026_04_23.py",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-extract-batch-2026-04-23 -->\n\nextract_batch_2026_04_23.py\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-010-document-dump/investigation/evidence/scripts/extract_batch_2026_04_23.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-010-document-dump/investigation/evidence/scripts/extract_batch_2026_04_23.py: 297 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine extract_batch_2026_04_23"
+    },
+    {
+      "key": "4-points-consulting/engine-reformat-csv",
+      "title": "CAP-166 engine reformat_csv: reformat_csv.py -- Parse Maltego D4 CSV export for case-039-david_j_goodgame.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-reformat-csv -->\n\nreformat_csv.py -- Parse Maltego D4 CSV export for case-039-david_j_goodgame.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-039-david_j_goodgame/investigation/evidence/scripts/reformat_csv.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-039-david_j_goodgame/investigation/evidence/scripts/reformat_csv.py: 341 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine reformat_csv"
+    },
+    {
+      "key": "4-points-consulting/engine-reformat-csv-2",
+      "title": "CAP-167 engine reformat_csv (2): reformat_csv.py -- Parse Maltego D4 CSV export for case-030-billy-wong.",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-reformat-csv-2 -->\n\nreformat_csv.py -- Parse Maltego D4 CSV export for case-030-billy-wong.\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-030-billy-wong/investigation/evidence/scripts/reformat_csv.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-030-billy-wong/investigation/evidence/scripts/reformat_csv.py: 299 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine reformat_csv (2)"
+    },
+    {
+      "key": "4-points-consulting/engine-ocr-hd",
+      "title": "CAP-168 engine ocr_hd: Intentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):",
+      "description": "<!-- kipi-key: 4-points-consulting/engine-ocr-hd -->\n\nIntentional exception, not an untracked duplicate (2026-07-21 extraction-dedup audit):\n\n| Field | Value |\n| -- | -- |\n| Repo | `4_points_consulting` |\n| Layer | L5 Engines and scripts |\n| Status claimed | UNWIRED |\n| Entry point | q-investigate/investigations/case-020-ngops-patton-harassment/investigation/evidence/scripts/ocr_hd.py |\n| Trigger | called by a hook, a command, or another script |\n| Depends on | _nothing recorded_ |\n| Feeds | _nothing recorded_ |\n\n## Evidence\n\nq-investigate/investigations/case-020-ngops-patton-harassment/investigation/evidence/scripts/ocr_hd.py: 102 lines; NO test and NO wiring reference found.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.",
+      "labels": [
+        "kind:capability",
+        "unwired",
+        "needs-evidence"
+      ],
+      "state": "Backlog",
+      "capability": "engine ocr_hd"
+    }
+  ],
+  "skipped_known": 311,
+  "rehydrated": 0
+}
