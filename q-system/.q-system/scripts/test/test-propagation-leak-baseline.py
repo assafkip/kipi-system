@@ -44,8 +44,17 @@ def finding(fact_class="client_identity", text="- Client: Northwind Trading",
 
 
 def justify_all(gate, findings, reason="reviewed 2026-07-25: template placeholder"):
-    """Per-entry justifications, the honest way, for tests not about provenance."""
-    return {key: reason for key in gate.blocking_fingerprints(findings)}
+    """One DISTINCT reason per fingerprint.
+
+    This helper used to return the same string for every key and was labelled
+    "the honest way". It was the bulk accept: a single expression blessing the
+    whole population while satisfying every per-entry check. Naming the actual
+    record in each reason is what a per-entry read leaves behind.
+    """
+    return {
+        key: f"{reason} — {key[0]} [{key[1]}] {key[3][:8]}"
+        for key in gate.blocking_fingerprints(findings)
+    }
 
 
 def test_blocking_scope_is_the_six_high_confidence_classes():
@@ -394,17 +403,101 @@ def test_a_newly_blessed_fingerprint_still_needs_its_own_justification():
         rebaseline(gate, document, [finding(), arrived])
 
 
-def test_a_shrunk_count_is_lowered_not_kept():
-    """Two copies blessed, one left: the permit for the second must lapse."""
+def test_any_count_movement_needs_a_fresh_justification():
+    """A shrink is a re-grant, because the old count may never have been real.
+
+    The document conflates "how many a human reviewed" with "how many are
+    permitted", so on the way down there is nothing left to prove the carried
+    reason ever covered the surviving copy. Requiring a fresh reason on ANY
+    movement is the only rule the current schema can actually enforce.
+    """
     gate = load_gate()
     twice = [finding(), finding()]
     document = baselined(gate, twice)
 
-    result = rebaseline(gate, document, [finding()])
+    with pytest.raises(gate.BaselineRefused):
+        rebaseline(gate, document, [finding()])
 
+    result = rebaseline(
+        gate,
+        document,
+        [finding()],
+        {key: "reviewed 2026-07-25: one copy left" for key in gate.blocking_fingerprints([finding()])},
+    )
     assert result["document"]["entries"][0]["count"] == 1
     assert result["removed"][0]["baseline_count"] == 2
     assert result["removed"][0]["current_count"] == 1
+
+
+def test_rebaseline_cannot_launder_an_inflated_count():
+    """The bug this rule exists for.
+
+    A human reviewed ONE copy. The committed file is hand-edited to three.
+    Reality is two. load_baseline_document refuses that file outright, so the
+    operator re-baselines, and the rewrite prunes 3 -> 2, carries the old
+    reason forward, and reports it only as a REMOVAL. The result loads clean
+    and grants two copies of a private line that one human ever read once.
+    """
+    gate = load_gate()
+    once = [finding()]
+    document = baselined(gate, once)
+    document["entries"][0]["count"] = 3
+    reality = [finding(), finding()]
+
+    with pytest.raises(gate.BaselineRefused):
+        gate.load_baseline_document(
+            document, current=gate.blocking_fingerprints(reality)
+        )
+
+    with pytest.raises(gate.BaselineRefused):
+        rebaseline(gate, document, reality)
+
+
+def test_one_reason_reused_across_entries_is_refused():
+    """The bulk accept that survives every per-entry check.
+
+    `{key: ONE_REASON for key in blocking_fingerprints(findings)}` is one
+    expression that blesses the whole population. It satisfies "a mapping",
+    "a key per fingerprint" and "non-empty" while no human read a single one.
+    """
+    gate = load_gate()
+    findings = [finding(), finding(fact_class="pricing", text=PRICE)]
+    one_reason = {
+        key: "reviewed 2026-07-25, all fine"
+        for key in gate.blocking_fingerprints(findings)
+    }
+
+    with pytest.raises(gate.BaselineRefused) as refusal:
+        gate.build_baseline_document(findings, one_reason)
+    assert "reused" in str(refusal.value)
+
+
+def test_a_non_string_justification_is_refused_at_build():
+    """The builder must not emit a document its own loader rejects."""
+    gate = load_gate()
+    findings = [finding()]
+    listed = {key: ["reviewed"] for key in gate.blocking_fingerprints(findings)}
+
+    with pytest.raises(gate.BaselineRefused):
+        gate.build_baseline_document(findings, listed)
+
+
+def test_rebaseline_does_not_restamp_an_unverified_classifier():
+    """Stamp only what was proven.
+
+    Omitting classifier_sha256 skips the provenance check entirely, so copying
+    the old hash onto entries computed by an unknown classifier makes the file
+    assert something the tool never checked.
+    """
+    gate = load_gate()
+    findings = [finding()]
+    document = gate.build_baseline_document(
+        findings, justify_all(gate, findings), classifier_sha256="a" * 64
+    )
+
+    with pytest.raises(gate.BaselineRefused) as refusal:
+        rebaseline(gate, document, findings)
+    assert "classifier" in str(refusal.value)
 
 
 def test_classifier_churn_cannot_hide_a_new_fact():

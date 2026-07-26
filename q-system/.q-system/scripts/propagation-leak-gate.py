@@ -606,11 +606,21 @@ def scan_propagation_sources(repo_root: Path | str, classify=None) -> list:
 # Baseline: what is blessed, and who said why
 # --------------------------------------------------------------------------
 
-# The classes worth blocking on. Measured on this repo: 784 findings across 450
-# files, against 63k `unclassified_populated_record` hits that are mostly YAML
-# frontmatter (`name:` in an agent file) read as client identity. A 784-entry
-# file can be read by a human; a 64k one cannot, and a baseline nobody can read
-# is an unaudited allowlist, not a review.
+# The classes worth blocking on. Measured on this repo after the copy-set fix:
+# 253 findings in these classes against 10,127 `unclassified_populated_record`
+# hits, a 40x ratio. Those are mostly YAML frontmatter (`name:` in an agent
+# file) read as client identity. A 253-entry file can be read by a human; a
+# 10k one cannot, and a baseline nobody can read is an unaudited allowlist.
+#
+# `validate-separation.py` emits EIGHT classes. Two are absent here:
+# `unclassified_populated_record` for the volume reason above, and
+# `relationship` because the PRD's resolved decision names six classes and
+# does not include it. That is a gap worth naming rather than hiding:
+# `relationship` is the one class that describes PEOPLE, it is not shadowed by
+# `client_identity` (`relationship` is not in IDENTITY_FIELDS), and
+# `_baseline_key` refuses a permit for it, so a human cannot even record having
+# reviewed one. Its count is 0 on this repo today. Changing blocking scope is a
+# PRD-level decision, so this is flagged, not silently changed (sp-6b42ce65).
 BLOCKING_FACT_CLASSES = (
     "case_proof_gap",
     "client_identity",
@@ -704,8 +714,39 @@ def _materialize_justifications(justifications) -> dict:
             raise BaselineRefused(
                 f"justification key is not a fingerprint: {key!r}"
             )
-        materialized[key] = justifications[key]
+        value = justifications[key]
+        if type(value) is not str:
+            # The loader requires a real str. Accepting any object and str()ing
+            # it lets a list through as "['reviewed']", and an unstable __str__
+            # emit an entry this module's own loader then refuses.
+            raise BaselineRefused(
+                f"justification for {_describe(key)} is not text: {value!r}"
+            )
+        materialized[key] = value
+    _refuse_reused_reasons(materialized)
     return materialized
+
+
+def _refuse_reused_reasons(justifications: dict) -> None:
+    """One sentence covering many entries is a bulk accept, spelled differently.
+
+    Refusing a bare string only catches the obvious spelling.
+    `{key: ONE_REASON for key in blocking_fingerprints(findings)}` is a single
+    expression that blesses the whole population while satisfying "a mapping",
+    "a key per fingerprint" and "non-empty" — and it was what this repo's own
+    test helper did, labelled "the honest way".
+    """
+    seen: dict = {}
+    for key, value in justifications.items():
+        seen.setdefault(value.strip(), []).append(key)
+    reused = {reason: keys for reason, keys in seen.items() if len(keys) > 1}
+    if reused:
+        raise BaselineRefused(
+            "a justification is per-entry, and these are reused:\n  "
+            + "\n  ".join(
+                f"{reason!r} covers {len(keys)} entries" for reason, keys in reused.items()
+            )
+        )
 
 
 def _assert_every_entry_is_justified(counts: dict, justifications: dict) -> None:
@@ -887,14 +928,29 @@ def rebaseline_document(document, findings, justifications=None,
     including one more copy of an already-blessed line, needs its own. Re-
     baselining is not a side door around per-entry provenance.
     """
+    if classifier_sha256 is None and document.get("classifier_sha256") is not None:
+        # Omitting the hash skips the provenance check entirely, so copying the
+        # old stamp onto entries computed by an unknown classifier makes the
+        # rewritten file assert something this tool never verified.
+        raise BaselineRefused(
+            "re-baselining a stamped baseline needs the classifier it was "
+            "built by; pass classifier_sha256 so the provenance is checked"
+        )
     previous = _read_baseline_entries(document, classifier_sha256)
     previous_counts = {key: entry["count"] for key, entry in previous.items()}
     current = blocking_fingerprints(findings)
     kept = prune_baseline(previous_counts, current)
     delta = baseline_delta(previous_counts, current)
     justifications = _materialize_justifications(justifications or {})
+    # ANY movement, not just an increase. A shrink re-grants too: the document
+    # conflates "how many a human reviewed" with "how many are permitted", so
+    # once a count is wrong there is nothing left to prove the carried reason
+    # ever covered the surviving copies. Scar: a baseline reviewed for 1 copy,
+    # hand-edited to 3 against a reality of 2, was REFUSED by the loader and
+    # then laundered by a rebaseline into a clean file granting 2 -- reported
+    # only as a removal, with no new justification asked for.
     added_keys = [
-        key for key in sorted(current) if current[key] > previous_counts.get(key, 0)
+        key for key in sorted(current) if current[key] != previous_counts.get(key, 0)
     ]
     _assert_additions_are_justified(added_keys, justifications)
 
@@ -904,9 +960,8 @@ def rebaseline_document(document, findings, justifications=None,
         counts[key] = current[key]
         reasons[key] = justifications[key]
     return {
-        "document": _document(
-            counts, reasons, classifier_sha256 or document.get("classifier_sha256")
-        ),
+        # Stamp only what was proven, never the old hash carried forward.
+        "document": _document(counts, reasons, classifier_sha256),
         "added": delta["added"],
         "removed": delta["removed"],
     }
