@@ -191,6 +191,27 @@ else:
     print('  Already registered')
 "
 
+# Queue a Linear project for the new instance (ASK-113, goal 3).
+#
+# This CANNOT call Linear directly: there is no Linear API key in ~/.config/kipi/
+# and no LINEAR_* env var, so Linear is reachable only through the MCP server,
+# which a shell script cannot use. So capture here, offline and unfailing, and let
+# the agent-side /linear-drain create the project where credentials exist.
+#
+# `|| true` because a queue problem must never fail an instance creation that has
+# already succeeded. The script itself warns loudly on stderr if it cannot write.
+QUEUE_SCRIPT="$SCRIPT_DIR/q-system/.q-system/scripts/linear-queue.py"
+if [ -f "$QUEUE_SCRIPT" ]; then
+  KIPI_LINEAR_QUEUE="${KIPI_LINEAR_QUEUE:-$SCRIPT_DIR/.linear-queue.jsonl}" \
+    python3 "$QUEUE_SCRIPT" add \
+      --repo "$INST_NAME" \
+      --kind project \
+      --title "$INST_NAME" \
+      --note "Auto-queued by kipi new. Instance at $(cd "$INST_PATH" && pwd)." \
+      --source kipi-new >/dev/null 2>&1 || true
+  echo "  Linear project queued (run /linear-drain in a Claude session to create it)"
+fi
+
 echo ""
 echo "=== Done ==="
 echo "Instance created at $INST_PATH"

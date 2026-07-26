@@ -18,6 +18,11 @@ usage() {
   echo "  kipi cluster add <path> <name> <role>  Plug an instance into the KTLYST cluster"
   echo "  kipi cluster sync    Re-run all bridge writers (push latest state to all instances)"
   echo "  kipi list            Show all registered projects"
+  echo ""
+  echo "  kipi linear issue \"<title>\"   Open a Linear issue for work you are ABOUT to start"
+  echo "  kipi linear pending           Show captured items Linear does not have yet"
+  echo "  kipi linear status            Which repos have been rolled out to Linear"
+  echo "  kipi linear plan --map <f> --remote <f> --out <f>   Plan creates (idempotent)"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
   echo "  kipi home            Print the skeleton path"
   echo ""
@@ -52,6 +57,42 @@ case "${1:-help}" in
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"
+    ;;
+  linear)
+    # Issue-first fast path. The commit-msg gate (linear-issue-ref-check.py)
+    # refuses a commit that names no issue; this is how you cheaply get an issue
+    # to name BEFORE building, rather than minting a receipt after.
+    # Capture is local and offline; the Linear write happens in the agent drain,
+    # because no Linear API key exists for a shell to use.
+    shift || true
+    QUEUE="$KIPI_HOME/q-system/.q-system/scripts/linear-queue.py"
+    SYNC="$KIPI_HOME/q-system/.q-system/scripts/linear-sync.py"
+    sub="${1:-pending}"
+    shift || true
+    case "$sub" in
+      issue)
+        title="${1:-}"
+        if [ -z "$title" ]; then
+          echo "usage: kipi linear issue \"<title>\" [--note \"...\"]" >&2
+          exit 1
+        fi
+        shift || true
+        repo="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+        python3 "$QUEUE" add --repo "$repo" --kind issue --title "$title" --source kipi-cli "$@"
+        echo ""
+        echo "Captured. It is not in Linear yet: run /linear-drain in a Claude session."
+        ;;
+      pending) python3 "$QUEUE" pending "$@" ;;
+      status)  python3 "$SYNC" status "$@" ;;
+      plan)    python3 "$SYNC" plan "$@" ;;
+      record)  python3 "$SYNC" record "$@" ;;
+      key)     python3 "$SYNC" key "$@" ;;
+      *)
+        echo "unknown: kipi linear $sub" >&2
+        echo "try: issue | pending | status | plan | record | key" >&2
+        exit 1
+        ;;
+    esac
     ;;
   check)
     shift || true
