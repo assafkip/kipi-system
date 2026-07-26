@@ -299,7 +299,95 @@ cleanup_updater_temps() {
     rm -r -- "$DRY_TMP"
     DRY_TMP=""
   fi
+  if [ -n "${CHECKPOINT_DIR:-}" ] && [ -d "$CHECKPOINT_DIR" ]; then
+    rm -r -- "$CHECKPOINT_DIR"
+    CHECKPOINT_DIR=""
+  fi
   cleanup_dry_model
+}
+
+# Checkpoint and restore: a failed run must leave the instance as it found it.
+#
+# 24 places give up on an instance, and none of them recorded its state first,
+# so any failure after the first write left debris that a human had to dig out
+# by hand -- and, worse, that the dirty-tree guard then read as founder work,
+# so EVERY later run refused too. One failure took the instance out of the
+# fleet permanently. Scars: sp-5f2d2a63 (a failed staging left 43 files
+# staged) and sp-e244e821 (a failed sync left tracked skeleton files modified).
+#
+# Restoring is exact, not lossy, because the dirty-tree guard has already
+# proved the tree clean at checkpoint time: everything discarded here is
+# something THIS run wrote. No hard reset and no clean subcommand is used.
+CHECKPOINT_DIR=""
+CHECKPOINT_TARGET=""
+
+checkpoint_instance() {
+  local target="$1"
+  CHECKPOINT_TARGET=""
+  CHECKPOINT_DIR="$(mktemp -d)" || return 1
+  # The LIST only, not the bytes: this is what tells restore which untracked
+  # paths existed before the run, so anything else it finds afterwards is this
+  # run's own output and can go. `--others` without `--exclude-standard` on
+  # purpose -- an ignored file is still not something this run created.
+  ( cd "$target" && git ls-files -z --others ) > "$CHECKPOINT_DIR/untracked" ||
+    return 1
+  CHECKPOINT_TARGET="$target"
+}
+
+restore_instance() {
+  local target="${CHECKPOINT_TARGET:-}" uf
+  [ -n "$target" ] || return 0
+  [ -d "$CHECKPOINT_DIR" ] || return 0
+  # Untracked files the rsync --delete removed. No git verb can bring one back,
+  # and the ONLY copy is the preservation snapshot under $SNAP -- which lives
+  # inside ARCHIVE_TMP, so this has to happen before that is torn down. That
+  # ordering is why abandon_instance owns both steps.
+  if [ -n "${SNAP:-}" ] && [ -d "$SNAP/f" ] && [ -f "$SNAP/list" ]; then
+    ( cd "$target" && while IFS= read -r -d '' uf; do
+        if ! { [ -e "$uf" ] || [ -L "$uf" ]; } &&
+            { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
+          mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf"
+        fi
+      done < "$SNAP/list" ) || true
+  fi
+  # Leave the instance CLEAN at whatever commit it reached -- do NOT rewind a
+  # commit that landed. A landed commit is not damage: the tree is clean and
+  # the next run proceeds normally. What actually took instances out of the
+  # fleet was UNCOMMITTED debris -- a half-staged index (sp-5f2d2a63) or
+  # modified tracked files (sp-e244e821) -- because the dirty-tree guard then
+  # read it as founder work and refused forever.
+  #
+  # Rewinding was tried and is wrong: test-kipi-update-hook-contract.sh sets
+  # HOOK_FAIL_ON=2 so the q-system commit lands and the CONFIG commit fails,
+  # and it asserts the first commit survives. Undoing it also strands the
+  # index against a HEAD it no longer matches, which manufactures the exact
+  # dirty tree this function exists to prevent.
+  git -C "$target" reset -q HEAD 2>/dev/null || true
+  git -C "$target" checkout -q -- . 2>/dev/null || true
+  # Finally, remove files this run created. Only paths that are untracked NOW
+  # and were absent from the checkpoint list -- never a recursive delete of a
+  # directory this run was not observed to create.
+  ( cd "$target" && git ls-files -z --others 2>/dev/null | while IFS= read -r -d '' uf; do
+      if ! grep -qzFx -- "$uf" "$CHECKPOINT_DIR/untracked" 2>/dev/null; then
+        [ -f "$uf" ] || [ -L "$uf" ] && rm -f -- "$uf"
+      fi
+    done ) || true
+}
+
+# The single give-up path. Every one of the 24 sites routes through here, so
+# restore-before-teardown is structural rather than 24 chances to forget it.
+abandon_instance() {
+  local message="${1:-}"
+  [ -n "$message" ] && echo "$message"
+  restore_instance
+  if [ -n "${ARCHIVE_TMP:-}" ] && [ -d "$ARCHIVE_TMP" ]; then
+    rm -r -- "$ARCHIVE_TMP"
+    ARCHIVE_TMP=""
+  fi
+  cleanup_dry_model
+  FAIL=$((FAIL + 1))
+  echo ""
+  return 0
 }
 
 worktree_digest() {
@@ -647,6 +735,11 @@ while IFS='|' read -r name path prefix itype; do
 
   MODEL_RUN=0
   DRY_MODEL_ROOT=""
+  # Per-instance, not per-run. A stale CHECKPOINT_TARGET would let an early
+  # bail on instance B restore against instance A's recorded state; a stale
+  # SNAP would point restore at a torn-down directory.
+  CHECKPOINT_TARGET=""
+  SNAP=""
   ORIGINAL_PATH="$path"
   ORIGINAL_HEAD=""
   if [ "$DRY_RUN" = "--dry-run" ]; then
@@ -662,11 +755,7 @@ while IFS='|' read -r name path prefix itype; do
     # guarded_commit authoritative.
     DRY_HOOKS_DIR="$DRY_MODEL_ROOT/no-hooks"
     if ! mkdir -p "$DRY_HOOKS_DIR"; then
-      echo "  ERROR: could not create the isolated dry-run hooks directory"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: could not create the isolated dry-run hooks directory" && continue
     fi
     unset GIT_CONFIG_PARAMETERS
     case "${GIT_CONFIG_COUNT:-}" in
@@ -687,11 +776,7 @@ while IFS='|' read -r name path prefix itype; do
     export GIT_CONFIG_VALUE_0="$DRY_HOOKS_DIR"
     ORIGINAL_HEAD="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
     if [ -z "$ORIGINAL_HEAD" ]; then
-      echo "  ERROR: could not resolve production HEAD for dry-run model"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: could not resolve production HEAD for dry-run model" && continue
     fi
     # Projection A. It re-enters the one scan itself, which also populates
     # MODEL_SKIPPED_PATHS -- projection B, read directly by the symlink walk
@@ -774,11 +859,7 @@ for current, directories, files in os.walk(root, followlinks=False):
         raise SystemExit(1)
 PY
     then
-      echo "  ERROR: unsafe symlink prevents isolated dry-run modeling"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: unsafe symlink prevents isolated dry-run modeling" && continue
     fi
     SOURCE_GIT_DIR="$(
       git -C "$path" rev-parse --path-format=absolute --git-common-dir \
@@ -792,11 +873,7 @@ PY
         { [ -f "$SOURCE_WORKTREE_GIT_DIR/MERGE_HEAD" ] ||
           [ -d "$SOURCE_WORKTREE_GIT_DIR/rebase-merge" ] ||
           [ -d "$SOURCE_WORKTREE_GIT_DIR/rebase-apply" ]; }; then
-      echo "  ERROR: active merge or rebase cannot be modeled safely"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: active merge or rebase cannot be modeled safely" && continue
     fi
     ORIGINAL_BRANCH="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
     MODEL_SETUP_FAILED=0
@@ -853,21 +930,13 @@ PY
       fi
     fi
     if [ "$MODEL_SETUP_FAILED" != "0" ]; then
-      echo "  ERROR: could not create disposable dry-run model"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: could not create disposable dry-run model" && continue
     fi
     if git -C "$DRY_MODEL_ROOT/instance" config --local \
         --get-all core.worktree >/dev/null 2>&1; then
       if ! git -C "$DRY_MODEL_ROOT/instance" config --local \
           --replace-all core.worktree "$DRY_MODEL_ROOT/instance"; then
-        echo "  ERROR: could not isolate repository worktree config"
-        cleanup_dry_model
-        FAIL=$((FAIL + 1))
-        echo ""
-        continue
+        abandon_instance "  ERROR: could not isolate repository worktree config" && continue
       fi
     fi
     if [ -f "$DRY_MODEL_ROOT/instance/.git/config.worktree" ] &&
@@ -875,11 +944,7 @@ PY
           --get-all core.worktree >/dev/null 2>&1; then
       if ! git -C "$DRY_MODEL_ROOT/instance" config --worktree \
           --replace-all core.worktree "$DRY_MODEL_ROOT/instance"; then
-        echo "  ERROR: could not isolate linked-worktree config"
-        cleanup_dry_model
-        FAIL=$((FAIL + 1))
-        echo ""
-        continue
+        abandon_instance "  ERROR: could not isolate linked-worktree config" && continue
       fi
     fi
     path="$DRY_MODEL_ROOT/instance"
@@ -899,11 +964,7 @@ PY
       esac
       if [ -z "$ORIGINAL_ORIGIN" ] ||
           ! git -C "$path" remote set-url origin "$ORIGINAL_ORIGIN"; then
-        echo "  ERROR: could not configure isolated direct-clone origin"
-        cleanup_dry_model
-        FAIL=$((FAIL + 1))
-        echo ""
-        continue
+        abandon_instance "  ERROR: could not configure isolated direct-clone origin" && continue
       fi
     fi
   fi
@@ -936,12 +997,17 @@ PY
       if [ "$MODEL_RUN" = "1" ]; then
         echo "  Changes vs skeleton: blocked by dirty working tree"
       fi
-      echo "  ERROR: dirty working tree; refusing to commit unrelated work"
       git status --short 2>/dev/null | sed 's/^/    /' || true
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: dirty working tree; refusing to commit unrelated work" && continue
+    fi
+
+    # Checkpoint HERE, not earlier, and the placement is the whole safety
+    # argument: the guard directly above has just proved the tree clean, so
+    # everything a later restore discards is something THIS run wrote. Against
+    # a DIRTY checkpoint the restore's `git checkout -- .` would throw away the
+    # founder's unstaged edits, which is the opposite of the point.
+    if ! checkpoint_instance "$path"; then
+      abandon_instance "  ERROR: could not checkpoint the instance; refusing to write" && continue
     fi
   fi
 
@@ -949,11 +1015,7 @@ PY
     echo "  Direct clone - pulling from origin..."
     if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
       if ! git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
-        echo "  ERROR: fetch failed"
-        cleanup_dry_model
-        FAIL=$((FAIL + 1))
-        echo ""
-        continue
+        abandon_instance "  ERROR: fetch failed" && continue
       fi
       if git pull --rebase origin "$SKELETON_BRANCH" 2>&1; then
         echo "  OK"
@@ -967,7 +1029,7 @@ PY
         else
           echo "  WARN: merge failed (needs manual resolve)"
           git merge --abort 2>/dev/null || true
-          FAIL=$((FAIL + 1))
+          abandon_instance && continue
         fi
       fi
     fi
@@ -991,12 +1053,7 @@ PY
             $(pathspec_owned_excludes "$prefix") \
             ":(exclude)$prefix/q-system/" \
             ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
-          echo "  ERROR: preservation snapshot inventory failed; rsync not started"
-          rm -r -- "$ARCHIVE_TMP"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preservation snapshot inventory failed; rsync not started" && continue
         fi
         COLLISION=0
         while IFS= read -r -d '' uf; do
@@ -1014,12 +1071,7 @@ PY
           fi
         done < "$SNAP/list"
         if [ "$COLLISION" != "0" ]; then
-          rm -r -- "$ARCHIVE_TMP"
-          ARCHIVE_TMP=""
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance && continue
         fi
         # Also preserve TRACKED instance-only files the --delete would remove. The
         # ls-files --others snapshot above only covers UNTRACKED files; a script the
@@ -1030,24 +1082,14 @@ PY
         # precondition: missing or incomplete proof stops before rsync --delete.
         PRESERVE_SCAN="$SCRIPT_DIR/kipi-update-preserve-scan.py"
         if [ ! -f "$PRESERVE_SCAN" ]; then
-          echo "  ERROR: preservation helper missing; rsync not started"
-          rm -r -- "$ARCHIVE_TMP"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preservation helper missing; rsync not started" && continue
         fi
         if ! python3 "$PRESERVE_SCAN" --skeleton-archive "$ARCHIVE_TMP" \
             --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
             --receipt "$SNAP/preservation-receipt.json" \
             > "$SNAP/tracked" 2>"$SNAP/warn"; then
           [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
-          echo "  ERROR: preservation helper failed; rsync not started"
-          rm -r -- "$ARCHIVE_TMP"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preservation helper failed; rsync not started" && continue
         fi
         if ! python3 - "$SNAP/preservation-receipt.json" "$SNAP/tracked" <<'PY'
 import hashlib
@@ -1080,12 +1122,7 @@ if receipt["stdout_sha256"] != hashlib.sha256(output).hexdigest():
     raise SystemExit(1)
 PY
         then
-          echo "  ERROR: preservation receipt incomplete or invalid; rsync not started"
-          rm -r -- "$ARCHIVE_TMP"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preservation receipt incomplete or invalid; rsync not started" && continue
         fi
         [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
         if [ -s "$SNAP/tracked" ]; then
@@ -1096,12 +1133,7 @@ PY
             mkdir -p "$SNAP/f/$(dirname "$uf")" &&
               cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || exit 1
           done < "$SNAP/list" ); then
-          echo "  ERROR: preservation snapshot copy failed; rsync not started"
-          rm -r -- "$ARCHIVE_TMP"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preservation snapshot copy failed; rsync not started" && continue
         fi
         # Excludes are ANCHORED (leading /) to the transfer root. Unanchored
         # patterns also matched inside the nested q-system/q-system/ shadow copy
@@ -1109,13 +1141,7 @@ PY
         # the shadow tree -- "not empty, cannot delete" on every update.
         if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
             $(rsync_owned_excludes) 2>/dev/null; then
-          echo "  ERROR: q-system sync failed"
-          rm -r -- "$ARCHIVE_TMP"
-          ARCHIVE_TMP=""
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: q-system sync failed" && continue
         fi
         # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
         if ! ( cd "$path" && while IFS= read -r -d '' uf; do
@@ -1123,34 +1149,20 @@ PY
               mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && echo "  restored untracked: $uf"
             fi
           done < "$SNAP/list" ); then
-          echo "  ERROR: preserved-file restore failed"
-          rm -r -- "$ARCHIVE_TMP"
-          ARCHIVE_TMP=""
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: preserved-file restore failed" && continue
         fi
         rm -r -- "$ARCHIVE_TMP"
         ARCHIVE_TMP=""
         cd "$path"
         if ! stage_q_system_sync "$path" "$prefix" 2>/dev/null; then
           unstage_scope "$path" "$prefix/"
-          echo "  ERROR: could not stage q-system sync"
-          cleanup_dry_model
-          FAIL=$((FAIL + 1))
-          echo ""
-          continue
+          abandon_instance "  ERROR: could not stage q-system sync" && continue
         fi
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
           if ! guarded_commit "$path" \
               "chore: sync q-system from skeleton $(date +%Y-%m-%d)"; then
-            echo "  ERROR: could not commit q-system sync"
-            cleanup_dry_model
-            FAIL=$((FAIL + 1))
-            echo ""
-            continue
+            abandon_instance "  ERROR: could not commit q-system sync" && continue
           fi
           echo "  OK ($CHANGES files updated)"
         else
@@ -1158,10 +1170,7 @@ PY
         fi
         PASS=$((PASS + 1))
       else
-        rm -r -- "$ARCHIVE_TMP"
-        ARCHIVE_TMP=""
-        echo "  WARN: archive export failed"
-        FAIL=$((FAIL + 1))
+        abandon_instance "  WARN: archive export failed" && continue
       fi
     else
       cd "$path"
@@ -1195,10 +1204,7 @@ PY
     echo "  Syncing .claude/ config..."
     CONFIG_FAILED=0
     if ! reject_untracked_config_collisions "$path"; then
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance && continue
     fi
 
     # Rebuild settings.json from template (preserves instance customizations)
@@ -1287,11 +1293,7 @@ PY
     fi
 
     if [ "$CONFIG_FAILED" != "0" ]; then
-      echo "  ERROR: config sync did not reach a complete committed state"
-      cleanup_dry_model
-      FAIL=$((FAIL + 1))
-      echo ""
-      continue
+      abandon_instance "  ERROR: config sync did not reach a complete committed state" && continue
     fi
 
     echo "  Config synced"
