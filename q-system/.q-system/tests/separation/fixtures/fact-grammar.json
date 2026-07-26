@@ -240,111 +240,277 @@
     }
   ],
   "reach_probe": {
-    "why": "One fact -- the client Oriole Systems -- written sixteen ways. The PRD states the gate's coverage bound in prose ('a client name in prose, a heading, JSON, shell, Python or most config syntax produces no finding'). Prose degrades silently: it stays on the page while the classifier changes underneath it. This turns the bound into a number that moves when the classifier does.",
+    "why": "One fact -- the client Oriole Systems -- written many ways, each pinned to what the classifier ACTUALLY returns. The first version of this probe was selected to reproduce the PRD's prose claim ('prose, a heading, JSON, shell, Python or most config syntax produces no finding') and so measured 3/33-equivalent. That was flattering: every 'prose' form happened to lack a leading label and every 'config' form happened to use = rather than :. The classifier's real rule is validate-separation.py's SEMANTIC_FIELD pattern -- ANY line shaped `Word(s): value`, whatever syntax surrounds it -- so YAML frontmatter, nested YAML, indented markdown, multi-line HTML comments, labeled log lines and labeled prose are all SEEN. This sample includes the shapes that make the number worse for the claim, not better. It is a SAMPLE bound, not a total one: a green suite means the classifier did not move ON THESE FORMS, never that it did not move.",
     "fact": "Oriole Systems",
     "measured_on": "2026-07-25",
+    "texts_sha256": "c166540c0edccc42daf3a025dd8dc886ea9ba661f3722549d7ca198043f2aff1",
     "forms": [
       {
         "id": "markdown-bold-field",
         "category": "record",
         "text": "- **Client:** Oriole Systems",
-        "seen_classes": [
-          "client_identity"
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
         ]
       },
       {
         "id": "plain-label-field",
         "category": "record",
         "text": "Client: Oriole Systems",
-        "seen_classes": [
-          "client_identity"
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
         ]
       },
       {
         "id": "table-row",
         "category": "record",
         "text": "| Client | Oriole Systems |",
-        "seen_classes": [
-          "client_identity"
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
         ]
+      },
+      {
+        "id": "indented-nested-bullet",
+        "category": "record",
+        "text": "- Accounts\n  - **Client:** Oriole Systems",
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 2
+          }
+        ]
+      },
+      {
+        "id": "obsidian-link-record",
+        "category": "record",
+        "text": "- **Client:** [[Oriole Systems]]",
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "markdown-link-record",
+        "category": "record",
+        "text": "- **Client:** [Oriole Systems](https://oriole.example)",
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "blockquote-record",
+        "category": "record",
+        "text": "> Client: Oriole Systems",
+        "seen_findings": []
       },
       {
         "id": "prose-sentence",
         "category": "prose",
         "text": "We closed the Oriole Systems deal last week.",
-        "seen_classes": []
+        "seen_findings": []
       },
       {
         "id": "prose-mid-paragraph",
         "category": "prose",
         "text": "After two calls Oriole Systems signed for $45,000 on 2026-03-14.",
-        "seen_classes": []
-      },
-      {
-        "id": "markdown-heading",
-        "category": "heading",
-        "text": "## Oriole Systems onboarding",
-        "seen_classes": []
+        "seen_findings": []
       },
       {
         "id": "bullet-no-label",
         "category": "prose",
         "text": "- Renewal conversation with Oriole Systems",
-        "seen_classes": []
+        "seen_findings": []
       },
       {
-        "id": "json-field",
-        "category": "json",
-        "text": "  \"client\": \"Oriole Systems\",",
-        "seen_classes": []
-      },
-      {
-        "id": "json-nested",
-        "category": "json",
-        "text": "{\"account\": {\"name\": \"Oriole Systems\", \"value\": \"$45,000\"}}",
-        "seen_classes": []
-      },
-      {
-        "id": "python-assignment",
-        "category": "code",
-        "text": "client = \"Oriole Systems\"",
-        "seen_classes": []
-      },
-      {
-        "id": "python-dict-literal",
-        "category": "code",
-        "text": "ACCOUNTS = {\"primary\": \"Oriole Systems\"}",
-        "seen_classes": []
-      },
-      {
-        "id": "shell-variable",
-        "category": "config",
-        "text": "CLIENT=\"Oriole Systems\"",
-        "seen_classes": []
-      },
-      {
-        "id": "toml-ini",
-        "category": "config",
-        "text": "client = \"Oriole Systems\"",
-        "seen_classes": []
-      },
-      {
-        "id": "csv-row",
-        "category": "config",
-        "text": "account,Oriole Systems,$45,000",
-        "seen_classes": []
-      },
-      {
-        "id": "html-comment",
+        "id": "labeled-prose-note",
         "category": "prose",
-        "text": "<!-- Client: Oriole Systems -->",
-        "seen_classes": []
+        "text": "Note: We closed the Oriole Systems deal last week.",
+        "seen_findings": [
+          {
+            "fact_class": "unclassified_populated_record",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "labeled-prose-update",
+        "category": "prose",
+        "text": "Update: Oriole Systems signed for $45,000 today.",
+        "seen_findings": [
+          {
+            "fact_class": "pricing",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "markdown-link-prose",
+        "category": "prose",
+        "text": "See [Oriole Systems](https://oriole.example) for details.",
+        "seen_findings": []
       },
       {
         "id": "email-signature",
         "category": "prose",
         "text": "Sent on behalf of Oriole Systems",
-        "seen_classes": []
+        "seen_findings": []
+      },
+      {
+        "id": "html-comment-oneline",
+        "category": "prose",
+        "text": "<!-- Client: Oriole Systems -->",
+        "seen_findings": []
+      },
+      {
+        "id": "html-comment-multiline",
+        "category": "prose",
+        "text": "<!--\nClient: Oriole Systems\n-->",
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 2
+          }
+        ]
+      },
+      {
+        "id": "markdown-heading",
+        "category": "heading",
+        "text": "## Oriole Systems onboarding",
+        "seen_findings": []
+      },
+      {
+        "id": "setext-heading",
+        "category": "heading",
+        "text": "Oriole Systems\n==============",
+        "seen_findings": []
+      },
+      {
+        "id": "bold-standalone",
+        "category": "heading",
+        "text": "**Oriole Systems**",
+        "seen_findings": []
+      },
+      {
+        "id": "json-field",
+        "category": "json",
+        "text": "  \"client\": \"Oriole Systems\",",
+        "seen_findings": []
+      },
+      {
+        "id": "json-nested",
+        "category": "json",
+        "text": "{\"account\": {\"name\": \"Oriole Systems\", \"value\": \"$45,000\"}}",
+        "seen_findings": []
+      },
+      {
+        "id": "python-assignment",
+        "category": "code",
+        "text": "client = \"Oriole Systems\"",
+        "seen_findings": []
+      },
+      {
+        "id": "python-dict-literal",
+        "category": "code",
+        "text": "ACCOUNTS = {\"primary\": \"Oriole Systems\"}",
+        "seen_findings": []
+      },
+      {
+        "id": "log-line-labeled",
+        "category": "code",
+        "text": "INFO: Oriole Systems renewal processed",
+        "seen_findings": [
+          {
+            "fact_class": "unclassified_populated_record",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "log-line-timestamped",
+        "category": "code",
+        "text": "2026-03-14 12:00:00 INFO client=Oriole Systems",
+        "seen_findings": []
+      },
+      {
+        "id": "yaml-frontmatter",
+        "category": "config",
+        "text": "client: Oriole Systems",
+        "seen_findings": [
+          {
+            "fact_class": "client_identity",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "yaml-nested",
+        "category": "config",
+        "text": "account:\n  name: Oriole Systems",
+        "seen_findings": [
+          {
+            "fact_class": "unclassified_populated_record",
+            "line": 1
+          },
+          {
+            "fact_class": "client_identity",
+            "line": 2
+          }
+        ]
+      },
+      {
+        "id": "yaml-list-item",
+        "category": "config",
+        "text": "clients:\n  - Oriole Systems",
+        "seen_findings": [
+          {
+            "fact_class": "unclassified_populated_record",
+            "line": 1
+          }
+        ]
+      },
+      {
+        "id": "shell-variable",
+        "category": "config",
+        "text": "CLIENT=\"Oriole Systems\"",
+        "seen_findings": []
+      },
+      {
+        "id": "toml-ini",
+        "category": "config",
+        "text": "[account]\nclient = \"Oriole Systems\"",
+        "seen_findings": []
+      },
+      {
+        "id": "csv-row",
+        "category": "config",
+        "text": "account,Oriole Systems,$45,000",
+        "seen_findings": []
+      },
+      {
+        "id": "html-table-cell",
+        "category": "config",
+        "text": "<td>Oriole Systems</td>",
+        "seen_findings": []
+      },
+      {
+        "id": "definition-list",
+        "category": "config",
+        "text": "Client\n: Oriole Systems",
+        "seen_findings": []
       }
     ]
   }

@@ -1,4 +1,6 @@
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -165,71 +167,123 @@ def test_prospect_and_standalone_source_fields_are_classified():
 # ---------------------------------------------------------------------------
 #
 # The PRD states the bound in prose: "a client name in prose, a heading, JSON,
-# shell, Python or most config syntax produces no finding, so it passes this
-# gate untouched." Prose degrades silently. It stays on the page while the
-# classifier changes underneath it, and by then nobody knows whether the
-# sentence is still true.
+# shell, Python or most config syntax produces no finding." Prose degrades
+# silently, so the bound is a fixture instead: one fact written many ways, each
+# pinned to what the classifier ACTUALLY returns.
 #
-# So the bound is a fixture: one fact, the client "Oriole Systems", written
-# sixteen ways, each pinned to what the classifier ACTUALLY returns today. If
-# the grammar widens, these fail and force the number to be re-measured and
-# re-stated. A blind spot that closes without anyone noticing is how a bound
-# becomes a lie.
+# The first version of this probe was WRONG, and wrong in the flattering
+# direction: it was sampled to reproduce the prose claim. Every "prose" form it
+# chose happened to lack a leading label and every "config" form happened to
+# use `=` rather than `:`. The real rule is validate-separation.py's
+# SEMANTIC_FIELD pattern -- ANY line shaped `Word(s): value`, whatever syntax
+# surrounds it -- so YAML frontmatter, nested YAML, indented markdown,
+# multi-line HTML comments and labeled prose are all SEEN. That matters
+# concretely: q-system/ canonical files are YAML-frontmattered markdown, the
+# shape the old probe called invisible.
+#
+# This is a SAMPLE bound, not a total one. A green suite means the classifier
+# did not move ON THESE FORMS. It never means the classifier did not move.
 
-import json
 
-REACH_PROBE = json.loads(
-    (Path(__file__).parent / "fixtures" / "fact-grammar.json").read_text(
-        encoding="utf-8"
-    )
-)["reach_probe"]
+def _reach_probe():
+    """Loaded per-test, not at import.
 
-
-@pytest.mark.parametrize(
-    "form", REACH_PROBE["forms"], ids=lambda form: form["id"]
-)
-def test_classifier_reach_is_pinned_per_form(form):
-    """Each form is pinned to what the classifier returns, seen or blind.
-
-    A failure here is not a regression. It means the classifier moved and the
-    stated bound is now wrong: re-measure, update the fixture, and update any
-    prose that quotes the number.
+    A module-level read turns a malformed fixture into a collection ERROR that
+    takes out the thirteen tests above, which have nothing to do with the probe.
     """
-    assert sorted(classes_for(form["text"])) == form["seen_classes"], (
+    return json.loads(
+        (Path(__file__).parent / "fixtures" / "fact-grammar.json").read_text(
+            encoding="utf-8"
+        )
+    )["reach_probe"]
+
+
+def _probe_forms():
+    return _reach_probe()["forms"]
+
+
+@pytest.mark.parametrize("form", _probe_forms(), ids=lambda form: form["id"])
+def test_classifier_reach_is_pinned_per_form(form):
+    """Pinned to class AND line, matching what the `cases` half of this fixture
+    already pins. Dropping the line meant a change to WHERE a finding fires was
+    invisible here while being caught next door.
+
+    A failure is not a regression. It means the classifier moved and the stated
+    bound is now wrong: re-measure, update the fixture AND its texts_sha256,
+    and update any prose quoting the number.
+    """
+    findings = sorted(
+        findings_for(form["text"]), key=lambda f: (f["line"], f["fact_class"])
+    )
+    expected = sorted(
+        form["seen_findings"], key=lambda f: (f["line"], f["fact_class"])
+    )
+    assert findings == expected, (
         f"the {form['category']} form {form['id']!r} no longer classifies as "
-        f"recorded; re-measure the bound before changing this fixture"
+        f"recorded; re-measure the bound before editing this fixture"
     )
 
 
 def test_blind_spot_coverage_is_measured_not_assumed():
-    """The bound as a number: 3 of 16 forms of one fact are visible.
+    """The bound as a number, over a sample chosen against the claim.
 
-    All three are the same shape -- an explicit `label: value` record. Every
-    prose, heading, JSON, code and config form is invisible, which is most of
-    the ways a real fact gets written down.
+    Measured 2026-07-25: 13 of 33 forms are visible. The visible set spans
+    record, prose, code AND config, which is why there is no assertion here
+    that only `record` forms are seen -- that assertion was true of the old
+    flattering sample and false of the classifier.
     """
-    forms = REACH_PROBE["forms"]
-    seen = [form for form in forms if form["seen_classes"]]
-    blind = [form for form in forms if not form["seen_classes"]]
+    probe = _reach_probe()
+    forms = probe["forms"]
+    seen = [form for form in forms if form["seen_findings"]]
 
-    assert len(forms) == 16
-    assert len(seen) == 3, f"reach changed: {len(seen)}/16 seen, re-state the bound"
-    assert {form["category"] for form in seen} == {"record"}, (
-        "the classifier now sees something outside label:value records; the "
-        "bound in the PRD and in propagation-leak-gate.py must be re-stated"
+    assert len(forms) == 33
+    assert len(seen) == 13, (
+        f"reach changed: {len(seen)}/{len(forms)} seen; re-state the bound in "
+        "the PRD and in propagation-leak-gate.py, do not just edit this number"
     )
-    assert {form["category"] for form in blind} == {
-        "prose", "heading", "json", "code", "config",
+    # Taxonomy may not grow silently, but category is a LABEL a human typed and
+    # nothing derives it from the text, so it is never used to assert anything
+    # about what the classifier can see.
+    assert {form["category"] for form in forms} == {
+        "record", "prose", "heading", "json", "code", "config",
     }
 
 
-def test_blind_spot_forms_carry_the_fact_a_human_would_read():
-    """Guard against the fixture drifting into forms that carry no fact.
+def test_probe_texts_cannot_be_edited_to_dodge_a_red_pin():
+    """The cheapest way out of a failing pin was editing the probe string.
 
-    A "blind spot" that does not actually contain the client name would make
-    the bound look worse than it is, which is its own kind of dishonesty.
+    Removing two quote characters from a JSON form was enough to return the
+    suite to green after a real classifier widening, with the bound unchanged
+    and nothing recorded. Pinning the texts makes that a deliberate two-place
+    edit a reviewer can see.
     """
-    for form in REACH_PROBE["forms"]:
-        assert REACH_PROBE["fact"] in form["text"], (
-            f"{form['id']} does not contain the fact it claims to hide"
+    probe = _reach_probe()
+    forms = probe["forms"]
+    texts = [form["text"] for form in forms]
+
+    assert len(set(texts)) == len(texts), "two probe forms share the same text"
+    assert len({form["id"] for form in forms}) == len(forms), "duplicate form id"
+    assert (
+        hashlib.sha256("\0".join(texts).encode("utf-8")).hexdigest()
+        == probe["texts_sha256"]
+    ), "a probe text changed; re-measure and update texts_sha256 deliberately"
+
+
+def test_every_probe_form_carries_the_real_fact():
+    """Guards against gutting the probe while every count still passes.
+
+    The needle used to live in the same editable dict as the haystack, so
+    setting `fact` to "O" and replacing all thirteen blind forms with the
+    literal string "O" passed every test: right counts, right categories,
+    `fact in text` true throughout. The needle is pinned to a literal now.
+    """
+    probe = _reach_probe()
+    assert probe["fact"] == "Oriole Systems"
+    for form in probe["forms"]:
+        assert probe["fact"] in form["text"], (
+            f"{form['id']} does not contain the fact it claims to carry"
+        )
+        assert len(form["text"]) > len(probe["fact"]), (
+            f"{form['id']} is the bare fact with no surrounding shape, so it "
+            "measures nothing"
         )
