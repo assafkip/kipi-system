@@ -25,6 +25,7 @@ no state mutation, no side effects.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,27 @@ pytestmark = pytest.mark.skipif(
 # shadow copies rsync could not remove. Anchored still protects the real
 # top-level instance state, which is the contract this test holds.
 PROTECTED_EXCLUSIONS = ("/memory/", "/output/", "/my-project/")
+
+
+def _run_rsync_owned_excludes(text: str) -> list[str]:
+    """Execute the real accessor and return the flags it emits.
+
+    Extracts INSTANCE_OWNED_SUBTREES and rsync_owned_excludes out of the script
+    and evals only those two in bash. Sourcing kipi-update.sh outright is not an
+    option -- it runs the updater against the live registry.
+    """
+    array = re.search(r"^INSTANCE_OWNED_SUBTREES=\(.*?^\)", text, re.S | re.M)
+    func = re.search(r"^rsync_owned_excludes\(\) \{.*?^\}", text, re.S | re.M)
+    assert array is not None, "INSTANCE_OWNED_SUBTREES not found in kipi-update.sh"
+    assert func is not None, "rsync_owned_excludes not found in kipi-update.sh"
+    snippet = f"{array.group(0)}\n{func.group(0)}\nrsync_owned_excludes\n"
+    result = subprocess.run(
+        ["bash", "-c", snippet], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, (
+        f"rsync_owned_excludes failed to execute: {result.stderr}"
+    )
+    return result.stdout.split()
 
 
 def _read_update_script() -> str:
@@ -129,17 +151,32 @@ def test_rsync_block_excludes_protected_path(path: str):
     directory. This is the binding contract that lets prd-os append to
     files under memory/working/ without being clobbered by kipi update.
 
-    The match is intentionally strict on shell-quoting form. Equivalent
-    rsync forms like --exclude=memory/ or --exclude='memory/' are not
-    treated as substitutes (per a deferred codex finding): the strictness
-    forces any cosmetic change to the exclusion DSL to come through
-    pytest, where the author can confirm the new form preserves the
-    contract.
+    This assertion used to be a literal substring match on the flag block,
+    deliberately strict on shell-quoting form so that any change to the
+    exclusion DSL had to come through pytest for an author to confirm the new
+    form still preserved the contract. It did exactly that: commit 98e6284
+    replaced the inline `--exclude="/memory/"` flags with `$(rsync_owned_excludes)`,
+    a single accessor over the INSTANCE_OWNED_SUBTREES list, and this test went
+    red and stayed red.
+
+    Confirmed 2026-07-26, which is what the tripwire was asking for: the new
+    form preserves the contract. The assertion is now on BEHAVIOUR rather than
+    source text -- the block must delegate to the accessor, and the accessor,
+    actually executed, must emit the exclusion. That cannot rot the same way,
+    because a rename breaks the first half and a dropped subtree breaks the
+    second.
     """
     text = _read_update_script()
     block, _ = _extract_rsync_block(text)
-    needle = f'--exclude="{path}"'
-    assert needle in block, (
-        f"protected exclusion {needle!r} not found in the rsync block "
-        f"that propagates q-system/. Block:\n{block}"
+    assert "$(rsync_owned_excludes)" in block, (
+        "the rsync block that propagates q-system/ no longer delegates to "
+        f"rsync_owned_excludes. Block:\n{block}"
+    )
+
+    emitted = _run_rsync_owned_excludes(text)
+    needle = f"--exclude={path}"
+    assert needle in emitted, (
+        f"rsync_owned_excludes does not emit {needle!r}, so the rsync that "
+        f"propagates q-system/ would overwrite instance-local state under "
+        f"{path!r}. Emitted: {emitted}"
     )
