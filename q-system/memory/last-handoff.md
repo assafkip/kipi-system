@@ -85,11 +85,10 @@ review rather than a same-session judgement call.
   `rebase -i` in a linked worktree. Both have permanent fixtures. Keep using it
   while Codex is out.
 - This session runs cached prd-os 0.1.0 / kipi-dsse 0.2.0; new sessions get
-  0.5.3 / 0.2.1. Self-resolving.
+  0.5.4 / 0.2.1. Self-resolving.
 - `gates run` is RED from the ~73 pre-existing items, which the plan said not to
   work. Nothing from this run is open except `sp-39ba760e`. pytest is fully
   green (360/0/1), so a red pytest from here is a real regression, not noise.
-  work. Nothing from this run is open except `sp-39ba760e`.
 - The line criterion was restated [USER-DIRECTED]: the original required
   `wc -l < 1253` AND "no scar comment deleted", which contradict. Final 1485.
   The PRD keeps the superseded criterion visible rather than editing it away.
