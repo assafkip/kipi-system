@@ -212,7 +212,7 @@ ARCHIVE_EXCLUDED_SUBTREES = (
 # `--exclude="*.pyc"` has no trailing slash, so it matches either kind.
 # Excluding by name alone would hand a copied file a free pass.
 RSYNC_EXCLUDED_ROOT_DIRS = (".git",)
-RSYNC_EXCLUDED_DIRS = ("__pycache__", ".venv")
+RSYNC_EXCLUDED_DIRS = ("__pycache__", ".venv", ".pytest_cache")
 RSYNC_EXCLUDED_SUFFIXES = (".pyc",)
 
 # Suffixes that cannot carry a `label: value` record, so an undecodable file
