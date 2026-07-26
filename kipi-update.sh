@@ -641,7 +641,9 @@ while IFS='|' read -r name path prefix itype; do
       echo ""
       continue
     fi
-    model_skip_scan "$path"
+    # Projection A. It re-enters the one scan itself, which also populates
+    # MODEL_SKIPPED_PATHS -- projection B, read directly by the symlink walk
+    # below and by the count on the next line.
     model_rsync_excludes "$path"
     if [ "${#MODEL_SKIPPED_PATHS[@]}" -gt 0 ]; then
       echo "  dry-run model: skipped ${#MODEL_SKIPPED_PATHS[@]} nested repositories (separate repos, not synced)"
