@@ -674,3 +674,59 @@ bash "$SK14/kipi-update.sh" --only wt >/dev/null 2>&1 || true
 [ -d "$(instance_rebase_dir)" ] || \
   fail "a failed run ABORTED the founder's own in-progress rebase (linked worktree); their work is gone"
 echo "PASS: a founder's in-progress rebase survives a failed run in a linked worktree"
+
+# --- identical residue under .claude/ is this sync's own output -------------
+# The q-system collision guard already excuses an untracked file byte-identical
+# to what the skeleton is about to write: that is this sync's half-finished
+# work from a run that died after writing and before committing. Treating it as
+# founder WIP is how sp-5f2d2a63 bricked an instance -- every later run refused
+# and the only recovery was deleting files by hand.
+#
+# The .claude/ + plugins/ guard did not have that carve-out (sp-72bd8029), so
+# the same interrupted run bricked the config sync instead. Both halves are
+# asserted here: identical residue proceeds, and content that DIFFERS is still
+# refused, because the carve-out must not become a hole that eats real work.
+WORK15="$(mktemp -d)"; SK15="$WORK15/skel"; I15="$WORK15/inst"
+mkdir -p "$SK15/q-system/.q-system/scripts" "$SK15/q-system/.q-system/state" \
+         "$SK15/.claude/rules" "$I15/q-system" "$I15/.claude/rules"
+cp "$SCRIPT" "$SK15/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK15/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK15/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK15/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK15/validate-separation.py"
+cp "$ROOT/settings-template.json" "$SK15/settings-template.json" 2>/dev/null || \
+  printf '{}\n' > "$SK15/settings-template.json"
+cp "$ROOT/kipi-settings-merge.py" "$SK15/kipi-settings-merge.py" 2>/dev/null || true
+cat > "$SK15/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK15/q-system/tracked.md"
+printf 'rule content from the skeleton\n' > "$SK15/.claude/rules/shared.md"
+( cd "$SK15" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"resid","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I15" > "$SK15/instance-registry.json"
+printf 'old\n' > "$I15/q-system/tracked.md"
+printf '{}\n' > "$I15/.claude/settings.json"
+( cd "$I15" && G init -q && G add -A && G commit -qm inst )
+
+# Order matters: the DIFFERING case runs first, while the file is still
+# untracked. A successful sync commits it, after which overwriting it is
+# tracked-modified and trips the dirty-tree guard instead -- a different guard
+# and not what this fixture is about.
+printf 'MY OWN UNFINISHED WORK\n' > "$I15/.claude/rules/shared.md"
+OUT15B="$(bash "$SK15/kipi-update.sh" --only resid 2>&1 || true)"
+echo "$OUT15B" | grep -q "untracked WIP collides with managed config" || \
+  fail "genuine untracked founder work under .claude/ was NOT protected: $OUT15B"
+
+# That run refused before writing, so the file is still untracked. Replace it
+# with this sync's own output -- byte-identical to what the skeleton writes --
+# and the same run must now get through.
+cp "$SK15/.claude/rules/shared.md" "$I15/.claude/rules/shared.md"
+OUT15="$(bash "$SK15/kipi-update.sh" --only resid 2>&1 || true)"
+echo "$OUT15" | grep -q "untracked WIP collides with managed config" && \
+  fail "identical config residue was read as founder WIP; an interrupted sync bricks the config path forever: $OUT15"
+echo "$OUT15" | grep -q "Config synced" || \
+  fail "the config sync did not complete over its own identical residue: $OUT15"
+echo "PASS: differing config content is protected; this sync's own identical residue is not"
