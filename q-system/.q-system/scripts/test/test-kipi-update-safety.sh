@@ -299,3 +299,59 @@ grep -q "NESTED INSTANCE WORK" "$I7/projects/nested/q-system/tracked.md" || \
   fail "the dry run mutated the nested repository"
 [ -d "$I7/projects/nested/.git" ] || fail "the dry run destroyed the nested repository's git dir"
 echo "PASS: the dry-run model skips nested repositories and still models the instance"
+
+# --- the stager must not stage what the syncer never wrote ------------------
+# The plugin sync loop iterates `$SCRIPT_DIR/plugins/*/`, a glob that only
+# matches directories, so a skeleton plugin entry that is a DANGLING symlink is
+# silently skipped and never materialises in the instance. stage_config_sync
+# then enumerates the same tree with `-type l` included, so it hands git that
+# path anyway and the instance answers `fatal: pathspec ... did not match any
+# files`, failing the whole config sync.
+#
+# Measured 2026-07-25: the skeleton's plugins/memory-lifecycle points at
+# /Users/assafkip/projects/memory-lifecycle -- an old username, long dead --
+# so all_points_setup and Prodigy_Gold both failed here. Instances that had
+# received the plugin back when the link resolved passed, which is why this
+# looked instance-specific rather than skeleton-wide.
+WORK8="$(mktemp -d)"; SK8="$WORK8/skel"; I8="$WORK8/inst"
+mkdir -p "$SK8/q-system/.q-system/scripts" "$SK8/q-system/.q-system/state" \
+         "$SK8/plugins/realplugin" "$SK8/.claude/rules" "$I8/q-system" "$I8/.claude"
+cp "$SCRIPT" "$SK8/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK8/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK8/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK8/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK8/validate-separation.py"
+cat > "$SK8/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK8/q-system/tracked.md"
+printf 'real plugin content\n' > "$SK8/plugins/realplugin/content.txt"
+printf 'example rule\n' > "$SK8/.claude/rules/example.md"
+cp "$ROOT/settings-template.json" "$SK8/settings-template.json" 2>/dev/null || \
+  printf '{}\n' > "$SK8/settings-template.json"
+cp "$ROOT/kipi-settings-merge.py" "$SK8/kipi-settings-merge.py" 2>/dev/null || true
+# the dead entry, exactly the shape of plugins/memory-lifecycle
+ln -s "$WORK8/never-existed" "$SK8/plugins/ghost"
+( cd "$SK8" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"ghostinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I8" > "$SK8/instance-registry.json"
+printf 'old\n' > "$I8/q-system/tracked.md"
+printf '{}\n' > "$I8/.claude/settings.json"
+( cd "$I8" && G init -q && G add -A && G commit -qm inst )
+
+OUT8="$(bash "$SK8/kipi-update.sh" --dry-run --only ghostinst 2>&1 || true)"
+echo "$OUT8" | grep -q "did not match any files" && \
+  fail "the stager staged a plugin the syncer never wrote: $OUT8"
+echo "$OUT8" | grep -q "config sync did not reach a complete committed state" && \
+  fail "a dangling skeleton plugin failed the config sync: $OUT8"
+echo "$OUT8" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model with a dangling skeleton plugin: $OUT8"
+
+# and the real plugin next to it must still reach the instance
+REAL8="$(bash "$SK8/kipi-update.sh" --only ghostinst 2>&1 || true)"
+grep -q "real plugin content" "$I8/plugins/realplugin/content.txt" 2>/dev/null || \
+  fail "skipping the dangling plugin also skipped the real one next to it: $REAL8"
+[ -e "$I8/plugins/ghost" ] && fail "a dangling skeleton plugin was materialised in the instance"
+echo "PASS: a dangling skeleton plugin is skipped by BOTH the syncer and the stager"

@@ -260,7 +260,7 @@ unstage_scope() {
 
 stage_config_sync() {
   local target="$1"
-  local scope source relative
+  local scope source relative plugin_top
   for scope in .claude plugins; do
     if [ -n "$(git -C "$target" ls-files -- "$scope/")" ]; then
       git -C "$target" add -u -- "$scope/" || return 1
@@ -283,6 +283,21 @@ stage_config_sync() {
   if [ -d "$SCRIPT_DIR/plugins" ]; then
     while IFS= read -r -d '' source; do
       relative="${source#"$SCRIPT_DIR/"}"
+      # Stage only what the sync loop can actually write. That loop iterates
+      # `$SCRIPT_DIR/plugins/*/`, a glob that matches directories and symlinks
+      # to directories, so a skeleton entry that is a DANGLING symlink is
+      # skipped there and never materialises in the instance. Handing git that
+      # path here fails with `pathspec ... did not match any files` and takes
+      # the whole config sync down with it.
+      #
+      # Scar 2026-07-25: plugins/memory-lifecycle points at
+      # /Users/assafkip/projects/memory-lifecycle -- an old username, long
+      # gone -- so all_points_setup and Prodigy_Gold both failed here while
+      # instances that received the plugin back when the link resolved passed.
+      # That asymmetry made a skeleton-wide defect look instance-specific.
+      plugin_top="${relative#plugins/}"
+      plugin_top="${plugin_top%%/*}"
+      [ -d "$SCRIPT_DIR/plugins/$plugin_top" ] || continue
       git -C "$target" add -- "$relative" || return 1
     done < <(
       find "$SCRIPT_DIR/plugins" \
