@@ -1,7 +1,7 @@
 ---
 id: issue-updater-one-wip-predicate-2026-07-26
 title: One predicate for the two untracked-collision guards
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-updater-consolidation-2026-07-26
 allowed_files:
@@ -25,3 +25,18 @@ Parent PRD: `.prd-os/prds/prd-updater-consolidation-2026-07-26.md`
 ## Acceptance
 
 Runs THIRD. is_instance_wip is the single predicate behind :452 and :894 ONLY; the tracked-tree check at :808-821 is NOT touched, and why is comment-anchored (a modified TRACKED .pyc must keep failing that guard, else git add -u at :226 stages it into the updater's own commit); the config site passes an empty counterpart so it does not gain the byte-identical carve-out; the q-system site's new build-artifact carve-out is argued no-op case by case; the deferred config-site byte-identical fix is captured in spillover; no test added; baseline unchanged.
+
+## Amendments
+
+### 2026-07-26T06:33:28Z
+Reason: bypass_check was a brittle grep-count proxy (is_instance_wip occurrences == 3) that counted PROSE as well as code: a comment naming the function made it 4. Replaced with the actual invariant: exactly 3 non-comment references (one definition, two call sites), the WIP byte-compare appearing in exactly one place (grep -F, since an unrelated cmp -s lives in the hook-guard heredoc), and the tracked-tree guard still present so issue 3 provably did not touch it. allowed_files and required_checks unchanged; no change to the work. Third such correction in this PRD; pattern captured as sp-59df4388.
+
+Before:
+- allowed_files: ['kipi-update.sh']
+- required_checks: ['bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh', 'bash q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh', 'bash -c \'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf "%s\\n" "$o" | tail -1; printf "%s\\n" "$o" | grep -Eq "^3 failed, 357 passed, 1 skipped" && [ "$(printf "%s\\n" "$o" | grep -c "^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path")" -eq 3 ]\'']
+- disallowed_files: []
+
+After:
+- allowed_files: ['kipi-update.sh']
+- required_checks: ['bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh', 'bash q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh', 'bash -c \'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf "%s\\n" "$o" | tail -1; printf "%s\\n" "$o" | grep -Eq "^3 failed, 357 passed, 1 skipped" && [ "$(printf "%s\\n" "$o" | grep -c "^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path")" -eq 3 ]\'']
+- disallowed_files: []

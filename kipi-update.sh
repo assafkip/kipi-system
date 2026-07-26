@@ -519,6 +519,12 @@ SH
 #
 #   $1 = the file's path in the instance
 #   $2 = the file the skeleton would write there, or "" when the caller has none
+#   $3 = non-empty when the CALLER's own rsync clears build artifacts anyway
+#
+# Each argument is a piece of evidence the caller has and the predicate does
+# not. Debris takes two forms and they do NOT apply to both callers equally:
+# whether a build artifact is debris depends on what that caller's sync is
+# about to do to it, so the caller says.
 #
 # NOT used by the tracked-tree guard further down. That one is
 # `git diff --cached --quiet || git diff --quiet` over the WHOLE tree: it takes
@@ -527,17 +533,28 @@ SH
 # founder edit inside the updater's own commit -- precisely what that guard
 # exists to prevent. Measured, not assumed.
 is_instance_wip() {
-  local instance_file="$1" skeleton_file="$2"
-  # A regenerable build artifact is not work. The plugins rsync runs with
-  # --delete-excluded and these same filters precisely to clear them from the
-  # instance, so flagging one as a collision refuses the sync over the thing
-  # the sync is for. Scar 2026-07-25: this matched whenever the plugin
-  # DIRECTORY existed in the skeleton, and the scan enumerates gitignored
-  # files, so a single __pycache__ entry aborted the config sync on 23 of 23
-  # instances -- and with it .claude/, plugins/, and the 98MB .venv deletion.
-  case "$instance_file" in
-    */.git/*|*/__pycache__/*|*.pyc|*/.venv/*|*/.pytest_cache/*) return 1 ;;
-  esac
+  local instance_file="$1" skeleton_file="$2" caller_clears_artifacts="$3"
+  # A regenerable build artifact is not work -- but ONLY for a caller whose own
+  # sync clears it regardless. The plugins rsync runs --delete-excluded with
+  # exactly these filters, so refusing over one there would block the sync over
+  # the very thing the sync is for. Scar 2026-07-25: this matched whenever the
+  # plugin DIRECTORY existed in the skeleton, and the scan enumerates
+  # gitignored files, so a single __pycache__ entry aborted the config sync on
+  # 23 of 23 instances -- and with it .claude/, plugins/, and the 98MB .venv
+  # deletion.
+  #
+  # The q-system rsync has NO --delete-excluded and none of these filters, so
+  # there the same path is ordinary content. Excusing it would let the
+  # skeleton's copy silently overwrite the instance's, and the post-rsync
+  # restore only recovers files the rsync DELETED -- an overwritten one is
+  # gone. Latent rather than live today only because the skeleton tracks
+  # nothing under q-system/**/.venv/ or .pytest_cache/; that is not a property
+  # to depend on.
+  if [ -n "$caller_clears_artifacts" ]; then
+    case "$instance_file" in
+      */.git/*|*/__pycache__/*|*.pyc|*/.venv/*|*/.pytest_cache/*) return 1 ;;
+    esac
+  fi
   # Byte-identical is not work in progress: it is THIS sync's own output from a
   # run that died after the rsync and before the commit. Treating it as WIP
   # made one interrupted sync brick an instance permanently -- every later run
@@ -583,7 +600,8 @@ reject_untracked_config_collisions() {
     # SHOULD get it -- residue here bricks an instance the same way
     # sp-5f2d2a63 did -- and the argument already exists for that fix.
     # Tracked as sp-72bd8029.
-    if config_source_manages "$relative" && is_instance_wip "$relative" ""; then
+    if config_source_manages "$relative" &&
+        is_instance_wip "$relative" "" clears-build-artifacts; then
       echo "  ERROR: untracked WIP collides with managed config: $relative"
       return 1
     fi
@@ -987,8 +1005,10 @@ PY
             continue
           fi
           source_path="$ARCHIVE_TMP/q-system/$relative"
+          # No third argument: this rsync is a plain --delete with no filters,
+          # so a build artifact here is content, not debris.
           if { [ -e "$source_path" ] || [ -L "$source_path" ]; } &&
-              is_instance_wip "$uf" "$source_path"; then
+              is_instance_wip "$uf" "$source_path" ""; then
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
