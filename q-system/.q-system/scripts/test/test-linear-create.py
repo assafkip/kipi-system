@@ -238,6 +238,20 @@ def main() -> int:
         fail(f"the no-key error does not tell the operator where to get one: {r.stderr[:200]}")
     ok("a missing API key refuses with the fix in the message")
 
+    # --- 8. a malformed or empty plan refuses cleanly, never a traceback ---
+    # This is the first thing a new operator hits (`--plan /dev/null` while
+    # exploring). A stack trace reads as "the tool is broken".
+    for label, path in (("empty", "/dev/null"), ("garbage", str(tmp / "bad.json"))):
+        (tmp / "bad.json").write_text("{not json")
+        r = run(Path(path), tmp / "x.jsonl", port, "--apply")
+        if r.returncode == 0:
+            fail(f"a {label} plan was accepted")
+        if "Traceback" in r.stderr:
+            fail(f"a {label} plan produced a traceback instead of a refusal:\n{r.stderr[:300]}")
+        if "BLOCK" not in r.stderr:
+            fail(f"a {label} plan did not print a BLOCK line: {r.stderr[:200]}")
+    ok("an empty or malformed plan refuses cleanly with BLOCK, no traceback")
+
     server.shutdown()
     print(f"PASS: linear-create ({PASSED} checks)")
     return 0

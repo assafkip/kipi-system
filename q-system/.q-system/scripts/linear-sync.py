@@ -449,12 +449,26 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
 
 def cmd_create(args) -> int:
     """Apply a plan against live Linear. Dry by default; --apply to write."""
-    with open(args.plan, "r", encoding="utf-8") as fh:
-        plan = json.load(fh)
-    repo = plan.get("repo")
-    if not repo:
-        print("BLOCK: plan has no 'repo'", file=sys.stderr)
+    try:
+        with open(args.plan, "r", encoding="utf-8") as fh:
+            plan = json.load(fh)
+    except OSError as exc:
+        print(f"BLOCK: cannot read plan {args.plan}: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except json.JSONDecodeError as exc:
+        # An empty or malformed plan must be a clean refusal, not a traceback:
+        # this is the first thing a new operator hits, and a stack trace reads as
+        # "the tool is broken" rather than "point me at a real plan file".
+        print(
+            f"BLOCK: plan {args.plan} is not valid JSON ({exc}). Generate one with "
+            "`kipi linear plan --map <capability-map> --remote <snapshot> --out <plan>`.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if not isinstance(plan, dict) or not plan.get("repo"):
+        print(f"BLOCK: plan {args.plan} has no 'repo' field", file=sys.stderr)
+        return EXIT_USAGE
+    repo = plan["repo"]
 
     try:
         team_id, project, remote_keys = fetch_remote_state(args.team, repo)
