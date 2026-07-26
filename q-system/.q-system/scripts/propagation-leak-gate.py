@@ -1104,8 +1104,40 @@ def _check(root: Path, baseline_path: Path) -> int:
             f"propagation leak gate: ABORT -- baseline was built by classifier {stamped[:12]}, running "
             f"{expected[:12]}"
         )
-        print("  Its entries describe findings this run cannot reproduce.")
-        print("  Re-baseline explicitly rather than trusting a stale allowlist.")
+        # "its entries describe findings this run cannot reproduce" was an
+        # ASSUMPTION. Measure it. The stamp is a hash of a whole file, so it
+        # moves for edits nowhere near the classifier, and the two cases need
+        # opposite responses: a stale stamp over identical findings is a
+        # one-command repair, while findings that actually moved are a real
+        # re-baseline needing per-entry justification. Both still ABORT -- this
+        # only tells the operator which one they are looking at, instead of
+        # leaving them to hand-write Python against this module to find out.
+        try:
+            previous = {
+                key: entry["count"]
+                for key, entry in _read_baseline_entries(document, None).items()
+            }
+        except BaselineRefused as exc:
+            print(f"  The baseline is also malformed: {exc}")
+            return 1
+        added = sorted(set(current) - set(previous))
+        removed = sorted(set(previous) - set(current))
+        recounted = sorted(
+            key for key in set(previous) & set(current)
+            if previous[key] != current[key]
+        )
+        if not (added or removed or recounted):
+            print(f"  Findings are IDENTICAL under both classifiers ({len(current)} "
+                  "fingerprints), so no fact is unreviewed here -- only the stamp")
+            print("  is stale. Repair it with:")
+            print(f"    python3 {Path(__file__).name} --restamp")
+        else:
+            print(f"  Findings MOVED: added {len(added)}, removed {len(removed)}, "
+                  f"recounted {len(recounted)}.")
+            for key in added[:REPORT_LIMIT]:
+                print(f"  + {key}")
+            print("  This is a real re-baseline: every new entry needs its own")
+            print("  justification. --restamp will refuse it, by design.")
         return 1
     try:
         baseline = load_baseline_document(document, expected, current)
