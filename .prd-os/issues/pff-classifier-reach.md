@@ -1,7 +1,7 @@
 ---
 id: pff-classifier-reach
 title: State and measure how much of a leak the classifier can see
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
