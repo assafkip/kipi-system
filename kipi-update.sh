@@ -246,6 +246,18 @@ for source in sys.stdin.buffer.read().split(b"\0"):
     git -C "$target" add --pathspec-from-file=- --pathspec-file-nul
 }
 
+# Staging is not atomic: `git add -u` then a second add that can fail leaves the
+# first one's work in the index. The updater then aborts, and EVERY later run
+# aborts at the dirty-tree guard, because that guard reads `git diff --cached`.
+# One interrupted run made an instance permanently un-updatable and a working
+# tree checkout did not clear it, which made it easy to misdiagnose. Any staging
+# failure unstages what it staged.
+unstage_scope() {
+  local target="$1"
+  shift
+  git -C "$target" reset -q -- "$@" 2>/dev/null || true
+}
+
 stage_config_sync() {
   local target="$1"
   local scope source relative
@@ -274,7 +286,8 @@ stage_config_sync() {
       git -C "$target" add -- "$relative" || return 1
     done < <(
       find "$SCRIPT_DIR/plugins" \
-        \( -type d -name .git -o -type d -name __pycache__ \) -prune -o \
+        \( -type d -name .git -o -type d -name __pycache__ \
+           -o -type d -name .pytest_cache -o -type d -name .venv \) -prune -o \
         \( -type f ! -name '*.pyc' -o -type l \) -print0
     )
   fi
@@ -873,6 +886,7 @@ PY
         ARCHIVE_TMP=""
         cd "$path"
         if ! stage_q_system_sync "$path" "$prefix" 2>/dev/null; then
+          unstage_scope "$path" "$prefix/"
           echo "  ERROR: could not stage q-system sync"
           cleanup_dry_model
           FAIL=$((FAIL + 1))
@@ -997,7 +1011,7 @@ PY
           # copies already there. Pairs with test-kipi-update-build-artifacts.sh.
           if ! rsync -a --delete --delete-excluded \
               --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
-              --exclude=".venv/" \
+              --exclude=".venv/" --exclude=".pytest_cache/" \
               "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null; then
             CONFIG_FAILED=1
           fi
@@ -1013,7 +1027,7 @@ PY
             >/dev/null 2>&1; then
           git rm -r -q --cached plugins/memory-lifecycle
         fi &&
-        stage_config_sync "$path" &&
+        { stage_config_sync "$path" || { unstage_scope "$path" .claude/ plugins/; false; }; } &&
         if ! git diff --cached --quiet 2>/dev/null; then
           guarded_commit "$path" \
             "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)"
