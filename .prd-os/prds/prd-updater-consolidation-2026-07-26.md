@@ -1,9 +1,9 @@
 ---
 id: prd-updater-consolidation-2026-07-26
 title: Updater Consolidation
-status: approved
+status: archived
 created_at: 2026-07-26T05:29:52Z
-updated_at: 2026-07-26T05:57:34Z
+updated_at: 2026-07-26T07:31:13Z
 owner: assafkip
 reviewers: []
 findings_path: .prd-os/findings/prd-updater-consolidation-2026-07-26-findings.jsonl
