@@ -649,6 +649,93 @@ def test_record_review_still_refuses_author_own_words(
         assert "codex_reviewed_at:" not in fm
 
 
+def test_stamp_never_eats_the_following_frontmatter_line(
+    fake_repo, write_config, run_findings_writer
+):
+    """An empty-valued key must not let the stamp regex consume the next line.
+
+    Adversarial review 2026-07-26 drove this to a real exploit: `\\s*` matches a
+    newline even under re.M, so stamping a frontmatter that carried a bare
+    `reviewed_by:` deleted the `findings_path:` line below it -- and with no
+    findings_path, the approval gate reported "no findings" and advanced a PRD
+    holding an untriaged BLOCKER. Every key below the stamp must survive.
+    """
+    _bootstrap(fake_repo, write_config)
+    spec = fake_repo / ".prd-os/prds/prd-x.md"
+    original = spec.read_text()
+    # bare keys with empty values, directly above the line the gate depends on
+    spec.write_text(
+        original.replace(
+            "findings_path:",
+            "reviewed_by:\ncodex_reviewed_at:\nfindings_path:",
+        )
+    )
+
+    r = run_findings_writer(
+        fake_repo, "record-review", "prd-x", "--source", "claude-review"
+    )
+    assert r.returncode == 0, r.stderr
+
+    fm = _read_prd_frontmatter(fake_repo, "prd-x")
+    assert "findings_path:" in fm, (
+        "the stamp ate the findings_path line; the approval gate would then read "
+        f"'no findings' and advance an untriaged PRD. Frontmatter:\n{fm}"
+    )
+    assert "reviewed_by: claude-review" in fm
+    assert "codex_reviewed_at:" in fm
+    # and the stamp the writer claims it wrote is actually on disk
+    assert len([l for l in fm.splitlines() if l.startswith("reviewed_by:")]) == 1
+    assert len([l for l in fm.splitlines() if l.startswith("codex_reviewed_at:")]) == 1
+
+
+def test_stamp_survives_when_the_key_is_last_in_frontmatter(
+    fake_repo, write_config, run_findings_writer
+):
+    """`reviewed_by` last must not swallow the timestamp the same call appended."""
+    _bootstrap(fake_repo, write_config)
+    spec = fake_repo / ".prd-os/prds/prd-x.md"
+    text = spec.read_text()
+    head, sep, body = text.partition("\n---\n\n")
+    spec.write_text(head + "\nreviewed_by:" + sep + body)
+
+    r = run_findings_writer(
+        fake_repo, "record-review", "prd-x", "--source", "claude-adversarial"
+    )
+    assert r.returncode == 0, r.stderr
+    fm = _read_prd_frontmatter(fake_repo, "prd-x")
+    assert "codex_reviewed_at:" in fm, (
+        "the writer reported success but the timestamp is not on disk -- a false "
+        f"receipt. Frontmatter:\n{fm}"
+    )
+    assert "reviewed_by: claude-adversarial" in fm
+
+
+def test_writer_sources_match_the_published_schema(fake_repo, write_config):
+    """The schema findings_writer names as its contract must list what it emits.
+
+    Drift here is silent: nothing validates against the schema at runtime, so
+    the published contract can quietly stop describing reality.
+    """
+    import importlib.util
+
+    repo = Path(__file__).resolve().parents[3]
+    schema = json.loads(
+        (repo / "plugins/prd-os/schemas/findings.schema.json").read_text()
+    )
+    spec = importlib.util.spec_from_file_location(
+        "fw", repo / "plugins/prd-os/scripts/findings_writer.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    enum = set(schema["properties"]["source"]["enum"])
+    assert set(module.SOURCES) == enum, (
+        f"writer emits {sorted(set(module.SOURCES) - enum)} that the schema "
+        f"rejects; schema allows {sorted(enum - set(module.SOURCES))} the writer "
+        "never emits"
+    )
+
+
 def test_record_review_fails_when_no_prd_spec(
     fake_repo, write_config, run_findings_writer
 ):

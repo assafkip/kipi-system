@@ -30,6 +30,12 @@ pre-commit:
           fi
         done
 
+    # The by-path exception below lets ONE .jsonl through forever. This checks
+    # its CONTENT, so the exception rests on a runnable gate rather than on the
+    # one-time human read that originally justified it.
+    receipts-ledger:
+      run: python3 q-system/.q-system/scripts/receipts-ledger-check.py
+
     blocked-paths:
       run: |
         # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,

@@ -96,8 +96,18 @@ REVIEWER_SOURCES = (
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
 ID_RE = re.compile(r"^finding-([0-9]+)$")
-REVIEWED_AT_RE = re.compile(r"(?m)^codex_reviewed_at:\s*.*$")
-REVIEWED_BY_RE = re.compile(r"(?m)^reviewed_by:\s*.*$")
+# `[^\n]*`, never `\s*.*` -- under re.M, `\s` STILL matches a newline, so a key
+# with an empty value (`reviewed_by:` with nothing after it) let `\s*` eat the
+# line break and `.*$` consume the FOLLOWING line, which sub() then replaced.
+# Found by adversarial review 2026-07-26 and driven to a real exploit: eating
+# the `findings_path:` line made _findings_gate return "no findings", so a PRD
+# with an untriaged BLOCKER advanced to `approved` with exit 0. When
+# `reviewed_by` was the last key it ate the `codex_reviewed_at` line the same
+# call had just appended, and the writer then reported `stamped: true` for a
+# stamp that was not on disk. A provenance writer emitting a false receipt is
+# the exact failure this file exists to prevent.
+REVIEWED_AT_RE = re.compile(r"(?m)^codex_reviewed_at:[^\n]*$")
+REVIEWED_BY_RE = re.compile(r"(?m)^reviewed_by:[^\n]*$")
 RECORD_FIELDS = (
     "id",
     "prd_id",

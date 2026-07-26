@@ -1,0 +1,15 @@
+# The closure-evidence ledger is append-only and now tracked, so two branches
+# that each close an issue append a line at the same offset and CONFLICT on
+# merge every time. That is not a rare case here: two agent sessions sharing one
+# checkout is normal practice in this fleet (feedback_parallel_sessions_one_checkout),
+# and a conflict is worse than annoying -- read_receipts() in
+# test-updater-issue-sequence.py records any non-JSON line as ledger DAMAGE and
+# refuses to skip it, so leftover conflict markers fail the required `validate`
+# check hard.
+#
+# merge=union keeps BOTH sides' lines, which is the correct semantics for an
+# append-only ledger: no receipt is ever meant to replace another. Safe here --
+# assert_archive_fidelity only refuses on export-ignore/export-subst, not merge.
+#
+# Found by adversarial review 2026-07-26, before it bit.
+.prd-os/receipts.jsonl merge=union

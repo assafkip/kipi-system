@@ -86,6 +86,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-queue.sh",
       "runner": "bash"
     },

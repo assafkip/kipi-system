@@ -24,16 +24,33 @@
     },
     "source": {
       "type": "string",
-      "enum": ["codex-review", "codex-adversarial", "manual"],
+      "enum": [
+        "codex-review",
+        "codex-adversarial",
+        "claude-review",
+        "claude-adversarial",
+        "manual",
+        "plan"
+      ],
       "description": "Who produced this finding. Codex output should be normalized into this shape via a deterministic template step; the schema does not trust raw Codex output."
     },
     "severity": {
       "type": "string",
-      "enum": ["blocker", "major", "minor", "nit"]
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "nit"
+      ]
     },
     "disposition": {
       "type": "string",
-      "enum": ["pending", "accepted", "rejected", "deferred"],
+      "enum": [
+        "pending",
+        "accepted",
+        "rejected",
+        "deferred"
+      ],
       "description": "`pending` is the initial state. A PRD cannot advance to `approved` while any finding is still `pending`."
     },
     "rationale": {
@@ -49,7 +66,10 @@
       "format": "date-time"
     },
     "resolved_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time",
       "description": "Set when disposition leaves `pending`."
     }

@@ -44,6 +44,12 @@ WIRING_SURFACES = (
     ".claude/settings.json",
     "settings-template.json",
     "validate-separation.py",
+    # lefthook is this repo's pre-commit enforcement layer (gitleaks,
+    # blocked-paths, instruction-budget, linear-issue-ref). A script wired ONLY
+    # there was reported inert, which is backwards: a commit-blocking hook is
+    # the strongest wiring a script can have. Added 2026-07-26 when
+    # receipts-ledger-check.py, wired in lefthook and nowhere else, was flagged.
+    "lefthook.yml",
 )
 WIRING_SURFACE_GLOBS = (
     "plugins/*/hooks/hooks.json",

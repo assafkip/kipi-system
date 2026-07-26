@@ -71,7 +71,14 @@ jobs:
       - name: Plugin version-bump guard (PR only)
         if: github.event_name == 'pull_request'
         run: |
-          git fetch origin main --depth=1 || true
+          # NOT --depth=1: that writes .git/shallow even into an already-complete
+          # clone, which silently undoes the `fetch-depth: 0` above and re-breaks
+          # the `merge-base --is-ancestor` probe in test-updater-issue-sequence.py.
+          # Today only step ORDER keeps that from firing (the capability gate runs
+          # earlier), and nothing encodes that dependency -- a reordering would
+          # quietly restore the original bug. History is already local, so there is
+          # nothing to shorten. Found by adversarial review 2026-07-26.
+          git fetch origin main || true
           python3 q-system/.q-system/scripts/plugin-version-bump-check.py --against origin/main
         env:
           CI: true
