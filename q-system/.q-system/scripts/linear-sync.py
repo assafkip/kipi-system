@@ -204,15 +204,26 @@ def build_rollup(repo: str, rolled: list) -> dict:
             f"| `{cap.get('entry')}` | {lines.group(1) if lines else '?'} | "
             f"{'no test, no wiring reference' if 'NO test and NO wiring' in ev else ev[:60]} |"
         )
+    # Pluralization is not cosmetic here: 10 of the 15 repos with work roll up to
+    # exactly ONE engine, and a Linear issue cannot be deleted, so "found 1 Python
+    # engines / 1 groomings for one call" would be permanent in most of the fleet.
+    # Caught on the first live create (ASK-118), spillover sp-77c8f0e9.
+    count = len(rolled)
+    one = count == 1
+    engines = "engine" if one else "engines"
+    they_are = "it is" if one else "they are"
+    the_scripts = "the script below is" if one else "every script below is"
+
     body = [
         f"<!-- kipi-key: {key} -->",
         "",
-        f"`capability-map-gen.py` found **{len(rolled)} Python engines** in `{repo}` "
+        f"`capability-map-gen.py` found **{count} Python {engines}** in `{repo}` "
         "with neither a paired test nor any reference on a wiring surface "
         "(settings.json, lefthook.yml, a hook, a command, the kipi CLI, or another script).",
         "",
-        "That does not prove they are dead. It proves nothing in the repo *says* "
-        "they are alive, which is the same position a future reader is in.",
+        f"That does not prove {'it is' if one else 'they are'} dead. It proves nothing "
+        f"in the repo *says* {they_are} alive, which is the same position a future "
+        "reader is in.",
         "",
         "## The list",
         "",
@@ -220,8 +231,8 @@ def build_rollup(repo: str, rolled: list) -> dict:
         "",
         "## Definition of Ready",
         "",
-        "- **Outcome:** every script below is either wired (and the wiring is visible), "
-        "tested, or deleted. None are left in the ambiguous middle.",
+        f"- **Outcome:** {the_scripts} either wired (and the wiring is visible), "
+        "tested, or deleted. Nothing is left in the ambiguous middle.",
         "- **Check:** re-run the generator and confirm the UNWIRED count for this repo "
         "drops to 0:",
         "",
@@ -232,20 +243,26 @@ def build_rollup(repo: str, rolled: list) -> dict:
         "",
         "- **Not doing:** engines that ARE referenced but lack a test. That is a "
         "test-coverage issue, not a liveness one.",
-        "",
-        "## Why this is one issue and not "
-        f"{len(rolled)}",
-        "",
-        "Wiring-or-deleting a repo's dead scripts is a single decision made once with "
-        "the whole list in view. Split across "
-        f"{len(rolled)} issues it becomes {len(rolled)} groomings for one call, and "
-        "Linear issues cannot be deleted here, so each one is permanent.",
-        "",
-        "Filed under ASK-113.",
     ]
+
+    # The "why one issue and not N" rationale only means anything when N > 1.
+    # At N=1 it read "Why this is one issue and not 1", which is nonsense.
+    if not one:
+        body += [
+            "",
+            f"## Why this is one issue and not {count}",
+            "",
+            "Wiring-or-deleting a repo's dead scripts is a single decision made once "
+            "with the whole list in view. Split across "
+            f"{count} issues it becomes {count} groomings for one call, and Linear "
+            "issues cannot be deleted here, so each one is permanent.",
+        ]
+
+    body += ["", "Filed under ASK-113."]
+
     return {
         "key": key,
-        "title": f"Audit {len(rolled)} unwired engines in {repo}",
+        "title": f"Audit {count} unwired {engines} in {repo}",
         "description": "\n".join(body),
         "labels": ["kind:capability", "unwired", "needs-evidence"],
         "state": "Backlog",

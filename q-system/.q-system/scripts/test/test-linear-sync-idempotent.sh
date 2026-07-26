@@ -181,6 +181,35 @@ rc=$?
 [ "$rc" -eq 3 ] && ok "colliding capability names are refused (exit 3)" \
   || no "colliding capability names are refused" "expected exit 3, got $rc"
 
+# --- the rollup must read correctly at N=1 ----------------------------------
+# 10 of the 15 repos with work roll up to exactly ONE engine, and a Linear issue
+# cannot be deleted here, so bad pluralization would be permanent across most of
+# the fleet. Caught on the first live create (ASK-118): "found 1 Python engines",
+# "Why this is one issue and not 1", "1 groomings for one call".
+if python3 - "$SCRIPT_DIR/../../../.." <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "ls", f"{sys.argv[1]}/q-system/.q-system/scripts/linear-sync.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cap = {"entry": "x.py", "evidence": "72 lines, NO test and NO wiring"}
+
+one = m.build_rollup("demo", [cap])
+text = one["title"] + "\n" + one["description"]
+for bad in ("1 engines", "1 groomings", "not 1", "1 issues it becomes"):
+    if bad in text:
+        print(f"N=1 rollup still reads {bad!r}", file=sys.stderr); sys.exit(1)
+if "unwired engine in" not in one["title"]:
+    print(f"N=1 title not singular: {one['title']}", file=sys.stderr); sys.exit(1)
+
+many = m.build_rollup("demo", [dict(cap, entry=f"s{i}.py") for i in range(3)])
+mtext = many["title"] + "\n" + many["description"]
+if "unwired engines in" not in many["title"] or "not 3" not in mtext:
+    print("N>1 rollup lost its plural form or its rationale", file=sys.stderr); sys.exit(1)
+PY
+then ok "the rollup reads correctly at N=1 and keeps its rationale at N>1"
+else no "rollup grammar" "see stderr above"
+fi
+
 echo
 echo "  pass=$pass fail=$fail"
 [ "$fail" -eq 0 ] || exit 1
