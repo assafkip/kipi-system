@@ -1,7 +1,7 @@
 ---
 id: issue-updater-one-model-scan-2026-07-26
 title: One scan, two projections, for what the disposable copy contains
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-updater-consolidation-2026-07-26
 allowed_files:

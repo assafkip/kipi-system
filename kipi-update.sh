@@ -123,6 +123,74 @@ is_managed_plugin_path() {
   [ -n "$top" ] && [ -d "$SKELETON_PLUGIN_ROOT/$top" ]
 }
 
+# One answer to "what does the disposable dry-run copy contain?".
+#
+# Two consumers must agree: the rsync that BUILDS the model, and the symlink
+# walk that VETS it. A path the rsync skips can never be reached by a write, so
+# refusing on a symlink inside it blocks the instance forever -- personal-brand's
+# broken canonical links refused cole-gtm, its parent, for a sync that never
+# touches personal-brand. A path the walk skips but the rsync copies is
+# unvetted. They were kept in step on 2026-07-25 by passing one list into the
+# other as argv, which is a wire between two lists, not one list.
+#
+# Copy only what this sync can write into. A directory holding its own .git
+# below the root is a SEPARATE repository -- in the fleet, another registered
+# instance with its own entry and its own update run -- and the sync never
+# descends into one; it writes to the subtree prefix, .claude/ and plugins/.
+# Scar 2026-07-25: ASK_AI_consultant is /Users/assafkipnis/projects/consulting,
+# the parent of ten nested instances, so a faithful whole-tree model wanted
+# 21GB of scratch for a sync that touches about 100MB. It ran the data volume
+# down to 605MB free before it was killed.
+#
+# Cached per instance root so two callers cannot observe two different trees.
+MODEL_SKIPPED_ROOT=""
+MODEL_SKIPPED_PATHS=()
+
+model_skip_scan() {
+  local instance_root="$1" nested_git nested_rel
+  [ "$MODEL_SKIPPED_ROOT" = "$instance_root" ] && return 0
+  MODEL_SKIPPED_PATHS=()
+  while IFS= read -r nested_git; do
+    nested_rel="${nested_git#"$instance_root"/}"
+    nested_rel="${nested_rel%/.git}"
+    [ -n "$nested_rel" ] || continue
+    [ "$nested_rel" != "$nested_git" ] || continue
+    # Tracked-ness is the line, not nested-ness. A SUBMODULE is a gitlink in
+    # this repo's index (mode 160000), so dropping it from the model makes git
+    # report it DELETED and the dirty-tree guard refuses -- the instance can
+    # never update. A separate project that merely lives under this path is
+    # untracked, and skipping it is the whole point.
+    #
+    # Scar 2026-07-25: the exclusion shipped without this check and bricked
+    # Alice, which carries three submodules under q-investigate/tools/.
+    if git -C "$instance_root" ls-files --error-unmatch -- "$nested_rel" \
+        >/dev/null 2>&1; then
+      continue
+    fi
+    MODEL_SKIPPED_PATHS+=("$nested_rel")
+  done < <(find "$instance_root" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
+  MODEL_SKIPPED_ROOT="$instance_root"
+}
+
+# Projection A of that one scan. It carries `.git` and the walk's projection
+# does NOT, on purpose: the model receives .git by `cp -a` on the has-a-.git
+# branch only, so the rsync must never copy it while the walk must still vet
+# the instance's own .git -- a dangling link at .git/hooks/* is refused today
+# and must stay refused. Collapsing the two into one list would either delete
+# that refusal or leave them divergent, which is the defect this replaces.
+# Projection B is MODEL_SKIPPED_PATHS itself, read directly by the walk.
+model_rsync_excludes() {
+  local instance_root="$1" nested_rel
+  # Re-enters the one scan rather than trusting the caller to have run it, so
+  # the projection cannot be built against a stale or unpopulated list. The
+  # scan is cached per root, so this costs nothing on the second call.
+  model_skip_scan "$instance_root"
+  MODEL_EXCLUDES=(--exclude=".git")
+  for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
+    MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
+  done
+}
+
 echo "=== Kipi System Update ==="
 echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
@@ -573,43 +641,12 @@ while IFS='|' read -r name path prefix itype; do
       echo ""
       continue
     fi
-    # Copy only what this sync can write into. A directory holding its own
-    # .git below the root is a SEPARATE repository -- in the fleet, another
-    # registered instance with its own entry and its own update run -- and the
-    # sync never descends into one; it writes to the subtree prefix, .claude/
-    # and plugins/. Scar 2026-07-25: ASK_AI_consultant is
-    # /Users/assafkipnis/projects/consulting, the parent of ten nested
-    # instances, so a faithful whole-tree model wanted 21GB of scratch for a
-    # sync that touches about 100MB. It ran the data volume down to 605MB free
-    # before it was killed.
-    MODEL_EXCLUDES=(--exclude=".git")
-    NESTED_SKIPPED=()
-    NESTED_COUNT=0
-    while IFS= read -r nested_git; do
-      nested_rel="${nested_git#"$path"/}"
-      nested_rel="${nested_rel%/.git}"
-      [ -n "$nested_rel" ] || continue
-      [ "$nested_rel" != "$nested_git" ] || continue
-      # Tracked-ness is the line, not nested-ness. A SUBMODULE is a gitlink in
-      # this repo's index (mode 160000), so dropping it from the model makes
-      # git report it DELETED and the dirty-tree guard refuses -- the instance
-      # can never update. A separate project that merely lives under this path
-      # is untracked, and skipping it is the whole point.
-      #
-      # Scar 2026-07-25: the exclusion shipped without this check and bricked
-      # Alice, which carries three submodules under q-investigate/tools/.
-      if git -C "$path" ls-files --error-unmatch -- "$nested_rel" \
-          >/dev/null 2>&1; then
-        continue
-      fi
-      MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
-      NESTED_SKIPPED+=("$nested_rel")
-      NESTED_COUNT=$((NESTED_COUNT + 1))
-    done < <(find "$path" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
-    if [ "$NESTED_COUNT" -gt 0 ]; then
-      echo "  dry-run model: skipped $NESTED_COUNT nested repositories (separate repos, not synced)"
+    model_skip_scan "$path"
+    model_rsync_excludes "$path"
+    if [ "${#MODEL_SKIPPED_PATHS[@]}" -gt 0 ]; then
+      echo "  dry-run model: skipped ${#MODEL_SKIPPED_PATHS[@]} nested repositories (separate repos, not synced)"
     fi
-    if ! python3 - "$path" ${NESTED_SKIPPED[@]+"${NESTED_SKIPPED[@]}"} <<'PY'
+    if ! python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
 import os
 import pathlib
 import sys
