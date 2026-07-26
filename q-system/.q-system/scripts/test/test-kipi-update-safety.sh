@@ -180,3 +180,60 @@ grep -q "skeleton v2" "$I5/q-system/tracked.md" || fail "re-run did not converge
 grep -q "MY OWN WORK" "$I5/q-system/tracked.md.local" || fail "a real untracked instance file was destroyed"
 echo "PASS: an interrupted sync re-runs cleanly; genuine untracked work is still protected"
 
+
+# --- a virtualenv's file symlinks must not block dry-run modeling -----------
+# Measured 2026-07-25 on ASK_AI_consultant: the dry-run symlink guard walks the
+# WHOLE instance and refuses on any symlink whose target resolves outside it.
+# Every instance with kipi-mcp installed carries a 98MB
+# plugins/kipi-core/kipi-mcp/.venv whose bin/ holds exactly that shape --
+# `python -> /abs/path/to/python3.12` and a relative `python3 -> python` that
+# inherits the escape through the chain. That refusal blocked the fleet for a
+# reason unrelated to update safety.
+#
+# The boundary that actually matters: rsync and git REPLACE a file symlink,
+# they never write through it, so an escaping FILE symlink cannot mutate
+# anything outside the model. An escaping DIRECTORY symlink is a real path
+# prefix a write can descend into, and must still refuse. Both are asserted
+# below, and case A asserts the outside target is byte-identical afterwards --
+# proof of no escape, not just proof the guard went quiet.
+WORK6="$(mktemp -d)"; SK6="$WORK6/skel"; I6="$WORK6/inst"; OUT6DIR="$WORK6/outside"
+mkdir -p "$SK6/q-system/.q-system/scripts" "$SK6/q-system/.q-system/state" \
+         "$I6/q-system" "$I6/plugins/kipi-core/kipi-mcp/.venv/bin" "$OUT6DIR"
+cp "$SCRIPT" "$SK6/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK6/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK6/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK6/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK6/validate-separation.py"
+cat > "$SK6/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK6/q-system/tracked.md"
+( cd "$SK6" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"venvinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I6" > "$SK6/instance-registry.json"
+printf 'old\n' > "$I6/q-system/tracked.md"
+( cd "$I6" && G init -q && G add -A && G commit -qm inst )
+
+# the real venv shape, byte for byte
+printf 'REAL INTERPRETER\n' > "$OUT6DIR/python3.12"
+ln -s "$OUT6DIR/python3.12" "$I6/plugins/kipi-core/kipi-mcp/.venv/bin/python"
+( cd "$I6/plugins/kipi-core/kipi-mcp/.venv/bin" && ln -s python python3 )
+OUT6="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6" | grep -q "unsafe symlink" && \
+  fail "a virtualenv's file symlinks blocked dry-run modeling: $OUT6"
+echo "$OUT6" | grep -q "unsafe absolute symlink" && \
+  fail "a virtualenv's absolute file symlink blocked dry-run modeling: $OUT6"
+echo "$OUT6" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model for an instance with a venv: $OUT6"
+grep -q "REAL INTERPRETER" "$OUT6DIR/python3.12" || \
+  fail "the dry run wrote THROUGH a file symlink and mutated a file outside the instance"
+
+# case B: an escaping DIRECTORY symlink is a write path and must still refuse
+mkdir -p "$OUT6DIR/realdir"
+ln -s "$OUT6DIR/realdir" "$I6/q-system/escapedir"
+OUT6B="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6B" | grep -q "unsafe" || \
+  fail "an escaping DIRECTORY symlink was modeled instead of refused: $OUT6B"
+echo "PASS: a venv's file symlinks model fine; an escaping directory symlink still refuses"

@@ -501,6 +501,19 @@ import os
 import pathlib
 import sys
 
+# Refuse only what a write can actually escape through: a DIRECTORY symlink
+# leaving the instance is a live path prefix, so an rsync or checkout writing
+# under it lands outside the disposable model and mutates the real filesystem.
+# A FILE symlink is not -- rsync and git replace the link itself and never
+# write through it, which test-kipi-update-safety.sh asserts by checking the
+# outside target is byte-identical after a dry run.
+#
+# Scar 2026-07-25 (ASK_AI_consultant, fleet rollout): this walked the whole
+# instance and refused on ANY escaping target, so every instance carrying a
+# kipi-mcp virtualenv was unmodelable -- `.venv/bin/python -> /abs/python3.12`
+# plus a relative `python3 -> python` that inherits the escape through the
+# chain. That is the normal shape of every venv on disk and says nothing about
+# update safety.
 root = pathlib.Path(sys.argv[1]).resolve()
 for current, directories, files in os.walk(root, followlinks=False):
     for name in directories + files:
@@ -509,13 +522,19 @@ for current, directories, files in os.walk(root, followlinks=False):
             continue
         target = os.readlink(candidate)
         if os.path.isabs(target):
-            print(f"unsafe absolute symlink: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
-            raise SystemExit(1)
-        resolved = (candidate.parent / target).resolve(strict=False)
+            resolved = pathlib.Path(target).resolve(strict=False)
+        else:
+            resolved = (candidate.parent / target).resolve(strict=False)
         try:
             resolved.relative_to(root)
         except ValueError:
-            print(f"unsafe symlink escapes instance: {candidate.relative_to(root)} -> {os.readlink(candidate)}", file=sys.stderr)
+            pass
+        else:
+            continue
+        # Escapes. is_dir() follows the whole chain; a dangling link is not a
+        # directory and cannot be descended into.
+        if candidate.is_dir():
+            print(f"unsafe directory symlink escapes instance: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
             raise SystemExit(1)
 PY
     then
