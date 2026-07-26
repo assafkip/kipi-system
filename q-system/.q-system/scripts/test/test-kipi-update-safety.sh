@@ -237,3 +237,57 @@ OUT6B="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
 echo "$OUT6B" | grep -q "unsafe" || \
   fail "an escaping DIRECTORY symlink was modeled instead of refused: $OUT6B"
 echo "PASS: a venv's file symlinks model fine; an escaping directory symlink still refuses"
+
+# --- the dry-run model must not copy nested repositories --------------------
+# The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
+# instance tree. Measured 2026-07-25: ASK_AI_consultant is
+# /Users/assafkipnis/projects/consulting, which is the PARENT of ten other
+# registered instances -- 21GB, of which this sync can write to about 100MB.
+# The copy ran the data volume down to 605MB free before it was killed.
+#
+# A directory holding its own .git below the root is a separate repository.
+# The updater never descends into one (it writes to the subtree prefix,
+# .claude/ and plugins/), and in the fleet it is another registered instance
+# with its own entry and its own update run. Copying it is pure waste and a
+# disk hazard, so the model skips it and says so.
+WORK7="$(mktemp -d)"; SK7="$WORK7/skel"; I7="$WORK7/inst"
+mkdir -p "$SK7/q-system/.q-system/scripts" "$SK7/q-system/.q-system/state" \
+         "$I7/q-system" "$I7/projects/nested/q-system"
+cp "$SCRIPT" "$SK7/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK7/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK7/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK7/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK7/validate-separation.py"
+cat > "$SK7/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK7/q-system/tracked.md"
+( cd "$SK7" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"parentinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I7" > "$SK7/instance-registry.json"
+printf 'old\n' > "$I7/q-system/tracked.md"
+( cd "$I7" && G init -q && G add -A && G commit -qm inst )
+# a separate repository living under the parent, exactly like the fleet's
+# consulting/projects/<instance> layout
+printf 'NESTED INSTANCE WORK\n' > "$I7/projects/nested/q-system/tracked.md"
+( cd "$I7/projects/nested" && G init -q && G add -A && G commit -qm nested )
+# The probe that makes this test about BEHAVIOUR and not about the log line:
+# an unreadable directory inside the nested repo. rsync cannot copy it and
+# exits non-zero, so a model that still descends into nested repos fails to
+# build. Announcing the skip while copying anyway does not survive this.
+mkdir -p "$I7/projects/nested/locked" && chmod 000 "$I7/projects/nested/locked"
+trap 'chmod 755 "$I7/projects/nested/locked" 2>/dev/null || true' EXIT
+
+OUT7="$(bash "$SK7/kipi-update.sh" --dry-run --only parentinst 2>&1 || true)"
+echo "$OUT7" | grep -q "could not create disposable dry-run model" && \
+  fail "the dry-run model descended into a nested repository and failed on it: $OUT7"
+echo "$OUT7" | grep -q "nested repositor" || \
+  fail "the dry-run model did not report skipping the nested repository: $OUT7"
+echo "$OUT7" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model once nested repos were skipped: $OUT7"
+grep -q "NESTED INSTANCE WORK" "$I7/projects/nested/q-system/tracked.md" || \
+  fail "the dry run mutated the nested repository"
+[ -d "$I7/projects/nested/.git" ] || fail "the dry run destroyed the nested repository's git dir"
+echo "PASS: the dry-run model skips nested repositories and still models the instance"

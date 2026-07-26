@@ -563,10 +563,32 @@ PY
       continue
     fi
     ORIGINAL_BRANCH="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
+    # Copy only what this sync can write into. A directory holding its own
+    # .git below the root is a SEPARATE repository -- in the fleet, another
+    # registered instance with its own entry and its own update run -- and the
+    # sync never descends into one; it writes to the subtree prefix, .claude/
+    # and plugins/. Scar 2026-07-25: ASK_AI_consultant is
+    # /Users/assafkipnis/projects/consulting, the parent of ten nested
+    # instances, so a faithful whole-tree model wanted 21GB of scratch for a
+    # sync that touches about 100MB. It ran the data volume down to 605MB free
+    # before it was killed.
+    MODEL_EXCLUDES=(--exclude=".git")
+    NESTED_COUNT=0
+    while IFS= read -r nested_git; do
+      nested_rel="${nested_git#"$path"/}"
+      nested_rel="${nested_rel%/.git}"
+      [ -n "$nested_rel" ] || continue
+      [ "$nested_rel" != "$nested_git" ] || continue
+      MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
+      NESTED_COUNT=$((NESTED_COUNT + 1))
+    done < <(find "$path" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
+    if [ "$NESTED_COUNT" -gt 0 ]; then
+      echo "  dry-run model: skipped $NESTED_COUNT nested repositories (separate repos, not synced)"
+    fi
     MODEL_SETUP_FAILED=0
     if [ -d "$path/.git" ]; then
       if ! mkdir -p "$DRY_MODEL_ROOT/instance" ||
-          ! rsync -a --delete --exclude=".git" "$path/" \
+          ! rsync -a --delete "${MODEL_EXCLUDES[@]}" "$path/" \
             "$DRY_MODEL_ROOT/instance/" ||
           ! cp -a "$path/.git" "$DRY_MODEL_ROOT/instance/.git"; then
         MODEL_SETUP_FAILED=1
@@ -592,7 +614,7 @@ PY
               "$DRY_MODEL_ROOT/instance/.git/config" ||
             ! git -C "$DRY_MODEL_ROOT/instance" config --local \
               core.bare false ||
-            ! rsync -a --delete --exclude=".git" "$path/" \
+            ! rsync -a --delete "${MODEL_EXCLUDES[@]}" "$path/" \
               "$DRY_MODEL_ROOT/instance/"; }; then
         MODEL_SETUP_FAILED=1
       fi
