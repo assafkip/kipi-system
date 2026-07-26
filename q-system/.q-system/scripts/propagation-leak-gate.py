@@ -1018,6 +1018,55 @@ def _report(entries: list, label: str) -> None:
         print(f"  ... and {len(entries) - REPORT_LIMIT} more {label}")
 
 
+def _restamp(root: Path, baseline_path: Path) -> int:
+    """Repoint the baseline at a classifier whose FINDINGS did not move.
+
+    CLASSIFIER_PATH is a whole file, so any edit to it -- including one nowhere
+    near the classifier -- invalidates the stamp and hard-blocks every fleet
+    update. Before this existed, unblocking meant hand-writing Python against
+    this module while the fleet was down, which is a worse control than the one
+    it was protecting.
+
+    This is deliberately NOT a re-baseline. It refuses the moment any
+    fingerprint is added, removed, or re-counted; that case is a real
+    re-baseline and still needs per-entry justification. All it can ever do is
+    update classifier_sha256 when the blocking set is byte-for-byte the same.
+    """
+    if not baseline_path.is_file():
+        print(f"propagation leak gate: ABORT -- baseline missing at {baseline_path}")
+        return 1
+    document = json.loads(baseline_path.read_text(encoding="utf-8"))
+    recorded = document.get("classifier_sha256")
+    running = current_classifier_sha256()
+    if recorded == running:
+        print("propagation leak gate: restamp not needed -- classifier already matches")
+        return 0
+
+    findings = scan_propagation_sources(root)
+    current = blocking_fingerprints(findings)
+    # None: skip the provenance check, which is the very thing being repaired.
+    previous = {k: e["count"] for k, e in _read_baseline_entries(document, None).items()}
+
+    added = sorted(set(current) - set(previous))
+    removed = sorted(set(previous) - set(current))
+    recounted = sorted(k for k in set(previous) & set(current)
+                       if previous[k] != current[k])
+    if added or removed or recounted:
+        print("propagation leak gate: ABORT -- restamp refused, the findings moved")
+        print(f"  added {len(added)}, removed {len(removed)}, recounted {len(recounted)}")
+        for k in added[:REPORT_LIMIT]:
+            print(f"  + {k}")
+        print("  This is a real re-baseline: each new entry needs its own")
+        print("  justification. Restamp only repoints an UNCHANGED baseline.")
+        return 1
+
+    document["classifier_sha256"] = running
+    baseline_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"propagation leak gate: restamped {str(recorded)[:12]} -> {running[:12]} "
+          f"({len(current)} fingerprints unchanged)")
+    return 0
+
+
 def _check(root: Path, baseline_path: Path) -> int:
     """0 to let propagation proceed, 1 to abort it. Never silent."""
     if not baseline_path.is_file():
@@ -1137,11 +1186,19 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="run the gate")
     parser.add_argument("--repo-root", type=Path, default=GATE_REPO_ROOT)
     parser.add_argument("--baseline", type=Path, default=None)
+    parser.add_argument(
+        "--restamp",
+        action="store_true",
+        help="repoint the baseline at the current classifier, ONLY when no "
+             "fingerprint moved; refuses otherwise",
+    )
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
     baseline_path = args.baseline or (root / DEFAULT_BASELINE_PATH)
+    if args.restamp:
+        return _restamp(root, baseline_path)
     if not args.check:
-        parser.error("nothing to do: pass --check")
+        parser.error("nothing to do: pass --check or --restamp")
     return _check(root, baseline_path)
 
 
