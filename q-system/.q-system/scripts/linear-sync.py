@@ -181,15 +181,84 @@ def build_issue(repo: str, cap: dict, index: int) -> dict:
     }
 
 
+def build_rollup(repo: str, rolled: list) -> dict:
+    """One issue per repo carrying every UNWIRED engine, with the full list.
+
+    Nothing is dropped: each script is named in the table with its line count and
+    why it was flagged, so the rollup is a work-list rather than a summary that
+    loses the detail.
+    """
+    key = f"{slugify(repo)}/unwired-engine-audit"
+    rows = ["| Script | Lines | Why flagged |", "| -- | -- | -- |"]
+    for cap in sorted(rolled, key=lambda c: c.get("entry") or ""):
+        ev = cap.get("evidence") or ""
+        lines = re.search(r"(\d+) lines", ev)
+        rows.append(
+            f"| `{cap.get('entry')}` | {lines.group(1) if lines else '?'} | "
+            f"{'no test, no wiring reference' if 'NO test and NO wiring' in ev else ev[:60]} |"
+        )
+    body = [
+        f"<!-- kipi-key: {key} -->",
+        "",
+        f"`capability-map-gen.py` found **{len(rolled)} Python engines** in `{repo}` "
+        "with neither a paired test nor any reference on a wiring surface "
+        "(settings.json, lefthook.yml, a hook, a command, the kipi CLI, or another script).",
+        "",
+        "That does not prove they are dead. It proves nothing in the repo *says* "
+        "they are alive, which is the same position a future reader is in.",
+        "",
+        "## The list",
+        "",
+        *rows,
+        "",
+        "## Definition of Ready",
+        "",
+        "- **Outcome:** every script below is either wired (and the wiring is visible), "
+        "tested, or deleted. None are left in the ambiguous middle.",
+        "- **Check:** re-run the generator and confirm the UNWIRED count for this repo "
+        "drops to 0:",
+        "",
+        "```bash",
+        "python3 q-system/.q-system/scripts/capability-map-gen.py \\",
+        f"  --root <repo> --repo {repo} --out /tmp/{slugify(repo)}.json",
+        "```",
+        "",
+        "- **Not doing:** engines that ARE referenced but lack a test. That is a "
+        "test-coverage issue, not a liveness one.",
+        "",
+        "## Why this is one issue and not "
+        f"{len(rolled)}",
+        "",
+        "Wiring-or-deleting a repo's dead scripts is a single decision made once with "
+        "the whole list in view. Split across "
+        f"{len(rolled)} issues it becomes {len(rolled)} groomings for one call, and "
+        "Linear issues cannot be deleted here, so each one is permanent.",
+        "",
+        "Filed under ASK-113.",
+    ]
+    return {
+        "key": key,
+        "title": f"Audit {len(rolled)} unwired engines in {repo}",
+        "description": "\n".join(body),
+        "labels": ["kind:capability", "unwired", "needs-evidence"],
+        "state": "Backlog",
+        "capability": "unwired engine audit",
+    }
+
+
 def _labels_for(cap: dict) -> list:
+    """Only labels that actually exist in the workspace.
+
+    Linear refuses an unresolved label name outright (it will not auto-create),
+    and every label is another permanent object. `layer:*` was dropped on purpose:
+    the layer is already in the issue's own field table AND in the capability map,
+    which is what the overlap join reads. Seven more labels bought nothing.
+    """
     labels = ["kind:capability"]
-    layer = str(cap.get("layer") or "").strip()
-    if layer:
-        # "L1 Propagation and fleet control" -> "layer:L1"
-        token = layer.split()[0]
-        if re.fullmatch(r"L\d+", token):
-            labels.append(f"layer:{token}")
-    if not (cap.get("evidence") or "").strip():
+    status = str(cap.get("status") or "").upper()
+    if status == "UNWIRED":
+        labels.append("unwired")
+    if status in ("NEEDS_WORK", "UNWIRED", "BROKEN"):
         labels.append("needs-evidence")
     return labels
 
@@ -266,15 +335,29 @@ def cmd_plan(args) -> int:
     known = set(ledger) | set(remote_keys)
 
     create_issues = []
+    rolled = []
     for i, cap in enumerate(caps):
         if not cap.get("track", True):
             continue
         if args.filter == "actionable" and _state_for(cap) == "Done":
             continue
+        # UNWIRED is a survey finding, not a defect: "this script has no test and
+        # no caller" is ONE decision for the repo (audit them, wire them, or delete
+        # them), not N decisions. Filing it per script would make the founder groom
+        # 25 items to make 1 call, and every one of those issues is permanent.
+        # NEEDS_WORK and BROKEN stay individual: each is a distinct defect.
+        if args.rollup and str(cap.get("status", "")).upper() == "UNWIRED":
+            rolled.append(cap)
+            continue
         issue = build_issue(repo, cap, i)
         if issue["key"] in known:
             continue
         create_issues.append(issue)
+
+    if rolled:
+        rollup = build_rollup(repo, rolled)
+        if rollup["key"] not in known:
+            create_issues.append(rollup)
 
     create_project = None
     if pkey not in known:
@@ -359,6 +442,8 @@ def main() -> int:
     p.add_argument("--remote", required=True, help="snapshot of what Linear already has")
     p.add_argument("--out", required=True, help="where to write the plan")
     p.add_argument("--filter", choices=["all", "actionable"], default="all")
+    p.add_argument("--rollup", action="store_true",
+                   help="collapse UNWIRED engines into one audit issue per repo")
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("record", help="append created objects to the ledger")

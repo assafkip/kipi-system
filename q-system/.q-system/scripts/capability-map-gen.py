@@ -21,6 +21,7 @@ it -- and it is invisible to every prose-level review.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -271,14 +272,20 @@ def collect_hooks(root: Path) -> list:
                 if not scripts:
                     continue
                 label = os.path.basename(scripts[0])
+                # Matcher is part of the identity: one script can be wired to
+                # several events/matchers, and those are different capabilities.
+                # Without it, investigations' two PostToolUse run-lint.sh hooks
+                # produced the same name AND the same entry, so even the path-hash
+                # disambiguation collided (linear-sync exit 3, 2026-07-26).
+                matcher = str(group.get("matcher") or "all")
                 caps.append({
-                    "name": f"hook {label} ({event})",
+                    "name": f"hook {label} ({event}/{matcher})",
                     "layer": L_ENFORCEMENT,
                     "status": "BROKEN" if missing else "LIVE",
                     "summary": (f"{event} hook running {label}."
                                 + (" Its script is MISSING from disk."
                                    if missing else "")),
-                    "entry": f".claude/settings.json -> {label}",
+                    "entry": f".claude/settings.json -> {scripts[0]} [{event}/{matcher}]",
                     "trigger": f"{event} ({group.get('matcher', 'all')})",
                     "evidence": (
                         f"Wired in .claude/settings.json under {event}. "
@@ -398,16 +405,36 @@ def collect_domains(root: Path) -> list:
 
 def dedupe(caps: list) -> list:
     """Two capabilities that slugify to one key would collapse into one permanent
-    Linear issue, so disambiguate here rather than letting linear-sync refuse."""
+    Linear issue, so disambiguate here rather than letting linear-sync refuse.
+
+    The suffix is a hash of the ENTRY PATH, not a counter. A counter collided for
+    real: KTLYST_strategy has a file that legitimately produces "engine core 2",
+    and a second "engine core" was being renamed to "engine core (2)", which
+    slugifies to the same key. linear-sync's collision guard caught it (exit 3),
+    which is the guard working, but the generator should not emit the collision in
+    the first place. A path hash is unique by construction and stable across runs,
+    so re-running does not reshuffle keys and orphan already-created issues.
+    """
     slug = lambda s: re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
     seen, out = {}, []
     for cap in caps:
-        k = slug(cap["name"])
-        if k in seen:
-            seen[k] += 1
-            cap["name"] = f"{cap['name']} ({seen[k]})"
-        else:
-            seen[k] = 1
+        base = cap["name"]
+        k = slug(base)
+        # Loop, do not single-shot. Hashing the entry alone is not enough when the
+        # entries are themselves identical: kipi-investigations wires run-lint.sh
+        # four times under the same event and matcher with different command
+        # arguments, so all four hashed the same and stayed collided even after
+        # renaming. Folding the ordinal into the hash terminates and is stable for
+        # a given (entry, ordinal) pair.
+        ordinal = 0
+        while k in seen:
+            ordinal += 1
+            tag = hashlib.sha1(
+                f"{cap.get('entry') or base}#{ordinal}".encode()
+            ).hexdigest()[:6]
+            cap["name"] = f"{base} [{tag}]"
+            k = slug(cap["name"])
+        seen[k] = True
         out.append(cap)
     return out
 
