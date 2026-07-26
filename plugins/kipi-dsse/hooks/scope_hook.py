@@ -29,6 +29,53 @@ def _runner_path() -> Path:
     return Path(__file__).resolve().parents[1] / "scripts" / "issue_runner.py"
 
 
+def _repo_root(cwd: str | None) -> Path | None:
+    """The git top-level for cwd, or None if it cannot be determined."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd or ".", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    if not top:
+        return None
+    try:
+        return Path(top).resolve()
+    except Exception:
+        return None
+
+
+def _outside_repo(file_path: str, cwd: str | None) -> bool:
+    """True only when the target provably sits outside the repo.
+
+    The gate exists to keep the issue's DIFF scoped. A path outside the repo
+    cannot appear in any diff, so blocking it protects nothing while blocking
+    real work: analysis scaffolding written to the session scratchpad had to
+    choose between ISSUE_GATE_OFF=1 and routing around the hook via a bash
+    heredoc, and the heredoc route then collided with the destructive-op
+    matcher, which scans whole command strings.
+
+    Fails SAFE: if the repo root cannot be resolved, return False so the
+    normal allowed_files check still runs.
+    """
+    root = _repo_root(cwd)
+    if root is None:
+        return False
+    try:
+        Path(file_path).resolve().relative_to(root)
+    except ValueError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
 def main() -> int:
     if os.environ.get("ISSUE_GATE_OFF") == "1":
         return 0
@@ -48,6 +95,9 @@ def main() -> int:
         or tool_input.get("path")
     )
     if not file_path:
+        return 0
+
+    if _outside_repo(str(file_path), payload.get("cwd")):
         return 0
 
     try:
