@@ -205,6 +205,12 @@ def _depends_on_gate(cfg: Config, spec_path) -> tuple[int, str]:
             continue
         if rec.get("prd_id") != dep:
             continue
+        try:
+            lifecycle = _gate_lifecycle(rec)
+        except ValueError as exc:
+            return 2, f"activation blocked: dependency gate registry is invalid ({exc}).\n"
+        if lifecycle != "regression":
+            continue
         result = _subprocess.run(rec["command"], shell=True,
                                  cwd=cfg.repo_root, capture_output=True,
                                  text=True, timeout=900)
@@ -909,22 +915,62 @@ def _gates_path(cfg: Config):
     return cfg.repo_root / ".prd-os" / "gates.jsonl"
 
 
-def gate_register(cfg: Config, *, prd_id: str, issue_id: str, command: str) -> dict:
+GATE_LIFECYCLES = (
+    "regression",
+    "historical-receipt",
+    "retired",
+    "external",
+)
+LEGACY_GATE_LIFECYCLE = "historical-receipt"
+
+
+def _gate_lifecycle(record: dict) -> str:
+    lifecycle = record.get("lifecycle", LEGACY_GATE_LIFECYCLE)
+    if lifecycle not in GATE_LIFECYCLES:
+        gate_id = record.get("gate_id", "<missing gate_id>")
+        raise ValueError(
+            f"gate {gate_id!r} has invalid lifecycle {lifecycle!r}; "
+            f"expected one of {', '.join(GATE_LIFECYCLES)}"
+        )
+    return lifecycle
+
+
+def gate_register(
+    cfg: Config,
+    *,
+    prd_id: str,
+    issue_id: str,
+    command: str,
+    lifecycle: str = LEGACY_GATE_LIFECYCLE,
+) -> dict:
     """Idempotent append: gate_id = <issue_id>-<sha256(command)[:8]>; an
     existing gate_id is a no-op. Single-line write + flush (atomic at line
     granularity); raises on I/O failure so the CALLER (dsse close) aborts."""
     import hashlib as _hashlib
+    if lifecycle not in GATE_LIFECYCLES:
+        raise ValueError(
+            f"invalid gate lifecycle {lifecycle!r}; "
+            f"expected one of {', '.join(GATE_LIFECYCLES)}"
+        )
     gate_id = f"{issue_id}-{_hashlib.sha256(command.encode()).hexdigest()[:8]}"
     path = _gates_path(cfg)
     if path.is_file():
         for raw in path.read_text().splitlines():
             try:
-                if json.loads(raw).get("gate_id") == gate_id:
+                existing = json.loads(raw)
+                if existing.get("gate_id") == gate_id:
+                    existing_lifecycle = _gate_lifecycle(existing)
+                    if existing_lifecycle != lifecycle:
+                        raise ValueError(
+                            f"gate {gate_id!r} already registered as "
+                            f"{existing_lifecycle!r}, not {lifecycle!r}"
+                        )
                     return {"gate_id": gate_id, "registered": False}
             except json.JSONDecodeError:
                 continue
     record = {"gate_id": gate_id, "prd_id": prd_id, "issue_id": issue_id,
               "command": command,
+              "lifecycle": lifecycle,
               "registered_at": _now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
@@ -1053,7 +1099,7 @@ def cmd_spillover(cfg: Config, args) -> int:
 
 
 def cmd_gates(cfg: Config, args) -> int:
-    """gates list — print the registry; gates run — execute every gate from
+    """gates list prints the registry; gates run executes regression gates from
     the repo root (operator-authored shell commands, the same trust boundary
     as required_checks), per-gate green/RED, non-zero exit on any RED. `run`
     ALSO fails while any spillover item is open (out-of-scope findings are part
@@ -1068,13 +1114,34 @@ def cmd_gates(cfg: Config, args) -> int:
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError:
-                sys.stderr.write(f"{path}:{lineno}: invalid JSONL — fix before running gates\n")
+                sys.stderr.write(f"{path}:{lineno}: invalid JSONL; fix before running gates\n")
                 return 2
+            try:
+                record["lifecycle"] = _gate_lifecycle(record)
+            except ValueError as exc:
+                sys.stderr.write(f"{path}:{lineno}: {exc}\n")
+                return 2
+            records.append(record)
     if args.gates_cmd == "list":
+        if args.lifecycle:
+            records = [
+                record for record in records
+                if record["lifecycle"] == args.lifecycle
+            ]
         print(json.dumps(records, indent=2))
         return 0
+    if args.lifecycle and args.lifecycle != "regression":
+        sys.stderr.write(
+            "gates run only supports lifecycle 'regression'; "
+            "other lifecycles are retained as non-current evidence\n"
+        )
+        return 2
+    records = [
+        record for record in records
+        if record["lifecycle"] == "regression"
+    ]
     failures = []
     skipped_self_ref = 0
     for rec in records:
@@ -1110,7 +1177,7 @@ def cmd_gates(cfg: Config, args) -> int:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} registered gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; no open spillover")
     return 0
 
 
@@ -1139,6 +1206,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     p_gates = sub.add_parser("gates")
     p_gates.add_argument("gates_cmd", choices=("list", "run"))
+    p_gates.add_argument("--lifecycle", choices=GATE_LIFECYCLES)
     p_gates.set_defaults(func=cmd_gates)
 
     p_spill = sub.add_parser("spillover")

@@ -658,12 +658,14 @@ def test_depends_on_blocks_activation_on_red_gate(
     gates.parent.mkdir(parents=True, exist_ok=True)
     gates.write_text(_json.dumps({
         "gate_id": "g-red", "prd_id": dep_id, "issue_id": "i",
-        "command": "false", "registered_at": "2026-01-01T00:00:00Z"}) + "\n")
+        "command": "false", "lifecycle": "regression",
+        "registered_at": "2026-01-01T00:00:00Z"}) + "\n")
     r = run_prd_runner(fake_repo, "load", two_id)
     assert r.returncode == 2
     assert "RED gate" in r.stderr
     gates.write_text(_json.dumps({
         "gate_id": "g-green", "prd_id": dep_id, "issue_id": "i",
-        "command": "true", "registered_at": "2026-01-01T00:00:00Z"}) + "\n")
+        "command": "true", "lifecycle": "regression",
+        "registered_at": "2026-01-01T00:00:00Z"}) + "\n")
     r = run_prd_runner(fake_repo, "load", two_id)
     assert r.returncode == 0, r.stderr

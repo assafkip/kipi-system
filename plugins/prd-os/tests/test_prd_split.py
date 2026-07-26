@@ -114,6 +114,55 @@ def test_split_creates_issue_files_for_approved_prd(
     assert "must pass pytest" in b
 
 
+def test_split_preserves_explicit_gate_lifecycle(
+    fake_repo, write_config, run_prd_split
+):
+    _bootstrap(fake_repo, write_config)
+    _write_prd(
+        fake_repo,
+        "prd-lifecycle-2026-07-24",
+        manifest=[
+            _entry(
+                id="issue-current",
+                bypass_check="pytest tests/test_current.py",
+                gate_lifecycle="regression",
+            )
+        ],
+    )
+
+    result = run_prd_split(
+        fake_repo, "--prd-id", "prd-lifecycle-2026-07-24"
+    )
+
+    assert result.returncode == 0, result.stderr
+    spec = (fake_repo / ".prd-os/issues/issue-current.md").read_text()
+    assert "gate_lifecycle: regression" in spec
+
+
+def test_split_rejects_invalid_gate_lifecycle(
+    fake_repo, write_config, run_prd_split
+):
+    _bootstrap(fake_repo, write_config)
+    _write_prd(
+        fake_repo,
+        "prd-invalid-lifecycle-2026-07-24",
+        manifest=[
+            _entry(
+                id="issue-invalid",
+                bypass_check="true",
+                gate_lifecycle="sometimes",
+            )
+        ],
+    )
+
+    result = run_prd_split(
+        fake_repo, "--prd-id", "prd-invalid-lifecycle-2026-07-24"
+    )
+
+    assert result.returncode == 2
+    assert "gate_lifecycle" in result.stderr
+
+
 def test_split_defaults_to_active_prd(fake_repo, write_config, run_prd_runner, run_prd_split):
     _bootstrap(fake_repo, write_config)
     assert run_prd_runner(fake_repo, "new", "active-prd").returncode == 0
