@@ -4,8 +4,8 @@
 
 Ran `q-system/output/plans/updater-consolidation-prompt-2026-07-25.md` end to
 end, shipped it, deployed it, then worked the ledger it generated down to one
-item. **Fleet 23/23. 8/8 updater suites green. pytest 360 passed / 0 failed.
-15 items opened, 14 resolved.**
+item, then to zero. **Fleet 23/23. 8/8 updater suites green. pytest 368 passed / 0 failed.
+15 items opened, 15 resolved.**
 
 The pytest number matters: it was "3 failed" all session and I kept quoting it
 as an accepted baseline. Those 3 were not stale tests -- they were a deliberate
@@ -67,15 +67,32 @@ Safety suite: 10 -> 15 fixtures, each mutation-checked.
 - **I nearly shipped dead code twice** -- a plugin edit without a version bump
   is a fleet-wide no-op. Gate 1.7 now catches it, and caught its own author.
 
-## Open thread (one)
+## Open threads: none
 
-`sp-39ba760e` -- `propagation-leak-gate.py` sets `CLASSIFIER_PATH` to the whole
-of `validate-separation.py`, so any edit to that 900-line validator invalidates
-the baseline and hard-blocks every fleet update. The operational half is fixed
-(`--restamp`). The remaining half -- hash the classifier FUNCTIONS rather than
-the whole file -- is left open deliberately: it would make the gate LESS
-sensitive, which is a security-relevant loosening and deserves its own gated
-review rather than a same-session judgement call.
+All 15 items opened this session are resolved.
+
+`sp-39ba760e` was the last, and closing it needed a correction rather than more
+work. I had framed it as "hash the whole classifier file" (blocks on unrelated
+edits) versus "hash the classifier functions" (less sensitive), called the
+second a security loosening, and left it open. Both framings were wrong: on a
+stamp mismatch the gate can RECOMPUTE the findings and compare them to the
+baseline entries. That is stronger than any hash, because it checks the thing
+itself instead of a proxy -- a weakened classifier still aborts, since its
+findings would differ. Both mismatch cases still ABORT; the gate now just
+reports which case it is instead of assuming.
+
+## Parallel session in this checkout
+
+Commit `53f2eeb` ("gate lifecycle", 486 insertions, prd-os -> 0.6.0) came from
+ANOTHER session working in this same checkout at 09:52, not from this one. It
+accounts for the pytest count moving 360 -> 368.
+
+Checked for cross-contamination: the only file both sessions touched is
+`plugins/prd-os/.claude-plugin/plugin.json`, the version sequence is monotonic
+(mine 0.5.3 at 09:13, mine 0.5.4 at 09:39, theirs 0.6.0 at 09:52), and their 26
+new tests pass under my changes. Nothing was lost either direction -- but see
+`feedback_parallel_sessions_one_checkout.md`: worktrees per session is the
+standing advice and this run did not use one.
 
 ## Notes for the next session
 
@@ -88,7 +105,7 @@ review rather than a same-session judgement call.
   0.5.4 / 0.2.1. Self-resolving.
 - `gates run` is RED from the ~73 pre-existing items, which the plan said not to
   work. Nothing from this run is open except `sp-39ba760e`. pytest is fully
-  green (360/0/1), so a red pytest from here is a real regression, not noise.
+  green (368/0/1), so a red pytest from here is a real regression, not noise.
 - The line criterion was restated [USER-DIRECTED]: the original required
   `wc -l < 1253` AND "no scar comment deleted", which contradict. Final 1485.
   The PRD keeps the superseded criterion visible rather than editing it away.
