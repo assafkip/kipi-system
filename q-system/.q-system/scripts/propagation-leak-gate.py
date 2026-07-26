@@ -36,8 +36,10 @@ never appearing in a tracked-path manifest at all.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import stat
@@ -967,6 +969,121 @@ def rebaseline_document(document, findings, justifications=None,
     }
 
 
+DEFAULT_BASELINE_PATH = "q-system/.q-system/state/propagation-leak-baseline.json"
+CLASSIFIER_PATH = "validate-separation.py"
+REPORT_LIMIT = 20
+
+
+def current_classifier_sha256() -> str:
+    """The hash of the classifier this gate actually runs.
+
+    The baseline is a statement about what ONE classifier saw. A baseline built
+    by a different one describes findings this run cannot reproduce, so it is
+    not evidence about this run.
+    """
+    return hashlib.sha256(
+        (GATE_REPO_ROOT / CLASSIFIER_PATH).read_bytes()
+    ).hexdigest()
+
+
+def _report(entries: list, label: str) -> None:
+    """Print findings, and say out loud how many were not printed."""
+    for entry in entries[:REPORT_LIMIT]:
+        print(f"  {entry['path']}: {entry['fact_class']} ({entry['line_sha256'][:12]})")
+    if len(entries) > REPORT_LIMIT:
+        print(f"  ... and {len(entries) - REPORT_LIMIT} more {label}")
+
+
+def _check(root: Path, baseline_path: Path) -> int:
+    """0 to let propagation proceed, 1 to abort it. Never silent."""
+    if not baseline_path.is_file():
+        print(f"ABORT: propagation leak baseline missing at {baseline_path}")
+        return 1
+    try:
+        document = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"ABORT: propagation leak baseline is unreadable: {exc}")
+        return 1
+    try:
+        findings = scan_propagation_sources(root)
+    except PropagationSourceRefused as exc:
+        print(f"ABORT: {exc}")
+        return 1
+
+    current = blocking_fingerprints(findings)
+    warnings = warning_findings(findings)
+    stamped = document.get("classifier_sha256")
+    if stamped is None:
+        return _report_unarmed(current, warnings, baseline_path)
+
+    expected = current_classifier_sha256()
+    if stamped != expected:
+        print(
+            f"ABORT: baseline was built by classifier {stamped[:12]}, running "
+            f"{expected[:12]}"
+        )
+        print("  Its entries describe findings this run cannot reproduce.")
+        print("  Re-baseline explicitly rather than trusting a stale allowlist.")
+        return 1
+    try:
+        baseline = load_baseline_document(document, expected, current)
+    except BaselineRefused as exc:
+        print(f"ABORT: {exc}")
+        return 1
+
+    additions = new_findings(baseline, current)
+    if additions:
+        print(f"ABORT: {len(additions)} fact(s) not in the propagation baseline:")
+        _report(additions, "not shown")
+        return 1
+    print(
+        f"propagation leak gate: clean "
+        f"({len(current)} baselined, {len(warnings)} warnings)"
+    )
+    return 0
+
+
+def _report_unarmed(current: dict, warnings: list, baseline_path: Path) -> int:
+    """The baseline ships empty because arming it is a human review.
+
+    This state is REACHABLE ONLY by an explicitly unstamped committed file. A
+    missing or unreadable baseline aborts above, so nothing can fall into
+    "not enforcing" by deletion. It prints on every run so it cannot be
+    forgotten, and it does not block, because a gate that blocks all 23
+    instances on day one gets removed by Friday.
+    """
+    print("propagation leak gate: NOT ENFORCING -- baseline is not armed")
+    print(
+        f"  {len(current)} fingerprint(s) in blocking classes, "
+        f"{len(warnings)} warning(s)"
+    )
+    _report(
+        [
+            {"path": key[0], "fact_class": key[1], "line_sha256": key[3]}
+            for key in sorted(current)
+        ],
+        "not shown",
+    )
+    print(f"  Arm it by writing a per-entry justification into {baseline_path}")
+    print("  and stamping classifier_sha256. Until then this reports only.")
+    return 0
+
+
+def main(argv: list | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Refuse to propagate a fact that is not in the baseline."
+    )
+    parser.add_argument("--check", action="store_true", help="run the gate")
+    parser.add_argument("--repo-root", type=Path, default=GATE_REPO_ROOT)
+    parser.add_argument("--baseline", type=Path, default=None)
+    args = parser.parse_args(argv)
+    root = args.repo_root.resolve()
+    baseline_path = args.baseline or (root / DEFAULT_BASELINE_PATH)
+    if not args.check:
+        parser.error("nothing to do: pass --check")
+    return _check(root, baseline_path)
+
+
 def _assert_additions_are_justified(added_keys: list, justifications: dict) -> None:
     missing = [
         key for key in added_keys if not str(justifications.get(key) or "").strip()
@@ -982,3 +1099,7 @@ def _assert_additions_are_justified(added_keys: list, justifications: dict) -> N
             "justification given for something that is not newly blessed:\n  "
             + "\n  ".join(_describe(key) for key in sorted(unknown))
         )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

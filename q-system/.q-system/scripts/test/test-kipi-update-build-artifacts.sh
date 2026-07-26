@@ -34,6 +34,16 @@ printf '*\n' > "$SK/plugins/demo/.venv/.gitignore"   # uv writes this itself
 printf '#!/Users/someone-else/bin/python\n' > "$SK/plugins/demo/.venv/bin/activate"
 cp "$SCRIPT" "$SK/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK/kipi-update-preserve-scan.py"
+# A valid skeleton ships the propagation leak gate: kipi-update.sh is
+# fail-closed on it, so a fixture without it aborts before any sync.
+mkdir -p "$SK/q-system/.q-system/scripts" "$SK/q-system/.q-system/state"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK/validate-separation.py"
+cp "$ROOT/q-system/.q-system/state/propagation-leak-baseline.json" \
+   "$SK/q-system/.q-system/state/propagation-leak-baseline.json"
 ( cd "$SK" && G init -q && G add -A -f && G commit -qm skel )
 printf '{"instances":[{"name":"testinst","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
   "$INST" > "$SK/instance-registry.json"

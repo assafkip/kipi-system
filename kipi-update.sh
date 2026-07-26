@@ -45,6 +45,29 @@ if [ -f "$SYNC_CHECK" ]; then
   fi
 fi
 
+# Preflight: refuse to fan a leaked instance fact out to every instance.
+#
+# NOT wrapped in `[ -f "$LEAK_GATE" ]`, unlike the settings check directly
+# above. That guard turns a DELETED script into a green run, which is the exact
+# failure this gate exists to prevent, one level up: the gate's own absence
+# must stop the fleet, not wave it through. A leak caught after the fan-out is
+# a post-mortem -- 23 repos already hold the fact, each in a commit.
+LEAK_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/propagation-leak-gate.py"
+if [ ! -f "$LEAK_GATE" ]; then
+  echo ""
+  echo "ABORT: propagation leak gate missing at $LEAK_GATE"
+  echo "It is fail-closed on purpose. Restore it or revert; do not proceed"
+  echo "with 23 instances unchecked."
+  exit 1
+fi
+if ! python3 "$LEAK_GATE" --check --repo-root "$SCRIPT_DIR"; then
+  echo ""
+  echo "ABORT: a fact absent from the propagation baseline would be copied into"
+  echo "every instance (named above). Remove it, replace it with a placeholder,"
+  echo "or re-baseline explicitly after a human reads each new entry."
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 SKIP=0

@@ -27,6 +27,16 @@ make_fixture() {
     "$skeleton/kipi-update-preserve-scan.py"
   cp "$ROOT/kipi-settings-merge.py" "$skeleton/kipi-settings-merge.py"
   cp "$ROOT/settings-template.json" "$skeleton/settings-template.json"
+  # A valid skeleton ships the propagation leak gate: kipi-update.sh is
+  # fail-closed on it, so a fixture without it aborts before any sync.
+  mkdir -p "$skeleton/q-system/.q-system/scripts" "$skeleton/q-system/.q-system/state"
+  cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+     "$skeleton/q-system/.q-system/scripts/propagation-leak-gate.py"
+  cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+     "$skeleton/q-system/.q-system/scripts/containment-targets.py"
+  cp "$ROOT/validate-separation.py" "$skeleton/validate-separation.py"
+  cp "$ROOT/q-system/.q-system/state/propagation-leak-baseline.json" \
+     "$skeleton/q-system/.q-system/state/propagation-leak-baseline.json"
   printf 'new skeleton content\n' > "$skeleton/q-system/tracked.md"
   printf 'new path from skeleton\n' > "$skeleton/q-system/new.md"
   printf '%s\n' \

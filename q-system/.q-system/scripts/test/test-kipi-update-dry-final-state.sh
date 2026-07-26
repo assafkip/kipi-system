@@ -108,6 +108,16 @@ cp "$ROOT/kipi-update.sh" "$SKELETON/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" \
   "$SKELETON/kipi-update-preserve-scan.py"
 cp "$ROOT/kipi-settings-merge.py" "$SKELETON/kipi-settings-merge.py"
+# A valid skeleton ships the propagation leak gate: kipi-update.sh is
+# fail-closed on it, so a fixture without it aborts before any sync.
+mkdir -p "$SKELETON/q-system/.q-system/scripts" "$SKELETON/q-system/.q-system/state"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SKELETON/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SKELETON/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SKELETON/validate-separation.py"
+cp "$ROOT/q-system/.q-system/state/propagation-leak-baseline.json" \
+   "$SKELETON/q-system/.q-system/state/propagation-leak-baseline.json"
 
 printf 'skeleton version two content\n' > "$SKELETON/q-system/tracked.md"
 printf 'raise SystemExit(0)\n' \
