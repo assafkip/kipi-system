@@ -540,7 +540,43 @@ while IFS='|' read -r name path prefix itype; do
       echo ""
       continue
     fi
-    if ! python3 - "$path" <<'PY'
+    # Copy only what this sync can write into. A directory holding its own
+    # .git below the root is a SEPARATE repository -- in the fleet, another
+    # registered instance with its own entry and its own update run -- and the
+    # sync never descends into one; it writes to the subtree prefix, .claude/
+    # and plugins/. Scar 2026-07-25: ASK_AI_consultant is
+    # /Users/assafkipnis/projects/consulting, the parent of ten nested
+    # instances, so a faithful whole-tree model wanted 21GB of scratch for a
+    # sync that touches about 100MB. It ran the data volume down to 605MB free
+    # before it was killed.
+    MODEL_EXCLUDES=(--exclude=".git")
+    NESTED_SKIPPED=()
+    NESTED_COUNT=0
+    while IFS= read -r nested_git; do
+      nested_rel="${nested_git#"$path"/}"
+      nested_rel="${nested_rel%/.git}"
+      [ -n "$nested_rel" ] || continue
+      [ "$nested_rel" != "$nested_git" ] || continue
+      # Tracked-ness is the line, not nested-ness. A SUBMODULE is a gitlink in
+      # this repo's index (mode 160000), so dropping it from the model makes
+      # git report it DELETED and the dirty-tree guard refuses -- the instance
+      # can never update. A separate project that merely lives under this path
+      # is untracked, and skipping it is the whole point.
+      #
+      # Scar 2026-07-25: the exclusion shipped without this check and bricked
+      # Alice, which carries three submodules under q-investigate/tools/.
+      if git -C "$path" ls-files --error-unmatch -- "$nested_rel" \
+          >/dev/null 2>&1; then
+        continue
+      fi
+      MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
+      NESTED_SKIPPED+=("$nested_rel")
+      NESTED_COUNT=$((NESTED_COUNT + 1))
+    done < <(find "$path" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
+    if [ "$NESTED_COUNT" -gt 0 ]; then
+      echo "  dry-run model: skipped $NESTED_COUNT nested repositories (separate repos, not synced)"
+    fi
+    if ! python3 - "$path" ${NESTED_SKIPPED[@]+"${NESTED_SKIPPED[@]}"} <<'PY'
 import os
 import pathlib
 import sys
@@ -563,7 +599,17 @@ import sys
 # chain. That is the normal shape of every venv on disk and says nothing about
 # update safety.
 root = pathlib.Path(sys.argv[1]).resolve()
+# Paths the model will not copy. A link inside one can never reach the model,
+# so it cannot leak a write, and refusing on it would let rot in a SEPARATE
+# repo block this instance forever. Scar 2026-07-25: personal-brand's broken
+# canonical links refused cole-gtm, its parent, for a sync that never touches
+# personal-brand at all.
+skipped = {(root / arg).resolve(strict=False) for arg in sys.argv[2:]}
 for current, directories, files in os.walk(root, followlinks=False):
+    directories[:] = [
+        name for name in directories
+        if pathlib.Path(current, name).resolve(strict=False) not in skipped
+    ]
     for name in directories + files:
         candidate = pathlib.Path(current, name)
         if not candidate.is_symlink():
@@ -629,40 +675,6 @@ PY
       continue
     fi
     ORIGINAL_BRANCH="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
-    # Copy only what this sync can write into. A directory holding its own
-    # .git below the root is a SEPARATE repository -- in the fleet, another
-    # registered instance with its own entry and its own update run -- and the
-    # sync never descends into one; it writes to the subtree prefix, .claude/
-    # and plugins/. Scar 2026-07-25: ASK_AI_consultant is
-    # /Users/assafkipnis/projects/consulting, the parent of ten nested
-    # instances, so a faithful whole-tree model wanted 21GB of scratch for a
-    # sync that touches about 100MB. It ran the data volume down to 605MB free
-    # before it was killed.
-    MODEL_EXCLUDES=(--exclude=".git")
-    NESTED_COUNT=0
-    while IFS= read -r nested_git; do
-      nested_rel="${nested_git#"$path"/}"
-      nested_rel="${nested_rel%/.git}"
-      [ -n "$nested_rel" ] || continue
-      [ "$nested_rel" != "$nested_git" ] || continue
-      # Tracked-ness is the line, not nested-ness. A SUBMODULE is a gitlink in
-      # this repo's index (mode 160000), so dropping it from the model makes
-      # git report it DELETED and the dirty-tree guard refuses -- the instance
-      # can never update. A separate project that merely lives under this path
-      # is untracked, and skipping it is the whole point.
-      #
-      # Scar 2026-07-25: the exclusion shipped without this check and bricked
-      # Alice, which carries three submodules under q-investigate/tools/.
-      if git -C "$path" ls-files --error-unmatch -- "$nested_rel" \
-          >/dev/null 2>&1; then
-        continue
-      fi
-      MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
-      NESTED_COUNT=$((NESTED_COUNT + 1))
-    done < <(find "$path" -mindepth 2 -maxdepth 5 -name .git -print 2>/dev/null)
-    if [ "$NESTED_COUNT" -gt 0 ]; then
-      echo "  dry-run model: skipped $NESTED_COUNT nested repositories (separate repos, not synced)"
-    fi
     MODEL_SETUP_FAILED=0
     if [ -d "$path/.git" ]; then
       if ! mkdir -p "$DRY_MODEL_ROOT/instance" ||

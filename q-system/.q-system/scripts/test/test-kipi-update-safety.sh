@@ -456,3 +456,50 @@ echo "$OUT10" | grep -qE "Changes vs skeleton|Up to date|final state" || \
 echo "$OUT10" | grep -q "skipped 1 nested repositories" || \
   fail "the UNTRACKED separate project should still be skipped, exactly one: $OUT10"
 echo "PASS: a tracked submodule stays in the model; an untracked nested project is still skipped"
+
+# --- the symlink guard must skip what the model will not copy ---------------
+# The guard walks the WHOLE instance and refuses on a dangling symlink, but the
+# model excludes untracked nested repositories, so a broken link inside one can
+# never reach the model and cannot leak a write. Refusing on it means one dead
+# link in a nested project blocks the PARENT instance forever.
+#
+# Scar 2026-07-25: gtm-partner is /Users/assafkipnis/projects/cole-gtm, parent
+# of five registered instances. personal-brand's canonical files are broken
+# links into the dissolved ktlyst-hub, and that refused cole-gtm's dry run --
+# an instance blocked by rot in a DIFFERENT repo that this sync never touches.
+WORK11="$(mktemp -d)"; SK11="$WORK11/skel"; I11="$WORK11/inst"
+mkdir -p "$SK11/q-system/.q-system/scripts" "$SK11/q-system/.q-system/state" \
+         "$I11/q-system" "$I11/projects/child/q-system"
+cp "$SCRIPT" "$SK11/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK11/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK11/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK11/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK11/validate-separation.py"
+cat > "$SK11/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK11/q-system/tracked.md"
+( cd "$SK11" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"parent11","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I11" > "$SK11/instance-registry.json"
+printf 'old\n' > "$I11/q-system/tracked.md"
+printf 'child content\n' > "$I11/projects/child/q-system/tracked.md"
+( cd "$I11/projects/child" && G init -q && G add -A && G commit -qm child )
+( cd "$I11" && G init -q && G add q-system && G commit -qm inst )
+# the dead link lives INSIDE the untracked nested repo, which the model skips
+ln -s "$WORK11/gone" "$I11/projects/child/q-system/deadlink.md"
+
+OUT11="$(bash "$SK11/kipi-update.sh" --dry-run --only parent11 2>&1 || true)"
+echo "$OUT11" | grep -q "unsafe" && \
+  fail "a dead link inside a skipped nested repo blocked the parent: $OUT11"
+echo "$OUT11" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model for a parent with a broken link in a child: $OUT11"
+
+# and a dead link in the instance's OWN tree must still refuse
+ln -s "$WORK11/gone" "$I11/q-system/deadlink.md"
+OUT11B="$(bash "$SK11/kipi-update.sh" --dry-run --only parent11 2>&1 || true)"
+echo "$OUT11B" | grep -q "unsafe dangling symlink" || \
+  fail "a dead link in the instance's own tree was modeled instead of refused: $OUT11B"
+echo "PASS: the symlink guard skips paths the model excludes, still refuses in the instance's own tree"
