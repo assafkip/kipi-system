@@ -21,7 +21,13 @@ set -euo pipefail
 
 KIPI_HOME="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
 REGISTRY="${KIPI_REGISTRY:-$KIPI_HOME/instance-registry.json}"
-SYNC_PREFIX='^chore: sync q-system from skeleton'
+# A single `kipi update` writes TWO commits per instance: the q-system rsync
+# and then the .claude config + plugins sync. This matched only the first, so
+# a rollback reverted the q-system half and silently left config and plugins
+# applied -- and every fixture created only the first commit, so nothing caught
+# it. Both forms now match, and the run below reverts the whole contiguous
+# block of sync commits rather than just the newest one.
+SYNC_PREFIX='^chore: sync \(q-system\|\.claude config + plugins\) from skeleton'
 ONLY="${1:-}"   # optional: scope rollback to a single instance by name
 
 PASS=0; SKIP=0; FAIL=0
@@ -456,9 +462,16 @@ rollback_one() {
     fi
     return 0
   fi
-  # most recent sync commit by message-prefix -- NOT HEAD
-  local sync_sha
+  # The newest CONTIGUOUS run of sync commits -- one `kipi update` writes one
+  # or two adjacent ones. Walking from the newest match backwards while each
+  # parent is also a sync commit bounds it to a single update, so an older
+  # update is never dragged in.
+  local sync_sha sync_shas
   sync_sha="$(git -C "$path" log --grep="$SYNC_PREFIX" --format=%H -n 1 2>/dev/null || true)"
+  sync_shas="$(git -C "$path" log --format='%H %s' "$sync_sha" 2>/dev/null \
+      | awk -v re="$SYNC_PREFIX" '{ msg=$0; sub(/^[0-9a-f]+ /,"",msg) }
+             msg ~ /^chore: sync (q-system|\.claude config \+ plugins) from skeleton/ { print $1; next }
+             { exit }' || true)"
   if [ -z "$sync_sha" ]; then
     if [ "$itype" = "direct-clone" ]; then
       echo "  SKIP (direct-clone: syncs via git pull from origin, no local sync commit -- roll back with git inside the instance)"
@@ -472,13 +485,24 @@ rollback_one() {
     echo "  SKIP (dirty working tree -- commit or stash first; refusing to revert over uncommitted work)"
     SKIP=$((SKIP+1)); return 0
   fi
-  local short
-  short="$(git -C "$path" rev-parse --short "$sync_sha")"
-  if git -C "$path" revert --no-edit "$sync_sha" >/dev/null 2>&1; then
-    echo "  ROLLED BACK (reverted sync $short)"; PASS=$((PASS+1))
+  local shorts reverted=0 conflicted=""
+  shorts=""
+  # Newest first: reverting an older commit before a newer one that touches the
+  # same paths conflicts by construction.
+  for sha in $sync_shas; do
+    local short; short="$(git -C "$path" rev-parse --short "$sha")"
+    if git -C "$path" revert --no-edit "$sha" >/dev/null 2>&1; then
+      reverted=$((reverted+1)); shorts="$shorts $short"
+    else
+      git -C "$path" revert --abort >/dev/null 2>&1 || true
+      conflicted="$short"; break
+    fi
+  done
+  if [ -n "$conflicted" ]; then
+    echo "  FAIL (revert of $conflicted conflicted; aborted cleanly,$([ "$reverted" -gt 0 ] && echo " $reverted earlier revert(s) kept," ) instance otherwise untouched)"
+    FAIL=$((FAIL+1))
   else
-    git -C "$path" revert --abort >/dev/null 2>&1 || true
-    echo "  FAIL (revert of $short conflicted; aborted cleanly, instance left untouched)"; FAIL=$((FAIL+1))
+    echo "  ROLLED BACK (reverted $reverted sync commit(s):$shorts)"; PASS=$((PASS+1))
   fi
 }
 

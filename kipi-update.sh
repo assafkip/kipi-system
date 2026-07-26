@@ -302,6 +302,21 @@ config_source_manages() {
       return
       ;;
     plugins/*/*)
+      # A build artifact is not work in progress. The plugins rsync runs with
+      # --delete-excluded and its filters (/.git/, __pycache__/, *.pyc, .venv/)
+      # exist precisely to clear these from the instance, so flagging them as a
+      # collision refuses the sync over the thing the sync is for. Scar
+      # 2026-07-25: this matched whenever the plugin DIRECTORY existed in the
+      # skeleton, and the scan enumerates gitignored files, so a single
+      # __pycache__ entry aborted the config sync on 23 of 23 instances -- and
+      # with it .claude/, plugins/, and the 98MB .venv deletion.
+      case "$relative" in
+        */.git/*|*/__pycache__/*|*.pyc|*/.venv/*|*/.pytest_cache/*)
+          return 1
+          ;;
+      esac
+      # Anything else under a managed plugin dir IS a real collision: the rsync
+      # is --delete, so it removes instance files the skeleton does not carry.
       local plugin_name="${relative#plugins/}"
       plugin_name="${plugin_name%%/*}"
       [ -d "$SCRIPT_DIR/plugins/$plugin_name" ]
@@ -320,12 +335,14 @@ reject_untracked_config_collisions() {
       return 1
     fi
   done < <(
-    {
-      git -C "$target" ls-files -z --others --exclude-standard -- \
-        .claude/ plugins/
-      git -C "$target" ls-files -z --others --ignored --exclude-standard -- \
-        .claude/ plugins/
-    }
+    # UNTRACKED only, not --ignored. This guard exists to protect WORK from a
+    # sync that would overwrite or --delete it. A file the instance itself
+    # gitignores is, by its own declaration, not work; one real instance
+    # returns 2569 ignored entries under these two dirs and the first of them
+    # aborted the whole config block. Genuinely precious untracked state lives
+    # under q-system/, which has its own snapshot-and-restore path.
+    git -C "$target" ls-files -z --others --exclude-standard -- \
+      .claude/ plugins/
   )
 }
 

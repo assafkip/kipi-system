@@ -106,3 +106,30 @@ OUTE2="$(KIPI_REGISTRY="$REGE2" bash "$RB" 2>&1)" || fail "empty-registry run ex
 echo "$OUTE2" | grep -qi "No eligible instances" || fail "empty registry did not signal 'no eligible instances': $OUTE2"
 
 echo "PASS: rollback reverts sync by message-prefix (even with a content commit on top), preserves instance dirs + pre-sync commit, refuses dirty trees, aborts cleanly on conflict, skips no-sync + direct-clone instances with clear messages, signals an empty registry"
+
+# --- a real update writes TWO commits; rollback must undo both ---------------
+# kipi-update.sh writes "chore: sync q-system from skeleton" AND "chore: sync
+# .claude config + plugins from skeleton". SYNC_PREFIX matched only the first,
+# so a rollback reverted the q-system half and silently left the config and
+# plugin half applied. Every fixture in this suite created only the first
+# commit, so the blind spot was untestable by construction.
+WORK2="$(mktemp -d)"; INST2="$WORK2/inst"
+mkdir -p "$INST2/q-system" "$INST2/.claude/rules"
+( cd "$INST2" && G init -q
+  printf 'v1\n' > q-system/tracked.md
+  printf 'rule v1\n' > .claude/rules/demo.md
+  G add -A && G commit -qm "instance baseline"
+  printf 'v2\n' > q-system/tracked.md
+  G add -A && G commit -qm "chore: sync q-system from skeleton 2026-07-25"
+  printf 'rule v2\n' > .claude/rules/demo.md
+  G add -A && G commit -qm "chore: sync .claude config + plugins from skeleton 2026-07-25" )
+printf '{"instances":[{"name":"two","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$INST2" > "$WORK2/registry.json"
+
+KIPI_REGISTRY="$WORK2/registry.json" bash "$RB" >/dev/null 2>&1 || true
+q="$(cat "$INST2/q-system/tracked.md")"
+r="$(cat "$INST2/.claude/rules/demo.md")"
+[ "$q" = "v1" ] || fail "q-system half not rolled back (got '$q')"
+[ "$r" = "rule v1" ] || fail "config+plugins half NOT rolled back (got '$r') -- SYNC_PREFIX missed the second commit"
+echo "PASS: rollback undoes both commits a single update writes"
+

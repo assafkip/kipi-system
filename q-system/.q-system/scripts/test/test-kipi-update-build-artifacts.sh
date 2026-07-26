@@ -70,6 +70,15 @@ printf '{"instances":[{"name":"testinst","path":"%s","subtree_prefix":"q-system"
 mkdir -p "$INST/q-system" "$INST/.claude" "$INST/plugins/demo/.venv/bin"
 printf 'old\n' > "$INST/q-system/tracked.md"
 printf 'stale venv from a previous update\n' > "$INST/plugins/demo/.venv/pyvenv.cfg"
+# ...and build artifacts, which must NOT be read as colliding work in progress.
+# config_source_manages matched plugins/*/* whenever the plugin DIRECTORY
+# existed in the skeleton, and the collision scan enumerated gitignored files
+# too, so one __pycache__ entry aborted the entire config block. Measured
+# 2026-07-25 against the real registry: that failed on 23 of 23 instances,
+# which meant .claude/, plugins/ and this very .venv deletion never ran.
+mkdir -p "$INST/plugins/demo/src/__pycache__" "$INST/plugins/demo/.pytest_cache"
+printf 'cached\n' > "$INST/plugins/demo/src/__pycache__/x.cpython-314.pyc"
+printf 'cached\n' > "$INST/plugins/demo/.pytest_cache/CACHEDIR.TAG"
 ( cd "$INST" && G init -q && G add -A -f && G commit -qm inst )
 
 bash "$SK/kipi-update.sh" >/dev/null 2>&1 || true
@@ -88,4 +97,10 @@ bash "$SK/kipi-update.sh" >/dev/null 2>&1 || true
 grep -q "real plugin source" "$INST/plugins/demo/src/server.py" || \
   fail "plugin source synced but with wrong content"
 
+if bash "$SK/kipi-update.sh" 2>&1 | grep -q "untracked WIP collides with managed config"; then
+  fail "a build artifact in the instance was treated as colliding WIP"
+fi
+
 echo "PASS: .venv is neither copied nor left behind; real plugin source still syncs"
+echo "PASS: a build artifact in the instance does not abort the config sync"
+echo "PASS: a gitignored build artifact in the instance does not abort the config sync"
