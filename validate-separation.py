@@ -686,8 +686,17 @@ def phase_1():
             if not last_bump:
                 warn(f"Gate 1.7: {name} manifest has no commit history")
                 continue
+            # `<commit>` with no `..HEAD`, so this compares the last bump against
+            # the WORKING TREE, not just committed history. The ..HEAD form
+            # reported clean while an uncommitted plugin edit sat in the tree --
+            # useless for a gate meant to warn BEFORE the change ships.
             changed = subprocess.run(
-                ["git", "-C", SCRIPT_DIR, "diff", "--name-only", f"{last_bump}..HEAD",
+                ["git", "-C", SCRIPT_DIR, "diff", "--name-only", last_bump,
+                 "--", f"plugins/{name}/"],
+                capture_output=True, text=True).stdout.split()
+            # ...and new files, which no diff form reports.
+            changed += subprocess.run(
+                ["git", "-C", SCRIPT_DIR, "ls-files", "--others", "--exclude-standard",
                  "--", f"plugins/{name}/"],
                 capture_output=True, text=True).stdout.split()
             drifted = [c for c in changed if not c.endswith(".claude-plugin/plugin.json")]

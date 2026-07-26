@@ -107,6 +107,21 @@ Required keys per entry (spine-native -- both consumers):
   - bypass_check (a command proving no bypass remains) OR
     bypass_exempt: "<reason>"                          -- spine contract
 
+Write bypass_check as an INVARIANT, not a token count. Counting occurrences of
+an identifier looks deterministic and is not: prose in a comment inflates it, a
+refactor that renames or inlines deflates it, and neither fact says anything
+about whether a bypass remains. Prefer "exactly one scan exists", "the byte
+compare lives in one place", "the guard is still present" over
+`grep -c <name> == N`. If a count really is the invariant, exclude comment lines
+(`grep -v '^[[:space:]]*#' | grep -c`) and use `grep -F` for patterns holding
+regex metacharacters such as `$`.
+
+Scar 2026-07-26 (prd-updater-consolidation): three of five bypass_checks were
+grep-count proxies and each needed a mid-issue amendment. One did real damage --
+it demanded three calls to a function, so a redundant dead call was written
+purely to satisfy the number, and adversarial review caught it. A check that
+shapes the code to fit the check is worse than no check.
+
 Optional keys:
   - priority (default p1)
   - disallowed_files, required_reviews, acceptance
