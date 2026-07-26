@@ -141,3 +141,42 @@ grep -q "INSTANCE OWN METRICS" "$I4/q-system/.q-system/data/metrics.db" || \
   fail "the instance's own metrics.db was overwritten by the skeleton's"
 echo "PASS: instance-owned .q-system/data/ neither blocks the sync nor is overwritten"
 
+# --- an interrupted sync must be recoverable by re-running ------------------
+# A run that dies after the rsync but before the commit leaves its own output
+# in the instance as UNTRACKED files. The collision guard then reads them as
+# work in progress and refuses forever, so one interrupted sync bricks that
+# instance until a human deletes files by hand. Observed on a real run
+# 2026-07-25: 40 residue files, every one byte-identical to the skeleton.
+# Identical content is not WIP; it is this sync's own half-finished work.
+WORK5="$(mktemp -d)"; SK5="$WORK5/skel"; I5="$WORK5/inst"
+mkdir -p "$SK5/q-system/.q-system/scripts" "$SK5/q-system/.q-system/state" "$I5/q-system"
+cp "$SCRIPT" "$SK5/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK5/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK5/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK5/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK5/validate-separation.py"
+cat > "$SK5/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK5/q-system/tracked.md"
+printf 'new skeleton file\n' > "$SK5/q-system/newthing.md"
+( cd "$SK5" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"r","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I5" > "$SK5/instance-registry.json"
+printf 'old\n' > "$I5/q-system/tracked.md"
+( cd "$I5" && G init -q && G add -A && G commit -qm inst )
+# residue from an interrupted run: identical to the skeleton, untracked
+printf 'new skeleton file\n' > "$I5/q-system/newthing.md"
+# and a genuine untracked instance file that DOES differ -- must still block
+printf 'MY OWN WORK\n' > "$I5/q-system/tracked.md.local"
+
+OUT5="$(bash "$SK5/kipi-update.sh" 2>&1 || true)"
+if echo "$OUT5" | grep -q "collides with skeleton path: q-system/newthing.md"; then
+  fail "identical sync residue was read as untracked WIP: $OUT5"
+fi
+grep -q "skeleton v2" "$I5/q-system/tracked.md" || fail "re-run did not converge: $OUT5"
+grep -q "MY OWN WORK" "$I5/q-system/tracked.md.local" || fail "a real untracked instance file was destroyed"
+echo "PASS: an interrupted sync re-runs cleanly; genuine untracked work is still protected"
+

@@ -738,6 +738,15 @@ PY
           fi
           source_path="$ARCHIVE_TMP/q-system/$relative"
           if [ -e "$source_path" ] || [ -L "$source_path" ]; then
+            # Byte-identical is not work in progress: it is THIS sync's own
+            # output from a run that died after the rsync and before the
+            # commit. Treating it as WIP made one interrupted sync brick an
+            # instance permanently -- every later run refused, and the only
+            # recovery was deleting files by hand. Observed on a real run
+            # 2026-07-25: 40 residue files, all identical to the skeleton.
+            if [ -f "$source_path" ] && [ -f "$uf" ] && cmp -s "$uf" "$source_path"; then
+              continue
+            fi
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
