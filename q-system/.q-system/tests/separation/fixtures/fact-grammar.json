@@ -13,49 +13,87 @@
   "cases": [
     {
       "id": "populated-client-field",
-      "covers": ["populated_field"],
+      "covers": [
+        "populated_field"
+      ],
       "text": "- **Client:** Oriole Systems",
-      "expected_classes": ["client_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "client_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "plain-prospect-field",
-      "covers": ["populated_field"],
+      "covers": [
+        "populated_field"
+      ],
       "text": "Prospect: Oriole Systems",
-      "expected_classes": ["client_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "client_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "sourced-dated-priced-interaction",
-      "covers": ["currency", "dated_interaction", "source"],
+      "covers": [
+        "currency",
+        "dated_interaction",
+        "source"
+      ],
       "text": "- **Source:** Maren quoted $5,000 on July 24, 2026",
-      "expected_classes": ["pricing", "sourced_interaction"],
-      "expected_lines": [1, 1]
+      "expected_classes": [
+        "pricing",
+        "sourced_interaction"
+      ],
+      "expected_lines": [
+        1,
+        1
+      ]
     },
     {
       "id": "case-proof-gap",
-      "covers": ["case_fact"],
+      "covers": [
+        "case_fact"
+      ],
       "text": "- **Proof gap:** Missing attribution proof for the Oriole case",
-      "expected_classes": ["case_proof_gap"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "case_proof_gap"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "relationship-fact",
-      "covers": ["populated_field"],
+      "covers": [
+        "populated_field"
+      ],
       "text": "- **Relationship:** Maren introduced Oriole Systems",
-      "expected_classes": ["relationship"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "relationship"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "placeholder-only-template",
-      "covers": ["placeholder"],
+      "covers": [
+        "placeholder"
+      ],
       "text": "- **Client:** {{ client.name }}",
       "expected_classes": [],
       "expected_lines": []
     },
     {
       "id": "synthetic-marker-with-fixture-provenance",
-      "covers": ["synthetic_marker"],
+      "covers": [
+        "synthetic_marker"
+      ],
       "source_path": "q-system/.q-system/tests/separation/fixtures/example.md",
       "text": "fixture: synthetic\n- **Client:** Oriole Systems\n- **Price:** $5,000",
       "expected_classes": [],
@@ -63,75 +101,251 @@
     },
     {
       "id": "synthetic-marker-without-provenance",
-      "covers": ["synthetic_marker", "unclassified"],
+      "covers": [
+        "synthetic_marker",
+        "unclassified"
+      ],
       "source_path": "q-system/canonical/discovery.md",
       "text": "fixture: synthetic\n- **Client:** Oriole Systems",
-      "expected_classes": ["unclassified_populated_record", "client_identity"],
-      "expected_lines": [1, 2]
+      "expected_classes": [
+        "unclassified_populated_record",
+        "client_identity"
+      ],
+      "expected_lines": [
+        1,
+        2
+      ]
     },
     {
       "id": "unclassified-populated-record",
-      "covers": ["unclassified"],
+      "covers": [
+        "unclassified"
+      ],
       "text": "- **Engagement detail:** Oriole requested custom deployment",
-      "expected_classes": ["unclassified_populated_record"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "unclassified_populated_record"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "multiline-populated-field",
-      "covers": ["populated_field"],
+      "covers": [
+        "populated_field"
+      ],
       "text": "- **Organization:**\n  Oriole Systems",
-      "expected_classes": ["client_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "client_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "source-without-date",
-      "covers": ["source"],
+      "covers": [
+        "source"
+      ],
       "text": "- **Potential source:** Maren",
-      "expected_classes": ["source_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "source_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "dated-interaction-without-source-or-currency",
-      "covers": ["dated_interaction"],
+      "covers": [
+        "dated_interaction"
+      ],
       "text": "- **Meeting:** July 24, 2026",
-      "expected_classes": ["dated_interaction"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "dated_interaction"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "invalid-dated-interaction",
-      "covers": ["dated_interaction", "unclassified"],
+      "covers": [
+        "dated_interaction",
+        "unclassified"
+      ],
       "text": "- **Meeting:** 2026-99-99",
-      "expected_classes": ["unclassified_populated_record"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "unclassified_populated_record"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "currency-without-source-or-date",
-      "covers": ["currency"],
+      "covers": [
+        "currency"
+      ],
       "text": "- **Package:** $5,000",
-      "expected_classes": ["pricing"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "pricing"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "affirmative-case-fact",
-      "covers": ["case_fact", "unclassified"],
+      "covers": [
+        "case_fact",
+        "unclassified"
+      ],
       "text": "- **Investigation case:** Oriole attribution review",
-      "expected_classes": ["unclassified_populated_record"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "unclassified_populated_record"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "fixture-provenance-without-marker",
-      "covers": ["synthetic_marker", "populated_field"],
+      "covers": [
+        "synthetic_marker",
+        "populated_field"
+      ],
       "source_path": "q-system/.q-system/tests/separation/fixtures/example.md",
       "text": "- **Client:** Oriole Systems",
-      "expected_classes": ["client_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "client_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     },
     {
       "id": "mixed-placeholder-and-real-content",
-      "covers": ["placeholder", "populated_field"],
+      "covers": [
+        "placeholder",
+        "populated_field"
+      ],
       "text": "- **Client:** {{ client.name }} for Oriole Systems",
-      "expected_classes": ["client_identity"],
-      "expected_lines": [1]
+      "expected_classes": [
+        "client_identity"
+      ],
+      "expected_lines": [
+        1
+      ]
     }
-  ]
+  ],
+  "reach_probe": {
+    "why": "One fact -- the client Oriole Systems -- written sixteen ways. The PRD states the gate's coverage bound in prose ('a client name in prose, a heading, JSON, shell, Python or most config syntax produces no finding'). Prose degrades silently: it stays on the page while the classifier changes underneath it. This turns the bound into a number that moves when the classifier does.",
+    "fact": "Oriole Systems",
+    "measured_on": "2026-07-25",
+    "forms": [
+      {
+        "id": "markdown-bold-field",
+        "category": "record",
+        "text": "- **Client:** Oriole Systems",
+        "seen_classes": [
+          "client_identity"
+        ]
+      },
+      {
+        "id": "plain-label-field",
+        "category": "record",
+        "text": "Client: Oriole Systems",
+        "seen_classes": [
+          "client_identity"
+        ]
+      },
+      {
+        "id": "table-row",
+        "category": "record",
+        "text": "| Client | Oriole Systems |",
+        "seen_classes": [
+          "client_identity"
+        ]
+      },
+      {
+        "id": "prose-sentence",
+        "category": "prose",
+        "text": "We closed the Oriole Systems deal last week.",
+        "seen_classes": []
+      },
+      {
+        "id": "prose-mid-paragraph",
+        "category": "prose",
+        "text": "After two calls Oriole Systems signed for $45,000 on 2026-03-14.",
+        "seen_classes": []
+      },
+      {
+        "id": "markdown-heading",
+        "category": "heading",
+        "text": "## Oriole Systems onboarding",
+        "seen_classes": []
+      },
+      {
+        "id": "bullet-no-label",
+        "category": "prose",
+        "text": "- Renewal conversation with Oriole Systems",
+        "seen_classes": []
+      },
+      {
+        "id": "json-field",
+        "category": "json",
+        "text": "  \"client\": \"Oriole Systems\",",
+        "seen_classes": []
+      },
+      {
+        "id": "json-nested",
+        "category": "json",
+        "text": "{\"account\": {\"name\": \"Oriole Systems\", \"value\": \"$45,000\"}}",
+        "seen_classes": []
+      },
+      {
+        "id": "python-assignment",
+        "category": "code",
+        "text": "client = \"Oriole Systems\"",
+        "seen_classes": []
+      },
+      {
+        "id": "python-dict-literal",
+        "category": "code",
+        "text": "ACCOUNTS = {\"primary\": \"Oriole Systems\"}",
+        "seen_classes": []
+      },
+      {
+        "id": "shell-variable",
+        "category": "config",
+        "text": "CLIENT=\"Oriole Systems\"",
+        "seen_classes": []
+      },
+      {
+        "id": "toml-ini",
+        "category": "config",
+        "text": "client = \"Oriole Systems\"",
+        "seen_classes": []
+      },
+      {
+        "id": "csv-row",
+        "category": "config",
+        "text": "account,Oriole Systems,$45,000",
+        "seen_classes": []
+      },
+      {
+        "id": "html-comment",
+        "category": "prose",
+        "text": "<!-- Client: Oriole Systems -->",
+        "seen_classes": []
+      },
+      {
+        "id": "email-signature",
+        "category": "prose",
+        "text": "Sent on behalf of Oriole Systems",
+        "seen_classes": []
+      }
+    ]
+  }
 }
