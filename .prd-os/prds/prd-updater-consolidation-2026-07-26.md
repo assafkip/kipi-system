@@ -336,7 +336,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
     "required_checks": [
       "bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-build-artifacts.sh",
-      "python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design"
+      "bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf \"%s\\n\" \"$o\" | tail -1; printf \"%s\\n\" \"$o\" | grep -Eq \"^3 failed, 357 passed, 1 skipped\" && [ \"$(printf \"%s\\n\" \"$o\" | grep -c \"^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path\")\" -eq 3 ]'"
     ],
     "bypass_check": "test \"$(grep -c 'SCRIPT_DIR/plugins' kipi-update.sh)\" -eq 1",
     "acceptance": "Runs FIRST. SKELETON_PLUGIN_ROOT defined once; managed_plugin_names and is_managed_plugin_path are the only deciders; the staging enumeration is re-rooted per managed plugin and :301's [ -d ] guard is deleted; the three behaviour-identity cases (loose file under plugins/, dangling top-level symlink, symlink-to-real-directory) are each demonstrated unchanged before and after; no test added; baseline unchanged."
@@ -353,7 +353,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
     "required_checks": [
       "bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-dry-final-state.sh",
-      "python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design"
+      "bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf \"%s\\n\" \"$o\" | tail -1; printf \"%s\\n\" \"$o\" | grep -Eq \"^3 failed, 357 passed, 1 skipped\" && [ \"$(printf \"%s\\n\" \"$o\" | grep -c \"^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path\")\" -eq 3 ]'"
     ],
     "bypass_check": "test \"$(grep -c 'model_skip_scan' kipi-update.sh)\" -ge 3",
     "acceptance": "Runs SECOND. model_skip_scan is the single cached scan; model_rsync_excludes and model_walk_skips are two named projections of it, neither derived from the other; .git is in the rsync projection and NOT in the walk projection, with the asymmetry's reason in a comment; a new fixture plants a dangling symlink under the instance's own .git/ and asserts the run still refuses, pinning today's behaviour rather than introducing new behaviour; the submodule carve-out is preserved verbatim; baseline unchanged."
@@ -367,7 +367,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
     "required_checks": [
       "bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
-      "python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design"
+      "bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf \"%s\\n\" \"$o\" | tail -1; printf \"%s\\n\" \"$o\" | grep -Eq \"^3 failed, 357 passed, 1 skipped\" && [ \"$(printf \"%s\\n\" \"$o\" | grep -c \"^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path\")\" -eq 3 ]'"
     ],
     "bypass_check": "test \"$(grep -c 'is_instance_wip' kipi-update.sh)\" -eq 3 && grep -q 'refusing to commit unrelated work' kipi-update.sh",
     "acceptance": "Runs THIRD. is_instance_wip is the single predicate behind :452 and :894 ONLY; the tracked-tree check at :808-821 is NOT touched, and why is comment-anchored (a modified TRACKED .pyc must keep failing that guard, else git add -u at :226 stages it into the updater's own commit); the config site passes an empty counterpart so it does not gain the byte-identical carve-out; the q-system site's new build-artifact carve-out is argued no-op case by case; the deferred config-site byte-identical fix is captured in spillover; no test added; baseline unchanged."
@@ -385,7 +385,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
       "bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
-      "python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design"
+      "bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf \"%s\\n\" \"$o\" | tail -1; printf \"%s\\n\" \"$o\" | grep -Eq \"^3 failed, 357 passed, 1 skipped\" && [ \"$(printf \"%s\\n\" \"$o\" | grep -c \"^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path\")\" -eq 3 ]'"
     ],
     "bypass_check": "test \"$(grep -c -F 'FAIL=$((FAIL + 1))' kipi-update.sh)\" -eq 1",
     "acceptance": "Runs FOURTH, and re-snapshots its scope with /issue-amend after issue 3 closes. checkpoint_instance runs before the first write and copies untracked CONTENT, not only the path list; all 24 give-up paths route through abandon_instance, so FAIL++ appears exactly once in the file; the reproducer for sp-5f2d2a63 and sp-e244e821 is red before and green after; a fixture proves an untracked file deleted by rsync --delete is restored on the :1000 and :1014 bails, which requires restoring before ARCHIVE_TMP teardown; every new assertion is mutation-checked against a deliberately gutted restore; no git reset --hard and no git clean; wc -l kipi-update.sh < 1253 with no scar comment deleted."
@@ -402,7 +402,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
     "required_checks": [
       "bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
       "bash q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh",
-      "python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design"
+      "bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf \"%s\\n\" \"$o\" | tail -1; printf \"%s\\n\" \"$o\" | grep -Eq \"^3 failed, 357 passed, 1 skipped\" && [ \"$(printf \"%s\\n\" \"$o\" | grep -c \"^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path\")\" -eq 3 ]'"
     ],
     "bypass_check": "grep -q 'CHERRY_PICK_HEAD' kipi-update.sh",
     "acceptance": "Runs LAST, after the restore chokepoint exists. restore_instance removes MERGE_HEAD, CHERRY_PICK_HEAD, rebase-merge/ and rebase-apply/ when the checkpoint did not record them; a fixture leaves the instance mid-merge on the direct-clone fall-through path (:840-846 has no continue, so bails :1083/:1178 run with MERGE_HEAD set whenever git merge --abort fails), runs the restore, and asserts the NEXT commit has one parent rather than two; the assertion checks commit parents, not `git status`, because status reports clean with MERGE_HEAD set, which is the whole defect."

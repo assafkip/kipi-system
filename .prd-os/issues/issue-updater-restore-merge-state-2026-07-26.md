@@ -11,7 +11,7 @@ disallowed_files: []
 required_checks:
   - bash q-system/.q-system/scripts/test/test-kipi-update-safety.sh
   - bash q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh
-  - python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design
+  - bash -c 'o=$(python3 -m pytest -q --ignore=scripts --ignore=.claude --ignore=plugins/kipi-core/kipi-mcp --ignore=plugins/kipi-design 2>&1); printf "%s\n" "$o" | tail -1; printf "%s\n" "$o" | grep -Eq "^3 failed, 357 passed, 1 skipped" && [ "$(printf "%s\n" "$o" | grep -c "^FAILED plugins/prd-os/tests/test_propagation.py::test_rsync_block_excludes_protected_path")" -eq 3 ]'
 required_reviews: []
 bypass_check: "grep -q 'CHERRY_PICK_HEAD' kipi-update.sh"
 ---

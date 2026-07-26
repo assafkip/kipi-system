@@ -78,6 +78,38 @@ is_instance_owned() {
   return 1
 }
 
+# One answer to "what is a plugin?". Decided independently in four places
+# before this: the staging enumeration walked plugins/ wholesale and filtered
+# afterwards, the copy loop globbed plugins/*/, and two more sites re-derived
+# the same [ -d ] test. The enumeration and the copy disagreeing is what
+# produced `pathspec ... did not match any files` -- the stager handed git a
+# skeleton entry the syncer had skipped, and that failed the whole config sync.
+#
+# Scar 2026-07-25: plugins/memory-lifecycle points at
+# /Users/assafkip/projects/memory-lifecycle -- an old username, long gone -- so
+# all_points_setup and Prodigy_Gold both failed there while instances that
+# received the plugin back when the link resolved passed. That asymmetry made a
+# skeleton-wide defect look instance-specific.
+SKELETON_PLUGIN_ROOT="$SCRIPT_DIR/plugins"
+
+# The ONLY enumeration. `*/` resolves symlinks, so a dangling entry never
+# appears here -- which is exactly why the stager can no longer name a path the
+# syncer will not write. Both now iterate this.
+managed_plugin_names() {
+  local plugin_dir
+  for plugin_dir in "$SKELETON_PLUGIN_ROOT"/*/; do
+    [ -d "$plugin_dir" ] || continue
+    plugin_dir="${plugin_dir%/}"
+    printf '%s\n' "${plugin_dir##*/}"
+  done
+}
+
+is_managed_plugin_path() {
+  local top="${1#plugins/}"
+  top="${top%%/*}"
+  [ -n "$top" ] && [ -d "$SKELETON_PLUGIN_ROOT/$top" ]
+}
+
 echo "=== Kipi System Update ==="
 echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
@@ -260,7 +292,7 @@ unstage_scope() {
 
 stage_config_sync() {
   local target="$1"
-  local scope source relative plugin_top ignored_paths
+  local scope source relative plugin_name ignored_paths
   local -a plugin_paths=() stage_paths=()
   for scope in .claude plugins; do
     if [ -n "$(git -C "$target" ls-files -- "$scope/")" ]; then
@@ -281,31 +313,21 @@ stage_config_sync() {
       )
     fi
   done
-  if [ -d "$SCRIPT_DIR/plugins" ]; then
-    while IFS= read -r -d '' source; do
-      relative="${source#"$SCRIPT_DIR/"}"
-      # Stage only what the sync loop can actually write. That loop iterates
-      # `$SCRIPT_DIR/plugins/*/`, a glob that matches directories and symlinks
-      # to directories, so a skeleton entry that is a DANGLING symlink is
-      # skipped there and never materialises in the instance. Handing git that
-      # path here fails with `pathspec ... did not match any files` and takes
-      # the whole config sync down with it.
-      #
-      # Scar 2026-07-25: plugins/memory-lifecycle points at
-      # /Users/assafkip/projects/memory-lifecycle -- an old username, long
-      # gone -- so all_points_setup and Prodigy_Gold both failed here while
-      # instances that received the plugin back when the link resolved passed.
-      # That asymmetry made a skeleton-wide defect look instance-specific.
-      plugin_top="${relative#plugins/}"
-      plugin_top="${plugin_top%%/*}"
-      [ -d "$SCRIPT_DIR/plugins/$plugin_top" ] || continue
-      plugin_paths+=("$relative")
-    done < <(
-      find "$SCRIPT_DIR/plugins" \
-        \( -type d -name .git -o -type d -name __pycache__ \
-           -o -type d -name .pytest_cache -o -type d -name .venv \) -prune -o \
-        \( -type f ! -name '*.pyc' -o -type l \) -print0
-    )
+  if [ -d "$SKELETON_PLUGIN_ROOT" ]; then
+    # Rooted PER MANAGED PLUGIN, not at plugins/ wholesale. The stager and the
+    # syncer now walk the same list, so the stager can no longer name a path
+    # the syncer will not write -- which is what the old post-hoc [ -d ] filter
+    # was patching around. See managed_plugin_names for the scar.
+    while IFS= read -r plugin_name; do
+      while IFS= read -r -d '' source; do
+        plugin_paths+=("${source#"$SCRIPT_DIR/"}")
+      done < <(
+        find "$SKELETON_PLUGIN_ROOT/$plugin_name" \
+          \( -type d -name .git -o -type d -name __pycache__ \
+             -o -type d -name .pytest_cache -o -type d -name .venv \) -prune -o \
+          \( -type f ! -name '*.pyc' -o -type l \) -print0
+      )
+    done < <(managed_plugin_names)
     # A path the INSTANCE ignores cannot be staged, and `git add` treats that
     # as an error, so ONE stray file in the skeleton fails the entire config
     # sync on every instance whose .gitignore covers its extension. Skip those
@@ -435,9 +457,7 @@ config_source_manages() {
       esac
       # Anything else under a managed plugin dir IS a real collision: the rsync
       # is --delete, so it removes instance files the skeleton does not carry.
-      local plugin_name="${relative#plugins/}"
-      plugin_name="${plugin_name%%/*}"
-      [ -d "$SCRIPT_DIR/plugins/$plugin_name" ]
+      is_managed_plugin_path "$relative"
       return
       ;;
   esac
@@ -1127,27 +1147,25 @@ PY
     # and bytecode from the instance copy. A symlinked skeleton plugin (e.g.
     # memory-lifecycle -> standalone repo) used to materialize WITH its .git,
     # leaving every instance permanently dirty on plugins/<name> in git status.
-    if [ -d "$SCRIPT_DIR/plugins" ]; then
+    if [ -d "$SKELETON_PLUGIN_ROOT" ]; then
       mkdir -p "$path/plugins"
-      for plugin_dir in "$SCRIPT_DIR"/plugins/*/; do
-        if [ -d "$plugin_dir" ]; then
-          plugin_name="$(basename "$plugin_dir")"
-          # .venv/ is a uv-built virtualenv, not source: uv writes a
-          # `.gitignore` of `*` inside it, pyvenv.cfg pins it to ONE machine's
-          # Python (home = /Users/<name>/... macos-aarch64), and nothing
-          # launches it -- plugins/kipi-core/.mcp.json runs `uv run`, which
-          # rebuilds it from the tracked uv.lock (measured: 52 packages, 37ms).
-          # It was 107MB of the 112MB plugin tree, copied into 23 instances
-          # where it could never work. --delete-excluded also clears the stale
-          # copies already there. Pairs with test-kipi-update-build-artifacts.sh.
-          if ! rsync -a --delete --delete-excluded \
-              --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
-              --exclude=".venv/" --exclude=".pytest_cache/" \
-              "$plugin_dir" "$path/plugins/$plugin_name/" 2>/dev/null; then
-            CONFIG_FAILED=1
-          fi
+      while IFS= read -r plugin_name; do
+        # .venv/ is a uv-built virtualenv, not source: uv writes a
+        # `.gitignore` of `*` inside it, pyvenv.cfg pins it to ONE machine's
+        # Python (home = /Users/<name>/... macos-aarch64), and nothing
+        # launches it -- plugins/kipi-core/.mcp.json runs `uv run`, which
+        # rebuilds it from the tracked uv.lock (measured: 52 packages, 37ms).
+        # It was 107MB of the 112MB plugin tree, copied into 23 instances
+        # where it could never work. --delete-excluded also clears the stale
+        # copies already there. Pairs with test-kipi-update-build-artifacts.sh.
+        if ! rsync -a --delete --delete-excluded \
+            --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
+            --exclude=".venv/" --exclude=".pytest_cache/" \
+            "$SKELETON_PLUGIN_ROOT/$plugin_name/" \
+            "$path/plugins/$plugin_name/" 2>/dev/null; then
+          CONFIG_FAILED=1
         fi
-      done
+      done < <(managed_plugin_names)
     fi
 
     # Commit the config sync. The updater used to commit only $prefix/, leaving
