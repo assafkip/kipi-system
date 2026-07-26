@@ -23,6 +23,7 @@ usage() {
   echo "  kipi linear pending           Show captured items Linear does not have yet"
   echo "  kipi linear status            Which repos have been rolled out to Linear"
   echo "  kipi linear plan --map <f> --remote <f> --out <f>   Plan creates (idempotent)"
+  echo "  kipi linear create --plan <f> [--apply]   Apply a plan to live Linear (dry by default)"
   echo "  kipi linear map               Regenerate every repo's capability map"
   echo "  kipi linear overlap           Cross-repo divergence + collision report"
   echo "  kipi linear claim <ASK-n> --agent <name> --session <id>   Claim this tree BEFORE branching (exit 3 = refused)"
@@ -117,6 +118,9 @@ PY
           --digest "$KIPI_HOME/q-system/output/capability-digest.json" "$@"
         ;;
       plan)    python3 "$SYNC" plan "$@" ;;
+      # Applies a plan to LIVE Linear. Dry unless --apply, because Linear
+      # delete/archive are hook-blocked so a duplicate is permanent.
+      create)  python3 "$SYNC" create "$@" ;;
       record)  python3 "$SYNC" record "$@" ;;
       key)     python3 "$SYNC" key "$@" ;;
       # Claim BEFORE creating a branch or worktree. Exit 3 means refused (another
@@ -126,7 +130,7 @@ PY
       claims)  python3 "$CLAIM" status "$@" ;;
       *)
         echo "unknown: kipi linear $sub" >&2
-        echo "try: issue | pending | status | map | overlap | plan | record | key" >&2
+        echo "try: issue | pending | status | map | overlap | plan | create | record | key" >&2
         echo "     claim | release | claims" >&2
         exit 1
         ;;

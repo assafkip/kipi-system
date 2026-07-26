@@ -281,6 +281,265 @@ def _state_for(cap: dict) -> str:
     return "Backlog"
 
 
+# ---------------------------------------------------------------------------
+# Direct creation over the Linear API
+#
+# Why this exists: queue-and-drain was built because a shell had no way to reach
+# Linear, so capture was local and an agent session drained it. That constraint
+# was a missing credential, not a law -- verified 2026-07-26 while reading two
+# other Linear agent orchestrators, both of which simply use an API key. With a
+# key, `create` closes the loop and the drain round trip is optional.
+#
+# The permanence rule still dominates every design choice below: Linear delete
+# and archive are blocked by the destructive-op hook and an agent cannot
+# self-authorize them, so a duplicate is FOREVER. Hence: refetch the remote
+# guard immediately before writing, append the ledger after EVERY single create
+# rather than at the end, and require --apply.
+
+LINEAR_API_URL = os.environ.get("KIPI_LINEAR_API_URL", "https://api.linear.app/graphql")
+
+
+class LinearAPIError(Exception):
+    """A GraphQL call failed. Never swallowed: a failed create must stop the run."""
+
+
+def linear_api_key() -> str:
+    """The key, from env or the gitignored secret file.
+
+    Same convention as the Slack webhook and cockpit-token: a 0600 file under
+    ~/.config/kipi/, never in the repo, never in a committed config.
+    """
+    env = os.environ.get("KIPI_LINEAR_API_KEY")
+    if env:
+        return env.strip()
+    path = os.path.expanduser("~/.config/kipi/linear-api-key")
+    if not os.path.isfile(path):
+        raise LinearAPIError(
+            f"no Linear API key. Create one at https://linear.app/settings/api "
+            f"then:\n  umask 077 && printf '%%s' '<key>' > {path}\n"
+            "or export KIPI_LINEAR_API_KEY."
+        )
+    with open(path, encoding="utf-8") as fh:
+        key = fh.read().strip()
+    if not key:
+        raise LinearAPIError(f"{path} is empty")
+    return key
+
+
+def graphql(query: str, variables: dict) -> dict:
+    """One GraphQL call. Raises on transport OR on a GraphQL `errors` array.
+
+    Linear returns HTTP 200 with an `errors` key for application-level failures,
+    so checking the status code alone would read a failed create as a success and
+    then append a ledger record for an object that does not exist.
+    """
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+    req = urllib.request.Request(
+        LINEAR_API_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": linear_api_key(),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:400]
+        raise LinearAPIError(f"HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise LinearAPIError(f"network: {exc.reason}") from exc
+    if payload.get("errors"):
+        raise LinearAPIError(json.dumps(payload["errors"])[:500])
+    return payload.get("data") or {}
+
+
+TEAM_QUERY = """
+query($key: String!) {
+  teams(filter: { key: { eq: $key } }) { nodes { id key name } }
+}
+"""
+
+PROJECT_ISSUES_QUERY = """
+query($projectId: ID!, $after: String) {
+  issues(filter: { project: { id: { eq: $projectId } } }, first: 100, after: $after) {
+    nodes { id identifier description }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+TEAM_PROJECTS_QUERY = """
+query($teamId: String!) {
+  team(id: $teamId) { projects(first: 250) { nodes { id name description } } }
+}
+"""
+
+PROJECT_CREATE = """
+mutation($input: ProjectCreateInput!) {
+  projectCreate(input: $input) { success project { id name } }
+}
+"""
+
+ISSUE_CREATE = """
+mutation($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { id identifier } }
+}
+"""
+
+
+def fetch_remote_state(team_key: str, repo: str) -> tuple:
+    """(team_id, project_or_None, {kipi-key: {...}}) straight from Linear.
+
+    This is the AUTHORITATIVE duplicate guard, refetched at create time rather
+    than trusted from the plan's `--remote` snapshot. A plan written an hour ago
+    and applied now would otherwise recreate anything added in between, and
+    those duplicates cannot be deleted.
+    """
+    teams = (graphql(TEAM_QUERY, {"key": team_key}).get("teams") or {}).get("nodes") or []
+    if not teams:
+        raise LinearAPIError(f"no team with key {team_key!r}")
+    team_id = teams[0]["id"]
+
+    projects = (
+        ((graphql(TEAM_PROJECTS_QUERY, {"teamId": team_id}).get("team") or {}).get("projects") or {})
+        .get("nodes")
+        or []
+    )
+    pkey = project_key(repo)
+    project = None
+    for proj in projects:
+        if MARKER_RE.search(proj.get("description") or "") and pkey in (
+            MARKER_RE.findall(proj.get("description") or "")
+        ):
+            project = proj
+            break
+        if (proj.get("name") or "").strip() == repo:
+            project = proj
+            break
+
+    keys: dict = {}
+    if project:
+        after = None
+        while True:
+            page = (
+                graphql(PROJECT_ISSUES_QUERY, {"projectId": project["id"], "after": after}).get(
+                    "issues"
+                )
+                or {}
+            )
+            for node in page.get("nodes") or []:
+                found = MARKER_RE.search(node.get("description") or "")
+                if found:
+                    keys[found.group(1)] = {
+                        "linear_id": node["id"],
+                        "identifier": node["identifier"],
+                    }
+            info = page.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+    return team_id, project, keys
+
+
+def cmd_create(args) -> int:
+    """Apply a plan against live Linear. Dry by default; --apply to write."""
+    with open(args.plan, "r", encoding="utf-8") as fh:
+        plan = json.load(fh)
+    repo = plan.get("repo")
+    if not repo:
+        print("BLOCK: plan has no 'repo'", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        team_id, project, remote_keys = fetch_remote_state(args.team, repo)
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    ledger = read_ledger()
+    known = set(ledger) | set(remote_keys)
+
+    want_project = plan.get("create_project")
+    if project:
+        want_project = None  # already exists remotely; never make a second one
+    issues = [i for i in (plan.get("create_issues") or []) if i["key"] not in known]
+    skipped = len(plan.get("create_issues") or []) - len(issues)
+
+    print(
+        f"{repo}: would create project={'yes' if want_project else 'exists'}, "
+        f"{len(issues)} issue(s), skipping {skipped} already known"
+    )
+    if not args.apply:
+        print("dry run. re-run with --apply to write to Linear.")
+        return EXIT_OK
+
+    if want_project:
+        data = graphql(
+            PROJECT_CREATE,
+            {
+                "input": {
+                    "name": want_project["name"],
+                    "description": (
+                        f"{want_project.get('summary', '')}\n\n"
+                        f"<!-- kipi-key: {want_project['key']} -->"
+                    ).strip(),
+                    "teamIds": [team_id],
+                }
+            },
+        )
+        created = (data.get("projectCreate") or {}).get("project") or {}
+        if not created.get("id"):
+            print("BLOCK: projectCreate returned no project", file=sys.stderr)
+            return EXIT_USAGE
+        project = created
+        # Append IMMEDIATELY. A crash before the next write must not lose the
+        # record of a permanent object.
+        append_ledger([{
+            "key": want_project["key"], "kind": "project",
+            "linear_id": created["id"], "identifier": created.get("name"),
+            "source": "api-create",
+        }])
+        print(f"  created project {created.get('name')} ({created['id']})")
+
+    made = 0
+    for issue in issues:
+        payload = {
+            "title": issue["title"],
+            "description": issue["description"],
+            "teamId": team_id,
+        }
+        if project:
+            payload["projectId"] = project["id"]
+        try:
+            data = graphql(ISSUE_CREATE, {"input": payload})
+        except LinearAPIError as exc:
+            # Stop on the first failure. Continuing would keep spending against a
+            # broken condition (bad auth, rate limit) and the ledger's account of
+            # what exists would drift from Linear.
+            print(f"BLOCK after {made} create(s): {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        node = (data.get("issueCreate") or {}).get("issue") or {}
+        if not node.get("id"):
+            print(f"BLOCK: issueCreate returned no issue for {issue['key']}", file=sys.stderr)
+            return EXIT_USAGE
+        append_ledger([{
+            "key": issue["key"], "kind": "issue",
+            "linear_id": node["id"], "identifier": node.get("identifier"),
+            "source": "api-create",
+        }])
+        made += 1
+        print(f"  {node.get('identifier')}  {issue['title'][:70]}")
+
+    print(f"{repo}: created {made} issue(s). Ledger updated per create.")
+    return EXIT_OK
+
+
 def cmd_plan(args) -> int:
     with open(args.map, "r", encoding="utf-8") as fh:
         cmap = json.load(fh)
@@ -454,6 +713,15 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--capability", required=True)
     p.set_defaults(func=cmd_key)
+
+    p = sub.add_parser("create", help="apply a plan to live Linear (dry unless --apply)")
+    p.add_argument("--plan", required=True, help="plan JSON from `plan`")
+    p.add_argument("--team", default="ASK", help="Linear team KEY (default ASK)")
+    # Dry by default and --apply to write, because Linear objects are permanent:
+    # delete and archive are hook-blocked and an agent cannot self-authorize them,
+    # so an accidental run cannot be undone.
+    p.add_argument("--apply", action="store_true", help="actually write to Linear")
+    p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("status", help="which repos are rolled out")
     p.set_defaults(func=cmd_status)
