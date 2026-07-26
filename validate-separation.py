@@ -665,48 +665,34 @@ def phase_1():
     print()
     print("  --- Gate 1.7: Plugin version drift ---")
 
-    plugins_root = os.path.join(SCRIPT_DIR, "plugins")
-    if not os.path.isdir(plugins_root):
-        warn("Gate 1.7 skipped: no plugins/ directory")
-    elif subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "--git-dir"],
-                        capture_output=True).returncode != 0:
-        warn("Gate 1.7 skipped: not a git repository")
+    # DELEGATES to q-system/.q-system/scripts/plugin-version-bump-check.py rather
+    # than reimplementing it. That script already existed (commit c494b85,
+    # sp-9886486d) and is wired into lefthook.yml as a pre-commit hook; this gate
+    # originally shipped a second, independent implementation of the same rule --
+    # the exact "one question answered twice" defect the updater consolidation
+    # was about. One implementation, two call sites.
+    #
+    # The two call sites are not redundant. lefthook runs it `--staged` at commit
+    # time and `git commit --no-verify` skips it entirely, which is how this
+    # repo accumulated the drift in the first place. Running it here against the
+    # published ref catches what --no-verify let through.
+    checker = os.path.join(
+        SCRIPT_DIR, "q-system", ".q-system", "scripts", "plugin-version-bump-check.py"
+    )
+    if not file_exists(checker):
+        warn("Gate 1.7: plugin-version-bump-check.py missing")
+    elif subprocess.run(["git", "-C", SCRIPT_DIR, "rev-parse", "--verify", "-q",
+                         "origin/main"], capture_output=True).returncode != 0:
+        warn("Gate 1.7 skipped: no origin/main to compare against")
     else:
-        for name in sorted(os.listdir(plugins_root)):
-            pdir = os.path.join(plugins_root, name)
-            manifest = os.path.join(pdir, ".claude-plugin", "plugin.json")
-            if not os.path.isdir(pdir) or not os.path.isfile(manifest):
-                continue
-            rel_manifest = os.path.relpath(manifest, SCRIPT_DIR)
-            # The commit that last touched this plugin's manifest. Everything under
-            # the plugin changed after it shipped without a version bump.
-            last_bump = subprocess.run(
-                ["git", "-C", SCRIPT_DIR, "log", "-1", "--format=%H", "--", rel_manifest],
-                capture_output=True, text=True).stdout.strip()
-            if not last_bump:
-                warn(f"Gate 1.7: {name} manifest has no commit history")
-                continue
-            # `<commit>` with no `..HEAD`, so this compares the last bump against
-            # the WORKING TREE, not just committed history. The ..HEAD form
-            # reported clean while an uncommitted plugin edit sat in the tree --
-            # useless for a gate meant to warn BEFORE the change ships.
-            changed = subprocess.run(
-                ["git", "-C", SCRIPT_DIR, "diff", "--name-only", last_bump,
-                 "--", f"plugins/{name}/"],
-                capture_output=True, text=True).stdout.split()
-            # ...and new files, which no diff form reports.
-            changed += subprocess.run(
-                ["git", "-C", SCRIPT_DIR, "ls-files", "--others", "--exclude-standard",
-                 "--", f"plugins/{name}/"],
-                capture_output=True, text=True).stdout.split()
-            drifted = [c for c in changed if not c.endswith(".claude-plugin/plugin.json")]
-            check(
-                f"{name}: no file changed since its last version bump "
-                f"({len(drifted)} drifted)",
-                not drifted,
-            )
-            for d in drifted[:5]:
-                print(f"        {d}")
+        result = subprocess.run(
+            ["python3", checker, "--against", "origin/main"],
+            capture_output=True, text=True, cwd=SCRIPT_DIR,
+        )
+        check("No plugin changed since origin/main without a version bump",
+              result.returncode == 0)
+        for line in (result.stderr or "").strip().splitlines()[:6]:
+            print(f"        {line}")
 
     # --- Full skeleton sweep ---
     print()
