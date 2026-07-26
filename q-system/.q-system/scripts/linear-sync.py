@@ -4,15 +4,22 @@
 Pairs with q-system/output/plans/linear-sdlc-standard-2026-07-26.md (Part 2) and
 its reproducer q-system/.q-system/scripts/test/test-linear-sync-idempotent.sh.
 
-WHY A PLANNER AND NOT A CREATOR (ASK-113): this script cannot reach Linear. There
-is no Linear API key in ~/.config/kipi/ and no LINEAR_* env var, so Linear is
-reachable only through the MCP server, which is available to the agent and not to
-a subprocess. The split is deliberate:
+PLANNER *AND* CREATOR (ASK-113, updated 2026-07-26). This file used to say it
+could not reach Linear: there was no API key, so Linear was reachable only
+through the MCP server, which the agent has and a subprocess does not. That was
+true of the credentials, never of the design -- verified while reading two other
+Linear agent orchestrators, both of which simply use an API key. A key now lives
+at ~/.config/kipi/linear-api-key (0600), so the whole flow runs headless:
 
-    plan   -> (agent creates via MCP) -> record
+    remote -> plan -> create --apply   (and `record` for the MCP path)
 
-The deterministic half is the part that decides WHAT to create and the part that
-remembers what was created. The network call happens where credentials exist.
+The MCP path still works and is still correct when an agent is already in
+session. `create` is what makes the rollout a script instead of one repo per
+agent session.
+
+The deterministic half is still the part that decides WHAT to create and the part
+that remembers what was created; `create` adds the network call under the same
+two guards.
 
 WHY THE DEDUP KEY IS LOAD-BEARING: mcp__linear__*delete* and archive are both
 blocked by ~/.claude/hooks/destructive-op-deny.sh, and an agent cannot set
@@ -447,6 +454,34 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
     return team_id, project, keys
 
 
+def cmd_remote(args) -> int:
+    """Write the snapshot `plan --remote` expects, straight from the API.
+
+    Before the API key existed this snapshot had to be hand-fetched in an agent
+    session over MCP, which is why the rollout stalled at one repo per session.
+    Reusing fetch_remote_state means the snapshot and the create-time guard read
+    the SAME markers through the same code -- a second fetcher would be a second
+    definition of "already exists", and the two would drift.
+    """
+    try:
+        _team_id, project, keys = fetch_remote_state(args.team, args.repo)
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    issues = [
+        {"id": v["linear_id"], "identifier": v["identifier"],
+         "description": f"<!-- kipi-key: {k} -->"}
+        for k, v in keys.items()
+    ]
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump({"project": project, "issues": issues}, fh, indent=2, ensure_ascii=False)
+    print(
+        f"{args.repo}: project={'found' if project else 'MISSING'}, "
+        f"{len(issues)} existing keyed issue(s) -> {args.out}"
+    )
+    return EXIT_OK
+
+
 def cmd_create(args) -> int:
     """Apply a plan against live Linear. Dry by default; --apply to write."""
     try:
@@ -727,6 +762,12 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--capability", required=True)
     p.set_defaults(func=cmd_key)
+
+    p = sub.add_parser("remote", help="fetch the remote snapshot plan --remote wants")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--team", default="ASK")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_remote)
 
     p = sub.add_parser("create", help="apply a plan to live Linear (dry unless --apply)")
     p.add_argument("--plan", required=True, help="plan JSON from `plan`")

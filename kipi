@@ -121,6 +121,7 @@ PY
       # Applies a plan to LIVE Linear. Dry unless --apply, because Linear
       # delete/archive are hook-blocked so a duplicate is permanent.
       create)  python3 "$SYNC" create "$@" ;;
+      remote)  python3 "$SYNC" remote "$@" ;;
       record)  python3 "$SYNC" record "$@" ;;
       key)     python3 "$SYNC" key "$@" ;;
       # Claim BEFORE creating a branch or worktree. Exit 3 means refused (another
@@ -130,7 +131,7 @@ PY
       claims)  python3 "$CLAIM" status "$@" ;;
       *)
         echo "unknown: kipi linear $sub" >&2
-        echo "try: issue | pending | status | map | overlap | plan | create | record | key" >&2
+        echo "try: issue | pending | status | map | overlap | plan | remote | create | record | key" >&2
         echo "     claim | release | claims" >&2
         exit 1
         ;;
