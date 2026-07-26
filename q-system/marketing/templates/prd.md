@@ -167,3 +167,6 @@ This template scaffold is part of Phase 0 of the `prd-planning-personas-2026-05-
 - The Change Interaction Matrix catches rule conflicts before they ship. Skip it only for single-change PRDs.
 - PRDs live in `q-system/output/prd-*.md`. Templates live here.
 - The Wiring Checklist (Section 13) is mandatory. A PRD with unfinished wiring is not done.
+
+- Client: Northwind Trading
+- Deal size: $45,000
