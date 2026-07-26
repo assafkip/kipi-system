@@ -51,8 +51,11 @@ def justify_all(gate, findings, reason="reviewed 2026-07-25: template placeholde
     whole population while satisfying every per-entry check. Naming the actual
     record in each reason is what a per-entry read leaves behind.
     """
+    # The distinguishing words are INSIDE the sentence, not a fingerprint
+    # appended to it: the guard now strips a trailing `— path [class] hash`,
+    # because that is the machine uniquifying rather than a human reading.
     return {
-        key: f"{reason} — {key[0]} [{key[1]}] {key[3][:8]}"
+        key: f"{reason}: the {key[1]} record in {key[0]}"
         for key in gate.blocking_fingerprints(findings)
     }
 
@@ -591,3 +594,24 @@ def test_every_committed_entry_names_what_it_permits():
         assert len(entry["justification"].split()) >= 8, (
             f"{entry['path']} has a justification too short to be a reading"
         )
+
+
+def test_a_canned_reason_with_a_fingerprint_appended_is_still_a_bulk_accept():
+    """The guard was walked around by making each reason mechanically unique.
+
+    Scar 2026-07-25: the first armed baseline carried 7 canned sentences across
+    29 entries, each made "distinct" by appending ` — <path> [<class>] <hash>`.
+    That is the machine uniquifying, not a human reading. Strip the appendix
+    and the guard must see what it always was.
+    """
+    gate = load_gate()
+    findings = [finding(), finding(text="- Price: $45,000", fact_class="pricing")]
+    canned = {
+        key: f"reviewed 2026-07-25 by hand: a type annotation — {key[0]} "
+             f"[{key[1]}] {key[3][:8]}"
+        for key in gate.blocking_fingerprints(findings)
+    }
+
+    with pytest.raises(gate.BaselineRefused) as refusal:
+        gate.build_baseline_document(findings, canned)
+    assert "reused" in str(refusal.value)

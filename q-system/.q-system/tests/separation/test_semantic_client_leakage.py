@@ -355,3 +355,47 @@ def test_a_two_column_table_record_is_still_a_fact():
     no separator under it -- is a label and its value, and still classifies.
     """
     assert "client_identity" in classes_for("| Client | Oriole Systems |")
+
+
+def test_a_client_roster_in_a_markdown_table_is_still_caught():
+    """The shape a CRM export actually takes.
+
+    A table-header exemption made every one of these invisible: `Client`,
+    `Price` and `Source` in a header cell emitted nothing, so a planted client
+    roster returned `clean, exit=0` from the armed gate while the same fact in
+    bullet form aborted. It suppressed ZERO findings the `name` removal had not
+    already suppressed -- measured 33 either way -- so it was a hole bought for
+    nothing.
+    """
+    roster = (
+        "| Client | Contact | Last call |\n"
+        "|--------|---------|-----------|\n"
+        "| Northwind Trading | Sarah Chen | 2026-03-14 |\n"
+    )
+
+    assert "client_identity" in classes_for(roster)
+
+
+def test_a_record_above_a_horizontal_rule_is_still_caught():
+    """`---` is a horizontal rule, a YAML doc separator and a Setext underline.
+
+    Treating it as a table separator meant any record line carrying a pipe and
+    sitting above one was exempt -- not a table at all.
+    """
+    ruled = "- Client: Northwind Trading | ACME\n---\nnext section\n"
+    frontmatter = "client: Northwind Trading | ACME\n---\nbody\n"
+
+    assert "client_identity" in classes_for(ruled)
+    assert "client_identity" in classes_for(frontmatter)
+
+
+def test_a_separator_row_is_still_not_a_record():
+    """The one piece of the table handling that was load-bearing.
+
+    Without it `|---|---|` parses as label `---`, value `---`.
+    """
+    assert classes_for("| Client | Value |\n|---|---|\n") != set()
+    assert "---" not in {
+        f.get("fact_class") for f in findings_for("|---|---|")
+    }
+    assert findings_for("|---|---|") == []

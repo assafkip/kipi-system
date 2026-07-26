@@ -733,6 +733,22 @@ def _materialize_justifications(justifications) -> dict:
     return materialized
 
 
+FINGERPRINT_SUFFIX_RE = re.compile(
+    r"\s*[-—–]{1,2}\s*\S+\s*\[[a-z_]+\]\s*[0-9a-f]{6,}\s*$"
+)
+
+
+def _human_part(justification: str) -> str:
+    """The reason with any machine-appended fingerprint stripped off.
+
+    Scar 2026-07-25: the first armed baseline defeated the check below with 7
+    canned sentences across 29 entries, each made unique by appending
+    ` — <path> [<class>] <hash>`. That is the machine uniquifying, not a human
+    reading, and the guard could not see through it. It compares the human part.
+    """
+    return FINGERPRINT_SUFFIX_RE.sub("", justification).strip()
+
+
 def _refuse_reused_reasons(justifications: dict) -> None:
     """One sentence covering many entries is a bulk accept, spelled differently.
 
@@ -744,7 +760,7 @@ def _refuse_reused_reasons(justifications: dict) -> None:
     """
     seen: dict = {}
     for key, value in justifications.items():
-        seen.setdefault(value.strip(), []).append(key)
+        seen.setdefault(_human_part(value), []).append(key)
     reused = {reason: keys for reason, keys in seen.items() if len(keys) > 1}
     if reused:
         raise BaselineRefused(

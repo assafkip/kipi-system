@@ -268,32 +268,26 @@ def _synthetic_fixture(text, source_path):
     )
 
 
-TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")
+# A markdown table SEPARATOR is not a record: without this, `|---|---|` parses
+# as label `---`, value `---`. Both pipes are required. An earlier version made
+# them optional, which matched a bare `---` -- a horizontal rule, a YAML
+# document separator, a Setext underline -- and exempted whatever sat above it.
+TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]*-[\s:|-]*\|\s*$")
 
-
-def _is_table_header(lines, index):
-    """A markdown table header row: column LABELS, not asserted data.
-
-    Deterministic rather than a guess: a header is the row immediately above a
-    `|---|---|` separator. Measured 2026-07-25: seventeen findings on this repo
-    were palette and roadmap table headers -- `| Name | Hex | RGB | Usage |` --
-    read as client identities. The data rows underneath stay records.
-    """
-    line = lines[index]
-    if "|" not in line:
-        return False
-    nxt = lines[index + 1] if index + 1 < len(lines) else ""
-    return "-" in nxt and TABLE_SEPARATOR_RE.match(nxt) is not None
+# There is deliberately no table-HEADER exemption. One was added on 2026-07-25
+# to stop `| Name | Hex | RGB |` palette headers being read as client
+# identities, and it was a hole bought for nothing: measured over the real
+# propagated source set it suppressed 33 findings with it and 33 without, i.e.
+# ZERO that removing `name` had not already suppressed, while making `Client`,
+# `Price` and `Source` invisible in any header cell. A planted client roster
+# returned a clean verdict from the armed gate while the same fact in bullet
+# form aborted. A header cell is exactly where a real roster puts its label.
 
 
 def _semantic_record_lines(text):
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        # The separator itself is not a record either: skipping only the header
-        # left `|---|---|` being read as label `---`, value `---`.
-        if TABLE_SEPARATOR_RE.match(line) and "|" in line:
-            continue
-        if _is_table_header(lines, index):
+        if TABLE_SEPARATOR_RE.match(line):
             continue
         match = next(
             (
