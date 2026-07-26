@@ -23,7 +23,8 @@
       "trigger": "manual: kipi update | new | push | check | list | dev | rollback",
       "depends": "nothing",
       "feeds": "every other L1 capability",
-      "evidence": "kipi:83,86 shells validate-separation.py with CAPABILITY_GATE_SKIP=1 for the instance path."
+      "evidence": "kipi:83,86 shells validate-separation.py with CAPABILITY_GATE_SKIP=1 for the instance path.",
+      "linear": "ASK-51"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -34,7 +35,8 @@
       "trigger": "manual `kipi update` / `kipi update --dry` / `--only <instance>`",
       "depends": "instance registry, settings merge, leak gate",
       "feeds": "all 24 instances",
-      "evidence": "9 dedicated tests in q-system/.q-system/scripts/test/ (safety, dry-final-state, hook-contract, leak-preflight, preservation-failure, build-artifacts). Scar: --no-verify added 2026-06-15 (commit 2793992) after an instance pre-commit hook hung the updater."
+      "evidence": "9 dedicated tests in q-system/.q-system/scripts/test/ (safety, dry-final-state, hook-contract, leak-preflight, preservation-failure, build-artifacts). Scar: --no-verify added 2026-06-15 (commit 2793992) after an instance pre-commit hook hung the updater.",
+      "linear": "ASK-52"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -45,7 +47,8 @@
       "trigger": "read by kipi update/list/check; Phase 0 of the validator asserts every path exists",
       "depends": "nothing",
       "feeds": "kipi update, kipi check, capability gate",
-      "evidence": "validate-separation.py Phase 0: 24 instance paths PASS, 0 FAIL (2026-07-26)."
+      "evidence": "validate-separation.py Phase 0: 24 instance paths PASS, 0 FAIL (2026-07-26).",
+      "linear": "ASK-53"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -56,7 +59,8 @@
       "trigger": "manual `kipi new <path> <name>`",
       "depends": "skeleton tree, settings-template.json",
       "feeds": "instance registry",
-      "evidence": "Recent instances created this way: school-negotiator, interview-coach, norri-ai, thaena."
+      "evidence": "Recent instances created this way: school-negotiator, interview-coach, norri-ai, thaena.",
+      "linear": "ASK-54"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -67,7 +71,8 @@
       "trigger": "manual `kipi push` from inside an instance",
       "depends": "leak gate (must not push instance facts upstream)",
       "feeds": "skeleton",
-      "evidence": "test-lessons-push-guard.sh covers the lessons slice of this path."
+      "evidence": "test-lessons-push-guard.sh covers the lessons slice of this path.",
+      "linear": "ASK-55"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -78,7 +83,8 @@
       "trigger": "manual, after a bad update",
       "depends": "kipi update checkpointing",
       "feeds": "instance recovery",
-      "evidence": "test-kipi-rollback.sh + test-kipi-rollback-matrix.sh in the capability manifest. Commit 8415b0d: checkpoint the instance and restore it on every give-up path."
+      "evidence": "test-kipi-rollback.sh + test-kipi-rollback-matrix.sh in the capability manifest. Commit 8415b0d: checkpoint the instance and restore it on every give-up path.",
+      "linear": "ASK-56"
     },
     {
       "layer": "L1 Propagation and fleet control",
@@ -89,7 +95,8 @@
       "trigger": "called by kipi update",
       "depends": "settings-template.json",
       "feeds": "hook runtime in every instance",
-      "evidence": "test-settings-merge.sh; settings-template.json ships 32 distinct hook scripts."
+      "evidence": "test-settings-merge.sh; settings-template.json ships 32 distinct hook scripts.",
+      "linear": "ASK-57"
     },
     {
       "layer": "L2 Validation harness",
@@ -100,7 +107,8 @@
       "trigger": "manual `kipi check`; also run before propagation",
       "depends": "instance registry",
       "feeds": "every propagation decision",
-      "evidence": "RED as of 2026-07-26: 170 PASS, 3 FAIL, 1 WARN, exit 1. Failures: Gate 1.2 KTLYST refs in scripts (1 file); Gate 1.3b semantic containment (11684 findings); Phase 1 full skeleton sweep (1 file). This is the headline number for repo health."
+      "evidence": "RED as of 2026-07-26: 170 PASS, 3 FAIL, 1 WARN, exit 1. Failures: Gate 1.2 KTLYST refs in scripts (1 file); Gate 1.3b semantic containment (11684 findings); Phase 1 full skeleton sweep (1 file). This is the headline number for repo health.",
+      "linear": "ASK-58"
     },
     {
       "layer": "L2 Validation harness",
@@ -111,7 +119,8 @@
       "trigger": "validator Gate 1.2a; CI; 3 instance-side call sites",
       "depends": "capability manifest",
       "feeds": "kipi check, CI",
-      "evidence": "Fleet-wide since 2026-07-23. Adding a test = one file + one manifest line. Commits 98cac94, 729dec9, 67f7dcc."
+      "evidence": "Fleet-wide since 2026-07-23. Adding a test = one file + one manifest line. Commits 98cac94, 729dec9, 67f7dcc.",
+      "linear": "ASK-60"
     },
     {
       "layer": "L2 Validation harness",
@@ -122,7 +131,8 @@
       "trigger": "kipi update preflight; every path that copies generic content outward",
       "depends": "classifier + baseline",
       "feeds": "kipi update, kipi push, lessons propagation",
-      "evidence": "Armed at commit b8083b4, proven with a planted leak (843f438) then removed (c525503). Baseline holds 29 entries with a classifier_sha256 pin so a classifier change forces a restamp. 4 dedicated tests."
+      "evidence": "Armed at commit b8083b4, proven with a planted leak (843f438) then removed (c525503). Baseline holds 29 entries with a classifier_sha256 pin so a classifier change forces a restamp. 4 dedicated tests.",
+      "linear": "ASK-61"
     },
     {
       "layer": "L2 Validation harness",
@@ -133,7 +143,8 @@
       "trigger": "kipi check phase 1",
       "depends": "containment target list",
       "feeds": "kipi check",
-      "evidence": "FAILING 2026-07-26 with 11684 findings. Needs a decision on whether the finding set is real leakage or classifier noise. Highest-count red in the repo."
+      "evidence": "FAILING 2026-07-26 with 11684 findings. Needs a decision on whether the finding set is real leakage or classifier noise. Highest-count red in the repo.",
+      "linear": "ASK-59"
     },
     {
       "layer": "L2 Validation harness",
@@ -144,7 +155,8 @@
       "trigger": "kipi check; compares working tree against origin/main",
       "depends": "git origin/main",
       "feeds": "marketplace release integrity",
-      "evidence": "Commit ac800a4. Gate 1.7 now delegates to the shared checker rather than reimplementing the rule (6b586f0). Sees the working tree (a6cd451)."
+      "evidence": "Commit ac800a4. Gate 1.7 now delegates to the shared checker rather than reimplementing the rule (6b586f0). Sees the working tree (a6cd451).",
+      "linear": "ASK-62"
     },
     {
       "layer": "L2 Validation harness",
@@ -155,7 +167,8 @@
       "trigger": "kipi check phase 1",
       "depends": "MODEL_TIERS / AGENT_TIER tables",
       "feeds": "the 5 .claude/agents definitions",
-      "evidence": "PASSING. Scar 2026-07-01: the policy lived only as prose in 3 files while frontmatters drifted; no checker existed."
+      "evidence": "PASSING. Scar 2026-07-01: the policy lived only as prose in 3 files while frontmatters drifted; no checker existed.",
+      "linear": "ASK-63"
     },
     {
       "layer": "L2 Validation harness",
@@ -166,7 +179,8 @@
       "trigger": "PostToolUse on settings edits; kipi update preflight",
       "depends": "settings.json + settings-template.json",
       "feeds": "fleet hook wiring",
-      "evidence": "Wired PostToolUse. test_settings_template_sync_check.py present."
+      "evidence": "Wired PostToolUse. test_settings_template_sync_check.py present.",
+      "linear": "ASK-64"
     },
     {
       "layer": "L2 Validation harness",
@@ -177,7 +191,8 @@
       "trigger": "PostToolUse in instances; skeleton self-detects and no-ops",
       "depends": "instance-registry.json for self-detection",
       "feeds": "instance automation durability",
-      "evidence": "RULE-2026-06-30-A. Scar: income scanners broke silently for 6 days because kipi update deleted their scripts. test-instance-automation-guard.sh."
+      "evidence": "RULE-2026-06-30-A. Scar: income scanners broke silently for 6 days because kipi update deleted their scripts. test-instance-automation-guard.sh.",
+      "linear": "ASK-65"
     },
     {
       "layer": "L3 Hook runtime",
@@ -188,7 +203,8 @@
       "trigger": "SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostCompact, Stop",
       "depends": "nothing",
       "feeds": "every enforcement capability in the repo",
-      "evidence": "Read live 2026-07-26. Highest fan-in node in the repo. Exit-code contract: 2 = block, 0 = pass."
+      "evidence": "Read live 2026-07-26. Highest fan-in node in the repo. Exit-code contract: 2 = block, 0 = pass.",
+      "linear": "ASK-66"
     },
     {
       "layer": "L3 Hook runtime",
@@ -199,7 +215,8 @@
       "trigger": "UserPromptSubmit + PreToolUse + PostToolUse",
       "depends": "hook runtime",
       "feeds": "loop exits 2, 3, 5",
-      "evidence": "VOLUME_CEILING=50, RETRY_LIMIT=3, AGENT_CEILING=30, MCP_RATE_LIMIT=30/60s, STALL_TIME_SECONDS=120. Volume ceiling resets on a real commit, so it gates lack-of-progress rather than raw volume. Fires in autonomous runs too."
+      "evidence": "VOLUME_CEILING=50, RETRY_LIMIT=3, AGENT_CEILING=30, MCP_RATE_LIMIT=30/60s, STALL_TIME_SECONDS=120. Volume ceiling resets on a real commit, so it gates lack-of-progress rather than raw volume. Fires in autonomous runs too.",
+      "linear": "ASK-67"
     },
     {
       "layer": "L3 Hook runtime",
@@ -210,7 +227,8 @@
       "trigger": "PostToolUse on Edit/Write",
       "depends": "hook runtime",
       "feeds": "every rule in .claude/rules",
-      "evidence": "test_prompt_only_enforcement_guard.py + test-prompt-only-enforcement-guard-stderr.sh."
+      "evidence": "test_prompt_only_enforcement_guard.py + test-prompt-only-enforcement-guard-stderr.sh.",
+      "linear": "ASK-68"
     },
     {
       "layer": "L3 Hook runtime",
@@ -221,7 +239,8 @@
       "trigger": "PostToolUse on Edit/Write; manual /wiring-check",
       "depends": "hook runtime",
       "feeds": "every skill/hook/agent/command change",
-      "evidence": "Scar 2026-06-20: a gap-class checklist was wired into an instance's plugins/ while the runtime loaded the marketplace clone. The edits were inert."
+      "evidence": "Scar 2026-06-20: a gap-class checklist was wired into an instance's plugins/ while the runtime loaded the marketplace clone. The edits were inert.",
+      "linear": "ASK-69"
     },
     {
       "layer": "L3 Hook runtime",
@@ -232,7 +251,8 @@
       "trigger": "Stop hook",
       "depends": "hook runtime",
       "feeds": "honesty of session-end reports",
-      "evidence": "Commit 48adb50 (fleet grounding-guard Stop hook + fix voice-stop-gate || true swallow)."
+      "evidence": "Commit 48adb50 (fleet grounding-guard Stop hook + fix voice-stop-gate || true swallow).",
+      "linear": "ASK-70"
     },
     {
       "layer": "L3 Hook runtime",
@@ -243,7 +263,8 @@
       "trigger": "Stop hook",
       "depends": "hook runtime, git",
       "feeds": "session continuity",
-      "evidence": "Paired with the parallel-sessions scar: two sessions on one checkout yank each other's tree on a branch switch; auto-commit is what makes that recoverable."
+      "evidence": "Paired with the parallel-sessions scar: two sessions on one checkout yank each other's tree on a branch switch; auto-commit is what makes that recoverable.",
+      "linear": "ASK-71"
     },
     {
       "layer": "L4 Voice and content lints",
@@ -254,7 +275,8 @@
       "trigger": "UserPromptSubmit (dna-loader), PostToolUse on Edit/Write (lints), Stop (stop-gate)",
       "depends": "hook runtime",
       "feeds": "all published content",
-      "evidence": "4 wired scripts. Known detector gaps recorded: within-sentence comma triplets and cross-paragraph fragment chains were missed by voice-lint v1."
+      "evidence": "4 wired scripts. Known detector gaps recorded: within-sentence comma triplets and cross-paragraph fragment chains were missed by voice-lint v1.",
+      "linear": "ASK-72"
     },
     {
       "layer": "L4 Voice and content lints",
@@ -265,7 +287,8 @@
       "trigger": "PostToolUse on Edit/Write",
       "depends": "hook runtime, founder-profile AUDHD flag",
       "feeds": "all founder-facing output",
-      "evidence": "Skill + paired hook, per the skill-hook pairing rule."
+      "evidence": "Skill + paired hook, per the skill-hook pairing rule.",
+      "linear": "ASK-73"
     },
     {
       "layer": "L4 Voice and content lints",
@@ -276,7 +299,8 @@
       "trigger": "PostToolUse on Edit/Write",
       "depends": "hook runtime",
       "feeds": "published social content",
-      "evidence": "Both pairings listed as wired in .claude/rules/skill-hook-pairing.md."
+      "evidence": "Both pairings listed as wired in .claude/rules/skill-hook-pairing.md.",
+      "linear": "ASK-74"
     },
     {
       "layer": "L4 Voice and content lints",
@@ -287,7 +311,8 @@
       "trigger": "PostToolUse on Edit/Write",
       "depends": "hook runtime",
       "feeds": "content pipeline",
-      "evidence": "Both wired in settings.json and settings-template.json."
+      "evidence": "Both wired in settings.json and settings-template.json.",
+      "linear": "ASK-75"
     },
     {
       "layer": "L4 Voice and content lints",
@@ -298,7 +323,8 @@
       "trigger": "manual/periodic; shells `claude -p`",
       "depends": "claude CLI",
       "feeds": "founder-voice, audhd, rca, fable-discipline confidence",
-      "evidence": "Deliberately never an exit-2 hook: it costs real model calls and the rate is noisy. test-skill-trigger-eval.sh."
+      "evidence": "Deliberately never an exit-2 hook: it costs real model calls and the rate is noisy. test-skill-trigger-eval.sh.",
+      "linear": "ASK-76"
     },
     {
       "layer": "L5 Memory",
@@ -309,7 +335,8 @@
       "trigger": "Stop hook",
       "depends": "hook runtime, allowlist",
       "feeds": "q-system/memory",
-      "evidence": "Merged to main via PR #7 (5-issue gated flow) but gated OFF everywhere. Going live on 4_points means running the HELD kipi update, at which point the allowlist self-activates. Open spillover: sp-cac8540c (shell-read proxy tuning). 3 dedicated tests."
+      "evidence": "Merged to main via PR #7 (5-issue gated flow) but gated OFF everywhere. Going live on 4_points means running the HELD kipi update, at which point the allowlist self-activates. Open spillover: sp-cac8540c (shell-read proxy tuning). 3 dedicated tests.",
+      "linear": "ASK-77"
     },
     {
       "layer": "L5 Memory",
@@ -320,7 +347,8 @@
       "trigger": "PostToolUse + SessionStart",
       "depends": "hook runtime",
       "feeds": "memory recall quality",
-      "evidence": "Both wired. test_memory_confidence_validator.py, test_memory_confidence_surface.py, test_memory_confidence_wiring.py."
+      "evidence": "Both wired. test_memory_confidence_validator.py, test_memory_confidence_surface.py, test_memory_confidence_wiring.py.",
+      "linear": "ASK-78"
     },
     {
       "layer": "L5 Memory",
@@ -331,7 +359,8 @@
       "trigger": "SessionStart",
       "depends": "hook runtime",
       "feeds": "memory recall quality",
-      "evidence": "Wired SessionStart in both settings.json and settings-template.json."
+      "evidence": "Wired SessionStart in both settings.json and settings-template.json.",
+      "linear": "ASK-79"
     },
     {
       "layer": "L5 Memory",
@@ -342,7 +371,8 @@
       "trigger": "SessionStart (surface); called by the autocapture path",
       "depends": "memory auto-capture",
       "feeds": "memory recall ranking",
-      "evidence": "Open thread: outcomes.jsonl has no compaction, snapshot, or retention. Judged premature for a log of tens of events; parked, not dropped."
+      "evidence": "Open thread: outcomes.jsonl has no compaction, snapshot, or retention. Judged premature for a log of tens of events; parked, not dropped.",
+      "linear": "ASK-80"
     },
     {
       "layer": "L6 Lessons corpus",
@@ -353,7 +383,8 @@
       "trigger": "com.kipi.lessons-daily launchd job; SessionStart index; PostToolUse validator",
       "depends": "leak gate (lessons must carry no instance facts), hook runtime",
       "feeds": "all 24 instances",
-      "evidence": "6 dedicated tests (validator, propagation, distill, scrub, push-guard, doc-wiring). launchd job loaded, last exit 0. Promotion rule: a lesson needs 2 unrelated instances; v1 accepts author self-attestation (provenance ledger deferred to v2)."
+      "evidence": "6 dedicated tests (validator, propagation, distill, scrub, push-guard, doc-wiring). launchd job loaded, last exit 0. Promotion rule: a lesson needs 2 unrelated instances; v1 accepts author self-attestation (provenance ledger deferred to v2).",
+      "linear": "ASK-81"
     },
     {
       "layer": "L7 PRD and issue lifecycle",
@@ -364,7 +395,8 @@
       "trigger": "/prd-start, /prd-review, /prd-triage, /prd-approve, /prd-split, /prd-archive, /prd-map, /prd-personas, /prd-os-init",
       "depends": "hook runtime, a review model",
       "feeds": "kipi-dsse issue specs",
-      "evidence": "Archive is blocked until every accepted finding has a receipt. `prd_runner.py gates run` is the repo's registered no-bypass re-proof."
+      "evidence": "Archive is blocked until every accepted finding has a receipt. `prd_runner.py gates run` is the repo's registered no-bypass re-proof.",
+      "linear": "ASK-82"
     },
     {
       "layer": "L7 PRD and issue lifecycle",
@@ -375,7 +407,8 @@
       "trigger": "/issue-start, /issue-approve, /issue-verify, /issue-review, /issue-amend, /issue-closeout",
       "depends": "prd-os issue specs",
       "feeds": "spillover ledger, gates registry",
-      "evidence": "Scar recorded in wiring-check.md: editing kipi-dsse's vendored copy of the codex:adversarial-review prompt was dead text; the live reviewer is the third-party openai-codex plugin."
+      "evidence": "Scar recorded in wiring-check.md: editing kipi-dsse's vendored copy of the codex:adversarial-review prompt was dead text; the live reviewer is the third-party openai-codex plugin.",
+      "linear": "ASK-84"
     },
     {
       "layer": "L7 PRD and issue lifecycle",
@@ -663,5 +696,6 @@
       "feeds": "prd-os for anything heavier",
       "evidence": "output/plans/ is excluded from kipi update sync, so plans stay instance-local. The plan is the agent's homework, not the founder's reading assignment."
     }
-  ]
+  ],
+  "linear_project": "https://linear.app/ask-consulting/project/kipi-system-c0944236257f"
 }
