@@ -23,6 +23,8 @@ usage() {
   echo "  kipi linear pending           Show captured items Linear does not have yet"
   echo "  kipi linear status            Which repos have been rolled out to Linear"
   echo "  kipi linear plan --map <f> --remote <f> --out <f>   Plan creates (idempotent)"
+  echo "  kipi linear map               Regenerate every repo's capability map"
+  echo "  kipi linear overlap           Cross-repo divergence + collision report"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
   echo "  kipi home            Print the skeleton path"
   echo ""
@@ -84,12 +86,36 @@ case "${1:-help}" in
         ;;
       pending) python3 "$QUEUE" pending "$@" ;;
       status)  python3 "$SYNC" status "$@" ;;
+      map)
+        # Regenerate the capability map for every registered instance + the
+        # skeleton. Cheap (~25s) and the only way drift gets noticed.
+        python3 - "$KIPI_HOME" <<'PY'
+import json, os, subprocess, sys
+home = sys.argv[1]
+gen = os.path.join(home, "q-system/.q-system/scripts/capability-map-gen.py")
+outdir = os.path.join(home, "q-system/output/capability-maps")
+os.makedirs(outdir, exist_ok=True)
+reg = json.load(open(os.path.join(home, "instance-registry.json")))["instances"]
+targets = reg + [{"name": "kipi-system", "path": home}]
+for i in targets:
+    out = os.path.join(outdir, i["name"].replace(" ", "_") + ".json")
+    r = subprocess.run(["python3", gen, "--root", i["path"], "--repo", i["name"],
+                        "--out", out], capture_output=True, text=True)
+    print(r.stdout.strip() or f"FAILED {i['name']}: {r.stderr.strip()[:120]}")
+PY
+        ;;
+      overlap)
+        python3 "$KIPI_HOME/q-system/.q-system/scripts/capability-overlap.py" \
+          --maps "$KIPI_HOME/q-system/output/capability-maps" \
+          --out "$KIPI_HOME/q-system/output/plans/capability-overlap-$(date +%F).md" \
+          --digest "$KIPI_HOME/q-system/output/capability-digest.json" "$@"
+        ;;
       plan)    python3 "$SYNC" plan "$@" ;;
       record)  python3 "$SYNC" record "$@" ;;
       key)     python3 "$SYNC" key "$@" ;;
       *)
         echo "unknown: kipi linear $sub" >&2
-        echo "try: issue | pending | status | plan | record | key" >&2
+        echo "try: issue | pending | status | map | overlap | plan | record | key" >&2
         exit 1
         ;;
     esac

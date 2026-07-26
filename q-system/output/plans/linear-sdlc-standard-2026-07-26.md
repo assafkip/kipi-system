@@ -110,7 +110,36 @@ started.
 45 issues) are **left exactly as they are** — they are already filed and permanent,
 and re-litigating them costs more than it returns.
 
-### 0.4 One correction to the handoff state
+### 0.4 A survey finding is one issue, not N
+
+Added during execution, after the planner produced its first real numbers.
+
+The first fleet-wide plan came to **347 issues**, and 25 of `4_points_consulting`'s
+26 were the same sentence: "this engine has no test and no caller." That is not 25
+decisions. It is one decision for the repo, made once with the whole list in view.
+
+**Adjusted to:** `UNWIRED` findings collapse into a single audit issue per repo
+carrying the full table, so nothing is lost (every script is still named with its
+line count and why it was flagged). `NEEDS_WORK` and `BROKEN` stay individual,
+because each of those is a distinct defect with its own fix.
+
+Fleet-wide: **347 issues became 31.** An issue is now a unit of work rather than a
+row in a survey, which is the actual SDLC principle underneath.
+
+### 0.5 Maps live centrally, not at each repo root
+
+Part 2 originally said each repo carries its own `CAPABILITY-MAP.json` at its root.
+In practice they are generated into
+`q-system/output/capability-maps/` in the skeleton instead, for three reasons: the
+overlap join needs them in one place, writing them into 24 repos means 24 commits
+in 24 repos for a regenerable artifact, and at 4.9MB they would churn every run.
+They are gitignored and regenerate in about 25 seconds.
+
+**The tradeoff, stated:** an instance cannot self-check its own map without the
+skeleton present. If that becomes a real need, the generator already takes
+`--out`, so writing a copy into a repo root is a one-line change.
+
+### 0.6 One correction to the handoff state
 
 The continuation prompt said "Projects `CAP-01` … `CAP-45` already exist". They are
 not projects. `list_projects` returns exactly two: `kipi-system` and `cole-GTM`.
@@ -146,8 +175,8 @@ expressed as a label. Repos are also the unit the founder actually navigates.
 **Labels** carry the cross-cutting dimensions, because they can span projects where
 a project cannot:
 
-- `layer:L0`…`layer:L9` — the capability layer
-- `kind:capability` / `kind:defect` / `kind:hardening` / `kind:chore`
+- `kind:capability` (the only `kind:` label created so far)
+- `unwired` (engine with no test and no caller)
 - `fleet-shared` — this capability exists in more than one repo (set by the overlap
   pass, §7)
 - `canonical-source` — this repo is the ONE source for a `fleet-shared` capability
@@ -195,7 +224,7 @@ The remote guard is why a lost ledger is recoverable and a duplicate is not crea
 ### 2.2 Title format
 
 ```
-<CAP-ID> <Capability name> — <one-line what it does>
+<CAP-ID> <Capability name>: <one-line what it does>
 ```
 
 `CAP-ID` is per-repo sequential (`CAP-01`…), matching the convention `cole-GTM`
