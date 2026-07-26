@@ -539,6 +539,116 @@ def test_record_review_rejects_manual_source(
     assert "codex" in r.stderr.lower()
 
 
+# --- Truthful reviewer provenance (slice 0, 2026-07-26) --------------------
+# Codex is out of credits until 2026-08-24, so the reviewer is a Claude
+# senior-staff-engineer subagent. With only codex-* accepted, that reviewer had
+# two bad options: stamp `codex-adversarial` and write a FALSE provenance
+# record, or skip the stamp and never be able to approve. These lock the honest
+# third option: sources that say what actually ran.
+
+
+def test_add_accepts_claude_reviewer_sources(
+    fake_repo, write_config, run_findings_writer
+):
+    """(a) the new sources are accepted, and (c) the stamp is written."""
+    for source in ("claude-review", "claude-adversarial"):
+        _bootstrap(fake_repo, write_config)
+        r = run_findings_writer(
+            fake_repo,
+            "add",
+            "prd-x",
+            "--source",
+            source,
+            stdin_text=json.dumps([{"severity": "major", "body": f"via {source}"}]),
+        )
+        assert r.returncode == 0, f"{source}: {r.stderr}"
+        records = [
+            json.loads(line)
+            for line in _findings_file(fake_repo, "prd-x")
+            .read_text()
+            .splitlines()
+            if line.strip()
+        ]
+        assert records[-1]["source"] == source
+        fm = _read_prd_frontmatter(fake_repo, "prd-x")
+        assert "codex_reviewed_at:" in fm, f"{source} did not stamp the review proof"
+
+
+def test_reviewer_stamp_records_the_true_source(
+    fake_repo, write_config, run_findings_writer
+):
+    """`reviewed_by` carries who actually reviewed.
+
+    The timestamp key is still `codex_reviewed_at` for approval-gate
+    compatibility (rename is spillover sp-b386aba4). Left alone, that key name
+    would itself be the lie once a Claude pass can stamp it -- so the truth
+    lives in `reviewed_by` beside it.
+    """
+    for source in ("claude-adversarial", "codex-review"):
+        _bootstrap(fake_repo, write_config)
+        r = run_findings_writer(
+            fake_repo, "record-review", "prd-x", "--source", source
+        )
+        assert r.returncode == 0, r.stderr
+        fm = _read_prd_frontmatter(fake_repo, "prd-x")
+        assert f"reviewed_by: {source}" in fm, (
+            f"stamp does not name its real reviewer; frontmatter was:\n{fm}"
+        )
+
+
+def test_record_review_accepts_claude_sources(
+    fake_repo, write_config, run_findings_writer
+):
+    _bootstrap(fake_repo, write_config)
+    r = run_findings_writer(
+        fake_repo, "record-review", "prd-x", "--source", "claude-adversarial"
+    )
+    assert r.returncode == 0, r.stderr
+    assert "codex_reviewed_at:" in _read_prd_frontmatter(fake_repo, "prd-x")
+
+
+def test_reviewer_source_widening_is_exact(
+    fake_repo, write_config, run_findings_writer
+):
+    """(b) unknown sources are still rejected -- the negative self-test.
+
+    A widened allowlist is only safe if it widened by exactly the two intended
+    names. Near-misses and other vendors must still be refused, on BOTH the
+    `add` path and the `record-review` stamp path.
+    """
+    near_misses = ("claude", "claude-adversary", "claude-review-2", "gpt-review", "")
+    for source in near_misses:
+        _bootstrap(fake_repo, write_config)
+        r = run_findings_writer(
+            fake_repo,
+            "add",
+            "prd-x",
+            "--source",
+            source,
+            stdin_text=json.dumps([{"severity": "major", "body": "x"}]),
+        )
+        assert r.returncode == 2, f"{source!r} was accepted by add but must not be"
+
+        r = run_findings_writer(
+            fake_repo, "record-review", "prd-x", "--source", source
+        )
+        assert r.returncode == 2, f"{source!r} was accepted by record-review"
+
+
+def test_record_review_still_refuses_author_own_words(
+    fake_repo, write_config, run_findings_writer
+):
+    """`manual` and `plan` are the author's own words, never an independent pass."""
+    for source in ("manual", "plan"):
+        _bootstrap(fake_repo, write_config)
+        r = run_findings_writer(
+            fake_repo, "record-review", "prd-x", "--source", source
+        )
+        assert r.returncode == 2, f"{source} must not stamp a review proof"
+        fm = _read_prd_frontmatter(fake_repo, "prd-x")
+        assert "codex_reviewed_at:" not in fm
+
+
 def test_record_review_fails_when_no_prd_spec(
     fake_repo, write_config, run_findings_writer
 ):
