@@ -501,12 +501,16 @@ import os
 import pathlib
 import sys
 
-# Refuse only what a write can actually escape through: a DIRECTORY symlink
-# leaving the instance is a live path prefix, so an rsync or checkout writing
-# under it lands outside the disposable model and mutates the real filesystem.
-# A FILE symlink is not -- rsync and git replace the link itself and never
-# write through it, which test-kipi-update-safety.sh asserts by checking the
-# outside target is byte-identical after a dry run.
+# An escaping symlink is allowed ONLY when it resolves to an existing regular
+# file. Such a link cannot leak a write: rsync and git replace the link itself
+# rather than writing through it, which test-kipi-update-safety.sh asserts by
+# checking the outside target is byte-identical after a dry run.
+#
+# Everything else that escapes is refused, for two different reasons:
+#   - a DIRECTORY is a live path prefix a write can descend into
+#   - a DANGLING target is worse, not better: nothing exists to replace, so a
+#     mkdir -p or a redirect under it materialises the path OUTSIDE the model
+#     (test-kipi-update-dry-final-state.sh plants exactly that shape)
 #
 # Scar 2026-07-25 (ASK_AI_consultant, fleet rollout): this walked the whole
 # instance and refused on ANY escaping target, so every instance carrying a
@@ -521,21 +525,39 @@ for current, directories, files in os.walk(root, followlinks=False):
         if not candidate.is_symlink():
             continue
         target = os.readlink(candidate)
-        if os.path.isabs(target):
-            resolved = pathlib.Path(target).resolve(strict=False)
-        else:
-            resolved = (candidate.parent / target).resolve(strict=False)
-        try:
-            resolved.relative_to(root)
-        except ValueError:
-            pass
-        else:
+        # is_file() follows the whole chain and is False for both a directory
+        # and a dangling target, which is the line that matters. A link to a
+        # real file is safe everywhere: rsync and git replace the link rather
+        # than writing through it, so it cannot mutate what it points at.
+        if candidate.is_file():
             continue
-        # Escapes. is_dir() follows the whole chain; a dangling link is not a
-        # directory and cannot be descended into.
-        if candidate.is_dir():
-            print(f"unsafe directory symlink escapes instance: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
-            raise SystemExit(1)
+        # Not a file, so a write can descend into it or materialise it. It is
+        # only safe if the whole chain is relative AND stays inside the
+        # instance: relative hops follow the copy into the model, an absolute
+        # hop keeps pointing at PRODUCTION even when it names a path inside
+        # the instance -- which is the isolation break, not the escape.
+        hop = candidate
+        internal = True
+        for _ in range(40):
+            if not hop.is_symlink():
+                break
+            hop_target = os.readlink(hop)
+            if os.path.isabs(hop_target):
+                internal = False
+                break
+            hop = hop.parent / hop_target
+            try:
+                hop.resolve(strict=False).relative_to(root)
+            except ValueError:
+                internal = False
+                break
+        else:
+            internal = False
+        if internal:
+            continue
+        reason = "directory" if candidate.is_dir() else "dangling"
+        print(f"unsafe {reason} symlink escapes the disposable model: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
+        raise SystemExit(1)
 PY
     then
       echo "  ERROR: unsafe symlink prevents isolated dry-run modeling"

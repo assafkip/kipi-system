@@ -230,13 +230,21 @@ echo "$OUT6" | grep -qE "Changes vs skeleton|Up to date|final state" || \
 grep -q "REAL INTERPRETER" "$OUT6DIR/python3.12" || \
   fail "the dry run wrote THROUGH a file symlink and mutated a file outside the instance"
 
-# case B: an escaping DIRECTORY symlink is a write path and must still refuse
+# case B: an escaping DANGLING symlink must refuse. Nothing exists to replace,
+# so a mkdir -p or a redirect under it materialises the path outside the model.
+ln -s "$OUT6DIR/never-created" "$I6/q-system/escapedangling"
+OUT6B="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6B" | grep -q "unsafe dangling symlink" || \
+  fail "an escaping DANGLING symlink was modeled instead of refused: $OUT6B"
+rm "$I6/q-system/escapedangling"
+
+# case C: an escaping DIRECTORY symlink is a live write path and must refuse
 mkdir -p "$OUT6DIR/realdir"
 ln -s "$OUT6DIR/realdir" "$I6/q-system/escapedir"
-OUT6B="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
-echo "$OUT6B" | grep -q "unsafe" || \
-  fail "an escaping DIRECTORY symlink was modeled instead of refused: $OUT6B"
-echo "PASS: a venv's file symlinks model fine; an escaping directory symlink still refuses"
+OUT6C="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6C" | grep -q "unsafe directory symlink" || \
+  fail "an escaping DIRECTORY symlink was modeled instead of refused: $OUT6C"
+echo "PASS: a venv's file symlinks model fine; escaping dangling and directory symlinks refuse"
 
 # --- the dry-run model must not copy nested repositories --------------------
 # The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
