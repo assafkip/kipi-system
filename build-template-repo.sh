@@ -32,6 +32,16 @@ if [ "$LEAK_RC" -ne 0 ]; then
   echo "template (named above). Fix it or re-baseline explicitly."
   exit 1
 fi
+# Stricter here than in kipi-update.sh, deliberately. A reports-only gate is a
+# reasonable trade for a fleet update: the instances are registered, the blast
+# radius is known, and a rollback is possible. None of that is true of a tree
+# strangers fork. This one does not ship on an unarmed gate.
+if printf '%s' "$LEAK_OUT" | grep -q "NOT ENFORCING"; then
+  echo "ABORT: the leak gate is not armed."
+  echo "A fleet update can run reports-only; a public template cannot. Arm the"
+  echo "baseline before building a tree other people will fork."
+  exit 1
+fi
 
 echo "Building template repo..."
 
@@ -39,11 +49,32 @@ echo "Building template repo..."
 rm -rf "$TEMPLATE_DIR"
 mkdir -p "$TEMPLATE_DIR"
 
-# 1. Copy the q-system skeleton (the core OS)
-cp -R "$SCRIPT_DIR/q-system" "$TEMPLATE_DIR/q-system"
+# 1. Copy the q-system skeleton (the core OS).
+# `git archive HEAD`, not `cp -R`: cp took the whole WORKTREE, including
+# gitignored artifacts. Measured before this change: 181 files shipped into the
+# template that the gate never scanned, 128 of them q-system/output/ -- morning
+# logs, GTM handoffs, RCA docs, 5.6MB of working state -- into a tree strangers
+# fork with no registry to trace it. The five excludes match the gate's scope,
+# so what ships is exactly what was scanned.
+mkdir -p "$TEMPLATE_DIR/q-system"
+git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ \
+  | tar -x --strip-components=1 -C "$TEMPLATE_DIR/q-system" \
+      --exclude='q-system/my-project/*' \
+      --exclude='q-system/canonical/*' \
+      --exclude='q-system/memory/*' \
+      --exclude='q-system/output/*' \
+      --exclude='q-system/.q-system/agent-pipeline/bus/*'
 
-# 2. Copy .claude directory (skills, rules, settings template)
-cp -R "$SCRIPT_DIR/.claude" "$TEMPLATE_DIR/.claude"
+# 2. Copy .claude: only the kinds the gate scans, never the whole directory.
+# `cp -R .claude` swept in .claude/plans/ (gitignored plan-mode output) and
+# anything else living there.
+mkdir -p "$TEMPLATE_DIR/.claude"
+for config_kind in agents output-styles rules; do
+  mkdir -p "$TEMPLATE_DIR/.claude/$config_kind"
+  if compgen -G "$SCRIPT_DIR/.claude/$config_kind/*.md" >/dev/null; then
+    cp "$SCRIPT_DIR/.claude/$config_kind"/*.md "$TEMPLATE_DIR/.claude/$config_kind/"
+  fi
+done
 # Remove local settings (has real tokens)
 rm -f "$TEMPLATE_DIR/.claude/settings.local.json"
 # Replace settings.json with template version

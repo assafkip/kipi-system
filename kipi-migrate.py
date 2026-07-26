@@ -227,9 +227,14 @@ def phase_struct(ctx):
             subprocess.run(["git", "add", "-A"], cwd=ctx.path, capture_output=True)
             subprocess.run(["git", "commit", "-m", "chore: pre-subtree commit"],
                            cwd=ctx.path, capture_output=True)
+            # SKELETON_DIR, not SKELETON_REMOTE. The gate scans the local
+            # checkout, so pulling the subtree from GitHub meant the verdict
+            # described one tree and the bytes came from another. Any local
+            # change not yet pushed -- including a leak fixed locally -- made
+            # the preflight a statement about the wrong content.
             subprocess.run(
                 ["git", "subtree", "add", "--prefix=q-system",
-                 SKELETON_REMOTE, "main", "--squash"],
+                 SKELETON_DIR, "main", "--squash"],
                 cwd=ctx.path, capture_output=True)
         ctx.fix("Adding q-system/ subtree from skeleton", add_subtree)
     else:

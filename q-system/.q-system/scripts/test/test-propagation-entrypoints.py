@@ -36,13 +36,33 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 # The call every entry point must make before it copies anything.
 GATE_CALL = re.compile(r"propagation-leak-gate\.py")
 
-# Copy primitives, matched as COMMANDS rather than as words, so prose in a
-# comment or a docstring does not register as a copy.
+# Copy primitives. The first version anchored on the START of a line, which
+# made every copy inside an `if`, a `for` or a function body invisible -- that
+# is where most real copies live. It also missed `git archive` (the actual
+# seeding copy), tar pipes, and the argv forms Python uses to shell out. A
+# fixture with three undeclared copiers passed cleanly against it.
 COPY_PRIMITIVE = re.compile(
-    r"""(?:^|[;&|]\s*|\$\(\s*|`\s*|=\s*)      # start of a statement
-        (?:cp|rsync|install)\b                 # shell copy commands
-      | shutil\.(?:copytree|copy2?|copyfile)\b # python copy calls
-      | git\s+(?:archive|subtree\s+add)\b      # git-based copies
+    r"""(?:^|[;&|(]\s*|\$\(\s*|`\s*|=\s*)          # start of a statement
+        \s*(?:cp|rsync|install|ditto|tar)\b        # shell copy commands
+      | shutil\.(?:copytree|copy2?|copyfile)\b     # python copy calls
+      | distutils\.[\w.]*copy_tree\b
+      | os\.(?:link|replace)\b
+      | git\s+(?:-C\s+\S+\s+)?(?:archive|subtree\s+add)\b   # git-based copies
+      | ["'](?:cp|rsync|ditto|tar)["']             # argv forms: subprocess(["cp", ...])
+    """,
+    re.VERBOSE,
+)
+
+# For SHELL sources the match must begin at the start of the stripped line, or
+# `echo "  ... (git archive)..."` reads as a copy. That mismatch let a mutation
+# move the real seeding copy above the gate while the suite stayed green,
+# because the first regex-visible "copy" was a log message.
+# Bare `git` is NOT a copy: it matched `git init` at kipi-new-instance.sh:73,
+# so the oracle was comparing the gate against a repo initialisation twenty
+# lines above the real seed. Only the git subcommands that actually copy count.
+SHELL_LEADING_COPY = re.compile(
+    r"""^(?:cp|rsync|install|ditto|tar)\b
+      | ^git\s+(?:-C\s+\S+\s+)?(?:archive|subtree\s+add)\b
     """,
     re.VERBOSE,
 )
@@ -57,17 +77,19 @@ DECLARED_ENTRYPOINTS = {
 
 # Repo-root scripts that contain a copy primitive but do NOT propagate generic
 # content outward. Each needs a written reason; "it looked fine" is not one.
+# Only scripts that ACTUALLY trip the copy check belong here. The first version
+# listed five, three of which never tripped it at all: the list read as a
+# reviewed inventory of five while only two were load-bearing, and a decorative
+# entry is a claim nobody checked. The assertion at the bottom now keeps this
+# honest in both directions as the regex is tightened.
 EXEMPT = {
-    "kipi-push-upstream.sh": "copies INTO the skeleton from an instance, the "
-    "opposite direction; nothing fans out",
-    "kipi-rollback.sh": "restores an instance from its own backup, no skeleton "
-    "content crosses",
-    "kipi-update-preserve-scan.py": "inventories instance-only files for the "
-    "updater; it is called BY a gated entry point and copies nothing outward",
-    "kipi-settings-merge.py": "merges settings-template.json into one instance "
-    "file; it is called BY kipi-update.sh after that gate has run",
-    "test-kipi-update-preserve-integration.sh": "a test harness that builds "
-    "throwaway fixtures in a temp dir; it propagates to no real instance",
+    "kipi-update-preserve-scan.py": "read-only: it inventories instance-only "
+    "files for the updater and has no write path at all (the match is prose in "
+    "its module docstring)",
+    "test-kipi-update-preserve-integration.sh": "a test harness whose skeleton "
+    "and destination are both synthetic fixtures under mktemp -d",
+    "test-kipi-update-preserve-scan.sh": "a test harness for the same scanner; "
+    "its copies are inside a throwaway temp fixture, not a real instance",
 }
 
 
@@ -92,11 +114,41 @@ def first_match(name: str, pattern: re.Pattern) -> int | None:
     return None
 
 
+def first_shell_copy(name: str) -> int | None:
+    """The first line whose STRIPPED text starts with a copy command.
+
+    Anywhere-in-the-line matching made `echo "... (git archive)..."` read as a
+    copy, so the oracle compared the gate against a log message.
+    """
+    for number, line in enumerate(source_lines(name), start=1):
+        if is_comment(line, name):
+            continue
+        if SHELL_LEADING_COPY.match(line.strip()):
+            return number
+    return None
+
+
+def is_script(path: Path) -> bool:
+    """Any executable or shebang file, not just .sh/.py.
+
+    The extensionless `kipi` dispatcher sat outside the old enumeration
+    entirely, and so would any new extensionless copier.
+    """
+    if path.suffix in {".sh", ".py"}:
+        return True
+    if not path.stat().st_mode & 0o111:
+        return False
+    try:
+        return path.read_bytes()[:2] == b"#!"
+    except OSError:
+        return False
+
+
 def repo_root_scripts() -> list:
     return sorted(
         path.name
         for path in REPO_ROOT.iterdir()
-        if path.is_file() and path.suffix in {".sh", ".py"}
+        if path.is_file() and is_script(path)
     )
 
 
@@ -121,7 +173,7 @@ def test_every_entrypoint_is_gated_before_it_copies(name):
     )
     if name.endswith(".py"):
         return
-    copy_line = first_match(name, COPY_PRIMITIVE)
+    copy_line = first_shell_copy(name)
     if copy_line is None:
         return
     assert gate_line < copy_line, (
@@ -130,10 +182,11 @@ def test_every_entrypoint_is_gated_before_it_copies(name):
     )
 
 
+@pytest.mark.parametrize("seeded", [False, True], ids=["fresh", "already-seeded"])
 @pytest.mark.parametrize(
     "name", sorted(n for n in DECLARED_ENTRYPOINTS if n.endswith(".py"))
 )
-def test_every_python_entrypoint_aborts_before_copying(name, tmp_path):
+def test_every_python_entrypoint_aborts_before_copying(name, seeded, tmp_path):
     """Run it for real with a sabotaged gate and prove nothing was copied.
 
     A zero-byte gate is the sabotage because it is the one that passes in
@@ -149,6 +202,11 @@ def test_every_python_entrypoint_aborts_before_copying(name, tmp_path):
 
     destination = tmp_path / "instance"
     destination.mkdir()
+    if seeded:
+        # A `if not isdir(q-system): <gate>` guard keeps a fresh-destination
+        # test green while every REAL migration -- of an instance that already
+        # has q-system/, which is all of them -- runs its copies ungated.
+        (destination / "q-system").mkdir()
     before = sorted(path.name for path in destination.iterdir())
 
     result = subprocess.run(
@@ -212,3 +270,7 @@ def test_every_exemption_carries_a_reason():
             f"{name} is exempted but no longer exists; drop the stale exemption"
         )
         assert len(reason.split()) >= 5, f"{name} has no real exemption reason"
+        assert first_match(name, COPY_PRIMITIVE) is not None, (
+            f"{name} is exempted but no longer trips the copy check; the list "
+            "reads as a reviewed inventory, so a decorative entry is a lie"
+        )

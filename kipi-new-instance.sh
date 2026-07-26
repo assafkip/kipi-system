@@ -32,6 +32,14 @@ if [ "$LEAK_RC" -ne 0 ]; then
   echo "new instance (named above). Fix it or re-baseline explicitly."
   exit 1
 fi
+# The gate scans the INDEX; the seed below uses `git archive HEAD`. Staging a
+# fix without committing it means the gate certifies a tree that is not the one
+# being copied, and HEAD wins.
+if ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD -- q-system/ 2>/dev/null; then
+  echo "ABORT: q-system/ is staged but not committed."
+  echo "The gate scanned the index and the seed copies HEAD; they must agree."
+  exit 1
+fi
 SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
 SKELETON_BRANCH="main"
 PREFIX="q-system"
@@ -77,9 +85,23 @@ fi
 # included a snapshot of the skeleton's own memory/). Every instance created that way
 # carried 30-350 stale junk files the updater could never delete. Scar: fleet cleanup
 # 2026-07-01 removed the shadow trees from 18/19 instances.
+# The seed must copy exactly what the gate scans, or the preflight above is a
+# green light over content nobody looked at. The gate derives its scope from
+# kipi-update.sh's five anchored rsync excludes, so this seed carries the same
+# five. Measured before this exclusion existed: 168 of 604 seeded files were
+# never scanned, including all 26 tracked canonical/ and my-project/ files --
+# the client deliverables and pricing framework -- landing in every fresh
+# instance under a clean verdict. Excluding them is also just correct seeding:
+# a new instance should start with its OWN canonical, not the skeleton's.
 echo "  Seeding $PREFIX/ from skeleton q-system/ (git archive)..."
 mkdir -p "$PREFIX"
-git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ | tar -x --strip-components=1 -C "$PREFIX"
+git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ \
+  | tar -x --strip-components=1 -C "$PREFIX" \
+      --exclude='q-system/my-project/*' \
+      --exclude='q-system/canonical/*' \
+      --exclude='q-system/memory/*' \
+      --exclude='q-system/output/*' \
+      --exclude='q-system/.q-system/agent-pipeline/bus/*'
 echo "  Skeleton q-system content seeded"
 
 # Create instance CLAUDE.md

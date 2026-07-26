@@ -27,6 +27,30 @@ VALIDATOR = REPO_ROOT / "validate-separation.py"
 REGISTRY = REPO_ROOT / "instance-registry.json"
 UPDATER = REPO_ROOT / "kipi-update.sh"
 
+# The gate's own machinery has to sit INSIDE the tree it scans -- the preflight
+# resolves it at q-system/.q-system/scripts/ -- so a fixture that ships a valid
+# skeleton necessarily propagates these files too. They are Python and JSON
+# full of `label: value` lines, so the classifier reports them, and this file's
+# assertions are about whether PROPAGATION injects a fact, not about whether
+# the classifier is quiet on source code. Excluding them keeps the assertion
+# strict over the content the fixture actually models.
+GATE_INFRASTRUCTURE = (
+    "q-system/.q-system/scripts/propagation-leak-gate.py",
+    "q-system/.q-system/scripts/containment-targets.py",
+    "q-system/.q-system/state/propagation-leak-baseline.json",
+    "validate-separation.py",
+)
+
+
+def fixture_violations(validator, instance):
+    """Violations in the content this fixture models, not in the gate itself."""
+    return [
+        violation
+        for violation in validator.semantic_separation_violations(instance)
+        if violation["path"] not in GATE_INFRASTRUCTURE
+    ]
+
+
 # A generic, propagating source: not under any instance-owned prefix, so the
 # updater's rsync carries it into every subtree instance.
 GENERIC_SOURCE = "marketing/templates/outreach.md"
@@ -143,6 +167,18 @@ def build_skeleton(root, env, body):
     for helper in ("kipi-update-preserve-scan.py", "kipi-settings-merge.py",
                    "settings-template.json"):
         shutil.copy(REPO_ROOT / helper, skeleton / helper)
+    # A valid skeleton ships the propagation leak gate. kipi-update.sh is
+    # fail-closed on it by design, so a fixture without it aborts before any
+    # sync and this file's propagation model never runs. See GATE_INFRASTRUCTURE
+    # for why these files are then excluded from the violation assertions.
+    (skeleton / "q-system" / ".q-system" / "state").mkdir(parents=True, exist_ok=True)
+    for gate_file in (
+        "q-system/.q-system/scripts/propagation-leak-gate.py",
+        "q-system/.q-system/scripts/containment-targets.py",
+        "q-system/.q-system/state/propagation-leak-baseline.json",
+        "validate-separation.py",
+    ):
+        shutil.copy(REPO_ROOT / gate_file, skeleton / gate_file)
     (skeleton / "q-system" / GENERIC_SOURCE).write_text(body, encoding="utf-8")
     # The updater treats a missing capability gate as a failed sync.
     (skeleton / "q-system" / ".q-system" / "scripts" / "capability-gate.py").write_text(
@@ -345,7 +381,7 @@ def test_clean_final_state_reports_nothing(tmp_path):
         f"the clean fixture never propagated: {result.stdout}{result.stderr}"
     )
     for layout, instance in instances.items():
-        assert validator.semantic_separation_violations(instance) == [], (
+        assert fixture_violations(validator, instance) == [], (
             f"the clean {layout[0]} final state reported a violation"
         )
 
