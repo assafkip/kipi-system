@@ -6,6 +6,32 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
+
+# Preflight: a fresh instance is the one nobody thinks to re-check, so a leak
+# that cannot ride `kipi update` can still ride `kipi new` and sit there.
+# Same fail-closed contract as kipi-update.sh: the gate must state its own
+# verdict before its exit code is believed, since a zero-byte gate script is a
+# valid program that exits 0 and would otherwise pass in silence.
+LEAK_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/propagation-leak-gate.py"
+if [ ! -f "$LEAK_GATE" ]; then
+  echo "ABORT: propagation leak gate missing at $LEAK_GATE"
+  exit 1
+fi
+if LEAK_OUT="$(python3 "$LEAK_GATE" --check --repo-root "$SCRIPT_DIR" 2>&1)"; then
+  LEAK_RC=0
+else
+  LEAK_RC=$?
+fi
+printf '%s\n' "$LEAK_OUT"
+if ! printf '%s' "$LEAK_OUT" | grep -q "^propagation leak gate: "; then
+  echo "ABORT: the propagation leak gate did not report a verdict"
+  exit 1
+fi
+if [ "$LEAK_RC" -ne 0 ]; then
+  echo "ABORT: a fact absent from the propagation baseline would seed into the"
+  echo "new instance (named above). Fix it or re-baseline explicitly."
+  exit 1
+fi
 SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
 SKELETON_BRANCH="main"
 PREFIX="q-system"

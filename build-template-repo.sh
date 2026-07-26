@@ -8,6 +8,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/template-repo"
 
+# Preflight: this builds a tree other people FORK, so a leaked fact here fans
+# out further than an update does and with no registry to trace it. Same gate,
+# same fail-closed contract as kipi-update.sh: proof of EXECUTION, not proof of
+# existence, because a zero-byte gate script is a valid program that exits 0.
+LEAK_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/propagation-leak-gate.py"
+if [ ! -f "$LEAK_GATE" ]; then
+  echo "ABORT: propagation leak gate missing at $LEAK_GATE"
+  exit 1
+fi
+if LEAK_OUT="$(python3 "$LEAK_GATE" --check --repo-root "$SCRIPT_DIR" 2>&1)"; then
+  LEAK_RC=0
+else
+  LEAK_RC=$?
+fi
+printf '%s\n' "$LEAK_OUT"
+if ! printf '%s' "$LEAK_OUT" | grep -q "^propagation leak gate: "; then
+  echo "ABORT: the propagation leak gate did not report a verdict"
+  exit 1
+fi
+if [ "$LEAK_RC" -ne 0 ]; then
+  echo "ABORT: a fact absent from the propagation baseline would ship in the"
+  echo "template (named above). Fix it or re-baseline explicitly."
+  exit 1
+fi
+
 echo "Building template repo..."
 
 # Clean previous build

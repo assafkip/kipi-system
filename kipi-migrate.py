@@ -579,6 +579,40 @@ def _file_differs(a, b):
 
 # --- Main ---
 
+def assert_no_leak_would_propagate():
+    """Run the propagation leak gate before copying skeleton content anywhere.
+
+    Fail-closed, matching kipi-update.sh: a missing gate ABORTS rather than
+    being skipped, and the gate must state its own verdict before its exit code
+    is believed. A zero-byte gate script is a valid program that exits 0, so
+    "it returned success" is not evidence that it ran. Runs even under
+    --dry-run: the point is to see the leak, and a dry run is when someone is
+    most likely to be looking.
+    """
+    gate = os.path.join(
+        SKELETON_DIR, "q-system", ".q-system", "scripts",
+        "propagation-leak-gate.py",
+    )
+    if not os.path.isfile(gate):
+        print(f"ABORT: propagation leak gate missing at {gate}")
+        return False
+    result = subprocess.run(
+        [sys.executable, gate, "--check", "--repo-root", SKELETON_DIR],
+        capture_output=True,
+        text=True,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    print(output, end="" if output.endswith("\n") else "\n")
+    if "propagation leak gate: " not in output:
+        print("ABORT: the propagation leak gate did not report a verdict")
+        return False
+    if result.returncode != 0:
+        print("ABORT: a fact absent from the propagation baseline would be")
+        print("copied into this instance (named above).")
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Migrate instance to kipi compliance")
     parser.add_argument("instance_path", help="Path to the instance to migrate")
@@ -588,6 +622,9 @@ def main():
 
     if not os.path.isdir(args.instance_path):
         print(f"ERROR: {args.instance_path} is not a directory")
+        sys.exit(1)
+
+    if not assert_no_leak_would_propagate():
         sys.exit(1)
 
     ctx = MigrationContext(args.instance_path, args.dry_run, args.verbose)
