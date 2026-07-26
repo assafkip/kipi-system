@@ -9,7 +9,7 @@
     "source_identity",
     "sourced_interaction"
   ],
-  "classifier_sha256": "3cd56da852d03e9090499cc410366babf65d1d9ca2f05b08f37f53bca7f4a3d3",
+  "classifier_sha256": "cc1bbe24488d547c73d818e0fcc943ed993e3a9c9d08208a8b8cedc1d8269ca7",
   "entries": [
     {
       "path": "plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml",
