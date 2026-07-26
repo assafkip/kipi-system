@@ -65,6 +65,17 @@ pre-commit:
       run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
       fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."
 
+commit-msg:
+  commands:
+    # linear-first: every commit names the Linear issue it belongs to.
+    # Rule: .claude/rules/linear-first.md. Escape hatch is [no-issue: reason],
+    # which is allowed but appended to a bypass ledger so work landing outside
+    # Linear is countable rather than invisible.
+    # {1} is the path git hands the hook for the pending commit message.
+    linear-issue-ref:
+      run: python3 q-system/.q-system/scripts/linear-issue-ref-check.py {1}
+      fail_text: "Commit names no Linear issue. Add the id (ASK-nn) or [no-issue: reason]."
+
 post-commit:
   commands:
     # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).

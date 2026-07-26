@@ -92,6 +92,16 @@ def commit_group(commit_type, message, files):
     if len(files) > 20:
         body_lines.append(f"- ... and {len(files) - 20} more files")
 
+    # The linear-first commit-msg gate refuses any commit with no issue id.
+    # This hook fires unattended on Stop and has no way to know which issue the
+    # session belonged to, so it declares itself as a bypass rather than being
+    # silently blocked -- which would kill the safety net that makes work
+    # survive a context loss or a parallel-session branch switch.
+    # Consequence on purpose: every auto-commit shows up in the bypass ledger,
+    # so "how much work never reached Linear" is a number, not a guess.
+    body_lines.append("")
+    body_lines.append("[no-issue: auto-commit safety net, unattended Stop hook]")
+
     full_msg = header + "\n\n" + "\n".join(body_lines)
 
     r = run(["git", "commit", "-m", full_msg])
