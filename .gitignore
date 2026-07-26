@@ -27,6 +27,11 @@ q-system/output/marketing/linkedin/*
 # Plans (auto-created by Claude Code)
 .claude/plans/
 
+# Agent claim-lock: per-working-tree local state. Committing it would share one
+# session's claim with every clone and the lock would refuse everyone forever.
+.linear-claims.json
+.linear-claims.json.guard
+
 # Session transcripts
 *.jsonl
 # ...but this one is not a transcript, it is the repo's own closure-evidence

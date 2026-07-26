@@ -25,6 +25,9 @@ usage() {
   echo "  kipi linear plan --map <f> --remote <f> --out <f>   Plan creates (idempotent)"
   echo "  kipi linear map               Regenerate every repo's capability map"
   echo "  kipi linear overlap           Cross-repo divergence + collision report"
+  echo "  kipi linear claim <ASK-n> --agent <name>    Claim this working tree BEFORE branching (exit 3 = refused)"
+  echo "  kipi linear release <ASK-n> --agent <name>  Drop the claim (do it when the PR opens)"
+  echo "  kipi linear claims            Who holds this working tree"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
   echo "  kipi home            Print the skeleton path"
   echo ""
@@ -69,6 +72,9 @@ case "${1:-help}" in
     shift || true
     QUEUE="$KIPI_HOME/q-system/.q-system/scripts/linear-queue.py"
     SYNC="$KIPI_HOME/q-system/.q-system/scripts/linear-sync.py"
+    # linear-claim.py resolves the tree it locks from the CALLER's cwd, not from
+    # $KIPI_HOME -- otherwise every instance would share the skeleton's lock.
+    CLAIM="$KIPI_HOME/q-system/.q-system/scripts/linear-claim.py"
     sub="${1:-pending}"
     shift || true
     case "$sub" in
@@ -113,9 +119,15 @@ PY
       plan)    python3 "$SYNC" plan "$@" ;;
       record)  python3 "$SYNC" record "$@" ;;
       key)     python3 "$SYNC" key "$@" ;;
+      # Claim BEFORE creating a branch or worktree. Exit 3 means refused (another
+      # session holds this tree), which is the feature, not a failure.
+      claim)   python3 "$CLAIM" claim "$@" ;;
+      release) python3 "$CLAIM" release "$@" ;;
+      claims)  python3 "$CLAIM" status "$@" ;;
       *)
         echo "unknown: kipi linear $sub" >&2
         echo "try: issue | pending | status | map | overlap | plan | record | key" >&2
+        echo "     claim | release | claims" >&2
         exit 1
         ;;
     esac
