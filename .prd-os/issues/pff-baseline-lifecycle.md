@@ -1,7 +1,7 @@
 ---
 id: pff-baseline-lifecycle
 title: Prune stale baseline entries and report adds separately from removals
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-prevent-fact-fanout-2026-07-25
 allowed_files:
@@ -33,4 +33,4 @@ Write the failing stale-entry reproducer first. Re-baselining prunes fingerprint
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Prune stale baseline entries and report adds separately from removals
+- [x] Prune stale baseline entries and report adds separately from removals
