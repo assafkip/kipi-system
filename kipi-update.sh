@@ -95,15 +95,28 @@ SKELETON_PLUGIN_ROOT="$SCRIPT_DIR/plugins"
 # The ONLY enumeration. `*/` resolves symlinks, so a dangling entry never
 # appears here -- which is exactly why the stager can no longer name a path the
 # syncer will not write. Both now iterate this.
+#
+# NUL-separated, not newline. A directory name may legally contain a newline,
+# and both consumers read this back with `read -r`; newline framing split such
+# a name into two nonexistent plugins, whose rsync then failed and abandoned
+# the instance's whole config sync. The pre-consolidation code did not have
+# that failure -- it carried names by `find -print0` and by the glob value
+# directly -- so newline framing here would have been a real regression.
 managed_plugin_names() {
   local plugin_dir
   for plugin_dir in "$SKELETON_PLUGIN_ROOT"/*/; do
     [ -d "$plugin_dir" ] || continue
     plugin_dir="${plugin_dir%/}"
-    printf '%s\n' "${plugin_dir##*/}"
+    printf '%s\0' "${plugin_dir##*/}"
   done
 }
 
+# Deliberately NOT the same test as managed_plugin_names: `*/` skips a
+# dot-named directory and this `[ -d ]` does not, so plugins/.hidden/ counts as
+# managed here while the stager and the copy loop both ignore it. This is the
+# pre-existing answer, replaced verbatim; aligning the two would change which
+# paths the collision guard refuses on, which a behaviour-preserving
+# consolidation must not do. Tracked as sp-7ff28101.
 is_managed_plugin_path() {
   local top="${1#plugins/}"
   top="${top%%/*}"
@@ -318,7 +331,7 @@ stage_config_sync() {
     # syncer now walk the same list, so the stager can no longer name a path
     # the syncer will not write -- which is what the old post-hoc [ -d ] filter
     # was patching around. See managed_plugin_names for the scar.
-    while IFS= read -r plugin_name; do
+    while IFS= read -r -d '' plugin_name; do
       while IFS= read -r -d '' source; do
         plugin_paths+=("${source#"$SCRIPT_DIR/"}")
       done < <(
@@ -1149,7 +1162,7 @@ PY
     # leaving every instance permanently dirty on plugins/<name> in git status.
     if [ -d "$SKELETON_PLUGIN_ROOT" ]; then
       mkdir -p "$path/plugins"
-      while IFS= read -r plugin_name; do
+      while IFS= read -r -d '' plugin_name; do
         # .venv/ is a uv-built virtualenv, not source: uv writes a
         # `.gitignore` of `*` inside it, pyvenv.cfg pins it to ONE machine's
         # Python (home = /Users/<name>/... macos-aarch64), and nothing
