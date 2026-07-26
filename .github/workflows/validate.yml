@@ -11,6 +11,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # test-updater-issue-sequence.py proves the issue order from commit
+          # ancestry against the REAL repo ("a closure commit unreachable from
+          # HEAD is rejected"). The default depth-1 shallow clone carries no
+          # history to probe, so every ancestry check reads as unreachable.
+          fetch-depth: 0
+
+      # kipi-update.sh commits the sync it is being tested on (guarded_commit,
+      # kipi-update.sh:705) and passes no identity of its own. The ubuntu runner
+      # user has an empty gecos field, so git cannot guess a name and refuses:
+      # `fatal: empty ident name`. That aborts the instance at kipi-update.sh:1289
+      # via `abandon_instance ... && continue`, which is UPSTREAM of the plugins
+      # rsync at line 1393 -- so one missing identity failed 4 updater tests whose
+      # reported symptoms (stale .venv, unsynced tracked file) look unrelated to
+      # git. Diagnosed 2026-07-26 from run 30219138594; local macOS cannot
+      # reproduce because its git guesses an identity from the passwd gecos field.
+      - name: Configure git identity for the updater tests
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
 
       - name: Set up Python
         uses: actions/setup-python@v6

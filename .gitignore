@@ -29,6 +29,13 @@ q-system/output/marketing/linkedin/*
 
 # Session transcripts
 *.jsonl
+# ...but this one is not a transcript, it is the repo's own closure-evidence
+# ledger. test-updater-issue-sequence.py audits it against real commit ancestry,
+# and the blanket ignore above meant it never reached a fresh clone -- so in CI
+# every issue read as "no closure receipt" while passing locally off an untracked
+# working copy. Verified 2026-07-26: structural ids and timestamps only, no
+# free-text, safe for a public repo.
+!.prd-os/receipts.jsonl
 
 # SQLite databases (generated at runtime)
 *.db
