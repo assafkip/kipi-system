@@ -84,3 +84,7 @@ q-system/output/.update-check-*
 # issue is open, removed when it closes, so tracking it churned git on every
 # DSSE cycle and committed one session's firing counts.
 .claude/state/
+
+# Generated capability maps (regenerate with capability-map-gen.py; ~5MB, churns
+# on every run). The committed artifact is the digest the overlap pass emits.
+q-system/output/capability-maps/
