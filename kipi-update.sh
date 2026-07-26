@@ -512,6 +512,45 @@ SH
   return "$rc"
 }
 
+# One answer to "is this untracked file the founder's work, or this sync's own
+# debris?". Two guards ask it -- the .claude/+plugins/ collision scan and the
+# q-system collision scan -- and each used to answer with its own carve-out,
+# neither knowing about the other's.
+#
+#   $1 = the file's path in the instance
+#   $2 = the file the skeleton would write there, or "" when the caller has none
+#
+# NOT used by the tracked-tree guard further down. That one is
+# `git diff --cached --quiet || git diff --quiet` over the WHOLE tree: it takes
+# no path and no counterpart, so there is nothing to pass it. And excusing
+# debris there would let a modified TRACKED .pyc reach `git add -u`, landing a
+# founder edit inside the updater's own commit -- precisely what that guard
+# exists to prevent. Measured, not assumed.
+is_instance_wip() {
+  local instance_file="$1" skeleton_file="$2"
+  # A regenerable build artifact is not work. The plugins rsync runs with
+  # --delete-excluded and these same filters precisely to clear them from the
+  # instance, so flagging one as a collision refuses the sync over the thing
+  # the sync is for. Scar 2026-07-25: this matched whenever the plugin
+  # DIRECTORY existed in the skeleton, and the scan enumerates gitignored
+  # files, so a single __pycache__ entry aborted the config sync on 23 of 23
+  # instances -- and with it .claude/, plugins/, and the 98MB .venv deletion.
+  case "$instance_file" in
+    */.git/*|*/__pycache__/*|*.pyc|*/.venv/*|*/.pytest_cache/*) return 1 ;;
+  esac
+  # Byte-identical is not work in progress: it is THIS sync's own output from a
+  # run that died after the rsync and before the commit. Treating it as WIP
+  # made one interrupted sync brick an instance permanently -- every later run
+  # refused, and the only recovery was deleting files by hand. Observed on a
+  # real run 2026-07-25: 40 residue files, all identical to the skeleton.
+  # A caller that cannot name a counterpart passes "" and skips this test.
+  if [ -n "$skeleton_file" ] && [ -f "$skeleton_file" ] &&
+      [ -f "$instance_file" ] && cmp -s "$instance_file" "$skeleton_file"; then
+    return 1
+  fi
+  return 0
+}
+
 config_source_manages() {
   local relative="$1"
   case "$relative" in
@@ -523,21 +562,10 @@ config_source_manages() {
       return
       ;;
     plugins/*/*)
-      # A build artifact is not work in progress. The plugins rsync runs with
-      # --delete-excluded and its filters (/.git/, __pycache__/, *.pyc, .venv/)
-      # exist precisely to clear these from the instance, so flagging them as a
-      # collision refuses the sync over the thing the sync is for. Scar
-      # 2026-07-25: this matched whenever the plugin DIRECTORY existed in the
-      # skeleton, and the scan enumerates gitignored files, so a single
-      # __pycache__ entry aborted the config sync on 23 of 23 instances -- and
-      # with it .claude/, plugins/, and the 98MB .venv deletion.
-      case "$relative" in
-        */.git/*|*/__pycache__/*|*.pyc|*/.venv/*|*/.pytest_cache/*)
-          return 1
-          ;;
-      esac
-      # Anything else under a managed plugin dir IS a real collision: the rsync
+      # Anything under a managed plugin dir is a candidate collision: the rsync
       # is --delete, so it removes instance files the skeleton does not carry.
+      # Whether a given one is WIP or this sync's own debris is is_instance_wip's
+      # call; this function answers only "does the skeleton manage this path?".
       is_managed_plugin_path "$relative"
       return
       ;;
@@ -549,7 +577,13 @@ reject_untracked_config_collisions() {
   local target="$1"
   local relative
   while IFS= read -r -d '' relative; do
-    if config_source_manages "$relative"; then
+    # The empty counterpart is deliberate, not an oversight: this guard does
+    # NOT get the byte-identical carve-out, because that would change which
+    # paths it refuses on and this consolidation is behaviour-preserving. It
+    # SHOULD get it -- residue here bricks an instance the same way
+    # sp-5f2d2a63 did -- and the argument already exists for that fix.
+    # Tracked as sp-72bd8029.
+    if config_source_manages "$relative" && is_instance_wip "$relative" ""; then
       echo "  ERROR: untracked WIP collides with managed config: $relative"
       return 1
     fi
@@ -953,16 +987,8 @@ PY
             continue
           fi
           source_path="$ARCHIVE_TMP/q-system/$relative"
-          if [ -e "$source_path" ] || [ -L "$source_path" ]; then
-            # Byte-identical is not work in progress: it is THIS sync's own
-            # output from a run that died after the rsync and before the
-            # commit. Treating it as WIP made one interrupted sync brick an
-            # instance permanently -- every later run refused, and the only
-            # recovery was deleting files by hand. Observed on a real run
-            # 2026-07-25: 40 residue files, all identical to the skeleton.
-            if [ -f "$source_path" ] && [ -f "$uf" ] && cmp -s "$uf" "$source_path"; then
-              continue
-            fi
+          if { [ -e "$source_path" ] || [ -L "$source_path" ]; } &&
+              is_instance_wip "$uf" "$source_path"; then
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
