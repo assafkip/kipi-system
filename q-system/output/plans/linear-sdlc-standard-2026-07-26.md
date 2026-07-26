@@ -252,6 +252,29 @@ a duplicate that does get created is marked `Duplicate` with `duplicateOf` point
 at the survivor. It does not vanish, but it stops polluting counts and queries. This
 is the recovery path, not a substitute for the dedup key.
 
+### 3.1 Close discipline — a state means what it says
+
+Close an issue only when the slice is actually complete. Do NOT close at session end
+"for hygiene" while anything is still in progress.
+
+Never end a session with an issue left `In Progress` under your name and no live
+branch. Two ways out, both acceptable, one required:
+
+- **Release it** — move it back to `Todo` and drop the claim, so the next session or
+  reviewer can take it.
+- **Record the blocker on the issue** — a comment naming what stopped the work and
+  the exact next action, so `In Progress` stays truthful.
+
+Why this is a rule and not a preference: the board is the fleet's only shared view of
+what is being worked on. A `Done` that means "the session ended" and an `In Progress`
+that means "abandoned three days ago" both destroy the one thing the board is for. A
+stale claim is worse than no claim, because the claim-lock will refuse the issue to
+the next agent on the strength of it.
+
+Nothing enforces this today — no hook, script, or validator checks for an abandoned
+`In Progress`. It is discipline, stated here so it is at least written down; the
+claim-lock's stale-claim handling is where it would become deterministic.
+
 ---
 
 ## Part 4 — Definition of Ready
@@ -290,6 +313,12 @@ enforces in prose ("I ran X and got Y"); here it is the issue's exit condition.
 
 **Anything found and not fixed is captured, not mentioned:**
 `python3 plugins/prd-os/scripts/prd_runner.py spillover add --source <id> --desc "..."`.
+
+**`Done` is earned by the four above, never by the clock.** Closing at session end
+"for hygiene" while the slice is unfinished is a false receipt: it is the same defect
+as stamping a review provenance that did not happen, just on the board instead of in
+the ledger. If the four are not met when the session ends, the issue does not close —
+it is released or the blocker is recorded on it (§3.1).
 
 ## Part 6 — Estimation
 
