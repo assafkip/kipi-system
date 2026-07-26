@@ -68,3 +68,38 @@ echo "$DRY" | grep -q "skeleton files:" && fail "--dry still uses the file-count
 echo "$DRY" | grep -qE "Changes vs skeleton|Up to date" || fail "--dry produced no itemized preview: $DRY"
 
 echo "PASS: untracked gitignored file survives the sync; --dry is an itemized preview (no file-count heuristic)"
+
+# --- staged rollout: --only must touch exactly one instance -----------------
+# A fleet update writes to every registered instance in one command. Without a
+# way to target one, there is no way to verify a risky change on a single repo
+# before the other 22, which is the only safe way to roll one out.
+WORK3="$(mktemp -d)"; SK3="$WORK3/skel"; A3="$WORK3/a"; B3="$WORK3/b"
+mkdir -p "$SK3/q-system" "$A3/q-system" "$B3/q-system"
+cp "$SCRIPT" "$SK3/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK3/kipi-update-preserve-scan.py"
+mkdir -p "$SK3/q-system/.q-system/scripts" "$SK3/q-system/.q-system/state"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK3/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK3/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK3/validate-separation.py"
+cat > "$SK3/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton v2\n' > "$SK3/q-system/tracked.md"
+( cd "$SK3" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"aaa","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"bbb","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$A3" "$B3" > "$SK3/instance-registry.json"
+for d in "$A3" "$B3"; do
+  printf 'old\n' > "$d/q-system/tracked.md"
+  ( cd "$d" && G init -q && G add -A && G commit -qm inst )
+done
+HB_BEFORE="$( cd "$B3" && G rev-parse HEAD )"
+
+bash "$SK3/kipi-update.sh" --only aaa >/dev/null 2>&1 || true
+grep -q "skeleton v2" "$A3/q-system/tracked.md" || fail "--only aaa did not update aaa"
+HB_AFTER="$( cd "$B3" && G rev-parse HEAD )"
+[ "$HB_BEFORE" = "$HB_AFTER" ] || fail "--only aaa also wrote to bbb"
+grep -q "old" "$B3/q-system/tracked.md" || fail "--only aaa changed bbb's content"
+echo "PASS: --only targets exactly one instance and leaves the rest untouched"
+

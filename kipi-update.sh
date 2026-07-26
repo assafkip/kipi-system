@@ -16,7 +16,29 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
 SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
 SKELETON_BRANCH="main"
-DRY_RUN="${1:-}"
+# Args in any order: --dry-run and/or --only <name>. Without --only there is no
+# way to verify a risky change against ONE repo before the other 22, and a
+# staged rollout is the only safe way to ship anything with this blast radius.
+DRY_RUN=""
+ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN="--dry-run"; shift ;;
+    --only)
+      ONLY="${2:-}"
+      if [ -z "$ONLY" ]; then
+        echo "ERROR: --only needs an instance name" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [ ! -f "$REGISTRY" ]; then
   echo "ERROR: instance-registry.json not found at $REGISTRY"
@@ -349,6 +371,12 @@ reject_untracked_config_collisions() {
 trap cleanup_updater_temps EXIT
 
 while IFS='|' read -r name path prefix itype; do
+  # Filter INSIDE the loop, not in the feed, so an --only name that matches
+  # nothing is caught by the post-loop check rather than reading as an empty
+  # registry.
+  if [ -n "$ONLY" ] && [ "$name" != "$ONLY" ]; then
+    continue
+  fi
   echo "--- $name ($itype) ---"
 
   if [ ! -d "$path" ]; then
@@ -1022,6 +1050,11 @@ for i in d['instances']:
     prefix = i.get('subtree_prefix') or ''
     print(i['name'] + '|' + i['path'] + '|' + prefix + '|' + t)
 ")
+
+if [ -n "$ONLY" ] && [ "$((PASS+FAIL+SKIP))" -eq 0 ]; then
+  echo "ERROR: no registered instance named '$ONLY'" >&2
+  exit 1
+fi
 
 echo "=== Summary ==="
 echo "  Updated: $PASS"
