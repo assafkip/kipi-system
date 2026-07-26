@@ -546,3 +546,55 @@ OUT12B="$(bash "$SK12/kipi-update.sh" --dry-run --only gitlink 2>&1 || true)"
 echo "$OUT12B" | grep -q "unsafe dangling symlink" || \
   fail "a dangling symlink under the instance's own .git/ was modeled instead of refused -- the walk's projection has wrongly inherited the rsync's .git exclusion: $OUT12B"
 echo "PASS: the walk still vets the instance's own .git/ while the rsync projection excludes it"
+
+# --- a failed run must leave the instance updatable -------------------------
+# 24 places give up on an instance. None of them recorded its state first, so a
+# failure after the first write left debris that the dirty-tree guard then read
+# as founder work -- and EVERY later run refused. One failure took the instance
+# out of the fleet until a human deleted files by hand.
+#
+# Scars: sp-5f2d2a63 (a failed staging left 43 files staged) and sp-e244e821 (a
+# failed sync left tracked skeleton files modified). Both fall out of the SAME
+# failure, so one fixture covers both: the instance's own pre-commit hook
+# rejects the updater's commit, which guarded_commit invokes by design, so
+# nothing about the script under test is patched to produce it.
+#
+# The assertion is on the instance's STATE, not on a log line: run 1 must fail
+# and leave `git status --porcelain` empty, and run 2 must then get through.
+WORK13="$(mktemp -d)"; SK13="$WORK13/skel"; I13="$WORK13/inst"
+mkdir -p "$SK13/q-system/.q-system/scripts" "$SK13/q-system/.q-system/state" \
+         "$I13/q-system"
+cp "$SCRIPT" "$SK13/kipi-update.sh"
+cp "$ROOT/kipi-update-preserve-scan.py" "$SK13/kipi-update-preserve-scan.py"
+cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
+   "$SK13/q-system/.q-system/scripts/propagation-leak-gate.py"
+cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
+   "$SK13/q-system/.q-system/scripts/containment-targets.py"
+cp "$ROOT/validate-separation.py" "$SK13/validate-separation.py"
+cat > "$SK13/q-system/.q-system/state/propagation-leak-baseline.json" <<'BJ'
+{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}
+BJ
+printf 'skeleton content v2\n' > "$SK13/q-system/tracked.md"
+( cd "$SK13" && G init -q && G add -A -f && G commit -qm skel )
+printf '{"instances":[{"name":"stuck","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$I13" > "$SK13/instance-registry.json"
+printf 'skeleton content v1 (old)\n' > "$I13/q-system/tracked.md"
+( cd "$I13" && G init -q && G add -A && G commit -qm inst )
+mkdir -p "$I13/.git/hooks"
+printf '#!/usr/bin/env bash\necho "instance pre-commit refuses" >&2\nexit 1\n' \
+  > "$I13/.git/hooks/pre-commit"
+chmod +x "$I13/.git/hooks/pre-commit"
+
+bash "$SK13/kipi-update.sh" --only stuck >/dev/null 2>&1 || true
+DIRTY13="$(G -C "$I13" status --porcelain)"
+[ -z "$DIRTY13" ] || \
+  fail "a failed run left the instance dirty; every later run will refuse at the dirty-tree guard: $DIRTY13"
+
+# hook removed, so the ONLY thing that could still block run 2 is run 1's debris
+rm -f "$I13/.git/hooks/pre-commit"
+OUT13="$(bash "$SK13/kipi-update.sh" --only stuck 2>&1 || true)"
+echo "$OUT13" | grep -q "dirty working tree" && \
+  fail "run 2 refused at the dirty-tree guard -- the instance is stuck: $OUT13"
+grep -q "skeleton content v2" "$I13/q-system/tracked.md" || \
+  fail "run 2 did not converge after run 1 failed: $OUT13"
+echo "PASS: a failed run leaves the instance clean and a later run still converges"
