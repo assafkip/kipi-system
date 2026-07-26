@@ -248,9 +248,9 @@ echo "PASS: a venv's file symlinks model fine; escaping dangling and directory s
 
 # --- the dry-run model must not copy nested repositories --------------------
 # The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
-# instance tree. Measured 2026-07-25: ASK_AI_consultant is
-# /Users/assafkipnis/projects/consulting, which is the PARENT of ten other
-# registered instances -- 21GB, of which this sync can write to about 100MB.
+# instance tree. Measured 2026-07-25: one registered instance's path is the
+# PARENT of ten other registered instances -- 21GB, of which this sync can write
+# to about 100MB.
 # The copy ran the data volume down to 605MB free before it was killed.
 #
 # A directory holding its own .git below the root is a separate repository.
@@ -308,11 +308,10 @@ echo "PASS: the dry-run model skips nested repositories and still models the ins
 # path anyway and the instance answers `fatal: pathspec ... did not match any
 # files`, failing the whole config sync.
 #
-# Measured 2026-07-25: the skeleton's plugins/memory-lifecycle points at
-# /Users/assafkip/projects/memory-lifecycle -- an old username, long dead --
-# so all_points_setup and Prodigy_Gold both failed here. Instances that had
-# received the plugin back when the link resolved passed, which is why this
-# looked instance-specific rather than skeleton-wide.
+# Measured 2026-07-25: the skeleton's plugins/memory-lifecycle pointed at a home
+# directory under an old, long-dead username, so two registered instances both
+# failed here. Instances that had received the plugin back when the link resolved
+# passed, which is why this looked instance-specific rather than skeleton-wide.
 WORK8="$(mktemp -d)"; SK8="$WORK8/skel"; I8="$WORK8/inst"
 mkdir -p "$SK8/q-system/.q-system/scripts" "$SK8/q-system/.q-system/state" \
          "$SK8/plugins/realplugin" "$SK8/.claude/rules" "$I8/q-system" "$I8/.claude"
@@ -463,10 +462,10 @@ echo "PASS: a tracked submodule stays in the model; an untracked nested project 
 # never reach the model and cannot leak a write. Refusing on it means one dead
 # link in a nested project blocks the PARENT instance forever.
 #
-# Scar 2026-07-25: gtm-partner is /Users/assafkipnis/projects/cole-gtm, parent
-# of five registered instances. personal-brand's canonical files are broken
-# links into the dissolved ktlyst-hub, and that refused cole-gtm's dry run --
-# an instance blocked by rot in a DIFFERENT repo that this sync never touches.
+# Scar 2026-07-25: one registered instance is the parent of five others. A child
+# instance's canonical files were broken links into a dissolved former cluster,
+# and that refused the PARENT's dry run -- an instance blocked by rot in a
+# DIFFERENT repo that this sync never touches.
 WORK11="$(mktemp -d)"; SK11="$WORK11/skel"; I11="$WORK11/inst"
 mkdir -p "$SK11/q-system/.q-system/scripts" "$SK11/q-system/.q-system/state" \
          "$I11/q-system" "$I11/projects/child/q-system"
