@@ -4,7 +4,16 @@
 
 Ran `q-system/output/plans/updater-consolidation-prompt-2026-07-25.md` end to
 end, shipped it, deployed it, then worked the ledger it generated down to one
-item. **Fleet 23/23. 8/8 updater suites green. 15 items opened, 14 resolved.**
+item. **Fleet 23/23. 8/8 updater suites green. pytest 360 passed / 0 failed.
+15 items opened, 14 resolved.**
+
+The pytest number matters: it was "3 failed" all session and I kept quoting it
+as an accepted baseline. Those 3 were not stale tests -- they were a deliberate
+tripwire whose docstring says a change to the exclusion DSL "must come through
+pytest, where the author can confirm the new form preserves the contract."
+Commit 98e6284 changed that DSL and nobody answered. Answered in feae55f: the
+contract holds, and the assertion now runs the accessor instead of matching
+source text, so it cannot rot the same way.
 
 ## What shipped
 
@@ -78,6 +87,8 @@ review rather than a same-session judgement call.
 - This session runs cached prd-os 0.1.0 / kipi-dsse 0.2.0; new sessions get
   0.5.3 / 0.2.1. Self-resolving.
 - `gates run` is RED from the ~73 pre-existing items, which the plan said not to
+  work. Nothing from this run is open except `sp-39ba760e`. pytest is fully
+  green (360/0/1), so a red pytest from here is a real regression, not noise.
   work. Nothing from this run is open except `sp-39ba760e`.
 - The line criterion was restated [USER-DIRECTED]: the original required
   `wc -l < 1253` AND "no scar comment deleted", which contradict. Final 1485.
