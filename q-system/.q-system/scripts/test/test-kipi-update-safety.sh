@@ -729,4 +729,17 @@ echo "$OUT15" | grep -q "untracked WIP collides with managed config" && \
   fail "identical config residue was read as founder WIP; an interrupted sync bricks the config path forever: $OUT15"
 echo "$OUT15" | grep -q "Config synced" || \
   fail "the config sync did not complete over its own identical residue: $OUT15"
-echo "PASS: differing config content is protected; this sync's own identical residue is not"
+
+# And a DOT-named directory under plugins/ is not a plugin. `managed_plugin_names`
+# globs plugins/*/ which never matches one, so the stager and the copy loop both
+# ignore it -- nothing is ever rsynced there. A second, independent [ -d ] test
+# used to disagree and call it managed, so the guard refused the whole sync over
+# an untracked file in a directory the sync cannot touch (sp-7ff28101).
+mkdir -p "$SK15/plugins/.hidden" "$I15/plugins/.hidden"
+printf 'hidden\n' > "$SK15/plugins/.hidden/h.md"
+( cd "$SK15" && G add -A -f && G commit -qm dotdir ) >/dev/null 2>&1
+printf 'incidental\n' > "$I15/plugins/.hidden/wip.md"
+OUT15C="$(bash "$SK15/kipi-update.sh" --only resid 2>&1 || true)"
+echo "$OUT15C" | grep -q "untracked WIP collides with managed config: plugins/.hidden" && \
+  fail "refused over a dot-named plugin dir the sync never writes: $OUT15C"
+echo "PASS: differing config content is protected; identical residue and dot-named dirs are not"

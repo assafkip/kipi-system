@@ -111,16 +111,21 @@ managed_plugin_names() {
   done
 }
 
-# Deliberately NOT the same test as managed_plugin_names: `*/` skips a
-# dot-named directory and this `[ -d ]` does not, so plugins/.hidden/ counts as
-# managed here while the stager and the copy loop both ignore it. This is the
-# pre-existing answer, replaced verbatim; aligning the two would change which
-# paths the collision guard refuses on, which a behaviour-preserving
-# consolidation must not do. Tracked as sp-7ff28101.
+# Membership in the enumeration above, not an independent `[ -d ]` test. Those
+# two disagreed on DOT-named directories -- `*/` skips them, `[ -d ]` does not
+# -- so plugins/.hidden/ counted as managed here while the stager and the copy
+# loop both ignored it, and the collision guard refused the whole sync over an
+# untracked file living there. Nothing ever rsyncs such a directory, so there
+# was no collision to protect against: the refusal was a pure false positive,
+# and it is the last place the "what is a plugin?" answer was still given twice.
 is_managed_plugin_path() {
-  local top="${1#plugins/}"
+  local top="${1#plugins/}" name
   top="${top%%/*}"
-  [ -n "$top" ] && [ -d "$SKELETON_PLUGIN_ROOT/$top" ]
+  [ -n "$top" ] || return 1
+  while IFS= read -r -d '' name; do
+    [ "$name" = "$top" ] && return 0
+  done < <(managed_plugin_names)
+  return 1
 }
 
 # One answer to "what does the disposable dry-run copy contain?".
