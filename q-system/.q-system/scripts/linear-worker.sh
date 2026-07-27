@@ -111,6 +111,15 @@ while [ $# -gt 0 ]; do
   shift || true
 done
 
+# NORMALIZE ONCE, AT THE ENTRY POINT (round-4 review, finding 1). --issue has
+# TWO readers with different semantics: the --reset-rounds branch keyed the
+# attempts ledger on the raw string, and the picker matches Linear identifiers
+# exactly (`i["identifier"] == only`). So `--issue ask-208` created a phantom
+# lowercase ledger key AND silently returned zero ready issues. Linear
+# identifiers are uppercase and `kipi directive` already normalizes, so this
+# script accepts the same input shape -- in one place, where both readers see it.
+ONLY_ISSUE="$(printf '%s' "$ONLY_ISSUE" | tr 'a-z' 'A-Z')"
+
 export SCRIPT_DIR
 # DIRECTIVES_DIR is created here and not lazily: an operator who drops a file in
 # by hand needs the directory to exist before the first directive, and it was the
@@ -131,14 +140,44 @@ AGENT="sana"
 # resetting a counter is not work that can be aimed at a stale base.
 if [ "$RESET_ROUNDS" = "1" ]; then
   [ -n "$ONLY_ISSUE" ] || { echo "--reset-rounds needs --issue ASK-nnn" >&2; exit 1; }
-  python3 -c "
+  # READ BACK BEFORE REPORTING (round-4 review, finding 1). This branch used to
+  # write with `>/dev/null 2>&1 || true` and then print "reset to 0; the next run
+  # will dispatch again" unconditionally. An unwritable ledger, an id with no
+  # recorded rounds, and a corrupt ledger all printed success and exited 0.
+  #
+  # That is the worst shape available here. The cap pages ONCE on the transition
+  # and then sets capped_notified, so after a reset the operator believes worked,
+  # the issue stays capped and never pages again -- the worker going permanently
+  # dark right after the operator did the right thing.
+  #
+  # The old `except Exception: d={}` was also silent data loss: a corrupt ledger
+  # was rebuilt from scratch and every OTHER issue's counters went with it. The
+  # reader below refuses to write what it could not parse.
+  RESET_OUT="$(python3 -c "
 import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); was=e.get('rounds',0)
-e['rounds']=0; e.pop('capped_notified',None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2); print(was)" "$ONLY_ISSUE" >/dev/null 2>&1 || true
-  say "$ONLY_ISSUE: review round count reset to 0; the next run will dispatch again"
+key, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as fh: d = json.load(fh)
+except FileNotFoundError:
+    print('NOKEY'); raise SystemExit(0)
+if key not in d:
+    print('NOKEY'); raise SystemExit(0)
+was = d[key].get('rounds', 0)
+d[key]['rounds'] = 0
+d[key].pop('capped_notified', None)
+with open(path, 'w') as fh: json.dump(d, fh, indent=2)
+with open(path) as fh: back = json.load(fh).get(key, {})
+if back.get('rounds') != 0 or back.get('capped_notified'):
+    sys.stderr.write('write did not stick: %r' % (back,)); raise SystemExit(1)
+print(was)" "$ONLY_ISSUE" "$ATTEMPTS" 2>&1)" || {
+    say "$ONLY_ISSUE: reset FAILED, round count UNCHANGED ($ATTEMPTS): $RESET_OUT"
+    exit 1
+  }
+  if [ "$RESET_OUT" = "NOKEY" ]; then
+    say "$ONLY_ISSUE: nothing to reset -- no round count recorded for it. Check the id ($ATTEMPTS)."
+    exit 1
+  fi
+  say "$ONLY_ISSUE: review rounds $RESET_OUT -> 0, verified by read-back; the next run will dispatch again"
   exit 0
 fi
 

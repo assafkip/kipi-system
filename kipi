@@ -34,12 +34,22 @@ usage() {
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
-  echo "  kipi directive <ASK-n> "<text>"  Standing instruction the worker renders into EVERY rework prompt (--clear to retire)
-  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
+  # The inner quotes are ESCAPED, not bare. Written bare, bash closed the string
+  # at `"<` and parsed <text> as a redirection: kipi help printed an error,
+  # exited 1, and dropped this line AND the kipi dor line below it -- and every
+  # unrecognized subcommand hits usage, so every typo did the same
+  # (PR #22 review round 4, finding 2). test-kipi-usage.sh pins it.
+  echo "  kipi directive <ASK-n> \"<text>\"  Standing instruction the worker renders into EVERY rework prompt (--clear to retire)"
+  echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
   echo "  kipi home            Print the skeleton path"
+  # Documented because it still EXISTS in the case statement: the coverage
+  # assertion in test-kipi-usage.sh treats a handled-but-unlisted subcommand as
+  # unregistered, and a deprecated command that only the source reveals is the
+  # shape that assertion is there to stop.
+  echo "  kipi sync-skills     DEPRECATED: skills ship as marketplace plugins (prints where to look)"
   echo ""
 }
 

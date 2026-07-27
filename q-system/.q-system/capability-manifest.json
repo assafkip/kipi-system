@@ -122,6 +122,18 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-reset-rounds.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-usage.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-scratch-guard-push.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-worker-directive-scratch.sh",
       "runner": "bash"
     },
