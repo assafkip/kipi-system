@@ -181,6 +181,10 @@ class _Boom:
         return _fh.finding_key(detector, subject)
 
     @staticmethod
+    def launchd_finding(detector, label, detail=""):
+        return _fh.launchd_finding(detector, label, detail)
+
+    @staticmethod
     def file_findings(findings, apply, filer=None):
         raise RuntimeError("linear unreachable")
 
@@ -200,8 +204,10 @@ try:
     _none = wd.file_linear_findings([("com.cole.gamma", "paused", "paused on purpose")])
 finally:
     wd._FLEET_HEALTH = _saved_fh
+# `owed` rides along on every return path: it is the denominator `unfiled_count`
+# needs, and a path that omitted it would silently fall back to reading one bucket.
 check("a paused-only run files nothing", _none,
-      {"created": 0, "existing": 0, "skipped_no_key": 0})
+      {"created": 0, "existing": 0, "skipped_no_key": 0, "owed": 0})
 
 # --- a dead filer must not read like a clean run (ASK-181 review, finding 1) --
 # THE REPRODUCER: `file_findings` catches its own network errors and returns
@@ -221,6 +227,13 @@ def _fh_stub(created=0, existing=0, unfiled=0, record=None):
         @staticmethod
         def finding_key(detector, subject):
             return _fh.finding_key(detector, subject)
+
+        # Delegated, never re-implemented: a stub with its own rendering would go
+        # on passing after the two filers drifted apart again, which is the whole
+        # defect (PR #19 round-3 review, major).
+        @staticmethod
+        def launchd_finding(detector, label, detail=""):
+            return _fh.launchd_finding(detector, label, detail)
 
         @staticmethod
         def file_findings(findings, apply, filer=None):
@@ -287,14 +300,222 @@ check("the ping says the findings did not reach Linear",
 check("a healthy filer leaves the ping text alone",
       any("NOT filed" in p for p in _ok_pings), False)
 
+# --- a REFUSED write must not read like a clean run either (PR #19 review, major)
+# THE REPRODUCER: ASK-204 gave `file_findings` per-finding error handling, so a
+# Linear write that fails now RETURNS {..., "errors": N} where it used to raise.
+# This reporter read `skipped_no_key` alone, so a refused write printed the
+# byte-identical line to a clean run AND lost the `[NOT filed to Linear: N]`
+# annotation on the ping -- in the job whose whole purpose is catching silence.
+# Same class as the ASK-181 scar above, one bucket further out.
+
+
+def _fh_stub_shape(record=None, **buckets):
+    """A stand-in emitting the FULL bucket shape `file_findings` returns.
+
+    `_fh_stub` above predates ASK-204 and emits three keys; the real filer emits
+    created/existing/skipped_no_key/updated/reopened/relisted/errors. Reporting
+    has to be proved against the shape production actually produces, and against
+    shapes it does not produce YET -- hence **buckets rather than a fixed list.
+    """
+
+    class _Stub:
+        @staticmethod
+        def finding_key(detector, subject):
+            return _fh.finding_key(detector, subject)
+
+        # Delegated, never re-implemented: a stub with its own rendering would go
+        # on passing after the two filers drifted apart again, which is the whole
+        # defect (PR #19 round-3 review, major).
+        @staticmethod
+        def launchd_finding(detector, label, detail=""):
+            return _fh.launchd_finding(detector, label, detail)
+
+        @staticmethod
+        def file_findings(findings, apply, filer=None):
+            if record is not None:
+                record.append({"n": len(findings), "apply": apply, "filer": filer})
+            outcome = {"created": 0, "existing": 0, "skipped_no_key": 0, "updated": 0,
+                       "reopened": 0, "relisted": 0, "errors": 0}
+            outcome.update(buckets)
+            return outcome
+
+    return _Stub
+
+
+def _last_line(problems, fleet_health):
+    return run_capture(problems, fleet_health)[0].strip().splitlines()[-1]
+
+
+# two findings, one filed and one the write refused
+_rejected_line = _last_line(_TWO_REAL, _fh_stub_shape(created=1, errors=1))
+_clean_line = _last_line(_TWO_REAL, _fh_stub_shape(created=2))
+check("a REFUSED Linear write does not print the same line as a clean run",
+      _rejected_line == _clean_line, False)
+check("a refused write is counted as unfiled", "unfiled=1" in _rejected_line, True)
+# the reviewer's exact shape: EVERY write refused reads byte-for-byte like a run
+# that had nothing to file, because both print filed=0 already-tracked=0.
+check("an all-refused run does not print the same line as a run with nothing to file",
+      _last_line(_TWO_REAL, _fh_stub_shape(errors=2))
+      == _last_line(_NOTHING_TO_FILE, _fh_stub_shape()), False)
+check("a clean run still reports nothing unfiled", "unfiled=0" in _clean_line, True)
+_rejected_pings = run_capture(_TWO_REAL, _fh_stub_shape(created=1, errors=1))[2]
+check("the ping says the board does NOT have the refused finding",
+      any("NOT filed to Linear: 1" in p for p in _rejected_pings), True)
+check("a refused write adds no extra ping", len(_rejected_pings), 1)
+check("a clean run leaves the ping text alone",
+      any("NOT filed" in p for p in run_capture(_TWO_REAL, _fh_stub_shape(created=2))[2]),
+      False)
+
+# A re-filed (`relisted`) finding DID land on the board -- counting it as unfiled
+# would trade this silence for a nightly false alarm, which is the other half of
+# the same failure.
+check("a re-filed finding counts as filed, not unfiled",
+      "unfiled=0" in _last_line(_TWO_REAL, _fh_stub_shape(created=1, relisted=1)), True)
+
+# The layer above this fix: `errors` will not be the last bucket `file_findings`
+# grows. A reporter that lists FAILURE buckets by name goes dark again on the day
+# the next one lands -- which is precisely how this regression happened. So
+# unfiled is owed-minus-LANDED: a bucket this reporter has never been taught
+# about counts as not-filed until someone declares it landed.
+check("a bucket the reporter has never heard of still counts as unfiled",
+      "unfiled=1" in _last_line(_TWO_REAL, _fh_stub_shape(created=1, quarantined=1)), True)
+
 # One layer deeper: if the findings cannot even be BUILT (fleet-health-daily.py
 # missing -- literally the kipi-update rsync --delete scar this watchdog exists
 # for) the outcome is all-zeros, which would print the clean-run line again.
 # `unfiled` has to count the problems that were owed an issue, not the findings
 # that were never constructed.
+# ===========================================================================
+# ONE kipi-key means ONE rendering (PR #19 round-3 review, major)
+# ===========================================================================
+# This script and fleet-health-daily.py file against the SAME key by design
+# (ASK-181). `finding_hash` covers title + body, so two renderings of one key made
+# every alternating run see a stale hash: a Linear rewrite plus a "1 updated ...
+# nothing to do now" Slack line twice a day on a fleet where nothing changed.
+#
+# Driven from ONE fake launchctl answering BOTH readers rather than two
+# hand-built fixtures, because the two encodings of a single machine state are
+# half the defect: `launchctl list` prints a SIGNED status (what fleet-health-daily
+# reads) while `launchctl list <label>` prints the RAW wait status (what this
+# script reads). Measured live 2026-07-27: a SIGKILLed job is `-9` in the column
+# and `"LastExitStatus" = 9`; com.apple.BiomeAgent is `5` and `1280`. A test that
+# fed both sides the same pre-formatted detail would have passed while production
+# titled one issue "(exit -9)" and the other "(exit 9)".
+_PAIR_LABEL = "com.kipi.pairing-demo"
+
+
+class _FakeCompleted:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, ""
+
+
+def _one_fake_machine(list_status, last_exit_status):
+    """`launchctl` for ONE failing job, answering both the bulk and per-label reads."""
+    def run(argv, **_kwargs):
+        if argv[:2] == ["launchctl", "list"] and len(argv) == 2:
+            return _FakeCompleted(f"PID\tStatus\tLabel\n-\t{list_status}\t{_PAIR_LABEL}\n")
+        if argv[:2] == ["launchctl", "list"] and len(argv) == 3:
+            if argv[2] != _PAIR_LABEL:
+                return _FakeCompleted("", 1)
+            return _FakeCompleted(f'\t"LastExitStatus" = {last_exit_status};\n', 0)
+        return _FakeCompleted("", 0)
+    return run
+
+
+def _both_renderings(list_status, last_exit_status):
+    """(fleet-health-daily's finding, this watchdog's finding) for one failing job."""
+    saved_fh, saved_wd = _fh.subprocess.run, wd.subprocess.run
+    _fh.subprocess.run = _one_fake_machine(list_status, last_exit_status)
+    wd.subprocess.run = _one_fake_machine(list_status, last_exit_status)
+    saved_module = wd._FLEET_HEALTH
+    wd._FLEET_HEALTH = _fh
+    try:
+        found = _fh.detect_failing_jobs(None)
+        fleet = dict(found[0]) if found else {}
+        if fleet:
+            fleet["key"] = _fh.finding_key("launchd-failing", fleet["subject"])
+        kind, code = wd.job_status(_PAIR_LABEL)
+        problems = [(_PAIR_LABEL, kind, f"exit {code}")] if kind == "failing" else []
+        watchdog = wd.linear_findings(problems)
+        return fleet, (watchdog[0] if watchdog else {})
+    finally:
+        _fh.subprocess.run, wd.subprocess.run = saved_fh, saved_wd
+        wd._FLEET_HEALTH = saved_module
+
+
+# `1`/`256` is an ordinary exit 1; `-9`/`9` is a SIGKILL, the shape 209 of the 210
+# non-zero rows on this machine actually have.
+for _name, _column, _raw in (("exit 1", "1", 256), ("SIGKILL", "-9", 9)):
+    _fleet_f, _wd_f = _both_renderings(_column, _raw)
+    check(f"{_name}: both scripts produce a finding", bool(_fleet_f and _wd_f), True)
+    check(f"{_name}: both file against the same key",
+          _fleet_f.get("key"), _wd_f.get("key"))
+    check(f"{_name}: both render the same title",
+          _fleet_f.get("title"), _wd_f.get("title"))
+    check(f"{_name}: both render the same body", _fleet_f.get("body"), _wd_f.get("body"))
+    check(f"{_name}: so the staleness hash agrees",
+          _fh.finding_hash(_fleet_f), _fh.finding_hash(_wd_f))
+
+# The consumer, not just the strings: `_refresh_one` is what turns a hash
+# disagreement into a Linear mutation. Hand it an issue carrying the OTHER filer's
+# rendering and it must answer "existing" -- no write, no Slack line.
+_fleet_f, _wd_f = _both_renderings("-9", 9)
+_tracked = {
+    "linear_id": "id-1", "identifier": "ASK-1", "state_type": "unstarted",
+    "team_id": "team-1",
+    "description": _fh.issue_description(_fleet_f["key"], _fleet_f,
+                                         filer="fleet-health-daily.py"),
+}
+check("the watchdog leaves fleet-health-daily's issue alone",
+      _fh._refresh_one(None, _wd_f, False, _tracked, "team-1", "launchd-health-check.py"),
+      "existing")
+_tracked_wd = {
+    "linear_id": "id-1", "identifier": "ASK-1", "state_type": "unstarted",
+    "team_id": "team-1",
+    "description": _fh.issue_description(_wd_f["key"], _wd_f,
+                                         filer="launchd-health-check.py"),
+}
+check("and fleet-health-daily leaves the watchdog's issue alone",
+      _fh._refresh_one(None, _fleet_f, False, _tracked_wd, "team-1",
+                       "fleet-health-daily.py"),
+      "existing")
+
+# Every kind this script files must come through the shared renderer -- driven
+# from the mapping itself, so adding a kind without covering it fails here rather
+# than shipping a second rendering of a shared key.
+for _kind, _detector in wd.LINEAR_DETECTOR_BY_KIND.items():
+    check(f"{_kind} routes to a shared-renderer id",
+          _detector in _fh.LAUNCHD_FINDING_IDS, True)
+    _saved_module = wd._FLEET_HEALTH
+    wd._FLEET_HEALTH = _fh
+    try:
+        _built = wd.linear_findings([(_PAIR_LABEL, _kind, "exit 7")])[0]
+    finally:
+        wd._FLEET_HEALTH = _saved_module
+    _shared = _fh.launchd_finding(_detector, _PAIR_LABEL, "exit 7")
+    check(f"{_kind}: title comes from the shared renderer",
+          _built["title"], _shared["title"])
+    check(f"{_kind}: body comes from the shared renderer",
+          _built["body"], _shared["body"])
+
+# An id nobody taught the renderer must be loud, not an empty body filed under a
+# key the other script also writes.
+try:
+    _fh.launchd_finding("launchd-invented", "com.kipi.x", "exit 1")
+    check("an unknown launchd detector id is refused", False, True)
+except ValueError:
+    check("an unknown launchd detector id is refused", True, True)
+
+
 class _BuildBoom:
     @staticmethod
     def finding_key(detector, subject):
+        raise ImportError("no module named fleet-health-daily")
+
+    @staticmethod
+    def launchd_finding(detector, label, detail=""):
+        # Rendering is delegated too now, so the missing-module scar has to be
+        # modelled on the call that actually happens first.
         raise ImportError("no module named fleet-health-daily")
 
 
