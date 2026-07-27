@@ -156,6 +156,43 @@ grep -q 'APPROVE WITH NITS' "$REVIEWER" || fail "reviewer prompt lost the severi
 grep -q 'spillover add'     "$REVIEWER" || fail "reviewer never captures minors as spillover"
 ok "reviewer wiring: severity rule in prompt, record written, minors captured"
 
+# --- review_round: the counter the anti-re-litigation rule arms on ------------
+# Off-by-one is the whole risk here, and it bit during authoring: an earlier
+# draft subtracted 1 on the theory that $REVIEW already existed. It does not --
+# it is a bare variable until the reviewer's stdout redirect at the end of the
+# script -- so a round-4 review would have announced itself as round 3 and told
+# the reviewer to re-litigate one round less than it should.
+RD="$WORK/rounds"; mkdir -p "$RD"
+[ "$(review_round "$RD" 11)" = "1" ] || fail "no prior reviews must be round 1"
+touch "$RD/pr-11-20260726-203324.md"
+[ "$(review_round "$RD" 11)" = "2" ] || fail "one prior review must be round 2"
+touch "$RD/pr-11-20260726-212446.md" "$RD/pr-11-20260726-215111.md"
+[ "$(review_round "$RD" 11)" = "4" ] || fail "three prior reviews must be round 4 (PR #11's real state)"
+touch "$RD/pr-9-20260726-120000.md"
+[ "$(review_round "$RD" 11)" = "4" ] || fail "another PR's reviews must not count toward this PR"
+[ "$(review_round "$RD" 9)"  = "2" ] || fail "per-PR counting broken"
+ok "review_round: 0/1/3 priors -> rounds 1/2/4, and PRs do not cross-count"
+
+# --- severity anchors + anti-re-litigation are IN the reviewer prompt ---------
+# Interpretive rules cannot be hook-enforced (the model decides how it grades),
+# so the deterministic slice is: the anchors are present, and the round rule is
+# conditional on round > 1. A prompt that silently loses them is the failure.
+for anchor in 'blocker' 'major' 'minor' 'nit' 'BLAST RADIUS and RECOVERABILITY'; do
+  grep -q -- "$anchor" "$REVIEWER" || fail "severity anchor '$anchor' missing from reviewer prompt"
+done
+ok "severity anchors present (blast-radius definitions for all 4 levels)"
+
+grep -q 'ROUND_RULE' "$REVIEWER"      || fail "reviewer has no round-scoped rule block"
+grep -q 'still LIVE\|STILL LIVE' "$REVIEWER" || fail "re-raise rule (repro-or-drop on repeat findings) missing"
+grep -q 'Do not escalate severity across rounds' "$REVIEWER" \
+  || fail "severity-escalation guard missing: a minor could be re-filed as a major next round"
+ROUND_IF="$(grep -n 'if \[ "\$ROUND" -gt 1 \]' "$REVIEWER" | head -1)"
+[ -n "$ROUND_IF" ] || fail "round rule must be gated on ROUND > 1 (round 1 has nothing to re-litigate)"
+ok "anti-re-litigation rule wired, gated on round > 1"
+
+grep -q 'review_round' "$REVIEWER" || fail "reviewer does not use the shared review_round (would drift from the test)"
+ok "reviewer computes its round through the shared lib"
+
 bash -n "$WORKER"   || fail "linear-worker.sh does not parse"
 bash -n "$REVIEWER" || fail "pr-review-agent.sh does not parse"
 ok "both consumers parse (bash -n)"

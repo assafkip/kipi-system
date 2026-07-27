@@ -58,6 +58,17 @@ extract_minor_findings() {
   sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$f" 2>/dev/null | grep -E '^minor\|' || true
 }
 
+# review_round <reviews-dir> <pr-number>
+# Which round the NEXT review of this PR will be: existing review files + 1.
+# Derived from disk, not from the worker's attempts json, because the reviewer
+# also runs standalone (`kipi review 11`) where that counter is never bumped --
+# it would report round 1 forever and the anti-re-litigation rule would never arm.
+review_round() {
+  local dir="$1" pr="$2" n
+  n="$(ls "$dir/pr-$pr-"*.md 2>/dev/null | wc -l | tr -d ' ')"
+  printf '%s' $(( ${n:-0} + 1 ))
+}
+
 # verdict_from_record <verdict-json>
 # Reads the `verdict` field of a pr-<N>.verdict.json record. Empty on any
 # parse failure -- a corrupt record reads as unreviewed, which fails closed.
