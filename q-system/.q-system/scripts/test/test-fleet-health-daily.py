@@ -949,6 +949,143 @@ check("`{ tar czf ~/projects/claude.tgz ~/p ; }` is not an invocation",
 check("`while read f; do du -sh ~/projects/claude; done < list` is not an invocation",
       fh._shells_claude("while read f; do du -sh ~/projects/claude; done < list"), False)
 
+# --- seventh review, MAJOR 1: an operator's annotation must survive a CONTENT change
+# The prior suite only asserted survival on the UNCHANGED path, where no mutation
+# is issued at all — a check that cannot fail, guarding a guarantee it was named
+# after. The interesting path is a CHANGED finding, where the update replaced
+# `description` wholesale and took the operator's note with it.
+splice = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=splice)
+NOTE = "operator note: migrating this one to a LaunchAgent on friday"
+splice.issues["id-1"]["description"] += "\n\n" + NOTE
+grown = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=splice)
+_spliced = splice.issues["id-1"]["description"]
+check("a CHANGED finding still rewrites the managed body", grown["updated"], 1)
+check("the operator's annotation survives a content change", NOTE in _spliced, True)
+check("...and the new offending line still landed",
+      "second job added a month later" in _spliced, True)
+check("...and the superseded rendering is gone, not duplicated below it",
+      _spliced.count("crontab line(s) invoke"), 1)
+# The splice's consumers: linear-sync's MARKER_RE parses kipi-key fleet-wide and
+# `tracked_hash` parses kipi-hash. Carrying a second copy of either into the
+# preserved tail would hand both a body with two answers in it.
+check("exactly one kipi-key marker survives the splice",
+      len(re.findall(r"<!--\s*kipi-key:", _spliced)), 1)
+check("exactly one kipi-hash marker survives the splice",
+      len(re.findall(r"<!--\s*kipi-hash:", _spliced)), 1)
+# The preserved tail round-trips through Linear's re-serializer, so it must not
+# reopen the daily-mutation hole the hash marker closed.
+_settled = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=splice)
+check("...and a spliced body still settles the morning after",
+      (_settled["updated"], _settled["reopened"], _settled["existing"]), (0, 0, 1))
+
+# The migration path is the blast radius: every fleet-health issue on the board
+# today is pre-hash, so `body_stale` is True for all of them on the FIRST
+# post-merge --apply run. Without the splice the operator loses every annotation
+# at once, silently, with the Slack line reporting it as "N updated".
+legacy_note = FakeLinear()
+_lf = _rollup(LINE_1 + "\n")[0]
+LEGACY_NOTE = "operator note: asked ops to confirm the keychain probe"
+legacy_note.issues["id-legacy"] = {
+    "identifier": "ASK-148",
+    "title": _lf["title"],
+    "description": (f"<!-- kipi-key: {_lf['key']} -->\n\n{_lf['body']}\n\n"
+                    f"Filed by `fleet-health-daily.py`.\n\n{LEGACY_NOTE}"),
+    "state_type": "unstarted",
+}
+mig_note = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=legacy_note)
+check("the one-time pre-hash migration still rewrites the issue", mig_note["updated"], 1)
+check("...and does NOT destroy the operator's note on the way through",
+      LEGACY_NOTE in legacy_note.issues["id-legacy"]["description"], True)
+
+# A body this renderer does not recognise at all (hand-written, or a renderer
+# older than the trailer) is PRESERVED wholesale rather than dropped. Duplication
+# is recoverable and visible; deletion of operator content is neither.
+odd = FakeLinear()
+odd.issues["id-odd"] = {
+    "identifier": "ASK-999",
+    "title": _lf["title"],
+    "description": f"<!-- kipi-key: {_lf['key']} -->\n\nhand-written triage nobody's renderer wrote",
+    "state_type": "unstarted",
+}
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=odd)
+check("an unrecognisable body is preserved, never dropped",
+      "hand-written triage nobody's renderer wrote" in odd.issues["id-odd"]["description"], True)
+check("...and still carries exactly one kipi-key marker",
+      len(re.findall(r"<!--\s*kipi-key:", odd.issues["id-odd"]["description"])), 1)
+
+# The reopen path builds the same update payload, so it must splice too.
+reopen_note = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=reopen_note)
+REOPEN_NOTE = "operator note: closed this after moving the job"
+reopen_note.issues["id-1"]["description"] += "\n\n" + REOPEN_NOTE
+reopen_note.close_issue("id-1")
+back = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=reopen_note)
+check("a reopen is still a reopen", back["reopened"], 1)
+check("...and the operator's note survives it too",
+      REOPEN_NOTE in reopen_note.issues["id-1"]["description"], True)
+
+# --- seventh review, MINOR 2: redaction must not depend on a leading SPACE ------
+# `(?<!\S)` required whitespace or line start before the assignment, so a secret
+# inside `bash -lc '...'` — one of this detector's own headline supported shapes —
+# was published verbatim into a permanent Linear issue.
+# Composed from variables, never written as a literal NAME=value, for the same
+# reason the third review's fixtures above are: the source of a test that proves
+# secrets get redacted must not itself carry one for gitleaks to flag.
+_V_LINEAR, _V_NOTION = "lin" + "_api_L1v3T0k3nAAAA", "ntn" + "_deadbeefdeadbeef"
+_V_JWT, _V_PG, _V_GL = "eyJhbGciOiJIUzI1NiJ9secret", "hunter2hunter2", "gl-tok3nGL3ak"
+_LEAK_SHAPES = [
+    ("nested single-quote shell -c", _V_LINEAR,
+     f"""0 3 * * * bash -lc 'LINEAR_API_KEY={_V_LINEAR} claude -p "sweep"'"""),
+    ("nested double-quote shell -c", _V_NOTION,
+     f'0 3 * * * bash -lc "NOTION_TOKEN={_V_NOTION} claude -p x"'),
+    ("after a semicolon, no space", _V_JWT,
+     f"0 3 * * * cd /x;SUPABASE_SERVICE_KEY={_V_JWT} claude -p x"),
+    ("after ( , subshell", _V_PG, f"0 3 * * * (PGPASSWORD={_V_PG} claude -p x)"),
+    ("after && , no space", _V_GL, f"0 3 * * * cd /x&&GITLAB_TOKEN={_V_GL} claude -p x"),
+]
+for _label, _secret, _line in _LEAK_SHAPES:
+    _finding = fh.detect_cron_shells_claude(None, cron_text=_line + "\n")
+    check(f"the line is still detected [{_label}]", bool(_finding), True)
+    check(f"the credential never reaches the issue body [{_label}]",
+          _secret in (_finding[0]["body"] if _finding else ""), False)
+_V_CONTROL = "s3cr3tv4lue"
+check("a space-preceded assignment is still redacted (control)",
+      _V_CONTROL in fh._redact_secrets(
+          f"0 3 * * * ANTHROPIC_API_KEY={_V_CONTROL} claude -p x"), False)
+# The lookbehind exists to keep this off FLAG values. Widening it must not.
+check("a long option's value is not read as an assignment",
+      fh._redact_secrets("rsync --exclude=.git ~/a ~/b"), "rsync --exclude=.git ~/a ~/b")
+check("a path segment containing = is not read as an assignment",
+      fh._redact_secrets("tar czf ~/b/A=1.tgz ~/p"), "tar czf ~/b/A=1.tgz ~/p")
+
+# --- seventh review, MINOR 3: command substitution and xargs read as benign -----
+# `$(` split only because `(` happens to be a shlex punctuation char. Backticks
+# are in no set at all, and `xargs` was not a wrapper, so both were silent false
+# negatives — the one failure class this detector cannot afford.
+check("a backtick substitution is an invocation",
+      fh._shells_claude("OUT=`claude -p 'x'`"), True)
+check("`xargs -I{} claude -p {}` is an invocation",
+      fh._shells_claude("xargs -I{} claude -p {} < list"), True)
+check("`xargs -I {} claude -p {}` (separated form) is an invocation",
+      fh._shells_claude("xargs -I {} claude -p {} < list"), True)
+check("a $( ) substitution INSIDE double quotes is an invocation",
+      fh._shells_claude('echo "$(claude -p x)"'), True)
+check("a backtick substitution inside double quotes is an invocation",
+      fh._shells_claude('echo "`claude -p x`"'), True)
+check("a bare $( ) substitution is still an invocation",
+      fh._shells_claude("OUT=$(claude -p 'x'); echo $OUT"), True)
+# Every widening carries its negatives. Single quotes suppress substitution, so a
+# backtick inside them is PROSE — the same trap the quoted-`&&` fix closed.
+check("a backtick inside single quotes is prose, not an invocation",
+      fh._shells_claude("echo 'run `claude -p x` tomorrow'"), False)
+check("a substitution that only NAMES the claude dir is not an invocation",
+      fh._shells_claude("du -sh `ls ~/projects/claude`"), False)
+check("`| xargs rm` over a claude dir is not an invocation",
+      fh._shells_claude("find ~/projects/claude -name '*.log' | xargs rm"), False)
+check("xargs running something else is not an invocation",
+      fh._shells_claude("xargs -n1 tar czf ~/projects/claude.tgz < list"), False)
+
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:
     try:

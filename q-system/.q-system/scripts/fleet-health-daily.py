@@ -235,7 +235,8 @@ def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
 # is the shape this fleet actually uses (open-loops-heartbeat.sh), so a matcher
 # that only reads the first token would miss every real invocation.
 CRON_COMMAND_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate",
-                         "sudo", "exec", "stdbuf", "npx", "flock", "ssh", "command"}
+                         "sudo", "exec", "stdbuf", "npx", "flock", "ssh", "command",
+                         "xargs"}
 
 # Shell KEYWORDS that stand in front of a command without being one. `if claude -p
 # x ; then ...` scored `if` as the command and answered False (fifth review,
@@ -269,6 +270,13 @@ _WRAPPER_VALUE_FLAGS = {
     "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"},
     "ssh": {"-i", "-l", "-p", "-o", "-F", "-b", "-c", "-D", "-E", "-e", "-I", "-J",
             "-L", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"},
+    # `xargs -I {} claude -p {}`: without `-I` here the `{}` placeholder was read
+    # as the command and `claude` never reached command position. The attached
+    # form (`-I{}`) needs nothing — it carries its own value (seventh review,
+    # finding 3).
+    "xargs": {"-I", "--replace", "-i", "-n", "--max-args", "-P", "--max-procs",
+              "-s", "--max-chars", "-L", "-l", "-d", "--delimiter", "-E",
+              "-a", "--arg-file"},
 }
 
 # Wrappers whose first POSITIONAL operand is not the command: flock takes a lock
@@ -523,6 +531,89 @@ def _shell_segments(command: str) -> list:
     return [s for s in segments if s]
 
 
+def _substitutions(command: str) -> list:
+    """The COMMAND STRINGS a substitution will run: `` `...` `` and `$(...)`.
+
+    Both are command positions the segment walk cannot see, and they were handled
+    by accident rather than on purpose: `$(` split only because `punctuation_chars`
+    makes `(` its own token and `(` is in SHELL_OPERATORS. Backticks are in neither
+    set, so `` OUT=`claude -p x` `` was a silent false negative, and `$(...)` INSIDE
+    double quotes was one too — shlex keeps a quoted string whole, so no token ever
+    became an operator (seventh review, finding 3).
+
+    Quote-aware, because that is the whole difficulty. Single quotes suppress
+    substitution and double quotes do not, so `echo 'run `claude -p x` now'` is
+    prose and `echo "`claude -p x`"` is an invocation. A naive split on backticks
+    would score the first — the same trap that made a quoted `&&` look like a
+    command boundary (third review, finding 5).
+
+    An UNTERMINATED substitution yields nothing. sh would not run it either, and
+    guessing where it ends is how a command position gets invented.
+    """
+    out, index, quote, length = [], 0, "", len(command)
+    while index < length:
+        char = command[index]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+            index += 1
+            continue
+        if char == "\\":
+            index += 2  # escaped next char, in double quotes or unquoted
+            continue
+        if char == "'":
+            quote = "'"
+        elif char == '"':
+            quote = "" if quote == '"' else '"'
+        elif char == "`":
+            close = _scan_to(command, index + 1, "`")
+            if close < 0:
+                break
+            out.append(command[index + 1:close])
+            index = close + 1
+            continue
+        elif char == "$" and command[index + 1:index + 2] == "(":
+            close = _scan_to_paren(command, index + 2)
+            if close < 0:
+                break
+            out.append(command[index + 2:close])
+            index = close + 1
+            continue
+        index += 1
+    return out
+
+
+def _scan_to(text: str, start: int, target: str) -> int:
+    """Index of the next unescaped `target`, or -1."""
+    index = start
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == target:
+            return index
+        index += 1
+    return -1
+
+
+def _scan_to_paren(text: str, start: int) -> int:
+    """Index of the `)` closing a `$(` opened before `start`, or -1. Nesting-aware
+    so `$(echo $(claude -p x))` yields the whole inner command, not half of it."""
+    depth, index = 1, start
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if not depth:
+                return index
+        index += 1
+    return -1
+
+
 def _shell_c_argument(tokens: list, command_index: int) -> str:
     """The string a shell will EXECUTE: the token after its `-c`-bearing flag.
 
@@ -568,6 +659,7 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
     # lex of a shorter string, so 5 is still bounded work per cron line.
     if _depth > 5:
         return False
+    command = _strip_comment(command)
     for tokens in _shell_segments(command):
         command_index = _command_index(tokens)
         command_token = tokens[command_index] if command_index >= 0 else ""
@@ -577,15 +669,33 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
             inner = _shell_c_argument(tokens, command_index)
             if inner and _shells_claude(inner, _depth + 1):
                 return True
+    # A substitution is a command position of its own, and the segment walk above
+    # cannot reach one that a quote has kept whole. Same recursion, same depth cap
+    # as the `-c` string: what runs inside `$( )` or backticks is a command, not text.
+    for inner in _substitutions(command):
+        if _shells_claude(inner, _depth + 1):
+            return True
     return False
 
 
-# A whitespace-delimited `VAR=value` assignment, value quote-aware. Splitting
-# the line on whitespace FIRST broke a quoted value at its internal space, so
-# `KEY="half1 half2"` masked only half1 and published half2 into a permanent
-# issue (third review, finding 4). `(?<!\S)` keeps this off flag values like
-# `--exclude=x`, matching exactly the env-prefix shape `_command_token` skips.
-_ASSIGNMENT_RE = re.compile(r"(?<!\S)([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*\"|'[^']*'|\S+)")
+# A `VAR=value` assignment at a word start, value quote-aware. Splitting the line
+# on whitespace FIRST broke a quoted value at its internal space, so
+# `KEY="half1 half2"` masked only half1 and published half2 into a permanent issue
+# (third review, finding 4).
+#
+# The lookbehind's job is to keep this OFF flag values (`--exclude=x`) and path
+# fragments (`~/b/A=1.tgz`), where the preceding character is part of the same
+# word. `(?<!\S)` demanded whitespace or line start, which is not the only place
+# sh starts a word: a quote, `;`, `(`, `&` or `|` starts one too. So
+# `bash -lc 'LINEAR_API_KEY=... claude -p x'` — one of this detector's own
+# headline supported shapes, with a test asserting it matches — published the
+# credential verbatim into a permanent Linear issue (seventh review, finding 2).
+#
+# Allowing `&` also masks a URL query parameter (`...&token=x`, and `...&page=2`
+# with it). Over-redaction is this function's stated bias and the variable NAME
+# survives, so the line stays identifiable either way.
+_ASSIGNMENT_RE = re.compile(
+    r"""(?<![^\s'"(;&|])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)""")
 
 # Bare-token credential SHAPES, not an exhaustive scanner: the families a cron
 # line in this fleet could realistically carry outside an assignment. sk- alone
@@ -894,7 +1004,58 @@ def tracked_hash(description: str) -> str:
     return found.group(1) if found else ""
 
 
-def issue_description(key: str, finding: dict) -> str:
+# The end of the region this script owns. Everything below it on a live issue
+# belongs to whoever wrote it and is spliced back onto every rewrite.
+MANAGED_END = "<!-- kipi-managed-end -->"
+_MANAGED_END_RE = re.compile(r"<!--\s*kipi-managed-end\s*-->")
+
+# The last line the v1 renderer emitted, which is where an operator's note starts
+# on every issue already on the board. Backtick-tolerant because Linear
+# re-serializes markdown on the read path and the sentinel does not exist yet on
+# those issues — this anchor is the migration, used once per issue.
+_V1_TRAILER_RE = re.compile(r"Filed by\s+`?fleet-health-daily\.py`?\.")
+
+# A kipi marker sitting on its own line. Stripped from the preserved tail so the
+# spliced body carries exactly ONE kipi-key (linear-sync's MARKER_RE parses it
+# fleet-wide) and exactly one kipi-hash (`tracked_hash` parses it here).
+_KIPI_MARKER_LINE_RE = re.compile(
+    r"(?m)^[ \t]*<!--\s*kipi-(?:key|hash|managed-end):?[^>]*-->[ \t]*$\n?")
+
+
+def operator_tail(description: str) -> str:
+    """Whatever a live issue's body holds that this script does not own.
+
+    `_refresh_one` replaced `description` wholesale, so the morning an offending
+    crontab line was added or removed, every annotation an operator had written on
+    the rollup issue was deleted — silently, with the Slack line reporting it as
+    "N updated", which reads as the body being refreshed rather than as operator
+    content being replaced (seventh review, finding 1). The prior suite asserted
+    survival only on the UNCHANGED path, where no mutation is issued at all; that
+    check could not fail.
+
+    Blast radius is why the fallbacks are graded rather than strict: every
+    fleet-health issue on the board today predates the hash marker, so `body_stale`
+    is True for ALL of them on the first post-merge `--apply` run. They lose their
+    annotations together or not at all.
+
+    1. the sentinel, on anything this renderer wrote since;
+    2. the v1 trailer, on every issue already on the board;
+    3. failing both, the WHOLE body is treated as not-ours and preserved.
+
+    Rule 3 buys one duplicated rendering on an unrecognisable body. That is
+    recoverable and visible in the issue; deleting operator content is neither.
+    """
+    text = description or ""
+    end = _MANAGED_END_RE.search(text)
+    if end:
+        tail = text[end.end():]
+    else:
+        trailer = _V1_TRAILER_RE.search(text)
+        tail = text[trailer.end():] if trailer else text
+    return _KIPI_MARKER_LINE_RE.sub("", tail).strip()
+
+
+def issue_description(key: str, finding: dict, tail: str = "") -> str:
     """The issue body for a finding. ONE renderer, used by create AND update.
 
     Two renderers would drift, and the drift would be invisible: the created body
@@ -904,11 +1065,17 @@ def issue_description(key: str, finding: dict) -> str:
     kipi-key marker: linear-sync's MARKER_RE and every other kipi-key consumer
     parse that marker fleet-wide, and changing its shape would break the dedup
     guard that keeps these issues from forking.
+
+    `tail` is operator-owned content carried through a rewrite. It is NOT hashed:
+    `finding_hash` covers the finding's title and body only, so an operator's note
+    can never make the body read stale and start a daily mutation.
     """
-    return (f"<!-- kipi-key: {key} -->\n"
-            f"<!-- kipi-hash: {finding_hash(finding)} -->\n\n"
-            f"{finding['body']}\n\n"
-            "Filed by `fleet-health-daily.py`.")
+    managed = (f"<!-- kipi-key: {key} -->\n"
+               f"<!-- kipi-hash: {finding_hash(finding)} -->\n\n"
+               f"{finding['body']}\n\n"
+               "Filed by `fleet-health-daily.py`.\n"
+               f"{MANAGED_END}")
+    return f"{managed}\n\n{tail}" if tail else managed
 
 
 # Linear WorkflowState.type values that mean the issue is off the board. Held
@@ -1065,7 +1232,15 @@ def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str) ->
         # reopen state exists without the network call it is forbidden to make,
         # so "reopened" here is the prediction.
         return "reopened" if closed else "updated"
-    update: dict = {"title": title, "description": issue_description(finding["key"], finding)}
+    # Splice, never replace. The wholesale rewrite deleted every operator
+    # annotation the moment the finding's content changed (seventh review,
+    # finding 1). This script owns the region above `MANAGED_END`; everything
+    # below it is carried through untouched.
+    update: dict = {
+        "title": title,
+        "description": issue_description(finding["key"], finding,
+                                         operator_tail(tracked.get("description"))),
+    }
     reopening = False
     if closed:
         # The issue's OWN team, falling back to the team this lookup started
