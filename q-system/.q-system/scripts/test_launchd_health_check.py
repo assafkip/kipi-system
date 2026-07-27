@@ -112,6 +112,91 @@ check("a paused label that starts FAILING still pings",
 _paused = wd.load_paused_labels()
 check("load_paused_labels returns a set", isinstance(_paused, set), True)
 
+# --- dry-run flag parsing (ASK-181) ------------------------------------------
+# THE REPRODUCER: the old test was `"--dry" in sys.argv`, an exact string match, so
+# `--dry-run` fell through to the LIVE path -- writing state and pinging the
+# founder's phone from what the operator typed as a read-only check. This job's own
+# migration Definition of Ready tells the verifier to run `--dry-run`.
+check("--dry is dry", wd.is_dry_run(["--dry"]), True)
+check("--dry-run is dry", wd.is_dry_run(["--dry-run"]), True)
+check("-n is dry", wd.is_dry_run(["-n"]), True)
+check("no flag is live", wd.is_dry_run([]), False)
+check("an unrelated flag is live", wd.is_dry_run(["--verbose"]), False)
+check("a dry flag anywhere counts", wd.is_dry_run(["--verbose", "--dry-run"]), True)
+
+# --- findings reach Linear, not only Slack (ASK-181) -------------------------
+# Bar 2 of the job-migration contract: a finding that only ever exists as a Slack
+# line is read once and scrolls away. Linear holds state.
+_probs = [
+    ("com.kipi.alpha", "failing", "exit 127"),
+    ("com.kipi.beta", "not_loaded", "installed but not running"),
+    ("com.cole.gamma", "paused", "paused on purpose"),
+]
+_found = wd.linear_findings(_probs)
+check("paused is never filed", [f["subject"] for f in _found],
+      ["com.kipi.alpha", "com.kipi.beta"])
+check("failing routes to the launchd-failing detector",
+      _found[0]["detector"], "launchd-failing")
+check("not_loaded routes to the launchd-dark detector",
+      _found[1]["detector"], "launchd-dark")
+check("the failing title carries the exit code",
+      _found[0]["title"], "launchd job failing: com.kipi.alpha (exit 127)")
+check("the dark title names the job", _found[1]["title"],
+      "launchd job is dark: com.kipi.beta")
+check("every finding carries a body", all(f.get("body") for f in _found), True)
+
+# The dedup key must be fleet-health-daily.py's key, byte for byte. That job runs
+# the SAME two checks at 08:15; a second key namespace would file a permanent
+# duplicate Linear issue for every finding both jobs see, and Linear issues do not
+# get deleted here.
+_fh_spec = importlib.util.spec_from_file_location(
+    "fh", Path(__file__).resolve().parent / "fleet-health-daily.py"
+)
+_fh = importlib.util.module_from_spec(_fh_spec)
+_fh_spec.loader.exec_module(_fh)
+check("failing key matches fleet-health's",
+      _found[0]["key"], _fh.finding_key("launchd-failing", "com.kipi.alpha"))
+check("dark key matches fleet-health's",
+      _found[1]["key"], _fh.finding_key("launchd-dark", "com.kipi.beta"))
+
+# ...and fleet-health's filer must be able to say who filed it, or every issue
+# this watchdog files claims to come from a job that did not file it.
+import inspect  # noqa: E402 - local to this assertion
+
+check("file_findings accepts a filer", "filer",
+      "filer" if "filer" in inspect.signature(_fh.file_findings).parameters else "MISSING")
+
+# Linear being unreachable must never take the watchdog down -- a watchdog that
+# dies on a network error stops watching launchd, which is the exact silent death
+# it exists to catch. Swap the cached fleet-health module for one that raises.
+class _Boom:
+    @staticmethod
+    def finding_key(detector, subject):
+        return _fh.finding_key(detector, subject)
+
+    @staticmethod
+    def file_findings(findings, apply, filer=None):
+        raise RuntimeError("linear unreachable")
+
+
+_saved_fh = wd._FLEET_HEALTH
+wd._FLEET_HEALTH = _Boom
+try:
+    _broken = wd.file_linear_findings([("com.kipi.alpha", "failing", "exit 127")])
+finally:
+    wd._FLEET_HEALTH = _saved_fh
+check("a filing error is swallowed, not raised", _broken["created"], 0)
+check("a filing error is counted", _broken["skipped_no_key"], 1)
+
+# Nothing to file must not reach the network at all.
+wd._FLEET_HEALTH = _Boom
+try:
+    _none = wd.file_linear_findings([("com.cole.gamma", "paused", "paused on purpose")])
+finally:
+    wd._FLEET_HEALTH = _saved_fh
+check("a paused-only run files nothing", _none,
+      {"created": 0, "existing": 0, "skipped_no_key": 0})
+
 if failures:
     print("FAIL:")
     for line in failures:
