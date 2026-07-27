@@ -13,10 +13,26 @@ LOG="$SKEL/q-system/output/lessons-daily.log"
 TS() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 mkdir -p "$(dirname "$LOG")"
 
-command -v claude >/dev/null 2>&1 || { echo "$(TS) no claude CLI -> skip" >> "$LOG"; exit 0; }
+# The exit code IS this job's wire to Linear (ASK-182). fleet-health-daily.py's
+# `launchd-failing` detector keys on a non-zero LastExitStatus, so a run that
+# reports 0 after a bad night is invisible to the board no matter what it Slacked.
+# Observed 2026-07-27: the 06:00 run logged "propagate FAILED", Slacked it, and
+# `launchctl list` still said LastExitStatus = 0. Pinned by
+# test/test-lessons-daily-exit.sh.
+fail() { echo "$(TS) FAILURE: $*" >> "$LOG"; bash "$NOTIFY" "lessons-daily: $*" 2>/dev/null; exit 1; }
 
-SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" 2>>"$LOG")"
+# The plist pins PATH to include ~/.local/bin, so a missing binary here is a
+# broken machine, not a normal night. Skipping silently would make this job dark
+# with a clean exit status -- the one state the four bars forbid.
+command -v claude >/dev/null 2>&1 || fail "no claude CLI on PATH -> nothing distilled"
+
+SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
 echo "$(TS) $SUMMARY" >> "$LOG"
+
+# A dead distiller emits no JSON, every count below parses as 0, and the run
+# reads as a quiet night. A zero result must prove it is empty, not broken.
+printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
+  || fail "lessons-distill.py emitted no parseable JSON summary"
 
 field() { printf '%s' "$SUMMARY" | python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
@@ -43,3 +59,13 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$PROP" = "propagate FAILED" ] && MSG="$MSG · propagation FAILED, see log"
 bash "$NOTIFY" "$MSG"
 echo "$(TS) slacked: $MSG" >> "$LOG"
+
+# Lessons that published but never reached the fleet are a half-done run: the
+# Slack line above says so, and this makes launchd (and therefore Linear) agree.
+# Held lessons are NOT a failure -- the scrub gate holding client data is the gate
+# working, and paging on it would train the founder to ignore the channel.
+if [ "$PROP" = "propagate FAILED" ]; then
+  echo "$(TS) propagation failed -> exit 1" >> "$LOG"
+  exit 1
+fi
+exit 0

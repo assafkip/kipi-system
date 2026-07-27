@@ -86,6 +86,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-create.py",
       "runner": "python3"
     },
