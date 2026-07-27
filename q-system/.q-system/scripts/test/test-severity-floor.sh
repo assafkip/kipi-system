@@ -356,6 +356,20 @@ EOF
 cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 echo "worked" >> "$W2/worked.txt"
+# The WORK-PHASE agent runs with cwd = the worktree it was handed, so this
+# records WHAT WAS IN that tree. Sections E-G only ever asked "was a round
+# dispatched"; the destructive case (PR #25 review, finding 1) is a round
+# dispatched into a tree that holds none of the PR's commits, which is
+# invisible without this.
+# FIRST WRITER WINS, because the REVIEWER also shells \`claude\`, from the real
+# repo root rather than the worktree. The work phase always runs first, so the
+# first record is the one under test; without this guard the reviewer's log
+# overwrites it and the probe silently reports the wrong repo entirely.
+# (Keying on KIPI_AGENT instead does NOT work: it is often already exported in
+# the ambient environment, so the reviewer's call passes the key too.)
+if [ ! -s "$W2/tree-log.txt" ]; then
+  git log --oneline -n 20 > "$W2/tree-log.txt" 2>&1
+fi
 exit 0
 EOF
 # The page sink. "Did anyone get told, and how many times?" is answered by
@@ -466,6 +480,167 @@ grep -q "nothing to rework, waiting on founder merge" "$W2/ok.out" \
       not gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/ok.out" | head -1)"
 [ ! -s "$W2/pages.txt" ] || fail "a healthy approved PR paged the founder: $(cat "$W2/pages.txt")"
 ok "approved + CLEAN is left alone at gate 10, and pages nobody"
+
+# --- a repo whose PR head lives ONLY on the remote branch --------------------
+# Sections E-G run against a repo where main IS the branch, so "which start
+# point did the worktree use" was unobservable there. Here origin/sana/ask-aaa
+# carries a commit main does not have, and main has moved past the fork point --
+# the real shape of an approved-but-DIRTY PR, and the only shape in which
+# cutting a tree from origin/main is visibly destructive.
+#
+# ONE REPO PER SECTION: two worktrees in one repo cannot both hold
+# sana/ask-aaa, and every section below needs its own tree.
+make_repo() {
+  local d="$1"
+  mkdir -p "$d"
+  git init -q --bare "$d/origin"
+  git init -q "$d/skel"
+  G -C "$d/skel" commit -q --allow-empty -m "base commit"
+  git -C "$d/skel" branch -M main
+  git -C "$d/skel" remote add origin "$d/origin"
+  git -C "$d/skel" push -q -u origin main
+  G -C "$d/skel" checkout -q -b sana/ask-aaa
+  G -C "$d/skel" commit -q --allow-empty -m "the approved work (ASK-AAA)"
+  git -C "$d/skel" push -q -u origin sana/ask-aaa
+  G -C "$d/skel" checkout -q main
+  # Drop the LOCAL branch: the PR's head now exists only as origin/sana/ask-aaa,
+  # which is exactly the state after a worktree is swept between rounds.
+  git -C "$d/skel" update-ref -d refs/heads/sana/ask-aaa
+  G -C "$d/skel" commit -q --allow-empty -m "main moved underneath the PR"
+  git -C "$d/skel" push -q origin main
+}
+
+# run_worker_in <skel> <state-dir> <out>
+run_worker_in() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
+       KIPI_NOTIFY="$W2/notify.sh" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
+  return 0
+}
+
+# --- H. a rebase round must be handed the PR's OWN commits -------------------
+# PR #25 review, finding 1 (major). `git worktree add -B <branch> <tree>
+# origin/main` RESETS the branch to origin/main. Before this line of work an
+# approved PR never reached it (gate 10 was terminal); gate 30 routes one
+# through it AND hands the agent a prompt that says `git push --force-with-lease
+# origin <branch>`. A tree with none of the PR's commits plus that instruction
+# wipes the approved diff off the remote, and --force-with-lease does not stop
+# it: the worker's own `git fetch origin` refreshed origin/<branch> first, so
+# the lease sees no surprise and allows the push.
+R_HEAD="$W2/repo-head"; make_repo "$R_HEAD"
+S_HEAD="$W2/state-head"; mkdir -p "$S_HEAD/pr-reviews"
+printf '{"verdict":"APPROVE","pr":781}\n' > "$S_HEAD/pr-reviews/pr-781.verdict.json"
+gh_says 781 DIRTY
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"
+run_worker_in "$R_HEAD/skel" "$S_HEAD" "$W2/head.out"
+
+grep -q worked "$W2/worked.txt" 2>/dev/null \
+  || fail "no rebase round was dispatched at all: $(grep -i skip "$W2/head.out" | head -1)"
+grep -q "the approved work" "$W2/tree-log.txt" 2>/dev/null \
+  || fail "DESTRUCTIVE: the rebase round was handed a worktree that does NOT contain PR #781's
+      commits. The prompt tells that agent to force-push this tree over the branch, which
+      deletes the approved diff from the remote. Tree contained:
+$(sed 's/^/        /' "$W2/tree-log.txt")"
+ok "the rebase round is handed a tree that contains the PR's own commits"
+
+# The other half: it must be ON the branch, not on a detached head or main, or
+# the force-push in the prompt has no branch to push.
+grep -q "sana/ask-aaa" "$W2/head.out" \
+  || fail "the run never names the branch it worked on"
+[ "$(git -C "$S_HEAD/worktrees/ask-aaa" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "sana/ask-aaa" ] \
+  || fail "the worktree is not on sana/ask-aaa; the prompt's push has no branch to push"
+ok "the worktree stands on the PR's branch"
+
+# Finding 4: a rebased diff DOES get re-reviewed (the diff changed, so the old
+# APPROVE no longer describes it). Pinned so a later "save the review budget"
+# change cannot silently ship an unreviewed force-push.
+LH="$S_HEAD/linear-worker-attempts.json"
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$LH'))['ASK-AAA'].get('rounds',0))")" = "1" ] \
+  || fail "the rebased diff was not re-reviewed; a force-push nobody looked at ships under the OLD verdict"
+ok "a rebase round's resulting diff is re-reviewed (round recorded)"
+
+# --- I. a skipped run must not spend the conflict budget ---------------------
+# PR #25 review, finding 2 (major). The bump used to run at the gate, before the
+# worktree and before the claim. A stale claim (converge.sh's own documented
+# 2026-07-27 scar: SIGKILL/timeout/sleep leaves a lock nobody reclaims) then
+# burned the whole budget across two runs having dispatched ZERO rebase rounds,
+# paged a count that never happened, and locked the issue out permanently.
+R_STALE="$W2/repo-stale"; make_repo "$R_STALE"
+S_STALE="$W2/state-stale"; mkdir -p "$S_STALE/pr-reviews" "$S_STALE/worktrees"
+printf '{"verdict":"APPROVE","pr":782}\n' > "$S_STALE/pr-reviews/pr-782.verdict.json"
+gh_says 782 DIRTY
+git -C "$R_STALE/skel" worktree add -q -B sana/ask-aaa \
+  "$S_STALE/worktrees/ask-aaa" origin/sana/ask-aaa 2>/dev/null \
+  || fail "could not pre-create the worktree for the stale-claim case"
+# A REAL lock, written by the real locker (fixture rule: never hand-roll the
+# on-disk shape), held by a session that is gone.
+( cd "$S_STALE/worktrees/ask-aaa" \
+  && "$REAL_PY" "$ROOT/q-system/.q-system/scripts/linear-claim.py" claim ASK-AAA \
+       --agent ghost --session ghost-dead-session ) >/dev/null 2>&1 \
+  || fail "could not seed the stale claim"
+
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale1.out"
+run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale2.out"
+
+grep -q "claimed by another session" "$W2/stale1.out" \
+  || fail "section I did not hit the stale claim at all: $(grep -i skip "$W2/stale1.out" | head -1)"
+LS="$S_STALE/linear-worker-attempts.json"
+BURNED="$("$REAL_PY" -c "
+import json
+try: d=json.load(open('$LS'))
+except Exception: d={}
+print(d.get('ASK-AAA',{}).get('conflict_rounds',0))")"
+[ "$BURNED" = "0" ] \
+  || fail "two runs that dispatched NOTHING spent $BURNED/2 conflict round(s). The budget is
+      gone before the work, so the issue is locked out with zero rebases tried."
+ok "a run skipped by another session's claim spends no conflict round"
+
+[ ! -s "$W2/pages.txt" ] \
+  || fail "the founder was paged a rebase count that never happened: $(cat "$W2/pages.txt")"
+ok "no page claiming rebase rounds that were never dispatched"
+
+grep -q "dispatching rebase round" "$W2/stale1.out" \
+  && fail "the log says it dispatched a rebase round on a run that skipped at the claim"
+ok "the log does not announce a dispatch that did not happen"
+
+# And the budget really is still there: release the dead session's lock, and the
+# next run gets round 1 of 2, not 'a human resolves this one'.
+( cd "$S_STALE/worktrees/ask-aaa" \
+  && "$REAL_PY" "$ROOT/q-system/.q-system/scripts/linear-claim.py" release ASK-AAA \
+       --agent ghost --session ghost-dead-session ) >/dev/null 2>&1
+: > "$W2/worked.txt"
+run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale3.out"
+grep -q "rebase round 1/" "$W2/stale3.out" \
+  || fail "after the stale claim cleared, the issue did not get its first rebase round.
+      The worker said: $(grep -iE 'skip|rebase' "$W2/stale3.out" | head -1)"
+ok "once the claim clears, the full conflict budget is still available"
+
+# --- J. the conflict budget is consecutive, not a lifetime total -------------
+# PR #25 review, finding 3 (minor). Nothing reset the counter, so an issue that
+# hit two conflicts across its life -- both successfully rebased -- could never
+# be dispatched for a third, silently (conflict_paged was already true, so it
+# did not even page).
+R_CLEAR="$W2/repo-clear"; make_repo "$R_CLEAR"
+S_CLEAR="$W2/state-clear"; mkdir -p "$S_CLEAR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":783}\n' > "$S_CLEAR/pr-reviews/pr-783.verdict.json"
+printf '{"ASK-AAA":{"conflict_rounds":2,"conflict_paged":true}}\n' > "$S_CLEAR/linear-worker-attempts.json"
+gh_says 783 CLEAN
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_CLEAR/skel" "$S_CLEAR" "$W2/clear.out"
+
+grep -q "nothing to rework, waiting on founder merge" "$W2/clear.out" \
+  || fail "section J skipped for the WRONG REASON; it must reach gate 10 (approved + CLEAN).
+      The worker said: $(grep -i skip "$W2/clear.out" | head -1)"
+LC="$S_CLEAR/linear-worker-attempts.json"
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$LC'))['ASK-AAA'].get('conflict_rounds',0))")" = "0" ] \
+  || fail "the PR merges cleanly again and the conflict counter still reads spent. The cap is a
+      LIFETIME total, so the next real conflict on this issue is un-dispatchable and silent."
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$LC'))['ASK-AAA'].get('conflict_paged',False))")" = "False" ] \
+  || fail "the page flag survived the PR becoming mergeable, so a NEW conflict streak would
+      stop the loop without ever telling the founder"
+ok "a PR that merges cleanly again resets its conflict budget and its page flag"
 
 # --- wiring: the worker actually consults the merge state --------------------
 grep -q 'pr_merge_state' "$WORKER" \
