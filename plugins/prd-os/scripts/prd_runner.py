@@ -1039,6 +1039,115 @@ def _issue_is_closed(cfg: Config, issue_id: str) -> bool:
     return False
 
 
+class LinearRefError(Exception):
+    """A resolution reference could not be PROVEN closed.
+
+    Covers every unverifiable case alike — no API key, no network, no such
+    issue, issue still open. They collapse to one class on purpose: the caller's
+    only correct response to any of them is to refuse, so a code path that could
+    tell them apart would only invite one of them being downgraded to a warning.
+    """
+
+
+LINEAR_API_URL = "https://api.linear.app/graphql"
+# Linear identifiers are TEAMKEY-number. Anything else is a local spec id (or a
+# typo), and must never become a live lookup.
+LINEAR_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}-\d+$")
+LINEAR_STATE_QUERY = "query($id: String!) { issue(id: $id) { state { name type } } }"
+
+
+def _linear_api_key() -> str:
+    """The same auth path linear-sync.py uses: env first, then the 0600 secret.
+
+    Read here rather than imported from linear-sync.py because prd-os ships as a
+    standalone plugin into repos with no q-system tree. What is shared is the
+    CONVENTION (this env name, this file path), not code that could drift.
+    """
+    env = os.environ.get("KIPI_LINEAR_API_KEY", "").strip()
+    if env:
+        return env
+    path = Path(os.path.expanduser("~/.config/kipi/linear-api-key"))
+    if not path.is_file():
+        raise LinearRefError(
+            "closure cannot be verified: no Linear API key. Create one at "
+            "https://linear.app/settings/api then:\n"
+            f"  umask 077 && printf '%s' '<key>' > {path}\n"
+            "or export KIPI_LINEAR_API_KEY. An unverified reference is never recorded")
+    key = path.read_text().strip()
+    if not key:
+        raise LinearRefError(f"closure cannot be verified: {path} is empty")
+    return key
+
+
+def _linear_issue_state(identifier: str) -> dict:
+    """The `{name, type}` of a Linear issue's workflow state.
+
+    Raises LinearRefError for anything short of a definite answer, including an
+    unreachable API — offline is a refusal, not an assumption.
+    """
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({"query": LINEAR_STATE_QUERY, "variables": {"id": identifier}}).encode("utf-8")
+    request = urllib.request.Request(
+        LINEAR_API_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json", "Authorization": _linear_api_key()},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise LinearRefError(f"Linear returned HTTP {exc.code} for {identifier}") from exc
+    except urllib.error.URLError as exc:
+        raise LinearRefError(f"cannot reach Linear to verify {identifier}: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise LinearRefError(f"Linear sent a non-JSON answer for {identifier}: {exc}") from exc
+    # Linear answers HTTP 200 with an `errors` array for application-level
+    # failures, so a status-code-only check would read a failed lookup as a
+    # verified one -- the exact shape of bug this command exists to prevent.
+    if payload.get("errors"):
+        raise LinearRefError(
+            f"Linear rejected the lookup for {identifier}: {json.dumps(payload['errors'])[:200]}")
+    issue = (payload.get("data") or {}).get("issue")
+    if not isinstance(issue, dict) or not isinstance(issue.get("state"), dict):
+        raise LinearRefError(f"Linear has no issue {identifier}")
+    return issue["state"]
+
+
+def _verify_resolution_ref(cfg: Config, ref: str) -> dict:
+    """Prove `ref` names a closed issue; return the evidence that proved it.
+
+    Raises LinearRefError with an operator-readable reason when closure cannot
+    be proven. Nothing here accepts the operator's word: the returned evidence
+    describes what the TRACKER said, which is why a resolution still cannot be
+    hand-flipped through this command.
+
+    Local specs answer first. A repo that tracks its own issues under
+    `.prd-os/issues/` keeps resolving offline even when its ids look like Linear
+    keys; the Linear path only opens for a ref this repo has no spec for.
+    """
+    local_spec = cfg.issues_dir / f"{ref}.md"
+    if local_spec.is_file() or not LINEAR_ID_RE.match(ref):
+        if _issue_is_closed(cfg, ref):
+            return {"resolution_tracker": "prd-os"}
+        raise LinearRefError(
+            f"issue '{ref}' is not closed. Build it through the normal "
+            "reproducer-first issue flow and close it first.")
+    state = _linear_issue_state(ref)
+    if state.get("type") != "completed":
+        # `canceled` lands here too, and should: a canceled issue shipped no fix,
+        # so clearing the item with it would green the gate on work that never
+        # happened. The honest exit for a non-item is --void, which records why.
+        raise LinearRefError(
+            f"Linear issue '{ref}' is not completed (state: {state.get('name')}). "
+            "Close it first, or record a non-item with --void <reason>.")
+    return {
+        "resolution_tracker": "linear",
+        "resolution_verified_state": state.get("name"),
+        "resolution_verified_at": _now_iso(),
+    }
+
+
 def cmd_spillover(cfg: Config, args) -> int:
     """add | list | check | resolve — the out-of-scope finding ledger."""
     import hashlib as _hashlib
@@ -1085,12 +1194,18 @@ def cmd_spillover(cfg: Config, args) -> int:
         if args.void:
             new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
         else:
-            if not _issue_is_closed(cfg, args.resolution_ref):
-                sys.stderr.write(
-                    f"cannot resolve {args.id}: issue '{args.resolution_ref}' is not closed. "
-                    f"Build it through the normal reproducer-first issue flow and close it first.\n")
+            try:
+                evidence = _verify_resolution_ref(cfg, args.resolution_ref)
+            except LinearRefError as exc:
+                sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
                 return 2
-            new.update(status="resolved", resolution_ref=args.resolution_ref, resolved_at=_now_iso())
+            new.update(status="resolved", resolution_ref=args.resolution_ref,
+                       resolved_at=_now_iso(), **evidence)
+            if args.evidence:
+                # Operator-supplied context (PR, merge commit). Recorded for the
+                # next reader, never consulted above: it is a note attached to a
+                # verified resolution, not a substitute for verifying one.
+                new["resolution_evidence"] = args.evidence
         _spillover_append(cfg, new)
         print(json.dumps({"id": args.id, "status": "resolved"}))
         return 0
@@ -1222,7 +1337,12 @@ def main(argv: list[str] | None = None) -> int:
     spill_sub.add_parser("check")
     sp_res = spill_sub.add_parser("resolve")
     sp_res.add_argument("id")
-    sp_res.add_argument("--resolution-ref", dest="resolution_ref", help="closed issue-id that fixed it")
+    sp_res.add_argument("--resolution-ref", dest="resolution_ref",
+                        help="closed issue that fixed it: a local .prd-os issue-id, "
+                             "or a Linear identifier (ASK-204) verified against Linear")
+    sp_res.add_argument("--evidence",
+                        help="auditable note recorded alongside a VERIFIED resolution "
+                             "(e.g. 'PR #19 / 990d7c1'); never a substitute for closure")
     sp_res.add_argument("--void", help="record a non-item (with reason) instead of fixing")
     p_spill.set_defaults(func=cmd_spillover)
 
