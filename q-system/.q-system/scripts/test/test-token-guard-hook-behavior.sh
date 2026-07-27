@@ -21,6 +21,10 @@ run_guard() { # $1 = event JSON on stdin; guard runs with fixture as project dir
   printf '%s' "$1" | CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD"
 }
 
+run_guard_file() { # $1 = path to a payload JSON file (for payloads with unicode/newlines)
+  CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD" < "$1"
+}
+
 # --- 1) warn() output must use the nested PreToolUse hookSpecificOutput form ---
 # Seed a cache one read short of the read-spiral threshold; the next Read warns.
 python3 - "$CACHE" "$SESSION" <<'EOF'
@@ -176,4 +180,132 @@ case "$ERR" in
   *) echo "FAIL: 3rd executed identical call blocked with wrong reason: $ERR"; exit 1;;
 esac
 
-echo "PASS: token-guard hook behavior (warn shape + PostToolUse edit reset + blocked-attempt un-count)"
+# --- 7-10) The ceiling's escape hatch must survive a pre-commit gate (ASK-215) --
+# Scar 4 (2026-07-27, ASK-214): at the ceiling the ONLY exempt call is `git
+# commit`. lefthook's plugin-version-bump REFUSED that commit, and bumping
+# plugin.json needs an Edit the ceiling blocks. The run stranded with 18/20 tests
+# done and everything staged. A refused commit is not a checkpoint, so the
+# commit-command exemption alone does not reach the deadlock: the gate's
+# PRECONDITION needs a bounded budget of its own.
+#
+# Fixture is a real lefthook v2.1.6 refusal (captured 2026-07-27). git passes a
+# hook's output through verbatim and adds no marker of its own, so the gate name
+# can only come from the gate's own text.
+mk_payloads() {
+python3 - "$FIXTURE" "$SESSION" <<'EOF'
+import json, os, sys
+fixture, session = sys.argv[1], sys.argv[2]
+
+LEFTHOOK_REFUSAL = (
+    "╭──────╮\n"
+    "│ \U0001f94a lefthook v2.1.6  hook: pre-commit │\n"
+    "╰──────╯\n"
+    "┃  gitleaks ❯ \n\nclean\n\n"
+    "┃  plugin-version-bump ❯ \n\nBLOCK: bump plugin.json\n\n"
+    "exit status 1\n"
+    "summary: (done in 0.10 seconds)\n"
+    "✔️ gitleaks (0.10 seconds)\n"
+    "\U0001f94a plugin-version-bump: A changed plugin must bump its "
+    ".claude-plugin/plugin.json version. (0.10 seconds)\n"
+)
+
+def write(name, payload):
+    with open(os.path.join(fixture, name), "w") as fh:
+        json.dump(payload, fh)
+
+def post_commit(response):
+    return {"session_id": session, "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m 'wip (ASK-214)'"},
+            "tool_response": response}
+
+write("refused.json", post_commit(
+    {"stdout": "", "stderr": LEFTHOOK_REFUSAL, "error": "Exit code 1"}))
+write("noop.json", post_commit(
+    {"stdout": "On branch main\nnothing to commit, working tree clean",
+     "stderr": "", "error": "Exit code 1"}))
+write("landed.json", post_commit(
+    {"stdout": "[sana/ask-215 abc1234] fix (ASK-215)\n 1 file changed", "stderr": ""}))
+EOF
+}
+mk_payloads
+
+seed_ceiling() { # reset to a clean at-the-ceiling cache, no grace recorded
+python3 - "$CACHE" "$SESSION" <<'EOF'
+import json, sys, time
+json.dump({
+    "actor_key": sys.argv[2], "tool_calls_since_user": 50,
+    "agent_calls_since_user": 0, "mcp_timestamps": [], "repeat_map": {},
+    "consecutive_reads": 0, "warnings_issued": 1, "file_read_counts": {},
+    "greps_since_write": 0, "edit_targets": {}, "agents_without_write": 0,
+    "last_write_time": time.time(), "calls_since_write": 1,
+    "last_volume_reset": time.time(),
+}, open(sys.argv[1], "w"))
+EOF
+}
+
+# Each probe Edit targets a DISTINCT path so neither the exact-retry hash nor the
+# edit-spiral counter fires -- this test is about the volume ceiling only.
+ceiling_edit() { # $1 = probe index -> exit code in CODE, stderr in ERR
+  local payload
+  payload="{\"session_id\": \"$SESSION\", \"hook_event_name\": \"PreToolUse\", \"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/gate-probe-$1.json\", \"old_string\": \"version-$1\", \"new_string\": \"bumped-$1\"}}"
+  set +e
+  ERR="$(printf '%s' "$payload" | CLAUDECODE=1 CLAUDE_PROJECT_DIR="$FIXTURE" python3 "$GUARD" 2>&1 >/dev/null)"
+  CODE=$?
+  set -e
+}
+
+# --- 7) A gate-refused commit grants the remediation budget ------------------
+seed_ceiling
+run_guard_file "$FIXTURE/refused.json" >/dev/null \
+  || { echo "FAIL: PostToolUse gate-refusal leg exited non-zero"; exit 1; }
+ceiling_edit 1
+[ "$CODE" -eq 0 ] || { echo "FAIL: Edit after a gate-refused commit exited $CODE, want 0 (deadlock): $ERR"; exit 1; }
+echo "ok: a gate-refused commit grants a bounded budget so the ceiling is escapable"
+
+# --- 8) A no-op commit must NOT mint budget ---------------------------------
+# Otherwise an agent clears the ceiling forever with an empty commit.
+seed_ceiling
+run_guard_file "$FIXTURE/noop.json" >/dev/null \
+  || { echo "FAIL: PostToolUse no-op commit leg exited non-zero"; exit 1; }
+ceiling_edit 2
+[ "$CODE" -eq 2 ] || { echo "FAIL: 'nothing to commit' minted grace (Edit exited $CODE, want 2)"; exit 1; }
+case "$ERR" in
+  *"plugin-version-bump"*) echo "FAIL: no-op commit recorded a refusing gate: $ERR"; exit 1;;
+  *"tool calls"*) echo "ok: a no-op commit mints no budget; the ceiling still blocks";;
+  *) echo "FAIL: no-op path blocked with the wrong reason: $ERR"; exit 1;;
+esac
+
+# --- 9) Bounded: the call after the budget is spent blocks, naming the gate --
+seed_ceiling
+run_guard_file "$FIXTURE/refused.json" >/dev/null
+GRACE="$(python3 -c "import re,sys; print(re.search(r'^GATE_GRACE = (\d+)', open(sys.argv[1]).read(), re.M).group(1))" "$GUARD")"
+probe=0
+while [ "$probe" -lt "$GRACE" ]; do
+  probe=$(( probe + 1 ))
+  ceiling_edit "9$probe"
+  [ "$CODE" -eq 0 ] || { echo "FAIL: grace call $probe/$GRACE blocked early (exit $CODE): $ERR"; exit 1; }
+done
+ceiling_edit "9over"
+[ "$CODE" -eq 2 ] || { echo "FAIL: call $(( GRACE + 1 )) after the grant exited $CODE, want 2 (budget is unbounded)"; exit 1; }
+case "$ERR" in
+  *plugin-version-bump*) echo "ok: budget is bounded at $GRACE and the hard stop names the refusing gate";;
+  *) echo "FAIL: spent-budget block does not name the refusing gate: $ERR"; exit 1;;
+esac
+
+# --- 10) A landed commit clears the budget (no stale grace at a later ceiling) --
+seed_ceiling
+run_guard_file "$FIXTURE/refused.json" >/dev/null
+run_guard_file "$FIXTURE/landed.json" >/dev/null \
+  || { echo "FAIL: PostToolUse landed-commit leg exited non-zero"; exit 1; }
+python3 - "$CACHE" <<'EOF'
+import json, sys
+cache = json.load(open(sys.argv[1]))
+assert cache.get("gate_grace_remaining", 0) == 0, \
+    f"a landed commit must clear the grace budget: {cache.get('gate_grace_remaining')}"
+assert not cache.get("gate_grace_gate"), \
+    f"a landed commit must clear the recorded gate: {cache.get('gate_grace_gate')}"
+EOF
+echo "ok: a landed commit clears the budget"
+
+echo "PASS: token-guard hook behavior (warn shape + PostToolUse edit reset + blocked-attempt un-count + gate-refusal grace)"
