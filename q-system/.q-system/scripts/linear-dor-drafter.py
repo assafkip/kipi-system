@@ -59,6 +59,33 @@ FAILURE_REPO = "kipi-system"
 FAILURE_KEY = "linear-dor/run-failure"
 FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
 
+# The single founder-ping channel (.claude/rules/founder-notifications.md).
+# Used ONLY when the report itself could not reach the board -- an open Linear
+# issue is the signal on a normal failing night, and a nightly Slack line on top
+# of it would train the founder to ignore the channel.
+NOTIFY_SCRIPT = HERE / "slack-notify.sh"
+
+# A closed permanent issue must be REOPENED, never quietly commented on. The
+# dedup key outlives the issue's state and fetch_remote_state cannot see state
+# (its query filters on project and does not select it), so the first time the
+# operator did the right thing -- fix the cause, close the issue -- every later
+# failing night became a comment on a Done issue with nothing open on the board.
+# The detector switched itself off at exactly the moment it was working.
+# (PR #12 review, major 1.)
+CLOSED_STATE_TYPES = ("completed", "canceled")
+REOPEN_TARGET_TYPES = ("unstarted", "backlog")  # prefer Todo, settle for Backlog
+
+# Failures a run could not file (Linear down at 03:00 is the routine unattended
+# case) are held in the state file and flushed by the next run. Before this the
+# list was dropped to stderr and the state file had no reader anywhere in the
+# repo -- a write-only artifact is not a record. (PR #12 review, major 2.)
+PENDING_CAP = 50
+
+# Escape hatch for a claude installed somewhere CLAUDE_FALLBACKS never heard of
+# (nvm, volta, asdf all put it under a versioned dir). A hardcoded list cannot be
+# exhaustive; this makes it not the last word.
+CLAUDE_BIN_ENV = "KIPI_CLAUDE_BIN"
+
 # Where `claude` lives when PATH does not say. The plist runs `/bin/bash -lc`,
 # and `-l` sources BASH login files -- the founder's shell is zsh, so the PATH
 # entry for ~/.local/bin never loads under launchd. Interactively it works
@@ -125,6 +152,14 @@ ISSUES_Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:25
 UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
   issueUpdate(id:$id,input:$input){success issue{identifier}}}"""
 
+ISSUE_STATE_Q = """query($id:String!){issue(id:$id){id identifier state{name type}}}"""
+
+TEAM_STATES_Q = """query($t:String!){team(id:$t){
+  states(first:50){nodes{id name type position}}}}"""
+
+REOPEN_M = """mutation($id:String!,$s:String!){
+  issueUpdate(id:$id,input:{stateId:$s}){success}}"""
+
 
 def needs_dor(issue: dict) -> bool:
     if (issue.get("state") or {}).get("type") not in DRAFTABLE_STATE_TYPES:
@@ -138,8 +173,46 @@ def needs_dor(issue: dict) -> bool:
     return True
 
 
+def notify(message: str) -> bool:
+    """Ping the founder through the one channel. Never raises, never blocks long.
+
+    Reserved for the case where this reporter could NOT put the failure on the
+    board. A ping for something already filed as a Linear issue is noise, and a
+    noisy channel is a channel nobody reads at 03:00.
+    """
+    if not NOTIFY_SCRIPT.exists():
+        return False
+    try:
+        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+        return True
+    except Exception:  # noqa: BLE001 - a failed ping must not fail the run
+        return False
+
+
+def read_pending() -> list:
+    """Failures an earlier run could not file. The state file's only reader."""
+    try:
+        data = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return []
+    items = (data or {}).get("pending_failures")
+    if not isinstance(items, list):
+        return []
+    return [str(i) for i in items][-PENDING_CAP:]
+
+
 def claude_binary() -> str | None:
-    """Absolute path to the `claude` CLI, or None. PATH first, then known installs."""
+    """Absolute path to the `claude` CLI, or None.
+
+    KIPI_CLAUDE_BIN first, then PATH, then the known install locations.
+    """
+    override = os.environ.get(CLAUDE_BIN_ENV)
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        print(f"  {CLAUDE_BIN_ENV}={override} is not an executable file, ignoring it",
+              file=sys.stderr)
     found = shutil.which("claude")
     if found:
         return found
@@ -149,13 +222,21 @@ def claude_binary() -> str | None:
     return None
 
 
-def draft_one(issue: dict, timeout: int) -> str | None:
-    """One `claude -p` call. Returns the DoR body, or None if it failed."""
+def draft_one(issue: dict, timeout: int) -> tuple:
+    """One `claude -p` call. Returns (dor_body, "") or (None, reason).
+
+    The reason travels with the failure: it is the line report_failures puts on
+    the Linear issue. Collapsing every cause into one string told the operator a
+    count and never a cause -- a missing binary read exactly like a timeout, and
+    the missing binary is the bug this whole job-migration exists because of.
+    (PR #12 review, minor 4.)
+    """
     binary = claude_binary()
     if not binary:
-        print(f"  {issue['identifier']}: no claude binary on PATH or in "
-              f"{[str(p) for p in CLAUDE_FALLBACKS]}", file=sys.stderr)
-        return None
+        reason = (f"no claude binary (${CLAUDE_BIN_ENV} unset or bad, not on PATH, "
+                  f"not in {len(CLAUDE_FALLBACKS)} known install locations)")
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
     prompt = PROMPT.format(
         project=(issue.get("project") or {}).get("name") or "unassigned",
         title=issue.get("title") or "",
@@ -168,13 +249,14 @@ def draft_one(issue: dict, timeout: int) -> str | None:
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"  {issue['identifier']}: claude failed ({type(exc).__name__})", file=sys.stderr)
-        return None
+        reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
     out = (res.stdout or "").strip()
     if res.returncode != 0 or len(out) < 60:
-        print(f"  {issue['identifier']}: unusable output (rc={res.returncode}, {len(out)} chars)",
-              file=sys.stderr)
-        return None
+        reason = f"claude exited rc={res.returncode} with {len(out)} chars of output"
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
     # Strip any stray fencing the model added despite instructions.
     out = re.sub(r"^```[a-z]*\n|\n```$", "", out).strip()
     # ...and any narration before the first bullet. Observed on the first live run
@@ -185,9 +267,10 @@ def draft_one(issue: dict, timeout: int) -> str | None:
     if start:
         out = out[start.start():].strip()
     if "**Energy:**" not in out:
-        print(f"  {issue['identifier']}: no Energy/Time line, rejecting", file=sys.stderr)
-        return None
-    return out
+        reason = f"draft had no Energy/Time line ({len(out)} chars), not written"
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
+    return out, ""
 
 
 def fetch_draftable(ls, team_id: str) -> list:
@@ -202,10 +285,42 @@ def fetch_draftable(ls, team_id: str) -> list:
     return [i for i in issues if needs_dor(i)]
 
 
-def report_failures(ls, failures: list, apply: bool) -> str:
-    """Put this run's failures onto ONE permanent Linear issue.
+def _live_issue(ls, linear_id: str):
+    """The permanent failure issue as Linear has it right now, or None if it is
+    gone. fetch_remote_state cannot answer this: its query filters on project and
+    never selects state, so the dedup key alone says "exists", not "is open"."""
+    return (ls.graphql(ISSUE_STATE_Q, {"id": linear_id}) or {}).get("issue")
 
-    Returns "none" | "dry" | "created" | "commented" | "unreachable".
+
+def _reopen(ls, team_id: str, linear_id: str) -> bool:
+    """Move a closed failure issue back to an open state. False if that failed.
+
+    Swallows its own errors on purpose: a reopen that Linear refuses must still
+    leave the failure detail ON the issue and tell the founder the board has
+    nothing open, which is strictly more than raising here would achieve.
+    """
+    try:
+        nodes = (((ls.graphql(TEAM_STATES_Q, {"t": team_id}) or {}).get("team") or {})
+                 .get("states") or {}).get("nodes") or []
+        open_states = [s for s in nodes if s.get("type") in REOPEN_TARGET_TYPES]
+        open_states.sort(key=lambda s: (REOPEN_TARGET_TYPES.index(s["type"]),
+                                        s.get("position") or 0))
+        if not open_states:
+            print("  no open workflow state to reopen into", file=sys.stderr)
+            return False
+        res = ls.graphql(REOPEN_M, {"id": linear_id, "s": open_states[0]["id"]})
+        return bool((res.get("issueUpdate") or {}).get("success"))
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"  reopen failed: {str(exc)[:120]}", file=sys.stderr)
+        return False
+
+
+def report_failures(ls, failures: list, carried: int = 0) -> str:
+    """Put the failures onto ONE permanent Linear issue, and keep it OPEN.
+
+    Returns "none" | "created" | "commented" | "reopened" | "reopen-failed"
+    | "unreachable". `carried` is how many of `failures` came from an earlier run
+    that could not file them, so the report can say when they actually happened.
 
     Never raises. This runs in the last breath of a launchd job; a reporter that
     throws would replace a silent failure with a louder one and still tell the
@@ -213,22 +328,31 @@ def report_failures(ls, failures: list, apply: bool) -> str:
     """
     if not failures:
         return "none"
-    if not apply:
-        return "dry"
 
     detail = "\n".join(f"- {f}" for f in failures)
+    header = f"Run {_now()} — {len(failures)} failure(s)"
+    if carried:
+        header += (f" ({carried} carried from an earlier run that could not reach "
+                   f"Linear)")
     try:
         team_id, project, remote_keys = ls.fetch_remote_state(TEAM_KEY, FAILURE_REPO)
         existing = dict(remote_keys).get(FAILURE_KEY) or ls.read_ledger().get(FAILURE_KEY)
+        live = _live_issue(ls, existing["linear_id"]) if (
+            existing and existing.get("linear_id")) else None
 
-        if existing and existing.get("linear_id"):
+        if live:
+            verdict = "commented"
+            if (live.get("state") or {}).get("type") in CLOSED_STATE_TYPES:
+                verdict = "reopened" if _reopen(ls, team_id, live["id"]) else "reopen-failed"
             ls.graphql(ls.COMMENT_CREATE, {"input": {
-                "issueId": existing["linear_id"],
-                "body": f"Run {_now()} — {len(failures)} failure(s):\n\n{detail}",
+                "issueId": live["id"], "body": f"{header}:\n\n{detail}",
             }})
-            print(f"  reported {len(failures)} failure(s) on "
-                  f"{existing.get('identifier') or FAILURE_KEY}")
-            return "commented"
+            ident = live.get("identifier") or FAILURE_KEY
+            print(f"  reported {len(failures)} failure(s) on {ident} ({verdict})")
+            if verdict == "reopen-failed":
+                notify(f"linear-dor: {len(failures)} failure(s) noted on {ident}, but it "
+                       f"is CLOSED and would not reopen. Nothing is open on the board.")
+            return verdict
 
         payload = {
             "title": FAILURE_TITLE[:250],
@@ -236,7 +360,7 @@ def report_failures(ls, failures: list, apply: bool) -> str:
                 f"<!-- kipi-key: {FAILURE_KEY} -->\n\n"
                 f"`com.kipi.linear-dor` had failures it cannot signal through its exit "
                 f"code (it exits 0 by design so launchd does not restart-loop it).\n\n"
-                f"Run {_now()} — {len(failures)} failure(s):\n\n{detail}\n\n"
+                f"{header}:\n\n{detail}\n\n"
                 f"Full stderr: `~/.config/kipi/linear-dor.err`. "
                 f"Filed by `linear-dor-drafter.py`."
             ),
@@ -247,7 +371,9 @@ def report_failures(ls, failures: list, apply: bool) -> str:
         node = (ls.graphql(ls.ISSUE_CREATE, {"input": payload})
                 .get("issueCreate") or {}).get("issue") or {}
         if not node.get("id"):
-            print("  failure report rejected by Linear", file=sys.stderr)
+            print("  failure report refused by Linear", file=sys.stderr)
+            notify(f"linear-dor: Linear refused the failure report; "
+                   f"{len(failures)} failure(s) held for the next run.")
             return "unreachable"
         ls.append_ledger([{
             "key": FAILURE_KEY, "kind": "issue", "linear_id": node["id"],
@@ -258,6 +384,8 @@ def report_failures(ls, failures: list, apply: bool) -> str:
     except Exception as exc:  # noqa: BLE001 - see the never-raise note above
         print(f"  linear unreachable, {len(failures)} failure(s) NOT filed: "
               f"{str(exc)[:120]}", file=sys.stderr)
+        notify(f"linear-dor: Linear unreachable, {len(failures)} failure(s) could not "
+               f"be filed ({str(exc)[:80]}). Held for the next run.")
         return "unreachable"
 
 
@@ -290,13 +418,13 @@ def main() -> int:
         print(f"dry run. {len(todo)} remaining; --apply to write {len(batch)}.")
         return 0
 
-    # Collected, not just printed. draft_one() still writes the specific reason to
-    # stderr; this list is what actually leaves the machine.
+    # Collected, not just printed, and each one carries its own cause. draft_one()
+    # still writes the reason to stderr; this list is what leaves the machine.
     drafted, failed = 0, []
     for issue in batch:
-        body = draft_one(issue, args.timeout)
+        body, reason = draft_one(issue, args.timeout)
         if not body:
-            failed.append(f"{issue['identifier']}: draft failed (claude call or output rejected)")
+            failed.append(f"{issue['identifier']}: {reason}")
             continue
         new_desc = (issue.get("description") or "").rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"
         try:
@@ -309,14 +437,24 @@ def main() -> int:
         drafted += 1
         print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
 
-    reported = report_failures(ls, failed, args.apply)
+    # Anything an earlier night could not file rides along with tonight's, so a
+    # clean night still flushes the backlog. read_pending() is what gives the
+    # state file a reader.
+    pending = read_pending()
+    to_report = pending + failed
+    reported = report_failures(ls, to_report, carried=len(pending))
+    unfiled = to_report if reported == "unreachable" else []
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(
         {"ran_at": _now(), "drafted": drafted, "failed": len(failed),
-         "failures_reported": reported, "remaining": len(todo) - drafted}, indent=2))
-    print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported}), "
-          f"{len(todo) - drafted} still lack a DoR")
+         "carried_in": len(pending), "failures_reported": reported,
+         "pending_failures": unfiled[-PENDING_CAP:],
+         "remaining": len(todo) - drafted}, indent=2))
+    carried_note = f", {len(pending)} carried in" if pending else ""
+    held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
+    print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
+          f"{carried_note}{held_note}, {len(todo) - drafted} still lack a DoR")
     return 0
 
 
