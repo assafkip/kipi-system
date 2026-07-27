@@ -6,6 +6,7 @@ Runs all checks up to and including the specified phase.
 Exit code 0 = all checks pass. Non-zero = failure.
 """
 
+import collections
 import json
 import importlib.util
 import os
@@ -179,24 +180,105 @@ def load_registry():
         return {"instances": []}
 
 
-SEMANTIC_FIELD_PATTERNS = (
+MARKDOWN_BOLD_LABEL_PATTERNS = (
     re.compile(
         r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*?)\s*$"
     ),
     re.compile(
         r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?)\*\*:\s*(?P<value>.*?)\s*$"
     ),
-    re.compile(
-        r"^\s*(?:[-*]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _-]*):"
-        r"\s*(?P<value>.*?)\s*$"
-    ),
-    re.compile(
-        r"^\s*\|\s*(?P<label>[^|]+?)\s*\|\s*(?P<value>[^|]*?)\s*\|"
-    ),
+)
+# The loosest pattern by far: any `label: value` line. It is the one that reads
+# a Python type annotation (`source: dict[str, Any],`), a docstring parameter
+# (`company: Company or project name...`) and a CSV prose cell as canonical
+# records. See BARE_LABEL_EXEMPT_SUFFIXES.
+BARE_LABEL_PATTERN = re.compile(
+    r"^\s*(?:[-*]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _-]*):"
+    r"\s*(?P<value>.*?)\s*$"
+)
+MARKDOWN_TABLE_PATTERN = re.compile(
+    r"^\s*\|\s*(?P<label>[^|]+?)\s*\|\s*(?P<value>[^|]*?)\s*\|"
+)
+SEMANTIC_FIELD_PATTERNS = (
+    MARKDOWN_BOLD_LABEL_PATTERNS
+    + (BARE_LABEL_PATTERN, MARKDOWN_TABLE_PATTERN)
+)
+
+# A DECLARATION is not an ASSERTION. In these languages `label: value` is
+# syntax -- a type annotation, a parameter, an object key -- so the bare-label
+# pattern reads the language itself as leaked facts. Measured 2026-07-27 over
+# the propagated source set: 15 of the 34 gating findings, and not one was a
+# fact. `source: str`, `source: dict[str, Any],`, `client: httpx.AsyncClient,`,
+# `source: Optional[Path] = None`, `source: resolvedPath,` are the whole
+# population.
+#
+# Only the BARE pattern is exempted. `**Client:** Acme` and `| Client | Acme |`
+# inside a docstring or a template string are still read, because those are
+# markdown a human wrote, not syntax the parser requires. Cost, stated rather
+# than hidden: a roster written as an unquoted `client: Acme` line in a .py file
+# is now invisible. In Python a dict literal keys it as `"client": "Acme"`,
+# which this pattern never matched anyway (it requires a bare word before the
+# colon), so the reachable loss is a comment.
+#
+# .yaml/.yml are deliberately NOT here: YAML is a real roster format, and
+# `prospect: Acme Corp` in a data file is exactly the leak this gate exists for.
+# YAML declarations are handled by SCHEMA_PRIMITIVE_VALUES instead, which is
+# tight enough that a company name cannot pass through it.
+CODE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx",
+})
+# A .csv is tabular data: one record per LINE, comma-delimited. A `label: value`
+# inside a cell is prose, not a canonical record. All 4 CSV findings were the
+# string "Visual DNA: Relentless motion... " in a design-reference table, read
+# as `pricing` because a `$` appeared later in the same long cell.
+DATA_SUFFIXES = frozenset({".csv", ".tsv"})
+BARE_LABEL_EXEMPT_SUFFIXES = CODE_SUFFIXES | DATA_SUFFIXES
+
+# YAML type declarations. Deliberately an exact-match allowlist of primitive
+# type NAMES rather than a grammar: `prospect: string` is a schema, while
+# `prospect: Acme` must still be a finding, and only an allowlist keeps that
+# line sharp. Adding a company name here would be a visible, reviewable act.
+SCHEMA_PRIMITIVE_VALUES = frozenset({
+    "any", "array", "bool", "boolean", "date", "datetime", "dict", "float",
+    "int", "integer", "list", "null", "number", "object", "str", "string",
+})
+YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+
+# A CITED DOCUMENT is not an identity. `Source: https://docs.anthropic.com/...`
+# and `source: [rca-...md](../cole-gtm/...)` both name a document you can go
+# open, which is the opposite of an instance fact -- the research-mode skill
+# REQUIRES that line. A locator (URL, markdown link with a URL or a relative
+# path, arXiv id, DOI) is the deterministic tell; a bare `Source: Acme Corp` has
+# none and stays a finding.
+CITATION_LOCATOR_RE = re.compile(
+    r"https?://"
+    r"|\]\(\s*(?:https?://|\.{0,2}/)"
+    r"|\barxiv:\s*\d{4}\.\d{4,5}"
+    r"|\bdoi:\s*10\.\d{4,9}/",
+    re.IGNORECASE,
 )
 PLACEHOLDER_RE = re.compile(
+    # {{HANDLEBARS}}, this repo's primary placeholder form.
     r"\{\{\s*[A-Za-z][A-Za-z0-9_.-]*\s*\}\}"
+    # ...and [Bracketed Title Case], the form the canonical TEMPLATES use:
+    # `- **Source:** [Person] - [Date]` is the blank a debrief fills in, not a
+    # source identity. Deliberately narrow -- capitalized words and spaces only
+    # -- so a markdown link label (`[Anthropic - Reduce Hallucinations](...)`,
+    # `[teract.ai](...)`, `[last30days]`) is untouched: those carry `-`, `.` or
+    # lowercase and must keep flowing to the citation check.
+    # Cost, stated rather than hidden: a real fact written as `Client: [Acme
+    # Corp]` is now invisible. In this repo brackets mean "fill this in", and
+    # the template-restoration tests depend on that reading.
+    # The `(?!\()` is load-bearing: without it this eats the LABEL of a markdown
+    # link, so `- **Client:** [Oriole Systems](https://oriole.example)` reduced
+    # to a bare parenthetical and vanished entirely. The reach probe caught it.
+    r"|\[[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\](?!\()"
 )
+# A value that is ENTIRELY a parenthetical is a template prompt to the author,
+# not an assertion: `- **Gaps:** (what we still can't answer well)`. Requiring
+# the parens to wrap the whole value is what keeps this narrow -- `Price: $6,500
+# (annual)` is untouched because the currency sits outside them.
+TEMPLATE_PROMPT_RE = re.compile(r"^\([^()]*\)$")
 CURRENCY_RE = re.compile(
     r"(?:[$€£]\s?\d[\d,]*(?:\.\d{1,2})?"
     r"|\b(?:USD|EUR|GBP)\s+\d[\d,]*(?:\.\d{1,2})?"
@@ -284,15 +366,31 @@ TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]*-[\s:|-]*\|\s*$")
 # form aborted. A header cell is exactly where a real roster puts its label.
 
 
-def _semantic_record_lines(text):
+def _record_patterns_for(source_path):
+    """The record grammars that apply to one file.
+
+    A file's LANGUAGE decides which `label: value` lines are assertions. See
+    BARE_LABEL_EXEMPT_SUFFIXES for why the bare pattern is dropped in code and
+    tabular data.
+    """
+    if source_path is None:
+        return SEMANTIC_FIELD_PATTERNS
+    suffix = os.path.splitext(str(source_path))[1].lower()
+    if suffix in BARE_LABEL_EXEMPT_SUFFIXES:
+        return MARKDOWN_BOLD_LABEL_PATTERNS + (MARKDOWN_TABLE_PATTERN,)
+    return SEMANTIC_FIELD_PATTERNS
+
+
+def _semantic_record_lines(text, source_path=None):
     lines = text.splitlines()
+    patterns = _record_patterns_for(source_path)
     for index, line in enumerate(lines):
         if TABLE_SEPARATOR_RE.match(line):
             continue
         match = next(
             (
                 pattern.match(line)
-                for pattern in SEMANTIC_FIELD_PATTERNS
+                for pattern in patterns
                 if pattern.match(line)
             ),
             None,
@@ -307,6 +405,41 @@ def _semantic_record_lines(text):
         ):
             value = lines[index + 1].strip()
         yield index + 1, match.group("label"), value
+
+
+# Bound chosen from a measured gap, not by taste. Strip the figures and count
+# the words left:
+#
+#   asserted prices        `$5,000`                                        -> 0
+#                          `Oriole Systems signed for $45,000 today.`      -> 5
+#                          `Maren quoted $5,000 on July 24, 2026`          -> 4
+#   operating-cost prose   `Do not exceed $2 total Apify spend per morning
+#                           run across IG + TikTok combined.`              -> 13
+#                          `Apify ~$0.50 per run (X/Twitter only). The
+#                           canonical Reddit tooling ...`                  -> 14
+#
+# 5 and 13 leave a wide valley; 6 sits in it. If a future case lands between
+# 6 and 12 the bound is the wrong instrument and should be replaced, not nudged.
+PRICE_RESIDUE_WORD_LIMIT = 6
+
+
+def _states_a_price(value):
+    """True when the value IS a figure, not prose that mentions one.
+
+    `**Package:** $5,000` and `$6,500 + $1,500/mo` assert a price. `Total Apify
+    spend across Instagram + TikTok must not exceed $2 per run. Check ...` and
+    `Gamma has a free tier ... Paid plans start around $10/month if you ...`
+    mention an operating cost inside a sentence.
+
+    The first version of this shipped as "currency without a pricing label is
+    never a price", which read `**Package:** $5,000` as advisory and was caught
+    by the fact-grammar boundary fixture -- a real loss of detector strength for
+    exactly the leak this gate exists to catch. Dominance is the distinguisher:
+    strip the figures and see whether a sentence is left.
+    """
+    residue = CURRENCY_RE.sub(" ", value)
+    words = re.findall(r"[A-Za-z]{2,}", residue)
+    return len(words) <= PRICE_RESIDUE_WORD_LIMIT
 
 
 def _has_valid_date(value):
@@ -335,11 +468,22 @@ def semantic_leakage_findings(text, source_path=None):
     if _synthetic_fixture(text, source_path):
         return []
 
+    suffix = os.path.splitext(str(source_path))[1].lower() if source_path else ""
+
     findings = []
-    for line_number, raw_label, value in _semantic_record_lines(text):
+    for line_number, raw_label, value in _semantic_record_lines(
+        text, source_path
+    ):
         label = " ".join(raw_label.lower().split())
         asserted_value = PLACEHOLDER_RE.sub("", value).strip(" \t-:;,")
         if not asserted_value:
+            continue
+        if TEMPLATE_PROMPT_RE.match(asserted_value):
+            continue
+        if (
+            suffix in YAML_SUFFIXES
+            and asserted_value.lower() in SCHEMA_PRIMITIVE_VALUES
+        ):
             continue
 
         fact_classes = []
@@ -347,14 +491,23 @@ def semantic_leakage_findings(text, source_path=None):
             fact_classes.append("client_identity")
         if label == "relationship":
             fact_classes.append("relationship")
-        if label in PRICING_FIELDS or CURRENCY_RE.search(asserted_value):
+        if label in PRICING_FIELDS:
             fact_classes.append("pricing")
-        if label in SOURCE_FIELDS:
+        elif CURRENCY_RE.search(asserted_value):
             fact_classes.append(
-                "sourced_interaction"
-                if _has_valid_date(asserted_value)
-                else "source_identity"
+                "pricing"
+                if _states_a_price(asserted_value)
+                else "pricing_mention"
             )
+        if label in SOURCE_FIELDS:
+            if CITATION_LOCATOR_RE.search(asserted_value):
+                fact_classes.append("cited_source")
+            else:
+                fact_classes.append(
+                    "sourced_interaction"
+                    if _has_valid_date(asserted_value)
+                    else "source_identity"
+                )
         if label in INTERACTION_FIELDS and _has_valid_date(asserted_value):
             fact_classes.append("dated_interaction")
         if label in GAP_FIELDS:
@@ -391,6 +544,94 @@ def _load_containment_targets():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# Prefixes that `kipi update` NEVER copies into an instance. Mirrors
+# INSTANCE_OWNED_SUBTREES in kipi-update.sh (my-project, canonical, memory,
+# output, .q-system/data, .q-system/agent-pipeline/bus), each rooted at
+# q-system/. A fact in one of these cannot fan out to another instance, so
+# Gate 1.3b -- which exists to catch fan-out -- has nothing to say about it.
+#
+# This is the same rationale the Full skeleton sweep already applies below
+# (see the comment above `exclude_files`). Two gates in ONE file disagreeing
+# about what propagates was the defect: the sweep excluded canonical/ on
+# purpose while 1.3b scanned it, so 13 of 1.3b's 47 classified findings were
+# facts that physically cannot reach another instance.
+#
+# Drift protection is a test, not a comment: test-gate-13b-scope.py asserts
+# this tuple still matches kipi-update.sh's INSTANCE_OWNED_SUBTREES.
+#
+# q-system/research/ is here because it was MADE instance-owned in ASK-191, not
+# because it always was: it shipped four kipi-system-specific notes to every
+# instance until `research` was added to INSTANCE_OWNED_SUBTREES. The ASK-191
+# issue text asserted research/ was already non-propagated; it was not, and
+# excluding it here WITHOUT the kipi-update.sh change would have hidden a real
+# fan-out rather than stopped it. The drift test is what keeps that honest.
+#
+# Repo-root paths outside q-system/ are NOT listed: only q-system/, plugins/
+# and .claude/ propagate, but enumerating the root's non-propagated dirs here
+# would be a second, drift-prone answer to a question kipi-update.sh owns.
+NON_PROPAGATED_PREFIXES = (
+    "q-system/my-project",
+    "q-system/canonical",
+    "q-system/memory",
+    "q-system/output",
+    "q-system/research",
+    "q-system/.q-system/data",
+    "q-system/.q-system/agent-pipeline/bus",
+)
+
+# `unclassified_populated_record` is the classifier's "I do not recognize this
+# schema" bucket, not a finding. Measured 2026-07-27: 12,341 of 12,388 findings
+# on this repo, including 418 lines of one MCP server source file and 236 lines
+# of a command reference. It gates nothing because a detector that flags 418
+# lines of generic engine source is not detecting a leak; it is reporting that
+# markdown-ish `label: value` lines exist.
+#
+# It stays VISIBLE (counted, and listed under --verbose) rather than being
+# deleted, because the day it drops to near-zero is the day the classifier
+# learned the schema, and that is worth being able to see.
+#
+# A baseline/ratchet at 12,388 was proposed and rejected by the founder
+# 2026-07-27: it would stamp the false alarms as accepted debt and bury the 47
+# real findings inside them permanently.
+#
+# `pricing_mention` and `cited_source` join it for the reasons documented at
+# their classification sites: a currency with no pricing label is an operating
+# cost, and a Source: line carrying a public locator is the citation the
+# research-mode skill requires. Both stay counted so a spike is still visible.
+ADVISORY_FACT_CLASSES = frozenset({
+    "pricing_mention",
+    "cited_source",
+    "unclassified_populated_record",
+})
+
+
+def _propagates(relative_path):
+    """False for a path `kipi update` never copies into an instance."""
+    normalized = relative_path.replace("\\", "/")
+    return not any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in NON_PROPAGATED_PREFIXES
+    )
+
+
+def partition_semantic_violations(violations):
+    """Split findings into (gating, advisory).
+
+    Gating findings are classified facts on a path that actually propagates.
+    Everything else is reported and does not fail the gate.
+    """
+    gating = []
+    advisory = []
+    for violation in violations:
+        if violation["fact_class"] in ADVISORY_FACT_CLASSES:
+            advisory.append(violation)
+        elif not _propagates(violation["path"]):
+            advisory.append(violation)
+        else:
+            gating.append(violation)
+    return gating, advisory
 
 
 def semantic_separation_violations(repo_root=SCRIPT_DIR):
@@ -594,20 +835,37 @@ def phase_1():
     except Exception as exc:
         semantic_violations = None
         warn(f"Semantic containment scope blocked: {exc}")
-    if semantic_violations and verbose:
-        for violation in semantic_violations:
-            warn(
-                "{path}:{line}: {fact_class}".format(**violation)
+    if semantic_violations is None:
+        check(
+            "Repository-derived generic targets contain no semantic instance "
+            "facts (scope unavailable)",
+            False,
+        )
+    else:
+        gating, advisory = partition_semantic_violations(semantic_violations)
+        if verbose:
+            for violation in gating:
+                warn("{path}:{line}: {fact_class}".format(**violation))
+        # Advisory findings are counted always and listed only under --verbose:
+        # there are ~12k of them and dumping the list drowns the gating ones.
+        advisory_classes = collections.Counter(
+            v["fact_class"] for v in advisory
+        )
+        print(
+            "        advisory (non-gating): "
+            + (
+                ", ".join(
+                    f"{cls}={count}"
+                    for cls, count in sorted(advisory_classes.items())
+                )
+                or "none"
             )
-    check(
-        "Repository-derived generic targets contain no semantic instance facts"
-        + (
-            f" ({len(semantic_violations)} findings)"
-            if semantic_violations is not None
-            else " (scope unavailable)"
-        ),
-        semantic_violations == [],
-    )
+        )
+        check(
+            "Repository-derived generic targets contain no semantic instance "
+            f"facts ({len(gating)} gating, {len(advisory)} advisory)",
+            gating == [],
+        )
 
     # --- GATE 1.4: Voice skill framework ---
     print()
