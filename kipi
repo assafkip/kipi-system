@@ -30,6 +30,7 @@ usage() {
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
   echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
+  echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
@@ -67,6 +68,12 @@ case "${1:-help}" in
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"
+    ;;
+  work)
+    # The autonomous worker. Dry by default; --apply to actually run an issue.
+    # It opens a PR and stops: it cannot merge and cannot close an issue.
+    shift || true
+    bash "$KIPI_HOME/q-system/.q-system/scripts/linear-worker.sh" "$@"
     ;;
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
