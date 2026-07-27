@@ -74,10 +74,22 @@ run_bounded() {
 }
 
 command -v gh >/dev/null 2>&1 || { echo "gh CLI required" >&2; exit 1; }
-PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null)" || { echo "no PR #$PR" >&2; exit 1; }
+# ONE read of the PR's state, and the head sha comes out of it (ASK-216).
+# Capturing it here -- before the reviewer is dispatched, in the same API read
+# that proves the PR exists -- is the whole point: looked up AFTER the review,
+# a push landing mid-review would make the record claim a commit the reviewer
+# never saw, which is worse than no sha because it looks authoritative. Erring
+# the other way (a push between here and the reviewer's own `gh pr diff`) pins
+# the OLDER sha, which reads as drift and routes to a re-review. Safe direction.
+# The sha is first in the tuple so a tab inside a PR title cannot displace it.
+PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null)" \
+  || { echo "no PR #$PR" >&2; exit 1; }
+HEAD_SHA="${PR_META%%$'\t'*}"
+PR_TITLE="${PR_META#*$'\t'}"
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
+echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
 # $REVIEW is only a variable at this point -- the file is not created until the
@@ -249,14 +261,22 @@ echo "  verdict: ${VERDICT:-unstated}"
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
 # in the timestamped .md files.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" <<'PY'
+#
+# head_sha is the commit this review actually examined, captured before the
+# reviewer ran (ASK-216). Without it the record binds an approval to a PR
+# NUMBER, and the worker reuses one PR across rounds, so any later push inherits
+# the approval. The key is ALWAYS written -- empty when `gh` could not answer --
+# because rework_gate reads empty as "unknown, fall back and say so", and a
+# key that sometimes vanishes is a shape the reader would have to guess at.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd = sys.argv[1:9]
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha = sys.argv[1:10]
 out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
-           "round": int(rnd), "review": review, "ts": ts}, open(out, "w"), indent=2)
+           "round": int(rnd), "review": review, "head_sha": head_sha,
+           "ts": ts}, open(out, "w"), indent=2)
 PY
 
 # Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
