@@ -20,7 +20,12 @@ Caveat: these stats come from social-media-marketing aggregators with skin in th
 
 ## Reddit top text headlines (last 30 days, AI subs)
 
-Source: direct Reddit MCP pulls on 2026-05-20, top-of-month sorted across r/ChatGPT, r/ClaudeAI, r/OpenAI, r/singularity, r/LocalLLaMA, r/ArtificialIntelligence.
+Source: direct Reddit MCP pulls on 2026-05-20, top-of-month sorted across [r/ChatGPT](https://www.reddit.com/r/ChatGPT/),
+[r/ClaudeAI](https://www.reddit.com/r/ClaudeAI/),
+[r/OpenAI](https://www.reddit.com/r/OpenAI/),
+[r/singularity](https://www.reddit.com/r/singularity/),
+[r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/),
+[r/ArtificialIntelligence](https://www.reddit.com/r/ArtificialIntelligence/).
 
 Top text-driven headlines and their lengths:
 
