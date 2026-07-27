@@ -10,12 +10,32 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-containment-gitlink.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-fleet-health-daily.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-instance-automation-guard.sh",
@@ -58,6 +78,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-lessons-distill.sh",
       "runner": "bash"
     },
@@ -86,10 +110,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-linear-create.py",
       "runner": "python3"
     },
@@ -102,18 +122,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-linear-triage.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-linear-worker-fetch.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-linear-queue.sh",
       "runner": "bash"
     },
@@ -122,7 +130,19 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-triage.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-wiring.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-fetch.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
       "runner": "bash"
     },
     {
@@ -163,6 +183,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash"
     },
     {
@@ -276,26 +300,6 @@
     },
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-converge.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
       "runner": "python3"
     }
   ],

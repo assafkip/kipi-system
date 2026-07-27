@@ -11,6 +11,11 @@ import subprocess
 from pathlib import Path, PurePosixPath
 
 
+# Git's mode for a gitlink (submodule) entry in the index. Its object id is a
+# commit in another repository, so it is never readable as a blob here.
+GITLINK_MODE = "160000"
+
+
 class ContainmentScopeBlocked(RuntimeError):
     """Raised when repository scope cannot be proven."""
 
@@ -59,6 +64,22 @@ def _tracked_entries(repo_root: Path) -> list[dict[str, str]]:
             raise ContainmentScopeBlocked(
                 "git returned malformed tracked metadata"
             ) from exc
+        # A gitlink records ANOTHER repo's commit sha, not a blob in this object
+        # store, so `git cat-file blob` on it always fails and _indexed_bytes
+        # converts that into ContainmentScopeBlocked -- taking the entire
+        # containment gate down rather than skipping one entry.
+        #
+        # Observed 2026-07-27: the auto-committer swept the review agent's
+        # scratch worktrees into main, 11 gitlinks landed, and Gate 1.3b went
+        # from PASS to "scope unavailable" on every open PR at once. Nothing was
+        # wrong with the containment rule; the scanner could not start.
+        #
+        # Skipping is the correct SCOPE, not a workaround: a submodule's content
+        # lives in a different repository, so this repo cannot scan it and never
+        # could. Any repo that legitimately used a submodule hit the same wall.
+        # The committed scratch is a separate defect (sp-1aae7516).
+        if mode == GITLINK_MODE:
+            continue
         if stage != "0":
             raise ContainmentScopeBlocked(
                 f"tracked path has unresolved index stage: {relative_path}"
