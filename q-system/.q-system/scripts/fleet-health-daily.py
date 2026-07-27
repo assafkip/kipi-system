@@ -235,7 +235,19 @@ def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
 # is the shape this fleet actually uses (open-loops-heartbeat.sh), so a matcher
 # that only reads the first token would miss every real invocation.
 CRON_COMMAND_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate",
-                         "sudo", "exec", "stdbuf", "npx", "flock", "ssh"}
+                         "sudo", "exec", "stdbuf", "npx", "flock", "ssh", "command"}
+
+# Shell KEYWORDS that stand in front of a command without being one. `if claude -p
+# x ; then ...` scored `if` as the command and answered False (fifth review,
+# finding 3). A bare one of these in leading position is always the keyword: an
+# argument never reaches here, because `_command_index` returns at the first token
+# it does not skip.
+SHELL_KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "!"}
+
+# `command -v claude` PRINTS a path; it does not run claude. Widening the matcher
+# to reach `command claude` without this would buy a real false positive for a
+# false negative — the trade this detector exists to refuse.
+_LOOKUP_FLAG_LETTERS = {"command": {"v", "V"}}
 
 # A wrapper option whose VALUE is a separate token. Without this the value was
 # scored as command position, so `sudo -u claude /opt/svc/run.sh` -- a service
@@ -275,7 +287,11 @@ SHELL_COMMANDS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
 
 # Tokens that END a command and open the next one. Redirections (`<`, `>`, `>>`)
 # are deliberately NOT here: they take an argument, they do not start a command.
-SHELL_OPERATORS = {"&&", "||", ";", "|", "&", "|&", "(", ")"}
+# `{` / `}` group commands, so a segment opens after them — `{ claude -p x ; }` read
+# `{` as the command and answered False (fifth review, finding 3). Brace EXPANSION
+# (`cp ~/a/{x,y} ~/b`) and find's `{}` carry no surrounding whitespace, so they lex
+# as one token and never look like an operator.
+SHELL_OPERATORS = {"&&", "||", ";", "|", "&", "|&", "(", ")", "{", "}"}
 
 
 class CrontabUnavailable(RuntimeError):
@@ -346,6 +362,45 @@ def _is_claude_token(token: str) -> bool:
 _WRAPPER_ARG_RE = re.compile(r"\d+(\.\d+)?[smhd]?")
 
 
+# A cluster of bundled SHORT options: `-Hu`, `-nu`. Long options (`--user`) have a
+# second dash and are matched whole; an attached value (`--user=x`) carries its own
+# `=` and never reaches here.
+_BUNDLED_SHORT_RE = re.compile(r"-[A-Za-z]+")
+
+
+def _is_lookup_flag(token: str, wrapper: str) -> bool:
+    """The flag turns this wrapper into a LOOKUP, so the segment runs no command."""
+    letters = _LOOKUP_FLAG_LETTERS.get(wrapper, ())
+    return bool(letters) and bool(_BUNDLED_SHORT_RE.fullmatch(token)) \
+        and any(char in letters for char in token[1:])
+
+
+def _takes_next_token(token: str, wrapper: str) -> bool:
+    """The option consumes the NEXT token as its value.
+
+    getopt's own bundling rule, because a whole-token membership test read `-u` and
+    missed `-Hu` — and `sudo -Hu svcaccount cmd` is an ordinary idiom, so on a box
+    with a `claude` service account it filed a permanent Linear issue asserting a
+    scheduler bug that does not exist (fifth review, finding 2).
+
+    Faithful, not just last-char: bundling STOPS at the first option that takes an
+    argument, and any characters after it ARE that argument. So `-Hu claude` skips
+    `claude` (H takes nothing, u is last), while `-uH claude` does not (H is already
+    -u's value, and real sudo runs `claude` as user H). Reading the second shape as
+    a flag cluster would buy the false positive back as a false negative.
+    """
+    value_flags = _WRAPPER_VALUE_FLAGS.get(wrapper, ())
+    if token in value_flags:
+        return True
+    if not _BUNDLED_SHORT_RE.fullmatch(token):
+        return False  # a long option, or `-` alone: nothing to unbundle
+    letters = token[1:]
+    for position, letter in enumerate(letters):
+        if f"-{letter}" in value_flags:
+            return position == len(letters) - 1  # last char: the value is the next token
+    return False
+
+
 def _command_index(tokens: list) -> int:
     """Index of the real command in a shell segment, past env prefixes and
     wrappers. -1 when the segment holds no command.
@@ -366,8 +421,12 @@ def _command_index(tokens: list) -> int:
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
             continue  # VAR=value prefix
         if token.startswith("-"):
-            skip_value = token in _WRAPPER_VALUE_FLAGS.get(wrapper, ())
+            if _is_lookup_flag(token, wrapper):
+                return -1  # `command -v claude` resolves a path, it runs nothing
+            skip_value = _takes_next_token(token, wrapper)
             continue
+        if token in SHELL_KEYWORDS:
+            continue  # a keyword in front of the command, never the command
         if _WRAPPER_ARG_RE.fullmatch(token):
             continue  # a wrapper's own positional arg, e.g. the 1800 in `timeout 1800`
         name = PurePosixPath(token).name
@@ -1021,7 +1080,18 @@ def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str) ->
             # Counting a daily no-op rewrite as progress would be the same false
             # claim one bucket over.
             return "existing"
-    ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
+    data = ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
+    # A REFUSED mutation is a failure, not an update. `IssueUpdatePayload.success`
+    # is a non-null Boolean; the field exists because it can be false. Firing and
+    # never reading the payload printed `updated ISS-1`, counted updated=1, and let
+    # the Slack line close with "nothing to do now" while the new offending line
+    # never reached the issue (fifth review, finding 1) -- the same false all-clear
+    # rounds 2 and 4 were built to remove, one payload check short of covered.
+    # `_create_one` already raises on a create that returned no issue; this is that
+    # same discipline one mutation over. The caller's per-finding `except` routes to
+    # `errors`, which `should_notify` and `notify_text` already read.
+    if not (data.get("issueUpdate") or {}).get("success"):
+        raise RuntimeError(f"issueUpdate refused for {finding['key']}")
     # ONE finding lands in exactly ONE bucket, decided AFTER the mutation input
     # is known: returning "reopened" before resolving the state id announced a
     # reopen that was never sent when no reopenable state existed -- the issue

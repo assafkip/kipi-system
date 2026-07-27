@@ -851,6 +851,104 @@ check("an ssh USER named claude is not an invocation",
 check("an ssh HOST named claude is not an invocation",
       fh._shells_claude("ssh claude /opt/svc/run.sh"), False)
 
+# --- fifth review, MINOR 1: a REFUSED issueUpdate is not an update -------------
+# `_refresh_one` fired the mutation and never read the payload, while `_create_one`
+# in the same file raised on a create that returned no issue. Opposite discipline,
+# same run. `IssueUpdatePayload.success` is a non-null Boolean; the field exists
+# because it can be false. When it was, the run printed `updated ISS-1`, counted
+# updated=1, and the Slack line closed with "nothing to do now" -- while the second
+# offending crontab line never reached the issue.
+class _UpdateRefused(FakeLinear):
+    """Linear ACCEPTS the mutation and answers `success: false`. Nothing changes."""
+
+    def graphql(self, query, variables):
+        if query == self.ISSUE_UPDATE:
+            self.mutations.append((query, sorted(variables.get("input", {}))))
+            node = self.issues[variables["id"]]  # deliberately NOT updated
+            return {"issueUpdate": {"success": False,
+                                    "issue": {"id": variables["id"],
+                                              "identifier": node["identifier"]}}}
+        return super().graphql(query, variables)
+
+
+refused = _UpdateRefused()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=refused)
+refused_outcome = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"),
+                                   apply=True, linear=refused)
+check("a REFUSED issueUpdate is not counted as an update",
+      refused_outcome["updated"], 0)
+check("...it lands in the errors bucket instead", refused_outcome["errors"], 1)
+check("...and the issue body on Linear really is unchanged",
+      "second job added a month later" in list(refused.issues.values())[0]["description"],
+      False)
+check("...so the run pings the operator",
+      fh.should_notify(refused_outcome, {"cron-shells-claude": 1}, apply=True), True)
+check("...and the Slack line does NOT close with the all-clear",
+      "nothing to do now" in fh.notify_text(refused_outcome, {"cron-shells-claude": 1}),
+      False)
+
+# A refused REOPEN is the same lie one bucket over: the issue stays Done while
+# Slack says it is back on the board.
+refused_reopen = _UpdateRefused()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=refused_reopen)
+refused_reopen.close_issue("id-1")
+reopen_outcome = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True,
+                                  linear=refused_reopen)
+check("a REFUSED reopen is not counted as a reopen", reopen_outcome["reopened"], 0)
+check("...and the issue is still closed", refused_reopen.issues["id-1"]["state_type"],
+      "completed")
+
+# --- fifth review, MINOR 2: bundled short flags hide a wrapper's option value ---
+# Round 4 fixed the SEPARATED form only. `_WRAPPER_VALUE_FLAGS` was matched against
+# the whole token, so `-u` hit and `-Hu` did not -- and `sudo -Hu svcaccount cmd` is
+# an ordinary idiom. On a box with a `claude` service account that files a permanent
+# Linear issue asserting a scheduler bug that does not exist.
+for bundled in [
+    "sudo -Hu claude /opt/svc/run.sh",
+    "sudo -nu claude /opt/svc/run.sh",
+    "sudo -iu claude /opt/svc/run.sh",
+    "sudo -HEu claude /opt/svc/run.sh",
+]:
+    check(f"a bundled option's value is not command position: {bundled[:40]}",
+          fh._shells_claude(bundled), False)
+check("a whole crontab of bundled-flag service-account lines files nothing",
+      fh.detect_cron_shells_claude(
+          None, cron_text="0 3 * * * sudo -Hu claude /opt/svc/run.sh\n"), [])
+# getopt stops bundling at the first option that takes an argument: in `-uH` the
+# `H` IS the value of `-u`, so the next token is a real command. Skipping it would
+# buy the false positive back as a false negative.
+check("`sudo -uH claude -p x` still matches (H is -u's value)",
+      fh._shells_claude("sudo -uH claude -p 'x'"), True)
+check("...and the separated form still does not",
+      fh._shells_claude("sudo -u claude /opt/svc/run.sh"), False)
+check("`timeout -sKILL 1800 claude` still matches (KILL is -s's value)",
+      fh._shells_claude("timeout -sKILL 1800 claude -p 'x'"), True)
+
+# --- fifth review, NIT 3: real invocation shapes that read as benign -----------
+# `{` and `command` are not wrappers and `if` is not an operator, so the matcher
+# scored the keyword as the command and answered False. A silent false negative is
+# the one failure this detector cannot afford.
+check("`command claude -p x` is an invocation",
+      fh._shells_claude("command claude -p x"), True)
+check("`{ claude -p x ; }` is an invocation",
+      fh._shells_claude("{ claude -p x ; }"), True)
+check("`if claude -p x ; then true ; fi` is an invocation",
+      fh._shells_claude("if claude -p x ; then true ; fi"), True)
+check("`while claude -p x ; do sleep 1 ; done` is an invocation",
+      fh._shells_claude("while claude -p x ; do sleep 1 ; done"), True)
+# Widening the matcher is exactly how a false positive gets bought, so every new
+# keyword carries its negative. `command -v` LOOKS UP a command; it does not run it.
+check("`command -v claude` is a lookup, not an invocation",
+      fh._shells_claude("command -v claude"), False)
+check("`command -V claude >> ~/log` is a lookup, not an invocation",
+      fh._shells_claude("command -V claude >> ~/log"), False)
+check("`if [ -d ~/projects/claude ]; then ./run.sh; fi` is not an invocation",
+      fh._shells_claude("if [ -d ~/projects/claude ]; then ./run.sh; fi"), False)
+check("`{ tar czf ~/projects/claude.tgz ~/p ; }` is not an invocation",
+      fh._shells_claude("{ tar czf ~/projects/claude.tgz ~/p ; }"), False)
+check("`while read f; do du -sh ~/projects/claude; done < list` is not an invocation",
+      fh._shells_claude("while read f; do du -sh ~/projects/claude; done < list"), False)
+
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:
     try:
