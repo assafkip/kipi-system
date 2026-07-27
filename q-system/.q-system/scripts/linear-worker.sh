@@ -187,12 +187,32 @@ while IFS= read -r ISSUE; do
   fi
 
   BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
-  say "start $ISSUE on $BRANCH (attempt $((N+1))/$MAX_ATTEMPTS)"
+
+  # WORKTREE, not the main checkout. Scar from this worker's own first live run
+  # (ASK-150, 2026-07-26): it branched in place and left the founder's main
+  # checkout sitting on sana/ask-150. The claim lock stopped a concurrent AGENT
+  # from colliding, but it cannot stop the worker yanking the FOUNDER's working
+  # tree out from under them mid-edit -- which is commit 53f2eeb, the exact scar
+  # this whole line of work started from. A worktree makes the collision
+  # impossible by construction instead of merely detected.
+  TREE="$STATE_DIR/worktrees/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+  if [ ! -d "$TREE" ]; then
+    mkdir -p "$(dirname "$TREE")"
+    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" origin/main 2>>"$LOG"; then
+      say "INFRA: could not create worktree for $ISSUE (not counted against the issue)"
+      python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1 || true
+      continue
+    fi
+  fi
+  say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
   python3 "$SYNC" progress "$ISSUE" \
     "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
     --agent "$AGENT" >/dev/null 2>&1 || true
 
-  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE in $SKEL.
+  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.
+
+You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
+Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.
@@ -206,7 +226,7 @@ while IFS= read -r ISSUE; do
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
 
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$SKEL' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
     say "ok $ISSUE"
     python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
       --agent "$AGENT" >/dev/null 2>&1 || true
