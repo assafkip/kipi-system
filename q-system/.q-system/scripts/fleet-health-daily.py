@@ -407,12 +407,17 @@ def finding_key(detector_id: str, subject: str) -> str:
     return f"fleet-health/{detector_id}/{slug(subject)}"
 
 
-def file_findings(findings: list, apply: bool) -> dict:
+def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.py") -> dict:
     """Create a Linear issue per finding, deduped by kipi-key.
 
     Reuses linear-sync's graphql + remote guard so 'already exists' has exactly one
     definition fleet-wide. Linear objects are permanent, so the guard is refetched
     here rather than trusted from any cache.
+
+    `filer` names the script that produced the finding. It is a parameter rather
+    than a constant because this is the fleet's ONE filer: launchd-health-check.py
+    files its 09:30/21:30 findings through here too (ASK-181), against these same
+    detector keys, so a finding both jobs see stays one issue instead of two.
     """
     result = {"created": 0, "existing": 0, "skipped_no_key": 0}
     if not findings:
@@ -443,7 +448,7 @@ def file_findings(findings: list, apply: bool) -> dict:
             continue
         payload = {
             "title": f["title"][:250],
-            "description": f"<!-- kipi-key: {key} -->\n\n{f['body']}\n\nFiled by `fleet-health-daily.py`.",
+            "description": f"<!-- kipi-key: {key} -->\n\n{f['body']}\n\nFiled by `{filer}`.",
             "teamId": team_id,
         }
         if project:
@@ -458,6 +463,23 @@ def file_findings(findings: list, apply: bool) -> dict:
             result["created"] += 1
             print(f"  filed {node.get('identifier')}  {f['title'][:70]}")
     return result
+
+
+def outcome_line(outcome: dict) -> str:
+    """The filing result as one line that cannot lie by omission.
+
+    Scar (ASK-181 review): this printed `created` and `existing` only. Because
+    `file_findings` catches its own network errors and returns
+    {created: 0, existing: 0, skipped_no_key: N}, 'Linear was unreachable and N
+    findings went nowhere' printed byte-identically to 'the fleet is clean,
+    nothing to file'. `unfiled` is what separates empty from broken.
+
+    launchd-health-check.py keeps its OWN copy of this formatter on purpose: it
+    has to be able to report that THIS file is missing, which is the rsync
+    --delete scar it was built for. Do not consolidate them into a dependency
+    that disappears exactly when it is needed."""
+    return (f"  filed={outcome['created']} already-tracked={outcome['existing']} "
+            f"unfiled={outcome['skipped_no_key']}")
 
 
 def main() -> int:
@@ -492,7 +514,7 @@ def main() -> int:
         print(f"  {did}: {n}")
 
     outcome = file_findings(all_findings, args.apply)
-    print(f"  filed={outcome['created']} already-tracked={outcome['existing']}")
+    print(outcome_line(outcome))
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(

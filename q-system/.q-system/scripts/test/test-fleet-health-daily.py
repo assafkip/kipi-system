@@ -120,6 +120,28 @@ for det in fh.DETECTORS:
             failures.append(f"detector {det['id']} emitted a finding with no stable subject")
 print(f"  ok: all {len(fh.DETECTORS)} shipped detectors run and return findings with subjects")
 
+# --- a dead filer must not read like a clean run (ASK-181 review, finding 1) --
+# file_findings catches its own network errors and returns skipped_no_key=N. This
+# job's report printed created + existing only, so "Linear was unreachable and 5
+# findings went nowhere" printed byte-identically to "the fleet is clean". Same
+# defect, same fix as launchd-health-check.py -- fixing only the watchdog would
+# have left the 08:15 job, which files the SAME findings, still lying.
+_dead = {"created": 0, "existing": 0, "skipped_no_key": 2}
+_clean = {"created": 0, "existing": 0, "skipped_no_key": 0}
+check("a dead filer's report differs from a clean one",
+      fh.outcome_line(_dead) == fh.outcome_line(_clean), False)
+check("the report names findings that never reached Linear",
+      "unfiled=2" in fh.outcome_line(_dead), True)
+check("a clean run reports nothing unfiled", "unfiled=0" in fh.outcome_line(_clean), True)
+check("the counts stay in the line",
+      "filed=3" in fh.outcome_line({"created": 3, "existing": 1, "skipped_no_key": 0}), True)
+
+# and the line must actually be the one main() prints, or the fix is a function
+# nobody calls.
+import inspect  # noqa: E402 - local to this assertion
+
+check("main() reports through outcome_line", "outcome_line(" in inspect.getsource(fh.main), True)
+
 if failures:
     print("FAIL:")
     for line in failures:

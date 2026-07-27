@@ -17,26 +17,37 @@ wiped their scripts out from under the plists. Nothing surfaced it -- the jobs j
 silently stopped hunting income. A prompt cannot watch launchd; this job can. It is
 the deterministic backstop that turns a silent 127 into a phone ping within hours.
 
+Every finding also becomes a Linear issue (ASK-181), deduped forever by the SAME
+kipi-key fleet-health-daily.py uses for its own launchd checks. A Slack line is
+read once and scrolls away; the issue holds state. Slack stays the pointer.
+
 Single notification channel: slack-notify.sh (founder-notifications rule). Silent
 no-op if no webhook is configured, so this watchdog never breaks anything.
 
 The watchdog always exits 0 -- it must never become the failing job it reports.
 
 Usage:
-  launchd-health-check.py            # check; ping on newly/again-failing jobs
-  launchd-health-check.py --dry      # print findings only; no ping, no state write
+  launchd-health-check.py             # check; ping + file Linear issues
+  launchd-health-check.py --dry-run   # print findings only; no ping, no issue,
+  launchd-health-check.py --dry       #   no state write (--dry / -n are aliases)
+
+Dry mode makes ONE read-only Linear query (the dedup fetch) so its preview of a
+permanent, undeletable action is the real number. It writes nothing: no issue, no
+state file, no ping. Any flag that is not a dry alias is REFUSED, never run live.
 """
 import json
 import re
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 SELF_LABEL = "com.kipi.launchd-health"
 FAIL_PING_TTL_SECONDS = 6 * 3600  # re-ping a still-failing job at most this often
 HERE = Path(__file__).resolve().parent
 NOTIFY_SCRIPT = HERE / "slack-notify.sh"
+DRY_FLAGS = ("--dry", "--dry-run", "-n")
 STATE_FILE = Path.home() / ".config" / "kipi" / "launchd-health-state.json"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 
@@ -209,6 +220,148 @@ def send_ping(message):
         pass
 
 
+def is_dry_run(args):
+    """True when a dry alias was typed. Answers only that; see parse_mode."""
+    return any(arg in DRY_FLAGS for arg in args)
+
+
+def parse_mode(args):
+    """('live'|'dry'|'refuse', unrecognized_flags).
+
+    Scar (ASK-181): dry mode used to be `"--dry" in sys.argv`, an exact string
+    match. `--dry-run` -- the flag this job's own migration checklist tells the
+    verifier to type -- did not match, so a read-only check silently took the LIVE
+    path and pinged the founder's phone.
+
+    Widening the accept-list fixed that one typo and left the shape intact: every
+    OTHER near-miss (`--dry-run=1`, `--dryrun`, `--dry_run`, `-dry`) still armed
+    the live path. So an unrecognized flag now REFUSES the run instead of guessing.
+    An unknown flag alongside a valid dry one also refuses -- if part of the
+    command line is unparsed, the operator's intent is unknown, and the safe
+    reading of an unknown intent is 'do nothing'.
+
+    launchd invokes this script with no arguments, so refusing cannot stop the
+    scheduled run; it only stops a hand-typed command from doing more than the
+    operator asked."""
+    unrecognized = [arg for arg in args if arg not in DRY_FLAGS]
+    if unrecognized:
+        return ("refuse", unrecognized)
+    return ("dry" if is_dry_run(args) else "live", [])
+
+
+# --- findings reach Linear, not only Slack -----------------------------------
+# Bar 2 of the job-migration contract (ASK-181). The detector ids below are
+# fleet-health-daily.py's, not new ones: that job runs the same two checks at
+# 08:15 and files against those keys. Sharing the key means a job both of them see
+# is ONE permanent issue; a private namespace here would file a second one every
+# time, and Linear issues are not deleted in this fleet.
+LINEAR_DETECTOR_BY_KIND = {
+    "failing": "launchd-failing",
+    "not_loaded": "launchd-dark",
+    # "paused" is deliberate, recorded in the pause ledger, and never filed.
+}
+
+_FLEET_HEALTH = None
+
+
+def _fleet_health():
+    """Lazily load fleet-health-daily.py -- the one place that defines a finding's
+    Linear key and how it gets filed. Loaded on demand so a healthy run (the
+    common case) pays nothing, and so an import error cannot stop the watchdog."""
+    global _FLEET_HEALTH
+    if _FLEET_HEALTH is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("fh", HERE / "fleet-health-daily.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _FLEET_HEALTH = module
+    return _FLEET_HEALTH
+
+
+def linear_findings(problems):
+    """Turn watchdog problems into fleet-health finding dicts, ready to file."""
+    fleet_health = _fleet_health()
+    findings = []
+    for label, kind, detail in problems:
+        detector = LINEAR_DETECTOR_BY_KIND.get(kind)
+        if detector is None:
+            continue
+        if kind == "failing":
+            title = f"launchd job failing: {label} ({detail})"
+            body = (
+                f"`{label}` is loaded but its last run exited non-zero (**{detail}**).\n\n"
+                "## Action\nRead its `StandardErrorPath`, fix the cause, and confirm a clean "
+                "run. If the failure is environmental (auth expiry, server down), say so on "
+                "this issue rather than retrying -- `self-healing-retry.md` rule 5 stops "
+                "environmental failures on attempt 1."
+            )
+        else:
+            title = f"launchd job is dark: {label}"
+            body = (
+                f"`{label}` has a plist in `~/Library/LaunchAgents/` but is not loaded, and "
+                "it is NOT in the paused ledger -- so nothing recorded a decision to stop "
+                "it. An unloaded job cannot report its own death.\n\n"
+                "## Action\n"
+                f"- Resume: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist`\n"
+                f"- Or record the pause: add `{label}` to `~/.config/kipi/launchd-paused.txt`"
+            )
+        findings.append({
+            "key": fleet_health.finding_key(detector, label),
+            "detector": detector,
+            "subject": label,
+            "title": title,
+            "body": body,
+        })
+    return findings
+
+
+def file_linear_findings(problems, apply=True):
+    """File the findings as deduped Linear issues. Never raises.
+
+    A watchdog that dies because Linear is unreachable stops watching launchd --
+    which is precisely the silent death it exists to catch. A filing failure is
+    counted and printed, never propagated.
+
+    With apply=False nothing is created; the same filer still runs its dedup so a
+    dry preview reports the real number instead of a second, looser estimate.
+
+    Every return path sets `skipped_no_key` to the number of problems that were
+    OWED an issue and did not get one. Counting the findings we managed to build
+    would report 0 for the one failure that matters most -- fleet-health-daily.py
+    missing entirely, which is the `kipi update` rsync --delete scar this watchdog
+    exists for."""
+    owed = sum(1 for _, kind, _ in problems if kind in LINEAR_DETECTOR_BY_KIND)
+    try:
+        findings = linear_findings(problems)
+    except Exception as exc:  # noqa: BLE001
+        print(f"linear findings could not be built: {exc}", file=sys.stderr)
+        return {"created": 0, "existing": 0, "skipped_no_key": owed}
+    if not findings:
+        return {"created": 0, "existing": 0, "skipped_no_key": 0}
+    try:
+        return _fleet_health().file_findings(
+            findings, apply=apply, filer="launchd-health-check.py")
+    except Exception as exc:  # noqa: BLE001
+        print(f"linear filing skipped: {exc}", file=sys.stderr)
+        return {"created": 0, "existing": 0, "skipped_no_key": len(findings)}
+
+
+def linear_report_line(outcome, dry_run):
+    """The filing result as one line that cannot lie by omission.
+
+    Scar (ASK-181 review): the old line printed `created` and `existing` only.
+    `file_findings` catches its own network errors and returns
+    {created: 0, existing: 0, skipped_no_key: N}, so 'Linear is unreachable and N
+    findings went nowhere' printed byte-identically to 'the fleet is clean, nothing
+    to file'. Every instance without a Linear API key takes that branch, and this
+    script ships fleet-wide. `unfiled` is what separates empty from broken."""
+    verb = "would-file" if dry_run else "filed"
+    prefix = "[dry] " if dry_run else ""
+    return (f"{prefix}linear: {verb}={outcome['created']} "
+            f"already-tracked={outcome['existing']} unfiled={outcome['skipped_no_key']}")
+
+
 def problems_to_ping(problems, state, now):
     """Problems whose kind changed since the last ping, or whose last ping is
     older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
@@ -245,6 +398,12 @@ def run(dry_run):
     now = int(time.time())
     due = problems_to_ping(problems, state, now)
 
+    # ONE filer for both modes. Dry used to count the findings it built while live
+    # counted what survived dedup, so the dry preview of a permanent action
+    # over-reported (review finding 2). Two readers of one input is the defect.
+    filed = file_linear_findings(problems, apply=not dry_run)
+    print(linear_report_line(filed, dry_run))
+
     if dry_run:
         print(f"[dry] would ping {len(due)} job(s)")
         return
@@ -255,7 +414,14 @@ def run(dry_run):
             else f"{label} ({detail})"
             for label, kind, detail in due
         ]
-        send_ping(f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts))
+        message = f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts)
+        if filed["skipped_no_key"]:
+            # Slack is the only channel the founder actually reads. Fixing the
+            # stdout counter alone would leave this ping saying "here are the
+            # problems" while the issues meant to hold them never reached the
+            # board. No NEW ping: the one that was already firing carries it.
+            message += f" [NOT filed to Linear: {filed['skipped_no_key']}]"
+        send_ping(message)
         for label, kind, detail in due:
             state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
 
@@ -266,8 +432,25 @@ def run(dry_run):
     write_state(state)
 
 
-if __name__ == "__main__":
+def main(argv):
+    """Always returns 0 -- a watchdog must never report itself as the failing job.
+
+    Scar (ASK-181 review): this used to be `try: run(...) finally: sys.exit(0)`.
+    `sys.exit` in the finally supersedes a propagating exception, so an unhandled
+    crash printed NOTHING and launchd recorded SUCCESS. Exiting 0 is the contract;
+    exiting 0 SILENTLY is the watchdog dying the same silent death it exists to
+    catch. Catch, print the traceback, then exit 0."""
+    mode, unrecognized = parse_mode(argv)
+    if mode == "refuse":
+        print(f"unrecognized flag(s): {' '.join(unrecognized)} -- refusing to run. "
+              f"Dry: {' / '.join(DRY_FLAGS)}. Live: no flags at all.", file=sys.stderr)
+        return 0
     try:
-        run("--dry" in sys.argv)
-    finally:
-        sys.exit(0)  # a watchdog must never report itself as the failing job
+        run(mode == "dry")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
