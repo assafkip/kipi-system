@@ -192,6 +192,92 @@ def structural_flags(issue: dict, ev: list) -> list:
     return flags
 
 
+# --- in-flight work --------------------------------------------------------
+# sp-d901c01e. The first dry pass judged ASK-210 `needs-scope` -- "add a
+# **Files:** line, then re-triage" -- while PR #23 was open carrying that exact
+# diff. Triage reasons from issue text plus disk, so an issue whose work is
+# half-shipped looks identical to one nobody has touched.
+#
+# The fix is to hold no opinion. An issue with an open PR already has an owner
+# (converge -> review -> merge). Re-scoping it from here races that loop, and
+# under --apply writes a permanent Linear comment contradicting live work.
+#
+# Branch names only, never the PR title or body: titles routinely name issues
+# they supersede ("re-file of ASK-208"), and claiming those would withhold real
+# backlog from triage forever. ASK-210 settled the same question the same way
+# for the receipt gate -- the branch is the reliable source, the body is not.
+#
+# TODO(sp-6d394dbb): collapse this onto plugins/kipi-dsse/scripts/linear_branch.py
+# once PR #23 lands. That module is the canonical branch->issue convention, but
+# PR #23 CREATES it; it is not on main yet, so importing it here today would
+# make triage depend on an unmerged branch.
+PR_BRANCH_RE = re.compile(r"(?:^|/)ask-0*(\d+)$", re.I)
+
+
+def open_pr_by_issue(prs: list) -> dict:
+    """Map ASK-n -> the open PR number claiming it, from branch names alone.
+
+    Lowest PR number wins, so a stale branch and its re-cut do not make the
+    answer flicker between passes. Which of the two is reported matters far
+    less than the mapping being stable.
+    """
+    out: dict = {}
+    for pr in prs:
+        m = PR_BRANCH_RE.search((pr.get("headRefName") or "").strip())
+        if not m:
+            continue
+        key = f"ASK-{int(m.group(1))}"
+        num = pr.get("number")
+        if key not in out or num < out[key]:
+            out[key] = num
+    return out
+
+
+def fetch_open_prs() -> list:
+    """Open PRs for this repo, or [] when gh cannot answer.
+
+    Degrading to [] restores the pre-fix behaviour: every issue stays
+    triageable. That is the safe direction. A missed skip costs one wrong
+    verdict a human can read and argue with; a wrongly-claimed issue would be
+    withheld from triage silently, and nothing would ever surface it again.
+
+    KIPI_GH overrides the binary -- the same seam converge.sh uses for NOTIFY --
+    so the suite can drive this without a network or a live board.
+    """
+    gh = os.environ.get("KIPI_GH", "gh")
+    try:
+        out = subprocess.run(
+            [gh, "pr", "list", "--state", "open", "--limit", "100",
+             "--json", "number,headRefName"],
+            cwd=REPO, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    try:
+        parsed = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def partition_in_flight(issues: list, pr_map: dict) -> tuple:
+    """Split into (triageable, [(issue, pr_number), ...]).
+
+    A partition, not a filter: the caller PRINTS the second list. Dropping them
+    silently would read as "triage saw 116 issues and had no opinion on 4", the
+    same silent-success class as a guard that exits 0 on failure.
+    """
+    keep, flight = [], []
+    for issue in issues:
+        num = pr_map.get(issue["identifier"])
+        if num is None:
+            keep.append(issue)
+        else:
+            flight.append((issue, num))
+    return keep, flight
+
+
 PROMPT = """You are a senior staff engineer triaging a backlog you did not create.
 
 Decide, for EACH issue below, which ONE bucket it belongs in:
@@ -424,6 +510,19 @@ def main() -> int:
         issues = issues[:args.limit]
     if not issues:
         print(f"no open issues in project {args.project!r}")
+        return 0
+
+    # sp-d901c01e: work that is already moving is not this pass's to re-scope.
+    issues, in_flight = partition_in_flight(
+        issues, open_pr_by_issue(fetch_open_prs()))
+    if in_flight:
+        print(f"{len(in_flight)} issue(s) skipped -- an open PR already owns "
+              f"them, so the review loop decides what happens next:")
+        for issue, num in in_flight:
+            print(f"  {issue['identifier']:<10} PR #{num}  {issue['title'][:60]}")
+        print()
+    if not issues:
+        print("every open issue is in flight; nothing left to triage")
         return 0
 
     print(f"triaging {len(issues)} open issue(s) in {args.project!r} "

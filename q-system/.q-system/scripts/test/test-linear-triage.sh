@@ -82,6 +82,36 @@ check "returns None when it has never commented" 'null' \
 check "an override is visible in the comment body" 'true' \
   "$(run '' '"Downgraded from" in t.comment_body({"id":"A","category":"needs-scope","why":"w","action":"a","overridden_from":"do-now"})')"
 
+echo "== in-flight PRs: triage must not judge work that is already moving =="
+
+# THE CORE CASE (sp-d901c01e). Measured 2026-07-27: the dry pass judged ASK-210
+# `needs-scope` -- "add a **Files:** line, then re-triage" -- while PR #23 was
+# open with that exact diff already written. The advice was not merely useless,
+# it was wrong: acting on it would have edited an issue whose work was done.
+# Triage decides what to do with UNTOUCHED backlog; an issue in the loop already
+# has an owner (converge/review), so it is not this pass's call to make.
+check "an open PR on sana/ask-210 claims ASK-210" '23' \
+  "$(run '' 't.open_pr_by_issue([{"number":23,"headRefName":"sana/ask-210"}])["ASK-210"]')"
+
+check "a branch with no issue id claims nothing" '{}' \
+  "$(run '' 't.open_pr_by_issue([{"number":5,"headRefName":"worktree-fix-prompt-only-guard"}])')"
+
+check "the lowest PR number wins when two claim one issue" '23' \
+  "$(run '' 't.open_pr_by_issue([{"number":31,"headRefName":"sana/ask-210"},{"number":23,"headRefName":"sana/ask-210"}])["ASK-210"]')"
+
+# Partition, not filter: the in-flight set is RETURNED so the caller reports it.
+# A silent drop here would read as "triage saw 116 issues and had no opinion on
+# 4 of them", which is the same silent-success class this repo keeps scarring on.
+check "an in-flight issue is withheld from the model" '["ASK-9"]' \
+  "$(run '' '[i["identifier"] for i in t.partition_in_flight([{"identifier":"ASK-210"},{"identifier":"ASK-9"}],{"ASK-210":23})[0]]')"
+
+check "an in-flight issue is reported, never dropped" '[["ASK-210", 23]]' \
+  "$(run '' '[[i["identifier"],n] for i,n in t.partition_in_flight([{"identifier":"ASK-210"},{"identifier":"ASK-9"}],{"ASK-210":23})[1]]')"
+
+# Must not fire when nothing is open, or a quiet board triages nothing.
+check "no open PRs leaves every issue triageable" '2' \
+  "$(run '' 'len(t.partition_in_flight([{"identifier":"ASK-210"},{"identifier":"ASK-9"}],{})[0])')"
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
