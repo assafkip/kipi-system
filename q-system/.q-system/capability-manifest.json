@@ -257,6 +257,26 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],

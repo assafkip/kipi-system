@@ -40,11 +40,18 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# KIPI_SKEL / KIPI_STATE_DIR are TEST-ISOLATION SEAMS, same discipline as
+# KIPI_LINEAR_CLAIMS / KIPI_LINEAR_LEDGER / KIPI_LINEAR_QUEUE. Without them a
+# suite that drives this script end-to-end would create real worktrees and real
+# sana/* branches in the founder's checkout and stomp the live attempts ledger --
+# so the ordering this script's whole correctness rests on could only ever be
+# asserted by grepping its source. Unset in production; the defaults are the
+# real skeleton and the real state dir.
+SKEL="${KIPI_SKEL:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CLAIM="$SCRIPT_DIR/linear-claim.py"
 SYNC="$SCRIPT_DIR/linear-sync.py"
 NOTIFY="$SCRIPT_DIR/slack-notify.sh"
-STATE_DIR="$HOME/.config/kipi"
+STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
@@ -211,28 +218,52 @@ while IFS= read -r ISSUE; do
     fi
   fi
 
-  # 1. CLAIM. exit 3 = another session holds this tree; that is a skip, not an error.
-  if ! python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1; then
-    rc=$?
-    if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
-    say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
-  fi
-
-  # WORKTREE, not the main checkout. Scar from this worker's own first live run
-  # (ASK-150, 2026-07-26): it branched in place and left the founder's main
-  # checkout sitting on sana/ask-150. The claim lock stopped a concurrent AGENT
-  # from colliding, but it cannot stop the worker yanking the FOUNDER's working
-  # tree out from under them mid-edit -- which is commit 53f2eeb, the exact scar
-  # this whole line of work started from. A worktree makes the collision
-  # impossible by construction instead of merely detected.
+  # 1. WORKTREE FIRST, and only then the claim -- in that order, because the
+  # claim has to be taken from INSIDE the tree it protects.
+  #
+  # Scar from this worker's own first live run (ASK-150, 2026-07-26): it branched
+  # in place and left the founder's main checkout sitting on sana/ask-150. The
+  # claim lock stopped a concurrent AGENT from colliding, but it cannot stop the
+  # worker yanking the FOUNDER's working tree out from under them mid-edit --
+  # commit 53f2eeb, the scar this whole line of work started from. A worktree
+  # makes that collision impossible by construction instead of merely detected.
   TREE="$STATE_DIR/worktrees/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
   if [ ! -d "$TREE" ]; then
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" origin/main 2>>"$LOG"; then
-      say "INFRA: could not create worktree for $ISSUE (not counted against the issue)"
-      python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1 || true
-      continue
+      # A concurrent worker on the SAME issue can create this tree between the
+      # test above and this line. That is the collision the claim below exists to
+      # adjudicate, not an infra failure -- so fall through and let it, rather
+      # than reporting a phantom outage and burning nothing.
+      if [ ! -d "$TREE" ]; then
+        say "INFRA: could not create worktree for $ISSUE (not counted against the issue)"
+        continue
+      fi
     fi
+  fi
+
+  # 2. CLAIM, from INSIDE $TREE. exit 3 = another session holds THIS tree; that
+  # is a skip, not an error.
+  #
+  # ASK-188: the claim used to run here at step 1, BEFORE the worktree existed,
+  # so its cwd was the skeleton. `linear-claim.py::claims_path()` resolves the
+  # lock from `git rev-parse --show-toplevel` OF THE CALLER'S CWD, which meant
+  # every issue on the board contended for one file at the skeleton root -- one
+  # lock, whole repo, total serialization. Measured 2026-07-27: 50+ ready issues
+  # behind a queue that could only ever run one. Inside a worktree that same
+  # command returns THAT worktree's path, so the lock lands in the tree it
+  # actually protects, which is what the function's own docstring says it is for.
+  # Two workers on the SAME issue still share one worktree and still collide, so
+  # the mutex is unweakened -- that is case 4 of test-linear-worker-parallel.sh.
+  #
+  # `rc=$?` cannot live under `if ! cmd`: bash sets $? from the NEGATION there, so
+  # it read 0 on every failure and the collision branch was unreachable -- a real
+  # collision reported as "INFRA: claim failed rc=0". Capture the status directly.
+  ( cd "$TREE" && python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" != "0" ]; then
+    if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
+    say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
   fi
   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
   python3 "$SYNC" progress "$ISSUE" \
@@ -403,7 +434,12 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   fi
 
   # 6. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
-  python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1 || true
+  # From INSIDE $TREE, matching the claim above. A claim taken in one cwd and
+  # released in another does not error: release reads a DIFFERENT lock file,
+  # finds nothing, prints "not held" and exits 0 while the real lock sits in the
+  # worktree forever, wedging that issue permanently. Asserted by case 3 of
+  # test-linear-worker-parallel.sh, which reads the lock files back after the run.
+  ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
   DONE=$((DONE+1))
 done
 
