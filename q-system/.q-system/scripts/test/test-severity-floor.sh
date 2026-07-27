@@ -642,6 +642,35 @@ LC="$S_CLEAR/linear-worker-attempts.json"
       stop the loop without ever telling the founder"
 ok "a PR that merges cleanly again resets its conflict budget and its page flag"
 
+# --- K. a tree cut by an OLDER run is repositioned, not abandoned ------------
+# Section H covers the tree the worker cuts itself. This covers the one it
+# INHERITS: $TREE already exists, cut from origin/main by a previous version, so
+# it holds none of the PR's commits. Refusing forever would trade a destructive
+# round for a permanently stalled issue, so a lossless move onto the PR's head
+# has to actually happen -- and "lossless" must not be defeated by the worker's
+# OWN claim file, which lands untracked inside the very tree being judged.
+R_LEGACY="$W2/repo-legacy"; make_repo "$R_LEGACY"
+S_LEGACY="$W2/state-legacy"; mkdir -p "$S_LEGACY/pr-reviews" "$S_LEGACY/worktrees"
+printf '{"verdict":"APPROVE","pr":784}\n' > "$S_LEGACY/pr-reviews/pr-784.verdict.json"
+gh_says 784 DIRTY
+git -C "$R_LEGACY/skel" worktree add -q -B sana/ask-aaa \
+  "$S_LEGACY/worktrees/ask-aaa" origin/main 2>/dev/null \
+  || fail "could not pre-create the legacy worktree"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"
+run_worker_in "$R_LEGACY/skel" "$S_LEGACY" "$W2/legacy.out"
+
+grep -q "the approved work" "$W2/tree-log.txt" 2>/dev/null \
+  || fail "an inherited worktree cut from origin/main was never moved onto PR #784's head.
+      Either the round ran in a tree whose force-push deletes the PR, or the issue is now
+      stalled every cycle. The worker said: $(grep -iE 'skip|rebase' "$W2/legacy.out" | head -1)
+      Tree contained:
+$(sed 's/^/        /' "$W2/tree-log.txt")"
+ok "an inherited tree is repositioned onto the PR's head before the round"
+
+[ ! -s "$W2/pages.txt" ] \
+  || fail "a tree that could be repositioned safely paged the founder anyway: $(cat "$W2/pages.txt")"
+ok "a repositionable tree costs the founder no page"
+
 # --- wiring: the worker actually consults the merge state --------------------
 grep -q 'pr_merge_state' "$WORKER" \
   || fail "linear-worker.sh never reads the merge state (the gate's second argument would be empty forever)"

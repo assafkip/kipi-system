@@ -316,12 +316,36 @@ tree_holds_pr_head() {
 # origin/main -- the two places work can legitimately live. An unattended job
 # does not get to throw away commits nobody has seen; when it cannot prove the
 # move is lossless it declines the round and leaves the tree for a human.
+# Sets POSITION_REFUSAL to the REASON when it declines, because "cannot be moved
+# safely" covers four different states and the operator reading this at 3am has
+# to know which one they are looking at.
+POSITION_REFUSAL=""
 position_tree_on_pr_head() {
-  local tree="$1" branch="$2"
-  [ -z "$(git -C "$tree" status --porcelain 2>/dev/null)" ] || return 1
-  [ -z "$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)" ] || return 1
-  git -C "$tree" checkout -q -B "$branch" "origin/$branch" 2>>"$LOG" || return 1
-  tree_holds_pr_head "$tree" "$branch"
+  local tree="$1" branch="$2" dirty extra
+  POSITION_REFUSAL=""
+  # `.linear-claims.json` is EXCLUDED: the claim taken two lines above this call
+  # writes that file into the very tree being judged, so counting it as local
+  # work made every inherited tree unrepositionable -- turning a destructive
+  # round into a permanently stalled issue plus a page. It is this worker's own
+  # lock, never a human's work.
+  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v '\.linear-claims\.json$')"
+  if [ -n "$dirty" ]; then
+    POSITION_REFUSAL="the tree has uncommitted changes"
+    return 1
+  fi
+  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)"
+  if [ -n "$extra" ]; then
+    POSITION_REFUSAL="the tree holds $(printf '%s\n' "$extra" | grep -c .) commit(s) that exist nowhere else"
+    return 1
+  fi
+  if ! git -C "$tree" checkout -q -B "$branch" "origin/$branch" 2>>"$LOG"; then
+    POSITION_REFUSAL="git could not check out origin/$branch (see $LOG)"
+    return 1
+  fi
+  if ! tree_holds_pr_head "$tree" "$branch"; then
+    POSITION_REFUSAL="the tree still does not contain origin/$branch after the checkout"
+    return 1
+  fi
 }
 
 DONE=0
@@ -483,7 +507,7 @@ while IFS= read -r ISSUE; do
   # tree and the claim is what says this session owns it.
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
-      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them without discarding local work. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
+      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
       if claim_page_once "$ISSUE" tree_paged; then
         bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
