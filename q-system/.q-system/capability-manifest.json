@@ -293,6 +293,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-pr-receipt-gate.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-receipt-gate-closeout-e2e.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
