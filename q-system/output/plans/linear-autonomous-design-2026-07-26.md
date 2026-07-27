@@ -19,6 +19,17 @@ So Linear is the **board and the queue**. The **thinking runs locally** on the
 subscription. Anything that needs an LLM verdict happens in `claude -p`, never in
 Linear's AI.
 
+**And the scheduler is launchd, never cron (ASK-150).** Every `claude -p` step below
+depends on this. cron runs from a bare environment with no keychain access, so
+subscription auth fails — probed 2026-07-23, `keychain_read_rc=44` plus
+`{"is_error":true,...}` (`reddit-build-radar/logs/cron-probe/result.txt`). launchd
+jobs do have keychain access, which is why every working `claude -p` job in this
+fleet is a LaunchAgent. Building any part of this design on cron would fail at
+runtime with an error that reads like a bad prompt rather than a bad scheduler.
+`fleet-health-daily.py`'s `cron-shells-claude` detector files an issue for any
+crontab line that shells `claude`, so the next scheduler choice cannot re-learn
+this the slow way.
+
 ## The engine already exists
 
 `q-system/.q-system/scripts/open-loops-heartbeat.sh` is the pattern, already in
@@ -101,7 +112,8 @@ decision.
 
 ### 3. Worker — `linear-worker.sh`, modeled on the heartbeat
 
-Per repo, on a schedule:
+Per repo, on a **launchd** schedule — step 3 shells `claude -p`, so cron is ruled
+out by ASK-150 (no keychain, auth fails):
 
 ```
 1. kipi linear claim <ASK-n> --agent linear-worker --session <launchd-run-id>

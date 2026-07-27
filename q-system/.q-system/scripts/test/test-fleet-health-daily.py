@@ -105,6 +105,67 @@ check(
     "com-cole-reddit-radar-daily",
 )
 
+# --- ASK-150: cron cannot authenticate `claude` (no keychain) ---------------
+# Probed 2026-07-23: `keychain_read_rc=44`. The detector's job is to catch a
+# crontab line that shells `claude` BEFORE it fails at 3am with an opaque auth
+# error. The fixtures are fed in directly so the test never shells `crontab -l`
+# (a test that reads live machine state passes or fails for the wrong reason).
+
+CRON_WITH_CLAUDE = """\
+# a comment line that mentions claude -p must NOT count
+PATH=/usr/local/bin:/usr/bin:/bin
+0 3 * * * cd ~/projects/kipi-system && timeout 1800 claude -p "sweep" </dev/null
+"""
+
+# The launchd-only machine: real cron lines, none of which invoke claude. Every
+# line here is a decoy that a naive substring match would flag.
+CRON_LAUNCHD_ONLY = """\
+# claude -p "this is a comment, not a job"
+CLAUDE_HOME=/Users/x/.claude
+30 2 * * * bash ~/.claude/hooks/rotate-logs.sh
+0 8 * * * cd ~/projects/claude && ./run_daily.sh
+15 * * * * python3 ~/projects/kipi-system/q-system/.q-system/scripts/fleet-health-daily.py
+"""
+
+claude_findings = fh.detect_cron_shells_claude(None, cron_text=CRON_WITH_CLAUDE)
+check("a crontab line shelling `claude -p` is detected", len(claude_findings), 1)
+check(
+    "the finding rolls up under ONE stable subject",
+    claude_findings[0]["subject"] if claude_findings else None,
+    "cron-shells-claude",
+)
+check(
+    "a launchd-only crontab produces no finding",
+    fh.detect_cron_shells_claude(None, cron_text=CRON_LAUNCHD_ONLY),
+    [],
+)
+check("an empty crontab produces no finding", fh.detect_cron_shells_claude(None, cron_text=""), [])
+
+# The false positives that would file a PERMANENT issue, asserted one by one.
+check("`cd` into a dir named claude is not an invocation",
+      fh._shells_claude("cd ~/projects/claude && ./run.sh"), False)
+check("a script under ~/.claude/ is not an invocation",
+      fh._shells_claude("bash ~/.claude/hooks/rotate-logs.sh"), False)
+check("a claude-prefixed binary is not `claude`",
+      fh._shells_claude("claude-code --version"), False)
+
+# The true positives, including the wrapper shapes this fleet actually uses.
+check("bare `claude -p` is an invocation", fh._shells_claude('claude -p "x"'), True)
+check("`timeout 1800 claude` is an invocation",
+      fh._shells_claude("timeout 1800 claude -p 'x' </dev/null"), True)
+check("an absolute claude path is an invocation",
+      fh._shells_claude("/Users/x/.claude/local/claude -p 'x'"), True)
+check("claude inside `bash -lc` is an invocation",
+      fh._shells_claude("bash -lc 'claude -p \"x\"'"), True)
+check("claude after `&&` is an invocation",
+      fh._shells_claude("cd ~/projects/x && claude -p 'x'"), True)
+
+# The schedule fields must be stripped, and non-job lines must not be parsed.
+check("a comment line yields no command", fh._cron_command("# 0 3 * * * claude -p 'x'"), "")
+check("a crontab env assignment yields no command", fh._cron_command("MAILTO=me@example.com"), "")
+check("a @daily line strips the special field",
+      fh._cron_command("@daily claude -p 'x'"), "claude -p 'x'")
+
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:
     try:

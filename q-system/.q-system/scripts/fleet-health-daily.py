@@ -44,7 +44,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 QROOT = HERE.parent.parent
@@ -220,6 +220,124 @@ def detect_duplicate_schedules(_ctx) -> list:
     return out
 
 
+# Wrappers that sit BEFORE the real command on a cron line. `timeout 1800 claude`
+# is the shape this fleet actually uses (open-loops-heartbeat.sh), so a matcher
+# that only reads the first token would miss every real invocation.
+CRON_COMMAND_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate",
+                         "sudo", "exec", "stdbuf"}
+
+
+def _crontab_text() -> str:
+    """`crontab -l`, or empty when there is no crontab or crontab is unavailable."""
+    try:
+        return subprocess.run(["crontab", "-l"], capture_output=True, text=True,
+                              timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _cron_command(line: str) -> str:
+    """The command part of a crontab line, with the schedule fields removed."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return ""
+    fields = stripped.split()
+    if "=" in fields[0]:
+        return ""  # a crontab env assignment (PATH=..., MAILTO=...), not a job
+    if fields[0].startswith("@"):
+        return " ".join(fields[1:])  # @daily / @reboot: one schedule field, not five
+    if len(fields) < 6:
+        return ""
+    return " ".join(fields[5:])
+
+
+def _is_claude_token(token: str) -> bool:
+    """The token names the `claude` binary — by basename, so a path counts too."""
+    return PurePosixPath(token).name == "claude"
+
+
+def _command_token(tokens: list) -> str:
+    """The real command in a shell segment, past env prefixes and wrappers."""
+    for token in tokens:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            continue  # VAR=value prefix
+        if token.startswith("-") or token.isdigit():
+            continue  # a wrapper's own flag or arg, e.g. the 1800 in `timeout 1800`
+        if PurePosixPath(token).name in CRON_COMMAND_WRAPPERS:
+            continue
+        return token
+    return ""
+
+
+def _shells_claude(command: str) -> bool:
+    """True when the command INVOKES `claude`, not merely mentions it.
+
+    Deliberately narrow. This fleet is dense with `.claude/` paths and a directory
+    literally named `claude`, and a false positive files a PERMANENT Linear issue —
+    the same cost that made detect_duplicate_schedules resolve absolute paths rather
+    than match basenames. So `claude` counts only when it holds command position in
+    a shell segment, or is immediately followed by a flag. That is what an
+    invocation looks like, and what `cd ~/projects/claude && ...` never is.
+    """
+    for segment in re.split(r"&&|\|\||[;|]", command):
+        tokens = [t for t in (raw.strip("'\"") for raw in segment.split()) if t]
+        if not tokens:
+            continue
+        if _is_claude_token(_command_token(tokens)):
+            return True
+        # Quoted forms like `bash -lc 'claude -p ...'` never reach command
+        # position, so the flag that follows is the invocation signal.
+        for token, following in zip(tokens, tokens[1:]):
+            if _is_claude_token(token) and following.startswith("-"):
+                return True
+    return False
+
+
+def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
+    """A crontab line that invokes `claude`. It cannot work: cron has no keychain.
+
+    Probed 2026-07-23 (`reddit-build-radar/logs/cron-probe/result.txt`):
+    `keychain_read_rc=44` and `{"is_error":true,...}`. cron starts from a bare
+    environment with no keychain access, so subscription auth fails with an opaque
+    error instead of a clean one — the failure reads as a broken prompt, not a
+    broken scheduler, which is why it is worth catching at the crontab. launchd
+    jobs DO have keychain access; every working `claude -p` job in this fleet is a
+    LaunchAgent. Filed as ASK-150.
+
+    ONE rollup finding, never one per line. A crontab line is an unstable string:
+    editing the prompt inside it would fork a new PERMANENT Linear issue every
+    time. The offending lines live in the body, which is updatable — the same
+    reasoning detect_open_spillover documents for its count.
+    """
+    cron = _crontab_text() if cron_text is None else cron_text
+    offenders = [line.strip() for line in cron.splitlines()
+                 if _shells_claude(_cron_command(line))]
+    if not offenders:
+        return []
+    return [{
+        "subject": "cron-shells-claude",
+        "title": f"{len(offenders)} crontab line(s) shell `claude` — cron has no keychain access",
+        "body": (
+            f"**{len(offenders)} crontab line(s) invoke `claude`.** They cannot "
+            "authenticate:\n\n"
+            + "\n".join(f"- `{line}`" for line in offenders)
+            + "\n\ncron runs from a bare environment with no keychain access, so "
+              "subscription auth fails. Probed 2026-07-23 "
+              "(`reddit-build-radar/logs/cron-probe/result.txt`):\n\n"
+              "```\nkeychain_read_rc=44\n{\"is_error\":true,...,\"num_turns\":1,"
+              "\"stop_reason\":\"stop_sequence\",...}\n```\n\n"
+              "The error surfaces as a failed agent run, not as an auth failure, so "
+              "the cause is easy to misread as a bad prompt.\n\n"
+              "## Action\nMove the job to a LaunchAgent. launchd DOES have keychain "
+              "access — every working `claude -p` job in this fleet "
+              "(`open-loops-heartbeat.sh` under `com.kipi.openloops-heartbeat`) is one. "
+              "Do not try to make cron work: there is no keychain workaround, and an "
+              "API-key fallback would bill separately from the subscription.\n\n"
+              "Constraint recorded in ASK-150."
+        ),
+    }]
+
+
 def detect_open_spillover(_ctx) -> list:
     """Open spillover items — real findings someone decided not to fix yet."""
     runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
@@ -355,6 +473,13 @@ DETECTORS = [
             "class — the detector exists to catch drift when a script is migrated "
             "between schedulers, which is a one-off event per script."
         ),
+    },
+    {
+        "id": "cron-shells-claude",
+        "description": "a crontab line invokes `claude`, which cannot authenticate under cron",
+        "detect": detect_cron_shells_claude,
+        "action": "file_issue",
+        "lesson": "a-scheduled-job-runs-in-a-bare-environment-not-your-shell",
     },
     {
         "id": "open-spillover",
