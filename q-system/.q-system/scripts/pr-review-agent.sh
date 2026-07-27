@@ -43,6 +43,10 @@ SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
 TIMEOUT_SECONDS=2400
+# Verdict semantics live in ONE place, shared with the worker. Two scripts each
+# grepping the review prose with their own regex is two readers with different
+# semantics -- the defect class review round 2 flagged on this very PR line.
+. "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 PR=""; ISSUE=""; POST=0
 while [ $# -gt 0 ]; do
@@ -134,8 +138,22 @@ file:line, the reproducer command, and its REAL output.
 Then:
 - **What is sound** — attacks you tried that the code survived. Name them. A review
   that only lists faults is not calibrated and cannot be trusted on the faults.
-- **VERDICT:** one of APPROVE / APPROVE WITH NITS / REQUEST CHANGES / BLOCK, and the
-  single most important thing to fix first."
+- **VERDICT:** decided by THIS RULE, not by feel:
+    - any blocker or major finding      => REQUEST CHANGES (BLOCK only if merging
+      as-is would cause permanent or unrecoverable damage)
+    - only minor/nit findings           => APPROVE WITH NITS
+    - no finding survived reproduction  => APPROVE
+  A bar this high ALWAYS finds something; that is what APPROVE WITH NITS is for.
+  On APPROVE WITH NITS the pipeline captures every minor as a tracked follow-up,
+  so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
+  wedges the PR forever and is itself a review defect.
+  State the verdict and the single most important thing to fix first.
+- **Last, a machine-readable findings block**, EXACTLY this shape, one line per
+  finding, empty block if none. The pipeline parses it; keep prose out of it:
+
+FINDINGS:
+severity|one-sentence claim|file:line
+END FINDINGS"
 
 echo "$(TS) running the reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
 if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$SKEL' && claude -p \"\$1\" </dev/null > '$REVIEW' 2>&1" _ "$PROMPT"; then
@@ -146,8 +164,39 @@ else
   exit "$rc"
 fi
 
-VERDICT="$(grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' "$REVIEW" | tail -1)"
+VERDICT="$(extract_verdict "$REVIEW")"
 echo "  verdict: ${VERDICT:-unstated}"
+
+# Single writer for verdict state. The worker's rework gate reads THIS record,
+# never the review prose. Keyed by PR number, latest round wins; history stays
+# in the timestamped .md files.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" <<'PY'
+import json, sys
+pr, issue, verdict, review, ts = sys.argv[1:6]
+out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
+json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
+           "review": review, "ts": ts}, open(out, "w"), indent=2)
+PY
+
+# Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
+# loop stops reworking -- so each minor must land in the spillover ledger or it
+# evaporates (no-orphan-findings.md). On REQUEST CHANGES the minors ride along
+# in the review, which is the spec for the next rework pass; capturing them
+# there too would double-file them.
+if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
+  CAPTURED=0
+  MINOR_COUNT=0
+  while IFS='|' read -r _sev claim loc; do
+    [ -n "$claim" ] || continue
+    MINOR_COUNT=$((MINOR_COUNT+1))
+    python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
+      --source "$ISSUE" --desc "PR #$PR review minor: $claim ($loc)" >/dev/null 2>&1 \
+      && CAPTURED=$((CAPTURED+1))
+  done <<EOF
+$(extract_minor_findings "$REVIEW")
+EOF
+  echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
+fi
 
 if [ "$POST" = "1" ]; then
   gh pr comment "$PR" --body-file "$REVIEW" >/dev/null 2>&1 \

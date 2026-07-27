@@ -47,6 +47,9 @@ NOTIFY="$SCRIPT_DIR/slack-notify.sh"
 STATE_DIR="$HOME/.config/kipi"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
+REVIEWS_DIR="$STATE_DIR/pr-reviews"
+# Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
+. "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 MAX_ATTEMPTS=3
 TIMEOUT_SECONDS=1800
@@ -179,14 +182,41 @@ while IFS= read -r ISSUE; do
     DONE=$((DONE+1)); continue
   fi
 
+  BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+
+  # SEVERITY FLOOR GATE (deterministic, before any side effect). Only REQUEST
+  # CHANGES or BLOCK starts another rework round: an approved PR waits on the
+  # founder, and an unreviewed PR has no spec to rework against. The gate runs
+  # BEFORE the claim and the Linear progress note on purpose -- a "Picked up"
+  # note on a permanent Linear object followed by an immediate skip is a false
+  # alarm, and false alarms train the reader to ignore the real notes.
+  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  REWORK=""
+  if [ -n "$EXISTING_PR" ]; then
+    PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    if [ -z "$PR_VERDICT" ]; then
+      # Fallback for PRs reviewed before the verdict record existed: extract
+      # from the newest review .md with the SAME extractor the reviewer uses.
+      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
+      [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
+    fi
+    rework_gate "$PR_VERDICT"; GATE=$?
+    if [ "$GATE" = "10" ]; then
+      say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
+      continue
+    fi
+    if [ "$GATE" = "20" ]; then
+      say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
+      continue
+    fi
+  fi
+
   # 1. CLAIM. exit 3 = another session holds this tree; that is a skip, not an error.
   if ! python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1; then
     rc=$?
     if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
     say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
   fi
-
-  BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
 
   # WORKTREE, not the main checkout. Scar from this worker's own first live run
   # (ASK-150, 2026-07-26): it branched in place and left the founder's main
@@ -213,8 +243,8 @@ while IFS= read -r ISSUE; do
   # fresh -- it is answering a review. Without this the prompt would say "do the
   # DoR" to an agent whose work is already written and already criticised, and it
   # would plausibly start over. The review is the spec for this pass.
-  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
-  REWORK=""
+  # EXISTING_PR was discovered above, before the claim; reaching this line means
+  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
   if [ -n "$EXISTING_PR" ]; then
     REWORK="
 
@@ -324,6 +354,18 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
     bash "$SCRIPT_DIR/pr-review-agent.sh" "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
       || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    # Read back the verdict RECORD the reviewer just wrote (never re-grep the
+    # review prose) and state what happens next in plain terms. Rework itself
+    # fires on the NEXT run, through the severity-floor gate above.
+    FINAL_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
+    case "$FINAL_VERDICT" in
+      "APPROVE"|"APPROVE WITH NITS")
+        say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM waits on founder merge" ;;
+      "REQUEST CHANGES"|"BLOCK")
+        say "$ISSUE: $FINAL_VERDICT (round $ROUNDS) -- rework via: kipi work --apply --issue $ISSUE" ;;
+      *)
+        say "$ISSUE: no verdict recorded for PR #$PR_NUM (round $ROUNDS) -- review may have died; see $REVIEWS_DIR" ;;
+    esac
   else
     say "no PR found for $BRANCH; nothing to review"
   fi
