@@ -28,6 +28,13 @@
 #   human interrupt                  -> destructive-op-deny.sh; and it cannot merge
 #   goal met                         -> the PR + the closeout gates, not this script
 #
+# EXIT CODES
+#   0  ran (or had nothing to run). A caller may treat this as healthy.
+#   1  usage error
+#   9  INFRA: the environment is down (git fetch failed) and the run did NO
+#      work. Paged on the way out. Distinct from 1 so a caller can tell a dead
+#      environment from a bad invocation.
+#
 # WHY INFRA FAILURE IS COUNTED SEPARATELY
 # ---------------------------------------
 # An expired auth token or a Linear outage is not the issue's fault. Counting it
@@ -50,7 +57,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKEL="${KIPI_SKEL:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 CLAIM="$SCRIPT_DIR/linear-claim.py"
 SYNC="$SCRIPT_DIR/linear-sync.py"
-NOTIFY="$SCRIPT_DIR/slack-notify.sh"
+# Overridable so the suite can read back WHAT was paged without paging the
+# founder, and so "did anyone get told?" is answered by a file instead of by a
+# grep of this source. Same seam and same name converge.sh already uses -- one
+# convention, not two. Default is always the real Slack sink.
+NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
@@ -105,6 +116,42 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
   wait "$watchdog" 2>/dev/null
   return "$rc"
 }
+
+# --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
+# ASK-211 (sp-28ced3d6). This script used to contain no `git fetch` at all: it
+# cut every worktree from whatever local origin/main ref happened to be lying
+# around, so the agent was dispatched against a base that could be arbitrarily
+# old. Observed 2026-07-27 -- ASK-150 was sent to resolve a conflict against
+# main, merged 3b60af0, and the conflict survived because main was already
+# 72c782d. The agent did the right thing to the wrong target and two rounds
+# were burned.
+#
+# ONCE PER RUN, not per issue: origin does not move meaningfully inside one run,
+# and a 50-issue board would otherwise pay 50 network round-trips to learn the
+# same thing. Placed above the picker so no code path can create a worktree
+# before it.
+#
+# A fetch failure is environmental (self-healing-retry.md rule 5), so it stops
+# on attempt 1 and is NOT counted against any issue. Continuing would be worse
+# than stopping: the whole point is that a stale base silently produces
+# plausible work aimed at the wrong target, and the run could not push or open
+# a PR against an unreachable origin anyway.
+#
+# IT PAGES AND EXITS 9, it does not stop quietly (PR #22 review round 3,
+# finding 1 -- major). The first version of this guard was `say` + `exit 0`,
+# which made an expired credential at 3am byte-for-byte indistinguishable from a
+# healthy run with nothing ready: same rc, no Slack, one line in a log nobody
+# reads. The issue never became stuck either, because MAX_ATTEMPTS only counts
+# DISPATCHED runs. Rule 5 says surface it IMMEDIATELY, and a log line is not
+# surfacing.
+#
+# 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
+# environment that is down from a worker that was invoked wrong.
+if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
+  say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
+  bash "$NOTIFY" "worker: git fetch failed in $SKEL -- the run did NO work. Check credentials/network." 2>/dev/null || true
+  exit 9
+fi
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
