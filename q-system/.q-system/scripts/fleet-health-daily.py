@@ -263,7 +263,74 @@ def detect_open_spillover(_ctx) -> list:
 # The registry. `action` and the learning leg are REQUIRED.
 # ---------------------------------------------------------------------------
 
+def detect_untracked_unwired(_ctx) -> list:
+    """A repo with UNWIRED engines but no open audit issue tracking them.
+
+    The founder's ask, 2026-07-26: "I am also seeing projects where it says things
+    are not wired - we need to track that and have a plan for action. nothing
+    should be left hanging."
+
+    capability-map-gen.py already FINDS unwired engines. Before this, that finding
+    lived in a JSON file nobody opens. The audit issues (ASK-119..146) tracked the
+    ones known on 2026-07-26; this detector is what keeps it true as maps change,
+    so a newly-unwired engine cannot go untracked just because the sweep already ran.
+    """
+    maps_dir = QROOT / "output" / "capability-maps"
+    if not maps_dir.is_dir():
+        return []
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("ls", HERE / "linear-sync.py")
+        ls = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ls)
+        ledger = ls.read_ledger()
+    except Exception:  # noqa: BLE001
+        return []
+
+    out = []
+    for path in sorted(maps_dir.glob("*.json")):
+        try:
+            cmap = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        repo = cmap.get("repo") or path.stem
+        unwired = [c for c in (cmap.get("capabilities") or [])
+                   if c.get("track", True)
+                   and str(c.get("status", "")).upper() == "UNWIRED"]
+        if not unwired:
+            continue
+        audit_key = f"{slug(repo)}/unwired-engine-audit"
+        if audit_key in ledger:
+            continue  # already tracked by its audit issue
+        out.append({
+            "subject": f"{slug(repo)}-unwired-untracked",
+            "title": f"{len(unwired)} unwired engine(s) in {repo} with no audit issue",
+            "body": (
+                f"`capability-map-gen.py` reports **{len(unwired)} unwired engine(s)** in "
+                f"`{repo}` — no paired test and no reference on any wiring surface — and "
+                f"there is no open audit issue (`{audit_key}`) tracking them.\n\n"
+                "Unwired does not mean dead. It means nothing in the repo *says* the code "
+                "is alive, which is the position every future reader starts from.\n\n"
+                "## Action\n```bash\nkipi linear remote --repo " + repo + " --out /tmp/r.json\n"
+                "kipi linear plan --map q-system/output/capability-maps/" + path.name +
+                " \\\n  --remote /tmp/r.json --out /tmp/p.json --filter actionable --rollup\n"
+                "kipi linear create --plan /tmp/p.json --apply\n```\n"
+                "That files the repo's audit issue with the full engine list, which is what "
+                "this detector is checking for."
+            ),
+        })
+    return out
+
+
 DETECTORS = [
+    {
+        "id": "unwired-untracked",
+        "description": "a repo has unwired engines but no audit issue tracking them",
+        "detect": detect_untracked_unwired,
+        "action": "file_issue",
+        "lesson": "a-defect-absence-gate-is-a-floor-not-a-finish-line",
+    },
     {
         "id": "launchd-dark",
         "description": "plist on disk, not loaded, not in the paused ledger",
