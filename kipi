@@ -29,6 +29,7 @@ usage() {
   echo "  kipi linear claim <ASK-n> --agent <name> --session <id>   Claim this tree BEFORE branching (exit 3 = refused)"
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
+  echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
@@ -65,6 +66,12 @@ case "${1:-help}" in
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"
+    ;;
+  dor)
+    # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
+    # satisfy Definition of Ready, so this is the gate on autonomy, not paperwork.
+    shift || true
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear

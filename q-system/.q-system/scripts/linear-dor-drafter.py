@@ -136,6 +136,13 @@ def draft_one(issue: dict, timeout: int) -> str | None:
         return None
     # Strip any stray fencing the model added despite instructions.
     out = re.sub(r"^```[a-z]*\n|\n```$", "", out).strip()
+    # ...and any narration before the first bullet. Observed on the first live run
+    # (ASK-149): the model prefixed "Both paths verified: ... Re-emitting the DoR
+    # unchanged:" before the content. The prompt says no preamble; a prompt is not
+    # enforcement, so cut deterministically at the first Outcome bullet.
+    start = re.search(r"(?m)^[-*]\s+\*\*Outcome:\*\*", out)
+    if start:
+        out = out[start.start():].strip()
     if "**Energy:**" not in out:
         print(f"  {issue['identifier']}: no Energy/Time line, rejecting", file=sys.stderr)
         return None
