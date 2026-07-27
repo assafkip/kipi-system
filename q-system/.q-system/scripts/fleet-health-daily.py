@@ -465,6 +465,23 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
     return result
 
 
+def outcome_line(outcome: dict) -> str:
+    """The filing result as one line that cannot lie by omission.
+
+    Scar (ASK-181 review): this printed `created` and `existing` only. Because
+    `file_findings` catches its own network errors and returns
+    {created: 0, existing: 0, skipped_no_key: N}, 'Linear was unreachable and N
+    findings went nowhere' printed byte-identically to 'the fleet is clean,
+    nothing to file'. `unfiled` is what separates empty from broken.
+
+    launchd-health-check.py keeps its OWN copy of this formatter on purpose: it
+    has to be able to report that THIS file is missing, which is the rsync
+    --delete scar it was built for. Do not consolidate them into a dependency
+    that disappears exactly when it is needed."""
+    return (f"  filed={outcome['created']} already-tracked={outcome['existing']} "
+            f"unfiled={outcome['skipped_no_key']}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="actually file Linear issues")
@@ -497,7 +514,7 @@ def main() -> int:
         print(f"  {did}: {n}")
 
     outcome = file_findings(all_findings, args.apply)
-    print(f"  filed={outcome['created']} already-tracked={outcome['existing']}")
+    print(outcome_line(outcome))
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(

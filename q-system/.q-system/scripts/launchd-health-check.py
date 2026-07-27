@@ -30,12 +30,17 @@ Usage:
   launchd-health-check.py             # check; ping + file Linear issues
   launchd-health-check.py --dry-run   # print findings only; no ping, no issue,
   launchd-health-check.py --dry       #   no state write (--dry / -n are aliases)
+
+Dry mode makes ONE read-only Linear query (the dedup fetch) so its preview of a
+permanent, undeletable action is the real number. It writes nothing: no issue, no
+state file, no ping. Any flag that is not a dry alias is REFUSED, never run live.
 """
 import json
 import re
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 SELF_LABEL = "com.kipi.launchd-health"
@@ -216,13 +221,32 @@ def send_ping(message):
 
 
 def is_dry_run(args):
-    """True when the operator asked for a read-only pass.
-
-    Scar (ASK-181): this used to be `"--dry" in sys.argv`, an exact string match.
-    `--dry-run` -- the flag this job's own migration checklist tells the verifier
-    to type -- did not match, so a read-only check silently took the LIVE path and
-    pinged the founder's phone. An unrecognized flag must not arm anything."""
+    """True when a dry alias was typed. Answers only that; see parse_mode."""
     return any(arg in DRY_FLAGS for arg in args)
+
+
+def parse_mode(args):
+    """('live'|'dry'|'refuse', unrecognized_flags).
+
+    Scar (ASK-181): dry mode used to be `"--dry" in sys.argv`, an exact string
+    match. `--dry-run` -- the flag this job's own migration checklist tells the
+    verifier to type -- did not match, so a read-only check silently took the LIVE
+    path and pinged the founder's phone.
+
+    Widening the accept-list fixed that one typo and left the shape intact: every
+    OTHER near-miss (`--dry-run=1`, `--dryrun`, `--dry_run`, `-dry`) still armed
+    the live path. So an unrecognized flag now REFUSES the run instead of guessing.
+    An unknown flag alongside a valid dry one also refuses -- if part of the
+    command line is unparsed, the operator's intent is unknown, and the safe
+    reading of an unknown intent is 'do nothing'.
+
+    launchd invokes this script with no arguments, so refusing cannot stop the
+    scheduled run; it only stops a hand-typed command from doing more than the
+    operator asked."""
+    unrecognized = [arg for arg in args if arg not in DRY_FLAGS]
+    if unrecognized:
+        return ("refuse", unrecognized)
+    return ("dry" if is_dry_run(args) else "live", [])
 
 
 # --- findings reach Linear, not only Slack -----------------------------------
@@ -292,26 +316,50 @@ def linear_findings(problems):
     return findings
 
 
-def file_linear_findings(problems):
+def file_linear_findings(problems, apply=True):
     """File the findings as deduped Linear issues. Never raises.
 
     A watchdog that dies because Linear is unreachable stops watching launchd --
     which is precisely the silent death it exists to catch. A filing failure is
-    counted and printed, never propagated."""
-    empty = {"created": 0, "existing": 0, "skipped_no_key": 0}
+    counted and printed, never propagated.
+
+    With apply=False nothing is created; the same filer still runs its dedup so a
+    dry preview reports the real number instead of a second, looser estimate.
+
+    Every return path sets `skipped_no_key` to the number of problems that were
+    OWED an issue and did not get one. Counting the findings we managed to build
+    would report 0 for the one failure that matters most -- fleet-health-daily.py
+    missing entirely, which is the `kipi update` rsync --delete scar this watchdog
+    exists for."""
+    owed = sum(1 for _, kind, _ in problems if kind in LINEAR_DETECTOR_BY_KIND)
     try:
         findings = linear_findings(problems)
     except Exception as exc:  # noqa: BLE001
         print(f"linear findings could not be built: {exc}", file=sys.stderr)
-        return empty
+        return {"created": 0, "existing": 0, "skipped_no_key": owed}
     if not findings:
-        return empty
+        return {"created": 0, "existing": 0, "skipped_no_key": 0}
     try:
         return _fleet_health().file_findings(
-            findings, apply=True, filer="launchd-health-check.py")
+            findings, apply=apply, filer="launchd-health-check.py")
     except Exception as exc:  # noqa: BLE001
         print(f"linear filing skipped: {exc}", file=sys.stderr)
         return {"created": 0, "existing": 0, "skipped_no_key": len(findings)}
+
+
+def linear_report_line(outcome, dry_run):
+    """The filing result as one line that cannot lie by omission.
+
+    Scar (ASK-181 review): the old line printed `created` and `existing` only.
+    `file_findings` catches its own network errors and returns
+    {created: 0, existing: 0, skipped_no_key: N}, so 'Linear is unreachable and N
+    findings went nowhere' printed byte-identically to 'the fleet is clean, nothing
+    to file'. Every instance without a Linear API key takes that branch, and this
+    script ships fleet-wide. `unfiled` is what separates empty from broken."""
+    verb = "would-file" if dry_run else "filed"
+    prefix = "[dry] " if dry_run else ""
+    return (f"{prefix}linear: {verb}={outcome['created']} "
+            f"already-tracked={outcome['existing']} unfiled={outcome['skipped_no_key']}")
 
 
 def problems_to_ping(problems, state, now):
@@ -350,13 +398,15 @@ def run(dry_run):
     now = int(time.time())
     due = problems_to_ping(problems, state, now)
 
+    # ONE filer for both modes. Dry used to count the findings it built while live
+    # counted what survived dedup, so the dry preview of a permanent action
+    # over-reported (review finding 2). Two readers of one input is the defect.
+    filed = file_linear_findings(problems, apply=not dry_run)
+    print(linear_report_line(filed, dry_run))
+
     if dry_run:
         print(f"[dry] would ping {len(due)} job(s)")
-        print(f"[dry] would file {len(linear_findings(problems))} linear finding(s)")
         return
-
-    filed = file_linear_findings(problems)
-    print(f"linear: filed={filed['created']} already-tracked={filed['existing']}")
 
     if due:
         parts = [
@@ -364,7 +414,14 @@ def run(dry_run):
             else f"{label} ({detail})"
             for label, kind, detail in due
         ]
-        send_ping(f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts))
+        message = f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts)
+        if filed["skipped_no_key"]:
+            # Slack is the only channel the founder actually reads. Fixing the
+            # stdout counter alone would leave this ping saying "here are the
+            # problems" while the issues meant to hold them never reached the
+            # board. No NEW ping: the one that was already firing carries it.
+            message += f" [NOT filed to Linear: {filed['skipped_no_key']}]"
+        send_ping(message)
         for label, kind, detail in due:
             state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
 
@@ -375,8 +432,25 @@ def run(dry_run):
     write_state(state)
 
 
-if __name__ == "__main__":
+def main(argv):
+    """Always returns 0 -- a watchdog must never report itself as the failing job.
+
+    Scar (ASK-181 review): this used to be `try: run(...) finally: sys.exit(0)`.
+    `sys.exit` in the finally supersedes a propagating exception, so an unhandled
+    crash printed NOTHING and launchd recorded SUCCESS. Exiting 0 is the contract;
+    exiting 0 SILENTLY is the watchdog dying the same silent death it exists to
+    catch. Catch, print the traceback, then exit 0."""
+    mode, unrecognized = parse_mode(argv)
+    if mode == "refuse":
+        print(f"unrecognized flag(s): {' '.join(unrecognized)} -- refusing to run. "
+              f"Dry: {' / '.join(DRY_FLAGS)}. Live: no flags at all.", file=sys.stderr)
+        return 0
     try:
-        run(is_dry_run(sys.argv[1:]))
-    finally:
-        sys.exit(0)  # a watchdog must never report itself as the failing job
+        run(mode == "dry")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
