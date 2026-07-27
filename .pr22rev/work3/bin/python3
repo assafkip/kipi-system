@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+case "${1:-}" in
+  -) cat >/dev/null; printf '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":1}\n'; exit 0 ;;
+  *linear-sync.py) exit 0 ;;
+esac
+exec "/opt/homebrew/bin/python3" "$@"

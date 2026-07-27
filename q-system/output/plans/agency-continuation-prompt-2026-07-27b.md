@@ -27,18 +27,40 @@ ASK-150's arc was monotonic: 2 blockers, then 1 blocker + 2 majors, then 1 major
 + 6 minors, then 2 majors + 3 minors, then 2 minors + a nit. The work was
 converging the whole time; only the gate could not say "good enough".
 
-## ONE OPEN DECISION for the founder, one solved workaround
+## ~~ONE OPEN DECISION for the founder~~ — CLOSED 2026-07-27, no decision needed
 
-### 1. Branch protection — 4 approved PRs cannot merge
+### 1. ~~Branch protection — 4 approved PRs cannot merge~~ RESOLVED
 
-`gh pr merge 14` returns *"the base branch policy prohibits the merge"*. Getting
-through needs `--admin`, because `validate` on main is RED on the 46 containment
-findings (ASK-58/ASK-59). I did NOT use `--admin`: overriding a protection gate
-unattended is the PocketOS shape the global rules exist to prevent.
+**Outcome: option 2 ("fix validate first"). `--admin` was never used, branch
+protection was never touched, and `validate` is still the required check.**
 
-**Consequence:** the parallelism unlock is INSIDE PR #14. Until it merges the
-board stays serial at 25-70 min per issue. Founder decides: merge with `--admin`,
-or fix validate first, or relax the required check for `sana/*` branches.
+All of #11-#16 are accounted for: #14 #16 #12 #13 #15 merged, and #11's work was
+superseded by #19 after it capped out. `main` is green.
+
+**The question sat two days because its premise was wrong.** This brief said
+`validate` was RED "on the 46 containment findings", which made override or relax
+look like the only routes. It was not.
+
+- The real blocker was a **60s test timeout on a suite that PASSES**:
+  `test-converge.sh` backgrounds a helper running `sleep 120` that inherits the
+  stdout pipe, and `capability-gate.py` used
+  `subprocess.run(capture_output=True, timeout=60)`, which waits on pipe EOF
+  rather than child exit. Only reproduces when the suite is run PIPED. Fixed in
+  ASK-190 / PR #17 (`run_contained`, deadline on `proc.wait`, process-group reap).
+- Behind it, Gate 1.3's "12,388 findings" was **12,341 `unclassified_populated_record`
+  and only 47 real classified findings** — the "46" in the original count was right
+  all along. Fixed in ASK-191 / PR #18 by gating on classified findings only and
+  aligning scan scope with what `kipi update` actually propagates. A baseline/ratchet
+  at 12,388 was proposed and REJECTED: it would have frozen the noise and buried the
+  47 real findings permanently.
+
+**Lesson for the next brief: a founder decision framed as "override or relax the
+gate" deserves one pass at "is the gate actually right?" first.** Here it was, and
+the cost of not asking was two days.
+
+**Consequence, also resolved:** the parallelism unlock in PR #14 is merged
+(`f06b81d`). Proven live the same evening — ASK-208 and ASK-209 converged side by
+side instead of serially.
 
 ### 2. SIGKILLed long runs — DIAGNOSED AND WORKED AROUND, no longer blocking
 

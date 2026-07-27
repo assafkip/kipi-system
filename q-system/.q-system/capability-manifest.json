@@ -10,12 +10,32 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-containment-gitlink.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-fleet-health-daily.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-instance-automation-guard.sh",
@@ -58,6 +78,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-lessons-distill.sh",
       "runner": "bash"
     },
@@ -86,10 +110,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-linear-create.py",
       "runner": "python3"
     },
@@ -102,14 +122,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-linear-worker-fetch.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-linear-queue.sh",
       "runner": "bash"
     },
@@ -118,7 +130,19 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-triage.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-wiring.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-fetch.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
       "runner": "bash"
     },
     {
@@ -159,6 +183,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash"
     },
     {
@@ -273,26 +301,6 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-converge.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
-      "runner": "python3"
     }
   ],
   "required_data": [],
@@ -335,6 +343,11 @@
       "path": "q-system/.q-system/scripts/instance-fact-inventory.py",
       "reason": "built for prd-skeleton-data-containment and never wired; its only references are that PRD's specs and its own test",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/linear-triage.py",
+      "reason": "built and tested (21 cases) but deliberately unwired: --apply writes permanent Linear comments and closes issues, so no trigger exists until the founder reviews the full dry-pass table. sp-0126e55b is the wiring destination -- triage must GATE the DoR drafter, which is loaded and currently drafting readiness ahead of it",
+      "spillover_id": "sp-0126e55b"
     },
     {
       "path": "q-system/.q-system/scripts/memory_outcomes.py",
