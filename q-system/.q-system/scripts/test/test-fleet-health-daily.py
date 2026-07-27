@@ -224,6 +224,16 @@ _MUST_DETECT = [
     'echo "don\'t $(claude -p x)"',                     # apostrophe then $( )
     'echo "don\'t" `claude -p z`',                      # apostrophe then backtick
     'echo "isn\'t `claude -p q` done"',                 # apostrophe, same span
+    # ssh JOINS its remote operands and hands one string to the far shell, which
+    # lexes it there. The quoted form -- the one you write so the LOCAL shell does
+    # not expand it -- reached `_is_claude_token` as a single token whose basename
+    # was `claude -p sweep`, so the unquoted form above was pinned while this one
+    # was a silent false negative (PR #19 round-3 review, minor 2).
+    "ssh mini 'claude -p sweep'",                       # quoted remote command
+    'ssh mini "claude -p sweep"',                       # double-quoted remote command
+    "ssh mini -- 'claude -p sweep'",                    # after an end-of-options --
+    "ssh mini timeout 30 'claude -p x'",                # a wrapper on the far side
+    'ssh mini echo "a; claude -p x"',                   # ssh's own quoting gotcha
 ]
 for _line in _MUST_DETECT:
     check(f"still detects: {_line}", fh._shells_claude(_line), True)
@@ -248,6 +258,18 @@ _MUST_NOT_DETECT = [
     # score as an invocation — a PERMANENT false-positive issue (PR #19, minor 2).
     'echo "don\'t" \'run `claude -p x` now\'',          # apostrophe then real quoting
     'echo "won\'t" \'note: $(claude -p z)\'',           # same, with $( )
+    # An UNTERMINATED double quote is a syntax error: /bin/sh runs nothing on the
+    # line, including what is inside the substitution. `_shell_segments` already
+    # refused to invent a command position on an unparsable line; the substitution
+    # walk bypassed that guard and filed a PERMANENT issue for a line that cannot
+    # execute (PR #19 round-3 review, minor 3).
+    'echo "reminder: $(claude -p x)',                   # unbalanced quote, $( )
+    'echo "note: `claude -p x`',                        # unbalanced quote, backtick
+    'VAR="x $(claude -p sweep)',                        # ...even in an assignment
+    # ssh's remote command is re-parsed, which must not make ordinary remote
+    # housekeeping over a `claude` directory look like an invocation.
+    "ssh mini tar -czf ~/b.tgz ~/projects/claude",      # remote housekeeping
+    "ssh mini echo 'run claude -p tomorrow'",           # remote prose
 ]
 for _line in _MUST_NOT_DETECT:
     check(f"still refuses: {_line}", fh._shells_claude(_line), False)

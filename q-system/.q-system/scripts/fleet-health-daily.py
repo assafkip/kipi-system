@@ -119,17 +119,62 @@ def _is_loaded(label: str) -> bool:
         return True  # cannot tell -> do not cry wolf
 
 
-def detect_dark_jobs(_ctx) -> list:
-    """A plist on disk, not loaded, and NOT in the paused ledger = silent death."""
-    paused = _paused_labels()
-    out = []
-    for label in _launchd_labels():
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
-            continue
-        if label in paused or _is_loaded(label):
-            continue
-        out.append({
+# ---------------------------------------------------------------------------
+# ONE rendering per launchd kipi-key, shared by BOTH filers
+# ---------------------------------------------------------------------------
+# Two scripts file against these keys: this one at 08:15 and
+# launchd-health-check.py at 09:30 and 21:30 (ASK-181 made them share the key on
+# purpose -- a private namespace on either side files a SECOND permanent issue for
+# the same dead job). `finding_hash` covers title + body, so sharing a key while
+# rendering different text means every alternating run sees a stale hash and
+# rewrites the issue: 13 Linear mutations a week and a "1 updated ... nothing to
+# do now" Slack line every morning on a fleet where nothing moved. That is the
+# checker training the operator to skip the line the real alert has to compete
+# with (PR #19 round-3 review, major). One key, one renderer -- both callers come
+# through here so the next edit cannot land on one side only.
+LAUNCHD_FINDING_IDS = ("launchd-failing", "launchd-dark")
+
+
+def launchd_exit_detail(list_status) -> str:
+    """`exit N` for a `launchctl list` STATUS column value.
+
+    The two readers see one machine state in TWO encodings: `launchctl list`
+    prints a SIGNED status while `launchctl list <label>` prints the RAW wait
+    status that launchd-health-check.py's `normalize_exit` decodes. Measured on
+    this machine 2026-07-27 across 210 non-zero rows: a SIGKILLed job reads `-9`
+    in the column and `"LastExitStatus" = 9`; `com.apple.BiomeAgent` reads `5`
+    and `1280`. `abs()` lands both encodings in the same space, so the detail
+    this renderer interpolates does not depend on WHICH script looked.
+
+    A column value that is not a number keeps its text rather than becoming a
+    fabricated `exit 0` -- an unparsable status is a thing to show, not to round.
+    """
+    try:
+        return f"exit {abs(int(list_status))}"
+    except (TypeError, ValueError):
+        return f"exit {list_status}"
+
+
+def launchd_finding(detector_id: str, label: str, detail: str = "") -> dict:
+    """The finding dict for one launchd problem: {subject, title, body}.
+
+    The ONLY place either filer renders these. `detail` is a `launchd_exit_detail`
+    string and is ignored for `launchd-dark`, which has no exit status.
+    """
+    if detector_id == "launchd-failing":
+        return {
+            "subject": label,
+            "title": f"launchd job failing: {label} ({detail})",
+            "body": (
+                f"`{label}` is loaded but its last run exited non-zero (**{detail}**).\n\n"
+                "## Action\nRead its `StandardErrorPath`, fix the cause, and confirm a clean "
+                "run. If the failure is environmental (auth expiry, server down), say so on "
+                "this issue rather than retrying -- `self-healing-retry.md` rule 5 stops "
+                "environmental failures on attempt 1."
+            ),
+        }
+    if detector_id == "launchd-dark":
+        return {
             "subject": label,
             "title": f"launchd job is dark: {label}",
             "body": (
@@ -140,7 +185,23 @@ def detect_dark_jobs(_ctx) -> list:
                 f"- Resume: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist`\n"
                 f"- Or record the pause: add `{label}` to `~/.config/kipi/launchd-paused.txt`"
             ),
-        })
+        }
+    # Loud, not silent: a caller inventing a launchd detector id would otherwise
+    # file an issue with an empty body under a key the other filer also writes.
+    raise ValueError(f"no launchd rendering for detector id {detector_id!r}")
+
+
+def detect_dark_jobs(_ctx) -> list:
+    """A plist on disk, not loaded, and NOT in the paused ledger = silent death."""
+    paused = _paused_labels()
+    out = []
+    for label in _launchd_labels():
+        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
+                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+            continue
+        if label in paused or _is_loaded(label):
+            continue
+        out.append(launchd_finding("launchd-dark", label))
     return out
 
 
@@ -162,17 +223,8 @@ def detect_failing_jobs(_ctx) -> list:
             continue
         if status in ("0", "-"):
             continue
-        out.append({
-            "subject": label,
-            "title": f"launchd job failing: {label} (exit {status})",
-            "body": (
-                f"`{label}` is loaded but its last run exited **{status}**.\n\n"
-                "## Action\nRead its `StandardErrorPath`, fix the cause, and confirm a clean "
-                "run. If the failure is environmental (auth expiry, server down), say so on "
-                "this issue rather than retrying -- `self-healing-retry.md` rule 5 stops "
-                "environmental failures on attempt 1."
-            ),
-        })
+        out.append(launchd_finding("launchd-failing", label,
+                                   launchd_exit_detail(status)))
     return out
 
 
@@ -381,6 +433,19 @@ _WRAPPER_VALUE_FLAGS = {
 # a lock file or a host named `claude`.
 _WRAPPER_OPERANDS = {"flock": 1, "ssh": 1}
 
+# ssh does NOT exec its remote operands the way flock and sudo do. It joins
+# everything after the destination with single spaces and hands ONE string to a
+# shell on the far side, which lexes it itself. So the remote command has to be
+# re-parsed as a command string -- exactly like a `-c` argument -- and reading it
+# as tokens in the local segment made the QUOTED form (`ssh mini 'claude -p
+# sweep'`, the form you write so the LOCAL shell does not expand it) lex to a
+# single token whose basename is `claude -p sweep`, not `claude`. The unquoted
+# form was pinned by the suite and the quoted one was a silent false negative
+# (PR #19 round-3 review, minor 2). flock stays OUT of this set on purpose: it
+# execs its operands directly, so `flock /tmp/x.lock echo 'a; claude -p x'` runs
+# no claude and re-lexing it would invent one.
+_REMOTE_SHELL_WRAPPERS = {"ssh"}
+
 # A shell in command position does not RUN what follows; it runs the string
 # handed to its `-c` flag. `bash -lc 'claude -p ...'` is the shape a cron line
 # uses to get a login environment, so the command inside the quotes has to be
@@ -463,18 +528,32 @@ def _takes_next_token(token: str, wrapper: str) -> bool:
 
 
 def _command_index(tokens: list) -> int:
-    """Index of the real command in a shell segment, past env prefixes and
-    wrappers. -1 when the segment holds no command.
+    """Index of the real command in a shell segment. See `_command_scan`."""
+    return _command_scan(tokens)[0]
+
+
+def _command_scan(tokens: list) -> tuple:
+    """(command index, remote-command index) for a shell segment.
+
+    The command index is the real command past env prefixes and wrappers, or -1
+    when the segment holds no command.
 
     Tracks WHICH wrapper is in effect, because a bare `startswith("-")` skip
     reads a flag and leaves its value exposed: `sudo -u claude run.sh` scored
     `claude` -- the value of `-u` -- as the command (fourth review, finding 4).
     An option's argument belongs to the option, and a wrapper's leading operand
     (flock's lock file, ssh's host) belongs to the wrapper.
+
+    The remote index is where a `_REMOTE_SHELL_WRAPPERS` wrapper's remote command
+    STARTS (-1 when there is none). Recorded here rather than derived from the
+    command index because a second wrapper resets the tracked one: in `ssh mini
+    timeout 30 'claude -p x'` the wrapper in effect at the command is `timeout`,
+    yet everything from `timeout` onward is still what ssh hands the far shell.
     """
     skip_value = False
     operands_left = 0
     wrapper = ""
+    remote_index = -1
     for index, token in enumerate(tokens):
         if skip_value:
             skip_value = False
@@ -483,7 +562,10 @@ def _command_index(tokens: list) -> int:
             continue  # VAR=value prefix
         if token.startswith("-"):
             if _is_lookup_flag(token, wrapper):
-                return -1  # `command -v claude` resolves a path, it runs nothing
+                # `command -v claude` resolves a path, it runs nothing. The
+                # remote index rides along: over ssh the far shell re-parses the
+                # string and reaches the same answer for the same reason.
+                return -1, remote_index
             skip_value = _takes_next_token(token, wrapper)
             continue
         if token in SHELL_KEYWORDS:
@@ -497,9 +579,11 @@ def _command_index(tokens: list) -> int:
             continue
         if operands_left:
             operands_left -= 1
+            if not operands_left and wrapper in _REMOTE_SHELL_WRAPPERS:
+                remote_index = index + 1  # past ssh's destination: the remote command
             continue  # flock's lock file / ssh's destination, not the command
-        return index
-    return -1
+        return index, remote_index
+    return -1, remote_index
 
 
 def _command_token(tokens: list) -> str:
@@ -772,7 +856,7 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
     # split an assignment prefix across two tokens (see _split_substitutions).
     masked, inner_commands = _split_substitutions(command)
     for tokens in _shell_segments(masked):
-        command_index = _command_index(tokens)
+        command_index, remote_index = _command_scan(tokens)
         command_token = tokens[command_index] if command_index >= 0 else ""
         if _is_claude_token(command_token):
             return True
@@ -780,6 +864,25 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
             inner = _shell_c_argument(tokens, command_index)
             if inner and _shells_claude(inner, _depth + 1):
                 return True
+        # ssh's remote operands are JOINED with spaces and re-lexed by the far
+        # shell, so they are a command STRING, not tokens in this segment. Joining
+        # the already-lexed tokens is the faithful model: ssh concatenates its
+        # argv after the local shell removed the quotes, which is why `ssh mini
+        # echo "a; claude -p x"` really does run claude on the far side.
+        if remote_index >= 0:
+            remote = " ".join(tokens[remote_index:])
+            if remote and _shells_claude(remote, _depth + 1):
+                return True
+    # A line sh REFUSES TO RUN runs nothing -- including whatever sits inside its
+    # substitutions. `_shell_segments` already obeys that (an unbalanced quote
+    # collapses to one coarse segment and never splits on an operator), and its
+    # rule is "one segment can only be coarser than sh, never finer". The walk
+    # below is FINER: `_split_substitutions` happily extracts `$(claude -p x)`
+    # out of an unterminated double-quoted span and scored it as an invocation,
+    # filing a permanent Linear issue for a line /bin/sh answers with a syntax
+    # error (PR #19 round-3 review, minor 3).
+    if _lex(_strip_comment(masked)) is None:  # the exact test `_shell_segments` makes
+        return False
     # A substitution is a command position of its own, and the segment walk above
     # cannot reach one: it saw a placeholder. Same recursion, same depth cap as
     # the `-c` string: what runs inside `$( )` or backticks is a command, not text.

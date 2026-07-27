@@ -287,32 +287,18 @@ def linear_findings(problems):
         detector = LINEAR_DETECTOR_BY_KIND.get(kind)
         if detector is None:
             continue
-        if kind == "failing":
-            title = f"launchd job failing: {label} ({detail})"
-            body = (
-                f"`{label}` is loaded but its last run exited non-zero (**{detail}**).\n\n"
-                "## Action\nRead its `StandardErrorPath`, fix the cause, and confirm a clean "
-                "run. If the failure is environmental (auth expiry, server down), say so on "
-                "this issue rather than retrying -- `self-healing-retry.md` rule 5 stops "
-                "environmental failures on attempt 1."
-            )
-        else:
-            title = f"launchd job is dark: {label}"
-            body = (
-                f"`{label}` has a plist in `~/Library/LaunchAgents/` but is not loaded, and "
-                "it is NOT in the paused ledger -- so nothing recorded a decision to stop "
-                "it. An unloaded job cannot report its own death.\n\n"
-                "## Action\n"
-                f"- Resume: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist`\n"
-                f"- Or record the pause: add `{label}` to `~/.config/kipi/launchd-paused.txt`"
-            )
-        findings.append({
-            "key": fleet_health.finding_key(detector, label),
-            "detector": detector,
-            "subject": label,
-            "title": title,
-            "body": body,
-        })
+        # fleet-health-daily.py RENDERS these, it does not just name their key.
+        # Both scripts file against one kipi-key and `finding_hash` covers title
+        # and body, so a second rendering here made every alternating run see a
+        # stale hash: a Linear rewrite and a "1 updated" Slack line twice a day on
+        # an unchanged fleet (PR #19 round-3 review, major). Rendering is safe to
+        # delegate for the same reason the key is: this path only runs when
+        # fleet-health-daily.py loaded, and `file_linear_findings` already reports
+        # its ABSENCE as owed-but-unfiled rather than letting it raise.
+        finding = fleet_health.launchd_finding(detector, label, detail)
+        finding["key"] = fleet_health.finding_key(detector, label)
+        finding["detector"] = detector
+        findings.append(finding)
     return findings
 
 
