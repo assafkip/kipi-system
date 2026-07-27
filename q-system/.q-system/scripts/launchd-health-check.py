@@ -59,6 +59,37 @@ WATCHED_PREFIXES = (
 # file = base set only (harmless no-op).
 EXTRA_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "launchd-watch-prefixes.txt"
 
+# Labels that are not_loaded ON PURPOSE. A deliberately paused job is not a
+# failure, and pinging about one is the alert-fatigue mechanism that teaches the
+# founder to ignore this channel entirely.
+#
+# Scar 2026-07-26: 26 com.cole.* jobs were paused by commenting `com.cole.` out
+# of EXTRA_PREFIXES_FILE. That could never work -- load_watched_prefixes() only
+# ADDS from that file, so a commented line cannot remove a prefix hardcoded in
+# WATCHED_PREFIXES. The pause was real, the silence was not, and one manual run
+# fired 26 false pings. Suppression needs its own ledger, not a comment.
+#
+# Paused labels are still PRINTED (visible, not forgotten) and never pinged.
+PAUSED_LABEL_FILES = (
+    Path.home() / ".config" / "kipi" / "launchd-paused.txt",
+    Path.home() / ".config" / "kipi" / "cole-pause.state",  # the live pause ledger
+)
+
+
+def load_paused_labels():
+    """Exact labels (not prefixes) that are intentionally stopped."""
+    paused = set()
+    for path in PAUSED_LABEL_FILES:
+        try:
+            lines = path.read_text().splitlines()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for line in lines:
+            entry = line.split("#", 1)[0].strip()
+            if entry:
+                paused.add(entry)
+    return paused
+
 
 def load_watched_prefixes():
     """Base families plus any instance-local additions from EXTRA_PREFIXES_FILE."""
@@ -138,6 +169,7 @@ def discover_problems():
     installed-but-unloaded. Watched = any watched-prefix plist, minus self."""
     problems = []
     seen = set()
+    paused = load_paused_labels()
     for prefix in load_watched_prefixes():
         for plist in sorted(LAUNCH_AGENTS.glob(f"{prefix}*.plist")):
             label = plist.stem
@@ -148,7 +180,11 @@ def discover_problems():
             if kind == "failing":
                 problems.append((label, "failing", f"exit {code}"))
             elif kind == "not_loaded":
-                problems.append((label, "not_loaded", "installed but not running"))
+                if label in paused:
+                    # Intentional. Reported so it stays visible, never pinged.
+                    problems.append((label, "paused", "paused on purpose"))
+                else:
+                    problems.append((label, "not_loaded", "installed but not running"))
     return problems
 
 
@@ -178,6 +214,12 @@ def problems_to_ping(problems, state, now):
     older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
     due = []
     for label, kind, detail in problems:
+        # A deliberately paused job is never a ping. It is still returned by
+        # discover_problems so it prints and stays visible; it just does not
+        # reach the founder's phone. Silencing it here rather than dropping it
+        # earlier keeps "paused" auditable instead of invisible.
+        if kind == "paused":
+            continue
         prev = state.get(label, {})
         kind_changed = prev.get("kind") != kind
         last_pinged = prev.get("pinged_at", 0)

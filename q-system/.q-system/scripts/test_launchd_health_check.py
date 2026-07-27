@@ -80,6 +80,38 @@ check("kind change re-fires",
       wd.problems_to_ping([("a", "not_loaded", "installed but not running")], changed, now),
       [("a", "not_loaded", "installed but not running")])
 
+# --- a deliberately paused job is never a ping -------------------------------
+# Scar 2026-07-26: 26 com.cole.* jobs were paused by commenting `com.cole.` out
+# of launchd-watch-prefixes.txt. That can never work -- load_watched_prefixes()
+# only ADDS from that file, so a comment cannot remove a prefix hardcoded in
+# WATCHED_PREFIXES. The pause was real, the silence was not, and one manual run
+# fired 26 false pings at the founder. Recurring false alarms are the mechanism
+# that teaches an operator to ignore the channel, which costs the REAL alert.
+check("a paused job is never pinged",
+      wd.problems_to_ping([("a", "paused", "paused on purpose")], {}, now),
+      [])
+
+check("paused stays silent even after the TTL",
+      wd.problems_to_ping([("a", "paused", "paused on purpose")],
+                          {"a": {"pinged_at": 0, "kind": "paused"}}, now),
+      [])
+
+# ...but a genuinely dark job in the same batch must still get through, or the
+# suppression would hide real rot behind an intentional pause.
+check("a real not_loaded still pings alongside a paused one",
+      wd.problems_to_ping([("paused-one", "paused", "paused on purpose"),
+                           ("dark-one", "not_loaded", "installed but not running")],
+                          {}, now),
+      [("dark-one", "not_loaded", "installed but not running")])
+
+check("a paused label that starts FAILING still pings",
+      wd.problems_to_ping([("a", "failing", "exit 1")], {}, now),
+      [("a", "failing", "exit 1")])
+
+# the ledger reader must ignore comments and blanks, like every other kipi list
+_paused = wd.load_paused_labels()
+check("load_paused_labels returns a set", isinstance(_paused, set), True)
+
 if failures:
     print("FAIL:")
     for line in failures:
