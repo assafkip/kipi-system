@@ -392,9 +392,21 @@ query($key: String!) {
 PROJECT_ISSUES_QUERY = """
 query($projectId: ID!, $after: String) {
   issues(filter: { project: { id: { eq: $projectId } } }, first: 100, after: $after) {
-    nodes { id identifier description }
+    nodes { id identifier description state { id name type } team { id } }
     pageInfo { hasNextPage endCursor }
   }
+}
+"""
+
+# One issue by its Linear id, INDEPENDENT of what project it currently sits in.
+# A project-scoped listing is the wrong sole lookup for a standing rollup issue:
+# moving it to another project is ordinary triage, and after the move the owning
+# job could no longer find it, so it stopped updating it and reported an
+# all-clear instead (PR #11 fourth review, finding 2). The ledger already holds
+# the linear_id; this is how a caller uses it.
+ISSUE_BY_ID_QUERY = """
+query($id: String!) {
+  issue(id: $id) { id identifier description state { id name type } team { id } }
 }
 """
 
@@ -415,6 +427,61 @@ mutation($input: IssueCreateInput!) {
   issueCreate(input: $input) { success issue { id identifier } }
 }
 """
+
+# Rewrites an EXISTING issue rather than creating a second one. Needed by any
+# caller whose issue is a standing rollup (fleet-health's cron/spillover
+# findings): the dedup key is stable on purpose, so without an update the body
+# freezes at the truth of the day it was filed and every later occurrence is
+# swallowed by the "already exists" guard. Never used to change a kipi-key
+# marker -- that would fork the identity the whole ledger is built on.
+ISSUE_UPDATE = """
+mutation($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { id identifier } }
+}
+"""
+
+TEAM_STATES_QUERY = """
+query($teamId: String!) {
+  team(id: $teamId) { states(first: 100) { nodes { id name type position } } }
+}
+"""
+
+# Linear WorkflowState.type values that mean "this issue is off the board".
+CLOSED_STATE_TYPES = ("completed", "canceled")
+
+# Where a reopen lands, best first. `unstarted` is the team's Todo column: the
+# issue is back on the board without falsely claiming someone is on it.
+_REOPEN_TYPE_PREFERENCE = ("unstarted", "backlog", "triage")
+
+_REOPEN_STATE_CACHE: dict = {}
+
+
+def reopen_state_id(team_id: str) -> str:
+    """The workflow state a CLOSED issue should be moved back to, or "".
+
+    Needed because a standing rollup issue's identity is its kipi-key, so there
+    is exactly one of them forever. Rewriting a Done issue's body leaves the
+    finding invisible on the board while the run reports it as handled. State is
+    what carries visibility; the body does not.
+
+    Returns "" when the team exposes no reopenable state, so the caller can
+    still write the body rather than failing the whole run over a missing column.
+    """
+    if team_id in _REOPEN_STATE_CACHE:
+        return _REOPEN_STATE_CACHE[team_id]
+    nodes = (
+        ((graphql(TEAM_STATES_QUERY, {"teamId": team_id}).get("team") or {}).get("states") or {})
+        .get("nodes")
+        or []
+    )
+    chosen = ""
+    for wanted in _REOPEN_TYPE_PREFERENCE:
+        matches = [n for n in nodes if n.get("type") == wanted]
+        if matches:
+            chosen = sorted(matches, key=lambda n: n.get("position") or 0)[0]["id"]
+            break
+    _REOPEN_STATE_CACHE[team_id] = chosen
+    return chosen
 
 
 def fetch_remote_state(team_key: str, repo: str) -> tuple:
@@ -460,15 +527,75 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
             for node in page.get("nodes") or []:
                 found = MARKER_RE.search(node.get("description") or "")
                 if found:
+                    state = node.get("state") or {}
                     keys[found.group(1)] = {
                         "linear_id": node["id"],
                         "identifier": node["identifier"],
+                        # The live body, so a caller holding a standing rollup
+                        # issue can tell "unchanged" from "needs a rewrite"
+                        # without a second fetch. cmd_remote does not carry this
+                        # into its snapshot; the snapshot is a dedup guard only.
+                        "description": node.get("description") or "",
+                        # STATE, for the same reason. A standing rollup issue the
+                        # operator closed is the correct end state of the fix;
+                        # rewriting its body afterwards puts the finding somewhere
+                        # nobody looks. A caller cannot tell without this field.
+                        "state_type": state.get("type") or "",
+                        "state_name": state.get("name") or "",
+                        # The issue's OWN team. A project can span teams, and a
+                        # workflow state id belongs to one team, so a caller
+                        # moving an issue back onto the board must ask that
+                        # issue's team for the state rather than assume the
+                        # team it started the lookup from.
+                        "team_id": (node.get("team") or {}).get("id") or "",
                     }
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
                 break
             after = info.get("endCursor")
     return team_id, project, keys
+
+
+# What Linear's "that id is not an issue" reads like on the wire. Matched on the
+# message rather than the status code because the call returns HTTP 200 with an
+# `errors` array (see graphql's docstring).
+_ENTITY_NOT_FOUND_RE = re.compile(r"Entity not found|Could not find referenced", re.I)
+
+
+def fetch_issue(linear_id: str) -> dict:
+    """One issue by id, in the same record shape `fetch_remote_state` returns.
+
+    Same shape ON PURPOSE: a caller that already handles a tracked issue must not
+    need a second code path for "the same issue, found a different way". Two
+    readers of one input with different semantics is the defect this avoids.
+
+    Returns {} when the issue is gone, so the caller can tell "moved" (a record)
+    from "not there any more" (empty) and report the second rather than silently
+    treating a key it can no longer maintain as handled.
+    """
+    try:
+        node = (graphql(ISSUE_BY_ID_QUERY, {"id": linear_id}) or {}).get("issue") or {}
+    except LinearAPIError as exc:
+        # Linear answers an unknown id with a GraphQL ERROR, not a null issue.
+        # Verified live 2026-07-27: `Entity not found: Issue ... code
+        # INPUT_ERROR`. The first cut of this function checked for a null node
+        # and never saw that, so a deleted issue would have surfaced to the
+        # operator as "Linear rejected the write" instead of "this key has no
+        # issue any more" -- right ping, wrong sentence.
+        if not _ENTITY_NOT_FOUND_RE.search(str(exc)):
+            raise  # a 429 or a dropped connection is NOT "gone"
+        return {}
+    if not node.get("id"):
+        return {}
+    state = node.get("state") or {}
+    return {
+        "linear_id": node["id"],
+        "identifier": node.get("identifier") or "",
+        "description": node.get("description") or "",
+        "state_type": state.get("type") or "",
+        "state_name": state.get("name") or "",
+        "team_id": (node.get("team") or {}).get("id") or "",
+    }
 
 
 COMMENT_CREATE = """
