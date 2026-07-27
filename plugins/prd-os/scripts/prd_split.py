@@ -24,10 +24,21 @@ Design constraints:
 
 Invocation:
   python3 prd_split.py [--repo-root <path>] [--prd-id <id>] [--dry-run]
+  python3 prd_split.py --from-linear <ASK-n> [--linear-json <path>] [--dry-run]
 
 If --prd-id is omitted, the currently-active PRD (from the PRD runner's
 state file) is used. --dry-run prints the planned writes without touching
 disk.
+
+--from-linear is an additive second entry point (ASK-214). It branches BEFORE
+PRD resolution, so every pre-existing invocation is byte-identical. A Linear
+issue has no parent PRD, so no legitimate spec could exist for Linear work; the
+issue runner's `load` refused it on provenance and `close` could therefore never
+write a receipt. That made the PR receipt gate block 100% of its target
+population forever. This mode makes a receipt PRODUCIBLE by teaching the real
+emitter to emit from a Definition of Ready. The marker stays honest and
+unchanged in format -- prd_split.py really is the emitter -- with the real
+provenance in its fields: `prd=linear:<ASK-n> finding=linear-dor`.
 
 Exit codes:
   0  success (or dry-run with no errors)
@@ -164,16 +175,19 @@ def _extract_issues_block(body: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _validate_entry(entry: object, index: int) -> dict:
+def _validate_entry(entry: object, index: int, id_re: re.Pattern = ISSUE_ID_RE) -> dict:
+    # id_re is a parameter only so the Linear entry point can pass its own
+    # (uppercase `ASK-214`) id shape. The default keeps PRD-manifest behaviour
+    # byte-identical.
     if not isinstance(entry, dict):
         raise ValueError(f"entry #{index}: must be a JSON object")
     for key in REQUIRED_KEYS:
         if key not in entry:
             raise ValueError(f"entry #{index}: missing required key {key!r}")
     issue_id = entry["id"]
-    if not isinstance(issue_id, str) or not ISSUE_ID_RE.match(issue_id):
+    if not isinstance(issue_id, str) or not id_re.match(issue_id):
         raise ValueError(
-            f"entry #{index}: id must match {ISSUE_ID_RE.pattern!r}; got {issue_id!r}"
+            f"entry #{index}: id must match {id_re.pattern!r}; got {issue_id!r}"
         )
     title = entry["title"]
     if not isinstance(title, str) or not title.strip():
@@ -411,6 +425,315 @@ def _inject_marker(rendered: str, marker: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Linear Definition of Ready -> issue spec (ASK-214)
+# ---------------------------------------------------------------------------
+
+# `ASK-214`. Uppercase team key + number, which is also the spec filename, so
+# the pattern doubles as the path-traversal guard.
+LINEAR_ISSUE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}-\d+$")
+LINEAR_PRD_PREFIX = "linear:"
+LINEAR_FINDING_ID = "linear-dor"
+LINEAR_ISSUE_URL = "https://linear.app/ask-consulting/issue/{id}"
+
+_DOR_HEADING_RE = re.compile(r"(?mi)^#{1,6}\s*Definition of Ready\s*$")
+_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
+# `- **Files:** ...`, `* **Files:** ...`, or a bare `**Files:**` line. Linear
+# renders bullets as `*`, the drafter prompt writes `-`; accept both.
+_LABEL_LINE_RE = re.compile(
+    r"^\s*(?:[-*+]\s+)?\*\*\s*([A-Za-z][A-Za-z ]*?)\s*:?\s*\*\*:?\s*(.*)$"
+)
+# A DoR that says the paths are unknown is the class that already burns
+# dispatches: no `Files:` means no diff, so converge exits on an empty PR.
+# Refuse loudly here instead of emitting a spec with empty allowed_files,
+# which would make `issue_runner.py scope` meaningless.
+_UNKNOWN_RE = re.compile(
+    r"\b(unknown|needs?\s+a\s+recon|recon\s+pass|tbd|to\s+be\s+determined|n/a)\b",
+    re.IGNORECASE,
+)
+# A path token: no whitespace, no shell/markdown punctuation.
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.\-/]*")
+
+
+class LinearDoRError(Exception):
+    """The DoR cannot produce a valid spec. Always names the issue."""
+
+
+def _dor_section(description: str) -> Optional[str]:
+    """The `## Definition of Ready` body, up to the next heading."""
+    m = _DOR_HEADING_RE.search(description)
+    if not m:
+        return None
+    rest = description[m.end():]
+    nxt = re.search(r"(?m)^#{1,6}\s+\S", rest)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _dor_fields(section: str) -> dict:
+    """Map lowercased DoR labels to their raw values.
+
+    A value runs from its `**Label:**` line until the next labelled line, a
+    blank line, or a heading. That covers both shapes the drafter emits: one
+    bullet per line, and a bullet whose paths wrap onto indented continuations.
+    """
+    fields: dict = {}
+    current: Optional[str] = None
+    buf: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current, buf
+        if current is not None and current not in fields:
+            fields[current] = "\n".join(buf).strip()
+        current, buf = None, []
+
+    for line in section.splitlines():
+        if _HEADING_RE.match(line):
+            break
+        m = _LABEL_LINE_RE.match(line)
+        if m:
+            _flush()
+            current = m.group(1).strip().lower()
+            buf = [m.group(2)]
+            continue
+        if current is None:
+            continue
+        if not line.strip():
+            _flush()
+            continue
+        buf.append(line)
+    _flush()
+    return fields
+
+
+def _split_candidates(value: str) -> list[str]:
+    """Backticked spans when present, else comma/newline-separated chunks.
+
+    Backticks win because every DoR that bothers to mark code marks the paths,
+    and prose in the same bullet ("merging PR #23") must not become a path.
+    """
+    ticked = re.findall(r"`([^`]+)`", value)
+    if ticked:
+        return ticked
+    return re.split(r"[,\n;]", value)
+
+
+def _extract_paths(value: str) -> list[str]:
+    """Every path-shaped token in a DoR bullet, order-preserving and deduped."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in _split_candidates(value):
+        token = raw.strip()
+        # trailing annotations the drafter adds: "(new)", "(one line)"
+        token = re.sub(r"\s*\([^()]*\)\s*$", "", token).strip()
+        token = token.strip("`*_ \t").rstrip(".,;:")
+        if not token or not _PATH_TOKEN_RE.fullmatch(token):
+            continue
+        # a bare word with no separator and no extension is prose, not a path
+        if "/" not in token and "." not in token:
+            continue
+        if token not in seen:
+            seen.add(token)
+            out.append(token)
+    return out
+
+
+def _as_disallowed(paths: list[str]) -> list[str]:
+    """Deny patterns for `issue_runner.py scope`, which fnmatches repo-relative
+    paths. A bare basename (`converge.sh`) would then only match a file at the
+    repo root, i.e. never -- a decorative deny. Ambiguity resolves toward MORE
+    blocking, so a basename becomes `**/<name>`. allowed_files gets no such
+    widening: there the same ambiguity has to resolve toward a loud scope block,
+    never toward silently granting a wider write surface.
+    """
+    return [p if "/" in p else f"**/{p}" for p in paths]
+
+
+def _flatten(text: str) -> str:
+    """One line, collapsed whitespace -- YAML list items are line-delimited."""
+    return " ".join(text.split())
+
+
+def _entry_from_dor(issue_id: str, title: str, description: str) -> dict:
+    """Build a manifest entry from a Linear issue's Definition of Ready.
+
+    Field mapping (settled in ASK-214, matching linear-dor-drafter.py's prompt):
+      **Files:**     -> allowed_files
+      **Not doing:** -> disallowed_files
+      **Check:**     -> required_checks
+      **Outcome:**   -> the `## Acceptance` body
+    """
+    section = _dor_section(description or "")
+    if section is None:
+        raise LinearDoRError(
+            f"{issue_id}: no '## Definition of Ready' section in the issue "
+            "description. The worker only dispatches issues that have one; "
+            "add a DoR (linear-dor-drafter.py writes them) and re-run."
+        )
+    fields = _dor_fields(section)
+
+    files_value = fields.get("files", "")
+    if not files_value:
+        raise LinearDoRError(
+            f"{issue_id}: DoR has no '**Files:**' line, so allowed_files would "
+            "be empty and `issue_runner.py scope` would enforce nothing. "
+            "Name the paths in the DoR and re-run."
+        )
+    if _UNKNOWN_RE.search(files_value):
+        raise LinearDoRError(
+            f"{issue_id}: DoR '**Files:**' says the paths are unknown "
+            f"({_flatten(files_value)[:120]!r}). An issue with no known files "
+            "cannot produce a diff; do the recon pass first, then re-run."
+        )
+    allowed = _extract_paths(files_value)
+    if not allowed:
+        raise LinearDoRError(
+            f"{issue_id}: DoR '**Files:**' names no path-shaped token "
+            f"({_flatten(files_value)[:120]!r}). Write explicit repo-relative "
+            "paths and re-run."
+        )
+
+    check_value = fields.get("check", "")
+    checks = [_flatten(c) for c in _split_candidates(check_value)]
+    checks = [c for c in checks if c and not c.startswith("#")]
+    if not checks:
+        raise LinearDoRError(
+            f"{issue_id}: DoR has no runnable '**Check:**' command, so "
+            "required_checks would be empty and the verify receipt would prove "
+            "nothing. Name the command that fails today and re-run."
+        )
+
+    disallowed = _as_disallowed(_extract_paths(fields.get("not doing", "")))
+    # `scope` tests disallowed BEFORE allowed, so a path in both would deny the
+    # very files the issue must edit. That is a contradictory DoR, not something
+    # to silently resolve.
+    conflict = [p for p in disallowed if p in allowed or p.lstrip("*/") in allowed]
+    if conflict:
+        raise LinearDoRError(
+            f"{issue_id}: DoR lists {', '.join(conflict)} under both "
+            "'**Files:**' and '**Not doing:**'. scope denies before it allows, "
+            "so that spec would block its own work. Fix the DoR and re-run."
+        )
+
+    outcome = fields.get("outcome", "").strip()
+    return {
+        "id": issue_id,
+        "title": _flatten(title) or issue_id,
+        "finding_id": LINEAR_FINDING_ID,
+        "allowed_files": allowed,
+        "disallowed_files": disallowed,
+        "required_checks": checks,
+        "acceptance": outcome or "<!-- fill in -->",
+    }
+
+
+def _fetch_linear_issue(cfg: Config, issue_id: str) -> dict:
+    """The issue payload from Linear, via the fleet's own client.
+
+    No private copy of the auth/transport convention: linear-sync.py owns it and
+    this imports that module by path, the same way pr-receipt-gate.py imports
+    linear_branch.py rather than carrying its own regex. A missing client is a
+    hard error, not a silent fallback.
+    """
+    import importlib.util
+
+    client_path = cfg.repo_root / "q-system/.q-system/scripts/linear-sync.py"
+    if not client_path.is_file():
+        raise LinearDoRError(
+            f"{issue_id}: no Linear client at {client_path}. Pass "
+            "--linear-json <path> with the issue payload instead."
+        )
+    spec = importlib.util.spec_from_file_location("kipi_linear_sync", client_path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        data = module.graphql(
+            "query($id: String!) { issue(id: $id) "
+            "{ identifier title description } }",
+            {"id": issue_id},
+        )
+    except Exception as exc:  # transport, auth, GraphQL — all fatal here
+        raise LinearDoRError(f"{issue_id}: Linear fetch failed: {exc}") from exc
+    issue = (data or {}).get("issue")
+    if not isinstance(issue, dict):
+        raise LinearDoRError(f"{issue_id}: Linear returned no such issue")
+    return issue
+
+
+def _load_linear_payload(cfg: Config, issue_id: str, json_path: Optional[str]) -> dict:
+    """The issue payload, from a file when given, else live from Linear.
+
+    --linear-json is a transport seam (offline runs and hermetic tests), not a
+    provenance seam: prd_split.py is still the only thing that renders and marks
+    a spec, so the marker's claim stays true either way.
+    """
+    if not json_path:
+        return _fetch_linear_issue(cfg, issue_id)
+    path = Path(json_path)
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LinearDoRError(f"{issue_id}: cannot read {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise LinearDoRError(f"{issue_id}: {path} must hold a JSON object")
+    return payload.get("issue") if isinstance(payload.get("issue"), dict) else payload
+
+
+def _split_from_linear(cfg: Config, args: argparse.Namespace) -> int:
+    issue_id = args.from_linear.strip()
+    if not LINEAR_ISSUE_ID_RE.match(issue_id):
+        sys.stderr.write(
+            f"--from-linear expects a Linear issue id like ASK-214 "
+            f"(pattern {LINEAR_ISSUE_ID_RE.pattern!r}); got {issue_id!r}\n"
+        )
+        return 2
+    try:
+        payload = _load_linear_payload(cfg, issue_id, args.linear_json)
+        entry = _entry_from_dor(
+            issue_id,
+            str(payload.get("title") or ""),
+            str(payload.get("description") or ""),
+        )
+        entry = _validate_entry(entry, 0, id_re=LINEAR_ISSUE_ID_RE)
+    except LinearDoRError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    except ValueError as exc:
+        sys.stderr.write(f"{issue_id}: {exc}\n")
+        return 2
+
+    prd_id = f"{LINEAR_PRD_PREFIX}{issue_id}"
+    target = cfg.issues_dir / f"{issue_id}.md"
+    at_iso = _extract_existing_marker_timestamp(target) or _now_iso()
+    marker = _format_marker(prd_id, entry["finding_id"], at_iso)
+    rendered = _render_spec(
+        entry, prd_id, LINEAR_ISSUE_URL.format(id=issue_id), marker
+    )
+
+    if target.exists() and target.read_text() != rendered:
+        sys.stderr.write(f"refusing to clobber existing issue spec: {target}\n")
+        return 2
+
+    if args.dry_run:
+        print(json.dumps({
+            "prd_id": prd_id,
+            "would_create": [] if target.exists() else [str(target)],
+            "skipped_existing_identical": [str(target)] if target.exists() else [],
+        }, indent=2))
+        return 0
+
+    created: list[str] = []
+    if not target.exists():
+        cfg.issues_dir.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered)
+        created.append(
+            str(target.relative_to(cfg.repo_root))
+            if target.is_absolute() and str(target).startswith(str(cfg.repo_root))
+            else str(target)
+        )
+    print(json.dumps({"prd_id": prd_id, "created": created}, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # PRD resolution
 # ---------------------------------------------------------------------------
 
@@ -453,6 +776,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="validate and print planned writes; do not touch disk"
     )
+    parser.add_argument(
+        "--from-linear",
+        metavar="ASK-n",
+        help="generate one spec from a Linear issue's Definition of Ready "
+             "instead of from an approved PRD",
+    )
+    parser.add_argument(
+        "--linear-json",
+        metavar="PATH",
+        help="read the --from-linear issue payload from a JSON file "
+             "(offline/test transport) instead of calling Linear",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -460,6 +795,21 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(repo_root, strict=True)
     except ConfigError as exc:
         sys.stderr.write(f"prd-os config error: {exc}\n")
+        return 2
+
+    # Branch BEFORE PRD resolution so no pre-existing invocation changes shape.
+    # `is not None`, not truthiness: `--from-linear ''` was passed explicitly and
+    # must be refused as a bad id, never fall through to the PRD path.
+    if args.from_linear is not None:
+        if args.prd_id:
+            sys.stderr.write(
+                "--from-linear and --prd-id are mutually exclusive: a Linear "
+                "issue has no parent PRD.\n"
+            )
+            return 2
+        return _split_from_linear(cfg, args)
+    if args.linear_json:
+        sys.stderr.write("--linear-json requires --from-linear\n")
         return 2
 
     try:
