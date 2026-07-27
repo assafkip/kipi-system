@@ -80,9 +80,44 @@ PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null)" || { echo "no 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# $REVIEW is only a variable at this point -- the file is not created until the
+# reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
+# exactly this run's round number. (Counting after the redirect would double it.)
+ROUND="$(review_round "$OUT_DIR" "$PR")"
+echo "  round: $ROUND"
+
+# A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
+# fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
+# with findings still arriving). So from round 2 on, the reviewer is told the
+# round and is required to re-prove any finding it wants to raise again.
+ROUND_RULE=""
+if [ "$ROUND" -gt 1 ]; then
+  ROUND_RULE="
+
+## THIS IS REVIEW ROUND $ROUND OF THIS PR
+
+Earlier rounds are in the PR comments (\`gh pr view $PR --comments\`). Read them
+AFTER you have formed your own read of the code, never before -- your value is
+that you did not inherit anyone's frame.
+
+Then apply this rule, which is binding:
+
+- A finding raised in an earlier round may be raised AGAIN only if your own
+  reproducer shows it is STILL LIVE. Paste that repro. 'They did not fix it
+  properly' without an executed repro is re-litigation, and it is dropped.
+- A finding the author ANSWERED with a code citation is settled unless you can
+  falsify the citation. Say which citation you falsified and how.
+- Do not escalate severity across rounds on the same underlying issue. If it was
+  a minor in round $((ROUND-1)), it is a minor now, unless new evidence shows a
+  consequence nobody had seen. Name that new consequence explicitly.
+- By round 3+, a PR that keeps producing NEW blockers on UNCHANGED code means the
+  earlier rounds were miscalibrated. Say so in your review if you see it. That is
+  a finding about the review process, and it is worth more than another nit."
+fi
+
 PROMPT="You are a SENIOR STAFF ENGINEER at Netflix. You have NEVER seen this codebase before.
 You were asked to review pull request #$PR in $SKEL, and you are ADVERSARIAL by default:
-your job is to find what is wrong, not to be agreeable.
+your job is to find what is wrong, not to be agreeable.$ROUND_RULE
 
 ## Read the change
 
@@ -119,6 +154,35 @@ BE DELETED, in a PUBLIC repo. So judge it that way:
   the operator to ignore it, which costs the real alert later.
 - Can this be rolled back? If not, say so loudly.
 - Concurrency: two of these running at once. What breaks?
+
+## WHAT EACH SEVERITY MEANS — use these anchors, not your feel for it
+
+Severity is BLAST RADIUS and RECOVERABILITY. It is not how clever the finding is,
+how long it took you to find, or how much the code annoyed you. Every one of these
+anchors is a real event on this fleet, so calibrate against them directly:
+
+- **blocker** — permanent or unrecoverable if it merges. Publishes a credential to
+  a Linear object that cannot be deleted. Destroys or overwrites founder work.
+  Silently disables the very detector the change adds, forever. If the honest
+  answer to 'can we undo this after it fires?' is no, it is a blocker.
+- **major** — wrong behavior unattended that a human must clean up, but CAN clean
+  up. Files duplicate permanent issues. Cries wolf on every run (a checker the
+  operator learns to ignore costs the real alert later, which is why false alarms
+  rank here and not below). Reports success for work that did not happen.
+- **minor** — real, reproducible, and bounded. Log or help text that misstates
+  what the code does. A narrow false negative on an input shape nobody hits yet.
+  A docstring that contradicts the code. It should be fixed; it does not gate.
+- **nit** — style, naming, formatting, preference. Never gates anything.
+
+Two calibration checks before you assign a severity:
+1. If you cannot name what a human has to DO about it at 3am, it is not a blocker
+   or a major.
+2. If your reproducer only fails under inputs you had to construct and no producer
+   in this repo emits, drop the severity a level and say so.
+
+Inflating a minor to a major to make a review feel substantial is itself a defect:
+it wedges a PR that should have shipped, and it burns the author's next round on
+work that did not need doing.
 
 ## THE STANDING RULE — non-negotiable
 
@@ -164,18 +228,35 @@ else
   exit "$rc"
 fi
 
-VERDICT="$(extract_verdict "$REVIEW")"
+# The verdict is COMPUTED from the labelled severities when the reviewer emitted
+# a findings block, and only read from prose when it did not. The prompt's
+# grading rule is guidance; this is the enforcement. Both are recorded so a
+# reviewer that grades against its own labels stays visible instead of silently
+# setting the gate.
+STATED_VERDICT="$(extract_verdict "$REVIEW")"
+DERIVED_VERDICT="$(verdict_from_findings "$REVIEW")"
+if [ -n "$DERIVED_VERDICT" ]; then
+  VERDICT="$DERIVED_VERDICT"
+  if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
+    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
+  fi
+else
+  VERDICT="$STATED_VERDICT"
+  echo "  NOTE: no FINDINGS block; verdict read from prose (weaker)"
+fi
 echo "  verdict: ${VERDICT:-unstated}"
 
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
 # in the timestamped .md files.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts = sys.argv[1:6]
+pr, issue, verdict, review, ts, stated, derived, rnd = sys.argv[1:9]
 out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
-           "review": review, "ts": ts}, open(out, "w"), indent=2)
+           "stated": stated, "derived": derived,
+           "source": "findings" if derived else "prose",
+           "round": int(rnd), "review": review, "ts": ts}, open(out, "w"), indent=2)
 PY
 
 # Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the

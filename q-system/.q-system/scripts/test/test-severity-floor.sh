@@ -156,6 +156,80 @@ grep -q 'APPROVE WITH NITS' "$REVIEWER" || fail "reviewer prompt lost the severi
 grep -q 'spillover add'     "$REVIEWER" || fail "reviewer never captures minors as spillover"
 ok "reviewer wiring: severity rule in prompt, record written, minors captured"
 
+# --- fixture: VERBATIM slice, real PR #11 ROUND 4 (2026-07-27) ---------------
+# The verdict sits on the line AFTER a bare `## VERDICT` heading AND qualifies
+# itself with the word BLOCK. Under the pre-fix extractor this recorded BLOCK --
+# it actually reached pr-11.verdict.json that way -- for a review whose own
+# sentence says "not BLOCK". Both routed to rework so nothing broke that night,
+# but "APPROVE (not BLOCK ...)" would have reworked an approved PR forever.
+cat > "$WORK/r4.md" <<'EOF'
+## VERDICT
+
+**REQUEST CHANGES** (not BLOCK — nothing here writes an unrecoverable object; findings 1 and 2 cause silence, not corruption, and the code is a net improvement over no detector at all).
+
+**Fix first: finding 1.** Add `skipped_no_key` to the `should_notify` expression.
+
+FINDINGS:
+major|Linear unreachable drops every finding with exit 0 and no Slack ping|scripts/fleet-health-daily.py:968
+major|A rollup key in the ledger but absent from the project reports "nothing to do" forever|scripts/fleet-health-daily.py:848
+minor|A Linear error on the update path kills the run mid-loop|scripts/fleet-health-daily.py:887
+minor|_command_index scores a wrapper's option argument as command position|scripts/fleet-health-daily.py:319
+minor|The wrapper allowlist is closed, so real invocations behind flock/ssh are missed|scripts/fleet-health-daily.py:231
+END FINDINGS
+EOF
+
+[ "$(extract_verdict "$WORK/r4.md")" = "REQUEST CHANGES" ] \
+  || fail "real r4: verdict-after-heading + '(not BLOCK)' qualifier misread as '$(extract_verdict "$WORK/r4.md")'"
+ok "real r4 slice -> REQUEST CHANGES (heading on its own line, self-qualifying verdict)"
+
+# --- verdict_from_findings: the ENFORCEMENT half of the severity floor --------
+# The prompt telling a reviewer how to grade is not enforcement. Severities are
+# structured data, so the verdict is computed from them.
+[ "$(verdict_from_findings "$WORK/r4.md")" = "REQUEST CHANGES" ] \
+  || fail "2 majors + 3 minors must derive REQUEST CHANGES, got '$(verdict_from_findings "$WORK/r4.md")'"
+ok "derive: majors present -> REQUEST CHANGES"
+
+[ "$(verdict_from_findings "$WORK/nits.md")" = "APPROVE WITH NITS" ] \
+  || fail "minors+nit only must derive APPROVE WITH NITS"
+ok "derive: minors/nits only -> APPROVE WITH NITS (the loop can now terminate)"
+
+printf 'FINDINGS:\nblocker|publishes a credential to an undeletable object|a.py:1\nminor|typo|a.py:2\nEND FINDINGS\n' > "$WORK/blk.md"
+[ "$(verdict_from_findings "$WORK/blk.md")" = "BLOCK" ] \
+  || fail "a blocker must derive BLOCK regardless of what else is present"
+ok "derive: blocker present -> BLOCK (severity wins over count)"
+
+printf 'FINDINGS:\nEND FINDINGS\n' > "$WORK/clean.md"
+[ "$(verdict_from_findings "$WORK/clean.md")" = "APPROVE" ] \
+  || fail "an empty findings block must derive APPROVE"
+ok "derive: empty findings block -> APPROVE (a clean PR is reachable)"
+
+[ -z "$(verdict_from_findings "$WORK/r2.md")" ] \
+  || fail "no FINDINGS block must derive nothing so the caller falls back to prose"
+ok "derive: no findings block -> empty (prose fallback, never a guess)"
+
+# The disagreement case the reviewer must not be trusted on: prose says APPROVE
+# while its own labels carry a major. Derivation has to win, or a reviewer can
+# talk a majors-laden PR through the gate.
+cat > "$WORK/liar.md" <<'EOF'
+## VERDICT: APPROVE
+
+Looks good overall.
+
+FINDINGS:
+major|silently drops every finding when the API is down|a.py:10
+END FINDINGS
+EOF
+[ "$(extract_verdict "$WORK/liar.md")" = "APPROVE" ] || fail "prose extraction should read APPROVE here"
+[ "$(verdict_from_findings "$WORK/liar.md")" = "REQUEST CHANGES" ] \
+  || fail "labels carry a major; derivation must override the prose APPROVE"
+ok "derive overrides prose: 'APPROVE' + a major label -> REQUEST CHANGES"
+
+grep -q 'verdict_from_findings' "$REVIEWER" \
+  || fail "reviewer does not derive the verdict from findings (prompt-only enforcement)"
+grep -q '"derived"\|derived' "$REVIEWER" || fail "verdict record must keep the derived value"
+grep -q 'stated' "$REVIEWER" || fail "verdict record must keep the stated value for drift visibility"
+ok "reviewer records stated + derived, and gates on derived"
+
 # --- review_round: the counter the anti-re-litigation rule arms on ------------
 # Off-by-one is the whole risk here, and it bit during authoring: an earlier
 # draft subtracted 1 on the theory that $REVIEW already existed. It does not --

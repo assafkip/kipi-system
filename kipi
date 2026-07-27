@@ -33,6 +33,7 @@ usage() {
   echo "  kipi review <PR#> [--post]  Adversarial PR review (Netflix staff, fresh eyes, repro-or-drop)"
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
+  echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
@@ -76,6 +77,13 @@ case "${1:-help}" in
     # adversarial, and every finding must ship a reproducer it actually ran.
     shift || true
     bash "$KIPI_HOME/q-system/.q-system/scripts/pr-review-agent.sh" "$@"
+    ;;
+  converge)
+    # Drive ONE issue to an approved PR: dispatch Sana, review, rework, repeat,
+    # with a hard round cap. `kipi work` is one round; this is the loop, so a
+    # human is not the thing that decides whether round 2 happens.
+    shift || true
+    bash "$KIPI_HOME/q-system/.q-system/scripts/converge.sh" "$@"
     ;;
   jobs)
     # One tracked Linear issue per scheduled job, for the migration onto

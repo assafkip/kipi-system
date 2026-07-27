@@ -257,6 +257,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

@@ -21,14 +21,49 @@
 # review of PR #11 ends "Fix first: **BLOCKER 1**" after its verdict line, and
 # a bare BLOCK token match reads that as verdict BLOCK. Found by using the
 # captured payload as the fixture, which is the point of the fixture rule.
+#
+# TWO further real-payload corrections, both from PR #11 round 4 (2026-07-27):
+#   - the verdict may sit on the line AFTER a bare `## VERDICT` heading, so the
+#     anchor has to span a few lines (-A3), not just the matching line.
+#   - the verdict line can QUALIFY itself: `**REQUEST CHANGES** (not BLOCK --
+#     nothing here writes an unrecoverable object)`. Taking the last token on
+#     that line records BLOCK for a review that said the opposite in the same
+#     breath. The verdict is stated FIRST and qualified after, so take head -1.
+# That misread actually reached the record: pr-11.verdict.json read BLOCK while
+# the review said REQUEST CHANGES. Both route to rework so behavior survived,
+# but "APPROVE (not BLOCK...)" would have reworked an approved PR forever.
 extract_verdict() {
   local f="$1" v=""
   [ -s "$f" ] || return 0
-  v="$(grep -E 'VERDICT' "$f" 2>/dev/null | sed 's/BLOCKERS\{0,1\}//g' \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | tail -1)"
+  v="$(grep -A3 -E 'VERDICT' "$f" 2>/dev/null | sed 's/BLOCKERS\{0,1\}//g' \
+        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
   [ -n "$v" ] || v="$(sed 's/BLOCKERS\{0,1\}//g' "$f" 2>/dev/null \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | tail -1)"
+        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
   printf '%s' "$v"
+}
+
+# verdict_from_findings <review-file>
+# Derive the verdict MECHANICALLY from the FINDINGS block severities. This is
+# the enforcement half of the severity floor: a prompt telling the reviewer how
+# to grade is not enforcement (no-prompt-only-enforcement), and PR #11 round 4
+# proved the gap is real -- the model reasoned its way to the right call there,
+# but nothing made it. Severity labels are structured data; the verdict is a
+# function of them, so compute it instead of reading prose.
+#   any blocker -> BLOCK            (anchor: unrecoverable if merged)
+#   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
+#   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
+#   none        -> APPROVE
+# Empty when there is no FINDINGS block, so the caller falls back to prose.
+verdict_from_findings() {
+  local f="$1" block
+  [ -s "$f" ] || return 0
+  block="$(sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$f" 2>/dev/null)"
+  printf '%s' "$block" | grep -q '^FINDINGS:' || return 0
+  if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
+  elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
+  elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  else printf 'APPROVE'
+  fi
 }
 
 # rework_gate <verdict>
