@@ -243,7 +243,22 @@ Anything real you find and are not fixing: capture it, never just mention it:
     fi
   fi
 
-  # 5. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
+  # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
+  # human having to remember to ask. The author of the PR and the author of the
+  # review must not be the same mind: the worker's `claude -p` wrote the diff, so
+  # a reviewer inside that same session would re-derive its blind spots rather
+  # than find them. This is a separate process with fresh eyes and no memory of
+  # why the code looks the way it does.
+  PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  if [ -n "$PR_NUM" ]; then
+    say "review PR #$PR_NUM for $ISSUE"
+    bash "$SCRIPT_DIR/pr-review-agent.sh" "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
+      || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+  else
+    say "no PR found for $BRANCH; nothing to review"
+  fi
+
+  # 6. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
   python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" >/dev/null 2>&1 || true
   DONE=$((DONE+1))
 done
