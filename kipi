@@ -29,6 +29,8 @@ usage() {
   echo "  kipi linear claim <ASK-n> --agent <name> --session <id>   Claim this tree BEFORE branching (exit 3 = refused)"
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
+  echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
+  echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
   echo "  kipi home            Print the skeleton path"
   echo ""
@@ -63,6 +65,13 @@ case "${1:-help}" in
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"
+    ;;
+  health)
+    # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear
+    # issue) and LEARN -- validate_detectors() refuses an alert-only checker.
+    # Scheduled by q-system/.q-system/scripts/com.kipi.fleet-health.plist at 08:15.
+    shift || true
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/fleet-health-daily.py" "$@"
     ;;
   linear)
     # Issue-first fast path. The commit-msg gate (linear-issue-ref-check.py)

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kipi.fleet-health</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/assafkipnis/projects/kipi-system/q-system/.q-system/scripts/fleet-health-daily.py</string>
+    <string>--apply</string>
+  </array>
+
+  <!-- 08:15, before the founder's day and before the 08:30 GTM jobs, so a
+       finding is on the board by the time anything else runs. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>15</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/assafkipnis/.config/kipi/fleet-health.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/assafkipnis/.config/kipi/fleet-health.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/assafkipnis/projects/kipi-system</string>
+</dict>
+</plist>

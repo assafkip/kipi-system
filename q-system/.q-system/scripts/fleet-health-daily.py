@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""Daily fleet health check. Every detector must DETECT, ACT, and feed LEARNING.
+
+THE RULE THIS FILE EXISTS TO ENFORCE (founder, 2026-07-26):
+
+    "detection without a path to action is useless. Any detection artifact should
+     be tied to a logged and automated action. I dont need to do them, I just need
+     to know they were tracked and done. The more critical thing is that prevention
+     is better than detection. When we detect, we should not only alert or fix or
+     both, the system should learn."
+
+The scar behind it: on 2026-07-26 the launchd watchdog detected all 26 paused
+com.cole.* jobs correctly and Slacked every one. Detection worked perfectly and it
+STILL felt like nothing was tracked -- because a Slack ping is not a work item. It
+is read once and scrolls away. A detector whose only output is an alert has moved
+the work back onto the founder, which is the exact inversion of the point.
+
+So a detector here is not shippable without all three legs:
+
+  DETECT  the check itself
+  ACT     `file_issue`, `auto_fix`, or `both`. NEVER None. A Linear issue carries
+          a stable kipi-key so the same finding is ONE issue forever, not a new
+          one each morning.
+  LEARN   `lesson` names the q-system/lessons/ entry this class of defect maps to,
+          or `lesson_waived` states in words why this class cannot recur. One of
+          the two is required.
+
+`validate_detectors()` refuses to run if any detector breaks that contract, and
+test-fleet-health-daily.py asserts it. Prose cannot hold this line; the registry can.
+
+ALERTING: ONE Slack summary line, never one ping per finding. The findings live in
+Linear where they hold state. Slack is a pointer, not a ledger.
+
+Exit 0 always (a health check that fails its own launchd job is noise); the report
+goes to stdout and the ledger.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+QROOT = HERE.parent.parent
+REPO_ROOT = QROOT.parent
+NOTIFY = HERE / "slack-notify.sh"
+LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+STATE = Path.home() / ".config" / "kipi" / "fleet-health-state.json"
+
+# Where fleet-wide findings are filed. Per-repo findings could route to their own
+# project later; today one project keeps the board readable.
+HEALTH_PROJECT = "kipi-system"
+TEAM_KEY = "ASK"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+
+
+# ---------------------------------------------------------------------------
+# Detectors
+#
+# Each returns a list of findings: {"subject": <stable id>, "title", "body"}.
+# `subject` MUST be stable across runs -- it is the dedup key, and an unstable
+# one files a new permanent Linear issue every single morning.
+# ---------------------------------------------------------------------------
+
+
+def _launchd_labels() -> list:
+    return sorted(p.stem for p in LAUNCH_AGENTS.glob("*.plist"))
+
+
+def _paused_labels() -> set:
+    """Reuse the watchdog's own ledger reader so 'paused' has ONE definition."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("wd", HERE / "launchd-health-check.py")
+    wd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wd)
+    return wd.load_paused_labels()
+
+
+def _is_loaded(label: str) -> bool:
+    try:
+        return subprocess.run(
+            ["launchctl", "list", label], capture_output=True, timeout=10
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # cannot tell -> do not cry wolf
+
+
+def detect_dark_jobs(_ctx) -> list:
+    """A plist on disk, not loaded, and NOT in the paused ledger = silent death."""
+    paused = _paused_labels()
+    out = []
+    for label in _launchd_labels():
+        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
+                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+            continue
+        if label in paused or _is_loaded(label):
+            continue
+        out.append({
+            "subject": label,
+            "title": f"launchd job is dark: {label}",
+            "body": (
+                f"`{label}` has a plist in `~/Library/LaunchAgents/` but is not loaded, "
+                "and it is NOT in the paused ledger — so nothing recorded a decision to "
+                "stop it.\n\n"
+                "## Action\n"
+                f"- Resume: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{label}.plist`\n"
+                f"- Or record the pause: add `{label}` to `~/.config/kipi/launchd-paused.txt`\n\n"
+                "Leaving it dark with no ledger entry is the state this detector exists to "
+                "make impossible."
+            ),
+        })
+    return out
+
+
+def detect_failing_jobs(_ctx) -> list:
+    """Loaded but last run exited non-zero."""
+    out = []
+    try:
+        listing = subprocess.run(["launchctl", "list"], capture_output=True,
+                                 text=True, timeout=15).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in listing.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        _pid, status, label = parts[0], parts[1], parts[2].strip()
+        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.")):
+            continue
+        try:
+            code = int(status)
+        except ValueError:
+            continue
+        if code != 0:
+            out.append({
+                "subject": label,
+                "title": f"launchd job failing: {label} (exit {code})",
+                "body": (
+                    f"`{label}` is loaded but its last run exited **{code}**.\n\n"
+                    "## Action\nRead its StandardErrorPath, fix the cause, and confirm a "
+                    "clean run. If the failure is environmental (auth expiry, server down), "
+                    "say so on this issue rather than retrying — `self-healing-retry.md` "
+                    "rule 5 stops environmental failures on attempt 1."
+                ),
+            })
+    return out
+
+
+def detect_duplicate_schedules(_ctx) -> list:
+    """The same script scheduled by BOTH launchd and crontab.
+
+    Found live 2026-07-26: reddit-build-radar runs at 08:00 from
+    com.cole.reddit-radar-daily AND from a crontab line. Two schedulers on one
+    script means pausing one does nothing, which is how a 'paused' job keeps running.
+    """
+    try:
+        cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True,
+                              timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    # Resolve to ABSOLUTE paths, never basenames. Measured 2026-07-26: matching on
+    # the basename `run_daily.sh` hit 3 plists (reddit-radar-daily, daily-podcast,
+    # story-podcast) when only ONE is a real duplicate -- the other two are
+    # unrelated scripts that happen to share a very common filename. Filing those
+    # would have created two PERMANENT false issues, and Linear issues cannot be
+    # deleted here. A detector's false positives are as expensive as its misses.
+    cron_scripts = set()
+    for line in cron.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        # cron lines commonly read `cd <dir> && ... scripts/foo.sh`, so a relative
+        # script path resolves against that cd, not against $HOME.
+        cd_match = re.search(r"\bcd\s+(\S+)", stripped)
+        base_dir = Path(cd_match.group(1)) if cd_match else Path.home()
+        for token in stripped.split():
+            if not token.endswith((".sh", ".py")):
+                continue
+            path = Path(token)
+            resolved = path if path.is_absolute() else (base_dir / path)
+            cron_scripts.add(str(resolved))
+
+    out = []
+    for label in _launchd_labels():
+        plist = LAUNCH_AGENTS / f"{label}.plist"
+        try:
+            text = plist.read_text(errors="ignore")
+        except OSError:
+            continue
+        for name in cron_scripts:
+            if name in text:
+                out.append({
+                    "subject": f"{label}--{slug(name)}",
+                    "title": f"double-scheduled: {name} runs from both launchd and cron",
+                    "body": (
+                        f"`{name}` is scheduled by launchd (`{label}`) **and** by a crontab "
+                        "entry.\n\n"
+                        "Two schedulers on one script means pausing or unloading one has no "
+                        "effect — the other keeps firing. That is how a job the operator "
+                        "believes is stopped keeps running, and how a run gets duplicated.\n\n"
+                        "## Action\nPick ONE scheduler. launchd is the fleet convention "
+                        "(`launchd-health-check.py` watches it; crontab is invisible to that "
+                        "watchdog). Remove the crontab line, or unload the plist."
+                    ),
+                })
+    return out
+
+
+def detect_open_spillover(_ctx) -> list:
+    """Open spillover items — real findings someone decided not to fix yet."""
+    runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
+    if not runner.is_file():
+        return []
+    try:
+        # `--open` is load-bearing. Without it the command lists RESOLVED items too,
+        # and the ledger is append-only so an id appears once per state change --
+        # scraping the unfiltered output reported 115 when the truth was 81. A
+        # health check that files a wrong number into a permanent issue is worse
+        # than one that files nothing.
+        res = subprocess.run(["python3", str(runner), "spillover", "list", "--open"],
+                             capture_output=True, text=True, timeout=60, cwd=REPO_ROOT)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    open_ids = sorted(set(re.findall(r"\[open\]\s+(sp-[0-9a-f]{8})", res.stdout or "")))
+    if not open_ids:
+        return []
+    shown = open_ids[:25]
+    more = len(open_ids) - len(shown)
+    return [{
+        # Stable subject: ONE standing issue, re-read each day, never a new issue
+        # per morning. The count lives in the body, which is updatable; putting it
+        # in the dedup key would fork a permanent issue every time it changed.
+        "subject": "open-spillover",
+        "title": "Open spillover backlog is blocking the closeout gates",
+        "body": (
+            f"**{len(open_ids)} open spillover item(s).** `prd_runner.py gates run` stays "
+            "RED while any is open, so these block every closeout in the repo.\n\n"
+            + "\n".join(f"- `{i}`" for i in shown)
+            + (f"\n- ...and {more} more (`prd_runner.py spillover list --open`)" if more else "")
+            + "\n\n## Action\nEach leaves the ledger exactly two ways: fixed through the "
+              "normal issue flow then `spillover resolve <id> --resolution-ref <closed-issue>`, "
+              "or `spillover resolve <id> --void \"<reason>\"`. There is no third way, and "
+              "hand-clearing the gate is not possible."
+        ),
+    }]
+
+
+# ---------------------------------------------------------------------------
+# The registry. `action` and the learning leg are REQUIRED.
+# ---------------------------------------------------------------------------
+
+DETECTORS = [
+    {
+        "id": "launchd-dark",
+        "description": "plist on disk, not loaded, not in the paused ledger",
+        "detect": detect_dark_jobs,
+        "action": "file_issue",
+        "lesson": "a-freshness-deadman-must-live-off-the-machine-it-watches",
+    },
+    {
+        "id": "launchd-failing",
+        "description": "loaded but last run exited non-zero",
+        "detect": detect_failing_jobs,
+        "action": "file_issue",
+        "lesson": "a-freshness-deadman-must-live-off-the-machine-it-watches",
+    },
+    {
+        "id": "schedule-duplicate",
+        "description": "same script scheduled by both launchd and crontab",
+        "detect": detect_duplicate_schedules,
+        "action": "file_issue",
+        "lesson_waived": (
+            "One scheduler per script is a fleet convention, not a recurring defect "
+            "class — the detector exists to catch drift when a script is migrated "
+            "between schedulers, which is a one-off event per script."
+        ),
+    },
+    {
+        "id": "open-spillover",
+        "description": "open spillover items blocking the closeout gates",
+        "detect": detect_open_spillover,
+        "action": "file_issue",
+        "lesson_waived": (
+            "Spillover is BY DESIGN a standing ledger of deferred work; its being "
+            "non-empty is not a defect to prevent, only to keep visible."
+        ),
+    },
+]
+
+
+def validate_detectors(detectors=None) -> list:
+    """Refuse a detector that detects without acting, or that cannot learn.
+
+    This is the deterministic form of the founder's rule. A detector added later
+    without an action path fails here rather than silently becoming another
+    alert-only checker.
+    """
+    problems = []
+    for d in detectors if detectors is not None else DETECTORS:
+        did = d.get("id", "<unnamed>")
+        if not d.get("id"):
+            problems.append("a detector has no id")
+        if d.get("action") not in ("file_issue", "auto_fix", "both"):
+            problems.append(
+                f"{did}: action must be file_issue|auto_fix|both, got {d.get('action')!r}. "
+                "Detection with no action path is the thing this file exists to prevent."
+            )
+        if not callable(d.get("detect")):
+            problems.append(f"{did}: detect is not callable")
+        if d.get("action") in ("auto_fix", "both") and not callable(d.get("fix")):
+            problems.append(f"{did}: action claims auto_fix but no fix() is wired")
+        if not d.get("lesson") and not d.get("lesson_waived"):
+            problems.append(
+                f"{did}: needs `lesson` (a q-system/lessons/ slug) or `lesson_waived` "
+                "(why this class cannot recur). Prevention outranks detection."
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# Acting: file each finding as ONE permanent Linear issue
+# ---------------------------------------------------------------------------
+
+
+def finding_key(detector_id: str, subject: str) -> str:
+    return f"fleet-health/{detector_id}/{slug(subject)}"
+
+
+def file_findings(findings: list, apply: bool) -> dict:
+    """Create a Linear issue per finding, deduped by kipi-key.
+
+    Reuses linear-sync's graphql + remote guard so 'already exists' has exactly one
+    definition fleet-wide. Linear objects are permanent, so the guard is refetched
+    here rather than trusted from any cache.
+    """
+    result = {"created": 0, "existing": 0, "skipped_no_key": 0}
+    if not findings:
+        return result
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ls", HERE / "linear-sync.py")
+    ls = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ls)
+
+    try:
+        team_id, project, remote_keys = ls.fetch_remote_state(TEAM_KEY, HEALTH_PROJECT)
+    except Exception as exc:  # noqa: BLE001 - a health check must not crash its job
+        print(f"  linear unreachable, findings NOT filed: {exc}", file=sys.stderr)
+        result["skipped_no_key"] = len(findings)
+        return result
+
+    ledger = ls.read_ledger()
+    known = set(ledger) | set(remote_keys)
+
+    for f in findings:
+        key = f["key"]
+        if key in known:
+            result["existing"] += 1
+            continue
+        if not apply:
+            result["created"] += 1  # would create
+            continue
+        payload = {
+            "title": f["title"][:250],
+            "description": f"<!-- kipi-key: {key} -->\n\n{f['body']}\n\nFiled by `fleet-health-daily.py`.",
+            "teamId": team_id,
+        }
+        if project:
+            payload["projectId"] = project["id"]
+        data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+        node = (data.get("issueCreate") or {}).get("issue") or {}
+        if node.get("id"):
+            ls.append_ledger([{
+                "key": key, "kind": "issue", "linear_id": node["id"],
+                "identifier": node.get("identifier"), "source": "fleet-health",
+            }])
+            result["created"] += 1
+            print(f"  filed {node.get('identifier')}  {f['title'][:70]}")
+    return result
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--apply", action="store_true", help="actually file Linear issues")
+    ap.add_argument("--quiet", action="store_true", help="no Slack line")
+    args = ap.parse_args()
+
+    problems = validate_detectors()
+    if problems:
+        print("BLOCK: detector registry is invalid:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        return 1
+
+    all_findings = []
+    per_detector = {}
+    for d in DETECTORS:
+        try:
+            found = d["detect"](None) or []
+        except Exception as exc:  # noqa: BLE001
+            print(f"  detector {d['id']} errored: {exc}", file=sys.stderr)
+            found = []
+        for f in found:
+            f["key"] = finding_key(d["id"], f["subject"])
+            f["detector"] = d["id"]
+        per_detector[d["id"]] = len(found)
+        all_findings.extend(found)
+
+    print(f"fleet-health {_now()}")
+    for did, n in per_detector.items():
+        print(f"  {did}: {n}")
+
+    outcome = file_findings(all_findings, args.apply)
+    print(f"  filed={outcome['created']} already-tracked={outcome['existing']}")
+
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(
+        {"ran_at": _now(), "per_detector": per_detector, "outcome": outcome}, indent=2))
+
+    # ONE line, never one per finding.
+    if not args.quiet and outcome["created"] and NOTIFY.exists():
+        subprocess.run(
+            ["bash", str(NOTIFY),
+             f"fleet health: {outcome['created']} new issue(s) filed, "
+             f"{outcome['existing']} already tracked. Board has them; nothing to do now."],
+            timeout=20, check=False)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
