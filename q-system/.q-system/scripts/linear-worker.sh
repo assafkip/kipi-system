@@ -209,7 +209,38 @@ while IFS= read -r ISSUE; do
     "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
     --agent "$AGENT" >/dev/null 2>&1 || true
 
-  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.
+  # REWORK: if a PR already exists for this branch, the worker is not starting
+  # fresh -- it is answering a review. Without this the prompt would say "do the
+  # DoR" to an agent whose work is already written and already criticised, and it
+  # would plausibly start over. The review is the spec for this pass.
+  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  REWORK=""
+  if [ -n "$EXISTING_PR" ]; then
+    REWORK="
+
+## THIS IS A REWORK, NOT A FRESH START
+
+PR #$EXISTING_PR already exists for this branch and has been reviewed by an
+adversarial senior-staff reviewer. Read the review before touching anything:
+
+  gh pr view $EXISTING_PR --comments
+
+THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
+re-litigate the design. For EACH finding, either:
+  - fix it, and add a test that FAILS without the fix (observed red, then green), or
+  - reply on the PR with why it is not a defect, citing the code.
+
+Findings you disagree with are answered, never silently ignored -- a finding that
+gets no response reads as a finding nobody read.
+
+The reviewer's own bar applies to your fixes too: a fix with no test that could
+have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
+tried and could NOT break, and do not regress those.
+
+Push to the SAME branch $BRANCH. Do not open a second PR."
+  fi
+
+  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
 Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.
