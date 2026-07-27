@@ -39,6 +39,25 @@ _spec = importlib.util.spec_from_file_location("dor", DRAFTER)
 dor = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dor)
 
+# The real producer, loaded ONLY for its exception class (no module-level side
+# effects, no network). The fake below raises that class with the message live
+# Linear actually returns, because a fixture that answers {"issue": None} models
+# a shape no producer in this repo emits (PR #12 round-2 review, major).
+_ls_spec = importlib.util.spec_from_file_location("ls_real", DRAFTER.parent / "linear-sync.py")
+ls_real = importlib.util.module_from_spec(_ls_spec)
+_ls_spec.loader.exec_module(ls_real)
+
+# Captured from live Linear on 2026-07-27, querying `issue(id:)` for a well-formed
+# uuid with nothing behind it AND for a non-uuid string. Both produce this exact
+# payload: HTTP 200 with an `errors` array, which linear-sync.graphql raises on.
+# So "the issue is gone" reaches the drafter as an EXCEPTION, never as a null.
+NOT_FOUND_PAYLOAD = (
+    '[{"message": "Entity not found: Issue", "path": ["issue"], '
+    '"locations": [{"line": 1, "column": 20}], "extensions": {"type": "invalid input", '
+    '"code": "INPUT_ERROR", "statusCode": 400, "userError": true, '
+    '"userPresentableMessage": "Could not find referenced Issue."}}]'
+)
+
 failures = []
 
 
@@ -54,9 +73,13 @@ class FakeLinear:
 
     `issue_state` is the state TYPE the permanent failure issue is in remotely
     ("backlog" / "started" / "completed" / "canceled"), or None to model an issue
-    that no longer exists. fetch_remote_state cannot report it -- its query filters
-    on project and does not select state -- so the drafter has to ask separately,
-    and this fake is the thing that answers.
+    that no longer exists -- which this fake reports the way the real API does, by
+    RAISING. fetch_remote_state cannot report state at all (its query filters on
+    project and does not select it), so the drafter has to ask separately, and
+    this fake is the thing that answers.
+
+    `live_error` is an exception to raise from the `issue(id:)` lookup instead,
+    for the case the drafter must NOT confuse with a deletion: Linear being down.
     """
 
     ISSUE_CREATE = "mutation issueCreate"
@@ -64,13 +87,14 @@ class FakeLinear:
 
     def __init__(self, existing_keys=None, unreachable=False,
                  report_unreachable=False, issue_state="started",
-                 reopen_succeeds=True, draftable=()):
+                 reopen_succeeds=True, draftable=(), live_error=None):
         self.existing_keys = existing_keys or {}
         self.unreachable = unreachable
         self.report_unreachable = report_unreachable
         self.issue_state = issue_state
         self.reopen_succeeds = reopen_succeeds
         self.draftable = list(draftable)
+        self.live_error = live_error
         self.created = []
         self.comments = []
         self.state_moves = []
@@ -92,8 +116,11 @@ class FakeLinear:
             return {"issues": {"nodes": self.draftable,
                                "pageInfo": {"hasNextPage": False}}}
         if "issue(id:" in query.replace(" ", ""):
+            if self.live_error is not None:
+                raise self.live_error
             if self.issue_state is None:
-                return {"issue": None}
+                # Exactly what live Linear does for an id it does not have.
+                raise ls_real.LinearAPIError(NOT_FOUND_PAYLOAD)
             return {"issue": {"id": "iss-1", "identifier": "ASK-999",
                               "state": {"name": "x", "type": self.issue_state}}}
         if "stateId" in query:
@@ -282,12 +309,52 @@ check("...the detail still reaches the issue", len(ls.comments), 1)
 check("...and the founder is told the board has nothing open",
       len(pings()) > _before, True)
 
-# A ledger entry pointing at an issue that no longer exists must not be a dead
-# end: file a fresh one rather than commenting into a 404.
+# --- A DELETED PERMANENT ISSUE MUST NOT TURN THE DETECTOR OFF ---------------
+# PR #12 round-2 review, major: real Linear does not answer {"issue": null} for
+# an id it lacks, it RAISES (NOT_FOUND_PAYLOAD above, captured live). So the
+# raise fell into report_failures' outer except -- verdict "unreachable",
+# nothing filed ever again, and a nightly "Linear unreachable" ping while Linear
+# was perfectly fine. The trigger is ordinary: the operator deletes the
+# bot-filed issue, and the machine-local ledger keeps the dead id forever.
 ls = FakeLinear(existing_keys=CLOSED_KEY, issue_state=None)
+_before = len(pings())
 check("a vanished issue is replaced, not commented on",
       dor.report_failures(ls, FAILS), "created")
 check("...exactly one replacement", len(ls.created), 1)
+check("...nothing was written at the dead id", len(ls.comments), 0)
+check("...the ledger is repointed so tomorrow does not chase the dead id again",
+      len(ls.ledger_appends), 1)
+check("...and the founder is NOT told Linear is down, because it is not",
+      len(pings()), _before)
+
+# The other direction, which matters more because it is unrecoverable: a
+# transport failure must NOT read as "the issue is gone". Filing a replacement
+# on every down night forks the permanent issue, and Linear issues cannot be
+# deleted here (destructive-op-deny.sh blocks *delete* and archive).
+ls = FakeLinear(existing_keys=CLOSED_KEY,
+                live_error=RuntimeError("network: [Errno 60] Operation timed out"))
+_before = len(pings())
+check("Linear down at the state lookup is held, not read as a deletion",
+      dor.report_failures(ls, FAILS), "unreachable")
+check("...no second permanent issue is forked", len(ls.created), 0)
+check("...and that one does ping, because nothing reached the board",
+      len(pings()), _before + 1)
+
+# --- the job must not draft a DoR onto its own failure record ---------------
+# PR #12 round-2 review, nit: the filed issue carried no DoR and no explicit
+# state, so it landed in backlog and passed the job's OWN selector. Tomorrow
+# night it would spend one of the plist's bounded `claude -p` slots writing LLM
+# prose onto the operator's failure log.
+ls = FakeLinear()
+dor.report_failures(ls, FAILS)
+_filed_issue = {"identifier": "ASK-999", "title": dor.FAILURE_TITLE,
+                "description": ls.created[0]["description"],
+                "state": {"name": "Backlog", "type": "backlog"}}
+check("the job's own failure record is not a draft target",
+      dor.needs_dor(_filed_issue), False)
+check("...but an ordinary backlog issue still is",
+      dor.needs_dor({"identifier": "ASK-1", "description": "a human wrote this",
+                     "state": {"name": "Backlog", "type": "backlog"}}), True)
 
 # --- a clean run reports nothing -------------------------------------------
 ls = FakeLinear()
@@ -369,6 +436,71 @@ try:
           "carried" in back_up.created[0]["description"], True)
     check("...and the queue is cleared once it lands",
           saved.get("pending_failures"), [])
+
+    # --- Linear down at the START of the run, not at report time ------------
+    # PR #12 round-2 review, minor: main() returned at the team lookup, BEFORE
+    # read_pending / report_failures / the state write. The held backlog stopped
+    # draining, ran_at froze so the state file could not even serve as a
+    # freshness deadman, and launchd saw exit 0. The night was invisible.
+    #
+    # The fix is a heartbeat plus ONE ping per outage, not one per night. A ping
+    # every night of a multi-day Linear outage is how a channel becomes one
+    # nobody reads (.claude/rules/founder-notifications.md: status that has not
+    # changed is noise, not a ping).
+    HELD = "ASK-147: claude call failed (TimeoutExpired after 300s)"
+    STATE_FILE.write_text(json.dumps({
+        "ran_at": "2026-07-26T03:00:00Z", "drafted": 0, "failed": 1,
+        "failures_reported": "unreachable", "pending_failures": [HELD],
+    }))
+    _before = len(pings())
+    rc = run_main(FakeLinear(unreachable=True), DRAFTABLE)
+    saved = json.loads(STATE_FILE.read_text())
+    check("a night Linear is down at the start still exits 0", rc, 0)
+    check("...the held failure survives the skipped night",
+          saved.get("pending_failures"), [HELD])
+    check("...ran_at advances, so the state file is a usable freshness deadman",
+          saved.get("ran_at") != "2026-07-26T03:00:00Z", True)
+    check("...the verdict names the branch, not the report-time one",
+          saved.get("failures_reported"), "unreachable-at-start")
+    check("...and the founder is told the drip is not running",
+          len(pings()), _before + 1)
+
+    # Night two of the SAME outage: still recorded, deliberately not re-pinged.
+    rc = run_main(FakeLinear(unreachable=True), DRAFTABLE)
+    saved = json.loads(STATE_FILE.read_text())
+    check("a second night of the same outage does not ping again",
+          len(pings()), _before + 1)
+    check("...but it still leaves a heartbeat",
+          saved.get("failures_reported"), "unreachable-at-start")
+    check("...and still holds the failure", saved.get("pending_failures"), [HELD])
+
+    # Linear returns: what was held across the whole outage reaches the board.
+    recovered = FakeLinear()
+    run_main(recovered, [])
+    saved = json.loads(STATE_FILE.read_text())
+    check("the failure held across the outage is filed once Linear returns",
+          len(recovered.created), 1)
+    check("...naming the issue from before the outage",
+          "ASK-147" in recovered.created[0]["description"], True)
+    check("...and the queue drains", saved.get("pending_failures"), [])
+
+    # A NEW outage after a healthy night is a new event, so it pings again.
+    _before = len(pings())
+    run_main(FakeLinear(unreachable=True), DRAFTABLE)
+    check("a new outage after a healthy night pings again", len(pings()), _before + 1)
+
+    # Edge-triggered ALONE buys unbounded silence: miss the one ping and a
+    # three-week outage is three weeks of nothing. So the silence is bounded --
+    # night 1, then every 7th. Nights 2..7 of this run continue the outage above,
+    # so the second ping lands on night 7 and nothing else does.
+    for _ in range(6):
+        run_main(FakeLinear(unreachable=True), DRAFTABLE)
+    saved = json.loads(STATE_FILE.read_text())
+    check("seven nights down is counted, not just flagged", saved.get("down_nights"), 7)
+    check("...and the weekly re-ping fires exactly once more",
+          len(pings()), _before + 2)
+    run_main(FakeLinear(unreachable=True), DRAFTABLE)
+    check("...night 8 is silent again", len(pings()), _before + 2)
 finally:
     dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv
     dor.STATE, dor.fetch_draftable = _real_state, _real_fetch

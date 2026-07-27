@@ -59,6 +59,15 @@ FAILURE_REPO = "kipi-system"
 FAILURE_KEY = "linear-dor/run-failure"
 FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
 
+# ONE definition, used by the writer (the create payload) and by the selector
+# (needs_dor). The job's own failure record has no explicit state, so it lands in
+# `backlog` and passed the job's own selector -- tomorrow night it would spend one
+# of the plist's bounded `claude -p` slots writing LLM prose onto the operator's
+# failure log. Matched narrowly on THIS job's key rather than on any kipi-key
+# marker: other machine-filed issues (fleet-health-daily's findings) are real work
+# items and a DoR helps them. (PR #12 round-2 review, nit.)
+FAILURE_MARKER = f"<!-- kipi-key: {FAILURE_KEY} -->"
+
 # The single founder-ping channel (.claude/rules/founder-notifications.md).
 # Used ONLY when the report itself could not reach the board -- an open Linear
 # issue is the signal on a normal failing night, and a nightly Slack line on top
@@ -80,6 +89,43 @@ REOPEN_TARGET_TYPES = ("unstarted", "backlog")  # prefer Todo, settle for Backlo
 # list was dropped to stderr and the state file had no reader anywhere in the
 # repo -- a write-only artifact is not a record. (PR #12 review, major 2.)
 PENDING_CAP = 50
+
+# Linear can also be down BEFORE anything is attempted (the team lookup at the
+# top of main()). That path used to return immediately: no state write, so ran_at
+# froze and the file could not serve as a freshness deadman, the held backlog
+# silently stopped draining, and launchd saw exit 0. Now the night still leaves a
+# heartbeat, and the founder gets ONE ping per outage rather than one per night --
+# a nightly line for the whole duration of an outage is how a channel becomes one
+# nobody reads (founder-notifications.md: unchanged status is noise, not a ping).
+# Edge-triggered off this verdict: any successful run overwrites it, so the next
+# outage is a new event and pings again. (PR #12 round-2 review, minor.)
+START_UNREACHABLE = "unreachable-at-start"
+
+# ...but edge-triggered alone buys UNBOUNDED silence: miss the one ping and a
+# three-week outage is three weeks of nothing. launchd-health-check.py solves the
+# same problem with FAIL_PING_TTL_SECONDS = 6h, which for a job that runs once a
+# night degenerates to a ping every night. So the cadence is counted in nights
+# instead: night 1, then every 7th. Once a week says "still dark" without
+# training the founder to swipe the channel away.
+START_UNREACHABLE_REPING_NIGHTS = 7
+
+# Linear does NOT answer {"issue": null} for an id it does not have. It answers
+# HTTP 200 with an `errors` array, and linear-sync.graphql raises on any errors
+# array (linear-sync.py:381). Captured live 2026-07-27 against both a well-formed
+# uuid with nothing behind it and a non-uuid string -- identical payload:
+#   [{"message": "Entity not found: Issue", ..., "code": "INPUT_ERROR",
+#     "statusCode": 400, "userError": true, ...}]
+# So "this issue is gone" arrives as an exception indistinguishable from "Linear
+# is down" unless something reads the message. Untreated, the operator deleting
+# the bot-filed issue meant nothing was ever filed again plus a nightly false
+# "Linear unreachable" ping while Linear was fine. (PR #12 round-2 review, major.)
+#
+# Matched on the message and deliberately NOT on INPUT_ERROR alone: a malformed
+# query is also INPUT_ERROR, and reading that as "gone" would fork a new permanent
+# issue every night. Linear issues cannot be deleted here (destructive-op-deny.sh
+# blocks *delete* and archive), so an over-match is unrecoverable while an
+# under-match only holds the failures for the next run.
+MISSING_ISSUE_MARKER = "entity not found"
 
 # Escape hatch for a claude installed somewhere CLAUDE_FALLBACKS never heard of
 # (nvm, volta, asdf all put it under a versioned dir). A hardcoded list cannot be
@@ -165,6 +211,10 @@ def needs_dor(issue: dict) -> bool:
     if (issue.get("state") or {}).get("type") not in DRAFTABLE_STATE_TYPES:
         return False
     desc = issue.get("description") or ""
+    # This job's own failure record. Drafting onto it burns a bounded nightly
+    # slot to write prose onto a machine-written log. See FAILURE_MARKER.
+    if FAILURE_MARKER in desc:
+        return False
     if DOR_HEADING in desc:
         return False
     # The generated capability issues already carry a DoR under their own wording.
@@ -189,16 +239,31 @@ def notify(message: str) -> bool:
         return False
 
 
-def read_pending() -> list:
-    """Failures an earlier run could not file. The state file's only reader."""
+def read_state() -> dict:
+    """Last run's state file. {} when missing or corrupt -- never raises, because
+    a job that dies reading its own bookkeeping is worse than one that starts
+    fresh. The state file's only reader lives here and in read_pending()."""
     try:
         data = json.loads(STATE.read_text())
     except (OSError, ValueError):
-        return []
-    items = (data or {}).get("pending_failures")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_pending(state: dict | None = None) -> list:
+    """Failures an earlier run could not file."""
+    items = (read_state() if state is None else state).get("pending_failures")
     if not isinstance(items, list):
         return []
     return [str(i) for i in items][-PENDING_CAP:]
+
+
+def write_state(**fields) -> None:
+    """The single writer. Every exit path from main() goes through it, including
+    the ones that did no work, so `ran_at` is a real heartbeat rather than a
+    'the last time this job got all the way to the end' timestamp."""
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(fields, indent=2))
 
 
 def claude_binary() -> str | None:
@@ -285,11 +350,29 @@ def fetch_draftable(ls, team_id: str) -> list:
     return [i for i in issues if needs_dor(i)]
 
 
+def _is_missing_issue(exc: Exception) -> bool:
+    """True when Linear said the issue does not exist, as opposed to being down.
+    See MISSING_ISSUE_MARKER for why this is matched on the message."""
+    return MISSING_ISSUE_MARKER in str(exc).lower()
+
+
 def _live_issue(ls, linear_id: str):
     """The permanent failure issue as Linear has it right now, or None if it is
     gone. fetch_remote_state cannot answer this: its query filters on project and
-    never selects state, so the dedup key alone says "exists", not "is open"."""
-    return (ls.graphql(ISSUE_STATE_Q, {"id": linear_id}) or {}).get("issue")
+    never selects state, so the dedup key alone says "exists", not "is open".
+
+    A deleted issue and a down Linear both arrive here as an exception; only the
+    first returns None. The second is re-raised so the caller holds the failures
+    for the next run instead of forking a permanent issue it cannot delete.
+    """
+    try:
+        return (ls.graphql(ISSUE_STATE_Q, {"id": linear_id}) or {}).get("issue")
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a deletion
+        if not _is_missing_issue(exc):
+            raise
+        print(f"  the recorded failure issue {linear_id} is gone from Linear; "
+              f"filing a fresh one", file=sys.stderr)
+        return None
 
 
 def _reopen(ls, team_id: str, linear_id: str) -> bool:
@@ -357,7 +440,7 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         payload = {
             "title": FAILURE_TITLE[:250],
             "description": (
-                f"<!-- kipi-key: {FAILURE_KEY} -->\n\n"
+                f"{FAILURE_MARKER}\n\n"
                 f"`com.kipi.linear-dor` had failures it cannot signal through its exit "
                 f"code (it exits 0 by design so launchd does not restart-loop it).\n\n"
                 f"{header}:\n\n{detail}\n\n"
@@ -398,11 +481,28 @@ def main() -> int:
     args = ap.parse_args()
 
     ls = _linear()
+    prior = read_state()
+    held = read_pending(prior)
     try:
         tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % TEAM_KEY,
                          {})["teams"]["nodes"][0]["id"]
     except Exception as exc:  # noqa: BLE001
+        # Nothing has been attempted, so nothing new is lost -- but the backlog
+        # stops draining and the night is a no-op. Leave a heartbeat, keep the
+        # held failures, and ping once per outage. See START_UNREACHABLE.
         print(f"linear unreachable: {exc}", file=sys.stderr)
+        nights = (prior.get("down_nights") or 0) + 1 if (
+            prior.get("failures_reported") == START_UNREACHABLE) else 1
+        write_state(ran_at=_now(), drafted=0, failed=0, carried_in=0,
+                    failures_reported=START_UNREACHABLE, down_nights=nights,
+                    pending_failures=held, remaining=None)
+        if nights == 1 or nights % START_UNREACHABLE_REPING_NIGHTS == 0:
+            note = f" {len(held)} earlier failure(s) still unfiled." if held else ""
+            notify(f"linear-dor: Linear unreachable at start for {nights} night(s), "
+                   f"the DoR drip is not running.{note} Next ping in "
+                   f"{START_UNREACHABLE_REPING_NIGHTS} nights if it stays down.")
+        print(f"dor-drafter: SKIPPED, Linear unreachable at start "
+              f"(night {nights}); {len(held)} failure(s) still held")
         return 0
 
     todo = fetch_draftable(ls, tid)
@@ -438,19 +538,17 @@ def main() -> int:
         print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
 
     # Anything an earlier night could not file rides along with tonight's, so a
-    # clean night still flushes the backlog. read_pending() is what gives the
-    # state file a reader.
-    pending = read_pending()
+    # clean night still flushes the backlog. `held` was read at the top of the
+    # run; read_state()/read_pending() are what give the state file a reader.
+    pending = held
     to_report = pending + failed
     reported = report_failures(ls, to_report, carried=len(pending))
     unfiled = to_report if reported == "unreachable" else []
 
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(
-        {"ran_at": _now(), "drafted": drafted, "failed": len(failed),
-         "carried_in": len(pending), "failures_reported": reported,
-         "pending_failures": unfiled[-PENDING_CAP:],
-         "remaining": len(todo) - drafted}, indent=2))
+    write_state(ran_at=_now(), drafted=drafted, failed=len(failed),
+                carried_in=len(pending), failures_reported=reported,
+                pending_failures=unfiled[-PENDING_CAP:],
+                remaining=len(todo) - drafted)
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
