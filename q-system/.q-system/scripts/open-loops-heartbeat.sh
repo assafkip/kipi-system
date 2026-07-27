@@ -21,6 +21,16 @@ RUNLOG="$SKEL/q-system/output/heartbeat-run-last.json"
 RUNLOG_TMP="$RUNLOG.steps.tmp"
 TS() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# Failures observed during this sweep. The script used to end in an
+# unconditional `exit 0`, so launchd recorded a clean run even when an
+# instance's agent died -- which made fleet-health-daily.py's `launchd-failing`
+# detector structurally blind to this job and left its failures in Slack and a
+# freeform log, never in Linear (ASK-184). The exit code IS the wire to Linear:
+# non-zero here -> LastExitStatus non-zero -> a deduped Linear issue on the next
+# fleet-health run. Counted, not `set -e`, so one bad instance still lets the
+# rest of the fleet sweep finish.
+SWEEP_FAILURES=0
+
 # Single-writer chokepoint for the structured run-log (2026-07-01: the freeform
 # .log was unauditable -- a sweep could miss instances and nothing diffed
 # expected-vs-actual; run-step-audit.py now does, post-sweep).
@@ -81,6 +91,7 @@ work_instance() {
   else
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"
     log_step "$name" failed "agent run failed/timeout"
+    SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
     KIPI_INSTANCE_NAME="$name" bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "heartbeat: autonomous run failed/timeout -- check open-loops-heartbeat.log" 2>/dev/null || true
   fi
 }
@@ -122,8 +133,18 @@ if ! AUDIT_OUT="$(python3 "$SKEL/q-system/.q-system/scripts/run-step-audit.py" \
     --manifest "$RUNLOG_TMP.expected" --log "$RUNLOG" --job open-loops-heartbeat 2>&1)"; then
   echo "$(TS) heartbeat AUDIT: $AUDIT_OUT" >> "$LOG"
   bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "heartbeat step-audit: $(printf '%s' "$AUDIT_OUT" | head -3 | tr '\n' ' ')" 2>/dev/null || true
+  SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
 else
   echo "$(TS) heartbeat AUDIT: $AUDIT_OUT" >> "$LOG"
 fi
 rm -f "$RUNLOG_TMP" "$RUNLOG_TMP.expected" 2>/dev/null || true
+
+# A `skipped` step (missing instance path, pre-propagation instance) is registry
+# drift, not a job failure, and is deliberately NOT counted here -- paging weekly
+# on known drift is the alert-fatigue that teaches the founder to ignore the
+# channel. Only a dead agent run or a step-audit mismatch reaches Linear.
+if [ "$SWEEP_FAILURES" -gt 0 ]; then
+  echo "$(TS) heartbeat: $SWEEP_FAILURES failure(s) this sweep -> exit 1" >> "$LOG"
+  exit 1
+fi
 exit 0
