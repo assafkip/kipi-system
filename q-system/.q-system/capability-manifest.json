@@ -289,6 +289,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-pr-receipt-gate.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

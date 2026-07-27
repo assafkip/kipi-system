@@ -83,6 +83,22 @@ jobs:
         env:
           CI: true
 
+      # ASK-210. linear-worker.sh stops the agent at "open a PR, do not merge --
+      # closeout runs through /issue-verify and /issue-closeout", and nothing
+      # invoked that closeout: on 2026-07-27 seven agent PRs merged with ZERO
+      # entries in .prd-os/receipts.jsonl. This step makes the absence fatal.
+      #
+      # --branch, not --pr: github.head_ref is already the head branch, so the
+      # gate needs neither gh nor a token. Only sana/ask-<n> branches are gated;
+      # human and chore PRs pass with an explicit "not gated" line.
+      - name: Receipt gate (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 q-system/.q-system/scripts/pr-receipt-gate.py \
+            --branch "${{ github.head_ref }}"
+        env:
+          CI: true
+
       - name: Check for protected file changes
         if: github.event_name == 'pull_request'
         run: |
