@@ -40,6 +40,11 @@ rc()  { set +e; run "$@"; local r=$?; set -e; echo "$r"; }
 
 [ -f "$CLAIM" ] || fail "linear-claim.py does not exist at $CLAIM"
 
+# Snapshot the live repo-root lock before anything runs, so case 21 can assert the
+# suite did not MUTATE it. A real worker may legitimately hold a claim while this
+# suite runs; that is the system working, not a leak.
+LIVE_LOCK_BEFORE="$(cat "$ROOT/.linear-claims.json" 2>/dev/null || echo '<absent>')"
+
 # --- REAL Linear payload, captured verbatim from mcp__linear__get_issue ------
 # Note `status` + `statusType`, NOT `state`. This is the shape that broke v1.
 cat > "$WORK/remote-started-other.json" <<'JSON'
@@ -288,9 +293,21 @@ ok "the recorded holder is the claimant that was told it won"
 [ ! -e "${KIPI_LINEAR_CLAIMS}.guard" ] || fail "the O_EXCL guard leaked after the race"
 ok "no guard file leaked after the race"
 
-# --- 21. isolation proof: the live lock was never touched -----------------
-[ ! -e "$ROOT/.linear-claims.json" ] || \
-  fail "the suite wrote the LIVE lock at repo root; the env override is not honored"
-ok "the live lock at repo root was never created"
+# --- 21. isolation proof: the live lock was never TOUCHED -----------------
+# Asserts the suite did not CHANGE the live lock, not that no lock exists.
+#
+# Scar 2026-07-27: this used to assert `! -e $ROOT/.linear-claims.json`, which
+# cannot distinguish "the suite wrote the live lock" (the real defect) from "a
+# real worker legitimately holds a claim right now" (the system working). It went
+# RED the first time linear-worker.sh ran for real, because the worker holds the
+# repo-root claim while it works. A test that fails whenever the product is in use
+# is a false-alarm generator, and false alarms are what teach an operator to skip
+# the gate -- the exact failure this fleet spent the day removing elsewhere.
+LIVE_LOCK="$ROOT/.linear-claims.json"
+if [ "$(cat "$LIVE_LOCK" 2>/dev/null || echo '<absent>')" = "$LIVE_LOCK_BEFORE" ]; then
+  ok "the live lock at repo root is byte-identical to before the suite ran"
+else
+  fail "the suite MUTATED the live lock at repo root; the env override is not honored"
+fi
 
 echo "PASS: linear-claim ($PASS checks)"

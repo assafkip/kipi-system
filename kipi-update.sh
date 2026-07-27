@@ -51,11 +51,22 @@ fi
 # the staging list) and drifted the moment a sixth entry was added -- the sync
 # wrote files it then refused to stage, leaving the instance dirty with no
 # commit. One list, four consumers.
+# The single answer to "what does kipi update NEVER copy into an instance?".
+# validate-separation.py's NON_PROPAGATED_PREFIXES mirrors this list and
+# test-gate-13b-scope.py parses this array to block drift between them.
+#
+# `research` added 2026-07-27 (ASK-191): q-system/research/ held four notes
+# written BY and ABOUT this instance (Claude Code workflow learnings, an RCA
+# resource list, a SkillOpt paper + PDF) and shipped all four to every
+# instance in the fleet, which has no use for them. That is a placement bug,
+# and the honest fix is to call the directory instance-owned rather than to
+# exclude the path from the gate that noticed.
 INSTANCE_OWNED_SUBTREES=(
   my-project
   canonical
   memory
   output
+  research
   .q-system/data
   .q-system/agent-pipeline/bus
 )

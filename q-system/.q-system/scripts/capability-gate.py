@@ -20,8 +20,10 @@ import argparse
 import datetime
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -285,6 +287,120 @@ def check_required_data(root, manifest, mode, errors):
             errors.append(f"required-data-missing: {entry.get('path')} (scope={scope})")
 
 
+class ContainedResult:
+    """What run_contained observed. `timed_out` is the deadline verdict; stdout /
+    stderr are always populated, partial on a timeout."""
+
+    def __init__(self, returncode, stdout, stderr, timed_out):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def run_contained(cmd, cwd, env, timeout):
+    """Run a test artifact so that NOTHING it spawns can outlive it or hold the
+    gate past `timeout`.
+
+    Two failures this closes (ASK-190):
+
+    1. `subprocess.run(capture_output=True, timeout=...)` waits on pipe EOF, not
+       on child exit. A test that backgrounds a child which inherits stdout keeps
+       that pipe's write end open, so the gate blocks after the test is already
+       gone -- reporting a PASSING test as RED with no way to tell the two apart.
+    2. On timeout `run()` kills only the direct child. Grandchildren survive as
+       orphans, and the next thing that reads the same pipe inherits the hang.
+
+    `start_new_session=True` puts the child in its own process group, so the
+    group signal below reaches the whole subtree. The group id is the child's
+    own pid -- never this process's group -- so cleanup can never reach the gate
+    itself. (A cleanup that re-raised at its own pid killed its caller once; that
+    is the shape being avoided here.)
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    # Read the pgid NOW. `start_new_session=True` makes it equal to proc.pid, but
+    # once the child is reaped its pid is gone and getpgid() would raise -- so
+    # looking it up during cleanup would silently skip the very orphan we are
+    # here to kill.
+    pgid = proc.pid
+
+    # Drain concurrently rather than reading after the wait: a test that writes
+    # more than one pipe buffer (64K) would block on write, never exit, and be
+    # reported as a timeout it did not earn.
+    chunks = {"out": [], "err": []}
+
+    def drain(stream, key):
+        try:
+            for line in iter(stream.readline, ""):
+                chunks[key].append(line)
+        except (ValueError, OSError):
+            pass  # closed under us by the reap; whatever we already read stands
+        finally:
+            try:
+                stream.close()
+            except (ValueError, OSError):
+                pass
+
+    readers = [
+        threading.Thread(target=drain, args=(proc.stdout, "out"), daemon=True),
+        threading.Thread(target=drain, args=(proc.stderr, "err"), daemon=True),
+    ]
+    for t in readers:
+        t.start()
+
+    # The deadline is on the CHILD'S EXIT, not on pipe EOF. That is the entire
+    # fix: a leaked grandchild holding the write end can no longer make a test
+    # that already exited 0 look like a hang.
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+
+    # Unconditional, not timeout-only: a test that exits cleanly while leaking a
+    # child is the common case here, and that orphan both holds this pipe and
+    # outlives the run into whatever reads next.
+    reap_group(proc, pgid)
+    for t in readers:
+        t.join(timeout=5)
+
+    return ContainedResult(
+        None if timed_out else proc.returncode,
+        "".join(chunks["out"]), "".join(chunks["err"]), timed_out,
+    )
+
+
+def reap_group(proc, pgid):
+    """SIGKILL the child's whole process group, then the child, then reap it.
+
+    TERM-then-KILL is not worth the extra deadline: by the time this runs the
+    process either finished or is over budget, and a test that ignores TERM
+    would spend the grace period twice.
+    """
+    # The one line that keeps cleanup off the parent. `pgid` is a child pid, so
+    # this should never match -- but a cleanup that signalled its own group once
+    # killed the harness that called it, and a cheap identity check is worth
+    # more than the assumption that it cannot happen.
+    if pgid and pgid != os.getpgid(0):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # already gone, or the child never got its own session
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_tests(root, manifest, mode, errors, notes):
     skeleton_only = set(manifest.get("skeleton_only", []))
     env = dict(os.environ, QROOT=str(root / "q-system"))
@@ -305,18 +421,12 @@ def run_tests(root, manifest, mode, errors, notes):
             continue  # already reported by the diff
         cmd = ["python3", str(full)] if entry["runner"] == "python3" else ["bash", str(full)]
         timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
-        try:
-            r = subprocess.run(cmd, cwd=root, env=env, capture_output=True,
-                               text=True, timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
+        r = run_contained(cmd, root, env, timeout)
+        if r.timed_out:
             # the partial output often names the hang (a prompt, a URL being
             # polled) — discarding it made timeouts undiagnosable (codex,
             # sag-runner-contract)
-            partial = ((exc.stdout or b"") if isinstance(exc.stdout, (bytes, bytearray))
-                       else (exc.stdout or "").encode())
-            partial += ((exc.stderr or b"") if isinstance(exc.stderr, (bytes, bytearray))
-                        else (exc.stderr or "").encode())
-            tail = "\n".join(partial.decode(errors="replace").splitlines()[-20:])
+            tail = "\n".join((r.stdout + r.stderr).splitlines()[-20:])
             errors.append(f"test-timeout ({timeout}s): {path}" + (f"\n{tail}" if tail else ""))
             continue
         ran += 1
