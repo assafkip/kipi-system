@@ -66,18 +66,71 @@ verdict_from_findings() {
   fi
 }
 
-# rework_gate <verdict>
+# pr_merge_state <pr-number>
+# GitHub's mergeStateStatus for a PR: CLEAN | DIRTY | BEHIND | BLOCKED |
+# UNSTABLE | DRAFT | HAS_HOOKS | UNKNOWN, or empty when gh cannot answer.
+# ONE reader of this state, for the same reason this file exists at all: the
+# worker and the driver both need it, and two callers each shelling their own
+# `gh pr view` is two readers of one input with drifting semantics. Empty on any
+# failure, which the gate treats as "still merges" -- see rework_gate.
+pr_merge_state() {
+  gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
+}
+
+# rework_gate <verdict> [merge-state]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
-#   10 = approved    (APPROVE or APPROVE WITH NITS -- nothing to rework; the PR
-#                     waits on the founder. Minors were captured, not wedged.)
+#   10 = approved    (APPROVE or APPROVE WITH NITS *and it still merges* --
+#                     nothing to rework; the PR waits on the founder. Minors
+#                     were captured, not wedged.)
 #   20 = unreviewed  (no verdict -- with no review there is no spec; refuse and
 #                     point at `kipi review <PR#> --post` instead of guessing)
+#   30 = conflicted  (approved, but it no longer merges -- a REBASE round, not a
+#                     review round. Distinct from 0 so the caller can cap it
+#                     separately; see the caller-owned cap note below.)
+#
+# WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
+# ----------------------------------------------------------
+# A verdict is a statement about a diff at a moment. The merge state is a
+# statement about that diff against main NOW, and main moves underneath it. PR
+# #11 was approved at 06:08Z; #16 landed at 17:30Z and broke it. Reading the
+# verdict alone, both converge and a direct worker run skipped #11 in under two
+# seconds and reported "waiting on founder merge only" -- so the loop could not
+# dispatch the one thing actually blocking the merge, and a human had to
+# diagnose it by hand. An approved PR that does not merge is not done.
+#
+# ONLY A STATED DIRTY OR BEHIND COUNTS. BLOCKED is a branch-protection state a
+# rebase cannot fix, UNSTABLE is a failing non-required check, UNKNOWN is GitHub
+# still computing, and empty is gh failing. Treating any of those as a conflict
+# would manufacture rebase rounds on healthy PRs every time the API was slow --
+# the wrong-refusal failure that would stall every instance's worker at once.
+# Fail toward "terminal": a missed conflict costs one human diagnosis, a
+# manufactured one costs unbounded model budget on every PR at once.
+#
+# 30 IS NOT 0, AND THE CAP IS THE CALLER'S (PR #22 round-3 review, finding 4)
+# --------------------------------------------------------------------------
+# Making APPROVE non-terminal opens an unbounded rework path: an unresolvable
+# conflict yields infinite rounds, and every round writes a permanent Linear
+# comment on an object that cannot be deleted. So this returns a DISTINCT code
+# rather than folding into 0. The caller caps conflict rounds on its own budget,
+# separate from the review-round budget -- a PR that has converged on content
+# must not lose its review rounds to rebase attempts. The gate answers "is this
+# a conflict?"; it does not answer "have we tried enough times?", because the
+# round ledger lives with the caller that owns the dispatch.
+#
+# The ONE-ARGUMENT form keeps its original semantics exactly (no merge state
+# supplied reads as "still merges"), because converge.sh calls it that way and a
+# silent behaviour change on the short form is a fleet-wide bug.
 rework_gate() {
-  case "${1:-}" in
+  local verdict="${1:-}" merge_state="${2:-}"
+  case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
-    "APPROVE"|"APPROVE WITH NITS")        return 10 ;;
+    "APPROVE"|"APPROVE WITH NITS")
+      case "$merge_state" in
+        "DIRTY"|"BEHIND")                 return 30 ;;
+        *)                                return 10 ;;
+      esac ;;
     *)                                    return 20 ;;
   esac
 }

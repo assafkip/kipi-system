@@ -70,6 +70,24 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 MAX_ATTEMPTS=3
+# Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
+# MAX_ATTEMPTS only counts runs where `claude` exits non-zero, and the cited
+# failure mode is an agent that exits 0 having done the wrong thing -- so it
+# would never bound a rebase that cannot succeed.
+# 2: a rebase either works on the first honest attempt or the conflict needs a
+# human. Round 3 has never been the one that lands it here.
+#
+# WHAT THIS CAP DOES *NOT* DO (PR #25 review, finding 4): it does not buy a
+# converged PR an exemption from review. A rebase REWRITES the diff, so the
+# stored APPROVE no longer describes what is on the branch, and the round below
+# re-reviews it like any other push. Skipping that would ship a force-pushed
+# diff nobody ever read under an approval earned by a different diff. What the
+# separate counter buys is that a rebase cannot spend MAX_ATTEMPTS and cannot
+# loop forever -- two budgets, two questions, neither one a licence to skip the
+# reviewer. `rounds` therefore counts every review this worker triggered,
+# rebases included, and `conflict_rounds` says how many of the current streak
+# were rebases.
+MAX_CONFLICT_ROUNDS=2
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
@@ -220,6 +238,116 @@ except Exception: d={}
 e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
 json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
 
+# --- conflict-round ledger (ASK-212) ----------------------------------------
+# Its own counter in the same file, deliberately NOT `count` (failed attempts)
+# and NOT `rounds` (review rounds). Three different budgets answering three
+# different questions; sharing one would let a rebase attempt spend a review
+# round, which is the thing the separate cap exists to prevent.
+conflict_rounds_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('conflict_rounds',0))" "$1"; }
+
+bump_conflict_round() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); e['conflict_rounds']=e.get('conflict_rounds',0)+1
+e['last_conflict']=sys.argv[2]
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+
+# CONSECUTIVE, NOT LIFETIME (PR #25 review, finding 3). Nothing used to clear
+# these keys, so the cap counted every conflict the issue ever had -- including
+# ones a rebase successfully fixed -- and the third conflict across an issue's
+# life was permanently un-dispatchable AND silent, because `conflict_paged` was
+# already true so it did not even page. A PR that merges cleanly again ended its
+# streak, so the streak's counters go with it.
+#
+# Only on a STATED "CLEAN": empty means gh failed and UNKNOWN means GitHub is
+# still computing, and refilling a budget from a state nobody actually read is
+# how an unresolvable conflict gets infinite rounds. Clearing conflict_paged
+# alongside is deliberate: a NEW conflict streak after the PR was healthy is new
+# information, not a repeat of the page the founder already got.
+clear_conflict_rounds() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: raise SystemExit(0)
+e=d.get(sys.argv[1])
+if not e or not (e.get('conflict_rounds') or e.get('conflict_paged')): raise SystemExit(0)
+for k in ('conflict_rounds','conflict_paged','last_conflict'): e.pop(k,None)
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+
+# Returns 0 the FIRST time <flag> is claimed for this issue and 1 every time
+# after, so a page fires exactly once instead of once per scheduled run. A
+# repeated "still stuck" every cycle is noise, and noise trains the reader to
+# skim the real pages (founder-notifications.md). The flag is claimed in the
+# same write that reports it, so two runs cannot both read "not paged yet".
+# Takes the flag NAME so every once-only page in this script shares one
+# mechanism instead of each stuck-state inventing its own convention.
+claim_page_once() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{})
+first = not e.get(sys.argv[2])
+e[sys.argv[2]]=True
+json.dump(d,open('$ATTEMPTS','w'),indent=2)
+raise SystemExit(0 if first else 1)" "$1" "$2"; }
+
+# --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
+# tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
+# already reachable from the tree's HEAD -- i.e. a push from this tree destroys
+# nothing. Compared against origin/<branch> rather than the API's headRefOid on
+# purpose: origin/<branch> is exactly what a force-push overwrites, and reading
+# it costs no network call that could fail open.
+tree_holds_pr_head() {
+  # A remote branch that does not exist has nothing to lose, so the invariant
+  # ("hold everything origin/<branch> has") is vacuously satisfied. Same
+  # reasoning as the start-point fallback below; without this the check would
+  # refuse every round on a PR whose head branch was already pruned.
+  git -C "$1" rev-parse --verify -q "origin/$2" >/dev/null 2>&1 || return 0
+  git -C "$1" merge-base --is-ancestor "origin/$2" HEAD 2>/dev/null
+}
+
+# position_tree_on_pr_head <tree> <branch>: move a tree onto the PR's head
+# without discarding anything that exists only there. Refuses (1) on a dirty
+# working tree, or on any commit not reachable from origin/<branch> or
+# origin/main -- the two places work can legitimately live. An unattended job
+# does not get to throw away commits nobody has seen; when it cannot prove the
+# move is lossless it declines the round and leaves the tree for a human.
+# Sets POSITION_REFUSAL to the REASON when it declines, because "cannot be moved
+# safely" covers four different states and the operator reading this at 3am has
+# to know which one they are looking at.
+POSITION_REFUSAL=""
+position_tree_on_pr_head() {
+  local tree="$1" branch="$2" dirty extra
+  POSITION_REFUSAL=""
+  # `.linear-claims.json` is EXCLUDED: the claim taken two lines above this call
+  # writes that file into the very tree being judged, so counting it as local
+  # work made every inherited tree unrepositionable -- turning a destructive
+  # round into a permanently stalled issue plus a page. It is this worker's own
+  # lock, never a human's work.
+  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v '\.linear-claims\.json$')"
+  if [ -n "$dirty" ]; then
+    POSITION_REFUSAL="the tree has uncommitted changes"
+    return 1
+  fi
+  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)"
+  if [ -n "$extra" ]; then
+    POSITION_REFUSAL="the tree holds $(printf '%s\n' "$extra" | grep -c .) commit(s) that exist nowhere else"
+    return 1
+  fi
+  if ! git -C "$tree" checkout -q -B "$branch" "origin/$branch" 2>>"$LOG"; then
+    POSITION_REFUSAL="git could not check out origin/$branch (see $LOG)"
+    return 1
+  fi
+  if ! tree_holds_pr_head "$tree" "$branch"; then
+    POSITION_REFUSAL="the tree still does not contain origin/$branch after the checkout"
+    return 1
+  fi
+}
+
 DONE=0
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
@@ -246,6 +374,7 @@ while IFS= read -r ISSUE; do
   # alarm, and false alarms train the reader to ignore the real notes.
   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
+  CONFLICT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
     if [ -z "$PR_VERDICT" ]; then
@@ -254,7 +383,15 @@ while IFS= read -r ISSUE; do
       LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
-    rework_gate "$PR_VERDICT"; GATE=$?
+    # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
+    # so the worker and the driver cannot drift on what "still merges" means.
+    MERGE_STATE="$(pr_merge_state "$EXISTING_PR")"
+    # The streak ends the moment the PR merges cleanly again -- see
+    # clear_conflict_rounds. Placed before the gate so it runs on every verdict,
+    # not just the approving ones: a rework round that also resolves the
+    # conflict ended the streak just as much.
+    [ "$MERGE_STATE" = "CLEAN" ] && clear_conflict_rounds "$ISSUE"
+    rework_gate "$PR_VERDICT" "$MERGE_STATE"; GATE=$?
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -262,6 +399,31 @@ while IFS= read -r ISSUE; do
     if [ "$GATE" = "20" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
+    fi
+    if [ "$GATE" = "30" ]; then
+      # Approved on content, but it no longer merges. Dispatch a REBASE round on
+      # its own budget -- and stop dead once that budget is spent, because an
+      # unresolvable conflict would otherwise rework forever and write a
+      # permanent Linear comment on every round.
+      CR="$(conflict_rounds_for "$ISSUE")"
+      if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
+        if claim_page_once "$ISSUE" conflict_paged; then
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+        fi
+        continue
+      fi
+      # THE ROUND IS NOT SPENT HERE, only planned (PR #25 review, finding 2).
+      # Everything between this line and the dispatch can still decline the run:
+      # another session's claim, a worktree that cannot be created, a tree that
+      # cannot be positioned on the PR's head. Spending the budget up here meant
+      # two runs skipped by a stale claim -- converge.sh's own documented
+      # 2026-07-27 scar, a SIGKILL or a sleeping laptop leaving a lock nobody
+      # reclaims -- burned the whole budget having dispatched ZERO rebases, then
+      # paged the founder a round count that never happened and locked the issue
+      # out until someone hand-edited the ledger. The bump and the log line both
+      # live at the dispatch site below, where the round actually happens.
+      CONFLICT_ROUND=$((CR + 1))
     fi
   fi
 
@@ -275,9 +437,34 @@ while IFS= read -r ISSUE; do
   # commit 53f2eeb, the scar this whole line of work started from. A worktree
   # makes that collision impossible by construction instead of merely detected.
   TREE="$STATE_DIR/worktrees/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+  # WHERE A NEW TREE STARTS DEPENDS ON WHETHER A PR ALREADY EXISTS (PR #25
+  # review, finding 1 -- major). `worktree add -B` RESETS the branch to the
+  # start point. origin/main is correct for fresh work and destructive for a PR
+  # that is already open: the agent gets a tree holding NONE of the PR's
+  # commits, and the rebase prompt below then tells it to
+  # `git push --force-with-lease`, which deletes the approved diff from the
+  # remote branch. The lease does not catch it -- the fetch above just
+  # refreshed origin/$BRANCH, so the lease sees no surprise and allows the
+  # push. The PR's head is origin/$BRANCH; when there is a PR, that is the
+  # only defensible start point.
+  BASE="origin/main"
+  if [ -n "$EXISTING_PR" ]; then
+    if git -C "$SKEL" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
+      BASE="origin/$BRANCH"
+    else
+      # gh named a PR whose head branch is not on the remote (deleted after a
+      # merge, pruned by hand). Cutting from main is safe HERE and only here:
+      # there is no remote branch left for a force-push to destroy. Said out
+      # loud rather than fallen through silently, because an unexplained
+      # origin/main is the exact behaviour this block exists to stop -- and
+      # refusing instead would stall the issue every cycle with one INFRA line
+      # nobody reads.
+      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/main (nothing on the remote to overwrite)"
+    fi
+  fi
   if [ ! -d "$TREE" ]; then
     mkdir -p "$(dirname "$TREE")"
-    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" origin/main 2>>"$LOG"; then
+    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
       # test above and this line. That is the collision the claim below exists to
       # adjudicate, not an infra failure -- so fall through and let it, rather
@@ -312,6 +499,33 @@ while IFS= read -r ISSUE; do
     if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
     say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
   fi
+  # 3. THE TREE MUST STAND ON THE PR'S HEAD before a round that will push over
+  # it. A tree left by an earlier round, or cut by the version of this script
+  # that always used origin/main, can be missing every commit the PR is made of
+  # -- and the round would then force-push that emptiness over the approved
+  # diff. Repositioning happens HERE, after the claim, because it mutates the
+  # tree and the claim is what says this session owns it.
+  if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
+    if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
+      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
+      if claim_page_once "$ISSUE" tree_paged; then
+        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+      fi
+      # Release before skipping: a claim held by a run that did nothing wedges
+      # this issue for every later run, which is the failure this refusal exists
+      # to avoid, one layer out.
+      ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      continue
+    fi
+  fi
+
+  # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every
+  # decline above this line left the budget intact (PR #25 review, finding 2),
+  # so the counter and the log line below both describe rounds that really ran.
+  if [ -n "$CONFLICT_ROUND" ]; then
+    bump_conflict_round "$ISSUE"
+    say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE -- dispatching rebase round $CONFLICT_ROUND/$MAX_CONFLICT_ROUNDS"
+  fi
   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
   python3 "$SYNC" progress "$ISSUE" \
     "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
@@ -322,8 +536,42 @@ while IFS= read -r ISSUE; do
   # DoR" to an agent whose work is already written and already criticised, and it
   # would plausibly start over. The review is the spec for this pass.
   # EXISTING_PR was discovered above, before the claim; reaching this line means
-  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
-  if [ -n "$EXISTING_PR" ]; then
+  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK,
+  # or ruled it approved-but-unmergeable (gate 30, the conflict branch below).
+  #
+  # A CONFLICT ROUND IS NOT A REVIEW ROUND, so it does not get the review prompt.
+  # The review APPROVED this diff -- handing the agent "the review is the spec,
+  # answer every finding" against a review with no findings is how ASK-208's
+  # rounds 1 and 2 both did code polish while the conflict went untouched. The
+  # spec for this pass is the conflict and nothing else.
+  if [ -n "$CONFLICT_ROUND" ]; then
+    REWORK="
+
+## THIS IS A REBASE ROUND. THE CONFLICT IS THE ONLY TASK.
+
+PR #$EXISTING_PR on this branch was already REVIEWED AND APPROVED ('$PR_VERDICT').
+GitHub now reports its merge state as $MERGE_STATE: main moved underneath it and
+it no longer merges. This is round $CONFLICT_ROUND of $MAX_CONFLICT_ROUNDS; at the cap the
+worker stops and pages a human, so do not spend this round on anything else.
+
+Do exactly this:
+
+  git fetch origin
+  git rebase origin/main        # or merge origin/main, whichever this repo prefers
+  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on main
+  bash <the tests this PR already ships>   # they must still pass after the rebase
+  git push --force-with-lease origin $BRANCH
+
+DO NOT redesign, refactor, polish, or 'improve' the approved diff. DO NOT re-open
+the design. Any change beyond what resolving the conflict requires costs the PR
+its approval and starts the review over.
+
+If the conflict cannot be resolved without a real decision (the two sides changed
+the same behaviour on purpose), say so on the issue via progress and STOP:
+  bash $SKEL/kipi linear progress $ISSUE \"<the conflict and the decision it needs>\" --agent sana
+
+Push to the SAME branch $BRANCH. Do not open a second PR."
+  elif [ -n "$EXISTING_PR" ]; then
     REWORK="
 
 ## THIS IS A REWORK, NOT A FRESH START
