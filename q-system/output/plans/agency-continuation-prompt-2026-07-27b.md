@@ -21,12 +21,13 @@ something. The gate was unsatisfiable by construction. Fixed and proven:
 | ASK-183 | 3, fully unattended | APPROVE WITH NITS | #12 |
 | ASK-184 | 1 (+1 stranded, see below) | APPROVE WITH NITS | #13 |
 | ASK-188 | 1 | APPROVE WITH NITS | #14 |
+| ASK-182 | 1, detached | APPROVE WITH NITS | #15 |
 
 ASK-150's arc was monotonic: 2 blockers, then 1 blocker + 2 majors, then 1 major
 + 6 minors, then 2 majors + 3 minors, then 2 minors + a nit. The work was
 converging the whole time; only the gate could not say "good enough".
 
-## TWO OPEN DECISIONS. Both are the founder's.
+## ONE OPEN DECISION for the founder, one solved workaround
 
 ### 1. Branch protection — 4 approved PRs cannot merge
 
@@ -39,9 +40,23 @@ unattended is the PocketOS shape the global rules exist to prevent.
 board stays serial at 25-70 min per issue. Founder decides: merge with `--admin`,
 or fix validate first, or relax the required check for `sana/*` branches.
 
-### 2. Long runs are being SIGKILLed — dispatching is currently unreliable
+### 2. SIGKILLed long runs — DIAGNOSED AND WORKED AROUND, no longer blocking
 
-Three consecutive dispatches died: ASK-181 twice, ASK-182 once. Each left a
+**Answer: launch converge DETACHED. `nohup ./kipi converge --issue ASK-n
+--max-rounds 3 > ~/.config/kipi/converge-<issue>.log 2>&1 & disown`**
+
+Proven: ASK-182 died as a harness-tracked background task, then converged in 1
+round (PR #15, APPROVE WITH NITS, claim released cleanly) when relaunched
+detached with an identical command. So the killer is the harness's
+background-task lifecycle for a long-running child late in a session, NOT
+anything in these scripts. In production under launchd the job is detached
+anyway, which is why this never showed up before an interactive session drove it.
+
+Do not "fix" this in converge.sh — there is nothing wrong with converge.sh. It is
+a rule about how an interactive session must launch it. ASK-189 still matters
+independently: a SIGKILL from any source still leaks a claim.
+
+Three consecutive dispatches died first: ASK-181 twice, ASK-182 once. Each left a
 leaked claim that stopped the whole board until released by hand.
 
 What is RULED OUT (do not re-test these):
@@ -53,13 +68,10 @@ What is RULED OUT (do not re-test these):
 - **"Execution error" in the worker log is the SYMPTOM, not the cause.**
   `claude -p` emits it as it dies. Do not chase it as a root cause.
 
-Still open: what sends the SIGKILL. 5 runs succeeded 07:16-08:19 UTC; the 3
-failures were 13:36-13:54 UTC after a ~5h idle gap. Suspect the harness's
-background-task lifecycle late in a long session. **Last action of the session:
-relaunched ASK-182 DETACHED via `nohup ... & disown`** writing to
-`~/.config/kipi/converge-ask182.log` — read that log first, it answers whether
-detaching defeats the killer. If it does, detached is how converge should always
-be launched.
+Timeline that pinned it: 5 runs succeeded 07:16-08:19 UTC as tracked background
+tasks; the 3 failures were 13:36-13:54 UTC after a ~5h idle gap; the detached
+relaunch at 13:57 succeeded. Same command, same issue, same worktree — only the
+launch mode differed.
 
 ## What shipped (all pushed to main)
 

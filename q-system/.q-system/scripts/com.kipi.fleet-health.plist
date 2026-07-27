@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily fleet-health sweep.
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. Born hardcoding the founder's home directory (896dc4b,
+     ASK-113), which made the skeleton unusable on any other machine and failed
+     validate-separation's Full skeleton sweep; converted to the
+     openloops-heartbeat placeholder convention in ASK-191.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-health -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -8,7 +15,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
-    <string>/Users/assafkipnis/projects/kipi-system/q-system/.q-system/scripts/fleet-health-daily.py</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/fleet-health-daily.py</string>
     <string>--apply</string>
   </array>
 
@@ -24,11 +31,11 @@
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/assafkipnis/.config/kipi/fleet-health.out</string>
+  <string>__HOME__/.config/kipi/fleet-health.out</string>
   <key>StandardErrorPath</key>
-  <string>/Users/assafkipnis/.config/kipi/fleet-health.err</string>
+  <string>__HOME__/.config/kipi/fleet-health.err</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/assafkipnis/projects/kipi-system</string>
+  <string>__KIPI_REPO__</string>
 </dict>
 </plist>
