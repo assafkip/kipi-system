@@ -471,6 +471,55 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
     return team_id, project, keys
 
 
+COMMENT_CREATE = """
+mutation($input: CommentCreateInput!) {
+  commentCreate(input: $input) { success comment { id } }
+}
+"""
+
+ISSUE_BY_ID = """
+query($id: String!) { issue(id: $id) { id identifier title state { name type } } }
+"""
+
+
+def cmd_progress(args) -> int:
+    """Post a progress note onto an issue, and optionally move its state.
+
+    Why this exists: measured 2026-07-26, ONE issue out of 146 carried any
+    progress comments (ASK-113, where sessions had been reporting by hand). An
+    issue that says only "In Progress" with no trail is indistinguishable from an
+    abandoned one -- which is exactly the "left hanging" state the founder is
+    trying to eliminate. The trail belongs ON the issue, not in a chat log or a
+    Slack message, because those cannot be read later by whoever picks it up.
+
+    Agents call this as they work. The founder reads the issue, not the agent.
+    """
+    try:
+        issue = graphql(ISSUE_BY_ID, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    who = args.agent or os.environ.get("KIPI_AGENT") or "sana"
+    body = f"**{who}** · {stamp}\n\n{args.note}"
+    if args.evidence:
+        # "I ran X and got Y" beats "should work" -- the repo's own bar.
+        body += f"\n\n```\n{args.evidence}\n```"
+
+    graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    print(f"{issue['identifier']}: progress noted by {who} (state: {issue['state']['name']})")
+    # Deliberately does NOT change state. A progress note and a state transition
+    # are different claims: "here is what happened" vs "this is now done". Moving
+    # state belongs to the closeout gates (/issue-verify, /issue-closeout), which
+    # refuse without receipts. Letting a comment also flip state would route
+    # around them.
+    return EXIT_OK
+
+
 def cmd_remote(args) -> int:
     """Write the snapshot `plan --remote` expects, straight from the API.
 
@@ -779,6 +828,13 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--capability", required=True)
     p.set_defaults(func=cmd_key)
+
+    p = sub.add_parser("progress", help="post a progress note onto an issue")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-113")
+    p.add_argument("note", help="what happened, in one or two sentences")
+    p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
+    p.add_argument("--evidence", help="the command and its real output")
+    p.set_defaults(func=cmd_progress)
 
     p = sub.add_parser("remote", help="fetch the remote snapshot plan --remote wants")
     p.add_argument("--repo", required=True)

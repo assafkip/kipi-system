@@ -29,6 +29,7 @@ usage() {
   echo "  kipi linear claim <ASK-n> --agent <name> --session <id>   Claim this tree BEFORE branching (exit 3 = refused)"
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
+  echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
@@ -138,6 +139,8 @@ PY
       # delete/archive are hook-blocked so a duplicate is permanent.
       create)  python3 "$SYNC" create "$@" ;;
       remote)  python3 "$SYNC" remote "$@" ;;
+      # Progress belongs ON the issue: a trail the next agent can read.
+      progress) python3 "$SYNC" progress "$@" ;;
       record)  python3 "$SYNC" record "$@" ;;
       key)     python3 "$SYNC" key "$@" ;;
       # Claim BEFORE creating a branch or worktree. Exit 3 means refused (another
@@ -147,7 +150,7 @@ PY
       claims)  python3 "$CLAIM" status "$@" ;;
       *)
         echo "unknown: kipi linear $sub" >&2
-        echo "try: issue | pending | status | map | overlap | plan | remote | create | record | key" >&2
+        echo "try: issue | pending | status | map | overlap | plan | remote | create | progress | record | key" >&2
         echo "     claim | release | claims" >&2
         exit 1
         ;;
