@@ -722,7 +722,12 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
     if _depth > 5:
         return False
     command = _strip_comment(command)
-    for tokens in _shell_segments(command):
+    # Substitutions come OUT before the segment walk lexes, and go back in as one
+    # argument-shaped token each. Their contents are walked separately below, at
+    # the same depth cap. Leaving them inline let a substitution's internal space
+    # split an assignment prefix across two tokens (see _split_substitutions).
+    masked, inner_commands = _split_substitutions(command)
+    for tokens in _shell_segments(masked):
         command_index = _command_index(tokens)
         command_token = tokens[command_index] if command_index >= 0 else ""
         if _is_claude_token(command_token):
@@ -732,9 +737,9 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
             if inner and _shells_claude(inner, _depth + 1):
                 return True
     # A substitution is a command position of its own, and the segment walk above
-    # cannot reach one that a quote has kept whole. Same recursion, same depth cap
-    # as the `-c` string: what runs inside `$( )` or backticks is a command, not text.
-    for inner in _substitutions(command):
+    # cannot reach one: it saw a placeholder. Same recursion, same depth cap as
+    # the `-c` string: what runs inside `$( )` or backticks is a command, not text.
+    for inner in inner_commands:
         if _shells_claude(inner, _depth + 1):
             return True
     return False
