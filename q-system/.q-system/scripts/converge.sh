@@ -70,6 +70,73 @@ if [ "$DRY" = "1" ]; then
   exit 0
 fi
 
+# RELEASE THE CLAIM IF THIS RUN IS KILLED.
+#
+# linear-claim.py deliberately does NOT pid-check the claim itself (only the
+# critical-section guard) -- the claiming python process exits immediately, so
+# its pid is meaningless, and the claim is meant to outlive it. Correct design,
+# real operational hole: a SIGKILL, a harness timeout, a laptop sleeping, or a
+# ctrl-c leaves the lock held with nothing to reclaim it.
+#
+# Observed 2026-07-27: this driver was killed mid-run on ASK-181 and left
+# `ASK-181 claimed by sana (session worker-1785159359-39569)`. Because the lock
+# is still repo-root scoped until ASK-188 lands, that one dead session blocked
+# EVERY issue on the board until a human released it by hand. In an unattended
+# loop, "a human notices and runs release" is not a recovery path -- nobody is
+# watching, which is the entire premise.
+#
+# The trap cannot know the worker's session token (the worker mints its own), so
+# it releases by the holder RECORDED IN THE LOCK, which is what the manual fix
+# does. Best-effort by design: never let cleanup failure mask the real exit code.
+release_stale_claim_for_issue() {
+  local held
+  held="$(python3 - "$ISSUE" <<'PY' 2>/dev/null || true
+import json, os, subprocess, sys
+issue = sys.argv[1]
+override = os.environ.get("KIPI_LINEAR_CLAIMS")
+if override:
+    path = override
+else:
+    try:
+        root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        raise SystemExit(0)
+    path = os.path.join(root, ".linear-claims.json")
+try:
+    rec = json.load(open(path))
+except Exception:
+    raise SystemExit(0)
+# Only speak up for THIS issue: never release a lock another issue legitimately holds.
+if rec.get("issue") == issue:
+    print("%s\t%s" % (rec.get("agent", ""), rec.get("session", "")))
+PY
+)"
+  [ -n "$held" ] || return 0
+  local agent session
+  agent="$(printf '%s' "$held" | cut -f1)"
+  session="$(printf '%s' "$held" | cut -f2)"
+  [ -n "$session" ] || return 0
+  python3 "$SCRIPT_DIR/linear-claim.py" release "$ISSUE" \
+    --agent "$agent" --session "$session" >/dev/null 2>&1 \
+    && say "released the claim this run left on $ISSUE (holder $session)" || true
+}
+
+# Exits 128+n directly rather than re-raising the signal at itself. Re-raising is
+# the tidier convention, but `kill -TERM $$` from a backgrounded run reached the
+# PARENT too and killed the caller: the test suite that drives this exited 143
+# with its own later cases never run. A cleanup path that can take down its
+# caller is worse than an unconventional exit code.
+on_interrupt() {
+  local sig="$1" code="$2"
+  say "INTERRUPTED by $sig -- releasing any claim so the board is not wedged"
+  release_stale_claim_for_issue
+  exit "$code"
+}
+trap 'on_interrupt TERM 143' TERM
+trap 'on_interrupt INT  130' INT
+trap 'on_interrupt HUP  129' HUP
+
 LAST_VERDICT=""; LAST_SHA=""; ROUND=0
 while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   ROUND=$((ROUND + 1))

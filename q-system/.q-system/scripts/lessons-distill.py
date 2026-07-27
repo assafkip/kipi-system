@@ -146,6 +146,30 @@ def gate(title, body, roster, verify_mode):
     return scrubbed, None
 
 
+def held_source_link(path):
+    """Provenance for a held lesson, as a fleet-relative markdown link.
+
+    Was a bare absolute path (`source: /Users/<name>/projects/cole-gtm/...`),
+    which put a machine-specific home directory into a committed file and made
+    validate-separation's Gate 1.3b read the held file as a dated instance fact
+    (ASK-191). Relative-and-linked fixes both: the path stops naming a person's
+    home, and a `Source:` line pointing at a document you can open is a
+    citation, not an identity.
+
+    Fleet root = the parent of the instance repo, so the link resolves for any
+    checkout layout rather than only the author's.
+    """
+    source = Path(path).resolve()
+    fleet_root = Path(__file__).resolve().parents[4]
+    try:
+        relative = source.relative_to(fleet_root)
+    except ValueError:
+        # Outside the fleet root: keep the name, drop the leading directories
+        # rather than emitting somebody's home directory.
+        relative = Path(source.name)
+    return f"[{relative.name}](../{relative.as_posix()})"
+
+
 def write_lesson(lessons_dir, distilled, published_text, stamp, used_ids):
     title = published_text.split("\n", 1)[0].strip() or distilled["title"]
     body = published_text.split("\n", 1)[1].strip() if "\n" in published_text else ""
@@ -201,7 +225,8 @@ def main():
         else:
             held_dir.mkdir(parents=True, exist_ok=True)
             (held_dir / f"held-{h}.md").write_text(
-                f"# HELD lesson (not published)\n\nreason: {held_reason}\nsource: {path}\n\n"
+                f"# HELD lesson (not published)\n\nreason: {held_reason}\n"
+                f"source: {held_source_link(path)}\n\n"
                 f"proposed title: {distilled['title']}\n\n{distilled['body']}\n")
             held.append(distilled["title"])
         ledger[h] = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
