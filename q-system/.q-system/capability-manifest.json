@@ -261,6 +261,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
