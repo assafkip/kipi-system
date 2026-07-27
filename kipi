@@ -34,7 +34,8 @@ usage() {
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
-  echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
+  echo "  kipi directive <ASK-n> "<text>"  Standing instruction the worker renders into EVERY rework prompt (--clear to retire)
+  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
@@ -96,6 +97,53 @@ case "${1:-help}" in
     # It opens a PR and stops: it cannot merge and cannot close an issue.
     shift || true
     bash "$KIPI_HOME/q-system/.q-system/scripts/linear-worker.sh" "$@"
+    ;;
+  directive)
+    # THE PRODUCER for the operator directive linear-worker.sh reads
+    # (ASK-208, sp-fd76af2f). The reader shipped first and nothing wrote the
+    # file, so the feature only worked for someone who had read the worker
+    # source and inferred the path by hand -- a state file with a consumer and
+    # no producer, which wiring-check.md calls out by name.
+    #
+    # A directive is a standing instruction for ONE issue that survives every
+    # review round. The reviewer regenerates its findings each round, so
+    # anything an operator injects into a review is gone next pass; this is not.
+    # It is retired by --clear and by nothing else.
+    #
+    # KIPI_STATE_DIR is read the same way the worker reads it, from the same
+    # env var with the same default. Two ends of a cross-process handshake, one
+    # path convention.
+    shift || true
+    D_ISSUE="$(echo "${1:-}" | tr 'a-z' 'A-Z')"
+    shift || true
+    D_STATE="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
+    D_DIR="$D_STATE/directives"
+    if [ -z "$D_ISSUE" ]; then
+      echo "usage: kipi directive <ASK-nnn> \"<standing instruction>\"" >&2
+      echo "       kipi directive <ASK-nnn>            # show the current one" >&2
+      echo "       kipi directive <ASK-nnn> --clear    # retire it" >&2
+      exit 1
+    fi
+    mkdir -p "$D_DIR"
+    D_FILE="$D_DIR/$(echo "$D_ISSUE" | tr 'A-Z' 'a-z').md"
+    case "${1:-}" in
+      --clear)
+        if [ -f "$D_FILE" ]; then rm -f "$D_FILE"; echo "cleared the directive on $D_ISSUE"
+        else echo "no directive on $D_ISSUE"; fi
+        ;;
+      "")
+        if [ -s "$D_FILE" ]; then
+          echo "directive on $D_ISSUE ($D_FILE):"; cat "$D_FILE"
+        else
+          echo "no directive on $D_ISSUE. Set one: kipi directive $D_ISSUE \"...\""
+        fi
+        ;;
+      *)
+        printf '%s\n' "$*" > "$D_FILE"
+        echo "directive set on $D_ISSUE ($D_FILE)."
+        echo "It is rendered verbatim into EVERY rework prompt until: kipi directive $D_ISSUE --clear"
+        ;;
+    esac
     ;;
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that

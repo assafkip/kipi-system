@@ -76,23 +76,47 @@ HOOKS_ROOT="$STATE_DIR/worktree-hooks"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 MAX_ATTEMPTS=3
+# CEILING ON REWORK ROUNDS (round-3 review, finding 4). MAX_ATTEMPTS above counts
+# only runs where `claude` exits NON-ZERO, and the failure this bounds is an agent
+# that exits 0 having done the wrong thing. Since mergeability joined the gate,
+# an approved PR that stops merging re-enters rework -- correct, and previously
+# unbounded: the `rounds` counter was written every round and never read.
+# Measured before this cap: 6 scheduled runs on one approved+CONFLICTING PR gave
+# 6 dispatched rounds and 18 permanent Linear comments, with 0 refusals.
+#
+# A STALL CHECK IS NOT ENOUGH HERE. converge's exit-5 needs an unchanged head
+# sha, and the cited agent pushes every round -- it polishes code while the
+# conflict survives -- so the sha moves and a stall check never fires. Only a
+# ceiling bounds that shape.
+#
+# 6, above converge's default MAX_ROUNDS=4, so the attended driver still hits its
+# own cap first and this one only ever binds the unattended `kipi work` path.
+# Resettable by design (--reset-rounds): a counter that only grows would make the
+# worker go permanently dark on an issue right after the operator fixed it.
+MAX_ROUNDS="${KIPI_MAX_ROUNDS:-6}"
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
+RESET_ROUNDS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
+    --reset-rounds) RESET_ROUNDS=1 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
 done
 
 export SCRIPT_DIR
-mkdir -p "$STATE_DIR"
+# DIRECTIVES_DIR is created here and not lazily: an operator who drops a file in
+# by hand needs the directory to exist before the first directive, and it was the
+# one path constant this script never mkdir'd (round-3 review, finding 3).
+# `kipi directive` is the supported producer and creates it too.
+mkdir -p "$STATE_DIR" "$DIRECTIVES_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { echo "$(TS) $*" | tee -a "$LOG"; }
 
@@ -101,6 +125,22 @@ say() { echo "$(TS) $*" | tee -a "$LOG"; }
 # same session and BOTH be granted -- the exact scar the lock exists to stop.
 SESSION="worker-$(date +%s)-$$"
 AGENT="sana"
+
+# THE WAY BACK from the round cap. Runs before the fetch and before the picker:
+# an operator unwedging an issue must not need the network to be healthy, and
+# resetting a counter is not work that can be aimed at a stale base.
+if [ "$RESET_ROUNDS" = "1" ]; then
+  [ -n "$ONLY_ISSUE" ] || { echo "--reset-rounds needs --issue ASK-nnn" >&2; exit 1; }
+  python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); was=e.get('rounds',0)
+e['rounds']=0; e.pop('capped_notified',None)
+json.dump(d,open('$ATTEMPTS','w'),indent=2); print(was)" "$ONLY_ISSUE" >/dev/null 2>&1 || true
+  say "$ONLY_ISSUE: review round count reset to 0; the next run will dispatch again"
+  exit 0
+fi
 
 # Wall clock, exit 4 of loop-exits.md. macOS ships NEITHER `timeout` nor `gtimeout`
 # unless coreutils is installed, and the old fallback here was an empty string --
@@ -158,11 +198,26 @@ install_scratch_guard() {
   common="$(git -C "$tree" rev-parse --git-common-dir 2>/dev/null)/hooks"
   mkdir -p "$hooks" "$scratch"
 
+  # ALLOWLIST, not a suffix denylist (round-3 review, finding 5). The denylist
+  # (*.sample|*.old|*.bak|pre-commit) had to predict every name anyone would ever
+  # leave next to a hook, and it already lost: this repo's real .git/hooks holds
+  # `pre-commit.before-gitleaks`, which the denylist copied into every agent
+  # worktree as a file git can never invoke. git's hook names are a closed set,
+  # so match that set instead of guessing at the complement. pre-commit is absent
+  # on purpose: the guard below IS the pre-commit, and it chains to the original.
   if [ -d "$common" ]; then
     for h in "$common"/*; do
       [ -f "$h" ] && [ -x "$h" ] || continue
       name="$(basename "$h")"
-      case "$name" in *.sample|*.old|*.bak|pre-commit) continue ;; esac
+      case "$name" in
+        applypatch-msg|pre-applypatch|post-applypatch|prepare-commit-msg|\
+        commit-msg|post-commit|pre-rebase|post-checkout|post-merge|pre-push|\
+        pre-receive|update|post-receive|post-update|push-to-checkout|\
+        pre-auto-gc|post-rewrite|sendemail-validate|fsmonitor-watchman|\
+        p4-changelist|p4-prepare-changelist|p4-post-changelist|p4-pre-submit|\
+        post-index-change|reference-transaction|proc-receive) ;;
+        *) continue ;;
+      esac
       printf '#!/bin/sh\nexec "%s" "$@"\n' "$h" > "$hooks/$name"
       chmod +x "$hooks/$name"
     done
@@ -332,6 +387,26 @@ try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
 print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 
+# Review ROUNDS for this issue, the counter bumped after every review below. It
+# was write-only until the round cap read it (round-3 review, finding 4).
+rounds_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('rounds',0))" "$1"; }
+
+# Prints 1 if THIS call is the transition into the capped state, 0 if the issue
+# was already capped. The page is keyed on that, so a parked issue is announced
+# once instead of on every scheduled run forever.
+mark_capped() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{})
+first = 0 if e.get('capped_notified') else 1
+e['capped_notified']=True
+json.dump(d,open('$ATTEMPTS','w'),indent=2); print(first)" "$1"; }
+
 bump_attempt() { python3 -c "
 import json,sys
 try: d=json.load(open('$ATTEMPTS'))
@@ -350,8 +425,26 @@ while IFS= read -r ISSUE; do
     continue
   fi
 
+  # ROUND CAP, checked HERE -- next to the attempts check and ABOVE the dry
+  # branch. Two reasons it does not live down with the verdict gate:
+  #   1. it needs no network, so the DRY run can report it. `kipi work` used to
+  #      print "would work ASK-x" for an issue it would in fact refuse; a fix
+  #      that lands on the gate and not on the report is half a fix.
+  #   2. it fires before the claim and before the "Picked up" Linear note, so a
+  #      refusal costs zero permanent comments on an object nobody can clean up.
+  R="$(rounds_for "$ISSUE")"
+  if [ "${R:-0}" -ge "$MAX_ROUNDS" ]; then
+    # Page ONCE, on the transition. A capped issue that pings every scheduled run
+    # is a channel that stops being read, which costs more than the silence.
+    if [ "$APPLY" = "1" ] && [ "$(mark_capped "$ISSUE")" = "1" ]; then
+      bash "$NOTIFY" "worker: $ISSUE hit the $MAX_ROUNDS-round cap on PR rework and is parked - needs a human" 2>/dev/null || true
+    fi
+    say "skip $ISSUE: $R/$MAX_ROUNDS review round cap reached; parked for a human. Resume with: kipi work --reset-rounds --issue $ISSUE"
+    continue
+  fi
+
   if [ "$APPLY" = "0" ]; then
-    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
+    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS, round $((R+1))/$MAX_ROUNDS)"
     DONE=$((DONE+1)); continue
   fi
 
@@ -550,7 +643,7 @@ prompt:
 $(cat "$DIRECTIVE_FILE")
 
 (end of operator directive)"
-    say "$ISSUE: operator directive in effect ($DIRECTIVE_FILE); clear it by deleting that file"
+    say "$ISSUE: operator directive in effect ($DIRECTIVE_FILE); retire it with: kipi directive $ISSUE --clear"
   fi
 
   # Scratch OUTSIDE the repo (ASK-208, sp-1aae7516), so the agent has somewhere

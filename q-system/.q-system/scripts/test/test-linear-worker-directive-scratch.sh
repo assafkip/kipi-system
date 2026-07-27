@@ -190,6 +190,72 @@ ok "the repo's existing pre-commit still runs after the guard (chained, not repl
   || fail "core.hooksPath leaked to the main checkout; the founder's commits would hit the agent's guard"
 ok "the main checkout's core.hooksPath is untouched (per-worktree only)"
 
+# --- 9. the directive has a PRODUCER, not just a reader ---------------------
+# Round-3 review, finding 3: $KIPI_STATE_DIR/directives/<issue>.md shipped with a
+# reader and nothing anywhere that writes one. The kipi CLI had zero occurrences
+# of "directive" and DIRECTIVES_DIR was the one path constant never passed to
+# mkdir -p, so the feature worked only for someone who had read linear-worker.sh
+# and inferred the path convention by hand. wiring-check.md: a new state file
+# needs both a producer and a consumer.
+#
+# BOTH ENDS IN ONE TEST on purpose. This is a cross-process handshake -- a CLI
+# writes, a worker reads -- and a test that pins only one end passes happily
+# while the two disagree about the path.
+KIPI="$ROOT/kipi"
+[ -x "$KIPI" ] || fail "the kipi CLI is not executable at $KIPI"
+CLI_TEXT="DIRECTIVE SET THROUGH THE CLI, NOT BY HAND (round 3)"
+
+KIPI_STATE_DIR="$WORK/state" bash "$KIPI" directive ASK-AAA "$CLI_TEXT" >"$WORK/cli.out" 2>&1 \
+  || fail "kipi directive exited non-zero: $(cat "$WORK/cli.out")"
+[ -s "$WORK/state/directives/ask-aaa.md" ] \
+  || fail "NO PRODUCER: kipi directive wrote nothing to the path the worker reads
+      ($WORK/state/directives/ask-aaa.md). It printed: $(cat "$WORK/cli.out")"
+ok "kipi directive writes the file the worker reads (producer exists)"
+
+: > "$WORK/prompts.txt"
+run_round
+grep -q -F "$CLI_TEXT" "$WORK/prompts.txt" \
+  || fail "HANDSHAKE BROKEN: the CLI wrote a directive the worker did not pick up.
+      The two ends disagree about the path or the format."
+ok "a directive set through the CLI reaches the agent's prompt verbatim"
+
+KIPI_STATE_DIR="$WORK/state" bash "$KIPI" directive ASK-AAA --clear >"$WORK/cli-clear.out" 2>&1 \
+  || fail "kipi directive --clear exited non-zero: $(cat "$WORK/cli-clear.out")"
+: > "$WORK/prompts.txt"
+run_round
+grep -q -F "$CLI_TEXT" "$WORK/prompts.txt" \
+  && fail "--clear did not clear: the directive still reached the prompt. A standing
+      instruction that cannot be retired is worse than none."
+ok "kipi directive --clear retires it, and the next prompt is clean"
+
+# The directory has to exist for the path to be usable at all -- including by an
+# operator who edits the file directly rather than going through the CLI.
+[ -d "$WORK/state/directives" ] \
+  || fail "the directives directory does not exist after a worker run"
+ok "the worker creates the directives directory it reads from"
+
+# --- 10. the hook mirror copies only hooks git will actually invoke ----------
+# Round-3 review, finding 5 (nit): the mirror used a suffix DENYLIST
+# (*.sample|*.old|*.bak|pre-commit), so this repo's real .git/hooks/
+# pre-commit.before-gitleaks was copied into every agent worktree as a file git
+# can never invoke. A denylist has to predict every name anyone will ever leave
+# lying around; an allowlist of git's actual hook names does not.
+COMMON2="$(git -C "$TREE" rev-parse --git-common-dir)/hooks"
+printf '#!/bin/sh\nexit 0\n' > "$COMMON2/pre-commit.before-gitleaks"
+printf '#!/bin/sh\nexit 0\n' > "$COMMON2/post-checkout"
+chmod +x "$COMMON2/pre-commit.before-gitleaks" "$COMMON2/post-checkout"
+run_round
+HOOKS_DIR="$(git -C "$TREE" config core.hooksPath)"
+[ -e "$HOOKS_DIR/pre-commit.before-gitleaks" ] \
+  && fail "DEAD FILE MIRRORED: pre-commit.before-gitleaks was copied into the agent's
+      hooks dir. git never invokes that name; the mirror is copying by suffix
+      instead of by git's actual hook names."
+ok "a backup file next to a real hook is not mirrored"
+[ -x "$HOOKS_DIR/post-checkout" ] \
+  || fail "post-checkout is a real git hook and was NOT mirrored; the allowlist
+      must not be narrower than the hooks the repo actually installs"
+ok "a real git hook (post-checkout) is still mirrored"
+
 bash -n "$WORKER" || fail "linear-worker.sh does not parse"
 ok "linear-worker.sh parses (bash -n)"
 

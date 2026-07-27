@@ -133,7 +133,15 @@ esac
 exit 0
 EOF
 chmod +x "$STUB/gh"
-printf '{"verdict":"APPROVE WITH NITS","pr":778}\n' > "$WORK/state/pr-reviews/pr-778.verdict.json"
+# The verdict record goes in the state dir the RUN BELOW actually reads.
+# Round-3 review, finding 2: this used to write to $WORK/state while the run used
+# KIPI_STATE_DIR=$WORK/state-ok. The worker found no verdict, skipped at gate 20
+# (unreviewed) and never reached the APPROVE branch at all, so `worked.txt is
+# empty` held no matter what that branch did. Verified: with the paths crossed, a
+# worker mutated to ignore gate 10 entirely still printed "ok: an approved AND
+# mergeable PR is still left alone" and the suite still said PASS (15 checks).
+mkdir -p "$WORK/state-ok/pr-reviews"
+printf '{"verdict":"APPROVE WITH NITS","pr":778}\n' > "$WORK/state-ok/pr-reviews/pr-778.verdict.json"
 : > "$WORK/worked.txt"
 
 ( cd "$WORK/skel" \
@@ -143,6 +151,15 @@ printf '{"verdict":"APPROVE WITH NITS","pr":778}\n' > "$WORK/state/pr-reviews/pr
 [ ! -s "$WORK/worked.txt" ] \
   || fail "an approved AND mergeable PR was reworked; this fix must not loop on healthy PRs"
 ok "an approved AND mergeable PR is still left alone for the founder"
+
+# ...and pin WHY it was left alone. An absence-of-work assertion passes for any
+# reason the worker declines, so on its own it can never tell "the gate approved
+# it" from "the fixture was broken and it skipped as unreviewed". Asserting the
+# gate that fired is what makes the case above able to fail.
+grep -q "nothing to rework, waiting on founder merge" "$WORK/run-ok.out" \
+  || fail "section C skipped for the WRONG REASON -- it must reach gate 10 (approved),
+      not gate 20 (unreviewed). The worker said: $(grep -i skip "$WORK/run-ok.out" | head -1)"
+ok "it was left alone at gate 10 (approved+mergeable), not skipped as unreviewed"
 
 bash -n "$LIB"    || fail "pr-verdict-lib.sh does not parse"
 bash -n "$WORKER" || fail "linear-worker.sh does not parse"
