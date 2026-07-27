@@ -1,0 +1,12 @@
+BLOCK: agent scratch cannot be committed.
+  q-system/output/ask208-plain.py
+
+q-system/output/ holds generated artifacts. A one-off helper, a message
+draft or a throwaway reproducer is not one. Working files go here --
+outside the repo, so they cannot be committed:
+  /Users/assafkipnis/projects/kipi-system/.pr22rev/work3/state/scratch/ask-aaa
+
+If it IS a deliverable it belongs where folder-structure.md puts it:
+  a harness -> q-system/.q-system/scripts/
+  a test    -> q-system/.q-system/scripts/test/
+  an RCA    -> q-system/output/rca/
