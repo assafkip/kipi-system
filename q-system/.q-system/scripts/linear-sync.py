@@ -556,6 +556,12 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
     return team_id, project, keys
 
 
+# What Linear's "that id is not an issue" reads like on the wire. Matched on the
+# message rather than the status code because the call returns HTTP 200 with an
+# `errors` array (see graphql's docstring).
+_ENTITY_NOT_FOUND_RE = re.compile(r"Entity not found|Could not find referenced", re.I)
+
+
 def fetch_issue(linear_id: str) -> dict:
     """One issue by id, in the same record shape `fetch_remote_state` returns.
 
@@ -567,7 +573,18 @@ def fetch_issue(linear_id: str) -> dict:
     from "not there any more" (empty) and report the second rather than silently
     treating a key it can no longer maintain as handled.
     """
-    node = (graphql(ISSUE_BY_ID_QUERY, {"id": linear_id}) or {}).get("issue") or {}
+    try:
+        node = (graphql(ISSUE_BY_ID_QUERY, {"id": linear_id}) or {}).get("issue") or {}
+    except LinearAPIError as exc:
+        # Linear answers an unknown id with a GraphQL ERROR, not a null issue.
+        # Verified live 2026-07-27: `Entity not found: Issue ... code
+        # INPUT_ERROR`. The first cut of this function checked for a null node
+        # and never saw that, so a deleted issue would have surfaced to the
+        # operator as "Linear rejected the write" instead of "this key has no
+        # issue any more" -- right ping, wrong sentence.
+        if not _ENTITY_NOT_FOUND_RE.search(str(exc)):
+            raise  # a 429 or a dropped connection is NOT "gone"
+        return {}
     if not node.get("id"):
         return {}
     state = node.get("state") or {}

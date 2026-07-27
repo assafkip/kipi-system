@@ -718,7 +718,12 @@ check("...without forking a second permanent issue", len(moved.issues), 1)
 
 
 class _IssueGone(_MovedOutOfProject):
-    """In the ledger, not in the project, and not reachable by id (deleted)."""
+    """In the ledger, not in the project, and not reachable by id.
+
+    Returns {} because that is linear-sync's CONTRACT for "gone"; that the wire
+    actually delivers it as a GraphQL error is linear-sync's problem, asserted
+    directly against the real fetch_issue below rather than modelled twice here.
+    """
 
     def fetch_issue(self, _linear_id):
         return {}
@@ -735,6 +740,38 @@ check("...the operator is pinged rather than told nothing-to-do",
       fh.should_notify(lost, {"cron-shells-claude": 1}, apply=True), True)
 check("...and the Slack line drops the all-clear language",
       "nothing to do now" in fh.notify_text(lost, {"cron-shells-claude": 1}), False)
+
+# linear-sync owns the wire format, so "gone" is asserted against the REAL
+# fetch_issue with the REAL error text. Live 2026-07-27, an unknown id does not
+# come back as a null issue -- it comes back as a GraphQL error array. The first
+# cut of fetch_issue checked for a null node, so a deleted issue would have
+# reached the operator as "Linear rejected the write" instead of "this key has
+# no issue any more". The live check caught it; this fixture is what keeps it caught.
+_lsspec = importlib.util.spec_from_file_location("ls_real", HEALTH.parent / "linear-sync.py")
+ls_real = importlib.util.module_from_spec(_lsspec)
+_lsspec.loader.exec_module(ls_real)
+
+_NOT_FOUND = ('[{"message": "Entity not found: Issue", "path": ["issue"], "extensions": '
+              '{"type": "invalid input", "code": "INPUT_ERROR", "statusCode": 400}}]')
+
+
+def _graphql_raising(message):
+    def _boom(_query, _variables):
+        raise ls_real.LinearAPIError(message)
+    return _boom
+
+
+_saved_graphql = ls_real.graphql
+ls_real.graphql = _graphql_raising(_NOT_FOUND)
+check("a truly missing issue reads as gone, not as a failed write",
+      ls_real.fetch_issue("00000000-0000-4000-8000-000000000000"), {})
+ls_real.graphql = _graphql_raising('HTTP 429: {"errors":[{"message":"rate limited"}]}')
+try:
+    ls_real.fetch_issue("any-id")
+    failures.append("a 429 on fetch_issue must NOT be reported as a missing issue")
+except ls_real.LinearAPIError:
+    print("  ok: a 429 on fetch_issue propagates rather than reading as 'gone'")
+ls_real.graphql = _saved_graphql
 
 # --- fourth review, MINOR 3: a Linear error mid-loop must not kill the run -----
 # Exactly one network call was guarded. reopen_state_id, ISSUE_UPDATE and
