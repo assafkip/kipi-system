@@ -20,7 +20,8 @@
 #   2 turn cap        -> MAX_ROUNDS (default 4), the ceiling on rounds
 #   5 no progress     -> same verdict AND no new commit on the branch two rounds
 #                        running: the rework is not moving, stop burning rounds
-#   7 error threshold -> no PR, or a review that produced no verdict
+#   7 error threshold -> no PR, a review that produced no verdict, or the worker
+#                        exiting 9 (its environment is down; it already paged)
 #   4 wall clock      -> inherited: each round is bounded inside the worker
 #                        (1800s work) and the reviewer (2400s review)
 #
@@ -35,6 +36,12 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 LOG="$STATE_DIR/linear-worker.log"
+# The worker mkdir's this for itself, but converge redirects the worker's output
+# into $LOG, and that redirect is evaluated by THIS shell before the worker ever
+# starts. On a state dir that does not exist yet the redirect fails, bash returns
+# 1, and every exit code the worker was trying to communicate -- including the
+# infra 9 below -- is flattened to 1. Found by the round-3 reproducer.
+mkdir -p "$STATE_DIR"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 # The worker command is injectable ONLY so the test suite can drive this loop
@@ -147,6 +154,16 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # bumped attempts and pinged); the verdict check below decides what to do.
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
+
+  # WORKER EXIT 9 = the environment is down and the run did no work (its git
+  # fetch failed). Without this mapping the next four lines would find no PR and
+  # report "Sana could not open one", which is false -- she was never dispatched
+  # -- and would fire a SECOND Slack for an event the worker already paged for.
+  # A wrong cause plus a duplicate page is how an operator learns to skim.
+  if [ "$WRC" = "9" ]; then
+    say "STOP exit-7: INFRA -- the worker reported an environment failure (rc=9) on round $ROUND and did no work. It already paged; see $LOG."
+    exit 7
+  fi
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then

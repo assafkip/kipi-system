@@ -134,7 +134,10 @@ EOF
   && PATH="$CSTUB:$PATH" HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state2" \
      bash "$WORKER" --apply --limit 2 ) >"$WORK/run2.out" 2>&1
 
-FETCHES="$(grep -c . "$WORK/fetches.txt" 2>/dev/null || echo 0)"
+# `grep -c` exits 1 on a zero count, so the old `|| echo 0` idiom printed "0\n0"
+# and the very branch that reports "no fetch at all" died on a bad integer
+# comparison instead of failing cleanly. wc always exits 0.
+FETCHES="$(wc -l < "$WORK/fetches.txt" | tr -d ' ')"
 [ "${FETCHES:-0}" -ge 1 ] || fail "a 2-issue run performed no fetch at all"
 [ "${FETCHES:-0}" -le 1 ] \
   || fail "a 2-issue run fetched $FETCHES times; the DoR asks for one fetch per run, not per issue"
