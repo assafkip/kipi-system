@@ -40,7 +40,7 @@
 | Features | FAB | confidence |
 | Traction | Proof Stack | trust |
 | Social Proof | Testimonial | trust |
-| Pricing | Value Stack | confidence |
+| Pricing slide | Value Stack | confidence |
 | CTA | AIDA, Urgency | urgency |
 
 ## Headline Patterns
