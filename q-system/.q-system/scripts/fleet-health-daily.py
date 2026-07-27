@@ -222,7 +222,44 @@ def _crontab_text() -> str:
     return _read_crontab_result(res.returncode, res.stdout, res.stderr)
 
 
-def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
+class RunContext:
+    """Per-run shared state for the detectors. Today: ONE `crontab -l` per run.
+
+    Two detectors read the crontab. `run_detectors` passed None as the context, so
+    each one shelled out for itself and a test asserting only that a `cron_text`
+    PARAMETER existed was labelled proof that "neither shells out twice" (PR #19
+    review, minor 4). The parameter existed; the wiring did not.
+
+    The FAILURE is cached alongside the value and re-raised per caller, so one read
+    still produces two independent blind spots. Collapsing them would buy the dedup
+    with a silent all-clear for whichever detector ran second -- the exact trade
+    `run_detectors` exists to refuse.
+    """
+
+    def __init__(self, read_crontab=None):
+        self._read_crontab = read_crontab or _crontab_text
+        self._crontab = None  # (text, exception), whichever the read produced
+
+    def crontab(self) -> str:
+        if self._crontab is None:
+            try:
+                self._crontab = (self._read_crontab(), None)
+            except Exception as exc:  # noqa: BLE001 - replayed to every caller
+                self._crontab = (None, exc)
+        text, exc = self._crontab
+        if exc is not None:
+            raise exc
+        return text
+
+
+def _crontab_for(ctx, cron_text):
+    """The crontab a detector should read: injected > shared > its own read."""
+    if cron_text is not None:
+        return cron_text
+    return ctx.crontab() if isinstance(ctx, RunContext) else _crontab_text()
+
+
+def detect_duplicate_schedules(ctx, cron_text=None) -> list:
     """The same script scheduled by BOTH launchd and crontab.
 
     Found live 2026-07-26: reddit-build-radar runs at 08:00 from
@@ -234,7 +271,7 @@ def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
     that reaches the body is one that already appears in `~/Library/LaunchAgents/`.
     A path that matched nothing is never published.
     """
-    cron = _crontab_text() if cron_text is None else cron_text
+    cron = _crontab_for(ctx, cron_text)
     # Resolve to ABSOLUTE paths, never basenames. Measured 2026-07-26: matching on
     # the basename `run_daily.sh` hit 3 plists (reddit-radar-daily, daily-podcast,
     # story-podcast) when only ONE is a real duplicate -- the other two are
@@ -592,7 +629,14 @@ def _split_substitutions(command: str) -> tuple:
             masked.append(command[index:index + 2])
             index += 2  # escaped next char, in double quotes or unquoted
             continue
-        if char == "'":
+        if char == "'" and not quote:
+            # `and not quote` is load-bearing: reaching here with quote == '"'
+            # means an APOSTROPHE inside a double-quoted span, which sh treats as
+            # a literal character. Opening a single-quote span on it inverted the
+            # state for the rest of the line, so `echo "don't $(claude -p x)"` --
+            # a real invocation -- was missed, and `echo "don't" 'run `claude -p
+            # x` now'` -- prose -- was scored as one and would have filed a
+            # PERMANENT false-positive issue (PR #19 review, minor 2).
             quote = "'"
         elif char == '"':
             quote = "" if quote == '"' else '"'
@@ -760,7 +804,7 @@ def offending_cron_lines(cron: str) -> list:
             if _shells_claude(_cron_command(line))]
 
 
-def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
+def detect_cron_shells_claude(ctx, cron_text=None) -> list:
     """A crontab line that invokes `claude`. It cannot work: cron has no keychain.
 
     Probed 2026-07-23 (`reddit-build-radar/logs/cron-probe/result.txt`):
@@ -782,7 +826,7 @@ def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
     Raises CrontabUnavailable when the crontab could not be read at all, so a
     blind run is reported as an error rather than as a clean bill of health.
     """
-    cron = _crontab_text() if cron_text is None else cron_text
+    cron = _crontab_for(ctx, cron_text)
     numbers = offending_cron_lines(cron)
     if not numbers:
         return []
@@ -1349,9 +1393,11 @@ def run_detectors(detectors=None) -> tuple:
     """
     all_findings = []
     per_detector = {}
+    # ONE context for the whole run, so the two crontab readers share a read.
+    context = RunContext()
     for d in detectors if detectors is not None else DETECTORS:
         try:
-            found = d["detect"](None) or []
+            found = d["detect"](context) or []
         except Exception as exc:  # noqa: BLE001 - a health check must not crash its job
             print(f"  detector {d['id']} errored: {exc}", file=sys.stderr)
             per_detector[d["id"]] = DETECTOR_ERROR

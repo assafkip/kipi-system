@@ -336,15 +336,46 @@ def file_linear_findings(problems, apply=True):
         findings = linear_findings(problems)
     except Exception as exc:  # noqa: BLE001
         print(f"linear findings could not be built: {exc}", file=sys.stderr)
-        return {"created": 0, "existing": 0, "skipped_no_key": owed}
+        return {"created": 0, "existing": 0, "skipped_no_key": owed, "owed": owed}
     if not findings:
-        return {"created": 0, "existing": 0, "skipped_no_key": 0}
+        return {"created": 0, "existing": 0, "skipped_no_key": 0, "owed": 0}
     try:
-        return _fleet_health().file_findings(
+        outcome = _fleet_health().file_findings(
             findings, apply=apply, filer="launchd-health-check.py")
     except Exception as exc:  # noqa: BLE001
         print(f"linear filing skipped: {exc}", file=sys.stderr)
-        return {"created": 0, "existing": 0, "skipped_no_key": len(findings)}
+        return {"created": 0, "existing": 0, "skipped_no_key": len(findings),
+                "owed": len(findings)}
+    # The DENOMINATOR travels with the outcome. `file_findings` reports which
+    # findings landed; only this side knows how many were owed an issue, and
+    # without that number the reporter below can only trust the failure buckets
+    # it happens to know the names of.
+    outcome["owed"] = len(findings)
+    return outcome
+
+
+# Buckets that mean "the board HAS this finding". Everything owed and not in one
+# of these counts as unfiled. An ALLOWLIST on purpose (PR #19 review, major):
+# `file_findings` grows buckets -- ASK-204 added `updated`, `reopened`, `relisted`
+# and `errors` -- and a reporter that names FAILURE buckets goes silently dark the
+# first time a new one lands upstream. That is exactly how a refused Linear write
+# came to print byte-for-byte like a clean run here. A new bucket now has to be
+# declared landed before it stops being counted as unfiled.
+LANDED_BUCKETS = ("created", "existing", "updated", "reopened", "relisted")
+
+
+def unfiled_count(outcome):
+    """How many findings were OWED an issue and did not get one.
+
+    Falls back to `skipped_no_key` when the outcome carries no `owed` -- an
+    outcome built by hand or by an older copy of this pair mid-`kipi update`
+    degrades to the pre-fix number rather than to a wrong one.
+    """
+    fallback = outcome.get("skipped_no_key", 0)
+    if "owed" not in outcome:
+        return fallback
+    landed = sum(outcome.get(bucket, 0) for bucket in LANDED_BUCKETS)
+    return max(outcome["owed"] - landed, fallback)
 
 
 def linear_report_line(outcome, dry_run):
@@ -355,11 +386,22 @@ def linear_report_line(outcome, dry_run):
     {created: 0, existing: 0, skipped_no_key: N}, so 'Linear is unreachable and N
     findings went nowhere' printed byte-identically to 'the fleet is clean, nothing
     to file'. Every instance without a Linear API key takes that branch, and this
-    script ships fleet-wide. `unfiled` is what separates empty from broken."""
+    script ships fleet-wide. `unfiled` is what separates empty from broken.
+
+    Second scar (PR #19 review): `unfiled` read ONE bucket by name. When ASK-204
+    taught `file_findings` to catch a per-finding write failure and return it as
+    `errors` instead of raising, this line went silent on the exact failure the
+    first scar was about. It now reads owed-minus-landed (`unfiled_count`), so the
+    number cannot be defeated by a bucket added upstream.
+
+    This stays a SEPARATE formatter from fleet-health-daily's `outcome_line`: this
+    script has to be able to report that fleet-health-daily.py is missing, which is
+    the rsync --delete scar it was built for. It cannot import its own reporter
+    from the file whose absence it reports. Both are pinned by tests."""
     verb = "would-file" if dry_run else "filed"
     prefix = "[dry] " if dry_run else ""
     return (f"{prefix}linear: {verb}={outcome['created']} "
-            f"already-tracked={outcome['existing']} unfiled={outcome['skipped_no_key']}")
+            f"already-tracked={outcome['existing']} unfiled={unfiled_count(outcome)}")
 
 
 def problems_to_ping(problems, state, now):
@@ -415,12 +457,12 @@ def run(dry_run):
             for label, kind, detail in due
         ]
         message = f"launchd watchdog: {len(due)} job issue(s) -- " + ", ".join(parts)
-        if filed["skipped_no_key"]:
+        if unfiled_count(filed):
             # Slack is the only channel the founder actually reads. Fixing the
             # stdout counter alone would leave this ping saying "here are the
             # problems" while the issues meant to hold them never reached the
             # board. No NEW ping: the one that was already firing carries it.
-            message += f" [NOT filed to Linear: {filed['skipped_no_key']}]"
+            message += f" [NOT filed to Linear: {unfiled_count(filed)}]"
         send_ping(message)
         for label, kind, detail in due:
             state[label] = {"pinged_at": now, "kind": kind, "detail": detail}

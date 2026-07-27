@@ -200,8 +200,10 @@ try:
     _none = wd.file_linear_findings([("com.cole.gamma", "paused", "paused on purpose")])
 finally:
     wd._FLEET_HEALTH = _saved_fh
+# `owed` rides along on every return path: it is the denominator `unfiled_count`
+# needs, and a path that omitted it would silently fall back to reading one bucket.
 check("a paused-only run files nothing", _none,
-      {"created": 0, "existing": 0, "skipped_no_key": 0})
+      {"created": 0, "existing": 0, "skipped_no_key": 0, "owed": 0})
 
 # --- a dead filer must not read like a clean run (ASK-181 review, finding 1) --
 # THE REPRODUCER: `file_findings` catches its own network errors and returns
@@ -286,6 +288,79 @@ check("the ping says the findings did not reach Linear",
       any("NOT filed to Linear: 2" in p for p in _dead_pings), True)
 check("a healthy filer leaves the ping text alone",
       any("NOT filed" in p for p in _ok_pings), False)
+
+# --- a REFUSED write must not read like a clean run either (PR #19 review, major)
+# THE REPRODUCER: ASK-204 gave `file_findings` per-finding error handling, so a
+# Linear write that fails now RETURNS {..., "errors": N} where it used to raise.
+# This reporter read `skipped_no_key` alone, so a refused write printed the
+# byte-identical line to a clean run AND lost the `[NOT filed to Linear: N]`
+# annotation on the ping -- in the job whose whole purpose is catching silence.
+# Same class as the ASK-181 scar above, one bucket further out.
+
+
+def _fh_stub_shape(record=None, **buckets):
+    """A stand-in emitting the FULL bucket shape `file_findings` returns.
+
+    `_fh_stub` above predates ASK-204 and emits three keys; the real filer emits
+    created/existing/skipped_no_key/updated/reopened/relisted/errors. Reporting
+    has to be proved against the shape production actually produces, and against
+    shapes it does not produce YET -- hence **buckets rather than a fixed list.
+    """
+
+    class _Stub:
+        @staticmethod
+        def finding_key(detector, subject):
+            return _fh.finding_key(detector, subject)
+
+        @staticmethod
+        def file_findings(findings, apply, filer=None):
+            if record is not None:
+                record.append({"n": len(findings), "apply": apply, "filer": filer})
+            outcome = {"created": 0, "existing": 0, "skipped_no_key": 0, "updated": 0,
+                       "reopened": 0, "relisted": 0, "errors": 0}
+            outcome.update(buckets)
+            return outcome
+
+    return _Stub
+
+
+def _last_line(problems, fleet_health):
+    return run_capture(problems, fleet_health)[0].strip().splitlines()[-1]
+
+
+# two findings, one filed and one the write refused
+_rejected_line = _last_line(_TWO_REAL, _fh_stub_shape(created=1, errors=1))
+_clean_line = _last_line(_TWO_REAL, _fh_stub_shape(created=2))
+check("a REFUSED Linear write does not print the same line as a clean run",
+      _rejected_line == _clean_line, False)
+check("a refused write is counted as unfiled", "unfiled=1" in _rejected_line, True)
+# the reviewer's exact shape: EVERY write refused reads byte-for-byte like a run
+# that had nothing to file, because both print filed=0 already-tracked=0.
+check("an all-refused run does not print the same line as a run with nothing to file",
+      _last_line(_TWO_REAL, _fh_stub_shape(errors=2))
+      == _last_line(_NOTHING_TO_FILE, _fh_stub_shape()), False)
+check("a clean run still reports nothing unfiled", "unfiled=0" in _clean_line, True)
+_rejected_pings = run_capture(_TWO_REAL, _fh_stub_shape(created=1, errors=1))[2]
+check("the ping says the board does NOT have the refused finding",
+      any("NOT filed to Linear: 1" in p for p in _rejected_pings), True)
+check("a refused write adds no extra ping", len(_rejected_pings), 1)
+check("a clean run leaves the ping text alone",
+      any("NOT filed" in p for p in run_capture(_TWO_REAL, _fh_stub_shape(created=2))[2]),
+      False)
+
+# A re-filed (`relisted`) finding DID land on the board -- counting it as unfiled
+# would trade this silence for a nightly false alarm, which is the other half of
+# the same failure.
+check("a re-filed finding counts as filed, not unfiled",
+      "unfiled=0" in _last_line(_TWO_REAL, _fh_stub_shape(created=1, relisted=1)), True)
+
+# The layer above this fix: `errors` will not be the last bucket `file_findings`
+# grows. A reporter that lists FAILURE buckets by name goes dark again on the day
+# the next one lands -- which is precisely how this regression happened. So
+# unfiled is owed-minus-LANDED: a bucket this reporter has never been taught
+# about counts as not-filed until someone declares it landed.
+check("a bucket the reporter has never heard of still counts as unfiled",
+      "unfiled=1" in _last_line(_TWO_REAL, _fh_stub_shape(created=1, quarantined=1)), True)
 
 # One layer deeper: if the findings cannot even be BUILT (fleet-health-daily.py
 # missing -- literally the kipi-update rsync --delete scar this watchdog exists

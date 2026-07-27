@@ -218,6 +218,12 @@ _MUST_DETECT = [
     "npx claude",                                       # npx
     "grep -q '#TODO' notes.txt && claude -p 'sweep'",   # quoted # is not a comment
     "claude -p 'sweep the repo",                        # unbalanced quote, still real
+    # An APOSTROPHE inside a double-quoted span is literal in sh, so everything
+    # after it is still double-quoted and a substitution there still runs
+    # (PR #19 review, minor 2 — verified against /bin/sh with a stub `claude`).
+    'echo "don\'t $(claude -p x)"',                     # apostrophe then $( )
+    'echo "don\'t" `claude -p z`',                      # apostrophe then backtick
+    'echo "isn\'t `claude -p q` done"',                 # apostrophe, same span
 ]
 for _line in _MUST_DETECT:
     check(f"still detects: {_line}", fh._shells_claude(_line), True)
@@ -237,6 +243,11 @@ _MUST_NOT_DETECT = [
     "echo 'run `claude -p x` now'",                     # single quotes suppress `` ` ``
     "true && # claude -p 'x'",                          # a real comment
     "du -sh ~/projects/claude --block-size='M",         # housekeeping over the dir
+    # ...and the same apostrophe must not push the walker INTO a single-quote
+    # state, which made a genuinely single-quoted substitution later on the line
+    # score as an invocation — a PERMANENT false-positive issue (PR #19, minor 2).
+    'echo "don\'t" \'run `claude -p x` now\'',          # apostrophe then real quoting
+    'echo "won\'t" \'note: $(claude -p z)\'',           # same, with $( )
 ]
 for _line in _MUST_NOT_DETECT:
     check(f"still refuses: {_line}", fh._shells_claude(_line), False)
@@ -409,10 +420,67 @@ try:
     check("an unreadable crontab raises", "no raise", "CrontabUnavailable")
 except fh.CrontabUnavailable:
     check("an unreadable crontab raises rather than reporting clean", True, True)
-check("both cron detectors accept injected text, so neither shells out twice",
+check("both cron detectors accept injected text",
       ["cron_text" in inspect.signature(fn).parameters
        for fn in (fh.detect_cron_shells_claude, fh.detect_duplicate_schedules)],
       [True, True])
+
+# THE REPRODUCER (PR #19 review, minor 4): the assertion above was labelled "so
+# neither shells out twice" and proved no such thing -- it checked that a
+# PARAMETER existed. `run_detectors` called `detect(None)`, so `cron_text` stayed
+# None and each cron detector ran its own `crontab -l`. The claim is now measured
+# by spying on the subprocess call, which is the only thing that can go red if the
+# wiring is removed again.
+_CRON_FIXTURE = "0 3 * * * claude -p sweep\n"
+
+
+class _FakeCrontab:
+    """A `crontab -l` CompletedProcess stand-in, scripted per case."""
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def _run_cron_detectors(returncode, stdout, stderr):
+    """(crontab -l invocations, per_detector) for the two cron detectors only.
+
+    Spies on the module's own `subprocess.run` so anything that is NOT the crontab
+    read (launchctl, prd_runner) still reaches the real command -- a stub that
+    swallowed every call would prove the detectors ran, not what they ran.
+    """
+    invocations = []
+    saved = fh.subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        if list(cmd)[:2] == ["crontab", "-l"]:
+            invocations.append(list(cmd))
+            return _FakeCrontab(returncode, stdout, stderr)
+        return saved(cmd, *args, **kwargs)
+
+    registry = [d for d in fh.DETECTORS
+                if d["id"] in ("cron-shells-claude", "schedule-duplicate")]
+    fh.subprocess.run = spy
+    try:
+        _, per_detector = fh.run_detectors(registry)
+    finally:
+        fh.subprocess.run = saved
+    return invocations, per_detector
+
+
+_cron_reads, _cron_per = _run_cron_detectors(0, _CRON_FIXTURE, "")
+check("run_detectors reads the crontab ONCE for both cron detectors",
+      len(_cron_reads), 1)
+check("and the shared read still reaches the detector that files on it",
+      _cron_per["cron-shells-claude"], 1)
+
+# The layer above the dedup: one read must not collapse two blind spots into one.
+# A crontab that cannot be read still has to mark BOTH detectors unknown, or the
+# dedup buys a silent all-clear for the second one.
+_blind_reads, _blind_per = _run_cron_detectors(1, "", "crontab: permission denied")
+check("an unreadable crontab is still read only once", len(_blind_reads), 1)
+check("...and BOTH cron detectors are reported blind, not clean",
+      sorted(did for did, n in _blind_per.items() if n == fh.DETECTOR_ERROR),
+      ["cron-shells-claude", "schedule-duplicate"])
 check("a blind detector is reported as unknown, not zero",
       fh.blind_detectors({"cron-shells-claude": fh.DETECTOR_ERROR, "launchd-dark": 0}),
       ["cron-shells-claude"])
