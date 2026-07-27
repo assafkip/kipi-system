@@ -144,6 +144,23 @@ set +e; bash "$CONV" --max-rounds 2 >"$WORK/out" 2>&1; RC=$?; set -e
 grep -q 'usage:' "$WORK/out" || fail "usage text missing"
 ok "missing --issue -> usage error, never guesses an issue"
 
+# --- the ASK-184 stranding: commits pushed, no PR ----------------------------
+# Sana pushed two good commits with an observed red-then-green reproducer, then
+# ended her turn on "bar 4 is in flight -- I'll report, then open the PR". The
+# turn ended, no PR existed, the review never ran, and the driver stopped with
+# nothing to look at. The worker now opens the PR itself when the branch is
+# ahead of origin/main, because "remember to open it" is not enforcement.
+grep -q 'gh pr create' "$ROOT/q-system/.q-system/scripts/linear-worker.sh" \
+  || fail "worker cannot open a PR itself; an agent that forgets strands its own work"
+grep -q 'rev-list --count origin/main..HEAD' "$ROOT/q-system/.q-system/scripts/linear-worker.sh" \
+  || fail "PR auto-open must be gated on commits existing, or an empty branch opens an empty PR"
+ok "worker opens the PR in code when commits are pushed but no PR exists"
+
+# The driver must still treat a genuinely empty run as a failure, not paper over
+# it: no commits means no PR means exit 7, which is the case above.
+grep -q 'exit 7' "$CONV" || fail "converge lost its no-PR error exit"
+ok "a run with no commits still exits 7 (auto-open does not mask real failure)"
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"

@@ -309,6 +309,9 @@ Work here. Never `cd` to $SKEL and never switch this branch -- the founder may b
 4. Commit on branch $BRANCH with the issue id $ISSUE in the message (the commit-msg gate requires it).
 5. Post progress with: bash $SKEL/kipi linear progress $ISSUE \"<what happened>\" --agent sana --evidence \"<command and its real output>\"
 6. Open a PR. DO NOT MERGE. DO NOT close the issue - closeout runs through /issue-verify and /issue-closeout.
+   OPEN IT BEFORE YOUR TURN ENDS. Never finish on \"I'll open the PR once X finishes\" -- your turn
+   ends there and the PR never exists, so the review never runs and the work is stranded (observed
+   on ASK-184). If a check is still running, open the PR FIRST and post the result as a comment.
 7. If the DoR turns out to be wrong or impossible, say so on the issue via progress and STOP. Do not improvise a different task.
 
 Anything real you find and are not fixing: capture it, never just mention it:
@@ -338,6 +341,35 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # than find them. This is a separate process with fresh eyes and no memory of
   # why the code looks the way it does.
   PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+
+  # OPEN THE PR IN CODE, not on the agent remembering to. Observed on ASK-184
+  # (2026-07-27): Sana pushed two good commits with an observed red-then-green
+  # reproducer, then ended her turn on "bar 4 is in flight -- I'll report its
+  # exit code, then open the PR". The turn ended; no PR existed; the review
+  # never ran and the driver stopped with nothing to look at. Good work
+  # stranded on an unopened PR is the most expensive possible failure here,
+  # and "tell the agent to remember" is not enforcement.
+  # Only fires when there is something to open a PR FOR: commits ahead of
+  # origin/main. A branch with no commits still yields no PR, which is a real
+  # failure the driver should still see.
+  if [ -z "$PR_NUM" ]; then
+    AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+    if [ "${AHEAD:-0}" -gt 0 ]; then
+      say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
+      (cd "$TREE" && git push -u origin "$BRANCH" >/dev/null 2>&1
+       gh pr create --head "$BRANCH" --base main \
+         --title "$(git log -1 --pretty=%s)" \
+         --body "Autonomous worker (Sana) on $ISSUE. Opened by the worker because the run ended without opening it.
+
+Commits on this branch:
+$(git log --oneline origin/main..HEAD)
+
+Review runs next. Do not merge without it." >/dev/null 2>&1) || true
+      PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+      [ -n "$PR_NUM" ] && say "$ISSUE: opened PR #$PR_NUM"
+    fi
+  fi
+
   if [ -n "$PR_NUM" ]; then
     # Count review ROUNDS per issue, distinct from failed ATTEMPTS. A run that
     # succeeds but comes back REQUEST CHANGES is not a failure, so the attempts
