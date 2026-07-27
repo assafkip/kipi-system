@@ -161,6 +161,77 @@ ok "worker opens the PR in code when commits are pushed but no PR exists"
 grep -q 'exit 7' "$CONV" || fail "converge lost its no-PR error exit"
 ok "a run with no commits still exits 7 (auto-open does not mask real failure)"
 
+# --- the ASK-181 wedge: a killed run must not leak its claim ------------------
+# Observed 2026-07-27: converge was killed mid-run on ASK-181 and left
+# `ASK-181 claimed by sana (session worker-...)`. linear-claim.py does not
+# pid-check the claim (by design -- the claiming process exits immediately), so
+# nothing reclaimed it, and with the lock still repo-root scoped that ONE dead
+# session blocked every issue on the board until a human released it by hand.
+#
+# This drives the real converge.sh, SIGTERMs it while the fake worker is still
+# running, and then reads the lock file back. Asserting on the trap's source
+# would prove only that a trap line exists, not that the lock is actually gone.
+CLAIMS="$WORK/state/claims.json"
+export KIPI_LINEAR_CLAIMS="$CLAIMS"
+
+cat > "$WORK/bin/slowworker" <<'EOF'
+#!/usr/bin/env bash
+# Hold a claim exactly the way the real worker does, then sit still so the
+# parent can be killed while the claim is held.
+python3 "$REAL_CLAIM" claim "$ISSUE_UNDER_TEST" --agent sana --session "worker-test-$$" >/dev/null 2>&1
+sleep 120
+EOF
+chmod +x "$WORK/bin/slowworker"
+
+export REAL_CLAIM="$ROOT/q-system/.q-system/scripts/linear-claim.py"
+export ISSUE_UNDER_TEST="ASK-999"
+echo "301" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+rm -f "$CLAIMS"
+
+KIPI_CONVERGE_WORKER="$WORK/bin/slowworker" bash "$CONV" --issue ASK-999 --max-rounds 1 \
+  >"$WORK/out" 2>&1 &
+CONV_PID=$!
+
+# Wait for the claim to actually exist before killing -- killing before the
+# claim is taken would pass vacuously and prove nothing.
+WAITED=0
+until [ -s "$CLAIMS" ] || [ "$WAITED" -ge 60 ]; do sleep 0.5; WAITED=$((WAITED+1)); done
+[ -s "$CLAIMS" ] || fail "fake worker never took a claim; the kill case would be vacuous"
+ok "claim is held while the run is in flight (kill case is live, not vacuous)"
+
+# `set -e` is active here (run_case restores it), and `wait` on a SIGTERMed job
+# returns 143 -- which aborted this suite at exactly this line, reporting rc=143
+# with every later case silently unrun. A test harness that dies while asserting
+# on a kill is indistinguishable from the bug it is testing for.
+set +e
+kill -TERM "$CONV_PID" 2>/dev/null
+wait "$CONV_PID" 2>/dev/null
+set -e
+# Give the trap its moment; it shells python3 to release.
+WAITED=0
+until [ ! -s "$CLAIMS" ] || python3 -c "
+import json,sys
+try: d=json.load(open('$CLAIMS'))
+except Exception: sys.exit(0)
+sys.exit(0 if not d or d.get('issue')!='ASK-999' else 1)" 2>/dev/null || [ "$WAITED" -ge 40 ]; do
+  sleep 0.5; WAITED=$((WAITED+1))
+done
+
+STILL_HELD="$(python3 -c "
+import json
+try: d=json.load(open('$CLAIMS'))
+except Exception: d=None
+print((d or {}).get('issue',''))" 2>/dev/null)"
+[ "$STILL_HELD" != "ASK-999" ] \
+  || fail "SIGTERM leaked the claim on ASK-999 -- this is the ASK-181 board wedge"
+ok "SIGTERM mid-run releases the claim (board is not wedged by a killed run)"
+
+pkill -f 'bin/slowworker' 2>/dev/null || true
+unset KIPI_LINEAR_CLAIMS REAL_CLAIM ISSUE_UNDER_TEST
+
+grep -q 'trap .*TERM' "$CONV" || fail "converge lost its TERM trap"
+ok "TERM/INT/HUP traps wired"
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"
