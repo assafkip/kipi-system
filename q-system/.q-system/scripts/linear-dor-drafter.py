@@ -48,6 +48,15 @@ STATE = Path.home() / ".config" / "kipi" / "linear-dor-state.json"
 DOR_HEADING = "## Definition of Ready"
 TEAM_KEY = "ASK"
 
+# Where this job's own failures go. Exit 0 keeps launchd calm, which also means
+# launchd-health-check.py (it keys on a non-zero LastExitStatus) never sees a bad
+# night here. So the run reports itself instead. ONE permanent issue, deduped by
+# the kipi-key marker exactly like fleet-health-daily.py, with a comment per
+# failing run -- a new issue every night would be its own kind of silence.
+FAILURE_REPO = "kipi-system"
+FAILURE_KEY = "linear-dor/run-failure"
+FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
+
 # Statuses worth drafting for. A Done/Canceled issue needs no DoR, and drafting
 # onto one would be pure noise on a permanent object.
 DRAFTABLE_STATE_TYPES = ("backlog", "unstarted")
@@ -149,6 +158,77 @@ def draft_one(issue: dict, timeout: int) -> str | None:
     return out
 
 
+def fetch_draftable(ls, team_id: str) -> list:
+    """Every issue on the team that still lacks a Definition of Ready."""
+    issues, after = [], None
+    while True:
+        page = ls.graphql(ISSUES_Q, {"t": team_id, "a": after})["issues"]
+        issues += page["nodes"]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    return [i for i in issues if needs_dor(i)]
+
+
+def report_failures(ls, failures: list, apply: bool) -> str:
+    """Put this run's failures onto ONE permanent Linear issue.
+
+    Returns "none" | "dry" | "created" | "commented" | "unreachable".
+
+    Never raises. This runs in the last breath of a launchd job; a reporter that
+    throws would replace a silent failure with a louder one and still tell the
+    founder nothing. Every exit path here is a return.
+    """
+    if not failures:
+        return "none"
+    if not apply:
+        return "dry"
+
+    detail = "\n".join(f"- {f}" for f in failures)
+    try:
+        team_id, project, remote_keys = ls.fetch_remote_state(TEAM_KEY, FAILURE_REPO)
+        existing = dict(remote_keys).get(FAILURE_KEY) or ls.read_ledger().get(FAILURE_KEY)
+
+        if existing and existing.get("linear_id"):
+            ls.graphql(ls.COMMENT_CREATE, {"input": {
+                "issueId": existing["linear_id"],
+                "body": f"Run {_now()} — {len(failures)} failure(s):\n\n{detail}",
+            }})
+            print(f"  reported {len(failures)} failure(s) on "
+                  f"{existing.get('identifier') or FAILURE_KEY}")
+            return "commented"
+
+        payload = {
+            "title": FAILURE_TITLE[:250],
+            "description": (
+                f"<!-- kipi-key: {FAILURE_KEY} -->\n\n"
+                f"`com.kipi.linear-dor` had failures it cannot signal through its exit "
+                f"code (it exits 0 by design so launchd does not restart-loop it).\n\n"
+                f"Run {_now()} — {len(failures)} failure(s):\n\n{detail}\n\n"
+                f"Full stderr: `~/.config/kipi/linear-dor.err`. "
+                f"Filed by `linear-dor-drafter.py`."
+            ),
+            "teamId": team_id,
+        }
+        if project:
+            payload["projectId"] = project["id"]
+        node = (ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+                .get("issueCreate") or {}).get("issue") or {}
+        if not node.get("id"):
+            print("  failure report rejected by Linear", file=sys.stderr)
+            return "unreachable"
+        ls.append_ledger([{
+            "key": FAILURE_KEY, "kind": "issue", "linear_id": node["id"],
+            "identifier": node.get("identifier"), "source": "linear-dor",
+        }])
+        print(f"  filed {node.get('identifier')} with {len(failures)} failure(s)")
+        return "created"
+    except Exception as exc:  # noqa: BLE001 - see the never-raise note above
+        print(f"  linear unreachable, {len(failures)} failure(s) NOT filed: "
+              f"{str(exc)[:120]}", file=sys.stderr)
+        return "unreachable"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--limit", type=int, default=5, help="issues per run (default 5)")
@@ -165,15 +245,7 @@ def main() -> int:
         print(f"linear unreachable: {exc}", file=sys.stderr)
         return 0
 
-    issues, after = [], None
-    while True:
-        page = ls.graphql(ISSUES_Q, {"t": tid, "a": after})["issues"]
-        issues += page["nodes"]
-        if not page["pageInfo"]["hasNextPage"]:
-            break
-        after = page["pageInfo"]["endCursor"]
-
-    todo = [i for i in issues if needs_dor(i)]
+    todo = fetch_draftable(ls, tid)
     if args.project:
         todo = [i for i in todo
                 if ((i.get("project") or {}).get("name") or "") == args.project]
@@ -186,10 +258,13 @@ def main() -> int:
         print(f"dry run. {len(todo)} remaining; --apply to write {len(batch)}.")
         return 0
 
-    drafted = 0
+    # Collected, not just printed. draft_one() still writes the specific reason to
+    # stderr; this list is what actually leaves the machine.
+    drafted, failed = 0, []
     for issue in batch:
         body = draft_one(issue, args.timeout)
         if not body:
+            failed.append(f"{issue['identifier']}: draft failed (claude call or output rejected)")
             continue
         new_desc = (issue.get("description") or "").rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"
         try:
@@ -197,14 +272,19 @@ def main() -> int:
                                   "input": {"description": new_desc}})
         except Exception as exc:  # noqa: BLE001
             print(f"  {issue['identifier']}: update failed: {str(exc)[:120]}", file=sys.stderr)
+            failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
             continue
         drafted += 1
         print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
 
+    reported = report_failures(ls, failed, args.apply)
+
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(
-        {"ran_at": _now(), "drafted": drafted, "remaining": len(todo) - drafted}, indent=2))
-    print(f"dor-drafter: drafted {drafted}, {len(todo) - drafted} still lack a DoR")
+        {"ran_at": _now(), "drafted": drafted, "failed": len(failed),
+         "failures_reported": reported, "remaining": len(todo) - drafted}, indent=2))
+    print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported}), "
+          f"{len(todo) - drafted} still lack a DoR")
     return 0
 
 
