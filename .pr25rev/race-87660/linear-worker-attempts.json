@@ -1,0 +1,6 @@
+{
+  "ASK-AAA": {
+    "conflict_rounds": 2,
+    "conflict_paged": true
+  }
+}

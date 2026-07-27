@@ -1,0 +1,818 @@
+diff --git a/q-system/.q-system/scripts/linear-worker.sh b/q-system/.q-system/scripts/linear-worker.sh
+index de857b1..682901c 100755
+--- a/q-system/.q-system/scripts/linear-worker.sh
++++ b/q-system/.q-system/scripts/linear-worker.sh
+@@ -70,6 +70,24 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
+ . "$SCRIPT_DIR/pr-verdict-lib.sh"
+ 
+ MAX_ATTEMPTS=3
++# Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
++# MAX_ATTEMPTS only counts runs where `claude` exits non-zero, and the cited
++# failure mode is an agent that exits 0 having done the wrong thing -- so it
++# would never bound a rebase that cannot succeed.
++# 2: a rebase either works on the first honest attempt or the conflict needs a
++# human. Round 3 has never been the one that lands it here.
++#
++# WHAT THIS CAP DOES *NOT* DO (PR #25 review, finding 4): it does not buy a
++# converged PR an exemption from review. A rebase REWRITES the diff, so the
++# stored APPROVE no longer describes what is on the branch, and the round below
++# re-reviews it like any other push. Skipping that would ship a force-pushed
++# diff nobody ever read under an approval earned by a different diff. What the
++# separate counter buys is that a rebase cannot spend MAX_ATTEMPTS and cannot
++# loop forever -- two budgets, two questions, neither one a licence to skip the
++# reviewer. `rounds` therefore counts every review this worker triggered,
++# rebases included, and `conflict_rounds` says how many of the current streak
++# were rebases.
++MAX_CONFLICT_ROUNDS=2
+ TIMEOUT_SECONDS=1800
+ LIMIT=1
+ APPLY=0
+@@ -220,6 +238,116 @@ except Exception: d={}
+ e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
+ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
+ 
++# --- conflict-round ledger (ASK-212) ----------------------------------------
++# Its own counter in the same file, deliberately NOT `count` (failed attempts)
++# and NOT `rounds` (review rounds). Three different budgets answering three
++# different questions; sharing one would let a rebase attempt spend a review
++# round, which is the thing the separate cap exists to prevent.
++conflict_rounds_for() { python3 -c "
++import json,sys
++try: d=json.load(open('$ATTEMPTS'))
++except Exception: d={}
++print(d.get(sys.argv[1],{}).get('conflict_rounds',0))" "$1"; }
++
++bump_conflict_round() { python3 -c "
++import json,sys
++try: d=json.load(open('$ATTEMPTS'))
++except Exception: d={}
++e=d.setdefault(sys.argv[1],{}); e['conflict_rounds']=e.get('conflict_rounds',0)+1
++e['last_conflict']=sys.argv[2]
++json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
++
++# CONSECUTIVE, NOT LIFETIME (PR #25 review, finding 3). Nothing used to clear
++# these keys, so the cap counted every conflict the issue ever had -- including
++# ones a rebase successfully fixed -- and the third conflict across an issue's
++# life was permanently un-dispatchable AND silent, because `conflict_paged` was
++# already true so it did not even page. A PR that merges cleanly again ended its
++# streak, so the streak's counters go with it.
++#
++# Only on a STATED "CLEAN": empty means gh failed and UNKNOWN means GitHub is
++# still computing, and refilling a budget from a state nobody actually read is
++# how an unresolvable conflict gets infinite rounds. Clearing conflict_paged
++# alongside is deliberate: a NEW conflict streak after the PR was healthy is new
++# information, not a repeat of the page the founder already got.
++clear_conflict_rounds() { python3 -c "
++import json,sys
++try: d=json.load(open('$ATTEMPTS'))
++except Exception: raise SystemExit(0)
++e=d.get(sys.argv[1])
++if not e or not (e.get('conflict_rounds') or e.get('conflict_paged')): raise SystemExit(0)
++for k in ('conflict_rounds','conflict_paged','last_conflict'): e.pop(k,None)
++json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
++
++# Returns 0 the FIRST time <flag> is claimed for this issue and 1 every time
++# after, so a page fires exactly once instead of once per scheduled run. A
++# repeated "still stuck" every cycle is noise, and noise trains the reader to
++# skim the real pages (founder-notifications.md). The flag is claimed in the
++# same write that reports it, so two runs cannot both read "not paged yet".
++# Takes the flag NAME so every once-only page in this script shares one
++# mechanism instead of each stuck-state inventing its own convention.
++claim_page_once() { python3 -c "
++import json,sys
++try: d=json.load(open('$ATTEMPTS'))
++except Exception: d={}
++e=d.setdefault(sys.argv[1],{})
++first = not e.get(sys.argv[2])
++e[sys.argv[2]]=True
++json.dump(d,open('$ATTEMPTS','w'),indent=2)
++raise SystemExit(0 if first else 1)" "$1" "$2"; }
++
++# --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
++# tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
++# already reachable from the tree's HEAD -- i.e. a push from this tree destroys
++# nothing. Compared against origin/<branch> rather than the API's headRefOid on
++# purpose: origin/<branch> is exactly what a force-push overwrites, and reading
++# it costs no network call that could fail open.
++tree_holds_pr_head() {
++  # A remote branch that does not exist has nothing to lose, so the invariant
++  # ("hold everything origin/<branch> has") is vacuously satisfied. Same
++  # reasoning as the start-point fallback below; without this the check would
++  # refuse every round on a PR whose head branch was already pruned.
++  git -C "$1" rev-parse --verify -q "origin/$2" >/dev/null 2>&1 || return 0
++  git -C "$1" merge-base --is-ancestor "origin/$2" HEAD 2>/dev/null
++}
++
++# position_tree_on_pr_head <tree> <branch>: move a tree onto the PR's head
++# without discarding anything that exists only there. Refuses (1) on a dirty
++# working tree, or on any commit not reachable from origin/<branch> or
++# origin/main -- the two places work can legitimately live. An unattended job
++# does not get to throw away commits nobody has seen; when it cannot prove the
++# move is lossless it declines the round and leaves the tree for a human.
++# Sets POSITION_REFUSAL to the REASON when it declines, because "cannot be moved
++# safely" covers four different states and the operator reading this at 3am has
++# to know which one they are looking at.
++POSITION_REFUSAL=""
++position_tree_on_pr_head() {
++  local tree="$1" branch="$2" dirty extra
++  POSITION_REFUSAL=""
++  # `.linear-claims.json` is EXCLUDED: the claim taken two lines above this call
++  # writes that file into the very tree being judged, so counting it as local
++  # work made every inherited tree unrepositionable -- turning a destructive
++  # round into a permanently stalled issue plus a page. It is this worker's own
++  # lock, never a human's work.
++  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v '\.linear-claims\.json$')"
++  if [ -n "$dirty" ]; then
++    POSITION_REFUSAL="the tree has uncommitted changes"
++    return 1
++  fi
++  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)"
++  if [ -n "$extra" ]; then
++    POSITION_REFUSAL="the tree holds $(printf '%s\n' "$extra" | grep -c .) commit(s) that exist nowhere else"
++    return 1
++  fi
++  if ! git -C "$tree" checkout -q -B "$branch" "origin/$branch" 2>>"$LOG"; then
++    POSITION_REFUSAL="git could not check out origin/$branch (see $LOG)"
++    return 1
++  fi
++  if ! tree_holds_pr_head "$tree" "$branch"; then
++    POSITION_REFUSAL="the tree still does not contain origin/$branch after the checkout"
++    return 1
++  fi
++}
++
+ DONE=0
+ printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
+ while IFS= read -r ISSUE; do
+@@ -246,6 +374,7 @@ while IFS= read -r ISSUE; do
+   # alarm, and false alarms train the reader to ignore the real notes.
+   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+   REWORK=""
++  CONFLICT_ROUND=""
+   if [ -n "$EXISTING_PR" ]; then
+     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+     if [ -z "$PR_VERDICT" ]; then
+@@ -254,7 +383,15 @@ while IFS= read -r ISSUE; do
+       LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
+       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
+     fi
+-    rework_gate "$PR_VERDICT"; GATE=$?
++    # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
++    # so the worker and the driver cannot drift on what "still merges" means.
++    MERGE_STATE="$(pr_merge_state "$EXISTING_PR")"
++    # The streak ends the moment the PR merges cleanly again -- see
++    # clear_conflict_rounds. Placed before the gate so it runs on every verdict,
++    # not just the approving ones: a rework round that also resolves the
++    # conflict ended the streak just as much.
++    [ "$MERGE_STATE" = "CLEAN" ] && clear_conflict_rounds "$ISSUE"
++    rework_gate "$PR_VERDICT" "$MERGE_STATE"; GATE=$?
+     if [ "$GATE" = "10" ]; then
+       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
+       continue
+@@ -263,6 +400,31 @@ while IFS= read -r ISSUE; do
+       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
+       continue
+     fi
++    if [ "$GATE" = "30" ]; then
++      # Approved on content, but it no longer merges. Dispatch a REBASE round on
++      # its own budget -- and stop dead once that budget is spent, because an
++      # unresolvable conflict would otherwise rework forever and write a
++      # permanent Linear comment on every round.
++      CR="$(conflict_rounds_for "$ISSUE")"
++      if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
++        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
++        if claim_page_once "$ISSUE" conflict_paged; then
++          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
++        fi
++        continue
++      fi
++      # THE ROUND IS NOT SPENT HERE, only planned (PR #25 review, finding 2).
++      # Everything between this line and the dispatch can still decline the run:
++      # another session's claim, a worktree that cannot be created, a tree that
++      # cannot be positioned on the PR's head. Spending the budget up here meant
++      # two runs skipped by a stale claim -- converge.sh's own documented
++      # 2026-07-27 scar, a SIGKILL or a sleeping laptop leaving a lock nobody
++      # reclaims -- burned the whole budget having dispatched ZERO rebases, then
++      # paged the founder a round count that never happened and locked the issue
++      # out until someone hand-edited the ledger. The bump and the log line both
++      # live at the dispatch site below, where the round actually happens.
++      CONFLICT_ROUND=$((CR + 1))
++    fi
+   fi
+ 
+   # 1. WORKTREE FIRST, and only then the claim -- in that order, because the
+@@ -275,9 +437,34 @@ while IFS= read -r ISSUE; do
+   # commit 53f2eeb, the scar this whole line of work started from. A worktree
+   # makes that collision impossible by construction instead of merely detected.
+   TREE="$STATE_DIR/worktrees/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
++  # WHERE A NEW TREE STARTS DEPENDS ON WHETHER A PR ALREADY EXISTS (PR #25
++  # review, finding 1 -- major). `worktree add -B` RESETS the branch to the
++  # start point. origin/main is correct for fresh work and destructive for a PR
++  # that is already open: the agent gets a tree holding NONE of the PR's
++  # commits, and the rebase prompt below then tells it to
++  # `git push --force-with-lease`, which deletes the approved diff from the
++  # remote branch. The lease does not catch it -- the fetch above just
++  # refreshed origin/$BRANCH, so the lease sees no surprise and allows the
++  # push. The PR's head is origin/$BRANCH; when there is a PR, that is the
++  # only defensible start point.
++  BASE="origin/main"
++  if [ -n "$EXISTING_PR" ]; then
++    if git -C "$SKEL" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
++      BASE="origin/$BRANCH"
++    else
++      # gh named a PR whose head branch is not on the remote (deleted after a
++      # merge, pruned by hand). Cutting from main is safe HERE and only here:
++      # there is no remote branch left for a force-push to destroy. Said out
++      # loud rather than fallen through silently, because an unexplained
++      # origin/main is the exact behaviour this block exists to stop -- and
++      # refusing instead would stall the issue every cycle with one INFRA line
++      # nobody reads.
++      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/main (nothing on the remote to overwrite)"
++    fi
++  fi
+   if [ ! -d "$TREE" ]; then
+     mkdir -p "$(dirname "$TREE")"
+-    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" origin/main 2>>"$LOG"; then
++    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
+       # A concurrent worker on the SAME issue can create this tree between the
+       # test above and this line. That is the collision the claim below exists to
+       # adjudicate, not an infra failure -- so fall through and let it, rather
+@@ -312,6 +499,33 @@ while IFS= read -r ISSUE; do
+     if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
+     say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
+   fi
++  # 3. THE TREE MUST STAND ON THE PR'S HEAD before a round that will push over
++  # it. A tree left by an earlier round, or cut by the version of this script
++  # that always used origin/main, can be missing every commit the PR is made of
++  # -- and the round would then force-push that emptiness over the approved
++  # diff. Repositioning happens HERE, after the claim, because it mutates the
++  # tree and the claim is what says this session owns it.
++  if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
++    if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
++      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
++      if claim_page_once "$ISSUE" tree_paged; then
++        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
++      fi
++      # Release before skipping: a claim held by a run that did nothing wedges
++      # this issue for every later run, which is the failure this refusal exists
++      # to avoid, one layer out.
++      ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
++      continue
++    fi
++  fi
++
++  # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every
++  # decline above this line left the budget intact (PR #25 review, finding 2),
++  # so the counter and the log line below both describe rounds that really ran.
++  if [ -n "$CONFLICT_ROUND" ]; then
++    bump_conflict_round "$ISSUE"
++    say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE -- dispatching rebase round $CONFLICT_ROUND/$MAX_CONFLICT_ROUNDS"
++  fi
+   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
+   python3 "$SYNC" progress "$ISSUE" \
+     "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
+@@ -322,8 +536,42 @@ while IFS= read -r ISSUE; do
+   # DoR" to an agent whose work is already written and already criticised, and it
+   # would plausibly start over. The review is the spec for this pass.
+   # EXISTING_PR was discovered above, before the claim; reaching this line means
+-  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
+-  if [ -n "$EXISTING_PR" ]; then
++  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK,
++  # or ruled it approved-but-unmergeable (gate 30, the conflict branch below).
++  #
++  # A CONFLICT ROUND IS NOT A REVIEW ROUND, so it does not get the review prompt.
++  # The review APPROVED this diff -- handing the agent "the review is the spec,
++  # answer every finding" against a review with no findings is how ASK-208's
++  # rounds 1 and 2 both did code polish while the conflict went untouched. The
++  # spec for this pass is the conflict and nothing else.
++  if [ -n "$CONFLICT_ROUND" ]; then
++    REWORK="
++
++## THIS IS A REBASE ROUND. THE CONFLICT IS THE ONLY TASK.
++
++PR #$EXISTING_PR on this branch was already REVIEWED AND APPROVED ('$PR_VERDICT').
++GitHub now reports its merge state as $MERGE_STATE: main moved underneath it and
++it no longer merges. This is round $CONFLICT_ROUND of $MAX_CONFLICT_ROUNDS; at the cap the
++worker stops and pages a human, so do not spend this round on anything else.
++
++Do exactly this:
++
++  git fetch origin
++  git rebase origin/main        # or merge origin/main, whichever this repo prefers
++  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on main
++  bash <the tests this PR already ships>   # they must still pass after the rebase
++  git push --force-with-lease origin $BRANCH
++
++DO NOT redesign, refactor, polish, or 'improve' the approved diff. DO NOT re-open
++the design. Any change beyond what resolving the conflict requires costs the PR
++its approval and starts the review over.
++
++If the conflict cannot be resolved without a real decision (the two sides changed
++the same behaviour on purpose), say so on the issue via progress and STOP:
++  bash $SKEL/kipi linear progress $ISSUE \"<the conflict and the decision it needs>\" --agent sana
++
++Push to the SAME branch $BRANCH. Do not open a second PR."
++  elif [ -n "$EXISTING_PR" ]; then
+     REWORK="
+ 
+ ## THIS IS A REWORK, NOT A FRESH START
+diff --git a/q-system/.q-system/scripts/pr-verdict-lib.sh b/q-system/.q-system/scripts/pr-verdict-lib.sh
+index 92e39a9..701c188 100755
+--- a/q-system/.q-system/scripts/pr-verdict-lib.sh
++++ b/q-system/.q-system/scripts/pr-verdict-lib.sh
+@@ -66,18 +66,71 @@ verdict_from_findings() {
+   fi
+ }
+ 
+-# rework_gate <verdict>
++# pr_merge_state <pr-number>
++# GitHub's mergeStateStatus for a PR: CLEAN | DIRTY | BEHIND | BLOCKED |
++# UNSTABLE | DRAFT | HAS_HOOKS | UNKNOWN, or empty when gh cannot answer.
++# ONE reader of this state, for the same reason this file exists at all: the
++# worker and the driver both need it, and two callers each shelling their own
++# `gh pr view` is two readers of one input with drifting semantics. Empty on any
++# failure, which the gate treats as "still merges" -- see rework_gate.
++pr_merge_state() {
++  gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
++}
++
++# rework_gate <verdict> [merge-state]
+ # The deterministic slice of the severity floor: whether another rework round
+ # is allowed to start. Exit codes, not prose:
+ #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
+-#   10 = approved    (APPROVE or APPROVE WITH NITS -- nothing to rework; the PR
+-#                     waits on the founder. Minors were captured, not wedged.)
++#   10 = approved    (APPROVE or APPROVE WITH NITS *and it still merges* --
++#                     nothing to rework; the PR waits on the founder. Minors
++#                     were captured, not wedged.)
+ #   20 = unreviewed  (no verdict -- with no review there is no spec; refuse and
+ #                     point at `kipi review <PR#> --post` instead of guessing)
++#   30 = conflicted  (approved, but it no longer merges -- a REBASE round, not a
++#                     review round. Distinct from 0 so the caller can cap it
++#                     separately; see the caller-owned cap note below.)
++#
++# WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
++# ----------------------------------------------------------
++# A verdict is a statement about a diff at a moment. The merge state is a
++# statement about that diff against main NOW, and main moves underneath it. PR
++# #11 was approved at 06:08Z; #16 landed at 17:30Z and broke it. Reading the
++# verdict alone, both converge and a direct worker run skipped #11 in under two
++# seconds and reported "waiting on founder merge only" -- so the loop could not
++# dispatch the one thing actually blocking the merge, and a human had to
++# diagnose it by hand. An approved PR that does not merge is not done.
++#
++# ONLY A STATED DIRTY OR BEHIND COUNTS. BLOCKED is a branch-protection state a
++# rebase cannot fix, UNSTABLE is a failing non-required check, UNKNOWN is GitHub
++# still computing, and empty is gh failing. Treating any of those as a conflict
++# would manufacture rebase rounds on healthy PRs every time the API was slow --
++# the wrong-refusal failure that would stall every instance's worker at once.
++# Fail toward "terminal": a missed conflict costs one human diagnosis, a
++# manufactured one costs unbounded model budget on every PR at once.
++#
++# 30 IS NOT 0, AND THE CAP IS THE CALLER'S (PR #22 round-3 review, finding 4)
++# --------------------------------------------------------------------------
++# Making APPROVE non-terminal opens an unbounded rework path: an unresolvable
++# conflict yields infinite rounds, and every round writes a permanent Linear
++# comment on an object that cannot be deleted. So this returns a DISTINCT code
++# rather than folding into 0. The caller caps conflict rounds on its own budget,
++# separate from the review-round budget -- a PR that has converged on content
++# must not lose its review rounds to rebase attempts. The gate answers "is this
++# a conflict?"; it does not answer "have we tried enough times?", because the
++# round ledger lives with the caller that owns the dispatch.
++#
++# The ONE-ARGUMENT form keeps its original semantics exactly (no merge state
++# supplied reads as "still merges"), because converge.sh calls it that way and a
++# silent behaviour change on the short form is a fleet-wide bug.
+ rework_gate() {
+-  case "${1:-}" in
++  local verdict="${1:-}" merge_state="${2:-}"
++  case "$verdict" in
+     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
+-    "APPROVE"|"APPROVE WITH NITS")        return 10 ;;
++    "APPROVE"|"APPROVE WITH NITS")
++      case "$merge_state" in
++        "DIRTY"|"BEHIND")                 return 30 ;;
++        *)                                return 10 ;;
++      esac ;;
+     *)                                    return 20 ;;
+   esac
+ }
+diff --git a/q-system/.q-system/scripts/test/test-severity-floor.sh b/q-system/.q-system/scripts/test/test-severity-floor.sh
+index cc61c06..5e80890 100755
+--- a/q-system/.q-system/scripts/test/test-severity-floor.sh
++++ b/q-system/.q-system/scripts/test/test-severity-floor.sh
+@@ -271,4 +271,414 @@ bash -n "$WORKER"   || fail "linear-worker.sh does not parse"
+ bash -n "$REVIEWER" || fail "pr-review-agent.sh does not parse"
+ ok "both consumers parse (bash -n)"
+ 
++# =============================================================================
++# MERGEABILITY IS HALF THE GATE (ASK-212, sp-71b63e62)
++# =============================================================================
++# THE DEFECT: rework_gate decided "is there work to do here" from the stored
++# verdict alone. A PR approved earlier that LATER stops merging was invisible to
++# the loop: it reported "waiting on founder merge only" and handed it back.
++#
++# OBSERVED 2026-07-27: PR #11 was approved at 06:08Z. #16 landed at 17:30Z and
++# broke it. Both `converge` and a direct worker run then skipped #11 in under two
++# seconds. The loop could not dispatch the one thing blocking the merge.
++#
++# THE TRAP, and why the second half of this section exists: making APPROVE
++# non-terminal opens an unbounded rework path. An unresolvable conflict yields
++# infinite rounds and a permanent Linear comment on every one. So the cap is
++# asserted as hard as the dispatch (PR #22 round-3 review, finding 4).
++#
++# Errexit is on from the record round-trip above; the worker runs below are
++# expected to return non-zero, so statuses are captured explicitly instead.
++set +e
++
++# --- D. the gate, per (verdict x merge state) --------------------------------
++# gate_is <want-rc> <verdict> <merge-state> <why>
++gate_is() {
++  local want="$1" verdict="$2" state="$3" why="$4" got
++  rework_gate "$verdict" "$state"; got=$?
++  [ "$got" = "$want" ] || fail "rework_gate '$verdict' '$state' -> $got, want $want ($why)"
++  ok "$why"
++}
++
++gate_is 30 "APPROVE"           "DIRTY"    "approved but DIRTY is a rebase round, not done"
++gate_is 30 "APPROVE WITH NITS" "DIRTY"    "approved-with-nits + DIRTY is a rebase round too"
++gate_is 30 "APPROVE"           "BEHIND"   "BEHIND is the same class of stale-against-main"
++gate_is 10 "APPROVE"           "CLEAN"    "approved AND CLEAN still waits on the founder"
++gate_is 10 "APPROVE WITH NITS" "CLEAN"    "approved-with-nits + CLEAN waits on the founder"
++# Fail toward terminal on every state a rebase cannot fix or that GitHub has not
++# stated. A missed conflict costs one human diagnosis; a manufactured one spends
++# model budget on every healthy PR in the fleet at once.
++gate_is 10 "APPROVE"           "UNKNOWN"  "UNKNOWN (GitHub still computing) does not manufacture a rebase round"
++gate_is 10 "APPROVE"           ""         "an absent merge-state reading does not manufacture a rebase round"
++gate_is 10 "APPROVE"           "BLOCKED"  "BLOCKED is branch protection; a rebase cannot fix it"
++gate_is 10 "APPROVE"           "UNSTABLE" "UNSTABLE is a failing non-required check, not a conflict"
++gate_is 0  "REQUEST CHANGES"   "CLEAN"    "REQUEST CHANGES is review rework regardless of merge state"
++gate_is 0  "BLOCK"             "DIRTY"    "BLOCK is review rework regardless of merge state"
++gate_is 20 ""                  "DIRTY"    "no verdict is still unreviewed, not rework"
++gate_is 20 "garbage"           "CLEAN"    "an unrecognised verdict is still unreviewed"
++
++# converge.sh calls this with ONE argument. A silent behaviour change on the
++# short form would be a fleet-wide bug in a file this issue does not touch.
++rework_gate "APPROVE"; [ $? = 10 ] || fail "one-arg rework_gate 'APPROVE' no longer returns 10"
++rework_gate "REQUEST CHANGES"; [ $? = 0 ] || fail "one-arg rework_gate 'REQUEST CHANGES' no longer returns 0"
++ok "the one-argument form keeps its original semantics (converge.sh is unchanged)"
++
++# --- the real worker, end to end ---------------------------------------------
++# The unit cases above would pass on a lib nobody calls with the second argument,
++# so the worker is driven for real. No live GitHub API: `gh` is a stub that
++# states the merge status, which is also the only way to script DIRTY on demand.
++REAL_PY="$(command -v python3)" || fail "python3 not on PATH"
++REAL_GIT="$(command -v git)"    || fail "git not on PATH"
++
++W2="$(mktemp -d)"
++trap 'rm -rf "$WORK" "$W2"' EXIT
++unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID 2>/dev/null || true
++G() { git -c user.email=t@t.t -c user.name=t "$@"; }
++
++git init -q --bare "$W2/origin"
++git init -q "$W2/skel"
++G -C "$W2/skel" commit -q --allow-empty -m c1
++git -C "$W2/skel" branch -M main
++git -C "$W2/skel" remote add origin "$W2/origin"
++git -C "$W2/skel" push -q -u origin main
++
++STUB="$W2/bin"; mkdir -p "$STUB" "$W2/home"
++cat > "$STUB/python3" <<EOF
++#!/usr/bin/env bash
++case "\${1:-}" in
++  -)  cat >/dev/null
++      printf '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":1}\n'
++      exit 0 ;;
++  *linear-sync.py) exit 0 ;;
++esac
++exec "$REAL_PY" "\$@"
++EOF
++cat > "$STUB/claude" <<EOF
++#!/usr/bin/env bash
++echo "worked" >> "$W2/worked.txt"
++# The WORK-PHASE agent runs with cwd = the worktree it was handed, so this
++# records WHAT WAS IN that tree. Sections E-G only ever asked "was a round
++# dispatched"; the destructive case (PR #25 review, finding 1) is a round
++# dispatched into a tree that holds none of the PR's commits, which is
++# invisible without this.
++# FIRST WRITER WINS, because the REVIEWER also shells \`claude\`, from the real
++# repo root rather than the worktree. The work phase always runs first, so the
++# first record is the one under test; without this guard the reviewer's log
++# overwrites it and the probe silently reports the wrong repo entirely.
++# (Keying on KIPI_AGENT instead does NOT work: it is often already exported in
++# the ambient environment, so the reviewer's call passes the key too.)
++if [ ! -s "$W2/tree-log.txt" ]; then
++  git log --oneline -n 20 > "$W2/tree-log.txt" 2>&1
++fi
++exit 0
++EOF
++# The page sink. "Did anyone get told, and how many times?" is answered by
++# reading a file, not by grepping the worker's source.
++cat > "$W2/notify.sh" <<EOF
++#!/usr/bin/env bash
++printf '%s\n' "\$*" >> "$W2/pages.txt"
++EOF
++chmod +x "$STUB/python3" "$STUB/claude" "$W2/notify.sh"
++export PATH="$STUB:$PATH"
++[ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub"
++
++# gh_says <pr> <mergeStateStatus>
++gh_says() {
++  cat > "$STUB/gh" <<EOF
++#!/usr/bin/env bash
++case "\$*" in
++  "pr list"*)                                  echo $1 ;;
++  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
++esac
++exit 0
++EOF
++  chmod +x "$STUB/gh"
++}
++
++# run_worker <state-dir>  -- one scheduled worker run against that state dir
++run_worker() {
++  ( cd "$W2/skel" \
++    && HOME="$W2/home" KIPI_SKEL="$W2/skel" KIPI_STATE_DIR="$1" \
++       KIPI_NOTIFY="$W2/notify.sh" \
++       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$2" 2>&1
++  return 0
++}
++
++# --- E. approved + DIRTY must be DISPATCHED, not skipped as done -------------
++S_DIRTY="$W2/state-dirty"; mkdir -p "$S_DIRTY/pr-reviews"
++printf '{"verdict":"APPROVE WITH NITS","pr":777}\n' > "$S_DIRTY/pr-reviews/pr-777.verdict.json"
++gh_says 777 DIRTY
++: > "$W2/worked.txt"; : > "$W2/pages.txt"
++run_worker "$S_DIRTY" "$W2/dirty.out"
++
++grep -q worked "$W2/worked.txt" 2>/dev/null \
++  || fail "SKIPPED A BLOCKED PR: an approved PR that GitHub reports DIRTY was not
++      dispatched. The worker said: $(grep -i skip "$W2/dirty.out" | head -1)"
++ok "approved + DIRTY reached the work phase (a rebase round was dispatched)"
++
++grep -qi "waiting on founder merge" "$W2/dirty.out" \
++  && fail "the run still claimed a DIRTY PR was merely waiting on the founder"
++ok "the run does not report a DIRTY PR as waiting on the founder"
++
++grep -q "rebase round 1/" "$W2/dirty.out" \
++  || fail "the run does not say which conflict round it is on; the cap is invisible to the operator"
++ok "the dispatch names the conflict round and its cap"
++
++# The conflict budget is its own counter: spending it must NOT spend the review
++# rounds or the failed-attempt budget, or a PR that converged on content loses
++# its review budget to rebase tries.
++LEDGER="$S_DIRTY/linear-worker-attempts.json"
++[ "$("$REAL_PY" -c "import json;print(json.load(open('$LEDGER'))['ASK-AAA'].get('conflict_rounds',0))")" = "1" ] \
++  || fail "the conflict round was not recorded; nothing would ever reach the cap"
++[ "$("$REAL_PY" -c "import json;print(json.load(open('$LEDGER'))['ASK-AAA'].get('count',0))")" = "0" ] \
++  || fail "a rebase round burned the failed-attempt budget; the caps must be separate"
++ok "conflict rounds are counted separately from failed attempts"
++
++# --- F. at the cap: stop, and page EXACTLY once across repeated runs ----------
++# Two scheduled runs, both at the cap. One page total. A "still stuck" line every
++# cycle is noise, and noise trains the operator to skim the real pages.
++S_CAP="$W2/state-cap"; mkdir -p "$S_CAP/pr-reviews"
++printf '{"verdict":"APPROVE","pr":779}\n' > "$S_CAP/pr-reviews/pr-779.verdict.json"
++printf '{"ASK-AAA":{"conflict_rounds":2}}\n' > "$S_CAP/linear-worker-attempts.json"
++gh_says 779 DIRTY
++: > "$W2/worked.txt"; : > "$W2/pages.txt"
++run_worker "$S_CAP" "$W2/cap1.out"
++run_worker "$S_CAP" "$W2/cap2.out"
++
++[ ! -s "$W2/worked.txt" ] \
++  || fail "the conflict cap did not hold: a rebase round was dispatched with the budget already spent.
++      An unresolvable conflict would rework forever, writing a permanent Linear comment each round."
++ok "at the cap the worker refuses to dispatch another rebase round"
++
++# Pin WHY it refused. An absence-of-work assertion passes for any reason the
++# worker declines, so on its own it cannot tell "the cap held" from "the fixture
++# was broken and it skipped as unreviewed" -- the exact vacuous-test defect the
++# round-3 review found in the prior art (finding 2).
++grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
++  || fail "the cap run skipped for the WRONG REASON. It must stop at the conflict cap,
++      not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
++ok "it stopped at the conflict cap, not as unreviewed"
++
++PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
++[ "$PAGES" = "1" ] \
++  || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
++grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
++ok "exactly one page across two runs at the cap (no per-cycle noise)"
++
++# --- G. approved + CLEAN must still be left alone ----------------------------
++# The other half: this fix must not turn every approved PR into a rework loop.
++S_OK="$W2/state-ok"; mkdir -p "$S_OK/pr-reviews"
++printf '{"verdict":"APPROVE WITH NITS","pr":778}\n' > "$S_OK/pr-reviews/pr-778.verdict.json"
++gh_says 778 CLEAN
++: > "$W2/worked.txt"; : > "$W2/pages.txt"
++run_worker "$S_OK" "$W2/ok.out"
++
++[ ! -s "$W2/worked.txt" ] \
++  || fail "an approved AND CLEAN PR was reworked; this fix must not loop on healthy PRs"
++grep -q "nothing to rework, waiting on founder merge" "$W2/ok.out" \
++  || fail "section G skipped for the WRONG REASON -- it must reach gate 10 (approved+clean),
++      not gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/ok.out" | head -1)"
++[ ! -s "$W2/pages.txt" ] || fail "a healthy approved PR paged the founder: $(cat "$W2/pages.txt")"
++ok "approved + CLEAN is left alone at gate 10, and pages nobody"
++
++# --- a repo whose PR head lives ONLY on the remote branch --------------------
++# Sections E-G run against a repo where main IS the branch, so "which start
++# point did the worktree use" was unobservable there. Here origin/sana/ask-aaa
++# carries a commit main does not have, and main has moved past the fork point --
++# the real shape of an approved-but-DIRTY PR, and the only shape in which
++# cutting a tree from origin/main is visibly destructive.
++#
++# ONE REPO PER SECTION: two worktrees in one repo cannot both hold
++# sana/ask-aaa, and every section below needs its own tree.
++make_repo() {
++  local d="$1"
++  mkdir -p "$d"
++  git init -q --bare "$d/origin"
++  git init -q "$d/skel"
++  G -C "$d/skel" commit -q --allow-empty -m "base commit"
++  git -C "$d/skel" branch -M main
++  git -C "$d/skel" remote add origin "$d/origin"
++  git -C "$d/skel" push -q -u origin main
++  G -C "$d/skel" checkout -q -b sana/ask-aaa
++  G -C "$d/skel" commit -q --allow-empty -m "the approved work (ASK-AAA)"
++  git -C "$d/skel" push -q -u origin sana/ask-aaa
++  G -C "$d/skel" checkout -q main
++  # Drop the LOCAL branch: the PR's head now exists only as origin/sana/ask-aaa,
++  # which is exactly the state after a worktree is swept between rounds.
++  git -C "$d/skel" update-ref -d refs/heads/sana/ask-aaa
++  G -C "$d/skel" commit -q --allow-empty -m "main moved underneath the PR"
++  git -C "$d/skel" push -q origin main
++}
++
++# run_worker_in <skel> <state-dir> <out>
++run_worker_in() {
++  ( cd "$1" \
++    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
++       KIPI_NOTIFY="$W2/notify.sh" \
++       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
++  return 0
++}
++
++# --- H. a rebase round must be handed the PR's OWN commits -------------------
++# PR #25 review, finding 1 (major). `git worktree add -B <branch> <tree>
++# origin/main` RESETS the branch to origin/main. Before this line of work an
++# approved PR never reached it (gate 10 was terminal); gate 30 routes one
++# through it AND hands the agent a prompt that says `git push --force-with-lease
++# origin <branch>`. A tree with none of the PR's commits plus that instruction
++# wipes the approved diff off the remote, and --force-with-lease does not stop
++# it: the worker's own `git fetch origin` refreshed origin/<branch> first, so
++# the lease sees no surprise and allows the push.
++R_HEAD="$W2/repo-head"; make_repo "$R_HEAD"
++S_HEAD="$W2/state-head"; mkdir -p "$S_HEAD/pr-reviews"
++printf '{"verdict":"APPROVE","pr":781}\n' > "$S_HEAD/pr-reviews/pr-781.verdict.json"
++gh_says 781 DIRTY
++: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"
++run_worker_in "$R_HEAD/skel" "$S_HEAD" "$W2/head.out"
++
++grep -q worked "$W2/worked.txt" 2>/dev/null \
++  || fail "no rebase round was dispatched at all: $(grep -i skip "$W2/head.out" | head -1)"
++grep -q "the approved work" "$W2/tree-log.txt" 2>/dev/null \
++  || fail "DESTRUCTIVE: the rebase round was handed a worktree that does NOT contain PR #781's
++      commits. The prompt tells that agent to force-push this tree over the branch, which
++      deletes the approved diff from the remote. Tree contained:
++$(sed 's/^/        /' "$W2/tree-log.txt")"
++ok "the rebase round is handed a tree that contains the PR's own commits"
++
++# The other half: it must be ON the branch, not on a detached head or main, or
++# the force-push in the prompt has no branch to push.
++grep -q "sana/ask-aaa" "$W2/head.out" \
++  || fail "the run never names the branch it worked on"
++[ "$(git -C "$S_HEAD/worktrees/ask-aaa" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "sana/ask-aaa" ] \
++  || fail "the worktree is not on sana/ask-aaa; the prompt's push has no branch to push"
++ok "the worktree stands on the PR's branch"
++
++# Finding 4: a rebased diff DOES get re-reviewed (the diff changed, so the old
++# APPROVE no longer describes it). Pinned so a later "save the review budget"
++# change cannot silently ship an unreviewed force-push.
++LH="$S_HEAD/linear-worker-attempts.json"
++[ "$("$REAL_PY" -c "import json;print(json.load(open('$LH'))['ASK-AAA'].get('rounds',0))")" = "1" ] \
++  || fail "the rebased diff was not re-reviewed; a force-push nobody looked at ships under the OLD verdict"
++ok "a rebase round's resulting diff is re-reviewed (round recorded)"
++
++# --- I. a skipped run must not spend the conflict budget ---------------------
++# PR #25 review, finding 2 (major). The bump used to run at the gate, before the
++# worktree and before the claim. A stale claim (converge.sh's own documented
++# 2026-07-27 scar: SIGKILL/timeout/sleep leaves a lock nobody reclaims) then
++# burned the whole budget across two runs having dispatched ZERO rebase rounds,
++# paged a count that never happened, and locked the issue out permanently.
++R_STALE="$W2/repo-stale"; make_repo "$R_STALE"
++S_STALE="$W2/state-stale"; mkdir -p "$S_STALE/pr-reviews" "$S_STALE/worktrees"
++printf '{"verdict":"APPROVE","pr":782}\n' > "$S_STALE/pr-reviews/pr-782.verdict.json"
++gh_says 782 DIRTY
++git -C "$R_STALE/skel" worktree add -q -B sana/ask-aaa \
++  "$S_STALE/worktrees/ask-aaa" origin/sana/ask-aaa 2>/dev/null \
++  || fail "could not pre-create the worktree for the stale-claim case"
++# A REAL lock, written by the real locker (fixture rule: never hand-roll the
++# on-disk shape), held by a session that is gone.
++( cd "$S_STALE/worktrees/ask-aaa" \
++  && "$REAL_PY" "$ROOT/q-system/.q-system/scripts/linear-claim.py" claim ASK-AAA \
++       --agent ghost --session ghost-dead-session ) >/dev/null 2>&1 \
++  || fail "could not seed the stale claim"
++
++: > "$W2/worked.txt"; : > "$W2/pages.txt"
++run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale1.out"
++run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale2.out"
++
++grep -q "claimed by another session" "$W2/stale1.out" \
++  || fail "section I did not hit the stale claim at all: $(grep -i skip "$W2/stale1.out" | head -1)"
++LS="$S_STALE/linear-worker-attempts.json"
++BURNED="$("$REAL_PY" -c "
++import json
++try: d=json.load(open('$LS'))
++except Exception: d={}
++print(d.get('ASK-AAA',{}).get('conflict_rounds',0))")"
++[ "$BURNED" = "0" ] \
++  || fail "two runs that dispatched NOTHING spent $BURNED/2 conflict round(s). The budget is
++      gone before the work, so the issue is locked out with zero rebases tried."
++ok "a run skipped by another session's claim spends no conflict round"
++
++[ ! -s "$W2/pages.txt" ] \
++  || fail "the founder was paged a rebase count that never happened: $(cat "$W2/pages.txt")"
++ok "no page claiming rebase rounds that were never dispatched"
++
++grep -q "dispatching rebase round" "$W2/stale1.out" \
++  && fail "the log says it dispatched a rebase round on a run that skipped at the claim"
++ok "the log does not announce a dispatch that did not happen"
++
++# And the budget really is still there: release the dead session's lock, and the
++# next run gets round 1 of 2, not 'a human resolves this one'.
++( cd "$S_STALE/worktrees/ask-aaa" \
++  && "$REAL_PY" "$ROOT/q-system/.q-system/scripts/linear-claim.py" release ASK-AAA \
++       --agent ghost --session ghost-dead-session ) >/dev/null 2>&1
++: > "$W2/worked.txt"
++run_worker_in "$R_STALE/skel" "$S_STALE" "$W2/stale3.out"
++grep -q "rebase round 1/" "$W2/stale3.out" \
++  || fail "after the stale claim cleared, the issue did not get its first rebase round.
++      The worker said: $(grep -iE 'skip|rebase' "$W2/stale3.out" | head -1)"
++ok "once the claim clears, the full conflict budget is still available"
++
++# --- J. the conflict budget is consecutive, not a lifetime total -------------
++# PR #25 review, finding 3 (minor). Nothing reset the counter, so an issue that
++# hit two conflicts across its life -- both successfully rebased -- could never
++# be dispatched for a third, silently (conflict_paged was already true, so it
++# did not even page).
++R_CLEAR="$W2/repo-clear"; make_repo "$R_CLEAR"
++S_CLEAR="$W2/state-clear"; mkdir -p "$S_CLEAR/pr-reviews"
++printf '{"verdict":"APPROVE","pr":783}\n' > "$S_CLEAR/pr-reviews/pr-783.verdict.json"
++printf '{"ASK-AAA":{"conflict_rounds":2,"conflict_paged":true}}\n' > "$S_CLEAR/linear-worker-attempts.json"
++gh_says 783 CLEAN
++: > "$W2/worked.txt"; : > "$W2/pages.txt"
++run_worker_in "$R_CLEAR/skel" "$S_CLEAR" "$W2/clear.out"
++
++grep -q "nothing to rework, waiting on founder merge" "$W2/clear.out" \
++  || fail "section J skipped for the WRONG REASON; it must reach gate 10 (approved + CLEAN).
++      The worker said: $(grep -i skip "$W2/clear.out" | head -1)"
++LC="$S_CLEAR/linear-worker-attempts.json"
++[ "$("$REAL_PY" -c "import json;print(json.load(open('$LC'))['ASK-AAA'].get('conflict_rounds',0))")" = "0" ] \
++  || fail "the PR merges cleanly again and the conflict counter still reads spent. The cap is a
++      LIFETIME total, so the next real conflict on this issue is un-dispatchable and silent."
++[ "$("$REAL_PY" -c "import json;print(json.load(open('$LC'))['ASK-AAA'].get('conflict_paged',False))")" = "False" ] \
++  || fail "the page flag survived the PR becoming mergeable, so a NEW conflict streak would
++      stop the loop without ever telling the founder"
++ok "a PR that merges cleanly again resets its conflict budget and its page flag"
++
++# --- K. a tree cut by an OLDER run is repositioned, not abandoned ------------
++# Section H covers the tree the worker cuts itself. This covers the one it
++# INHERITS: $TREE already exists, cut from origin/main by a previous version, so
++# it holds none of the PR's commits. Refusing forever would trade a destructive
++# round for a permanently stalled issue, so a lossless move onto the PR's head
++# has to actually happen -- and "lossless" must not be defeated by the worker's
++# OWN claim file, which lands untracked inside the very tree being judged.
++R_LEGACY="$W2/repo-legacy"; make_repo "$R_LEGACY"
++S_LEGACY="$W2/state-legacy"; mkdir -p "$S_LEGACY/pr-reviews" "$S_LEGACY/worktrees"
++printf '{"verdict":"APPROVE","pr":784}\n' > "$S_LEGACY/pr-reviews/pr-784.verdict.json"
++gh_says 784 DIRTY
++git -C "$R_LEGACY/skel" worktree add -q -B sana/ask-aaa \
++  "$S_LEGACY/worktrees/ask-aaa" origin/main 2>/dev/null \
++  || fail "could not pre-create the legacy worktree"
++: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"
++run_worker_in "$R_LEGACY/skel" "$S_LEGACY" "$W2/legacy.out"
++
++grep -q "the approved work" "$W2/tree-log.txt" 2>/dev/null \
++  || fail "an inherited worktree cut from origin/main was never moved onto PR #784's head.
++      Either the round ran in a tree whose force-push deletes the PR, or the issue is now
++      stalled every cycle. The worker said: $(grep -iE 'skip|rebase' "$W2/legacy.out" | head -1)
++      Tree contained:
++$(sed 's/^/        /' "$W2/tree-log.txt")"
++ok "an inherited tree is repositioned onto the PR's head before the round"
++
++[ ! -s "$W2/pages.txt" ] \
++  || fail "a tree that could be repositioned safely paged the founder anyway: $(cat "$W2/pages.txt")"
++ok "a repositionable tree costs the founder no page"
++
++# --- wiring: the worker actually consults the merge state --------------------
++grep -q 'pr_merge_state' "$WORKER" \
++  || fail "linear-worker.sh never reads the merge state (the gate's second argument would be empty forever)"
++grep -q 'MAX_CONFLICT_ROUNDS' "$WORKER" \
++  || fail "linear-worker.sh has no conflict-round cap"
++ok "worker wiring: merge state read through the lib, conflict cap present"
++
++bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
++ok "the lib parses (bash -n)"
++
+ echo "PASS: $PASS/$PASS severity-floor checks"
