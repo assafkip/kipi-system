@@ -36,7 +36,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -56,6 +58,20 @@ TEAM_KEY = "ASK"
 FAILURE_REPO = "kipi-system"
 FAILURE_KEY = "linear-dor/run-failure"
 FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
+
+# Where `claude` lives when PATH does not say. The plist runs `/bin/bash -lc`,
+# and `-l` sources BASH login files -- the founder's shell is zsh, so the PATH
+# entry for ~/.local/bin never loads under launchd. Interactively it works
+# because PATH is inherited from the parent shell, which is why this was invisible
+# until the job was actually kickstarted (2026-07-27: 8 of 8 drafts died on
+# FileNotFoundError while launchd recorded LastExitStatus=0). Resolving the binary
+# here rather than trusting the scheduler's environment fixes it for every caller.
+CLAUDE_FALLBACKS = (
+    Path.home() / ".local" / "bin" / "claude",
+    Path.home() / ".claude" / "local" / "claude",
+    Path("/opt/homebrew/bin/claude"),
+    Path("/usr/local/bin/claude"),
+)
 
 # Statuses worth drafting for. A Done/Canceled issue needs no DoR, and drafting
 # onto one would be pure noise on a permanent object.
@@ -122,8 +138,24 @@ def needs_dor(issue: dict) -> bool:
     return True
 
 
+def claude_binary() -> str | None:
+    """Absolute path to the `claude` CLI, or None. PATH first, then known installs."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in CLAUDE_FALLBACKS:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def draft_one(issue: dict, timeout: int) -> str | None:
     """One `claude -p` call. Returns the DoR body, or None if it failed."""
+    binary = claude_binary()
+    if not binary:
+        print(f"  {issue['identifier']}: no claude binary on PATH or in "
+              f"{[str(p) for p in CLAUDE_FALLBACKS]}", file=sys.stderr)
+        return None
     prompt = PROMPT.format(
         project=(issue.get("project") or {}).get("name") or "unassigned",
         title=issue.get("title") or "",
@@ -131,7 +163,7 @@ def draft_one(issue: dict, timeout: int) -> str | None:
     )
     try:
         res = subprocess.run(
-            ["claude", "-p", prompt, "--permission-mode", "acceptEdits"],
+            [binary, "-p", prompt, "--permission-mode", "acceptEdits"],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
         )

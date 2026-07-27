@@ -84,6 +84,37 @@ class FakeLinear:
 
 FAILS = ["ASK-1: claude failed (TimeoutExpired)", "ASK-2: unusable output (rc=1, 0 chars)"]
 
+# --- the launchd-PATH regression -------------------------------------------
+# 2026-07-27, first real kickstart of com.kipi.linear-dor: 8 of 8 drafts died on
+# FileNotFoundError while launchd recorded LastExitStatus=0. The plist runs
+# `/bin/bash -lc`; `-l` sources BASH login files, the founder's shell is zsh, so
+# ~/.local/bin never entered PATH. Interactive runs inherited PATH and passed.
+# claude_binary() resolves the binary instead of trusting the scheduler.
+import os as _os  # noqa: E402
+
+_binary = dor.claude_binary()
+check("claude_binary() resolves a path", _binary is not None, True)
+check(
+    "the resolved path is executable",
+    bool(_binary) and _os.access(_binary, _os.X_OK),
+    True,
+)
+
+_real_which, _real_fallbacks = dor.shutil.which, dor.CLAUDE_FALLBACKS
+try:
+    # An empty PATH is what launchd effectively handed it. The fallbacks carry it.
+    dor.shutil.which = lambda _name: None
+    check("with PATH blind, the fallbacks still find it", dor.claude_binary(), _binary)
+    # And with nothing anywhere, a draft is a reported failure, never a crash.
+    dor.CLAUDE_FALLBACKS = (Path("/nonexistent/claude"),)
+    check(
+        "no binary anywhere is a clean None, not an exception",
+        dor.draft_one({"identifier": "ASK-1", "title": "t", "description": ""}, 5),
+        None,
+    )
+finally:
+    dor.shutil.which, dor.CLAUDE_FALLBACKS = _real_which, _real_fallbacks
+
 # --- THE RULE: a run with failures files them to Linear ---------------------
 ls = FakeLinear()
 check("a failing run creates one issue", dor.report_failures(ls, FAILS, apply=True), "created")
