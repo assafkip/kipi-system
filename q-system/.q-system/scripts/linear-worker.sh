@@ -237,6 +237,33 @@ The reviewer's own bar applies to your fixes too: a fix with no test that could
 have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
 tried and could NOT break, and do not regress those.
 
+## CHECK THE LAYER ABOVE YOUR FIX
+
+Observed on BOTH review rounds of this PR, so treat it as the likely failure mode
+rather than a hypothetical:
+
+  round 1: the detector had no update path      -> you added one
+  round 2: the update path rewrites a CLOSED issue and never reopens it,
+           so the detector goes permanently dark after the operator does the
+           right thing -- WORSE than before the fix
+  round 2 also: 'the fix landed on the detector and not on the report'
+
+A local fix that is correct in isolation can create a worse failure one layer out.
+Before you call a finding fixed, walk the value you changed to its CONSUMERS and
+ask what each now does with it:
+
+- who READS the thing I just started writing? what if it is in a state I did not
+  consider (closed, empty, stale, concurrent)?
+- does the REPORT (Slack line, counts, dry-run output) still tell the truth after
+  this change, or does it now claim something that is not happening?
+- is there a SECOND code path doing the same job that I did not touch? Two readers
+  of the same input with different semantics is a defect even when each is
+  individually defensible.
+- what does the operator SEE when this fires at 3am, and is that signal or noise?
+
+If a fix makes any downstream thing quieter, say so explicitly on the PR and
+justify it. Silence bought by a fix is the most expensive kind.
+
 Push to the SAME branch $BRANCH. Do not open a second PR."
   fi
 
@@ -282,7 +309,19 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # why the code looks the way it does.
   PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   if [ -n "$PR_NUM" ]; then
-    say "review PR #$PR_NUM for $ISSUE"
+    # Count review ROUNDS per issue, distinct from failed ATTEMPTS. A run that
+    # succeeds but comes back REQUEST CHANGES is not a failure, so the attempts
+    # counter never sees it -- yet rounds-to-approve is the number that actually
+    # decides whether this worker can be trusted unattended. Without it the
+    # question "does it converge or oscillate?" is answered by memory, and memory
+    # is what this whole system exists to replace.
+    ROUNDS="$(python3 -c "
+import json
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
+json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
+    say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
     bash "$SCRIPT_DIR/pr-review-agent.sh" "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
       || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
   else
