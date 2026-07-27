@@ -89,6 +89,10 @@ def test_scope_matches_propagation(vs) -> None:
         finding("q-system/output/report.md", "pricing", 3),
         finding("q-system/.q-system/data/db.md", "source_identity", 3),
         finding("q-system/.q-system/agent-pipeline/bus/x.md", "pricing", 3),
+        # research/ became instance-owned in ASK-191 (kipi-update.sh), because
+        # it was shipping four kipi-system-specific notes to the whole fleet.
+        finding("q-system/research/cc-workflow-learnings-2026-06-02.md",
+                "source_identity", 4),
     ]
     gating, advisory = vs.partition_semantic_violations(non_propagated)
     expect(
@@ -106,13 +110,11 @@ def test_scope_matches_propagation(vs) -> None:
         finding("plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml",
                 "client_identity", 14),
         finding("q-system/.q-system/commands.md", "pricing", 417),
-        # research/ propagates: the rsync excludes only INSTANCE_OWNED_SUBTREES.
-        finding("q-system/research/cc-workflow-learnings-2026-06-02.md",
-                "source_identity", 4),
+        finding("plugins/prd-os/scripts/runner.md", "source_identity", 9),
     ]
     gating, advisory = vs.partition_semantic_violations(propagated)
     expect(
-        "classified findings on propagated paths DO gate (incl. research/)",
+        "classified findings on propagated paths DO gate",
         len(gating) == 3 and advisory == [],
     )
 

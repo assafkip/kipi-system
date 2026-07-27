@@ -180,24 +180,102 @@ def load_registry():
         return {"instances": []}
 
 
-SEMANTIC_FIELD_PATTERNS = (
+MARKDOWN_BOLD_LABEL_PATTERNS = (
     re.compile(
         r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*?)\s*$"
     ),
     re.compile(
         r"^\s*(?:[-*]\s+)?\*\*(?P<label>[^*]+?)\*\*:\s*(?P<value>.*?)\s*$"
     ),
-    re.compile(
-        r"^\s*(?:[-*]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _-]*):"
-        r"\s*(?P<value>.*?)\s*$"
-    ),
-    re.compile(
-        r"^\s*\|\s*(?P<label>[^|]+?)\s*\|\s*(?P<value>[^|]*?)\s*\|"
-    ),
+)
+# The loosest pattern by far: any `label: value` line. It is the one that reads
+# a Python type annotation (`source: dict[str, Any],`), a docstring parameter
+# (`company: Company or project name...`) and a CSV prose cell as canonical
+# records. See BARE_LABEL_EXEMPT_SUFFIXES.
+BARE_LABEL_PATTERN = re.compile(
+    r"^\s*(?:[-*]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _-]*):"
+    r"\s*(?P<value>.*?)\s*$"
+)
+MARKDOWN_TABLE_PATTERN = re.compile(
+    r"^\s*\|\s*(?P<label>[^|]+?)\s*\|\s*(?P<value>[^|]*?)\s*\|"
+)
+SEMANTIC_FIELD_PATTERNS = (
+    MARKDOWN_BOLD_LABEL_PATTERNS
+    + (BARE_LABEL_PATTERN, MARKDOWN_TABLE_PATTERN)
+)
+
+# A DECLARATION is not an ASSERTION. In these languages `label: value` is
+# syntax -- a type annotation, a parameter, an object key -- so the bare-label
+# pattern reads the language itself as leaked facts. Measured 2026-07-27 over
+# the propagated source set: 15 of the 34 gating findings, and not one was a
+# fact. `source: str`, `source: dict[str, Any],`, `client: httpx.AsyncClient,`,
+# `source: Optional[Path] = None`, `source: resolvedPath,` are the whole
+# population.
+#
+# Only the BARE pattern is exempted. `**Client:** Acme` and `| Client | Acme |`
+# inside a docstring or a template string are still read, because those are
+# markdown a human wrote, not syntax the parser requires. Cost, stated rather
+# than hidden: a roster written as an unquoted `client: Acme` line in a .py file
+# is now invisible. In Python a dict literal keys it as `"client": "Acme"`,
+# which this pattern never matched anyway (it requires a bare word before the
+# colon), so the reachable loss is a comment.
+#
+# .yaml/.yml are deliberately NOT here: YAML is a real roster format, and
+# `prospect: Acme Corp` in a data file is exactly the leak this gate exists for.
+# YAML declarations are handled by SCHEMA_PRIMITIVE_VALUES instead, which is
+# tight enough that a company name cannot pass through it.
+CODE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx",
+})
+# A .csv is tabular data: one record per LINE, comma-delimited. A `label: value`
+# inside a cell is prose, not a canonical record. All 4 CSV findings were the
+# string "Visual DNA: Relentless motion... " in a design-reference table, read
+# as `pricing` because a `$` appeared later in the same long cell.
+DATA_SUFFIXES = frozenset({".csv", ".tsv"})
+BARE_LABEL_EXEMPT_SUFFIXES = CODE_SUFFIXES | DATA_SUFFIXES
+
+# YAML type declarations. Deliberately an exact-match allowlist of primitive
+# type NAMES rather than a grammar: `prospect: string` is a schema, while
+# `prospect: Acme` must still be a finding, and only an allowlist keeps that
+# line sharp. Adding a company name here would be a visible, reviewable act.
+SCHEMA_PRIMITIVE_VALUES = frozenset({
+    "any", "array", "bool", "boolean", "date", "datetime", "dict", "float",
+    "int", "integer", "list", "null", "number", "object", "str", "string",
+})
+YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+
+# A CITED DOCUMENT is not an identity. `Source: https://docs.anthropic.com/...`
+# and `source: [rca-...md](../cole-gtm/...)` both name a document you can go
+# open, which is the opposite of an instance fact -- the research-mode skill
+# REQUIRES that line. A locator (URL, markdown link with a URL or a relative
+# path, arXiv id, DOI) is the deterministic tell; a bare `Source: Acme Corp` has
+# none and stays a finding.
+CITATION_LOCATOR_RE = re.compile(
+    r"https?://"
+    r"|\]\(\s*(?:https?://|\.{0,2}/)"
+    r"|\barxiv:\s*\d{4}\.\d{4,5}"
+    r"|\bdoi:\s*10\.\d{4,9}/",
+    re.IGNORECASE,
 )
 PLACEHOLDER_RE = re.compile(
+    # {{HANDLEBARS}}, this repo's primary placeholder form.
     r"\{\{\s*[A-Za-z][A-Za-z0-9_.-]*\s*\}\}"
+    # ...and [Bracketed Title Case], the form the canonical TEMPLATES use:
+    # `- **Source:** [Person] - [Date]` is the blank a debrief fills in, not a
+    # source identity. Deliberately narrow -- capitalized words and spaces only
+    # -- so a markdown link label (`[Anthropic - Reduce Hallucinations](...)`,
+    # `[teract.ai](...)`, `[last30days]`) is untouched: those carry `-`, `.` or
+    # lowercase and must keep flowing to the citation check.
+    # Cost, stated rather than hidden: a real fact written as `Client: [Acme
+    # Corp]` is now invisible. In this repo brackets mean "fill this in", and
+    # the template-restoration tests depend on that reading.
+    r"|\[[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\]"
 )
+# A value that is ENTIRELY a parenthetical is a template prompt to the author,
+# not an assertion: `- **Gaps:** (what we still can't answer well)`. Requiring
+# the parens to wrap the whole value is what keeps this narrow -- `Price: $6,500
+# (annual)` is untouched because the currency sits outside them.
+TEMPLATE_PROMPT_RE = re.compile(r"^\([^()]*\)$")
 CURRENCY_RE = re.compile(
     r"(?:[$€£]\s?\d[\d,]*(?:\.\d{1,2})?"
     r"|\b(?:USD|EUR|GBP)\s+\d[\d,]*(?:\.\d{1,2})?"
@@ -285,15 +363,31 @@ TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]*-[\s:|-]*\|\s*$")
 # form aborted. A header cell is exactly where a real roster puts its label.
 
 
-def _semantic_record_lines(text):
+def _record_patterns_for(source_path):
+    """The record grammars that apply to one file.
+
+    A file's LANGUAGE decides which `label: value` lines are assertions. See
+    BARE_LABEL_EXEMPT_SUFFIXES for why the bare pattern is dropped in code and
+    tabular data.
+    """
+    if source_path is None:
+        return SEMANTIC_FIELD_PATTERNS
+    suffix = os.path.splitext(str(source_path))[1].lower()
+    if suffix in BARE_LABEL_EXEMPT_SUFFIXES:
+        return MARKDOWN_BOLD_LABEL_PATTERNS + (MARKDOWN_TABLE_PATTERN,)
+    return SEMANTIC_FIELD_PATTERNS
+
+
+def _semantic_record_lines(text, source_path=None):
     lines = text.splitlines()
+    patterns = _record_patterns_for(source_path)
     for index, line in enumerate(lines):
         if TABLE_SEPARATOR_RE.match(line):
             continue
         match = next(
             (
                 pattern.match(line)
-                for pattern in SEMANTIC_FIELD_PATTERNS
+                for pattern in patterns
                 if pattern.match(line)
             ),
             None,
@@ -336,11 +430,22 @@ def semantic_leakage_findings(text, source_path=None):
     if _synthetic_fixture(text, source_path):
         return []
 
+    suffix = os.path.splitext(str(source_path))[1].lower() if source_path else ""
+
     findings = []
-    for line_number, raw_label, value in _semantic_record_lines(text):
+    for line_number, raw_label, value in _semantic_record_lines(
+        text, source_path
+    ):
         label = " ".join(raw_label.lower().split())
         asserted_value = PLACEHOLDER_RE.sub("", value).strip(" \t-:;,")
         if not asserted_value:
+            continue
+        if TEMPLATE_PROMPT_RE.match(asserted_value):
+            continue
+        if (
+            suffix in YAML_SUFFIXES
+            and asserted_value.lower() in SCHEMA_PRIMITIVE_VALUES
+        ):
             continue
 
         fact_classes = []
@@ -348,14 +453,25 @@ def semantic_leakage_findings(text, source_path=None):
             fact_classes.append("client_identity")
         if label == "relationship":
             fact_classes.append("relationship")
-        if label in PRICING_FIELDS or CURRENCY_RE.search(asserted_value):
+        if label in PRICING_FIELDS:
             fact_classes.append("pricing")
+        elif CURRENCY_RE.search(asserted_value):
+            # Currency with no pricing LABEL is a mention, not an asserted
+            # price. Measured 2026-07-27 over the propagated set: every one of
+            # the 8 was an engine operating cost or a third-party public list
+            # price ("Apify ~$0.50 per run", "Gamma ... $10/month"), none the
+            # founder's. Kept visible as its own class rather than deleted --
+            # the label carries the signal, the currency corroborates it.
+            fact_classes.append("pricing_mention")
         if label in SOURCE_FIELDS:
-            fact_classes.append(
-                "sourced_interaction"
-                if _has_valid_date(asserted_value)
-                else "source_identity"
-            )
+            if CITATION_LOCATOR_RE.search(asserted_value):
+                fact_classes.append("cited_source")
+            else:
+                fact_classes.append(
+                    "sourced_interaction"
+                    if _has_valid_date(asserted_value)
+                    else "source_identity"
+                )
         if label in INTERACTION_FIELDS and _has_valid_date(asserted_value):
             fact_classes.append("dated_interaction")
         if label in GAP_FIELDS:
@@ -409,14 +525,22 @@ def _load_containment_targets():
 # Drift protection is a test, not a comment: test-gate-13b-scope.py asserts
 # this tuple still matches kipi-update.sh's INSTANCE_OWNED_SUBTREES.
 #
-# NOT excluded, deliberately: q-system/research/ and repo-root paths outside
-# q-system/. The q-system rsync copies the whole tree minus the owned subtrees,
-# so research/ DOES propagate and its findings are real.
+# q-system/research/ is here because it was MADE instance-owned in ASK-191, not
+# because it always was: it shipped four kipi-system-specific notes to every
+# instance until `research` was added to INSTANCE_OWNED_SUBTREES. The ASK-191
+# issue text asserted research/ was already non-propagated; it was not, and
+# excluding it here WITHOUT the kipi-update.sh change would have hidden a real
+# fan-out rather than stopped it. The drift test is what keeps that honest.
+#
+# Repo-root paths outside q-system/ are NOT listed: only q-system/, plugins/
+# and .claude/ propagate, but enumerating the root's non-propagated dirs here
+# would be a second, drift-prone answer to a question kipi-update.sh owns.
 NON_PROPAGATED_PREFIXES = (
     "q-system/my-project",
     "q-system/canonical",
     "q-system/memory",
     "q-system/output",
+    "q-system/research",
     "q-system/.q-system/data",
     "q-system/.q-system/agent-pipeline/bus",
 )
@@ -435,7 +559,16 @@ NON_PROPAGATED_PREFIXES = (
 # A baseline/ratchet at 12,388 was proposed and rejected by the founder
 # 2026-07-27: it would stamp the false alarms as accepted debt and bury the 47
 # real findings inside them permanently.
-ADVISORY_FACT_CLASSES = frozenset({"unclassified_populated_record"})
+#
+# `pricing_mention` and `cited_source` join it for the reasons documented at
+# their classification sites: a currency with no pricing label is an operating
+# cost, and a Source: line carrying a public locator is the citation the
+# research-mode skill requires. Both stay counted so a spike is still visible.
+ADVISORY_FACT_CLASSES = frozenset({
+    "pricing_mention",
+    "cited_source",
+    "unclassified_populated_record",
+})
 
 
 def _propagates(relative_path):

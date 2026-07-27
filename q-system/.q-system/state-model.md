@@ -13,7 +13,7 @@
 | Open gap questions | `canonical/discovery.md` | CALIBRATE mode |
 | Unresolved objections | `canonical/objections.md` | DEBRIEF / CALIBRATE |
 | Relationships needing follow-up | `my-project/relationships.md` | PLAN mode |
-| Proof gaps | `canonical/objections.md` | DEBRIEF mode |
+| Unclosed proof gaps | `canonical/objections.md` | DEBRIEF mode |
 | Unvalidated claims | `my-project/current-state.md` | CALIBRATE mode |
 
 ### Health Indicators
