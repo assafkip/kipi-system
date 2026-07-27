@@ -10,7 +10,9 @@ can.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,22 @@ def run(repo: Path, *args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(PRD_RUNNER), "--repo-root", str(repo), *args],
         capture_output=True, text=True,
     )
+
+
+def _load_runner():
+    """Import prd_runner in-process so the Linear fetch can be monkeypatched.
+
+    The tracker lookup is stubbed at the function boundary rather than through
+    an env-var endpoint override on purpose: an override would be a real bypass
+    surface on the resolve path, and the whole point of this command is that a
+    resolution cannot be asserted. A test seam that production also honours is
+    a hand-clear with extra steps.
+    """
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    spec = importlib.util.spec_from_file_location("prd_runner_under_test", PRD_RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -121,3 +139,133 @@ def test_resolve_requires_a_target(repo):
     run(repo, "spillover", "add", "--source", "s", "--desc", "x", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1")  # neither --resolution-ref nor --void
     assert bad.returncode != 0
+
+
+# --- ASK-209: resolving against the tracker that actually owns the issue -----
+#
+# This repo's work ships through Linear, so `--resolution-ref ASK-204` used to be
+# looked up in `.prd-os/issues/`, never found, and refused -- while ASK-204 was
+# provably closed (PR #19, merge 990d7c1). The ledger then held finished work
+# open forever and `gates run` went RED on nothing, which is how a gate stops
+# carrying information. The fix VERIFIES a Linear identifier against Linear.
+# It does not trust the operator's word for it: an unverifiable ref is refused,
+# never recorded as resolved.
+
+
+@pytest.fixture
+def runner():
+    return _load_runner()
+
+
+def _resolve(module, repo: Path, *args: str) -> int:
+    return module.main(["--repo-root", str(repo), "spillover", "resolve", *args])
+
+
+def _stub_linear(monkeypatch, module, table: dict):
+    """Stand in for the Linear API. Unknown identifier -> the same error the
+    real fetch raises, so 'unknown' and 'open' stay distinguishable."""
+    def fake(identifier: str) -> dict:
+        if identifier not in table:
+            raise module.LinearRefError(f"Linear has no issue {identifier}")
+        return table[identifier]
+    monkeypatch.setattr(module, "_linear_issue_state", fake)
+
+
+def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    _stub_linear(monkeypatch, runner, {"ASK-204": {"type": "completed", "name": "Done"}})
+
+    code = _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-204",
+                    "--evidence", "PR #19 / 990d7c1")
+    assert code == 0
+
+    last = [json.loads(l) for l in _ledger(repo).read_text().splitlines()
+            if json.loads(l)["id"] == "sp1"][-1]
+    assert last["status"] == "resolved"
+    assert last["resolution_ref"] == "ASK-204"
+    # The record has to be auditable offline: which tracker answered, what it
+    # said, and when. Otherwise the next reader has to re-hit the API to know
+    # whether this was verified or asserted.
+    assert last["resolution_tracker"] == "linear"
+    assert last["resolution_verified_state"] == "Done"
+    assert last["resolution_evidence"] == "PR #19 / 990d7c1"
+    assert run(repo, "spillover", "check").returncode == 0
+    assert run(repo, "gates", "run").returncode == 0
+
+
+def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    _stub_linear(monkeypatch, runner, {"ASK-999": {"type": "started", "name": "In Progress"}})
+
+    assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-999") != 0
+    assert run(repo, "spillover", "check").returncode == 1  # still open
+    assert run(repo, "gates", "run").returncode != 0
+
+
+def test_resolve_refuses_canceled_linear_issue(repo, runner, monkeypatch):
+    # Canceled is not fixed. A canceled issue shipped no fix, so letting it
+    # resolve an item would clear the gate on work that never happened. The
+    # honest exit for a non-item is --void, which records a reason.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    _stub_linear(monkeypatch, runner, {"ASK-998": {"type": "canceled", "name": "Canceled"}})
+
+    assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-998") != 0
+    assert run(repo, "spillover", "check").returncode == 1
+
+
+def test_resolve_refuses_unknown_linear_identifier(repo, runner, monkeypatch):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    _stub_linear(monkeypatch, runner, {})  # Linear knows nothing
+
+    assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-4242") != 0
+    assert run(repo, "spillover", "check").returncode == 1
+
+
+def test_resolve_refuses_malformed_ref_without_calling_linear(repo, runner, monkeypatch):
+    # A ref that is neither a local spec nor a well-formed Linear identifier is
+    # refused before any network call, so a typo cannot become a live lookup.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    called = []
+    monkeypatch.setattr(runner, "_linear_issue_state",
+                        lambda ident: called.append(ident) or {"type": "completed", "name": "Done"})
+
+    assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-two-oh-four") != 0
+    assert called == [], "a malformed ref reached the Linear API"
+    assert run(repo, "spillover", "check").returncode == 1
+
+
+def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
+    """No key, no network, no resolution -- the item stays open and the gate red.
+
+    Recording an unverifiable ref as `pending` was the alternative. It is worse:
+    the operator's assertion would be the only thing standing between a finding
+    and a clean ledger, which is exactly the hand-clear this command exists to
+    prevent. Refusing keeps the item visible until someone can actually prove it.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    env = dict(os.environ)
+    env.pop("KIPI_LINEAR_API_KEY", None)
+    env["HOME"] = str(tmp_path / "empty-home")  # no ~/.config/kipi/linear-api-key
+    (tmp_path / "empty-home").mkdir()
+
+    bad = subprocess.run(
+        [sys.executable, str(PRD_RUNNER), "--repo-root", str(repo),
+         "spillover", "resolve", "sp1", "--resolution-ref", "ASK-204"],
+        capture_output=True, text=True, env=env,
+    )
+    assert bad.returncode != 0
+    assert "sp1" in bad.stderr
+    assert run(repo, "spillover", "check").returncode == 1
+    assert run(repo, "gates", "run").returncode != 0
+
+
+def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
+    # A repo that tracks issues locally under a Linear-shaped id keeps working
+    # offline: the local spec is checked first and Linear is never consulted.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    _write_issue(repo, "ASK-204", status="closed")
+    monkeypatch.setattr(runner, "_linear_issue_state",
+                        lambda ident: pytest.fail("local spec should have answered"))
+
+    assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-204") == 0
+    assert run(repo, "spillover", "check").returncode == 0
