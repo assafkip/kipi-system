@@ -1,0 +1,94 @@
+#!/bin/bash
+# Materialize a committed plist TEMPLATE and load it into launchd.
+#
+# Why this exists (ASK-191): three committed plists in this directory used two
+# different conventions. com.kipi.openloops-heartbeat.plist carried __KIPI_REPO__
+# and __HOME__ placeholders -- but NOTHING in the repo ever substituted them, so
+# the convention was text in a file, not wiring: copying that plist into
+# ~/Library/LaunchAgents produced a job that tried to exec `__KIPI_REPO__/...`.
+# The other two (fleet-health, linear-dor) sidestepped the missing substituter by
+# hardcoding /Users/assafkipnis, which made the skeleton unusable on any other
+# machine and failed validate-separation's Full skeleton sweep.
+#
+# One substituter, one convention, all three templates. A template is never
+# loadable as-is; it is rendered here.
+#
+# Usage: bash q-system/.q-system/scripts/install-plist.sh <label> [--render-only <out>]
+#   e.g. bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-health
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# scripts/ -> .q-system/ -> q-system/ -> repo root
+KIPI_REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+usage() {
+  echo "usage: install-plist.sh <label> [--render-only <output-path>]" >&2
+  echo "labels available:" >&2
+  for p in "$SCRIPT_DIR"/com.kipi.*.plist; do
+    [ -e "$p" ] || continue
+    echo "  $(basename "$p" .plist)" >&2
+  done
+}
+
+if [ $# -lt 1 ]; then
+  usage
+  exit 2
+fi
+
+LABEL="$1"
+shift
+TEMPLATE="$SCRIPT_DIR/$LABEL.plist"
+
+if [ ! -f "$TEMPLATE" ]; then
+  echo "ERROR: no plist template for label '$LABEL' at $TEMPLATE" >&2
+  usage
+  exit 2
+fi
+
+RENDER_ONLY=""
+if [ "${1:-}" = "--render-only" ]; then
+  if [ -z "${2:-}" ]; then
+    echo "ERROR: --render-only needs an output path" >&2
+    exit 2
+  fi
+  RENDER_ONLY="$2"
+fi
+
+render() {
+  # sed with | as the delimiter: both replacements are absolute paths containing /.
+  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" "$TEMPLATE"
+}
+
+# A template that still carries a placeholder after substitution is a broken
+# render, and launchd would accept it silently and fail at fire time. Fail loud.
+assert_rendered() {
+  local rendered_file="$1"
+  if grep -q "__KIPI_REPO__\|__HOME__" "$rendered_file"; then
+    echo "ERROR: unsubstituted placeholder remains in $rendered_file" >&2
+    exit 1
+  fi
+}
+
+if [ -n "$RENDER_ONLY" ]; then
+  mkdir -p "$(dirname "$RENDER_ONLY")"
+  render > "$RENDER_ONLY"
+  assert_rendered "$RENDER_ONLY"
+  echo "rendered $LABEL -> $RENDER_ONLY (KIPI_REPO=$KIPI_REPO)"
+  exit 0
+fi
+
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.config/kipi"
+render > "$PLIST"
+assert_rendered "$PLIST"
+
+# plutil is the only thing that proves the rendered XML is a loadable plist.
+if command -v plutil >/dev/null 2>&1; then
+  plutil -lint "$PLIST" >/dev/null
+fi
+
+UID_="$(id -u)"
+launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_" "$PLIST"
+echo "installed $LABEL -> $PLIST (KIPI_REPO=$KIPI_REPO)"
+launchctl list | grep "$LABEL" || echo "  WARN: not loaded"
