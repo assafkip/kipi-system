@@ -7,8 +7,8 @@
 # the convention was text in a file, not wiring: copying that plist into
 # ~/Library/LaunchAgents produced a job that tried to exec `__KIPI_REPO__/...`.
 # The other two (fleet-health, linear-dor) sidestepped the missing substituter by
-# hardcoding /Users/assafkipnis, which made the skeleton unusable on any other
-# machine and failed validate-separation's Full skeleton sweep.
+# hardcoding the founder's home directory, which made the skeleton unusable on
+# any other machine and failed validate-separation's Full skeleton sweep.
 #
 # One substituter, one convention, all three templates. A template is never
 # loadable as-is; it is rendered here.
