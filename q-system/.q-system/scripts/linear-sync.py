@@ -392,9 +392,21 @@ query($key: String!) {
 PROJECT_ISSUES_QUERY = """
 query($projectId: ID!, $after: String) {
   issues(filter: { project: { id: { eq: $projectId } } }, first: 100, after: $after) {
-    nodes { id identifier description state { id name type } }
+    nodes { id identifier description state { id name type } team { id } }
     pageInfo { hasNextPage endCursor }
   }
+}
+"""
+
+# One issue by its Linear id, INDEPENDENT of what project it currently sits in.
+# A project-scoped listing is the wrong sole lookup for a standing rollup issue:
+# moving it to another project is ordinary triage, and after the move the owning
+# job could no longer find it, so it stopped updating it and reported an
+# all-clear instead (PR #11 fourth review, finding 2). The ledger already holds
+# the linear_id; this is how a caller uses it.
+ISSUE_BY_ID_QUERY = """
+query($id: String!) {
+  issue(id: $id) { id identifier description state { id name type } team { id } }
 }
 """
 
@@ -530,12 +542,43 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
                         # nobody looks. A caller cannot tell without this field.
                         "state_type": state.get("type") or "",
                         "state_name": state.get("name") or "",
+                        # The issue's OWN team. A project can span teams, and a
+                        # workflow state id belongs to one team, so a caller
+                        # moving an issue back onto the board must ask that
+                        # issue's team for the state rather than assume the
+                        # team it started the lookup from.
+                        "team_id": (node.get("team") or {}).get("id") or "",
                     }
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
                 break
             after = info.get("endCursor")
     return team_id, project, keys
+
+
+def fetch_issue(linear_id: str) -> dict:
+    """One issue by id, in the same record shape `fetch_remote_state` returns.
+
+    Same shape ON PURPOSE: a caller that already handles a tracked issue must not
+    need a second code path for "the same issue, found a different way". Two
+    readers of one input with different semantics is the defect this avoids.
+
+    Returns {} when the issue is gone, so the caller can tell "moved" (a record)
+    from "not there any more" (empty) and report the second rather than silently
+    treating a key it can no longer maintain as handled.
+    """
+    node = (graphql(ISSUE_BY_ID_QUERY, {"id": linear_id}) or {}).get("issue") or {}
+    if not node.get("id"):
+        return {}
+    state = node.get("state") or {}
+    return {
+        "linear_id": node["id"],
+        "identifier": node.get("identifier") or "",
+        "description": node.get("description") or "",
+        "state_type": state.get("type") or "",
+        "state_name": state.get("name") or "",
+        "team_id": (node.get("team") or {}).get("id") or "",
+    }
 
 
 COMMENT_CREATE = """

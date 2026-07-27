@@ -31,8 +31,14 @@ test-fleet-health-daily.py asserts it. Prose cannot hold this line; the registry
 ALERTING: ONE Slack summary line, never one ping per finding. The findings live in
 Linear where they hold state. Slack is a pointer, not a ledger.
 
-Exit 0 always (a health check that fails its own launchd job is noise); the report
-goes to stdout and the ledger.
+EXIT CODE: 0 for every OPERATIONAL outcome, including a detector that could not
+look and a finding Linear refused — those are reported through the Slack line and
+the state file, because a health check that reds its own launchd job over a 429 is
+noise. Non-zero is reserved for the run being unable to do its job at all: an
+invalid detector registry (1), or an unhandled error, which `launchd-health-check`
+then classifies as failing. "Exit 0 always" was the older claim and it was not
+true: one unguarded Linear call could take the process down (PR #11 fourth review,
+finding 3).
 """
 
 from __future__ import annotations
@@ -229,7 +235,37 @@ def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
 # is the shape this fleet actually uses (open-loops-heartbeat.sh), so a matcher
 # that only reads the first token would miss every real invocation.
 CRON_COMMAND_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate",
-                         "sudo", "exec", "stdbuf", "npx"}
+                         "sudo", "exec", "stdbuf", "npx", "flock", "ssh"}
+
+# A wrapper option whose VALUE is a separate token. Without this the value was
+# scored as command position, so `sudo -u claude /opt/svc/run.sh` -- a service
+# account named `claude`, not an invocation -- filed a permanent Linear issue
+# (PR #11 fourth review, finding 4). This is the same rule `_shell_c_argument`
+# already applies for shells: an option's argument is not a command.
+_WRAPPER_VALUE_FLAGS = {
+    "sudo": {"-u", "--user", "-g", "--group", "-U", "--other-user", "-C", "--close-from",
+             "-D", "--chdir", "-p", "--prompt", "-r", "--role", "-t", "--type",
+             "-R", "--chroot"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "npx": {"-p", "--package", "-w", "--workspace"},
+    "nice": {"-n", "--adjustment"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "caffeinate": {"-t", "-w"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "exec": {"-a"},
+    "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"},
+    "ssh": {"-i", "-l", "-p", "-o", "-F", "-b", "-c", "-D", "-E", "-e", "-I", "-J",
+            "-L", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"},
+}
+
+# Wrappers whose first POSITIONAL operand is not the command: flock takes a lock
+# file, ssh takes a destination. Both were missing entirely, so
+# `flock -n /tmp/x.lock claude -p` -- the standard way a cron job stops
+# overlapping itself -- was a silent false negative (fourth review, finding 5).
+# Skipping the operand is what keeps adding them from buying that at the price of
+# a lock file or a host named `claude`.
+_WRAPPER_OPERANDS = {"flock": 1, "ssh": 1}
 
 # A shell in command position does not RUN what follows; it runs the string
 # handed to its `-c` flag. `bash -lc 'claude -p ...'` is the shape a cron line
@@ -312,14 +348,36 @@ _WRAPPER_ARG_RE = re.compile(r"\d+(\.\d+)?[smhd]?")
 
 def _command_index(tokens: list) -> int:
     """Index of the real command in a shell segment, past env prefixes and
-    wrappers. -1 when the segment holds no command."""
+    wrappers. -1 when the segment holds no command.
+
+    Tracks WHICH wrapper is in effect, because a bare `startswith("-")` skip
+    reads a flag and leaves its value exposed: `sudo -u claude run.sh` scored
+    `claude` -- the value of `-u` -- as the command (fourth review, finding 4).
+    An option's argument belongs to the option, and a wrapper's leading operand
+    (flock's lock file, ssh's host) belongs to the wrapper.
+    """
+    skip_value = False
+    operands_left = 0
+    wrapper = ""
     for index, token in enumerate(tokens):
+        if skip_value:
+            skip_value = False
+            continue  # the VALUE of the option just skipped, never a command
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
             continue  # VAR=value prefix
-        if token.startswith("-") or _WRAPPER_ARG_RE.fullmatch(token):
-            continue  # a wrapper's own flag or arg, e.g. the 1800 in `timeout 1800`
-        if PurePosixPath(token).name in CRON_COMMAND_WRAPPERS:
+        if token.startswith("-"):
+            skip_value = token in _WRAPPER_VALUE_FLAGS.get(wrapper, ())
             continue
+        if _WRAPPER_ARG_RE.fullmatch(token):
+            continue  # a wrapper's own positional arg, e.g. the 1800 in `timeout 1800`
+        name = PurePosixPath(token).name
+        if name in CRON_COMMAND_WRAPPERS:
+            wrapper = name
+            operands_left = _WRAPPER_OPERANDS.get(name, 0)
+            continue
+        if operands_left:
+            operands_left -= 1
+            continue  # flock's lock file / ssh's destination, not the command
         return index
     return -1
 
@@ -444,7 +502,12 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
     command. `bash -lc 'claude -p "x"'` still matches, and
     `notify-send "run claude -p tomorrow"` no longer does.
     """
-    if _depth > 2:  # `sh -c 'sh -c ...'` is not a shape worth chasing further
+    # Bounded, not shallow. The cap exists to end recursion, not to decide which
+    # nesting depths are real: at 2 a genuine `sh -c 'sh -c "sh -c \"claude\""'`
+    # was answered False, and a silent false negative is the one failure this
+    # detector cannot afford (fourth review, finding 5). Each level costs one
+    # lex of a shorter string, so 5 is still bounded work per cron line.
+    if _depth > 5:
         return False
     for tokens in _shell_segments(command):
         command_index = _command_index(tokens)
@@ -815,7 +878,8 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
     provable against an in-memory fake. A test that reached real Linear would
     leave permanent objects behind and could not be re-run.
     """
-    result = {"created": 0, "existing": 0, "updated": 0, "reopened": 0, "skipped_no_key": 0}
+    result = {"created": 0, "existing": 0, "updated": 0, "reopened": 0,
+              "unfiled": 0, "unresolved": 0, "errors": 0, "unresolved_keys": []}
     if not findings:
         return result
     ls = linear
@@ -830,7 +894,14 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
         team_id, project, remote_keys = ls.fetch_remote_state(TEAM_KEY, HEALTH_PROJECT)
     except Exception as exc:  # noqa: BLE001 - a health check must not crash its job
         print(f"  linear unreachable, findings NOT filed: {exc}", file=sys.stderr)
-        result["skipped_no_key"] = len(findings)
+        # COUNTED, and counted where the notification gate can see it. The
+        # shipped code recorded this in a bucket `should_notify` never read, so
+        # a dropped finding produced one stderr line into a file nobody reads
+        # and a Slack line that said "Board has them; nothing to do now" -- the
+        # exact lie the blind-detector branch exists to prevent, one half of the
+        # job over (fourth review, finding 1).
+        result["unfiled"] = len(findings)
+        result["unfiled_reason"] = _redact_secrets(str(exc))[:200]
         return result
 
     ledger = ls.read_ledger()
@@ -838,82 +909,127 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
 
     for f in findings:
         key = f["key"]
-        title = f["title"][:250]
-        description = issue_description(key, f)
-        if key in known:
-            tracked = remote_keys.get(key)
-            # Ledger-only keys (the issue was moved out of the health project)
-            # have no body to compare against, so they are left alone rather
-            # than rewritten from a guess.
+        try:
+            if key not in known:
+                result[_create_one(ls, f, apply, team_id, project)] += 1
+                continue
+            tracked = _tracked_issue(ls, key, remote_keys, ledger)
             if not tracked:
-                result["existing"] += 1
+                # Known, and the issue cannot be located anywhere. Filing a
+                # second permanent object on a guess is worse than saying so,
+                # but saying so has to reach the operator: silently counting it
+                # as already-tracked is what made this class invisible.
+                result["unresolved"] += 1
+                result["unresolved_keys"].append(key)
                 continue
-            # Hash-to-hash, never body-to-body: Linear re-serializes markdown on
-            # the read path, so a raw compare was stale forever (see the
-            # kipi-hash block above issue_description).
-            body_stale = tracked_hash(tracked.get("description")) != finding_hash(f)
-            # A CLOSED rollup issue is the correct end state of the fix: the
-            # operator moved the job to a LaunchAgent and closed it. If the
-            # finding is back, rewriting a Done issue puts it where nobody looks
-            # while the run reports it as handled -- a false all-clear, worse
-            # than never surfacing it. State is what carries visibility.
-            # Independent of body_stale on purpose: a finding that is STILL TRUE
-            # while the board says done is the blind spot whether or not the text
-            # moved. An OPEN issue's state is never touched, so an issue the
-            # operator moved to In Progress is not dragged back to Todo daily.
-            closed = tracked.get("state_type") in CLOSED_STATE_TYPES
-            if not body_stale and not closed:
-                result["existing"] += 1
-                continue
-            if not apply:
-                # A dry run reports the action it WOULD take. It cannot know
-                # whether a reopen state exists without the network call it is
-                # forbidden to make, so "reopened" here is the prediction.
-                result["reopened" if closed else "updated"] += 1
-                continue
-            update: dict = {"title": title, "description": description}
-            reopening = False
-            if closed:
-                state_id = ls.reopen_state_id(team_id)
-                if state_id:
-                    update["stateId"] = state_id
-                    reopening = True
-                elif not body_stale:
-                    # No reopenable state and a current body: nothing useful to
-                    # send. Counting a daily no-op rewrite as progress would be
-                    # the same false claim one bucket over.
-                    result["existing"] += 1
-                    continue
-            ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
-            # ONE finding lands in exactly ONE bucket, counted AFTER the mutation
-            # input is known: incrementing `reopened` before resolving the state
-            # id announced a reopen that was never sent when no reopenable state
-            # existed -- the issue stayed completed while Slack said it was back
-            # on the board (third review, finding 6).
-            result["reopened" if reopening else "updated"] += 1
-            verb = "reopened" if reopening else "updated"
-            print(f"  {verb} {tracked.get('identifier')}  {title[:70]}")
-            continue
-        if not apply:
-            result["created"] += 1  # would create
-            continue
-        payload = {
-            "title": title,
-            "description": description,
-            "teamId": team_id,
-        }
-        if project:
-            payload["projectId"] = project["id"]
-        data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
-        node = (data.get("issueCreate") or {}).get("issue") or {}
-        if node.get("id"):
-            ls.append_ledger([{
-                "key": key, "kind": "issue", "linear_id": node["id"],
-                "identifier": node.get("identifier"), "source": "fleet-health",
-            }])
-            result["created"] += 1
-            print(f"  filed {node.get('identifier')}  {f['title'][:70]}")
+            result[_refresh_one(ls, f, apply, tracked, team_id)] += 1
+        except Exception as exc:  # noqa: BLE001 - one finding's failure is not the run's
+            print(f"  filing {key} FAILED: {exc}", file=sys.stderr)
+            result["errors"] += 1
     return result
+
+
+def _tracked_issue(ls, key: str, remote_keys: dict, ledger: dict) -> dict:
+    """The live issue a known key names, or {} when it cannot be located.
+
+    `remote_keys` covers the health PROJECT only. A key in the ledger but not in
+    that project is the ordinary result of triage moving the issue, and the
+    shipped code answered it with `existing += 1; continue` on every future run:
+    the crontab could grow from 1 offending line to 5 with zero writes, zero
+    pings, and "nothing to do now" as the only sentence the operator ever saw
+    (fourth review, finding 2). The ledger already holds the linear_id, so the
+    issue is fetched by id rather than given up on for having moved.
+    """
+    tracked = remote_keys.get(key)
+    if tracked:
+        return tracked
+    linear_id = (ledger.get(key) or {}).get("linear_id")
+    if not linear_id:
+        return {}
+    return ls.fetch_issue(linear_id) or {}
+
+
+def _create_one(ls, finding: dict, apply: bool, team_id: str, project) -> str:
+    """File ONE new issue. Returns the outcome bucket. Raises on a Linear failure."""
+    if not apply:
+        return "created"  # would create
+    payload = {
+        "title": finding["title"][:250],
+        "description": issue_description(finding["key"], finding),
+        "teamId": team_id,
+    }
+    if project:
+        payload["projectId"] = project["id"]
+    data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+    node = (data.get("issueCreate") or {}).get("issue") or {}
+    if not node.get("id"):
+        # A create that returned no issue is a FAILURE, not a quiet zero. The
+        # shipped code fell off the end of the branch here and counted nothing,
+        # which reads downstream as "no findings" rather than "the write did not
+        # land".
+        raise RuntimeError(f"issueCreate returned no issue for {finding['key']}")
+    ls.append_ledger([{
+        "key": finding["key"], "kind": "issue", "linear_id": node["id"],
+        "identifier": node.get("identifier"), "source": "fleet-health",
+    }])
+    print(f"  filed {node.get('identifier')}  {finding['title'][:70]}")
+    return "created"
+
+
+def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str) -> str:
+    """Rewrite / reopen ONE tracked issue. Returns the outcome bucket.
+
+    Raises on a Linear failure: the CALLER decides what one finding's failure
+    means for the rest of the run. Before this split exactly one network call in
+    the whole path was guarded, so a 429 on the first finding propagated out of
+    `main()` -- later findings never attempted, the state file left holding
+    yesterday's `ran_at`, and no Slack line sent at all (fourth review, finding 3).
+    """
+    title = finding["title"][:250]
+    # Hash-to-hash, never body-to-body: Linear re-serializes markdown on the read
+    # path, so a raw compare was stale forever (see the kipi-hash block above
+    # issue_description).
+    body_stale = tracked_hash(tracked.get("description")) != finding_hash(finding)
+    # A CLOSED rollup issue is the correct end state of the fix: the operator
+    # moved the job to a LaunchAgent and closed it. If the finding is back,
+    # rewriting a Done issue puts it where nobody looks while the run reports it
+    # as handled -- a false all-clear, worse than never surfacing it. State is
+    # what carries visibility. Independent of body_stale on purpose: a finding
+    # that is STILL TRUE while the board says done is the blind spot whether or
+    # not the text moved. An OPEN issue's state is never touched, so an issue the
+    # operator moved to In Progress is not dragged back to Todo daily.
+    closed = tracked.get("state_type") in CLOSED_STATE_TYPES
+    if not body_stale and not closed:
+        return "existing"
+    if not apply:
+        # A dry run reports the action it WOULD take. It cannot know whether a
+        # reopen state exists without the network call it is forbidden to make,
+        # so "reopened" here is the prediction.
+        return "reopened" if closed else "updated"
+    update: dict = {"title": title, "description": issue_description(finding["key"], finding)}
+    reopening = False
+    if closed:
+        # The issue's OWN team, falling back to the team this lookup started
+        # from. A workflow state id belongs to one team, and an issue that left
+        # the health project may have left the team with it.
+        state_id = ls.reopen_state_id(tracked.get("team_id") or team_id)
+        if state_id:
+            update["stateId"] = state_id
+            reopening = True
+        elif not body_stale:
+            # No reopenable state and a current body: nothing useful to send.
+            # Counting a daily no-op rewrite as progress would be the same false
+            # claim one bucket over.
+            return "existing"
+    ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
+    # ONE finding lands in exactly ONE bucket, decided AFTER the mutation input
+    # is known: returning "reopened" before resolving the state id announced a
+    # reopen that was never sent when no reopenable state existed -- the issue
+    # stayed completed while Slack said it was back on the board (third review,
+    # finding 6).
+    verb = "reopened" if reopening else "updated"
+    print(f"  {verb} {tracked.get('identifier')}  {title[:70]}")
+    return verb
 
 
 DETECTOR_ERROR = "error"
@@ -962,24 +1078,48 @@ def should_notify(outcome: dict, per_detector: dict, apply: bool) -> bool:
     Nothing pings without `--apply`. A dry run issues no mutation, so announcing
     one is announcing something that did not happen. The 08:15 LaunchAgent always
     passes `--apply`.
+
+    A run that could not FILE is as unclean as a run that could not LOOK. The
+    shipped gate read created/updated/reopened plus blind detectors and stopped
+    there, so Linear being unreachable — every finding dropped — cleared the gate
+    as an all-clear (fourth review, finding 1).
     """
     if not apply:
         return False
-    return bool(outcome["created"] or outcome["updated"] or outcome["reopened"]
+    return bool(outcome.get("created") or outcome.get("updated")
+                or outcome.get("reopened") or outcome.get("unfiled")
+                or outcome.get("unresolved") or outcome.get("errors")
                 or blind_detectors(per_detector))
 
 
 def notify_text(outcome: dict, per_detector: dict) -> str:
-    """The ONE Slack line, never one per finding. Pure, so its claims are testable."""
+    """The ONE Slack line, never one per finding. Pure, so its claims are testable.
+
+    Every way this run could be WRONG about the board goes in front of the
+    counts, and any one of them removes the all-clear sentence. Silence and
+    "nothing to do now" are the two things a 3am reader cannot distinguish from
+    success, so neither is allowed over an unknown.
+    """
+    counts = (f"{outcome.get('created', 0)} new issue(s) filed, "
+              f"{outcome.get('reopened', 0)} reopened, {outcome.get('updated', 0)} updated, "
+              f"{outcome.get('existing', 0)} already tracked")
+    warnings = []
     blind = blind_detectors(per_detector)
-    counts = (f"{outcome['created']} new issue(s) filed, "
-              f"{outcome['reopened']} reopened, {outcome['updated']} updated, "
-              f"{outcome['existing']} already tracked")
     if blind:
-        # No all-clear language while a detector is blind: "nothing to do now"
-        # over an unknown result is the exact lie the error state exists to stop.
-        return (f"fleet health: BLIND SPOT — {', '.join(blind)} could not run, so "
-                f"that result is UNKNOWN, not clean. Also: {counts}.")
+        warnings.append(f"BLIND SPOT — {', '.join(blind)} could not run, so that "
+                        "result is UNKNOWN, not clean")
+    if outcome.get("unfiled"):
+        warnings.append(f"{outcome['unfiled']} finding(s) NOT filed, Linear unreachable "
+                        f"({outcome.get('unfiled_reason', 'no reason recorded')})")
+    if outcome.get("errors"):
+        warnings.append(f"{outcome['errors']} finding(s) failed to file — Linear "
+                        "rejected the write; see the run log")
+    if outcome.get("unresolved"):
+        named = ", ".join(outcome.get("unresolved_keys", [])[:2]) or "unnamed"
+        warnings.append(f"{outcome['unresolved']} tracked issue(s) could not be located "
+                        f"({named}) — the ledger says they exist and Linear does not")
+    if warnings:
+        return f"fleet health: {'; '.join(warnings)}. Also: {counts}."
     return f"fleet health: {counts}. Board has them; nothing to do now."
 
 
@@ -1003,8 +1143,12 @@ def main() -> int:
         print(f"  {did}: {n}")
 
     outcome = file_findings(all_findings, args.apply)
+    # Every bucket prints, including the ones that mean the run did NOT do what
+    # it was asked. A report that lists only successes reads as a clean run.
     print(f"  filed={outcome['created']} already-tracked={outcome['existing']} "
-          f"rewritten={outcome['updated']} reopened={outcome['reopened']}")
+          f"rewritten={outcome['updated']} reopened={outcome['reopened']} "
+          f"unfiled={outcome['unfiled']} unresolved={outcome['unresolved']} "
+          f"errors={outcome['errors']}")
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(

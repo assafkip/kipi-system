@@ -107,6 +107,25 @@ class FakeLinear:
                 }
         return "team-1", {"id": "proj-1"}, keys
 
+    def fetch_issue(self, linear_id):
+        """One issue by id, in the record shape fetch_remote_state returns.
+
+        On the base fake because it is part of the linear-sync surface
+        `file_findings` calls, not a special case: a fake that only models the
+        project-scoped listing cannot see an issue that left the project.
+        """
+        node = self.issues.get(linear_id)
+        if not node:
+            return {}
+        return {
+            "linear_id": linear_id,
+            "identifier": node["identifier"],
+            "description": self._linear_render(node["description"]),
+            "state_type": node["state_type"],
+            "state_name": node["state_type"],
+            "team_id": "team-1",
+        }
+
     def reopen_state_id(self, _team_id):
         return self.REOPEN_STATE_ID
 
@@ -454,7 +473,8 @@ check("the same outcome under --apply does Slack",
 # An errored detector produced one stderr line, "error" in a state file, exit 0,
 # and NO Slack ping (the gate needed created-or-updated, both 0). The distinction
 # CrontabUnavailable exists to preserve died at the notification boundary.
-CLEAN = {"created": 0, "existing": 1, "updated": 0, "reopened": 0, "skipped_no_key": 0}
+CLEAN = {"created": 0, "existing": 1, "updated": 0, "reopened": 0,
+         "unfiled": 0, "unresolved": 0, "errors": 0}
 check("a blind detector pings even with nothing filed",
       fh.should_notify(CLEAN, {"cron-shells-claude": fh.DETECTOR_ERROR}, apply=True), True)
 check("an all-clear run with nothing new does not ping",
@@ -635,6 +655,164 @@ check("...and no stateId was sent",
       any("stateId" in keys for q, keys in no_state.mutations if q == "ISSUE_UPDATE"), False)
 check("...so the issue honestly remains closed",
       no_state.issues["id-1"]["state_type"], "completed")
+
+# --- fourth review, MAJOR 1: Linear unreachable must not read as a clean run ---
+# `file_findings` caught everything from fetch_remote_state, counted the dropped
+# findings, and returned -- but the notify gate never consulted that bucket. A
+# real finding was discarded with one stderr line into a file nobody reads, exit
+# 0, and the LAST WORD to the operator was "Board has them; nothing to do now".
+# The rule the crontab reader follows (a run that could not look is not clean)
+# was applied to the DETECT half and not to the FILE half.
+class _LinearDown(FakeLinear):
+    def fetch_remote_state(self, _team_key, _repo):
+        raise RuntimeError("network: [Errno 8] nodename nor servname provided")
+
+
+down = _LinearDown()
+dropped = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=down)
+check("a finding Linear could not accept is counted as unfiled", dropped["unfiled"], 1)
+check("...and nothing was created", (dropped["created"], len(down.issues)), (0, 0))
+check("a run that dropped a finding PINGS the operator",
+      fh.should_notify(dropped, {"cron-shells-claude": 1}, apply=True), True)
+down_text = fh.notify_text(dropped, {"cron-shells-claude": 1})
+check("...and never claims the board has it",
+      "nothing to do now" in down_text, False)
+check("...and says how many findings were dropped", "1" in down_text, True)
+check("...and names the reason so 3am has somewhere to start",
+      "Linear" in down_text or "unreachable" in down_text, True)
+check("a dry run that could not reach Linear still does not ping",
+      fh.should_notify(dropped, {"cron-shells-claude": 1}, apply=False), False)
+
+# --- fourth review, MAJOR 2: a rollup outside the health project must not go dark
+# `known = ledger | remote_keys`, but only remote_keys carries a body. Moving the
+# issue to another project -- ordinary triage -- made `tracked` None forever, so
+# every later run took `existing += 1; continue`: zero writes, zero pings, and
+# the one sentence the operator saw was "nothing to do now" while the crontab
+# grew from 1 offending line to 5. The ledger already holds the linear_id; the
+# fix is to go get the issue rather than give up because it moved.
+class _MovedOutOfProject(FakeLinear):
+    """The issue exists and is reachable by id; it is just not in this project."""
+
+    def __init__(self):
+        super().__init__()
+        self.hide_from_project = set()
+
+    def fetch_remote_state(self, team_key, repo):
+        team_id, project, keys = super().fetch_remote_state(team_key, repo)
+        for key in self.hide_from_project:
+            keys.pop(key, None)
+        return team_id, project, keys
+
+
+moved = _MovedOutOfProject()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=moved)
+moved.hide_from_project.add("fleet-health/cron-shells-claude/cron-shells-claude")
+grown = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=moved)
+check("a rollup moved out of the health project is still updated", grown["updated"], 1)
+check("...it is not silently counted as already-tracked", grown["existing"], 0)
+check("...the mutation really went out",
+      [q for q, _ in moved.mutations if q == "ISSUE_UPDATE"], ["ISSUE_UPDATE"])
+check("...and the new offending line is visible on it",
+      "second" in moved.issues["id-1"]["description"], True)
+check("...without forking a second permanent issue", len(moved.issues), 1)
+
+
+class _IssueGone(_MovedOutOfProject):
+    """In the ledger, not in the project, and not reachable by id (deleted)."""
+
+    def fetch_issue(self, _linear_id):
+        return {}
+
+
+gone = _IssueGone()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=gone)
+gone.hide_from_project.add("fleet-health/cron-shells-claude/cron-shells-claude")
+lost = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=gone)
+check("a known key whose issue cannot be located is counted as unresolved",
+      lost["unresolved"], 1)
+check("...it is NOT reported as already-tracked", lost["existing"], 0)
+check("...the operator is pinged rather than told nothing-to-do",
+      fh.should_notify(lost, {"cron-shells-claude": 1}, apply=True), True)
+check("...and the Slack line drops the all-clear language",
+      "nothing to do now" in fh.notify_text(lost, {"cron-shells-claude": 1}), False)
+
+# --- fourth review, MINOR 3: a Linear error mid-loop must not kill the run -----
+# Exactly one network call was guarded. reopen_state_id, ISSUE_UPDATE and
+# ISSUE_CREATE were not, so a 429 on finding 1 propagated out of file_findings
+# and out of main(): finding 2 was never attempted, the state file kept
+# yesterday's ran_at, and no Slack line was ever sent.
+class _RateLimited(FakeLinear):
+    def __init__(self, fail_on=1):
+        super().__init__()
+        self.fail_on = fail_on
+        self.attempts = 0
+
+    def graphql(self, query, variables):
+        if query == self.ISSUE_CREATE:
+            self.attempts += 1
+            if self.attempts == self.fail_on:
+                raise RuntimeError('HTTP 429: {"errors":[{"message":"rate limited"}]}')
+        return super().graphql(query, variables)
+
+
+two_findings = [
+    {"key": "fleet-health/x/first", "subject": "first", "title": "first finding",
+     "body": "b1", "detector": "x"},
+    {"key": "fleet-health/x/second", "subject": "second", "title": "second finding",
+     "body": "b2", "detector": "x"},
+]
+limited = _RateLimited(fail_on=1)
+survived = fh.file_findings(list(two_findings), apply=True, linear=limited)
+check("a Linear error on one finding does not propagate out of file_findings",
+      survived["errors"], 1)
+check("...the NEXT finding is still attempted and filed", survived["created"], 1)
+check("...and the one that landed is the second one",
+      [n["title"] for n in limited.issues.values()], ["second finding"])
+check("a run with a filing error pings the operator",
+      fh.should_notify(survived, {"x": 2}, apply=True), True)
+check("...and the Slack line says filing failed",
+      "failed" in fh.notify_text(survived, {"x": 2}), True)
+
+# --- fourth review, MINOR 4: a wrapper's option ARGUMENT is not command position
+# `_command_index` skipped `-u` as a flag and then handed `claude` -- the VALUE
+# of that flag -- straight to `_is_claude_token`. A machine with a service
+# account named `claude` files a permanent false issue. Same asymmetry the third
+# review fixed for shells at `_shell_c_argument` (stop at the first operand) and
+# did not fix for wrappers.
+for benign_wrapper in [
+    "sudo -u claude /opt/svc/run.sh",
+    "sudo -u claude -H /opt/svc/run.sh",
+    "sudo --user claude /opt/svc/run.sh",
+    "env -u claude /opt/svc/run.sh",
+    "npx -p claude ./build.sh",
+    "nice -n 10 /opt/svc/run.sh",
+]:
+    check(f"a wrapper option's value is not command position: {benign_wrapper[:40]}",
+          fh._shells_claude(benign_wrapper), False)
+check("...but the wrapper still passes a REAL invocation through",
+      fh._shells_claude("sudo -u root claude -p 'x'"), True)
+check("...including with no option at all", fh._shells_claude("sudo claude -p 'x'"), True)
+check("...and `timeout -k 30 1800 claude` still matches",
+      fh._shells_claude("timeout -k 30 1800 claude -p 'x'"), True)
+
+# --- fourth review, MINOR 5: real invocations behind an unlisted wrapper --------
+# 4 of 15 real shapes were missed silently. `flock -n <lock> claude -p` is the
+# standard way a cron job stops overlapping itself, and this fleet has a "mini"
+# box it reaches over ssh. A miss here is the detector's whole job, undone.
+check("`flock -n <lock> claude -p` is an invocation",
+      fh._shells_claude("flock -n /tmp/x.lock claude -p 'x'"), True)
+check("`flock -w 5 <lock> claude` is an invocation",
+      fh._shells_claude("flock -w 5 /tmp/x.lock claude -p 'x'"), True)
+check("`ssh <host> claude -p` is an invocation",
+      fh._shells_claude("ssh mini claude -p 'x'"), True)
+check("3-deep shell nesting is an invocation",
+      fh._shells_claude("""sh -c 'sh -c "sh -c \\"claude -p x\\""'"""), True)
+check("a lock FILE named claude is not an invocation",
+      fh._shells_claude("flock -n /tmp/claude.lock /opt/svc/run.sh"), False)
+check("an ssh USER named claude is not an invocation",
+      fh._shells_claude("ssh claude@mini ./run.sh"), False)
+check("an ssh HOST named claude is not an invocation",
+      fh._shells_claude("ssh claude /opt/svc/run.sh"), False)
 
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:
