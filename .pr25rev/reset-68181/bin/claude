@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+cat > "/Users/assafkipnis/projects/kipi-system/.pr25rev/repo/../reset-68181/prompt.txt"
+exit 0
