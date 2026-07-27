@@ -15,6 +15,7 @@ Run: python3 test-fleet-health-daily.py   (exit 0 = pass)
 
 import importlib.util
 import re
+import subprocess as subprocess_real
 import sys
 from pathlib import Path
 
@@ -57,15 +58,26 @@ class FakeLinear:
 
     Only the surface `file_findings` actually touches. Linear objects are
     permanent in production; a test that reached the real API could not be re-run.
+
+    Issue STATE is modelled, not just the body. PR #11's second review found the
+    update path rewriting a Done issue and never reopening it, so a fake that
+    stored only {title, description} could not have caught the blocker.
     """
 
     ISSUE_CREATE = "ISSUE_CREATE"
     ISSUE_UPDATE = "ISSUE_UPDATE"
+    REOPEN_STATE_ID = "state-todo"
 
     def __init__(self):
-        self.issues = {}       # linear_id -> {identifier, title, description}
+        self.issues = {}       # linear_id -> {identifier, title, description, state_type}
         self.ledger = {}       # kipi-key -> record
+        self.mutations = []    # (query, sorted input keys) in order, for assertions
         self._n = 0
+
+    # --- test-side helpers, not part of the linear-sync surface -------------
+    def close_issue(self, linear_id):
+        """What the operator does after fixing the crontab: mark the rollup Done."""
+        self.issues[linear_id]["state_type"] = "completed"
 
     # --- the linear-sync surface fleet-health calls ------------------------
     def fetch_remote_state(self, _team_key, _repo):
@@ -77,8 +89,13 @@ class FakeLinear:
                     "linear_id": lid,
                     "identifier": node["identifier"],
                     "description": node["description"],
+                    "state_type": node["state_type"],
+                    "state_name": node["state_type"],
                 }
         return "team-1", {"id": "proj-1"}, keys
+
+    def reopen_state_id(self, _team_id):
+        return self.REOPEN_STATE_ID
 
     def read_ledger(self):
         return dict(self.ledger)
@@ -89,6 +106,7 @@ class FakeLinear:
         return len(records)
 
     def graphql(self, query, variables):
+        self.mutations.append((query, sorted(variables.get("input", {}))))
         if query == self.ISSUE_CREATE:
             self._n += 1
             lid = f"id-{self._n}"
@@ -96,6 +114,7 @@ class FakeLinear:
                 "identifier": f"ISSUE-{self._n}",
                 "title": variables["input"]["title"],
                 "description": variables["input"]["description"],
+                "state_type": "unstarted",
             }
             return {"issueCreate": {"success": True,
                                     "issue": {"id": lid, "identifier": f"ISSUE-{self._n}"}}}
@@ -103,6 +122,8 @@ class FakeLinear:
             node = self.issues[variables["id"]]
             node.update({k: v for k, v in variables["input"].items()
                          if k in ("title", "description")})
+            if variables["input"].get("stateId") == self.REOPEN_STATE_ID:
+                node["state_type"] = "unstarted"
             return {"issueUpdate": {"success": True,
                                     "issue": {"id": variables["id"],
                                               "identifier": node["identifier"]}}}
@@ -354,6 +375,149 @@ dry_fake = FakeLinear()
 dry = fh.file_findings(_rollup(LINE_1 + "\n"), apply=False, linear=dry_fake)
 check("a dry run reports what it would create", dry["created"], 1)
 check("a dry run creates nothing", len(dry_fake.issues), 0)
+
+# --- second review, MINOR 4: one finding lands in exactly ONE bucket ----------
+# `existing += 1` then `updated += 1` in the same iteration rendered a single
+# finding as "1 updated, 1 already tracked", which reads as two items.
+check("an updated finding is not ALSO counted as already-tracked", day30.get("existing"), 0)
+check("an unchanged finding IS counted as already-tracked", day31.get("existing"), 1)
+
+# --- second review, BLOCKER 1: a rewrite must REOPEN a closed rollup issue -----
+# The prescribed remedy is "move the job to a LaunchAgent", after which the
+# operator closes the rollup issue. That is the CORRECT end state. Without a
+# stateId on the update, every later detection rewrites a Done issue nobody
+# looks at while Slack says "board has them; nothing to do now" -- a false
+# all-clear that is worse than the pre-PR behaviour, which never claimed to
+# have surfaced anything.
+reopen_fake = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=reopen_fake)
+reopen_fake.close_issue("id-1")
+check("precondition: the operator's close really closed it",
+      reopen_fake.issues["id-1"]["state_type"], "completed")
+
+months_later = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"),
+                                apply=True, linear=reopen_fake)
+check("a closed rollup issue is reopened, not silently rewritten",
+      reopen_fake.issues["id-1"]["state_type"] != "completed", True)
+check("the reopen is counted so the operator can be told", months_later.get("reopened"), 1)
+check("reopening does not fork a second permanent issue", len(reopen_fake.issues), 1)
+check("the new offending line is on the reopened issue",
+      "second job added a month later" in reopen_fake.issues["id-1"]["description"], True)
+
+# An UNCHANGED body on a CLOSED issue must still reopen. The body-diff and the
+# state check are independent: a finding that is still true while the board says
+# it is done is exactly the blind spot, whether or not the text moved.
+still_closed = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=still_closed)
+still_closed.close_issue("id-1")
+same_body = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=still_closed)
+check("a closed issue with an UNCHANGED body is still reopened", same_body.get("reopened"), 1)
+check("...and its state really moved off completed",
+      still_closed.issues["id-1"]["state_type"] != "completed", True)
+
+# An OPEN issue must never have its state touched: filing must not drag an issue
+# the operator moved to In Progress back to Todo every morning.
+open_fake = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=open_fake)
+open_fake.mutations.clear()
+fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=open_fake)
+check("an OPEN issue is updated without a stateId",
+      [k for q, keys in open_fake.mutations if q == "ISSUE_UPDATE" for k in keys],
+      ["description", "title"])
+
+# --- second review, MINOR 5: a dry run must not issue OR announce a mutation ---
+dry_update = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=dry_update)
+dry_update.mutations.clear()
+would = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=False, linear=dry_update)
+check("a dry run reports what it WOULD update", would.get("updated"), 1)
+check("a dry run issues no mutation", dry_update.mutations, [])
+check("a dry run does not Slack a mutation it never issued",
+      fh.should_notify(would, {"cron-shells-claude": 1}, apply=False), False)
+check("the same outcome under --apply does Slack",
+      fh.should_notify(would, {"cron-shells-claude": 1}, apply=True), True)
+
+# --- second review, MAJOR 3: a blind detector must reach the founder ----------
+# An errored detector produced one stderr line, "error" in a state file, exit 0,
+# and NO Slack ping (the gate needed created-or-updated, both 0). The distinction
+# CrontabUnavailable exists to preserve died at the notification boundary.
+CLEAN = {"created": 0, "existing": 1, "updated": 0, "reopened": 0, "skipped_no_key": 0}
+check("a blind detector pings even with nothing filed",
+      fh.should_notify(CLEAN, {"cron-shells-claude": fh.DETECTOR_ERROR}, apply=True), True)
+check("an all-clear run with nothing new does not ping",
+      fh.should_notify(CLEAN, {"cron-shells-claude": 0}, apply=True), False)
+blind_text = fh.notify_text(CLEAN, {"cron-shells-claude": fh.DETECTOR_ERROR})
+check("the blind detector is NAMED in the Slack line",
+      "cron-shells-claude" in blind_text, True)
+check("a blind run never says nothing-to-do",
+      "nothing to do now" in blind_text, False)
+check("a clean run still says nothing-to-do",
+      "nothing to do now" in fh.notify_text(
+          {**CLEAN, "created": 1}, {"cron-shells-claude": 1}), True)
+check("a reopen is announced, not folded into 'already tracked'",
+      "reopened" in fh.notify_text(
+          {**CLEAN, "reopened": 1}, {"cron-shells-claude": 1}), True)
+
+# --- second review, MAJOR 2: ONE crontab reader, one blind-spot semantics ------
+# `detect_duplicate_schedules` and `detect_cron_shells_claude` read the same
+# command and had opposite semantics: `schedule-duplicate: 0` and
+# `cron-shells-claude: error` in the same report from the same refused command.
+# One of those two lines is a lie and the operator cannot tell which.
+class _RefusedCrontab:
+    """Stands in for `subprocess` so `crontab -l` is refused, nothing else runs."""
+
+    CalledProcessError = subprocess_real.CalledProcessError
+    TimeoutExpired = subprocess_real.TimeoutExpired
+
+    class _Result:
+        returncode = 1
+        stdout = ""
+        stderr = "crontab: you are not allowed to use this program"
+
+    @staticmethod
+    def run(cmd, *a, **kw):
+        if cmd[:2] == ["crontab", "-l"]:
+            return _RefusedCrontab._Result()
+        return subprocess_real.run(cmd, *a, **kw)
+
+
+fh.subprocess = _RefusedCrontab
+try:
+    for det_id, fn in (("cron-shells-claude", fh.detect_cron_shells_claude),
+                       ("schedule-duplicate", fh.detect_duplicate_schedules)):
+        try:
+            fn(None)
+            failures.append(
+                f"{det_id}: a refused `crontab -l` returned a value instead of raising")
+        except fh.CrontabUnavailable:
+            print(f"  ok: {det_id} raises rather than reporting all-clear on a refused crontab")
+    _, refused = fh.run_detectors([
+        {"id": "schedule-duplicate", "description": "d",
+         "detect": fh.detect_duplicate_schedules, "action": "file_issue", "lesson": "l"},
+        {"id": "cron-shells-claude", "description": "d",
+         "detect": fh.detect_cron_shells_claude, "action": "file_issue", "lesson": "l"},
+    ])
+    check("both crontab readers report the SAME thing for the same refusal",
+          refused, {"schedule-duplicate": "error", "cron-shells-claude": "error"})
+finally:
+    fh.subprocess = subprocess_real
+
+# --- second review, MINOR 6: the lexer must not diverge from sh silently -------
+# `shlex` treats `#` as a comment start ANYWHERE; sh only at the start of a word.
+# And an unbalanced quote returned None, which read as "not an invocation" --
+# the same silent-clean shape CrontabUnavailable was built to eliminate, one
+# layer down.
+check("a mid-word `#` does not truncate the line before `claude`",
+      fh._shells_claude("curl https://ex.com/a#frag && claude -p 'sweep'"), True)
+check("a word-initial `#` still comments out the rest of the line",
+      fh._shells_claude("true && # claude -p 'x'"), False)
+check("an unbalanced quote does not read as an all-clear",
+      fh._shells_claude("claude -p 'sweep the repo"), True)
+check("an unbalanced quote on a benign line is still benign",
+      fh._shells_claude("du -sh ~/projects/claude --block-size='M"), False)
+check("a mid-word `#` line is caught end to end",
+      len(fh.detect_cron_shells_claude(
+          None, cron_text="0 3 * * * curl https://ex.com/a#frag && claude -p 'sweep'\n")), 1)
 
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:

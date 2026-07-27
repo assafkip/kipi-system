@@ -161,18 +161,21 @@ def detect_failing_jobs(_ctx) -> list:
     return out
 
 
-def detect_duplicate_schedules(_ctx) -> list:
+def detect_duplicate_schedules(_ctx, cron_text=None) -> list:
     """The same script scheduled by BOTH launchd and crontab.
 
     Found live 2026-07-26: reddit-build-radar runs at 08:00 from
     com.cole.reddit-radar-daily AND from a crontab line. Two schedulers on one
     script means pausing one does nothing, which is how a 'paused' job keeps running.
+
+    Reads the crontab through the SAME `_crontab_text()` as
+    `detect_cron_shells_claude`, so one refused `crontab -l` cannot produce
+    `schedule-duplicate: 0` and `cron-shells-claude: error` in the same report.
+    PR #11's second review found exactly that: two readers of one command with
+    opposite blind-spot semantics, one of the two lines a lie, and no way for the
+    operator to tell which. Swallowing here was the older half of the pattern.
     """
-    try:
-        cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True,
-                              timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    cron = _crontab_text() if cron_text is None else cron_text
     # Resolve to ABSOLUTE paths, never basenames. Measured 2026-07-26: matching on
     # the basename `run_daily.sh` hit 3 plists (reddit-radar-daily, daily-podcast,
     # story-podcast) when only ONE is a real duplicate -- the other two are
@@ -312,30 +315,44 @@ def _command_token(tokens: list) -> str:
     return ""
 
 
-def _lex(command: str):
-    """Shell-aware tokens, or None when the string cannot be parsed as shell.
+def _lex(command: str) -> list:
+    """Shell-aware tokens. Never None: an unparsable string still gets scored.
 
     `punctuation_chars=True` makes `&& || ; | ( )` their own tokens while leaving
     quoted strings intact, which is what lets the operator split below happen at
     the TOKEN level. Splitting the raw string on `;`/`&&` (the shipped v1) cut
     inside quoted arguments: `echo "step one; claude -p x"` produced a second
     segment whose first token was `claude`.
+
+    Two places `shlex` is not `sh`, both found by PR #11's second review, both
+    silent false negatives — the same shape `CrontabUnavailable` exists to
+    eliminate, one layer down:
+
+    - `shlex` starts a comment at `#` ANYWHERE; `sh` only at the start of a word.
+      `curl https://ex.com/a#frag && claude -p ...` lexed to two tokens and the
+      invocation vanished. `commenters = ""` hands `#` back as an ordinary
+      character; word-initial `#` is then honoured in `_shell_segments`, where
+      word boundaries actually exist.
+    - An unbalanced quote raised, and returning None read as "not an invocation".
+      `claude -p 'sweep the repo` is a REAL invocation with a typo. Falling back
+      to a whitespace split keeps command position scorable; it cannot invent a
+      match, because the fallback only ever splits more coarsely than sh.
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         return list(lexer)
     except ValueError:
-        return None  # unbalanced quotes: not a runnable command, do not guess
+        return command.split()
 
 
 def _shell_segments(command: str) -> list:
     """The command's shell segments, each as a token list."""
-    tokens = _lex(command)
-    if tokens is None:
-        return []
     segments, current = [], []
-    for token in tokens:
+    for token in _lex(command):
+        if token.startswith("#"):
+            break  # sh: a word-initial `#` comments to end of LINE, not of segment
         if token in SHELL_OPERATORS:
             segments.append(current)
             current = []
@@ -669,6 +686,12 @@ def issue_description(key: str, finding: dict) -> str:
             "Filed by `fleet-health-daily.py`.")
 
 
+# Linear WorkflowState.type values that mean the issue is off the board. Held
+# here rather than read off the injected linear module so the reopen decision is
+# this file's, testable without a Linear surface that must agree about it.
+CLOSED_STATE_TYPES = ("completed", "canceled")
+
+
 def file_findings(findings: list, apply: bool, linear=None) -> dict:
     """Create a Linear issue per finding, deduped by kipi-key; UPDATE it if stale.
 
@@ -689,7 +712,7 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
     provable against an in-memory fake. A test that reached real Linear would
     leave permanent objects behind and could not be re-run.
     """
-    result = {"created": 0, "existing": 0, "updated": 0, "skipped_no_key": 0}
+    result = {"created": 0, "existing": 0, "updated": 0, "reopened": 0, "skipped_no_key": 0}
     if not findings:
         return result
     ls = linear
@@ -715,21 +738,41 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
         title = f["title"][:250]
         description = issue_description(key, f)
         if key in known:
-            result["existing"] += 1
             tracked = remote_keys.get(key)
             # Ledger-only keys (the issue was moved out of the health project)
             # have no body to compare against, so they are left alone rather
             # than rewritten from a guess.
-            if not tracked or tracked.get("description") == description:
+            if not tracked:
+                result["existing"] += 1
                 continue
-            result["updated"] += 1
+            body_stale = tracked.get("description") != description
+            # A CLOSED rollup issue is the correct end state of the fix: the
+            # operator moved the job to a LaunchAgent and closed it. If the
+            # finding is back, rewriting a Done issue puts it where nobody looks
+            # while the run reports it as handled -- a false all-clear, worse
+            # than never surfacing it. State is what carries visibility.
+            # Independent of body_stale on purpose: a finding that is STILL TRUE
+            # while the board says done is the blind spot whether or not the text
+            # moved. An OPEN issue's state is never touched, so an issue the
+            # operator moved to In Progress is not dragged back to Todo daily.
+            closed = tracked.get("state_type") in CLOSED_STATE_TYPES
+            if not body_stale and not closed:
+                result["existing"] += 1
+                continue
+            # ONE finding lands in exactly ONE bucket. Incrementing `existing`
+            # and `updated` in the same iteration rendered a single finding as
+            # "1 updated, 1 already tracked", which reads as two items.
+            result["reopened" if closed else "updated"] += 1
             if not apply:
                 continue
-            ls.graphql(ls.ISSUE_UPDATE, {
-                "id": tracked["linear_id"],
-                "input": {"title": title, "description": description},
-            })
-            print(f"  updated {tracked.get('identifier')}  {title[:70]}")
+            update: dict = {"title": title, "description": description}
+            if closed:
+                state_id = ls.reopen_state_id(team_id)
+                if state_id:
+                    update["stateId"] = state_id
+            ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
+            verb = "reopened" if closed else "updated"
+            print(f"  {verb} {tracked.get('identifier')}  {title[:70]}")
             continue
         if not apply:
             result["created"] += 1  # would create
@@ -782,6 +825,44 @@ def run_detectors(detectors=None) -> tuple:
     return all_findings, per_detector
 
 
+def blind_detectors(per_detector: dict) -> list:
+    """Detectors that could not look. Their result is unknown, not clean."""
+    return sorted(did for did, n in per_detector.items() if n == DETECTOR_ERROR)
+
+
+def should_notify(outcome: dict, per_detector: dict, apply: bool) -> bool:
+    """Whether this run has earned the ONE Slack line. Pure, so it is testable.
+
+    A blind detector pings even with nothing filed. Before this, an errored
+    detector produced one stderr line, `"error"` in a state file, exit 0, and NO
+    ping — the gate needed created-or-updated, both 0. The distinction
+    `CrontabUnavailable` exists to preserve died at the notification boundary,
+    which is the only place the operator actually reads.
+
+    Nothing pings without `--apply`. A dry run issues no mutation, so announcing
+    one is announcing something that did not happen. The 08:15 LaunchAgent always
+    passes `--apply`.
+    """
+    if not apply:
+        return False
+    return bool(outcome["created"] or outcome["updated"] or outcome["reopened"]
+                or blind_detectors(per_detector))
+
+
+def notify_text(outcome: dict, per_detector: dict) -> str:
+    """The ONE Slack line, never one per finding. Pure, so its claims are testable."""
+    blind = blind_detectors(per_detector)
+    counts = (f"{outcome['created']} new issue(s) filed, "
+              f"{outcome['reopened']} reopened, {outcome['updated']} updated, "
+              f"{outcome['existing']} already tracked")
+    if blind:
+        # No all-clear language while a detector is blind: "nothing to do now"
+        # over an unknown result is the exact lie the error state exists to stop.
+        return (f"fleet health: BLIND SPOT — {', '.join(blind)} could not run, so "
+                f"that result is UNKNOWN, not clean. Also: {counts}.")
+    return f"fleet health: {counts}. Board has them; nothing to do now."
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="actually file Linear issues")
@@ -803,23 +884,15 @@ def main() -> int:
 
     outcome = file_findings(all_findings, args.apply)
     print(f"  filed={outcome['created']} already-tracked={outcome['existing']} "
-          f"rewritten={outcome['updated']}")
+          f"rewritten={outcome['updated']} reopened={outcome['reopened']}")
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(
         {"ran_at": _now(), "per_detector": per_detector, "outcome": outcome}, indent=2))
 
-    # ONE line, never one per finding.
-    # A rewrite is a real change (a NEW offending line landed on a standing
-    # issue), so it earns the ping too — otherwise every occurrence after the
-    # first is silent, which is the exact blindness the update path exists to fix.
-    if not args.quiet and (outcome["created"] or outcome["updated"]) and NOTIFY.exists():
-        subprocess.run(
-            ["bash", str(NOTIFY),
-             f"fleet health: {outcome['created']} new issue(s) filed, "
-             f"{outcome['updated']} updated, "
-             f"{outcome['existing']} already tracked. Board has them; nothing to do now."],
-            timeout=20, check=False)
+    if not args.quiet and should_notify(outcome, per_detector, args.apply) and NOTIFY.exists():
+        subprocess.run(["bash", str(NOTIFY), notify_text(outcome, per_detector)],
+                       timeout=20, check=False)
     return 0
 
 

@@ -392,7 +392,7 @@ query($key: String!) {
 PROJECT_ISSUES_QUERY = """
 query($projectId: ID!, $after: String) {
   issues(filter: { project: { id: { eq: $projectId } } }, first: 100, after: $after) {
-    nodes { id identifier description }
+    nodes { id identifier description state { id name type } }
     pageInfo { hasNextPage endCursor }
   }
 }
@@ -427,6 +427,49 @@ mutation($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success issue { id identifier } }
 }
 """
+
+TEAM_STATES_QUERY = """
+query($teamId: String!) {
+  team(id: $teamId) { states(first: 100) { nodes { id name type position } } }
+}
+"""
+
+# Linear WorkflowState.type values that mean "this issue is off the board".
+CLOSED_STATE_TYPES = ("completed", "canceled")
+
+# Where a reopen lands, best first. `unstarted` is the team's Todo column: the
+# issue is back on the board without falsely claiming someone is on it.
+_REOPEN_TYPE_PREFERENCE = ("unstarted", "backlog", "triage")
+
+_REOPEN_STATE_CACHE: dict = {}
+
+
+def reopen_state_id(team_id: str) -> str:
+    """The workflow state a CLOSED issue should be moved back to, or "".
+
+    Needed because a standing rollup issue's identity is its kipi-key, so there
+    is exactly one of them forever. Rewriting a Done issue's body leaves the
+    finding invisible on the board while the run reports it as handled. State is
+    what carries visibility; the body does not.
+
+    Returns "" when the team exposes no reopenable state, so the caller can
+    still write the body rather than failing the whole run over a missing column.
+    """
+    if team_id in _REOPEN_STATE_CACHE:
+        return _REOPEN_STATE_CACHE[team_id]
+    nodes = (
+        ((graphql(TEAM_STATES_QUERY, {"teamId": team_id}).get("team") or {}).get("states") or {})
+        .get("nodes")
+        or []
+    )
+    chosen = ""
+    for wanted in _REOPEN_TYPE_PREFERENCE:
+        matches = [n for n in nodes if n.get("type") == wanted]
+        if matches:
+            chosen = sorted(matches, key=lambda n: n.get("position") or 0)[0]["id"]
+            break
+    _REOPEN_STATE_CACHE[team_id] = chosen
+    return chosen
 
 
 def fetch_remote_state(team_key: str, repo: str) -> tuple:
@@ -472,6 +515,7 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
             for node in page.get("nodes") or []:
                 found = MARKER_RE.search(node.get("description") or "")
                 if found:
+                    state = node.get("state") or {}
                     keys[found.group(1)] = {
                         "linear_id": node["id"],
                         "identifier": node["identifier"],
@@ -480,6 +524,12 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
                         # without a second fetch. cmd_remote does not carry this
                         # into its snapshot; the snapshot is a dedup guard only.
                         "description": node.get("description") or "",
+                        # STATE, for the same reason. A standing rollup issue the
+                        # operator closed is the correct end state of the fix;
+                        # rewriting its body afterwards puts the finding somewhere
+                        # nobody looks. A caller cannot tell without this field.
+                        "state_type": state.get("type") or "",
+                        "state_name": state.get("name") or "",
                     }
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
