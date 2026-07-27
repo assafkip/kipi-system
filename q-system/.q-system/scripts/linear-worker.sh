@@ -55,6 +55,13 @@ STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
+# Operator directives (ASK-208, sp-fd76af2f) and per-run agent scratch
+# (sp-1aae7516). Both live OUTSIDE any worktree on purpose: a directive inside
+# the tree would be wiped by a branch switch, and scratch inside the tree is
+# exactly what kept reaching main.
+DIRECTIVES_DIR="$STATE_DIR/directives"
+SCRATCH_ROOT="$STATE_DIR/scratch"
+HOOKS_ROOT="$STATE_DIR/worktree-hooks"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
@@ -105,6 +112,30 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
   wait "$watchdog" 2>/dev/null
   return "$rc"
 }
+
+# --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
+# ASK-208 (sp-28ced3d6). This script used to contain no `git fetch` at all: it
+# cut every worktree from whatever local origin/main ref happened to be lying
+# around, so the agent was dispatched against a base that could be arbitrarily
+# old. Observed 2026-07-26 -- ASK-150 was sent to resolve a conflict against
+# main, merged 3b60af0, and the conflict survived because main was already
+# 72c782d. The agent did the right thing to the wrong target and two rounds
+# were burned.
+#
+# ONCE PER RUN, not per issue: origin does not move meaningfully inside one run,
+# and a 50-issue board would otherwise pay 50 network round-trips to learn the
+# same thing. Placed above the picker so no code path can create a worktree
+# before it.
+#
+# A fetch failure is environmental (self-healing-retry.md rule 5), so it stops
+# on attempt 1 and is NOT counted against any issue. Continuing would be worse
+# than stopping: the whole point is that a stale base silently produces
+# plausible work aimed at the wrong target, and the run could not push or open
+# a PR against an unreachable origin anyway.
+if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
+  say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
+  exit 0
+fi
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -199,6 +230,7 @@ while IFS= read -r ISSUE; do
   # alarm, and false alarms train the reader to ignore the real notes.
   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
+  PR_MERGEABLE=""
   if [ -n "$EXISTING_PR" ]; then
     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
     if [ -z "$PR_VERDICT" ]; then
@@ -207,7 +239,12 @@ while IFS= read -r ISSUE; do
       LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
-    rework_gate "$PR_VERDICT"; GATE=$?
+    # Read mergeability ONCE, here, and reuse the same value for both the gate
+    # and the prompt below. The gate decides whether to dispatch; the prompt has
+    # to say WHY, and re-querying gh for the prompt would be a second reader of
+    # one input -- the defect class this lib was extracted to kill.
+    PR_MERGEABLE="$(pr_mergeable "$EXISTING_PR")"
+    rework_gate "$PR_VERDICT" "$PR_MERGEABLE"; GATE=$?
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -277,7 +314,25 @@ while IFS= read -r ISSUE; do
   # EXISTING_PR was discovered above, before the claim; reaching this line means
   # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
   if [ -n "$EXISTING_PR" ]; then
-    REWORK="
+    # An approved PR only reaches a rework round because it stopped merging
+    # (rework_gate, ASK-208). Saying "the review is the spec" here would be a
+    # lie -- the review approved it. The merge conflict is the spec, and it is
+    # stated FIRST because the observed failure was two rounds of code polish
+    # while the only merge blocker went untouched.
+    CONFLICT_FIRST=""
+    if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
+      CONFLICT_FIRST="
+
+## THE MERGE CONFLICT IS THE ONLY THING BLOCKING THIS PR
+
+PR #$EXISTING_PR is reviewed and its verdict is '$PR_VERDICT', but GitHub reports it
+as CONFLICTING: main moved underneath it and it no longer merges.
+
+Resolve the conflict against the CURRENT main. That is the whole job of this round.
+Do not polish code, do not re-litigate the review, do not open new work. If you
+finish the conflict and the PR merges cleanly, you are done."
+    fi
+    REWORK="$CONFLICT_FIRST
 
 ## THIS IS A REWORK, NOT A FRESH START
 
@@ -328,7 +383,57 @@ justify it. Silence bought by a fix is the most expensive kind.
 Push to the SAME branch $BRANCH. Do not open a second PR."
   fi
 
-  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
+  # OPERATOR DIRECTIVE (ASK-208, sp-fd76af2f). The rework spec used to be
+  # whatever the newest review .md said, and the reviewer regenerates its
+  # findings every round -- so anything an operator injected survived exactly one
+  # pass. Observed: a REQUEST CHANGES scoped to "resolve the merge conflict,
+  # nothing else" dispatched round 1; the round-1 reviewer wrote its own
+  # findings, and rounds 1 and 2 both did code polish while the conflict went
+  # untouched.
+  #
+  # So the directive lives in a file the worker reads, is rendered VERBATIM into
+  # every prompt, and sits ALONGSIDE the review rather than replacing it. It is
+  # cleared by deleting the file and by nothing else -- no review round, no
+  # successful run, no verdict can retire it. Deliberately not a priority system:
+  # one file, one blob of text, always shown.
+  DIRECTIVE_FILE="$DIRECTIVES_DIR/$(echo "$ISSUE" | tr 'A-Z' 'a-z').md"
+  DIRECTIVE=""
+  if [ -s "$DIRECTIVE_FILE" ]; then
+    DIRECTIVE="
+
+## OPERATOR DIRECTIVE (persists across rounds; outranks nothing, ignores nothing)
+
+An operator left this standing instruction for $ISSUE. It is NOT a review finding
+and no review round replaces it. Read it together with everything else in this
+prompt:
+
+$(cat "$DIRECTIVE_FILE")
+
+(end of operator directive)"
+    say "$ISSUE: operator directive in effect ($DIRECTIVE_FILE); clear it by deleting that file"
+  fi
+
+  # Scratch OUTSIDE the repo (ASK-208, sp-1aae7516), so the agent has somewhere
+  # legitimate to put working files. The refusal is enforced by the commit hook
+  # installed above; this is the place the refusal points at. A refusal with no
+  # alternative just gets worked around.
+  SCRATCH="$SCRATCH_ROOT/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+  mkdir -p "$SCRATCH"
+
+  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK$DIRECTIVE
+
+## WORKING FILES GO OUTSIDE THE REPO
+
+Helper scripts, message drafts, scratch reproducers and anything else you write
+for your own use go in:
+
+  $SCRATCH
+
+That path is outside the repo and cannot be committed. Do NOT drop working files
+in q-system/output/ -- a commit hook in this worktree refuses them, because seven
+such files reached main through three consecutive PRs before being swept. Real
+deliverables go where folder-structure.md puts them (a harness in
+q-system/.q-system/scripts/, a test in q-system/.q-system/scripts/test/).
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
 Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.

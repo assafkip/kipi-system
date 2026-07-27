@@ -66,18 +66,48 @@ verdict_from_findings() {
   fi
 }
 
-# rework_gate <verdict>
+# pr_mergeable <pr-number>
+# GitHub's mergeability for a PR: MERGEABLE | CONFLICTING | UNKNOWN, or empty
+# when gh cannot answer. ONE reader of this state, for the same reason this file
+# exists at all: the worker and the driver both need it, and two callers each
+# shelling their own `gh pr view` is two readers of one input with drifting
+# semantics. Empty on any failure, which the gate treats as "not a conflict".
+pr_mergeable() {
+  gh pr view "$1" --json mergeable -q .mergeable 2>/dev/null | tr -d '[:space:]'
+}
+
+# rework_gate <verdict> [mergeable]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
-#   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
-#   10 = approved    (APPROVE or APPROVE WITH NITS -- nothing to rework; the PR
-#                     waits on the founder. Minors were captured, not wedged.)
+#   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec; OR an
+#                     approved PR that no longer merges -- the conflict is)
+#   10 = approved    (APPROVE or APPROVE WITH NITS *and still mergeable* --
+#                     nothing to rework; the PR waits on the founder. Minors
+#                     were captured, not wedged.)
 #   20 = unreviewed  (no verdict -- with no review there is no spec; refuse and
 #                     point at `kipi review <PR#> --post` instead of guessing)
+#
+# WHY MERGEABILITY IS PART OF THE GATE (ASK-208, sp-71b63e62)
+# ----------------------------------------------------------
+# A verdict is a statement about a diff at a moment. Mergeability is a statement
+# about that diff against main NOW, and main moves underneath it. PR #11 was
+# approved at 06:08Z; #16 landed at 17:30Z and broke it. Reading the verdict
+# alone, both converge and a direct worker run skipped #11 in under two seconds
+# and reported "waiting on founder merge only" -- so the loop could not dispatch
+# the one thing actually blocking the merge. An approved PR that does not merge
+# is not done.
+#
+# Only a stated CONFLICTING counts. UNKNOWN is GitHub still computing, and empty
+# is gh failing; treating either as a conflict would manufacture rework rounds on
+# healthy PRs every time the API was slow, which is the wrong-refusal failure
+# that would stall every instance's worker at once.
 rework_gate() {
-  case "${1:-}" in
+  local verdict="${1:-}" mergeable="${2:-}"
+  case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
-    "APPROVE"|"APPROVE WITH NITS")        return 10 ;;
+    "APPROVE"|"APPROVE WITH NITS")
+      [ "$mergeable" = "CONFLICTING" ] && return 0
+      return 10 ;;
     *)                                    return 20 ;;
   esac
 }
