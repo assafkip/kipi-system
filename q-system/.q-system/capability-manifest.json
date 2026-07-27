@@ -345,6 +345,11 @@
       "spillover_id": "sp-0f773063"
     },
     {
+      "path": "q-system/.q-system/scripts/linear-triage.py",
+      "reason": "built and tested (21 cases) but deliberately unwired: --apply writes permanent Linear comments and closes issues, so no trigger exists until the founder reviews the full dry-pass table. sp-0126e55b is the wiring destination -- triage must GATE the DoR drafter, which is loaded and currently drafting readiness ahead of it",
+      "spillover_id": "sp-0126e55b"
+    },
+    {
       "path": "q-system/.q-system/scripts/memory_outcomes.py",
       "reason": "auto-capture referee merged (PR #7) but gated OFF fleet-wide; activates with the held kipi update",
       "spillover_id": "sp-cac8540c"
