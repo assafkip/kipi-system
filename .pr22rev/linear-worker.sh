@@ -32,8 +32,7 @@
 #   0  ran (or had nothing to run). A caller may treat this as healthy.
 #   1  usage error
 #   9  INFRA: the environment is down (git fetch failed) and the run did NO
-#      work. Paged on the way out. Distinct from 1 so a caller can tell a dead
-#      environment from a bad invocation.
+#      work. Paged on the way out; converge.sh maps this to its own exit 7.
 #
 # WHY INFRA FAILURE IS COUNTED SEPARATELY
 # ---------------------------------------
@@ -66,27 +65,67 @@ STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
+# Operator directives (ASK-208, sp-fd76af2f) and per-run agent scratch
+# (sp-1aae7516). Both live OUTSIDE any worktree on purpose: a directive inside
+# the tree would be wiped by a branch switch, and scratch inside the tree is
+# exactly what kept reaching main.
+DIRECTIVES_DIR="$STATE_DIR/directives"
+SCRATCH_ROOT="$STATE_DIR/scratch"
+HOOKS_ROOT="$STATE_DIR/worktree-hooks"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 MAX_ATTEMPTS=3
+# CEILING ON REWORK ROUNDS (round-3 review, finding 4). MAX_ATTEMPTS above counts
+# only runs where `claude` exits NON-ZERO, and the failure this bounds is an agent
+# that exits 0 having done the wrong thing. Since mergeability joined the gate,
+# an approved PR that stops merging re-enters rework -- correct, and previously
+# unbounded: the `rounds` counter was written every round and never read.
+# Measured before this cap: 6 scheduled runs on one approved+CONFLICTING PR gave
+# 6 dispatched rounds and 18 permanent Linear comments, with 0 refusals.
+#
+# A STALL CHECK IS NOT ENOUGH HERE. converge's exit-5 needs an unchanged head
+# sha, and the cited agent pushes every round -- it polishes code while the
+# conflict survives -- so the sha moves and a stall check never fires. Only a
+# ceiling bounds that shape.
+#
+# 6, above converge's default MAX_ROUNDS=4, so the attended driver still hits its
+# own cap first and this one only ever binds the unattended `kipi work` path.
+# Resettable by design (--reset-rounds): a counter that only grows would make the
+# worker go permanently dark on an issue right after the operator fixed it.
+MAX_ROUNDS="${KIPI_MAX_ROUNDS:-6}"
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
+RESET_ROUNDS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
+    --reset-rounds) RESET_ROUNDS=1 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
 done
 
+# NORMALIZE ONCE, AT THE ENTRY POINT (round-4 review, finding 1). --issue has
+# TWO readers with different semantics: the --reset-rounds branch keyed the
+# attempts ledger on the raw string, and the picker matches Linear identifiers
+# exactly (`i["identifier"] == only`). So `--issue ask-208` created a phantom
+# lowercase ledger key AND silently returned zero ready issues. Linear
+# identifiers are uppercase and `kipi directive` already normalizes, so this
+# script accepts the same input shape -- in one place, where both readers see it.
+ONLY_ISSUE="$(printf '%s' "$ONLY_ISSUE" | tr 'a-z' 'A-Z')"
+
 export SCRIPT_DIR
-mkdir -p "$STATE_DIR"
+# DIRECTIVES_DIR is created here and not lazily: an operator who drops a file in
+# by hand needs the directory to exist before the first directive, and it was the
+# one path constant this script never mkdir'd (round-3 review, finding 3).
+# `kipi directive` is the supported producer and creates it too.
+mkdir -p "$STATE_DIR" "$DIRECTIVES_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { echo "$(TS) $*" | tee -a "$LOG"; }
 
@@ -95,6 +134,52 @@ say() { echo "$(TS) $*" | tee -a "$LOG"; }
 # same session and BOTH be granted -- the exact scar the lock exists to stop.
 SESSION="worker-$(date +%s)-$$"
 AGENT="sana"
+
+# THE WAY BACK from the round cap. Runs before the fetch and before the picker:
+# an operator unwedging an issue must not need the network to be healthy, and
+# resetting a counter is not work that can be aimed at a stale base.
+if [ "$RESET_ROUNDS" = "1" ]; then
+  [ -n "$ONLY_ISSUE" ] || { echo "--reset-rounds needs --issue ASK-nnn" >&2; exit 1; }
+  # READ BACK BEFORE REPORTING (round-4 review, finding 1). This branch used to
+  # write with `>/dev/null 2>&1 || true` and then print "reset to 0; the next run
+  # will dispatch again" unconditionally. An unwritable ledger, an id with no
+  # recorded rounds, and a corrupt ledger all printed success and exited 0.
+  #
+  # That is the worst shape available here. The cap pages ONCE on the transition
+  # and then sets capped_notified, so after a reset the operator believes worked,
+  # the issue stays capped and never pages again -- the worker going permanently
+  # dark right after the operator did the right thing.
+  #
+  # The old `except Exception: d={}` was also silent data loss: a corrupt ledger
+  # was rebuilt from scratch and every OTHER issue's counters went with it. The
+  # reader below refuses to write what it could not parse.
+  RESET_OUT="$(python3 -c "
+import json,sys
+key, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as fh: d = json.load(fh)
+except FileNotFoundError:
+    print('NOKEY'); raise SystemExit(0)
+if key not in d:
+    print('NOKEY'); raise SystemExit(0)
+was = d[key].get('rounds', 0)
+d[key]['rounds'] = 0
+d[key].pop('capped_notified', None)
+with open(path, 'w') as fh: json.dump(d, fh, indent=2)
+with open(path) as fh: back = json.load(fh).get(key, {})
+if back.get('rounds') != 0 or back.get('capped_notified'):
+    sys.stderr.write('write did not stick: %r' % (back,)); raise SystemExit(1)
+print(was)" "$ONLY_ISSUE" "$ATTEMPTS" 2>&1)" || {
+    say "$ONLY_ISSUE: reset FAILED, round count UNCHANGED ($ATTEMPTS): $RESET_OUT"
+    exit 1
+  }
+  if [ "$RESET_OUT" = "NOKEY" ]; then
+    say "$ONLY_ISSUE: nothing to reset -- no round count recorded for it. Check the id ($ATTEMPTS)."
+    exit 1
+  fi
+  say "$ONLY_ISSUE: review rounds $RESET_OUT -> 0, verified by read-back; the next run will dispatch again"
+  exit 0
+fi
 
 # Wall clock, exit 4 of loop-exits.md. macOS ships NEITHER `timeout` nor `gtimeout`
 # unless coreutils is installed, and the old fallback here was an empty string --
@@ -117,11 +202,192 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
   return "$rc"
 }
 
+# install_scratch_guard <tree> <issue>
+# Make the agent's scratch UNCOMMITTABLE (ASK-208, sp-1aae7516).
+#
+# Seven agent working files reached main through PRs #18 and #19 before being
+# swept in #20 -- per-run helper scripts, message drafts, and a reproducer whose
+# default target was never on the branch. It recurred in three consecutive PRs,
+# which makes it a process defect rather than an accident, and "tell the agent
+# not to" is prompt-only enforcement, which this repo does not accept.
+#
+# WHY A PER-WORKTREE hooksPath AND NOT .git/hooks
+# -----------------------------------------------
+# A linked worktree resolves `git rev-parse --git-path hooks` to the COMMON
+# .git/hooks -- the founder's checkout shares it. Installing a guard there would
+# fire on the founder's own commits. `git config --worktree core.hooksPath` is
+# per-worktree (verified: the main checkout's core.hooksPath stays unset), so
+# the guard binds to the agent's tree and nothing else.
+#
+# WHY IT CHAINS INSTEAD OF REPLACING
+# ----------------------------------
+# Repointing core.hooksPath would silently switch lefthook off in that tree,
+# taking gitleaks and the commit-msg linear-first gate with it. Buying one gate
+# by disabling two is a net loss, so every hook the repo already installs is
+# mirrored as a passthrough and pre-commit delegates after its own check.
+#
+# The hooks dir lives OUTSIDE the worktree so the guard cannot itself be
+# committed, and it is rewritten every run so a change to this generator reaches
+# trees that already exist.
+install_scratch_guard() {
+  local tree="$1" issue="$2" slug hooks scratch common name h
+  slug="$(echo "$issue" | tr 'A-Z' 'a-z')"
+  hooks="$HOOKS_ROOT/$slug"
+  scratch="$SCRATCH_ROOT/$slug"
+  common="$(git -C "$tree" rev-parse --git-common-dir 2>/dev/null)/hooks"
+  mkdir -p "$hooks" "$scratch"
+
+  # ALLOWLIST, not a suffix denylist (round-3 review, finding 5). The denylist
+  # (*.sample|*.old|*.bak|pre-commit) had to predict every name anyone would ever
+  # leave next to a hook, and it already lost: this repo's real .git/hooks holds
+  # `pre-commit.before-gitleaks`, which the denylist copied into every agent
+  # worktree as a file git can never invoke. git's hook names are a closed set,
+  # so match that set instead of guessing at the complement. pre-commit is absent
+  # on purpose: the guard below IS the pre-commit, and it chains to the original.
+  if [ -d "$common" ]; then
+    for h in "$common"/*; do
+      [ -f "$h" ] && [ -x "$h" ] || continue
+      name="$(basename "$h")"
+      case "$name" in
+        applypatch-msg|pre-applypatch|post-applypatch|prepare-commit-msg|\
+        commit-msg|post-commit|pre-rebase|post-checkout|post-merge|\
+        pre-receive|update|post-receive|post-update|push-to-checkout|\
+        pre-auto-gc|post-rewrite|sendemail-validate|fsmonitor-watchman|\
+        p4-changelist|p4-prepare-changelist|p4-post-changelist|p4-pre-submit|\
+        post-index-change|reference-transaction|proc-receive) ;;
+        *) continue ;;
+      esac
+      # pre-commit and pre-push are absent from that list on purpose: the guard
+      # below IS both of them, and it chains to whatever the repo had.
+      printf '#!/bin/sh\nexec "%s" "$@"\n' "$h" > "$hooks/$name"
+      chmod +x "$hooks/$name"
+    done
+  fi
+
+  sed -e "s|@@SCRATCH@@|$scratch|" > "$hooks/pre-commit" <<'GUARD'
+#!/usr/bin/env bash
+# kipi agent scratch guard -- GENERATED by linear-worker.sh (ASK-208).
+# Edits here are overwritten on the next worker run; change the generator.
+#
+# `--check-paths` reads candidate paths on stdin instead of the index, so the
+# guard can be swept over a whole repo's tracked file list in a test. Without
+# that seam the only way to check for false positives would be to stage every
+# file in the repo, and a guard nobody can sweep is a guard that quietly widens.
+set -uo pipefail
+
+# The shape is derived from the real payload, not invented. The seven files
+# swept out of main in PR #20 were script/draft files dropped at the ROOT of
+# q-system/output/ (ask191-lines.py, ask191-msg.txt, run-validate.sh, ...), and
+# no such file has ever been legitimately tracked there -- the tracked top-level
+# files in that directory are .md, .patch, .out and .err. Files inside a NAMED
+# subdirectory (rca/, plans/, architecture-report/, fable-analysis/) are real
+# deliverables and are deliberately NOT matched: a wrong refusal here stalls
+# every instance's worker at once.
+SCRATCH_RE='^q-system/output/[^/]+\.(py|sh|bash|zsh|js|mjs|rb|pl|txt)$'
+
+# ONE GUARD, TWO HOOK NAMES (round-4 review, finding 3). A pre-commit hook
+# cannot see `git commit --no-verify`, and the observed shape is one lazy -n,
+# not a determined bypass -- so whatever slips past the commit gate is caught
+# here, before it reaches the remote and the PR. This does not make the guard
+# unbypassable (`git push --no-verify` exists); it makes a single -n
+# insufficient. The file is installed under both names byte-for-byte, because
+# two copies of this regex would drift.
+HOOK="$(basename "$0")"
+REFS=""
+if [ "${1:-}" = "--check-paths" ]; then
+  candidates="$(cat)"
+elif [ "$HOOK" = "pre-push" ]; then
+  REFS="$(cat)"
+  candidates=""
+  while read -r _lref lsha _rref rsha; do
+    [ -n "${lsha:-}" ] || continue
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac   # all-zero local sha: a ref being deleted
+    case "$rsha" in
+      *[!0]*)
+        paths="$(git diff --name-only --diff-filter=ACMRT "$rsha" "$lsha" 2>/dev/null)" ;;
+      *)
+        # New branch on the remote: compare against where it left main. With no
+        # merge-base (a disjoint history) fall back to the whole tree rather
+        # than to nothing -- over-listing is caught by the sweep, under-listing
+        # is a hole nobody sees.
+        base="$(git merge-base origin/main "$lsha" 2>/dev/null)"
+        if [ -n "${base:-}" ] && [ "$base" != "$lsha" ]; then
+          paths="$(git diff --name-only --diff-filter=ACMRT "$base" "$lsha" 2>/dev/null)"
+        else
+          paths="$(git ls-tree -r --name-only "$lsha" 2>/dev/null)"
+        fi ;;
+    esac
+    candidates="$candidates
+$paths"
+  done <<REFS_EOF
+$REFS
+REFS_EOF
+else
+  candidates="$(git diff --cached --name-only --diff-filter=ACMRT)"
+fi
+
+offenders="$(printf '%s\n' "$candidates" | grep -E "$SCRATCH_RE" | sort -u || true)"
+if [ -n "$offenders" ]; then
+  {
+    echo "BLOCK: agent scratch cannot be committed."
+    printf '%s\n' "$offenders" | sed 's/^/  /'
+    echo
+    echo "q-system/output/ holds generated artifacts. A one-off helper, a message"
+    echo "draft or a throwaway reproducer is not one. Working files go here --"
+    echo "outside the repo, so they cannot be committed:"
+    echo "  @@SCRATCH@@"
+    echo
+    echo "If it IS a deliverable it belongs where folder-structure.md puts it:"
+    echo "  a harness -> q-system/.q-system/scripts/"
+    echo "  a test    -> q-system/.q-system/scripts/test/"
+    echo "  an RCA    -> q-system/output/rca/"
+    if [ "$HOOK" = "pre-push" ]; then
+      echo
+      echo "This is the PUSH gate -- the commit already exists locally. Take it out with:"
+      echo "  git rm --cached <path> && git commit --amend --no-edit"
+    fi
+  } >&2
+  exit 1
+fi
+
+[ "${1:-}" = "--check-paths" ] && exit 0
+
+# Delegate to whatever the repo already had (lefthook: gitleaks, blocked-paths,
+# the instruction budget). Adding a gate must never subtract one.
+#
+# Resolved HERE rather than baked in at install time. These worktrees outlive
+# many commits, so a hook installed after the tree was created -- someone runs
+# `lefthook install`, a hook gets added to the repo -- would otherwise be
+# skipped until the next worker run. The delegate must be whatever is on disk
+# now, or the day gitleaks is added is the day it silently does not run.
+NEXT="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/$HOOK"
+if [ -x "$NEXT" ] && [ "$NEXT" != "$0" ]; then
+  # pre-push's spec is on stdin and this guard already consumed it, so the
+  # delegate gets it replayed. Handing it an empty stdin would make the repo's
+  # own pre-push see zero refs and pass everything -- a gate subtracted while
+  # looking like it still ran.
+  if [ "$HOOK" = "pre-push" ]; then
+    printf '%s\n' "$REFS" | "$NEXT" "$@"
+    exit $?
+  fi
+  exec "$NEXT" "$@"
+fi
+exit 0
+GUARD
+  chmod +x "$hooks/pre-commit"
+  # Same bytes under both names. `cmp` in the test pins that they cannot drift.
+  cp "$hooks/pre-commit" "$hooks/pre-push"
+  chmod +x "$hooks/pre-push"
+
+  git -C "$tree" config extensions.worktreeConfig true >/dev/null 2>&1
+  git -C "$tree" config --worktree core.hooksPath "$hooks" >/dev/null 2>&1
+}
+
 # --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
-# ASK-211 (sp-28ced3d6). This script used to contain no `git fetch` at all: it
+# ASK-208 (sp-28ced3d6). This script used to contain no `git fetch` at all: it
 # cut every worktree from whatever local origin/main ref happened to be lying
 # around, so the agent was dispatched against a base that could be arbitrarily
-# old. Observed 2026-07-27 -- ASK-150 was sent to resolve a conflict against
+# old. Observed 2026-07-26 -- ASK-150 was sent to resolve a conflict against
 # main, merged 3b60af0, and the conflict survived because main was already
 # 72c782d. The agent did the right thing to the wrong target and two rounds
 # were burned.
@@ -137,16 +403,18 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 # plausible work aimed at the wrong target, and the run could not push or open
 # a PR against an unreachable origin anyway.
 #
-# IT PAGES AND EXITS 9, it does not stop quietly (PR #22 review round 3,
-# finding 1 -- major). The first version of this guard was `say` + `exit 0`,
-# which made an expired credential at 3am byte-for-byte indistinguishable from a
-# healthy run with nothing ready: same rc, no Slack, one line in a log nobody
-# reads. The issue never became stuck either, because MAX_ATTEMPTS only counts
-# DISPATCHED runs. Rule 5 says surface it IMMEDIATELY, and a log line is not
-# surfacing.
+# IT PAGES AND EXITS 9, it does not stop quietly (review round 3, finding 1).
+# The first version of this guard was `say` + `exit 0`, which made an expired
+# credential at 3am byte-for-byte indistinguishable from a healthy run with
+# nothing ready: same rc, no Slack, one line in a log nobody reads. The issue
+# never became stuck either, because MAX_ATTEMPTS only counts dispatched runs.
+# Rule 5 says surface it IMMEDIATELY, and a log line is not surfacing.
 #
-# 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
-# environment that is down from a worker that was invoked wrong.
+# 9, not 1: 1 is the usage error above, and the caller has to be able to tell an
+# environment that is down from a worker that was invoked wrong. converge.sh
+# reads this exact code and reports the real cause instead of blaming Sana for
+# opening no PR -- and it deliberately does NOT page again, because one event
+# with two Slack messages is how a channel stops being read.
 if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
   bash "$NOTIFY" "worker: git fetch failed in $SKEL -- the run did NO work. Check credentials/network." 2>/dev/null || true
@@ -213,6 +481,26 @@ try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
 print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 
+# Review ROUNDS for this issue, the counter bumped after every review below. It
+# was write-only until the round cap read it (round-3 review, finding 4).
+rounds_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('rounds',0))" "$1"; }
+
+# Prints 1 if THIS call is the transition into the capped state, 0 if the issue
+# was already capped. The page is keyed on that, so a parked issue is announced
+# once instead of on every scheduled run forever.
+mark_capped() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{})
+first = 0 if e.get('capped_notified') else 1
+e['capped_notified']=True
+json.dump(d,open('$ATTEMPTS','w'),indent=2); print(first)" "$1"; }
+
 bump_attempt() { python3 -c "
 import json,sys
 try: d=json.load(open('$ATTEMPTS'))
@@ -231,8 +519,26 @@ while IFS= read -r ISSUE; do
     continue
   fi
 
+  # ROUND CAP, checked HERE -- next to the attempts check and ABOVE the dry
+  # branch. Two reasons it does not live down with the verdict gate:
+  #   1. it needs no network, so the DRY run can report it. `kipi work` used to
+  #      print "would work ASK-x" for an issue it would in fact refuse; a fix
+  #      that lands on the gate and not on the report is half a fix.
+  #   2. it fires before the claim and before the "Picked up" Linear note, so a
+  #      refusal costs zero permanent comments on an object nobody can clean up.
+  R="$(rounds_for "$ISSUE")"
+  if [ "${R:-0}" -ge "$MAX_ROUNDS" ]; then
+    # Page ONCE, on the transition. A capped issue that pings every scheduled run
+    # is a channel that stops being read, which costs more than the silence.
+    if [ "$APPLY" = "1" ] && [ "$(mark_capped "$ISSUE")" = "1" ]; then
+      bash "$NOTIFY" "worker: $ISSUE hit the $MAX_ROUNDS-round cap on PR rework and is parked - needs a human" 2>/dev/null || true
+    fi
+    say "skip $ISSUE: $R/$MAX_ROUNDS review round cap reached; parked for a human. Resume with: kipi work --reset-rounds --issue $ISSUE"
+    continue
+  fi
+
   if [ "$APPLY" = "0" ]; then
-    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
+    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS, round $((R+1))/$MAX_ROUNDS)"
     DONE=$((DONE+1)); continue
   fi
 
@@ -246,6 +552,7 @@ while IFS= read -r ISSUE; do
   # alarm, and false alarms train the reader to ignore the real notes.
   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
+  PR_MERGEABLE=""
   if [ -n "$EXISTING_PR" ]; then
     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
     if [ -z "$PR_VERDICT" ]; then
@@ -254,7 +561,12 @@ while IFS= read -r ISSUE; do
       LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
-    rework_gate "$PR_VERDICT"; GATE=$?
+    # Read mergeability ONCE, here, and reuse the same value for both the gate
+    # and the prompt below. The gate decides whether to dispatch; the prompt has
+    # to say WHY, and re-querying gh for the prompt would be a second reader of
+    # one input -- the defect class this lib was extracted to kill.
+    PR_MERGEABLE="$(pr_mergeable "$EXISTING_PR")"
+    rework_gate "$PR_VERDICT" "$PR_MERGEABLE"; GATE=$?
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -288,6 +600,11 @@ while IFS= read -r ISSUE; do
       fi
     fi
   fi
+
+  # 1b. ARM THE SCRATCH GUARD before anything can commit in this tree. Rewritten
+  # every run, not only at creation, so a change to the generator reaches trees
+  # that already exist -- these worktrees are long-lived across rework rounds.
+  install_scratch_guard "$TREE" "$ISSUE"
 
   # 2. CLAIM, from INSIDE $TREE. exit 3 = another session holds THIS tree; that
   # is a skip, not an error.
@@ -324,7 +641,25 @@ while IFS= read -r ISSUE; do
   # EXISTING_PR was discovered above, before the claim; reaching this line means
   # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
   if [ -n "$EXISTING_PR" ]; then
-    REWORK="
+    # An approved PR only reaches a rework round because it stopped merging
+    # (rework_gate, ASK-208). Saying "the review is the spec" here would be a
+    # lie -- the review approved it. The merge conflict is the spec, and it is
+    # stated FIRST because the observed failure was two rounds of code polish
+    # while the only merge blocker went untouched.
+    CONFLICT_FIRST=""
+    if [ "$PR_MERGEABLE" = "CONFLICTING" ]; then
+      CONFLICT_FIRST="
+
+## THE MERGE CONFLICT IS THE ONLY THING BLOCKING THIS PR
+
+PR #$EXISTING_PR is reviewed and its verdict is '$PR_VERDICT', but GitHub reports it
+as CONFLICTING: main moved underneath it and it no longer merges.
+
+Resolve the conflict against the CURRENT main. That is the whole job of this round.
+Do not polish code, do not re-litigate the review, do not open new work. If you
+finish the conflict and the PR merges cleanly, you are done."
+    fi
+    REWORK="$CONFLICT_FIRST
 
 ## THIS IS A REWORK, NOT A FRESH START
 
@@ -375,7 +710,57 @@ justify it. Silence bought by a fix is the most expensive kind.
 Push to the SAME branch $BRANCH. Do not open a second PR."
   fi
 
-  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
+  # OPERATOR DIRECTIVE (ASK-208, sp-fd76af2f). The rework spec used to be
+  # whatever the newest review .md said, and the reviewer regenerates its
+  # findings every round -- so anything an operator injected survived exactly one
+  # pass. Observed: a REQUEST CHANGES scoped to "resolve the merge conflict,
+  # nothing else" dispatched round 1; the round-1 reviewer wrote its own
+  # findings, and rounds 1 and 2 both did code polish while the conflict went
+  # untouched.
+  #
+  # So the directive lives in a file the worker reads, is rendered VERBATIM into
+  # every prompt, and sits ALONGSIDE the review rather than replacing it. It is
+  # cleared by deleting the file and by nothing else -- no review round, no
+  # successful run, no verdict can retire it. Deliberately not a priority system:
+  # one file, one blob of text, always shown.
+  DIRECTIVE_FILE="$DIRECTIVES_DIR/$(echo "$ISSUE" | tr 'A-Z' 'a-z').md"
+  DIRECTIVE=""
+  if [ -s "$DIRECTIVE_FILE" ]; then
+    DIRECTIVE="
+
+## OPERATOR DIRECTIVE (persists across rounds; outranks nothing, ignores nothing)
+
+An operator left this standing instruction for $ISSUE. It is NOT a review finding
+and no review round replaces it. Read it together with everything else in this
+prompt:
+
+$(cat "$DIRECTIVE_FILE")
+
+(end of operator directive)"
+    say "$ISSUE: operator directive in effect ($DIRECTIVE_FILE); retire it with: kipi directive $ISSUE --clear"
+  fi
+
+  # Scratch OUTSIDE the repo (ASK-208, sp-1aae7516), so the agent has somewhere
+  # legitimate to put working files. The refusal is enforced by the commit AND
+  # push gates installed above; this is the place they point at. A refusal with no
+  # alternative just gets worked around.
+  SCRATCH="$SCRATCH_ROOT/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+  mkdir -p "$SCRATCH"
+
+  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK$DIRECTIVE
+
+## WORKING FILES GO OUTSIDE THE REPO
+
+Helper scripts, message drafts, scratch reproducers and anything else you write
+for your own use go in:
+
+  $SCRATCH
+
+That path is outside the repo and cannot be committed. Do NOT drop working files
+in q-system/output/ -- seven such files reached main through three consecutive
+PRs before being swept, so a commit or push that carries one is refused. Real
+deliverables go where folder-structure.md puts them (a harness in
+q-system/.q-system/scripts/, a test in q-system/.q-system/scripts/test/).
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
 Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.

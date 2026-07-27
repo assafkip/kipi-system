@@ -102,6 +102,14 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-triage.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-linear-worker-fetch.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
       "runner": "bash"
     },
