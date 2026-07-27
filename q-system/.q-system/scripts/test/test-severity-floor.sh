@@ -271,4 +271,210 @@ bash -n "$WORKER"   || fail "linear-worker.sh does not parse"
 bash -n "$REVIEWER" || fail "pr-review-agent.sh does not parse"
 ok "both consumers parse (bash -n)"
 
+# =============================================================================
+# MERGEABILITY IS HALF THE GATE (ASK-212, sp-71b63e62)
+# =============================================================================
+# THE DEFECT: rework_gate decided "is there work to do here" from the stored
+# verdict alone. A PR approved earlier that LATER stops merging was invisible to
+# the loop: it reported "waiting on founder merge only" and handed it back.
+#
+# OBSERVED 2026-07-27: PR #11 was approved at 06:08Z. #16 landed at 17:30Z and
+# broke it. Both `converge` and a direct worker run then skipped #11 in under two
+# seconds. The loop could not dispatch the one thing blocking the merge.
+#
+# THE TRAP, and why the second half of this section exists: making APPROVE
+# non-terminal opens an unbounded rework path. An unresolvable conflict yields
+# infinite rounds and a permanent Linear comment on every one. So the cap is
+# asserted as hard as the dispatch (PR #22 round-3 review, finding 4).
+#
+# Errexit is on from the record round-trip above; the worker runs below are
+# expected to return non-zero, so statuses are captured explicitly instead.
+set +e
+
+# --- D. the gate, per (verdict x merge state) --------------------------------
+# gate_is <want-rc> <verdict> <merge-state> <why>
+gate_is() {
+  local want="$1" verdict="$2" state="$3" why="$4" got
+  rework_gate "$verdict" "$state"; got=$?
+  [ "$got" = "$want" ] || fail "rework_gate '$verdict' '$state' -> $got, want $want ($why)"
+  ok "$why"
+}
+
+gate_is 30 "APPROVE"           "DIRTY"    "approved but DIRTY is a rebase round, not done"
+gate_is 30 "APPROVE WITH NITS" "DIRTY"    "approved-with-nits + DIRTY is a rebase round too"
+gate_is 30 "APPROVE"           "BEHIND"   "BEHIND is the same class of stale-against-main"
+gate_is 10 "APPROVE"           "CLEAN"    "approved AND CLEAN still waits on the founder"
+gate_is 10 "APPROVE WITH NITS" "CLEAN"    "approved-with-nits + CLEAN waits on the founder"
+# Fail toward terminal on every state a rebase cannot fix or that GitHub has not
+# stated. A missed conflict costs one human diagnosis; a manufactured one spends
+# model budget on every healthy PR in the fleet at once.
+gate_is 10 "APPROVE"           "UNKNOWN"  "UNKNOWN (GitHub still computing) does not manufacture a rebase round"
+gate_is 10 "APPROVE"           ""         "an absent merge-state reading does not manufacture a rebase round"
+gate_is 10 "APPROVE"           "BLOCKED"  "BLOCKED is branch protection; a rebase cannot fix it"
+gate_is 10 "APPROVE"           "UNSTABLE" "UNSTABLE is a failing non-required check, not a conflict"
+gate_is 0  "REQUEST CHANGES"   "CLEAN"    "REQUEST CHANGES is review rework regardless of merge state"
+gate_is 0  "BLOCK"             "DIRTY"    "BLOCK is review rework regardless of merge state"
+gate_is 20 ""                  "DIRTY"    "no verdict is still unreviewed, not rework"
+gate_is 20 "garbage"           "CLEAN"    "an unrecognised verdict is still unreviewed"
+
+# converge.sh calls this with ONE argument. A silent behaviour change on the
+# short form would be a fleet-wide bug in a file this issue does not touch.
+rework_gate "APPROVE"; [ $? = 10 ] || fail "one-arg rework_gate 'APPROVE' no longer returns 10"
+rework_gate "REQUEST CHANGES"; [ $? = 0 ] || fail "one-arg rework_gate 'REQUEST CHANGES' no longer returns 0"
+ok "the one-argument form keeps its original semantics (converge.sh is unchanged)"
+
+# --- the real worker, end to end ---------------------------------------------
+# The unit cases above would pass on a lib nobody calls with the second argument,
+# so the worker is driven for real. No live GitHub API: `gh` is a stub that
+# states the merge status, which is also the only way to script DIRTY on demand.
+REAL_PY="$(command -v python3)" || fail "python3 not on PATH"
+REAL_GIT="$(command -v git)"    || fail "git not on PATH"
+
+W2="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$W2"' EXIT
+unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID 2>/dev/null || true
+G() { git -c user.email=t@t.t -c user.name=t "$@"; }
+
+git init -q --bare "$W2/origin"
+git init -q "$W2/skel"
+G -C "$W2/skel" commit -q --allow-empty -m c1
+git -C "$W2/skel" branch -M main
+git -C "$W2/skel" remote add origin "$W2/origin"
+git -C "$W2/skel" push -q -u origin main
+
+STUB="$W2/bin"; mkdir -p "$STUB" "$W2/home"
+cat > "$STUB/python3" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  -)  cat >/dev/null
+      printf '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":1}\n'
+      exit 0 ;;
+  *linear-sync.py) exit 0 ;;
+esac
+exec "$REAL_PY" "\$@"
+EOF
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+echo "worked" >> "$W2/worked.txt"
+exit 0
+EOF
+# The page sink. "Did anyone get told, and how many times?" is answered by
+# reading a file, not by grepping the worker's source.
+cat > "$W2/notify.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$W2/pages.txt"
+EOF
+chmod +x "$STUB/python3" "$STUB/claude" "$W2/notify.sh"
+export PATH="$STUB:$PATH"
+[ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub"
+
+# gh_says <pr> <mergeStateStatus>
+gh_says() {
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  "pr list"*)                                  echo $1 ;;
+  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# run_worker <state-dir>  -- one scheduled worker run against that state dir
+run_worker() {
+  ( cd "$W2/skel" \
+    && HOME="$W2/home" KIPI_SKEL="$W2/skel" KIPI_STATE_DIR="$1" \
+       KIPI_NOTIFY="$W2/notify.sh" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$2" 2>&1
+  return 0
+}
+
+# --- E. approved + DIRTY must be DISPATCHED, not skipped as done -------------
+S_DIRTY="$W2/state-dirty"; mkdir -p "$S_DIRTY/pr-reviews"
+printf '{"verdict":"APPROVE WITH NITS","pr":777}\n' > "$S_DIRTY/pr-reviews/pr-777.verdict.json"
+gh_says 777 DIRTY
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker "$S_DIRTY" "$W2/dirty.out"
+
+grep -q worked "$W2/worked.txt" 2>/dev/null \
+  || fail "SKIPPED A BLOCKED PR: an approved PR that GitHub reports DIRTY was not
+      dispatched. The worker said: $(grep -i skip "$W2/dirty.out" | head -1)"
+ok "approved + DIRTY reached the work phase (a rebase round was dispatched)"
+
+grep -qi "waiting on founder merge" "$W2/dirty.out" \
+  && fail "the run still claimed a DIRTY PR was merely waiting on the founder"
+ok "the run does not report a DIRTY PR as waiting on the founder"
+
+grep -q "rebase round 1/" "$W2/dirty.out" \
+  || fail "the run does not say which conflict round it is on; the cap is invisible to the operator"
+ok "the dispatch names the conflict round and its cap"
+
+# The conflict budget is its own counter: spending it must NOT spend the review
+# rounds or the failed-attempt budget, or a PR that converged on content loses
+# its review budget to rebase tries.
+LEDGER="$S_DIRTY/linear-worker-attempts.json"
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$LEDGER'))['ASK-AAA'].get('conflict_rounds',0))")" = "1" ] \
+  || fail "the conflict round was not recorded; nothing would ever reach the cap"
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$LEDGER'))['ASK-AAA'].get('count',0))")" = "0" ] \
+  || fail "a rebase round burned the failed-attempt budget; the caps must be separate"
+ok "conflict rounds are counted separately from failed attempts"
+
+# --- F. at the cap: stop, and page EXACTLY once across repeated runs ----------
+# Two scheduled runs, both at the cap. One page total. A "still stuck" line every
+# cycle is noise, and noise trains the operator to skim the real pages.
+S_CAP="$W2/state-cap"; mkdir -p "$S_CAP/pr-reviews"
+printf '{"verdict":"APPROVE","pr":779}\n' > "$S_CAP/pr-reviews/pr-779.verdict.json"
+printf '{"ASK-AAA":{"conflict_rounds":2}}\n' > "$S_CAP/linear-worker-attempts.json"
+gh_says 779 DIRTY
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker "$S_CAP" "$W2/cap1.out"
+run_worker "$S_CAP" "$W2/cap2.out"
+
+[ ! -s "$W2/worked.txt" ] \
+  || fail "the conflict cap did not hold: a rebase round was dispatched with the budget already spent.
+      An unresolvable conflict would rework forever, writing a permanent Linear comment each round."
+ok "at the cap the worker refuses to dispatch another rebase round"
+
+# Pin WHY it refused. An absence-of-work assertion passes for any reason the
+# worker declines, so on its own it cannot tell "the cap held" from "the fixture
+# was broken and it skipped as unreviewed" -- the exact vacuous-test defect the
+# round-3 review found in the prior art (finding 2).
+grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
+  || fail "the cap run skipped for the WRONG REASON. It must stop at the conflict cap,
+      not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
+ok "it stopped at the conflict cap, not as unreviewed"
+
+PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+[ "$PAGES" = "1" ] \
+  || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
+grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
+ok "exactly one page across two runs at the cap (no per-cycle noise)"
+
+# --- G. approved + CLEAN must still be left alone ----------------------------
+# The other half: this fix must not turn every approved PR into a rework loop.
+S_OK="$W2/state-ok"; mkdir -p "$S_OK/pr-reviews"
+printf '{"verdict":"APPROVE WITH NITS","pr":778}\n' > "$S_OK/pr-reviews/pr-778.verdict.json"
+gh_says 778 CLEAN
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker "$S_OK" "$W2/ok.out"
+
+[ ! -s "$W2/worked.txt" ] \
+  || fail "an approved AND CLEAN PR was reworked; this fix must not loop on healthy PRs"
+grep -q "nothing to rework, waiting on founder merge" "$W2/ok.out" \
+  || fail "section G skipped for the WRONG REASON -- it must reach gate 10 (approved+clean),
+      not gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/ok.out" | head -1)"
+[ ! -s "$W2/pages.txt" ] || fail "a healthy approved PR paged the founder: $(cat "$W2/pages.txt")"
+ok "approved + CLEAN is left alone at gate 10, and pages nobody"
+
+# --- wiring: the worker actually consults the merge state --------------------
+grep -q 'pr_merge_state' "$WORKER" \
+  || fail "linear-worker.sh never reads the merge state (the gate's second argument would be empty forever)"
+grep -q 'MAX_CONFLICT_ROUNDS' "$WORKER" \
+  || fail "linear-worker.sh has no conflict-round cap"
+ok "worker wiring: merge state read through the lib, conflict cap present"
+
+bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
+ok "the lib parses (bash -n)"
+
 echo "PASS: $PASS/$PASS severity-floor checks"

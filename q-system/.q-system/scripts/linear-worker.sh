@@ -70,6 +70,14 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
 MAX_ATTEMPTS=3
+# Conflict rounds are capped SEPARATELY from review rounds and from failed
+# attempts (ASK-212). MAX_ATTEMPTS only counts runs where `claude` exits
+# non-zero, and the cited failure mode is an agent that exits 0 having done the
+# wrong thing -- so it would never bound a rebase that cannot succeed. A PR that
+# has converged on CONTENT must also not lose its review budget to rebase tries.
+# 2: a rebase either works on the first honest attempt or the conflict needs a
+# human. Round 3 has never been the one that lands it here.
+MAX_CONFLICT_ROUNDS=2
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
@@ -220,6 +228,40 @@ except Exception: d={}
 e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
 json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
 
+# --- conflict-round ledger (ASK-212) ----------------------------------------
+# Its own counter in the same file, deliberately NOT `count` (failed attempts)
+# and NOT `rounds` (review rounds). Three different budgets answering three
+# different questions; sharing one would let a rebase attempt spend a review
+# round, which is the thing the separate cap exists to prevent.
+conflict_rounds_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('conflict_rounds',0))" "$1"; }
+
+bump_conflict_round() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); e['conflict_rounds']=e.get('conflict_rounds',0)+1
+e['last_conflict']=sys.argv[2]
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+
+# Returns 0 the FIRST time the cap is hit for this issue and 1 every time after,
+# so the page below fires exactly once instead of once per scheduled run. A
+# repeated "still stuck" every cycle is noise, and noise trains the reader to
+# skim the real pages (founder-notifications.md). The flag is claimed in the
+# same write that reports it, so two runs cannot both read "not paged yet".
+claim_conflict_page() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{})
+first = not e.get('conflict_paged')
+e['conflict_paged']=True
+json.dump(d,open('$ATTEMPTS','w'),indent=2)
+raise SystemExit(0 if first else 1)" "$1"; }
+
 DONE=0
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
@@ -246,6 +288,7 @@ while IFS= read -r ISSUE; do
   # alarm, and false alarms train the reader to ignore the real notes.
   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
+  CONFLICT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
     if [ -z "$PR_VERDICT" ]; then
@@ -254,7 +297,10 @@ while IFS= read -r ISSUE; do
       LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
-    rework_gate "$PR_VERDICT"; GATE=$?
+    # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
+    # so the worker and the driver cannot drift on what "still merges" means.
+    MERGE_STATE="$(pr_merge_state "$EXISTING_PR")"
+    rework_gate "$PR_VERDICT" "$MERGE_STATE"; GATE=$?
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -262,6 +308,23 @@ while IFS= read -r ISSUE; do
     if [ "$GATE" = "20" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
+    fi
+    if [ "$GATE" = "30" ]; then
+      # Approved on content, but it no longer merges. Dispatch a REBASE round on
+      # its own budget -- and stop dead once that budget is spent, because an
+      # unresolvable conflict would otherwise rework forever and write a
+      # permanent Linear comment on every round.
+      CR="$(conflict_rounds_for "$ISSUE")"
+      if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
+        if claim_conflict_page "$ISSUE"; then
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+        fi
+        continue
+      fi
+      bump_conflict_round "$ISSUE"
+      CONFLICT_ROUND=$((CR + 1))
+      say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE -- dispatching rebase round $CONFLICT_ROUND/$MAX_CONFLICT_ROUNDS"
     fi
   fi
 
@@ -322,8 +385,42 @@ while IFS= read -r ISSUE; do
   # DoR" to an agent whose work is already written and already criticised, and it
   # would plausibly start over. The review is the spec for this pass.
   # EXISTING_PR was discovered above, before the claim; reaching this line means
-  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK.
-  if [ -n "$EXISTING_PR" ]; then
+  # the severity-floor gate already ruled the verdict REQUEST CHANGES or BLOCK,
+  # or ruled it approved-but-unmergeable (gate 30, the conflict branch below).
+  #
+  # A CONFLICT ROUND IS NOT A REVIEW ROUND, so it does not get the review prompt.
+  # The review APPROVED this diff -- handing the agent "the review is the spec,
+  # answer every finding" against a review with no findings is how ASK-208's
+  # rounds 1 and 2 both did code polish while the conflict went untouched. The
+  # spec for this pass is the conflict and nothing else.
+  if [ -n "$CONFLICT_ROUND" ]; then
+    REWORK="
+
+## THIS IS A REBASE ROUND. THE CONFLICT IS THE ONLY TASK.
+
+PR #$EXISTING_PR on this branch was already REVIEWED AND APPROVED ('$PR_VERDICT').
+GitHub now reports its merge state as $MERGE_STATE: main moved underneath it and
+it no longer merges. This is round $CONFLICT_ROUND of $MAX_CONFLICT_ROUNDS; at the cap the
+worker stops and pages a human, so do not spend this round on anything else.
+
+Do exactly this:
+
+  git fetch origin
+  git rebase origin/main        # or merge origin/main, whichever this repo prefers
+  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on main
+  bash <the tests this PR already ships>   # they must still pass after the rebase
+  git push --force-with-lease origin $BRANCH
+
+DO NOT redesign, refactor, polish, or 'improve' the approved diff. DO NOT re-open
+the design. Any change beyond what resolving the conflict requires costs the PR
+its approval and starts the review over.
+
+If the conflict cannot be resolved without a real decision (the two sides changed
+the same behaviour on purpose), say so on the issue via progress and STOP:
+  bash $SKEL/kipi linear progress $ISSUE \"<the conflict and the decision it needs>\" --agent sana
+
+Push to the SAME branch $BRANCH. Do not open a second PR."
+  elif [ -n "$EXISTING_PR" ]; then
     REWORK="
 
 ## THIS IS A REWORK, NOT A FRESH START
