@@ -41,6 +41,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -224,16 +225,58 @@ def detect_duplicate_schedules(_ctx) -> list:
 # is the shape this fleet actually uses (open-loops-heartbeat.sh), so a matcher
 # that only reads the first token would miss every real invocation.
 CRON_COMMAND_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate",
-                         "sudo", "exec", "stdbuf"}
+                         "sudo", "exec", "stdbuf", "npx"}
+
+# A shell in command position does not RUN what follows; it runs the string
+# handed to its `-c` flag. `bash -lc 'claude -p ...'` is the shape a cron line
+# uses to get a login environment, so the command inside the quotes has to be
+# parsed as a command, not scanned as text.
+SHELL_COMMANDS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
+
+# Tokens that END a command and open the next one. Redirections (`<`, `>`, `>>`)
+# are deliberately NOT here: they take an argument, they do not start a command.
+SHELL_OPERATORS = {"&&", "||", ";", "|", "&", "|&", "(", ")"}
+
+
+class CrontabUnavailable(RuntimeError):
+    """`crontab -l` could not be read. NOT the same as an empty crontab.
+
+    This distinction is the whole point of the class. A detector whose value is a
+    NEGATIVE result ("no cron line shells claude") must never print the same
+    thing for "I looked and found nothing" and "I could not look". The first is
+    an all-clear; the second is a blind spot wearing an all-clear's clothes.
+    """
+
+
+# `crontab -l` exits non-zero when the user simply has no crontab. That is the
+# one benign non-zero, and it is identified by its stderr, not by its code.
+_NO_CRONTAB_RE = re.compile(r"no crontab for", re.IGNORECASE)
+
+
+def _read_crontab_result(returncode: int, stdout: str, stderr: str) -> str:
+    """Interpret a `crontab -l` result. Pure, so the blind-spot case is testable.
+
+    Raises CrontabUnavailable when the command ran but could not report the
+    crontab (permission denied, crontab not installed, an unexpected code).
+    """
+    if returncode == 0:
+        return stdout
+    err = (stderr or "").strip()
+    if _NO_CRONTAB_RE.search(err):
+        return ""  # the user genuinely has no crontab: a real, readable empty
+    raise CrontabUnavailable(
+        f"crontab -l exited {returncode}: {err[:200] or '(no stderr)'}"
+    )
 
 
 def _crontab_text() -> str:
-    """`crontab -l`, or empty when there is no crontab or crontab is unavailable."""
+    """`crontab -l`. Empty ONLY when the user genuinely has no crontab."""
     try:
-        return subprocess.run(["crontab", "-l"], capture_output=True, text=True,
-                              timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+        res = subprocess.run(["crontab", "-l"], capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CrontabUnavailable(f"crontab -l did not run: {exc}") from exc
+    return _read_crontab_result(res.returncode, res.stdout, res.stderr)
 
 
 def _cron_command(line: str) -> str:
@@ -269,28 +312,106 @@ def _command_token(tokens: list) -> str:
     return ""
 
 
-def _shells_claude(command: str) -> bool:
+def _lex(command: str):
+    """Shell-aware tokens, or None when the string cannot be parsed as shell.
+
+    `punctuation_chars=True` makes `&& || ; | ( )` their own tokens while leaving
+    quoted strings intact, which is what lets the operator split below happen at
+    the TOKEN level. Splitting the raw string on `;`/`&&` (the shipped v1) cut
+    inside quoted arguments: `echo "step one; claude -p x"` produced a second
+    segment whose first token was `claude`.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return None  # unbalanced quotes: not a runnable command, do not guess
+
+
+def _shell_segments(command: str) -> list:
+    """The command's shell segments, each as a token list."""
+    tokens = _lex(command)
+    if tokens is None:
+        return []
+    segments, current = [], []
+    for token in tokens:
+        if token in SHELL_OPERATORS:
+            segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    segments.append(current)
+    return [s for s in segments if s]
+
+
+def _shell_c_argument(tokens: list) -> str:
+    """The string a shell will EXECUTE: the token after its `-c`-bearing flag.
+
+    Only consulted when the command itself is a shell, so `tar -czf` (whose flag
+    also contains a `c`) is never read this way.
+    """
+    for index, token in enumerate(tokens):
+        if not token.startswith("-") or token.startswith("--"):
+            continue
+        if "c" in token[1:] and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return ""
+
+
+def _shells_claude(command: str, _depth: int = 0) -> bool:
     """True when the command INVOKES `claude`, not merely mentions it.
 
-    Deliberately narrow. This fleet is dense with `.claude/` paths and a directory
-    literally named `claude`, and a false positive files a PERMANENT Linear issue —
-    the same cost that made detect_duplicate_schedules resolve absolute paths rather
-    than match basenames. So `claude` counts only when it holds command position in
-    a shell segment, or is immediately followed by a flag. That is what an
-    invocation looks like, and what `cd ~/projects/claude && ...` never is.
+    COMMAND POSITION IS THE ONLY SIGNAL. v1 also scored any token whose basename
+    was `claude` immediately followed by a flag, with no command-position guard.
+    That clause was there to reach `bash -lc 'claude -p ...'`, and PR #11's review
+    measured what it actually cost: 4 of 5 ordinary housekeeping lines over
+    `~/projects/claude` (tar, rsync, du, chmod, each with a trailing flag) scored
+    as invocations. This fleet HAS that directory, and a Linear issue filed here
+    is permanent and cannot be deleted, so a false positive is forever.
+
+    The quoted-shell case it was covering is handled properly instead: when a
+    shell holds command position, the string it was handed is re-parsed as a
+    command. `bash -lc 'claude -p "x"'` still matches, and
+    `notify-send "run claude -p tomorrow"` no longer does.
     """
-    for segment in re.split(r"&&|\|\||[;|]", command):
-        tokens = [t for t in (raw.strip("'\"") for raw in segment.split()) if t]
-        if not tokens:
-            continue
-        if _is_claude_token(_command_token(tokens)):
+    if _depth > 2:  # `sh -c 'sh -c ...'` is not a shape worth chasing further
+        return False
+    for tokens in _shell_segments(command):
+        command_token = _command_token(tokens)
+        if _is_claude_token(command_token):
             return True
-        # Quoted forms like `bash -lc 'claude -p ...'` never reach command
-        # position, so the flag that follows is the invocation signal.
-        for token, following in zip(tokens, tokens[1:]):
-            if _is_claude_token(token) and following.startswith("-"):
+        if PurePosixPath(command_token).name in SHELL_COMMANDS:
+            inner = _shell_c_argument(tokens)
+            if inner and _shells_claude(inner, _depth + 1):
                 return True
     return False
+
+
+_SECRET_TOKEN_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})")
+
+
+def _redact_secrets(line: str) -> str:
+    """Mask credentials before a raw crontab line is copied into a Linear issue.
+
+    `_command_token` deliberately steps PAST `VAR=value` prefixes, which makes
+    `ANTHROPIC_API_KEY=... claude -p` a FIRST-CLASS detection target — the action
+    text below even anticipates the API-key shape. So the line most likely to be
+    detected is the line most likely to be carrying a live key, and the object it
+    gets copied into is permanent and cannot be deleted here. Detecting a secret
+    and then publishing it is a worse outcome than not detecting it.
+
+    Over-redaction is the deliberate bias: the variable NAME survives (the line
+    stays identifiable), only its value is masked.
+    """
+    out = []
+    for token in line.split():
+        assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.+)", token)
+        if assignment:
+            out.append(f"{assignment.group(1)}=<redacted>")
+            continue
+        out.append(_SECRET_TOKEN_RE.sub("<redacted>", token))
+    return " ".join(out)
 
 
 def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
@@ -306,11 +427,17 @@ def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
 
     ONE rollup finding, never one per line. A crontab line is an unstable string:
     editing the prompt inside it would fork a new PERMANENT Linear issue every
-    time. The offending lines live in the body, which is updatable — the same
-    reasoning detect_open_spillover documents for its count.
+    time. The offending lines live in the body, which `file_findings` REWRITES on
+    every run whose content changed — the same reasoning detect_open_spillover
+    documents for its count. That update path is what makes the rollup honest: a
+    second offending line added a month later lands on the same issue instead of
+    disappearing behind an already-known dedup key.
+
+    Raises CrontabUnavailable when the crontab could not be read at all, so a
+    blind run is reported as an error rather than as a clean bill of health.
     """
     cron = _crontab_text() if cron_text is None else cron_text
-    offenders = [line.strip() for line in cron.splitlines()
+    offenders = [_redact_secrets(line.strip()) for line in cron.splitlines()
                  if _shells_claude(_cron_command(line))]
     if not offenders:
         return []
@@ -532,21 +659,46 @@ def finding_key(detector_id: str, subject: str) -> str:
     return f"fleet-health/{detector_id}/{slug(subject)}"
 
 
-def file_findings(findings: list, apply: bool) -> dict:
-    """Create a Linear issue per finding, deduped by kipi-key.
+def issue_description(key: str, finding: dict) -> str:
+    """The issue body for a finding. ONE renderer, used by create AND update.
+
+    Two renderers would drift, and the drift would be invisible: the created body
+    and the updated body only ever exist on different days.
+    """
+    return (f"<!-- kipi-key: {key} -->\n\n{finding['body']}\n\n"
+            "Filed by `fleet-health-daily.py`.")
+
+
+def file_findings(findings: list, apply: bool, linear=None) -> dict:
+    """Create a Linear issue per finding, deduped by kipi-key; UPDATE it if stale.
 
     Reuses linear-sync's graphql + remote guard so 'already exists' has exactly one
     definition fleet-wide. Linear objects are permanent, so the guard is refetched
     here rather than trusted from any cache.
+
+    A known key is not the end of the story. Findings here roll up under stable
+    subjects on purpose (`cron-shells-claude`, `open-spillover`), so their CONTENT
+    changes while their identity does not. `continue`-on-known — the shipped v1 —
+    meant the second offending crontab line, and every one after it, was never
+    surfaced to anyone: the detector reported 1 finding forever and the count in
+    the body drifted into a lie. So a known key whose rendered body differs from
+    what Linear currently holds is rewritten in place, and an unchanged one still
+    writes nothing (an unchanged crontab must not issue a mutation every morning).
+
+    `linear` injects the linear-sync module, so the create AND update paths are
+    provable against an in-memory fake. A test that reached real Linear would
+    leave permanent objects behind and could not be re-run.
     """
-    result = {"created": 0, "existing": 0, "skipped_no_key": 0}
+    result = {"created": 0, "existing": 0, "updated": 0, "skipped_no_key": 0}
     if not findings:
         return result
-    import importlib.util
+    ls = linear
+    if ls is None:
+        import importlib.util
 
-    spec = importlib.util.spec_from_file_location("ls", HERE / "linear-sync.py")
-    ls = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ls)
+        spec = importlib.util.spec_from_file_location("ls", HERE / "linear-sync.py")
+        ls = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ls)
 
     try:
         team_id, project, remote_keys = ls.fetch_remote_state(TEAM_KEY, HEALTH_PROJECT)
@@ -560,15 +712,31 @@ def file_findings(findings: list, apply: bool) -> dict:
 
     for f in findings:
         key = f["key"]
+        title = f["title"][:250]
+        description = issue_description(key, f)
         if key in known:
             result["existing"] += 1
+            tracked = remote_keys.get(key)
+            # Ledger-only keys (the issue was moved out of the health project)
+            # have no body to compare against, so they are left alone rather
+            # than rewritten from a guess.
+            if not tracked or tracked.get("description") == description:
+                continue
+            result["updated"] += 1
+            if not apply:
+                continue
+            ls.graphql(ls.ISSUE_UPDATE, {
+                "id": tracked["linear_id"],
+                "input": {"title": title, "description": description},
+            })
+            print(f"  updated {tracked.get('identifier')}  {title[:70]}")
             continue
         if not apply:
             result["created"] += 1  # would create
             continue
         payload = {
-            "title": f["title"][:250],
-            "description": f"<!-- kipi-key: {key} -->\n\n{f['body']}\n\nFiled by `fleet-health-daily.py`.",
+            "title": title,
+            "description": description,
             "teamId": team_id,
         }
         if project:
@@ -585,6 +753,35 @@ def file_findings(findings: list, apply: bool) -> dict:
     return result
 
 
+DETECTOR_ERROR = "error"
+
+
+def run_detectors(detectors=None) -> tuple:
+    """(findings, {detector_id: count | "error"}).
+
+    A detector that RAISED is recorded as "error", never as 0. v1 swallowed the
+    exception and reported a count of 0, so "I could not look" and "I looked and
+    found nothing" printed identically — the worst possible failure mode for a
+    detector whose entire value is a negative result. `crontab -l` failing on a
+    locked-down machine would have read as a clean bill of health forever.
+    """
+    all_findings = []
+    per_detector = {}
+    for d in detectors if detectors is not None else DETECTORS:
+        try:
+            found = d["detect"](None) or []
+        except Exception as exc:  # noqa: BLE001 - a health check must not crash its job
+            print(f"  detector {d['id']} errored: {exc}", file=sys.stderr)
+            per_detector[d["id"]] = DETECTOR_ERROR
+            continue
+        for f in found:
+            f["key"] = finding_key(d["id"], f["subject"])
+            f["detector"] = d["id"]
+        per_detector[d["id"]] = len(found)
+        all_findings.extend(found)
+    return all_findings, per_detector
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="actually file Linear issues")
@@ -598,36 +795,29 @@ def main() -> int:
             print(f"  - {p}", file=sys.stderr)
         return 1
 
-    all_findings = []
-    per_detector = {}
-    for d in DETECTORS:
-        try:
-            found = d["detect"](None) or []
-        except Exception as exc:  # noqa: BLE001
-            print(f"  detector {d['id']} errored: {exc}", file=sys.stderr)
-            found = []
-        for f in found:
-            f["key"] = finding_key(d["id"], f["subject"])
-            f["detector"] = d["id"]
-        per_detector[d["id"]] = len(found)
-        all_findings.extend(found)
+    all_findings, per_detector = run_detectors()
 
     print(f"fleet-health {_now()}")
     for did, n in per_detector.items():
         print(f"  {did}: {n}")
 
     outcome = file_findings(all_findings, args.apply)
-    print(f"  filed={outcome['created']} already-tracked={outcome['existing']}")
+    print(f"  filed={outcome['created']} already-tracked={outcome['existing']} "
+          f"rewritten={outcome['updated']}")
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(
         {"ran_at": _now(), "per_detector": per_detector, "outcome": outcome}, indent=2))
 
     # ONE line, never one per finding.
-    if not args.quiet and outcome["created"] and NOTIFY.exists():
+    # A rewrite is a real change (a NEW offending line landed on a standing
+    # issue), so it earns the ping too — otherwise every occurrence after the
+    # first is silent, which is the exact blindness the update path exists to fix.
+    if not args.quiet and (outcome["created"] or outcome["updated"]) and NOTIFY.exists():
         subprocess.run(
             ["bash", str(NOTIFY),
              f"fleet health: {outcome['created']} new issue(s) filed, "
+             f"{outcome['updated']} updated, "
              f"{outcome['existing']} already tracked. Board has them; nothing to do now."],
             timeout=20, check=False)
     return 0

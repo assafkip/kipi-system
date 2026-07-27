@@ -416,6 +416,18 @@ mutation($input: IssueCreateInput!) {
 }
 """
 
+# Rewrites an EXISTING issue rather than creating a second one. Needed by any
+# caller whose issue is a standing rollup (fleet-health's cron/spillover
+# findings): the dedup key is stable on purpose, so without an update the body
+# freezes at the truth of the day it was filed and every later occurrence is
+# swallowed by the "already exists" guard. Never used to change a kipi-key
+# marker -- that would fork the identity the whole ledger is built on.
+ISSUE_UPDATE = """
+mutation($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { id identifier } }
+}
+"""
+
 
 def fetch_remote_state(team_key: str, repo: str) -> tuple:
     """(team_id, project_or_None, {kipi-key: {...}}) straight from Linear.
@@ -463,6 +475,11 @@ def fetch_remote_state(team_key: str, repo: str) -> tuple:
                     keys[found.group(1)] = {
                         "linear_id": node["id"],
                         "identifier": node["identifier"],
+                        # The live body, so a caller holding a standing rollup
+                        # issue can tell "unchanged" from "needs a rewrite"
+                        # without a second fetch. cmd_remote does not carry this
+                        # into its snapshot; the snapshot is a dedup guard only.
+                        "description": node.get("description") or "",
                     }
             info = page.get("pageInfo") or {}
             if not info.get("hasNextPage"):
