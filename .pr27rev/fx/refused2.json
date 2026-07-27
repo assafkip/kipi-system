@@ -1,0 +1,1 @@
+{"session_id": "repro3-22944", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'wip (ASK-214)'"}, "tool_response": {"stdout": "", "stderr": "exit status 1\n\ud83e\udd4a gitleaks: Secret detected. (0.2 seconds)\n", "error": "Exit code 1"}}
