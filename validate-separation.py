@@ -6,6 +6,7 @@ Runs all checks up to and including the specified phase.
 Exit code 0 = all checks pass. Non-zero = failure.
 """
 
+import collections
 import json
 import importlib.util
 import os
@@ -393,6 +394,77 @@ def _load_containment_targets():
     return module
 
 
+# Prefixes that `kipi update` NEVER copies into an instance. Mirrors
+# INSTANCE_OWNED_SUBTREES in kipi-update.sh (my-project, canonical, memory,
+# output, .q-system/data, .q-system/agent-pipeline/bus), each rooted at
+# q-system/. A fact in one of these cannot fan out to another instance, so
+# Gate 1.3b -- which exists to catch fan-out -- has nothing to say about it.
+#
+# This is the same rationale the Full skeleton sweep already applies below
+# (see the comment above `exclude_files`). Two gates in ONE file disagreeing
+# about what propagates was the defect: the sweep excluded canonical/ on
+# purpose while 1.3b scanned it, so 13 of 1.3b's 47 classified findings were
+# facts that physically cannot reach another instance.
+#
+# Drift protection is a test, not a comment: test-gate-13b-scope.py asserts
+# this tuple still matches kipi-update.sh's INSTANCE_OWNED_SUBTREES.
+#
+# NOT excluded, deliberately: q-system/research/ and repo-root paths outside
+# q-system/. The q-system rsync copies the whole tree minus the owned subtrees,
+# so research/ DOES propagate and its findings are real.
+NON_PROPAGATED_PREFIXES = (
+    "q-system/my-project",
+    "q-system/canonical",
+    "q-system/memory",
+    "q-system/output",
+    "q-system/.q-system/data",
+    "q-system/.q-system/agent-pipeline/bus",
+)
+
+# `unclassified_populated_record` is the classifier's "I do not recognize this
+# schema" bucket, not a finding. Measured 2026-07-27: 12,341 of 12,388 findings
+# on this repo, including 418 lines of one MCP server source file and 236 lines
+# of a command reference. It gates nothing because a detector that flags 418
+# lines of generic engine source is not detecting a leak; it is reporting that
+# markdown-ish `label: value` lines exist.
+#
+# It stays VISIBLE (counted, and listed under --verbose) rather than being
+# deleted, because the day it drops to near-zero is the day the classifier
+# learned the schema, and that is worth being able to see.
+#
+# A baseline/ratchet at 12,388 was proposed and rejected by the founder
+# 2026-07-27: it would stamp the false alarms as accepted debt and bury the 47
+# real findings inside them permanently.
+ADVISORY_FACT_CLASSES = frozenset({"unclassified_populated_record"})
+
+
+def _propagates(relative_path):
+    """False for a path `kipi update` never copies into an instance."""
+    normalized = relative_path.replace("\\", "/")
+    return not any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in NON_PROPAGATED_PREFIXES
+    )
+
+
+def partition_semantic_violations(violations):
+    """Split findings into (gating, advisory).
+
+    Gating findings are classified facts on a path that actually propagates.
+    Everything else is reported and does not fail the gate.
+    """
+    gating = []
+    advisory = []
+    for violation in violations:
+        if violation["fact_class"] in ADVISORY_FACT_CLASSES:
+            advisory.append(violation)
+        elif not _propagates(violation["path"]):
+            advisory.append(violation)
+        else:
+            gating.append(violation)
+    return gating, advisory
+
+
 def semantic_separation_violations(repo_root=SCRIPT_DIR):
     """Run semantic leakage checks over repository-derived generic targets."""
     root = os.path.abspath(os.fspath(repo_root))
@@ -594,20 +666,37 @@ def phase_1():
     except Exception as exc:
         semantic_violations = None
         warn(f"Semantic containment scope blocked: {exc}")
-    if semantic_violations and verbose:
-        for violation in semantic_violations:
-            warn(
-                "{path}:{line}: {fact_class}".format(**violation)
+    if semantic_violations is None:
+        check(
+            "Repository-derived generic targets contain no semantic instance "
+            "facts (scope unavailable)",
+            False,
+        )
+    else:
+        gating, advisory = partition_semantic_violations(semantic_violations)
+        if verbose:
+            for violation in gating:
+                warn("{path}:{line}: {fact_class}".format(**violation))
+        # Advisory findings are counted always and listed only under --verbose:
+        # there are ~12k of them and dumping the list drowns the gating ones.
+        advisory_classes = collections.Counter(
+            v["fact_class"] for v in advisory
+        )
+        print(
+            "        advisory (non-gating): "
+            + (
+                ", ".join(
+                    f"{cls}={count}"
+                    for cls, count in sorted(advisory_classes.items())
+                )
+                or "none"
             )
-    check(
-        "Repository-derived generic targets contain no semantic instance facts"
-        + (
-            f" ({len(semantic_violations)} findings)"
-            if semantic_violations is not None
-            else " (scope unavailable)"
-        ),
-        semantic_violations == [],
-    )
+        )
+        check(
+            "Repository-derived generic targets contain no semantic instance "
+            f"facts ({len(gating)} gating, {len(advisory)} advisory)",
+            gating == [],
+        )
 
     # --- GATE 1.4: Voice skill framework ---
     print()
