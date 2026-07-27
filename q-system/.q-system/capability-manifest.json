@@ -90,6 +90,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-dor-failure-reporting.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-issue-ref-check.sh",
       "runner": "bash"
     },
