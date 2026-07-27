@@ -269,7 +269,10 @@ PLACEHOLDER_RE = re.compile(
     # Cost, stated rather than hidden: a real fact written as `Client: [Acme
     # Corp]` is now invisible. In this repo brackets mean "fill this in", and
     # the template-restoration tests depend on that reading.
-    r"|\[[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\]"
+    # The `(?!\()` is load-bearing: without it this eats the LABEL of a markdown
+    # link, so `- **Client:** [Oriole Systems](https://oriole.example)` reduced
+    # to a bare parenthetical and vanished entirely. The reach probe caught it.
+    r"|\[[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\](?!\()"
 )
 # A value that is ENTIRELY a parenthetical is a template prompt to the author,
 # not an assertion: `- **Gaps:** (what we still can't answer well)`. Requiring
@@ -404,6 +407,41 @@ def _semantic_record_lines(text, source_path=None):
         yield index + 1, match.group("label"), value
 
 
+# Bound chosen from a measured gap, not by taste. Strip the figures and count
+# the words left:
+#
+#   asserted prices        `$5,000`                                        -> 0
+#                          `Oriole Systems signed for $45,000 today.`      -> 5
+#                          `Maren quoted $5,000 on July 24, 2026`          -> 4
+#   operating-cost prose   `Do not exceed $2 total Apify spend per morning
+#                           run across IG + TikTok combined.`              -> 13
+#                          `Apify ~$0.50 per run (X/Twitter only). The
+#                           canonical Reddit tooling ...`                  -> 14
+#
+# 5 and 13 leave a wide valley; 6 sits in it. If a future case lands between
+# 6 and 12 the bound is the wrong instrument and should be replaced, not nudged.
+PRICE_RESIDUE_WORD_LIMIT = 6
+
+
+def _states_a_price(value):
+    """True when the value IS a figure, not prose that mentions one.
+
+    `**Package:** $5,000` and `$6,500 + $1,500/mo` assert a price. `Total Apify
+    spend across Instagram + TikTok must not exceed $2 per run. Check ...` and
+    `Gamma has a free tier ... Paid plans start around $10/month if you ...`
+    mention an operating cost inside a sentence.
+
+    The first version of this shipped as "currency without a pricing label is
+    never a price", which read `**Package:** $5,000` as advisory and was caught
+    by the fact-grammar boundary fixture -- a real loss of detector strength for
+    exactly the leak this gate exists to catch. Dominance is the distinguisher:
+    strip the figures and see whether a sentence is left.
+    """
+    residue = CURRENCY_RE.sub(" ", value)
+    words = re.findall(r"[A-Za-z]{2,}", residue)
+    return len(words) <= PRICE_RESIDUE_WORD_LIMIT
+
+
 def _has_valid_date(value):
     for pattern, formats in DATE_PATTERNS:
         for match in pattern.finditer(value):
@@ -456,13 +494,11 @@ def semantic_leakage_findings(text, source_path=None):
         if label in PRICING_FIELDS:
             fact_classes.append("pricing")
         elif CURRENCY_RE.search(asserted_value):
-            # Currency with no pricing LABEL is a mention, not an asserted
-            # price. Measured 2026-07-27 over the propagated set: every one of
-            # the 8 was an engine operating cost or a third-party public list
-            # price ("Apify ~$0.50 per run", "Gamma ... $10/month"), none the
-            # founder's. Kept visible as its own class rather than deleted --
-            # the label carries the signal, the currency corroborates it.
-            fact_classes.append("pricing_mention")
+            fact_classes.append(
+                "pricing"
+                if _states_a_price(asserted_value)
+                else "pricing_mention"
+            )
         if label in SOURCE_FIELDS:
             if CITATION_LOCATOR_RE.search(asserted_value):
                 fact_classes.append("cited_source")
