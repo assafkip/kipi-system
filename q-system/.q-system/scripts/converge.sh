@@ -157,10 +157,14 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 
   VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
   SHA="$(head_sha "$PR")"
+  # Mergeability is half the gate (ASK-208, sp-71b63e62). This driver skipped
+  # PR #11 in under two seconds and declared it "waiting on founder merge only"
+  # while it was CONFLICTING and could not be merged by anyone.
+  MERGEABLE="$(pr_mergeable "$PR")"
 
-  rework_gate "$VERDICT"; GATE=$?
+  rework_gate "$VERDICT" "$MERGEABLE"; GATE=$?
   if [ "$GATE" = "10" ]; then
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Waiting on founder merge only."
+    say "DONE exit-1: PR #$PR verdict '$VERDICT' (mergeable=${MERGEABLE:-unknown}) after $ROUND round(s). Waiting on founder merge only."
     bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR ready to merge" 2>/dev/null || true
     exit 1
   fi
@@ -181,7 +185,11 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"
-  say "round $ROUND -> $VERDICT (head $SHA); reworking"
+  if [ "$MERGEABLE" = "CONFLICTING" ]; then
+    say "round $ROUND -> $VERDICT but CONFLICTING (head $SHA); reworking the merge conflict"
+  else
+    say "round $ROUND -> $VERDICT (head $SHA); reworking"
+  fi
 done
 
 say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
