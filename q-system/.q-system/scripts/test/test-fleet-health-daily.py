@@ -62,6 +62,10 @@ class FakeLinear:
     Issue STATE is modelled, not just the body. PR #11's second review found the
     update path rewriting a Done issue and never reopening it, so a fake that
     stored only {title, description} could not have caught the blocker.
+
+    The READ path re-serializes markdown the way live Linear does (third review,
+    finding 1): a fake that echoes bytes-as-written structurally cannot catch a
+    staleness compare that trusts Linear to return markdown unchanged.
     """
 
     ISSUE_CREATE = "ISSUE_CREATE"
@@ -79,6 +83,15 @@ class FakeLinear:
         """What the operator does after fixing the crontab: mark the rollup Done."""
         self.issues[linear_id]["state_type"] = "completed"
 
+    @staticmethod
+    def _linear_render(markdown):
+        """What Linear does to a stored description on the read path: `- ` list
+        bullets come back as `* `. Verified live on ASK-148 (third review,
+        finding 1 — real output: bullet style sample ['* `sp-01', ...] on an
+        issue no producer ever wrote `* ` into). HTML comments survive verbatim.
+        """
+        return re.sub(r"(?m)^- ", "* ", markdown)
+
     # --- the linear-sync surface fleet-health calls ------------------------
     def fetch_remote_state(self, _team_key, _repo):
         keys = {}
@@ -88,7 +101,7 @@ class FakeLinear:
                 keys[found.group(1)] = {
                     "linear_id": lid,
                     "identifier": node["identifier"],
-                    "description": node["description"],
+                    "description": self._linear_render(node["description"]),
                     "state_type": node["state_type"],
                     "state_name": node["state_type"],
                 }
@@ -519,10 +532,120 @@ check("a mid-word `#` line is caught end to end",
       len(fh.detect_cron_shells_claude(
           None, cron_text="0 3 * * * curl https://ex.com/a#frag && claude -p 'sweep'\n")), 1)
 
+# --- third review, MAJOR 1: staleness must settle through Linear's re-serializer
+# `tracked.description != description` compared raw bytes, and Linear rewrites
+# `- ` bullets as `* ` on the read path. Every bulleted rollup body was therefore
+# stale on every run, forever: a daily Linear mutation and a daily false Slack
+# "1 updated" ping for an UNCHANGED crontab — which trains the operator to ignore
+# the one channel the blind-spot design depends on.
+settle = FakeLinear()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=settle)
+mutations_after_create = len(settle.mutations)
+for morning in range(2, 7):
+    day = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=settle)
+    check(f"morning {morning}: an unchanged crontab settles through the re-serializer",
+          (day["updated"], day["reopened"], day["existing"]), (0, 0, 1))
+check("no mutation was issued on any settled morning",
+      len(settle.mutations), mutations_after_create)
+
+# The same raw compare silently REVERTED any operator edit to a tracked open
+# issue's body every morning. The hash marker pins only what the renderer owns,
+# so an operator's note on the issue survives the 08:15 run.
+settle.issues["id-1"]["description"] += "\n\noperator note: waiting on the mini"
+after_edit = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=settle)
+check("an operator's edit to the body is not reverted by the morning run",
+      "operator note" in settle.issues["id-1"]["description"], True)
+check("...because an unchanged finding issues no rewrite over it", after_edit["updated"], 0)
+
+# A live pre-hash issue (ASK-148 shape: kipi-key marker, no hash marker) migrates
+# with exactly ONE rewrite, then settles. Without the missing-marker-is-stale
+# rule it would never gain a hash and never settle.
+legacy = FakeLinear()
+_legacy_finding = _rollup(LINE_1 + "\n")[0]
+legacy.issues["id-legacy"] = {
+    "identifier": "ASK-148",
+    "title": _legacy_finding["title"],
+    "description": (f"<!-- kipi-key: {_legacy_finding['key']} -->\n\n"
+                    f"{_legacy_finding['body']}\n\nFiled by `fleet-health-daily.py`."),
+    "state_type": "unstarted",
+}
+mig1 = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=legacy)
+check("a pre-hash live issue is migrated with one rewrite", mig1["updated"], 1)
+mig2 = fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=legacy)
+check("...and settles the morning after", (mig2["updated"], mig2["reopened"]), (0, 0))
+
+# --- third review, MINOR 2: a shell RUNNING A SCRIPT keeps its flags -----------
+# `bash backup.sh -c <arg>` hands `-c <arg>` to the script, not to bash. Reading
+# any later `-c` as the shell's own flag scored a line that never runs claude.
+check("a script's own -c flag is not read as the shell's -c",
+      fh._shells_claude("bash q-repro-innocent.sh -c ~/projects/claude"), False)
+check("a long option before -c is still an option, not an operand",
+      fh._shells_claude("bash --norc -c 'claude -p x'"), True)
+
+# --- third review, MINOR 3: silent false negatives on real invocation shapes ---
+check("`timeout 30m claude` is an invocation (GNU duration suffix)",
+      fh._shells_claude("timeout 30m claude -p 'sweep'"), True)
+check("a quoted #-leading ARGUMENT does not comment out the invocation",
+      fh._shells_claude("grep -q '#TODO' notes.txt && claude -p 'sweep'"), True)
+
+# --- third review, MINOR 5: the lexer fallback must not INVENT a match ---------
+# An unbalanced quote fell back to a whitespace split, which re-exposed a `&&`
+# that posix parsing had absorbed into the string — creating a command position
+# sh never creates. The fallback now scores the line as ONE segment, so it can
+# only ever be coarser than sh, never finer.
+check("an unbalanced quote cannot re-expose a quoted operator as a segment",
+      fh._shells_claude("echo 'reminder: && claude -p x"), False)
+
+# --- third review, MINOR 4: redaction must survive quotes and non-sk shapes ----
+# Composed from a variable (like SECRET above) so the source never contains a
+# literal KEY="value" assignment for gitleaks to flag at commit time.
+_TWO_HALVES = "sk-ant-api03-SECRETHALF1 SECRETHALF2"
+_QUOTED_KEY_LINE = f'0 3 * * * ANTHROPIC_API_KEY="{_TWO_HALVES}" claude -p x'
+_red = fh._redact_secrets(_QUOTED_KEY_LINE)
+check("a quoted env value is masked past its first space", "SECRETHALF2" in _red, False)
+check("...and the variable NAME still survives", "ANTHROPIC_API_KEY" in _red, True)
+check("...and the command itself survives", "claude -p x" in _red, True)
+check("a Slack webhook path is masked",
+      "T000/B000" in fh._redact_secrets(
+          "0 3 * * * curl -d x https://hooks.slack.com/services/T000/B000/XXX && claude -p y"),
+      False)
+# Composed so the source holds no literal curl auth header for gitleaks.
+_BEARER = "tok4bcdef123456"
+check("a bearer token is masked",
+      _BEARER in fh._redact_secrets(
+          f'0 3 * * * curl -H "Authorization: Bearer {_BEARER}" https://x && claude -p y'),
+      False)
+
+# --- third review, MINOR 6: never announce a reopen that was not sent ----------
+# `reopened` incremented before the state id was known; with no reopenable state
+# the update carried no stateId, the issue stayed completed, and Slack said it
+# was back on the board.
+class _NoReopenState(FakeLinear):
+    def reopen_state_id(self, _team_id):
+        return ""
+
+
+no_state = _NoReopenState()
+fh.file_findings(_rollup(LINE_1 + "\n"), apply=True, linear=no_state)
+no_state.close_issue("id-1")
+stuck = fh.file_findings(_rollup(LINE_1 + "\n" + LINE_2 + "\n"), apply=True, linear=no_state)
+check("with no reopenable state, a reopen is NOT announced", stuck["reopened"], 0)
+check("...the body rewrite is counted as what it was: an update", stuck["updated"], 1)
+check("...and no stateId was sent",
+      any("stateId" in keys for q, keys in no_state.mutations if q == "ISSUE_UPDATE"), False)
+check("...so the issue honestly remains closed",
+      no_state.issues["id-1"]["state_type"], "completed")
+
 # every shipped detector must be callable and return a list
 for det in fh.DETECTORS:
     try:
         result = det["detect"](None)
+    except fh.CrontabUnavailable as exc:
+        # On a crontab-locked machine the RAISE is the designed behaviour (second
+        # review, MAJOR 2); `run_detectors` records it as "error". The suite must
+        # not go red on machine state alone (third review, finding 7).
+        print(f"  ok: {det['id']} raised CrontabUnavailable on this machine (designed): {exc}")
+        continue
     except Exception as exc:  # noqa: BLE001
         failures.append(f"detector {det['id']} raised: {exc}")
         continue

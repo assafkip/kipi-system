@@ -38,6 +38,7 @@ goes to stdout and the ledger.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -302,41 +303,71 @@ def _is_claude_token(token: str) -> bool:
     return PurePosixPath(token).name == "claude"
 
 
-def _command_token(tokens: list) -> str:
-    """The real command in a shell segment, past env prefixes and wrappers."""
-    for token in tokens:
+# A wrapper's own positional argument: `timeout 1800`, `timeout 30m`,
+# `timeout 1.5h`. `.isdigit()` alone missed the GNU duration suffix, so
+# `timeout 30m claude` lost command-position tracking and slipped through as
+# benign (third review, finding 3) — a silent false negative.
+_WRAPPER_ARG_RE = re.compile(r"\d+(\.\d+)?[smhd]?")
+
+
+def _command_index(tokens: list) -> int:
+    """Index of the real command in a shell segment, past env prefixes and
+    wrappers. -1 when the segment holds no command."""
+    for index, token in enumerate(tokens):
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
             continue  # VAR=value prefix
-        if token.startswith("-") or token.isdigit():
+        if token.startswith("-") or _WRAPPER_ARG_RE.fullmatch(token):
             continue  # a wrapper's own flag or arg, e.g. the 1800 in `timeout 1800`
         if PurePosixPath(token).name in CRON_COMMAND_WRAPPERS:
             continue
-        return token
-    return ""
+        return index
+    return -1
 
 
-def _lex(command: str) -> list:
-    """Shell-aware tokens. Never None: an unparsable string still gets scored.
+def _command_token(tokens: list) -> str:
+    """The real command in a shell segment, past env prefixes and wrappers."""
+    index = _command_index(tokens)
+    return tokens[index] if index >= 0 else ""
+
+
+def _strip_comment(command: str) -> str:
+    """Truncate at an sh comment: an UNQUOTED `#` that starts a word.
+
+    Comment handling has to happen BEFORE lexing, on the raw string, because
+    quoting is what decides it and posix dequoting erases the evidence: after
+    `shlex`, `grep -q '#TODO'`'s argument and a genuine `# comment` are the same
+    token, and treating both as comments silenced a real invocation after the
+    `&&` (third review, finding 3). sh's own rule is positional — `a#frag` is
+    one word, `# rest` is a comment — so the scan tracks quote state and word
+    starts, the two things sh actually consults.
+    """
+    quote = ""
+    for index, char in enumerate(command):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or command[index - 1] in " \t;|&()"):
+            return command[:index]
+    return command
+
+
+def _lex(command: str):
+    """Shell-aware tokens (a list), or None when the string cannot be parsed as sh.
 
     `punctuation_chars=True` makes `&& || ; | ( )` their own tokens while leaving
-    quoted strings intact, which is what lets the operator split below happen at
-    the TOKEN level. Splitting the raw string on `;`/`&&` (the shipped v1) cut
-    inside quoted arguments: `echo "step one; claude -p x"` produced a second
-    segment whose first token was `claude`.
+    quoted strings intact, which is what lets the operator split in
+    `_shell_segments` happen at the TOKEN level. Splitting the raw string on
+    `;`/`&&` (the shipped v1) cut inside quoted arguments: `echo "step one;
+    claude -p x"` produced a second segment whose first token was `claude`.
 
-    Two places `shlex` is not `sh`, both found by PR #11's second review, both
-    silent false negatives — the same shape `CrontabUnavailable` exists to
-    eliminate, one layer down:
-
-    - `shlex` starts a comment at `#` ANYWHERE; `sh` only at the start of a word.
-      `curl https://ex.com/a#frag && claude -p ...` lexed to two tokens and the
-      invocation vanished. `commenters = ""` hands `#` back as an ordinary
-      character; word-initial `#` is then honoured in `_shell_segments`, where
-      word boundaries actually exist.
-    - An unbalanced quote raised, and returning None read as "not an invocation".
-      `claude -p 'sweep the repo` is a REAL invocation with a typo. Falling back
-      to a whitespace split keeps command position scorable; it cannot invent a
-      match, because the fallback only ever splits more coarsely than sh.
+    Comments are handled by `_strip_comment` before this runs (`commenters = ""`);
+    an unbalanced quote returns None and the CALLER decides what that means —
+    returning a whitespace split from here let the caller treat it like real sh
+    tokens, which is exactly how a quoted `&&` got re-exposed as an operator
+    (third review, finding 5).
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -344,15 +375,28 @@ def _lex(command: str) -> list:
     try:
         return list(lexer)
     except ValueError:
-        return command.split()
+        return None
 
 
 def _shell_segments(command: str) -> list:
-    """The command's shell segments, each as a token list."""
+    """The command's shell segments, each as a token list.
+
+    When the line is not parsable as sh (unbalanced quote), the whole line
+    becomes ONE whitespace-split segment. `claude -p 'sweep the repo` is a real
+    invocation with a typo and stays caught at line-lead command position; but
+    the fallback must never SPLIT on operators, because a `&&` that posix
+    parsing had absorbed into a quoted string is not a command boundary —
+    re-exposing it invented a command position sh never creates and scored
+    `echo 'reminder: && claude -p x` as an invocation (third review, finding 5).
+    One segment can only be coarser than sh, never finer.
+    """
+    command = _strip_comment(command)
+    tokens = _lex(command)
+    if tokens is None:
+        fallback = command.split()
+        return [fallback] if fallback else []
     segments, current = [], []
-    for token in _lex(command):
-        if token.startswith("#"):
-            break  # sh: a word-initial `#` comments to end of LINE, not of segment
+    for token in tokens:
         if token in SHELL_OPERATORS:
             segments.append(current)
             current = []
@@ -362,15 +406,23 @@ def _shell_segments(command: str) -> list:
     return [s for s in segments if s]
 
 
-def _shell_c_argument(tokens: list) -> str:
+def _shell_c_argument(tokens: list, command_index: int) -> str:
     """The string a shell will EXECUTE: the token after its `-c`-bearing flag.
 
     Only consulted when the command itself is a shell, so `tar -czf` (whose flag
     also contains a `c`) is never read this way.
+
+    Scanning stops at the first OPERAND after the shell: in `bash backup.sh -c
+    <arg>` the `-c` belongs to backup.sh's argv, not to bash, and reading it as
+    the shell's own flag scored a line that never runs claude (third review,
+    finding 2). Only tokens before the shell's first operand are its options.
     """
-    for index, token in enumerate(tokens):
-        if not token.startswith("-") or token.startswith("--"):
-            continue
+    for index in range(command_index + 1, len(tokens)):
+        token = tokens[index]
+        if token.startswith("--"):
+            continue  # a long option is still an option, not the first operand
+        if not token.startswith("-"):
+            return ""  # first operand: the script file; later flags are ITS argv
         if "c" in token[1:] and index + 1 < len(tokens):
             return tokens[index + 1]
     return ""
@@ -395,17 +447,37 @@ def _shells_claude(command: str, _depth: int = 0) -> bool:
     if _depth > 2:  # `sh -c 'sh -c ...'` is not a shape worth chasing further
         return False
     for tokens in _shell_segments(command):
-        command_token = _command_token(tokens)
+        command_index = _command_index(tokens)
+        command_token = tokens[command_index] if command_index >= 0 else ""
         if _is_claude_token(command_token):
             return True
         if PurePosixPath(command_token).name in SHELL_COMMANDS:
-            inner = _shell_c_argument(tokens)
+            inner = _shell_c_argument(tokens, command_index)
             if inner and _shells_claude(inner, _depth + 1):
                 return True
     return False
 
 
-_SECRET_TOKEN_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})")
+# A whitespace-delimited `VAR=value` assignment, value quote-aware. Splitting
+# the line on whitespace FIRST broke a quoted value at its internal space, so
+# `KEY="half1 half2"` masked only half1 and published half2 into a permanent
+# issue (third review, finding 4). `(?<!\S)` keeps this off flag values like
+# `--exclude=x`, matching exactly the env-prefix shape `_command_token` skips.
+_ASSIGNMENT_RE = re.compile(r"(?<!\S)([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*\"|'[^']*'|\S+)")
+
+# Bare-token credential SHAPES, not an exhaustive scanner: the families a cron
+# line in this fleet could realistically carry outside an assignment. sk- alone
+# let a Slack webhook path and a Bearer token through verbatim (third review,
+# finding 4).
+_SECRET_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"\bxox[a-z]-[A-Za-z0-9-]{8,}"),
+    re.compile(r"(?<=hooks\.slack\.com/services/)\S+"),
+    re.compile(r"(?i)(?<=bearer )[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+]
 
 
 def _redact_secrets(line: str) -> str:
@@ -419,16 +491,15 @@ def _redact_secrets(line: str) -> str:
     and then publishing it is a worse outcome than not detecting it.
 
     Over-redaction is the deliberate bias: the variable NAME survives (the line
-    stays identifiable), only its value is masked.
+    stays identifiable), only its value is masked. An UNBALANCED quote in a value
+    can still leak its tail past the first space — the quoted alternatives
+    require the closing quote — which the bare-token patterns then get a second
+    pass at; accepted residual, not a covered case.
     """
-    out = []
-    for token in line.split():
-        assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.+)", token)
-        if assignment:
-            out.append(f"{assignment.group(1)}=<redacted>")
-            continue
-        out.append(_SECRET_TOKEN_RE.sub("<redacted>", token))
-    return " ".join(out)
+    out = _ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}=<redacted>", line)
+    for pattern in _SECRET_PATTERNS:
+        out = pattern.sub("<redacted>", out)
+    return out
 
 
 def detect_cron_shells_claude(_ctx, cron_text=None) -> list:
@@ -676,13 +747,45 @@ def finding_key(detector_id: str, subject: str) -> str:
     return f"fleet-health/{detector_id}/{slug(subject)}"
 
 
+# The staleness compare CANNOT read the body Linear returns: Linear re-serializes
+# markdown on the read path (live evidence, third review finding 1: `- ` bullets
+# come back as `* ` on ASK-148, a body no producer ever wrote `* ` into). A raw
+# `!=` against that was stale on every run forever — a daily mutation and a daily
+# false "1 updated" Slack ping for an UNCHANGED crontab, and every operator edit
+# to the body silently reverted each morning. HTML comments DO survive the
+# round-trip verbatim (verified on all 4 live issues), so the renderer's content
+# hash rides inside one, and staleness compares hash-to-hash: "did OUR rendering
+# change", immune to Linear's serializer and blind to everything it does not own.
+_HASH_MARKER_RE = re.compile(r"<!--\s*kipi-hash:\s*([0-9a-f]+)\s*-->")
+
+
+def finding_hash(finding: dict) -> str:
+    """Hash of what the renderer owns: the finding's title and body."""
+    return hashlib.sha256(
+        f"{finding['title']}\n{finding['body']}".encode()).hexdigest()[:16]
+
+
+def tracked_hash(description: str) -> str:
+    """The kipi-hash a live issue carries, or "" (pre-hash issues read as stale
+    once, which is the migration path: one rewrite adds the marker, then settled)."""
+    found = _HASH_MARKER_RE.search(description or "")
+    return found.group(1) if found else ""
+
+
 def issue_description(key: str, finding: dict) -> str:
     """The issue body for a finding. ONE renderer, used by create AND update.
 
     Two renderers would drift, and the drift would be invisible: the created body
     and the updated body only ever exist on different days.
+
+    The kipi-hash marker is a SEPARATE comment line, never folded into the
+    kipi-key marker: linear-sync's MARKER_RE and every other kipi-key consumer
+    parse that marker fleet-wide, and changing its shape would break the dedup
+    guard that keeps these issues from forking.
     """
-    return (f"<!-- kipi-key: {key} -->\n\n{finding['body']}\n\n"
+    return (f"<!-- kipi-key: {key} -->\n"
+            f"<!-- kipi-hash: {finding_hash(finding)} -->\n\n"
+            f"{finding['body']}\n\n"
             "Filed by `fleet-health-daily.py`.")
 
 
@@ -745,7 +848,10 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
             if not tracked:
                 result["existing"] += 1
                 continue
-            body_stale = tracked.get("description") != description
+            # Hash-to-hash, never body-to-body: Linear re-serializes markdown on
+            # the read path, so a raw compare was stale forever (see the
+            # kipi-hash block above issue_description).
+            body_stale = tracked_hash(tracked.get("description")) != finding_hash(f)
             # A CLOSED rollup issue is the correct end state of the fix: the
             # operator moved the job to a LaunchAgent and closed it. If the
             # finding is back, rewriting a Done issue puts it where nobody looks
@@ -759,19 +865,33 @@ def file_findings(findings: list, apply: bool, linear=None) -> dict:
             if not body_stale and not closed:
                 result["existing"] += 1
                 continue
-            # ONE finding lands in exactly ONE bucket. Incrementing `existing`
-            # and `updated` in the same iteration rendered a single finding as
-            # "1 updated, 1 already tracked", which reads as two items.
-            result["reopened" if closed else "updated"] += 1
             if not apply:
+                # A dry run reports the action it WOULD take. It cannot know
+                # whether a reopen state exists without the network call it is
+                # forbidden to make, so "reopened" here is the prediction.
+                result["reopened" if closed else "updated"] += 1
                 continue
             update: dict = {"title": title, "description": description}
+            reopening = False
             if closed:
                 state_id = ls.reopen_state_id(team_id)
                 if state_id:
                     update["stateId"] = state_id
+                    reopening = True
+                elif not body_stale:
+                    # No reopenable state and a current body: nothing useful to
+                    # send. Counting a daily no-op rewrite as progress would be
+                    # the same false claim one bucket over.
+                    result["existing"] += 1
+                    continue
             ls.graphql(ls.ISSUE_UPDATE, {"id": tracked["linear_id"], "input": update})
-            verb = "reopened" if closed else "updated"
+            # ONE finding lands in exactly ONE bucket, counted AFTER the mutation
+            # input is known: incrementing `reopened` before resolving the state
+            # id announced a reopen that was never sent when no reopenable state
+            # existed -- the issue stayed completed while Slack said it was back
+            # on the board (third review, finding 6).
+            result["reopened" if reopening else "updated"] += 1
+            verb = "reopened" if reopening else "updated"
             print(f"  {verb} {tracked.get('identifier')}  {title[:70]}")
             continue
         if not apply:
