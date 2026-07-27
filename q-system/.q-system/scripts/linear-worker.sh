@@ -250,13 +250,15 @@ install_scratch_guard() {
       name="$(basename "$h")"
       case "$name" in
         applypatch-msg|pre-applypatch|post-applypatch|prepare-commit-msg|\
-        commit-msg|post-commit|pre-rebase|post-checkout|post-merge|pre-push|\
+        commit-msg|post-commit|pre-rebase|post-checkout|post-merge|\
         pre-receive|update|post-receive|post-update|push-to-checkout|\
         pre-auto-gc|post-rewrite|sendemail-validate|fsmonitor-watchman|\
         p4-changelist|p4-prepare-changelist|p4-post-changelist|p4-pre-submit|\
         post-index-change|reference-transaction|proc-receive) ;;
         *) continue ;;
       esac
+      # pre-commit and pre-push are absent from that list on purpose: the guard
+      # below IS both of them, and it chains to whatever the repo had.
       printf '#!/bin/sh\nexec "%s" "$@"\n' "$h" > "$hooks/$name"
       chmod +x "$hooks/$name"
     done
@@ -283,13 +285,48 @@ set -uo pipefail
 # every instance's worker at once.
 SCRATCH_RE='^q-system/output/[^/]+\.(py|sh|bash|zsh|js|mjs|rb|pl|txt)$'
 
+# ONE GUARD, TWO HOOK NAMES (round-4 review, finding 3). A pre-commit hook
+# cannot see `git commit --no-verify`, and the observed shape is one lazy -n,
+# not a determined bypass -- so whatever slips past the commit gate is caught
+# here, before it reaches the remote and the PR. This does not make the guard
+# unbypassable (`git push --no-verify` exists); it makes a single -n
+# insufficient. The file is installed under both names byte-for-byte, because
+# two copies of this regex would drift.
+HOOK="$(basename "$0")"
+REFS=""
 if [ "${1:-}" = "--check-paths" ]; then
   candidates="$(cat)"
+elif [ "$HOOK" = "pre-push" ]; then
+  REFS="$(cat)"
+  candidates=""
+  while read -r _lref lsha _rref rsha; do
+    [ -n "${lsha:-}" ] || continue
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac   # all-zero local sha: a ref being deleted
+    case "$rsha" in
+      *[!0]*)
+        paths="$(git diff --name-only --diff-filter=ACMRT "$rsha" "$lsha" 2>/dev/null)" ;;
+      *)
+        # New branch on the remote: compare against where it left main. With no
+        # merge-base (a disjoint history) fall back to the whole tree rather
+        # than to nothing -- over-listing is caught by the sweep, under-listing
+        # is a hole nobody sees.
+        base="$(git merge-base origin/main "$lsha" 2>/dev/null)"
+        if [ -n "${base:-}" ] && [ "$base" != "$lsha" ]; then
+          paths="$(git diff --name-only --diff-filter=ACMRT "$base" "$lsha" 2>/dev/null)"
+        else
+          paths="$(git ls-tree -r --name-only "$lsha" 2>/dev/null)"
+        fi ;;
+    esac
+    candidates="$candidates
+$paths"
+  done <<REFS_EOF
+$REFS
+REFS_EOF
 else
   candidates="$(git diff --cached --name-only --diff-filter=ACMRT)"
 fi
 
-offenders="$(printf '%s\n' "$candidates" | grep -E "$SCRATCH_RE" || true)"
+offenders="$(printf '%s\n' "$candidates" | grep -E "$SCRATCH_RE" | sort -u || true)"
 if [ -n "$offenders" ]; then
   {
     echo "BLOCK: agent scratch cannot be committed."
@@ -304,6 +341,11 @@ if [ -n "$offenders" ]; then
     echo "  a harness -> q-system/.q-system/scripts/"
     echo "  a test    -> q-system/.q-system/scripts/test/"
     echo "  an RCA    -> q-system/output/rca/"
+    if [ "$HOOK" = "pre-push" ]; then
+      echo
+      echo "This is the PUSH gate -- the commit already exists locally. Take it out with:"
+      echo "  git rm --cached <path> && git commit --amend --no-edit"
+    fi
   } >&2
   exit 1
 fi
@@ -318,11 +360,24 @@ fi
 # `lefthook install`, a hook gets added to the repo -- would otherwise be
 # skipped until the next worker run. The delegate must be whatever is on disk
 # now, or the day gitleaks is added is the day it silently does not run.
-NEXT="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
-if [ -x "$NEXT" ] && [ "$NEXT" != "$0" ]; then exec "$NEXT" "$@"; fi
+NEXT="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/$HOOK"
+if [ -x "$NEXT" ] && [ "$NEXT" != "$0" ]; then
+  # pre-push's spec is on stdin and this guard already consumed it, so the
+  # delegate gets it replayed. Handing it an empty stdin would make the repo's
+  # own pre-push see zero refs and pass everything -- a gate subtracted while
+  # looking like it still ran.
+  if [ "$HOOK" = "pre-push" ]; then
+    printf '%s\n' "$REFS" | "$NEXT" "$@"
+    exit $?
+  fi
+  exec "$NEXT" "$@"
+fi
 exit 0
 GUARD
   chmod +x "$hooks/pre-commit"
+  # Same bytes under both names. `cmp` in the test pins that they cannot drift.
+  cp "$hooks/pre-commit" "$hooks/pre-push"
+  chmod +x "$hooks/pre-push"
 
   git -C "$tree" config extensions.worktreeConfig true >/dev/null 2>&1
   git -C "$tree" config --worktree core.hooksPath "$hooks" >/dev/null 2>&1
@@ -686,8 +741,8 @@ $(cat "$DIRECTIVE_FILE")
   fi
 
   # Scratch OUTSIDE the repo (ASK-208, sp-1aae7516), so the agent has somewhere
-  # legitimate to put working files. The refusal is enforced by the commit hook
-  # installed above; this is the place the refusal points at. A refusal with no
+  # legitimate to put working files. The refusal is enforced by the commit AND
+  # push gates installed above; this is the place they point at. A refusal with no
   # alternative just gets worked around.
   SCRATCH="$SCRATCH_ROOT/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
   mkdir -p "$SCRATCH"
@@ -702,8 +757,8 @@ for your own use go in:
   $SCRATCH
 
 That path is outside the repo and cannot be committed. Do NOT drop working files
-in q-system/output/ -- a commit hook in this worktree refuses them, because seven
-such files reached main through three consecutive PRs before being swept. Real
+in q-system/output/ -- seven such files reached main through three consecutive
+PRs before being swept, so a commit or push that carries one is refused. Real
 deliverables go where folder-structure.md puts them (a harness in
 q-system/.q-system/scripts/, a test in q-system/.q-system/scripts/test/).
 
