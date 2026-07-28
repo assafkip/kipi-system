@@ -464,27 +464,76 @@ else
   fail "the suite MUTATED the live lock at repo root; the env override is not honored"
 fi
 
-# --- 26. A TIMEZONE CHANGE IS NOT A RECYCLED PID --------------------------
-# `ps -o lstart=` renders in the READING process's timezone. The claim is written
-# by one process and read by another hours later, so an unpinned render made a
-# LIVE holder read as "the pid was recycled" the moment the system zone moved --
+# --- 26. A TIMEZONE OR LOCALE CHANGE IS NOT A RECYCLED PID ----------------
+# `ps -o lstart=` renders in the READING process's timezone AND locale. The claim
+# is written by one process and read by another hours later, so an unpinned render
+# made a LIVE holder read as "the pid was recycled" the moment either one moved --
 # macOS sets the zone automatically, and a laptop that travels flips it. That is
 # the mutex handing a live worker's tree to a second worker (scar 53f2eeb), the
 # one direction this feature must never go. PR #31 review, finding 1.
-rc_tz() {
-  local z="$1"; shift
-  set +e; TZ="$z" python3 "$CLAIM" "$@" >"$WORK/out" 2>"$WORK/err"; local r=$?; set -e
+#
+# BOTH HALVES OF THE PIN ARE ASSERTED (ASK-224). This case used to vary TZ only.
+# Measured 2026-07-28: deleting `"LC_ALL": "C"` from `_PS_ENV` and running this
+# suite under `LC_ALL=ja_JP.UTF-8` left all 43 checks GREEN, so the locale half of
+# the guard was true by accident and nothing would have caught its removal -- the
+# same class as the zombie fixture that passed with zombie detection deleted.
+# Codex's ASK-224 major named "timezone OR LOCALE"; the locale word is why this
+# case now varies both.
+rc_env() {
+  local z="$1" l="$2"; shift 2
+  set +e
+  TZ="$z" LC_ALL="$l" python3 "$CLAIM" "$@" >"$WORK/out" 2>"$WORK/err"
+  local r=$?
+  set -e
   echo "$r"
 }
-rm -f "$KIPI_LINEAR_CLAIMS"
-HOLDER="$(spawn_holder)"
-r=$(rc_tz UTC claim ASK-TZ --agent agent-a --session sess-A --holder-pid "$HOLDER")
-[ "$r" = "$EXIT_OK" ] || fail "the claim recording the holder's start time was refused (exit $r): $(cat "$WORK/err")"
-r=$(rc_tz Asia/Tokyo claim ASK-TZ2 --agent agent-b --session sess-B)
-[ "$r" = "$EXIT_COLLISION" ] || \
-  fail "a LIVE holder was reclaimed because the timezone changed between claim and read (exit $r): $(cat "$WORK/err")"
+
+# The locale must PROVABLY re-render lstart on this machine, or asserting against
+# it proves nothing. A machine with only C/POSIX cannot express the defect at all,
+# and that is reported as a SKIP, never counted as a passing check -- a green tick
+# for an assertion that never ran is the failure this whole file exists to avoid.
+ALT_LOCALE=""
+C_RENDER="$(TZ=UTC LC_ALL=C ps -p $$ -o lstart=)"
+for cand in ja_JP.UTF-8 de_DE.UTF-8 fr_FR.UTF-8 es_ES.UTF-8 ru_RU.UTF-8; do
+  if [ "$(TZ=UTC LC_ALL="$cand" ps -p $$ -o lstart= 2>/dev/null)" != "$C_RENDER" ]; then
+    ALT_LOCALE="$cand"
+    break
+  fi
+done
+
+# writer env -> reader env; the holder stays alive across both, so any reclaim is
+# a live holder losing its tree.
+tz_locale_case() {
+  local label="$1" wtz="$2" wlc="$3" rtz="$4" rlc="$5"
+  rm -f "$KIPI_LINEAR_CLAIMS"
+  local holder; holder="$(spawn_holder)"
+  local r
+  r=$(rc_env "$wtz" "$wlc" claim ASK-TZ --agent agent-a --session sess-A --holder-pid "$holder")
+  if [ "$r" != "$EXIT_OK" ]; then
+    reap "$holder"
+    fail "[$label] the claim recording the holder's start time was refused (exit $r): $(cat "$WORK/err")"
+  fi
+  r=$(rc_env "$rtz" "$rlc" claim ASK-TZ2 --agent agent-b --session sess-B)
+  if [ "$r" != "$EXIT_COLLISION" ]; then
+    reap "$holder"
+    fail "[$label] a LIVE holder was reclaimed because TZ/locale changed between claim and read (exit $r): $(cat "$WORK/err")"
+  fi
+  reap "$holder"
+}
+
+tz_locale_case "tz-only" UTC C Asia/Tokyo C
 ok "a timezone change between claim and read does not make a live holder look recycled"
-reap "$HOLDER"
+
+if [ -n "$ALT_LOCALE" ]; then
+  tz_locale_case "locale-only" UTC "$ALT_LOCALE" UTC C
+  ok "a locale change between claim and read does not make a live holder look recycled ($ALT_LOCALE)"
+  tz_locale_case "tz+locale" Asia/Tokyo "$ALT_LOCALE" UTC C
+  tz_locale_case "tz+locale reversed" UTC C Asia/Tokyo "$ALT_LOCALE"
+  ok "TZ and locale changing together, in both directions, still respect a live holder"
+else
+  echo "  SKIP: no installed locale re-renders \`ps -o lstart=\`, so the locale half" >&2
+  echo "        of the pin cannot be exercised on this machine (checked: ja_JP de_DE fr_FR es_ES ru_RU)" >&2
+fi
 
 # --- 27. A PRE-PIN RECORD IS NOT READ AS A RECYCLED PID -------------------
 # The layer ABOVE the fix in case 26. Records written before the pin hold a
