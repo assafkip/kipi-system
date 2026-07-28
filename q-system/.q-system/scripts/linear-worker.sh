@@ -391,7 +391,20 @@ while IFS= read -r ISSUE; do
     # not just the approving ones: a rework round that also resolves the
     # conflict ended the streak just as much.
     [ "$MERGE_STATE" = "CLEAN" ] && clear_conflict_rounds "$ISSUE"
-    rework_gate "$PR_VERDICT" "$MERGE_STATE"; GATE=$?
+    # THE VERDICT IS BOUND TO A SHA, NOT A PR NUMBER (ASK-216, armed here by
+    # ASK-219, sp-a27722e7). This worker reuses ONE branch and ONE PR across every
+    # rework round, so before this call passed a sha, each push landing after an
+    # approval inherited that approval silently. The reviewed sha is the one the
+    # reviewer pinned into the record; the current head goes through the same
+    # shared lib as the merge state so the worker and converge.sh cannot drift on
+    # what "the current head" means.
+    #
+    # APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2. Reordering it would
+    # silently stop ASK-212's rebase rounds from ever firing again.
+    REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
+    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
+    [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -399,6 +412,18 @@ while IFS= read -r ISSUE; do
     if [ "$GATE" = "20" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
+    fi
+    if [ "$GATE" = "40" ]; then
+      # STALE. The record approves a commit that is no longer the head, so nobody
+      # has read the code that is actually there. Fall through to the dispatch:
+      # the round ends in a review (step 5 below), and THAT review writes a record
+      # pinned to the current head, which is the only thing that clears this.
+      #
+      # CONFLICT_ROUND stays empty on purpose even when the PR is also DIRTY. A
+      # drift round is a review round, not a rebase round; spending the rebase
+      # budget on it would leave a real conflict un-dispatchable later, and the
+      # rebase prompt would tell the agent to force-push a diff nobody reviewed.
+      say "$ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but that verdict was recorded at $REVIEWED_SHA and the head is now $CURRENT_SHA -- the code at the head was never reviewed. Dispatching a round so it gets re-reviewed."
     fi
     if [ "$GATE" = "30" ]; then
       # Approved on content, but it no longer merges. Dispatch a REBASE round on
