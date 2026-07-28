@@ -188,14 +188,30 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # armed auto-merge. The worker runs first inside every round here and arms
     # every PR it touches, so the merge is the platform's job now.
     #
-    # It does NOT re-probe `gh pr view --json autoMergeRequest` to say so: that
-    # would be a second reader of the arm state with its own semantics, drifting
-    # from the worker's. The arm has exactly one reader, and when it fails or
-    # cannot be read the worker pages on its own line -- so this line stating the
-    # normal path, plus the fallback command, is the whole truth without a
-    # duplicate probe.
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge carries it from here -- GitHub merges once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- auto-merge lands it, no human merge needed" 2>/dev/null || true
+    # It still does NOT re-probe `gh pr view --json autoMergeRequest`: that would
+    # be a second reader of the arm state with its own semantics, drifting from
+    # the worker's. But the alternative to a second reader is NOT an assertion,
+    # which is what this was -- the comment here used to justify the claim with
+    # "the worker arms every PR it touches", and the worker's gate skipped this
+    # exact population 400 lines above its arm, so the sentence was false for
+    # every PR that reached this line (PR #33 review round 3, finding 1 -- major).
+    # It reads the record the ONE reader publishes. Three states, three sentences.
+    #
+    # An empty record means nothing recorded an arm for this PR -- the worker
+    # declined the issue this round, or never got that far -- so this claims
+    # nothing and hands over the command instead.
+    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
+    case "$AUTOMERGE" in
+      armed)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" 2>/dev/null || true ;;
+      unarmed)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+      *)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+    esac
     exit 1
   fi
   if [ "$GATE" = "20" ]; then

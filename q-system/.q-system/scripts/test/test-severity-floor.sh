@@ -492,7 +492,11 @@ run_worker "$S_OK" "$W2/ok.out"
 
 [ ! -s "$W2/worked.txt" ] \
   || fail "an approved AND CLEAN PR was reworked; this fix must not loop on healthy PRs"
-grep -q "nothing to rework, waiting on founder merge" "$W2/ok.out" \
+# "nothing to rework" and not the merge half of the sentence: gate 10 now reports
+# the arm state (ASK-222), so pinning "waiting on founder merge" here would pin
+# the misstatement this issue removed. What section G is about is WHICH GATE the
+# skip came from, and that is what this anchors.
+grep -q "nothing to rework" "$W2/ok.out" \
   || fail "section G skipped for the WRONG REASON -- it must reach gate 10 (approved+clean),
       not gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/ok.out" | head -1)"
 [ ! -s "$W2/pages.txt" ] || fail "a healthy approved PR paged the founder: $(cat "$W2/pages.txt")"
@@ -647,7 +651,7 @@ gh_says 783 CLEAN
 : > "$W2/worked.txt"; : > "$W2/pages.txt"
 run_worker_in "$R_CLEAR/skel" "$S_CLEAR" "$W2/clear.out"
 
-grep -q "nothing to rework, waiting on founder merge" "$W2/clear.out" \
+grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/clear.out" \
   || fail "section J skipped for the WRONG REASON; it must reach gate 10 (approved + CLEAN).
       The worker said: $(grep -i skip "$W2/clear.out" | head -1)"
 LC="$S_CLEAR/linear-worker-attempts.json"
@@ -1238,7 +1242,7 @@ grep -q worked "$W2/worked.txt" 2>/dev/null \
       $(grep -i skip "$W2/wdrift.out" | head -1)"
 ok "worker: a stale approval is dispatched, not skipped as done"
 
-grep -q "nothing to rework, waiting on founder merge" "$W2/wdrift.out" \
+grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/wdrift.out" \
   && fail "the worker still reported a PR with unreviewed code at its head as waiting on the founder"
 ok "worker: a stale approval is not reported as waiting on the founder"
 
@@ -1258,7 +1262,7 @@ run_worker "$S_WSAME" "$W2/wsame.out"
 [ ! -s "$W2/worked.txt" ] \
   || fail "an approved PR at the sha that IS the head was reworked; this fix must not loop on
       healthy PRs"
-grep -q "nothing to rework, waiting on founder merge" "$W2/wsame.out" \
+grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/wsame.out" \
   || fail "the worker skipped PR #806 for the WRONG REASON -- it must reach gate 10, not gate 20.
       It said: $(grep -i skip "$W2/wsame.out" | head -1)"
 [ ! -s "$W2/pages.txt" ] || fail "a converged PR paged the founder: $(cat "$W2/pages.txt")"
@@ -1502,7 +1506,7 @@ run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-drift.out" "$STUB/reviewer-down"
 # drift at all -- and the streak that led here has to end with it.
 run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-heal.out" "$STUB/reviewer-ok"
 run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-clear.out" "$STUB/reviewer-down"
-grep -q "nothing to rework, waiting on founder merge" "$W2/p5-clear.out" \
+grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/p5-clear.out" \
   || fail "after a review repinned the record to the head, the PR is no longer drifting and must
       reach gate 10. It said: $(grep -i skip "$W2/p5-clear.out" | head -1)"
 [ "$(ledger_key "$S_P5" drift_rounds)" = "0" ] \
@@ -2084,6 +2088,180 @@ grep -qi "sit green and unmerged" "$W2/pages.txt" \
 [ "$ARM_RC" = "0" ] || fail "an unreadable auto-merge state changed the run's exit code to $ARM_RC"
 ok "an unreadable auto-merge state pages, says it could not tell, and claims nothing more"
 
+# =============================================================================
+# R. THE POPULATION THE WORKER SKIPS IS STILL A POPULATION (PR #33 round 3)
+# =============================================================================
+# THE DEFECT (major, filed on converge.sh:198). Gate 10 -- approved, clean, no
+# drift -- `continue`s 400+ lines ABOVE the arm at step 5. So the PRs with
+# NOTHING LEFT BUT THE MERGE, the exact population this issue exists for, were
+# the one population nothing armed. converge.sh then Slacked "auto-merge lands
+# it, no human merge needed" across that state, justified by a comment claiming
+# the worker "arms every PR it touches". It did not touch them.
+#
+# Every case drives the REAL worker and the REAL converge against a `gh` call
+# log. Never the live API.
+
+# --- R1. an approved PR is armed AT THE GATE, not only inside a round --------
+R_ARM8="$W2/repo-arm8"; make_repo "$R_ARM8"
+S_ARM8="$W2/state-arm8"; mkdir -p "$S_ARM8"
+seed_record "$S_ARM8" 900 "APPROVE" "$SHA_A"
+gh_arm 900 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM8/skel" "$S_ARM8" "$W2/arm8.out"
+
+grep -q "skip ASK-AAA: PR #900" "$W2/arm8.out" \
+  || fail "the R1 fixture never reached the approved-and-done gate, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm8.out")"
+grep -q "^pr merge --auto --squash 900$" "$ARMLOG" \
+  || fail "THE DEFECT: PR #900 is approved, clean, and pinned to its own head -- there is nothing
+      left to do but merge it -- and the worker skipped it without arming auto-merge. This is the
+      population the issue is named for, and it is the one the arm never reached: the gate
+      \`continue\`s hundreds of lines above it. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "an approved PR is armed at the gate that skips it, not only inside a rework round"
+
+# ARMING IS NOT A ROUND. The skip must stay a skip: no agent dispatched, no
+# reviewer, no Linear comment. A fix that arms by turning done PRs back into
+# rework rounds would burn model spend on every scheduled run forever.
+[ ! -s "$W2/worked.txt" ] \
+  || fail "arming at the gate dispatched the work agent on a PR that was already approved and
+      clean. The skip has to stay a skip; only the arm is new."
+grep -q "^REVIEWER RAN" "$ARMLOG" \
+  && fail "arming at the gate re-reviewed an already-approved PR. Every scheduled run would pay
+      for a review of a PR with nothing left to review. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+[ "$ARM_RC" = "0" ] || fail "arming at the gate changed the run's exit code to $ARM_RC"
+ok "arming at the gate stays a skip: no agent, no reviewer, no change to the exit code"
+
+# --- R2. the gate's own line reports who merges it ---------------------------
+# PR #33 round 3, finding 2 (minor). Round 2 fixed this exact sentence at the
+# closing line and at converge's, and left the third site. For a PR armed a round
+# ago, no founder is waiting; the line is the misstatement the issue set out to
+# remove.
+SKIP900="$(grep 'skip ASK-AAA: PR #900' "$W2/arm8.out" | tail -1)"
+case "$SKIP900" in
+  *"waiting on founder merge"*|*"waits on founder merge"*)
+    fail "THE THIRD SITE: the same run armed auto-merge on PR #900 and the skip line still tells
+      the operator a founder owes it a merge. It said:
+        $SKIP900" ;;
+esac
+case "$SKIP900" in
+  *armed*) : ;;
+  *) fail "the gate's skip line does not say whether the PR is armed, so an operator scanning the
+      log cannot tell an auto-merging PR from one that needs their hand. It said:
+        $SKIP900" ;;
+esac
+ok "the gate-10 skip line reports the arm state, not a founder who is not waiting"
+
+# --- R3. the arm state is PUBLISHED, so the second reporter reads it ---------
+# converge.sh cannot assert arm state it never read, and re-probing `gh` there
+# would be a second reader of one input with its own semantics -- the defect
+# pr-verdict-lib.sh exists to close. So the ONE reader publishes its answer and
+# the other reporter reads the record, exactly like the verdict record.
+#
+# This assertion is what keeps the converge fixtures below honest: they seed the
+# record, and this pins that the REAL worker writes that same file with that same
+# vocabulary. A fixture built on a key no producer emits proves nothing.
+AMREC="$S_ARM8/pr-reviews/pr-900.automerge"
+[ -s "$AMREC" ] \
+  || fail "the worker armed PR #900 and recorded nothing, so the only thing converge could do is
+      assert or guess. Expected the arm state at $AMREC"
+[ "$(tr -d '[:space:]' < "$AMREC")" = "armed" ] \
+  || fail "the worker armed PR #900 and recorded '$(cat "$AMREC")' instead of 'armed'"
+ok "the worker publishes the arm state it read, so the second reporter never has to assert it"
+
+# --- R4. converge reports the RECORDED state, and only that ------------------
+S_CV_ARM="$W2/state-conv-armed"; mkdir -p "$S_CV_ARM/pr-reviews"
+seed_record "$S_CV_ARM" 902 "APPROVE" "$SHA_A"
+printf 'armed\n' > "$S_CV_ARM/pr-reviews/pr-902.automerge"
+gh_says 902 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_ARM" "$W2/conv-armed.out" 1
+[ "$CRC" = "1" ] \
+  || fail "converge exited $CRC on an approved, armed PR; expected 1 (goal met). It said:
+$(sed 's/^/        /' "$W2/conv-armed.out")"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  || fail "the worker recorded PR #902 as armed and converge's page does not say the merge is
+      handled. The healthy case has to stay readable or the operator checks every one by hand:
+$(cat "$W2/pages.txt")"
+ok "converge says no human owes the merge when the worker RECORDED the PR armed"
+
+S_CV_UN="$W2/state-conv-unarmed"; mkdir -p "$S_CV_UN/pr-reviews"
+seed_record "$S_CV_UN" 903 "APPROVE" "$SHA_A"
+printf 'unarmed\n' > "$S_CV_UN/pr-reviews/pr-903.automerge"
+gh_says 903 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_UN" "$W2/conv-unarmed.out" 1
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "THE DEFECT ON THE PHONE: the worker recorded PR #903 as NOT armed and converge Slacked
+      that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
+      fine -- the silent stall relocated into the alert channel. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
+  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
+      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
+ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
+
+S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"
+seed_record "$S_CV_NONE" 904 "APPROVE" "$SHA_A"
+gh_says 904 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_NONE" "$W2/conv-none.out" 1
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "NOTHING RECORDED THE ARM and converge asserted it anyway. This is the reviewer's own
+      repro: the worker never reached the arm this round, so the claim is backed by a comment
+      rather than by a read. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 904" "$W2/conv-none.out" \
+  || fail "converge could not read the arm state and did not leave the operator the fallback
+      command. It said:
+$(sed 's/^/        /' "$W2/conv-none.out")"
+ok "converge claims nothing about a PR whose arm state nobody recorded"
+
+# --- R5. an unarmed PR pages ONCE, and the flag CLEARS -----------------------
+# PR #33 round 3, finding 3 (minor). The comment justified per-run paging as "the
+# same shape as the approved-but-blocked pages above, which also fire per run".
+# All three of those go through claim_page_once and fire once per ISSUE. With the
+# arm now running at the gate -- which repeats on EVERY scheduled run for as long
+# as the PR sits there -- per-run paging is not merely an inaccurate comment, it
+# is a page every cycle forever. The code moves to the claim the comment makes.
+R_ARM9="$W2/repo-arm9"; make_repo "$R_ARM9"
+S_ARM9="$W2/state-arm9"; mkdir -p "$S_ARM9"
+seed_record "$S_ARM9" 901 "APPROVE" "$SHA_A"
+gh_arm 901 CLEAN "$SHA_A" 1 false
+: > "$ARMLOG"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9a.out"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9b.out"
+PAGES_N="$(grep -c . "$W2/pages.txt" 2>/dev/null || true)"
+[ -n "$PAGES_N" ] && [ "$PAGES_N" != "0" ] \
+  || fail "the R5 fixture never paged at all, so it cannot judge the cardinality. Runs said:
+$(sed 's/^/        /' "$W2/arm9a.out")"
+[ "$PAGES_N" = "1" ] \
+  || fail "an unarmed PR paged $PAGES_N times across 2 runs. Nothing about the PR changed between
+      them, and the gate re-reaches this state on every scheduled run for as long as it sits
+      there -- so this is a page every cycle, forever, for one unchanged fact. Noise is what
+      makes the real page unreadable (founder-notifications.md). Pages:
+$(sed 's/^/        /' "$W2/pages.txt")"
+ok "an unarmed PR pages ONCE across repeated runs, not once per run"
+
+# THE ONCE-ONLY FLAG HAS TO CLEAR, or the second time this PR is genuinely
+# unarmed it is silent forever -- the PR #25 finding-3 scar that
+# clear_conflict_rounds and clear_drift_rounds both carry.
+gh_arm 901 CLEAN "$SHA_A" 0 true
+: > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9c.out"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "PR #901 is armed and the run paged anyway: $(cat "$W2/pages.txt")"
+gh_arm 901 CLEAN "$SHA_A" 1 false
+: > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9d.out"
+[ -s "$W2/pages.txt" ] \
+  || fail "PERMANENTLY SILENT: PR #901 was armed, then became unarmed again, and the once-only
+      page never fired because nothing cleared the flag. A page that can only ever fire once in
+      an issue's life is a page that is missing exactly when the state comes back. The run said:
+$(sed 's/^/        /' "$W2/arm9d.out")"
+ok "the once-only page clears when the PR is seen armed, so a NEW unarmed state still pages"
+
 # --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
 grep -q 'pr merge --auto --squash' "$WORKER" \
   || fail "linear-worker.sh never arms auto-merge"
@@ -2093,6 +2271,31 @@ REV_SRC="$(grep -n 'REVIEWER_CMD' "$WORKER" | grep -v '^.*REVIEWER_CMD=' | head 
   || fail "the arm does not sit before the reviewer call in linear-worker.sh (arm at
       ${ARM_SRC:-none}, reviewer at ${REV_SRC:-none})"
 ok "worker wiring: the arm is in the worker and precedes the review call"
+
+# BOTH POPULATIONS, asserted on the CALL SITES rather than on the one `gh pr
+# merge` line. Once the arm became a function, the line above moved to the
+# helper's definition near the top of the file and stopped saying anything about
+# where it is USED -- so this pins the two callers: the gate that skips a done PR,
+# and step 5 for a PR inside a round. One caller is how this round's major got in.
+ARM_CALLS="$(grep -c 'arm_automerge "' "$WORKER" 2>/dev/null || true)"
+[ "${ARM_CALLS:-0}" -ge 2 ] \
+  || fail "linear-worker.sh calls the arm from ${ARM_CALLS:-0} site(s). It needs both: the gate
+      that skips an approved PR (nothing left but the merge -- the population this issue is
+      named for) and step 5 (a PR inside a round). One caller leaves a whole population unarmed
+      while the report says otherwise."
+GATE10_SRC="$(grep -n 'GATE" = "10"' "$WORKER" | head -1 | cut -d: -f1)"
+GATE_ARM_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /arm_automerge "/ {print NR; exit}' "$WORKER")"
+CONT_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /^ *continue$/ {print NR; exit}' "$WORKER")"
+[ -n "$GATE_ARM_SRC" ] && [ -n "$CONT_SRC" ] && [ "$GATE_ARM_SRC" -lt "$CONT_SRC" ] \
+  || fail "the gate-10 branch \`continue\`s at line ${CONT_SRC:-none} before it arms (arm at
+      ${GATE_ARM_SRC:-none}). That is the original defect verbatim: the skip exits the iteration
+      above the arm, so the done PRs are never touched."
+ok "worker wiring: the approved-PR gate arms BEFORE it skips the issue"
+
+grep -q 'automerge_from_record' "$CONV" \
+  || fail "converge.sh reports on auto-merge without reading the arm state the worker recorded.
+      Asserting a state nobody read is what put 'no human merge needed' on an unarmed PR."
+ok "converge wiring: the second reporter READS the arm state instead of asserting it"
 
 bash -n "$CONV" || fail "converge.sh does not parse"
 ok "converge.sh parses (bash -n)"
