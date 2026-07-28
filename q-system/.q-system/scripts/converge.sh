@@ -180,8 +180,22 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA")"; GATE=$?
   [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
   if [ "$GATE" = "10" ]; then
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Waiting on founder merge only."
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR ready to merge" 2>/dev/null || true
+    # NOBODY IS WAITING (ASK-222; PR #33 review, finding 2, one layer out from
+    # where it was filed). This line and the page under it are the SECOND reporter
+    # of the same state the worker's closing line reports -- and this is the half
+    # that Slacks, so it is the one an operator actually reads at 3am. Both said
+    # "waiting on founder merge only" / "ready to merge", true only while nothing
+    # armed auto-merge. The worker runs first inside every round here and arms
+    # every PR it touches, so the merge is the platform's job now.
+    #
+    # It does NOT re-probe `gh pr view --json autoMergeRequest` to say so: that
+    # would be a second reader of the arm state with its own semantics, drifting
+    # from the worker's. The arm has exactly one reader, and when it fails or
+    # cannot be read the worker pages on its own line -- so this line stating the
+    # normal path, plus the fallback command, is the whole truth without a
+    # duplicate probe.
+    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge carries it from here -- GitHub merges once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- auto-merge lands it, no human merge needed" 2>/dev/null || true
     exit 1
   fi
   if [ "$GATE" = "20" ]; then

@@ -1165,9 +1165,27 @@ run_converge "$S_SAME" "$W2/conv-same.out" 1
   || fail "a converged PR (approved at the sha that IS the head) no longer exits 1: got $CRC.
       This fix must not turn every approved PR into an endless re-review. It said:
 $(sed 's/^/        /' "$W2/conv-same.out")"
-grep -q "Waiting on founder merge only" "$W2/conv-same.out" \
+grep -q "DONE exit-1" "$W2/conv-same.out" \
   || fail "converge exited 1 without the terminal message; it converged for the wrong reason"
+# THE SECOND REPORTER OF THE SAME STATE (PR #33 review, finding 2, one layer out).
+# converge's terminal line and its page are what the operator actually reads at
+# 3am -- it is the half of this pair that Slacks. Both said the PR was "waiting on
+# founder merge" / "ready to merge", which was true only while nothing armed
+# auto-merge. Fixing the worker's closing line and leaving converge's would put
+# the pre-fix picture on the founder's phone and the fixed one in a log file.
+grep -qi "waiting on founder merge\|waits on founder merge\|ready to merge" "$W2/conv-same.out" \
+  && fail "converge still closes an approved PR by telling the operator a founder must merge it.
+      The worker armed auto-merge before this line ran; GitHub merges it. It said:
+$(sed 's/^/        /' "$W2/conv-same.out")"
+grep -qi "waiting on founder merge\|ready to merge" "$W2/pages.txt" \
+  && fail "converge's PAGE -- the line that reaches the founder's phone -- still says a human owes
+      this PR a merge: $(cat "$W2/pages.txt")"
+grep -qi "auto-merge" "$W2/conv-same.out" \
+  || fail "converge's terminal line never names auto-merge, so it does not say what does own the
+      merge now that no founder does. It said:
+$(sed 's/^/        /' "$W2/conv-same.out")"
 ok "converge: an approval at the sha that IS the head still converges (no cry-wolf)"
+ok "converge's terminal line and page name auto-merge as the merge path, not a founder"
 
 # --- O3. converge: a record with NO head_sha behaves as today, and says so ----
 # Every record written before ASK-216 lacks the field. Reading absent as drift
@@ -1819,6 +1837,30 @@ ok "the arm happens BEFORE the review (--auto holds until the required checks ar
 [ "$ARM_RC" = "0" ] || fail "arming changed the worker's exit code to $ARM_RC"
 ok "arming a PR leaves the run's exit code alone"
 
+# THE CLOSING LINE REPORTS WHO MERGES IT (PR #33 review, finding 2 -- minor).
+# Two lines after "auto-merge armed on PR #830", the same run told the operator
+# "PR #830 waits on founder merge". It does not; GitHub does. The closing line is
+# the one an operator scans, so a fix that lands on the arm and not on the report
+# leaves the operator with the pre-fix picture of who owes the merge.
+CONV_LINE="$(grep 'ASK-AAA converged:' "$W2/arm1.out" | tail -1)"
+[ -n "$CONV_LINE" ] \
+  || fail "the Q1 fixture never reached the converged line, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm1.out")"
+case "$CONV_LINE" in
+  *"waits on founder merge"*|*"waits on a human merge"*)
+    fail "THE REPORT DID NOT MOVE WITH THE FIX: this run armed auto-merge on PR #830 and then
+      closed by telling the operator the PR waits on a human to merge it. Nobody is waiting --
+      GitHub merges it once the required contexts are green. It said:
+        $CONV_LINE" ;;
+esac
+case "$CONV_LINE" in
+  *armed*) : ;;
+  *) fail "the closing line does not say the PR is armed, so the operator cannot tell an
+      auto-merging PR from one that needs their hand. It said:
+        $CONV_LINE" ;;
+esac
+ok "the closing line on an armed PR says GitHub merges it, not a human"
+
 # --- Q2. the PR the WORKER opened gets armed too -----------------------------
 # One is not the other: this PR does not exist when the run starts. The agent
 # ends its turn without opening it (ASK-184), the worker opens it at step 5, and
@@ -1864,6 +1906,24 @@ grep -q "832" "$W2/arm3.out" \
   || fail "the auto-merge warning does not name the PR, so nobody can act on it"
 ok "a refused arm is said out loud, naming the PR"
 
+# LOUD MEANS $NOTIFY, NOT $LOG (PR #33 review, finding 1 -- major). `say` is
+# `tee -a "$LOG"`, and under the launchd heartbeat $LOG is a file nobody opens at
+# 3am. This worker's channel for "a human must do something" is `bash "$NOTIFY"`,
+# used at five other sites in the same file, and this failure state is precisely
+# that: the message itself ends "until someone runs: gh pr merge --auto". An
+# unarmed PR goes green, never merges, and if nothing pages, the silent stall
+# this issue exists to kill has just moved one step down.
+[ -s "$W2/pages.txt" ] \
+  || fail "THE STALL MOVED, IT DID NOT DIE: gh refused to arm PR #832 and nobody was paged. The
+      warning went to \$LOG only, which at 3am under launchd reaches no one. The PR goes green,
+      never merges, and the first human to know is whoever happens to open GitHub. The run said:
+$(sed 's/^/        /' "$W2/arm3.out")"
+grep -q "832" "$W2/pages.txt" \
+  || fail "the page does not name the PR, so the operator cannot act on it: $(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 832" "$W2/pages.txt" \
+  || fail "the page does not carry the one command that fixes it: $(cat "$W2/pages.txt")"
+ok "a refused arm PAGES the founder, naming the PR and the command that fixes it"
+
 grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
   || fail "a failed arm killed the review. The PR must still stand and still be reviewed. Log:
 $(sed 's/^/        /' "$ARMLOG")"
@@ -1880,7 +1940,7 @@ R_ARM4="$W2/repo-arm4"; make_repo "$R_ARM4"
 S_ARM4="$W2/state-arm4"; mkdir -p "$S_ARM4"
 seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
 gh_arm 833 CLEAN "$SHA_A" 0 false
-: > "$ARMLOG"; : > "$W2/worked.txt"
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
 run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4a.out"
 [ "$(arm_calls)" = "1" ] || fail "round 1 did not arm PR #833 exactly once (got $(arm_calls))"
 
@@ -1888,16 +1948,24 @@ run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4a.out"
 # refuse. Nothing should call it, and nothing should warn.
 seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
 gh_arm 833 CLEAN "$SHA_A" 1 true
-: > "$ARMLOG"; : > "$W2/worked.txt"
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
 run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4b.out"
 
 [ "$(arm_calls)" = "0" ] \
   || fail "the second round re-armed an already-armed PR. gh was called with:
 $(sed 's/^/        /' "$ARMLOG")"
-grep -qi "auto-merge" "$W2/arm4b.out" \
+# WARN, not the bare word: the closing line now names auto-merge on every healthy
+# round on purpose (it is what tells the operator no human owes this PR a merge),
+# so the thing that must not repeat is the WARNING, which is what this case was
+# ever about. Asserted on both channels -- a page per rework round is the version
+# of this noise that reaches a phone.
+grep -qi "WARN.*auto-merge" "$W2/arm4b.out" \
   && fail "an already-armed PR produced a warning on the re-run. Every rework round would repeat
       it, and noise is what makes the real warning unreadable. It said:
 $(grep -i auto-merge "$W2/arm4b.out")"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "an already-armed PR paged the founder on a re-run. Every rework round would page again
+      for a PR that is fine: $(cat "$W2/pages.txt")"
 [ "$ARM_RC" = "0" ] || fail "a re-run on an armed PR exited $ARM_RC"
 ok "a re-run on an already-armed PR: no call, no warning, no error"
 
@@ -1926,6 +1994,95 @@ $(sed 's/^/        /' "$W2/arm5.out")"
   || fail "auto-merge was armed with no PR to arm. gh was called with:
 $(sed 's/^/        /' "$ARMLOG")"
 ok "no PR means no arm call at all"
+
+# --- Q6/Q7. the probe's rc is part of its answer -----------------------------
+# PR #33 review, finding 3 (minor). `gh pr view ... 2>/dev/null` threw away both
+# stderr AND the exit code, so a rate limit or a network blip produced the same
+# empty string as "not armed" -- and `gh pr merge --auto` on an ALREADY-ARMED PR
+# returns non-zero on some gh versions. The pair yields a WARN about a PR that is
+# armed and will merge, telling the operator to run a command already run. The
+# probe exists to kill exactly that noise; it held on the happy path and dropped
+# it on the error path, which is the path that only happens at 3am.
+#
+# gh_arm_probe <pr> <merge-state> <head-sha> <merge-rc> <probe1> <probe2>
+#   <probe1>/<probe2>  successive answers from `pr view --json autoMergeRequest`:
+#                      "true", "false", or FAIL (exits 1 with no output, which is
+#                      what a rate limit or a dropped connection looks like).
+gh_arm_probe() {
+  rm -f "$W2/probe-n"
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr list"*)                                  echo $1 ;;
+  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+  "pr view $1 --json headRefOid"*)             echo $3 ;;
+  "pr view $1 --json autoMergeRequest"*)
+    N=\$(cat "$W2/probe-n" 2>/dev/null || echo 0); N=\$((N+1)); echo "\$N" > "$W2/probe-n"
+    if [ "\$N" = "1" ]; then A="$5"; else A="$6"; fi
+    [ "\$A" = "FAIL" ] && exit 1
+    echo "\$A" ;;
+  "pr merge"*)                                 exit $4 ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# Q6. a gh blip on an ARMED PR must not cry wolf. PR #836 IS armed. The first
+# probe cannot answer, so the arm is attempted (the right move: an unarmed PR is
+# the expensive state), gh refuses it because it is already armed, and the run
+# then has to tell "already armed" from "broken" before it says anything.
+R_ARM6="$W2/repo-arm6"; make_repo "$R_ARM6"
+S_ARM6="$W2/state-arm6"; mkdir -p "$S_ARM6"
+seed_record "$S_ARM6" 836 "REQUEST CHANGES" "$SHA_A"
+gh_arm_probe 836 CLEAN "$SHA_A" 1 FAIL true
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM6/skel" "$S_ARM6" "$W2/arm6.out"
+
+grep -qi "sit green and unmerged" "$W2/arm6.out" \
+  && fail "CRY WOLF: PR #836 is armed and WILL merge, and the run told the operator it will sit
+      green and unmerged until a human runs a command that is already done. One gh blip on the
+      probe was enough. It said:
+$(grep -i 'auto-merge' "$W2/arm6.out")"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "an armed PR paged the founder off a transient gh failure: $(cat "$W2/pages.txt")"
+CONV6="$(grep 'ASK-AAA converged:' "$W2/arm6.out" | tail -1)"
+case "$CONV6" in
+  *armed*) : ;;
+  *) fail "the closing line does not report PR #836 as armed even though the state probe says it
+      is. It said:
+        ${CONV6:-<no converged line at all>}" ;;
+esac
+ok "a gh blip on an armed PR: no false warning, no page, and the report still says armed"
+
+# Q7. and when NOTHING can tell -- the arm refused and neither probe answered --
+# the run must still be audible, because that is the state where the PR may
+# genuinely be unarmed. What it may not do is assert the thing it cannot back.
+# Buying quiet here would be the fix re-creating the silence it exists to kill.
+R_ARM7="$W2/repo-arm7"; make_repo "$R_ARM7"
+S_ARM7="$W2/state-arm7"; mkdir -p "$S_ARM7"
+seed_record "$S_ARM7" 837 "REQUEST CHANGES" "$SHA_A"
+gh_arm_probe 837 CLEAN "$SHA_A" 1 FAIL FAIL
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM7/skel" "$S_ARM7" "$W2/arm7.out"
+
+grep -qi "auto-merge" "$W2/arm7.out" \
+  || fail "gh could neither arm PR #837 nor read its state and the run said nothing at all. It said:
+$(sed 's/^/        /' "$W2/arm7.out")"
+grep -qi "sit green and unmerged" "$W2/arm7.out" \
+  && fail "the run asserted PR #837 will sit green and unmerged. Nothing here knows that: gh
+      refused the arm and refused the state, so the honest word is that it could not tell."
+[ -s "$W2/pages.txt" ] \
+  || fail "SILENCE BOUGHT BY THE FIX: gh could not arm PR #837 and could not read its state, and
+      nobody was paged. This is the one branch where the PR may really be unarmed, so quieting it
+      re-creates the stall one layer down. The run said:
+$(sed 's/^/        /' "$W2/arm7.out")"
+grep -q "837" "$W2/pages.txt" || fail "the page does not name the PR: $(cat "$W2/pages.txt")"
+grep -qi "sit green and unmerged" "$W2/pages.txt" \
+  && fail "the page repeats the claim the run cannot back: $(cat "$W2/pages.txt")"
+[ "$ARM_RC" = "0" ] || fail "an unreadable auto-merge state changed the run's exit code to $ARM_RC"
+ok "an unreadable auto-merge state pages, says it could not tell, and claims nothing more"
 
 # --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
 grep -q 'pr merge --auto --squash' "$WORKER" \

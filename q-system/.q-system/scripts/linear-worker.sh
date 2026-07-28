@@ -912,16 +912,70 @@ Review runs next. Do not merge without it." >/dev/null 2>&1) || true
     # same PR every rework round; a warning per round would train the operator to
     # skim the one that matters, and which exit code `gh pr merge` returns for an
     # already-armed PR varies by version. Asking makes the no-op a real no-op.
-    if [ "$( cd "$TREE" && gh pr view "$PR_NUM" --json autoMergeRequest \
-               -q '.autoMergeRequest != null' 2>/dev/null )" != "true" ]; then
-      if ( cd "$TREE" && gh pr merge --auto --squash "$PR_NUM" ) >/dev/null 2>&1; then
-        say "$ISSUE: auto-merge armed on PR #$PR_NUM (GitHub merges it once every required check is green)"
+    #
+    # THE STATE IS CARRIED, not just acted on. `AUTOMERGE` is armed | unarmed |
+    # unknown, and the closing line at the bottom of this block reads it. Without
+    # it the arm landed here and the REPORT two lines below still told the
+    # operator a founder owed this PR a merge (PR #33 review, finding 2), which
+    # is the pre-fix picture printed underneath the fix. Set on every path below;
+    # re-set per issue because this block runs once per issue in the loop.
+    # THE PROBE'S rc IS PART OF ITS ANSWER (PR #33 review, finding 3). `gh pr
+    # view` says true/false when it answers at all and an EMPTY STRING when it
+    # could not -- a rate limit, a dropped connection, an unattended schedule
+    # against a live API, which is why this call carried `2>/dev/null` from the
+    # first draft. Reading that empty string as "not armed" is how an ARMED PR
+    # earns a warning saying it will sit green forever plus a command already run.
+    # Three states are kept apart, never two: armed / unarmed / could not tell.
+    AUTOMERGE="unknown"
+    if ! PROBE="$( cd "$TREE" && gh pr view "$PR_NUM" --json autoMergeRequest \
+                     -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
+      PROBE="unknown"
+    fi
+    if [ "$PROBE" = "true" ]; then
+      AUTOMERGE="armed"
+    elif ( cd "$TREE" && gh pr merge --auto --squash "$PR_NUM" ) >/dev/null 2>&1; then
+      AUTOMERGE="armed"
+      say "$ISSUE: auto-merge armed on PR #$PR_NUM (GitHub merges it once every required check is green)"
+    else
+      # ASK THE STATE AGAIN BEFORE CRYING WOLF. `gh pr merge --auto` refuses for
+      # reasons that are not "unarmed", and an already-armed PR is one of them --
+      # which rc it returns for that varies by gh version, which is the whole
+      # reason the probe exists. The refusal alone cannot tell an armed PR from a
+      # broken one, so the PR is asked what it IS. Only ever runs on this path.
+      if ! PROBE="$( cd "$TREE" && gh pr view "$PR_NUM" --json autoMergeRequest \
+                       -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
+        PROBE="unknown"
+      fi
+      if [ "$PROBE" = "true" ]; then
+        # It was already armed and the refusal WAS the no-op. Silent on purpose:
+        # this is the healthy state, reached through a blip.
+        AUTOMERGE="armed"
+      elif [ "$PROBE" = "unknown" ]; then
+        AUTOMERGE="unknown"
+        # STILL AUDIBLE, but claiming only what can be backed. gh refused the arm
+        # AND refused the state, so "it will sit green and unmerged" is a sentence
+        # nothing here knows to be true -- and this may equally be a PR that is
+        # fine. It pages anyway: this is the branch where the PR may really be
+        # unarmed, and quieting it would re-create the stall one layer down.
+        say "WARN: could not arm auto-merge on PR #$PR_NUM for $ISSUE and could not read its state either -- gh answered neither. If it sits green: gh pr merge --auto --squash $PR_NUM"
+        bash "$NOTIFY" "worker: $ISSUE PR #$PR_NUM -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $PR_NUM" 2>/dev/null || true
       else
-        # LOUD, and NOT fatal. An unarmed PR is invisible by construction:
-        # everything green, nothing merges, no signal anywhere. So it is said. The
-        # PR still stands, the review still runs, and the run's exit code is
-        # unchanged -- the cost of this failure is one human command, not a round.
+        AUTOMERGE="unarmed"
+        # LOUD MEANS $NOTIFY, NOT $LOG (PR #33 review, finding 1 -- major). This
+        # was `say` alone, and `say` is `tee -a "$LOG"`: under the launchd
+        # heartbeat that is a file nobody opens at 3am. This worker's channel for
+        # "a human must do something" is `bash "$NOTIFY"`, used at five other
+        # sites in this file, and this state is exactly that -- the message ends
+        # in the command a human has to run. An unarmed PR is invisible by
+        # construction (everything green, nothing merges, no signal), so a
+        # log-only warning does not kill the silent stall, it relocates it.
+        #
+        # NOT fatal, and per-run rather than at a cap: the PR still stands, the
+        # review still runs, the exit code is unchanged, and the state persists
+        # until a human acts -- the same shape as the approved-but-blocked pages
+        # above, which also fire per run.
         say "WARN: could not arm auto-merge on PR #$PR_NUM for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $PR_NUM"
+        bash "$NOTIFY" "worker: $ISSUE PR #$PR_NUM is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $PR_NUM" 2>/dev/null || true
       fi
     fi
     # Count review ROUNDS per issue, distinct from failed ATTEMPTS. A run that
@@ -987,7 +1041,21 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")
-        say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM waits on founder merge" ;;
+        # WHO MERGES IT (PR #33 review, finding 2). This line closed every approved
+        # run with "waits on founder merge" -- two lines under the same run's
+        # "auto-merge armed on PR #N". Nobody waits; GitHub merges it. The closing
+        # line is the one an operator scans, so it reports the state the arm above
+        # actually reached instead of the one that was true before this worker
+        # armed anything. Three outcomes, three sentences: a hedge that covered all
+        # of them would make the healthy case unreadable.
+        case "$AUTOMERGE" in
+          armed)
+            say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM has auto-merge armed -- GitHub merges it once every required check is green, no human merge needed" ;;
+          unarmed)
+            say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM is NOT armed and waits on a human merge: gh pr merge --auto --squash $PR_NUM" ;;
+          *)
+            say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM -- gh could not read its auto-merge state this run, so check it landed; if it sits green: gh pr merge --auto --squash $PR_NUM" ;;
+        esac ;;
       "REQUEST CHANGES"|"BLOCK")
         say "$ISSUE: $FINAL_VERDICT (round $ROUNDS) -- rework via: kipi work --apply --issue $ISSUE" ;;
       *)
