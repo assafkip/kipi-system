@@ -299,9 +299,60 @@ EOF
   echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
 fi
 
+# The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
+#
+# WHY THIS EXISTS: the verdict record above is a LOCAL file. GitHub cannot see
+# it, so no platform mechanism can gate on it, so every approved PR ends its
+# life waiting on a human. Every prior-art integrator (merge queue, Bors,
+# Mergify, Kodiak) has one shape: every precondition is a required status check
+# and the platform does the merging. pr-receipt-gate.py is already a CI step;
+# this was the one piece still stuck on disk.
+#
+# WHY A STATUS AND NOT A PR REVIEW: a commit status needs no second identity. A
+# PR *review* would deadlock -- this agent runs as the account that authors
+# these PRs, and GitHub forbids self-approval. Proven live on PR #23, 2026-07-27.
+#
+# ABSENT IS NOT APPROVED, and that is the point. A reviewer that fails or times
+# out exits well above this, before the verdict is even computed, so no status is
+# posted at all. Once this context becomes a REQUIRED check, "absent" is what
+# holds the PR -- the safe direction. Nothing on an error path here invents one.
+post_reviewer_status() {
+  local sha="$1" verdict="$2" target="$3"
+  local context="kipi/reviewer-approved" state="failure" desc
+  # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
+  # written to the record; re-grepping the review prose here would be a second
+  # reader with its own semantics, which is the defect class this repo keeps
+  # finding. Anything that is not an approval -- including an unstated verdict --
+  # is a failure, so an unparseable review cannot pass a gate by accident.
+  case "$verdict" in
+    "APPROVE"|"APPROVE WITH NITS") state="success" ;;
+  esac
+  desc="$(printf '%.140s' "${verdict:-unstated: no verdict parsed from the review}")"
+  local args=(api -X POST "repos/{owner}/{repo}/statuses/$sha"
+              -f "state=$state" -f "context=$context" -f "description=$desc")
+  # Link only a real URL. The PR comment just above is what --post creates; when
+  # that failed there is nothing to link, and a local file path is not a URL.
+  case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
+  if gh "${args[@]}" >/dev/null 2>&1; then
+    echo "  commit status posted: $context=$state on $sha"
+  else
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
+  fi
+}
+
 if [ "$POST" = "1" ]; then
-  gh pr comment "$PR" --body-file "$REVIEW" >/dev/null 2>&1 \
-    && echo "  posted to PR #$PR" || echo "  WARN: could not comment on PR" >&2
+  COMMENT_URL=""
+  COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW" 2>/dev/null)" \
+    && echo "  posted to PR #$PR" \
+    || { COMMENT_URL=""; echo "  WARN: could not comment on PR" >&2; }
+  # No sha, no status. A status on a guessed commit is worse than none because
+  # it looks authoritative -- the same reason ASK-216 captured the sha before
+  # dispatch instead of looking it up afterwards.
+  if [ -n "$HEAD_SHA" ]; then
+    post_reviewer_status "$HEAD_SHA" "$VERDICT" "$COMMENT_URL"
+  else
+    echo "  no head sha for PR #$PR: posting NO commit status (a status on a guessed sha looks authoritative)"
+  fi
   if [ -n "$ISSUE" ]; then
     python3 "$SYNC" progress "$ISSUE" \
       "Adversarial review of PR #$PR complete. Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
