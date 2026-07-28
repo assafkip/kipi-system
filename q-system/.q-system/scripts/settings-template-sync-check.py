@@ -31,22 +31,27 @@ import sys
 # is skeleton-only by design -- without this entry the check would flag itself.
 SKELETON_ONLY = {
     "settings-template-sync-check.py",
-    # HELD BACK from the fleet 2026-07-28 (ASK-229), soak-testing in the skeleton
-    # only. All three shipped blocking in 1b49d91 and each has a demonstrated false
-    # positive: read-first-gate has an unproven interaction with morning-pipeline
-    # subagents (they write bus files and may never have opened the methodology
-    # doc), handoff-provenance-lint blocks the skeleton's OWN handoff template
-    # because a dated markdown header is not exempt (sp-be424cdd), and
-    # client-output-evidence-gate reads bare years and ISO dates as unbacked
-    # measurements (sp-f551ef30). Shipping a false-positive gate to 23 instances
-    # teaches the fleet to reach for the bypass marker, which is worse than no
-    # gate. The scripts still rsync out; they land dormant because nothing invokes
-    # them. REMOVE these three entries when the gates are fixed and they go back
-    # into settings-template.json -- the entry is the held-back marker, so a stale
-    # entry means a gate silently never reached the fleet.
+    # HELD BACK from the fleet, soak-testing in the skeleton only. The entry IS the
+    # held-back marker: a stale entry means a gate silently never reached the fleet,
+    # so it is removed the moment the gate ships. handoff-provenance-lint and
+    # client-output-evidence-gate were held here on 2026-07-28 (ASK-229) and
+    # released the same day once ASK-231/232/233 fixed their false positives.
+    #
+    # read-first-gate stays held (ASK-235). The risk it was held for is no longer
+    # hypothetical -- it is measured. Feeding the real evaluate() a morning-pipeline
+    # subagent transcript blocks the write, because the required reading happened in
+    # the ORCHESTRATOR's context and the subagent's transcript cannot show it.
+    # Exempting generated targets fixed bus files and morning logs, but the
+    # `synthesizer` agent writes daily-schedule-<date>.html and
+    # schedule-data-<date>.json into q-system/output/, and BOTH still block.
+    #
+    # So the gate would wedge the morning pipeline in 21 instances, on a hook whose
+    # failure is invisible from inside the pipeline. It ships when a subagent's
+    # first write is provably safe, not before. Two things would release it: an
+    # empirical answer to which transcript a subagent hook receives (no transcript
+    # on disk carries isSidechain=True, and none was available to inspect), or a
+    # first-write rule that does not depend on transcript identity at all.
     "read-first-gate.py",
-    "client-output-evidence-gate.py",
-    "handoff-provenance-lint.py",
 }
 
 # Scripts that legitimately live ONLY in settings-template.json (fleet) and not in
