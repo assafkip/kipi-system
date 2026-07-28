@@ -62,6 +62,14 @@ SYNC="$SCRIPT_DIR/linear-sync.py"
 # grep of this source. Same seam and same name converge.sh already uses -- one
 # convention, not two. Default is always the real Slack sink.
 NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
+# The reviewer is injectable for the SAME reason converge.sh injects its worker:
+# "what does this script do when the REVIEWER is down" is a real 3am state, and
+# it is the state PR #30's review round 2 found two defects in (an unbounded
+# drift loop, and a run reporting CONVERGED off the stale record the same run had
+# just refused to trust). Asserting it against the real reviewer would cost an
+# adversarial review's model spend per case, so the branch would stay untested --
+# which is how it shipped wrong. Default is always the real reviewer.
+REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 LOG="$STATE_DIR/linear-worker.log"
@@ -88,6 +96,21 @@ MAX_ATTEMPTS=3
 # rebases included, and `conflict_rounds` says how many of the current streak
 # were rebases.
 MAX_CONFLICT_ROUNDS=2
+# Drift rounds (gate 40) are capped SEPARATELY again, for the reason
+# pr-verdict-lib.sh already states about gate 30: "Making APPROVE non-terminal
+# opens an unbounded rework path ... every round writes a permanent Linear
+# comment on an object that cannot be deleted ... The caller caps conflict rounds
+# on its own budget." Gate 40 ALSO makes APPROVE non-terminal, and when ASK-219
+# first wired it this caller gave it no budget at all. Measured on that build:
+# 5 scheduled runs against one persistently-failing reviewer spent 5 model
+# rounds, wrote 10 permanent Linear comments, paged nobody, and left
+# conflict_rounds -- the only budget in the file -- at 0.
+#
+# 2, matching the conflict cap: a drift clears the moment ANY review writes a
+# record pinned to the current head, so two rounds that both failed to produce
+# one means the reviewer is down or the head keeps moving under it. Neither is
+# fixed by a third round; both need a human.
+MAX_DRIFT_ROUNDS=2
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
@@ -278,6 +301,45 @@ if not e or not (e.get('conflict_rounds') or e.get('conflict_paged')): raise Sys
 for k in ('conflict_rounds','conflict_paged','last_conflict'): e.pop(k,None)
 json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
 
+# --- drift-round ledger (ASK-219, PR #30 review round 2) ---------------------
+# A FOURTH key, deliberately not `count`, not `rounds`, not `conflict_rounds`.
+# Four budgets, four questions. A drift round that spent the conflict budget
+# would leave a real conflict un-dispatchable later; one that spent `count`
+# would mark good work STUCK after three rounds that all ran fine.
+drift_rounds_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('drift_rounds',0))" "$1"; }
+
+bump_drift_round() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); e['drift_rounds']=e.get('drift_rounds',0)+1
+e['last_drift']=sys.argv[2]
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+
+# CONSECUTIVE, NOT LIFETIME -- the same scar clear_conflict_rounds carries (PR
+# #25 finding 3). Without this the cap would count every drift in the issue's
+# life, so the third genuine drift would be permanently un-dispatchable AND
+# silent, because drift_paged was already true.
+#
+# Cleared on "the gate did not say 40", which is the ONE reader's own answer
+# rather than a second sha comparison living out here. 40 is the only code that
+# means drift, so anything else means there is none right now: a review has
+# repinned the record to the head, or the verdict is no longer approving, or the
+# record is gone. Re-deriving that comparison in this file is exactly the
+# two-readers-of-one-input defect pr-verdict-lib.sh exists to close.
+clear_drift_rounds() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: raise SystemExit(0)
+e=d.get(sys.argv[1])
+if not e or not (e.get('drift_rounds') or e.get('drift_paged')): raise SystemExit(0)
+for k in ('drift_rounds','drift_paged','last_drift'): e.pop(k,None)
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+
 # Returns 0 the FIRST time <flag> is claimed for this issue and 1 every time
 # after, so a page fires exactly once instead of once per scheduled run. A
 # repeated "still stuck" every cycle is noise, and noise trains the reader to
@@ -375,6 +437,7 @@ while IFS= read -r ISSUE; do
   EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
   CONFLICT_ROUND=""
+  DRIFT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
     PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
     if [ -z "$PR_VERDICT" ]; then
@@ -391,7 +454,52 @@ while IFS= read -r ISSUE; do
     # not just the approving ones: a rework round that also resolves the
     # conflict ended the streak just as much.
     [ "$MERGE_STATE" = "CLEAN" ] && clear_conflict_rounds "$ISSUE"
-    rework_gate "$PR_VERDICT" "$MERGE_STATE"; GATE=$?
+    # THE VERDICT IS BOUND TO A SHA, NOT A PR NUMBER (ASK-216, armed here by
+    # ASK-219, sp-a27722e7). This worker reuses ONE branch and ONE PR across every
+    # rework round, so before this call passed a sha, each push landing after an
+    # approval inherited that approval silently. The reviewed sha is the one the
+    # reviewer pinned into the record; the current head goes through the same
+    # shared lib as the merge state so the worker and converge.sh cannot drift on
+    # what "the current head" means.
+    #
+    # APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2. Reordering it would
+    # silently stop ASK-212's rebase rounds from ever firing again.
+    REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
+    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
+    [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
+    # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
+    # both of them scars:
+    #
+    # It sits ABOVE the branches because gates 10 and 20 both `continue`, so a
+    # clear placed with the gate-40 block would never run on the one path that
+    # matters most -- the review came back, repinned the record, the PR is
+    # healthy again. (Observed RED as P5: drift_rounds stayed at 2 through a
+    # full heal.)
+    #
+    # And it requires BOTH shas to have been read, because "the gate did not say
+    # 40" is not the same statement as "there is no drift". `pr_head_sha` returns
+    # empty on any `gh` failure and the gate then falls toward terminal and
+    # returns 10 -- so the bare `!= 40` form treated a head NOBODY COULD READ as
+    # proof the drift was over: it reset the streak AND popped `drift_paged`, and
+    # one hiccup every other run was enough to make the cap unreachable and the
+    # page never fire. clear_conflict_rounds 190 lines up refuses the identical
+    # move for the identical reason -- "refilling a budget from a state nobody
+    # actually read is how an unresolvable conflict gets infinite rounds"
+    # (PR #30 review round 3, major 1; observed RED as P8: 9 runs, 6 rounds, 0
+    # pages).
+    #
+    # This is a readability check on the gate's INPUTS, not a second sha
+    # comparison: 40 is still the one reader's own answer to "is this drift?".
+    # What it costs, stated: a blind run no longer refills the budget, so a drift
+    # that quietly resolved during a blind window can reach the cap one round
+    # early. That direction pages ("unreviewed code sits at the head, needs a
+    # human") on a run where the gate really did say 40, so the page is true when
+    # it fires -- louder, never quieter, which is the only safe way to be wrong
+    # about a budget guarding unreviewed code.
+    if [ "$GATE" != "40" ] && [ -n "$REVIEWED_SHA" ] && [ -n "$CURRENT_SHA" ]; then
+      clear_drift_rounds "$ISSUE"
+    fi
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -399,6 +507,37 @@ while IFS= read -r ISSUE; do
     if [ "$GATE" = "20" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
+    fi
+    if [ "$GATE" = "40" ]; then
+      # STALE. The record approves a commit that is no longer the head, so nobody
+      # has read the code that is actually there. Dispatch a RE-REVIEW round on
+      # its OWN budget: the round ends in a review (step 5 below), and THAT review
+      # writes a record pinned to the current head, which is the only thing that
+      # clears this. When the reviewer is the thing that is down, nothing clears
+      # it -- so the budget below is what stops a dead reviewer at 3am from
+      # becoming an unbounded loop of model rounds and undeletable Linear
+      # comments with nobody told (PR #30 review round 2, major 2).
+      #
+      # CONFLICT_ROUND stays empty on purpose even when the PR is also DIRTY. A
+      # drift round is a review round, not a rebase round; spending the rebase
+      # budget on it would leave a real conflict un-dispatchable later, and the
+      # rebase prompt would tell the agent to force-push a diff nobody reviewed.
+      DR="$(drift_rounds_for "$ISSUE")"
+      if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
+        if claim_page_once "$ISSUE" drift_paged; then
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+        fi
+        continue
+      fi
+      # PLANNED, NOT SPENT (same discipline as CONFLICT_ROUND below). Everything
+      # between here and the dispatch can still decline the run -- another
+      # session's claim, a worktree that cannot be created, a tree that cannot be
+      # positioned. Spending the budget here would let two runs skipped by a stale
+      # claim burn it having re-reviewed nothing, then page a round count that
+      # never happened.
+      DRIFT_ROUND=$((DR + 1))
+      say "$ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but that verdict was recorded at $REVIEWED_SHA and the head is now $CURRENT_SHA -- the code at the head was never reviewed. Dispatching a round so it gets re-reviewed."
     fi
     if [ "$GATE" = "30" ]; then
       # Approved on content, but it no longer merges. Dispatch a REBASE round on
@@ -526,6 +665,10 @@ while IFS= read -r ISSUE; do
     bump_conflict_round "$ISSUE"
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE -- dispatching rebase round $CONFLICT_ROUND/$MAX_CONFLICT_ROUNDS"
   fi
+  if [ -n "$DRIFT_ROUND" ]; then
+    bump_drift_round "$ISSUE"
+    say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' at $REVIEWED_SHA but the head is $CURRENT_SHA -- dispatching re-review round $DRIFT_ROUND/$MAX_DRIFT_ROUNDS"
+  fi
   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
   python3 "$SYNC" progress "$ISSUE" \
     "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
@@ -569,6 +712,52 @@ its approval and starts the review over.
 If the conflict cannot be resolved without a real decision (the two sides changed
 the same behaviour on purpose), say so on the issue via progress and STOP:
   bash $SKEL/kipi linear progress $ISSUE \"<the conflict and the decision it needs>\" --agent sana
+
+Push to the SAME branch $BRANCH. Do not open a second PR."
+  elif [ -n "$DRIFT_ROUND" ]; then
+    # A DRIFT ROUND IS NOT A REVIEW ROUND EITHER, and for the same reason the
+    # rebase round is not: the stored review APPROVED, so it carries no findings
+    # to answer. Handing it the rework prompt below said "the review is the spec,
+    # for EACH finding either fix it or reply why it is not a defect" against a
+    # review with no findings -- ASK-208's failure shape exactly, and the most
+    # common producer of this drift is a HUMAN (a founder push, GitHub's "Update
+    # branch" button), so that prompt sent an agent to invent work on top of
+    # someone else's commit and push it to the same branch (PR #30 review, major
+    # 1).
+    #
+    # What actually clears the drift is step 5's review, not this round's edits.
+    # So the honest instruction is: read the unreviewed commits, change NOTHING
+    # unless they are broken, and let the review run. Doing nothing is a correct
+    # outcome here and is stated as one -- otherwise an agent handed a round with
+    # no task will manufacture one.
+    REWORK="
+
+## THIS IS A RE-REVIEW ROUND. THE CODE AT THE HEAD HAS NEVER BEEN REVIEWED.
+
+PR #$EXISTING_PR on this branch carries a stored verdict of '$PR_VERDICT', but that
+verdict was recorded against commit $REVIEWED_SHA. The head of the branch is now
+$CURRENT_SHA. Whatever landed in between has never been read by any reviewer.
+
+This is round $DRIFT_ROUND of $MAX_DRIFT_ROUNDS; at the cap the worker stops and pages a human.
+
+THERE ARE NO FINDINGS TO ANSWER. The stored review approved. Do not read it as a
+spec, do not re-open the design, and do not restart the task.
+
+The re-review at the end of this round is what clears the drift, not your edits.
+So:
+
+  git log --oneline $REVIEWED_SHA..$CURRENT_SHA     # what nobody has reviewed
+  git diff $REVIEWED_SHA..$CURRENT_SHA
+
+  1. If those commits are coherent and complete, CHANGE NOTHING. Say so via
+     progress and stop. That is a correct and expected outcome for this round --
+     the review runs next either way. Inventing work here is the failure mode.
+  2. Only if they are actually broken -- a partial push, a botched merge, a WIP
+     commit, tests that no longer pass -- fix exactly that, and nothing else.
+     Run this PR's tests before you push.
+
+Someone else may have pushed those commits (a founder push, GitHub's 'Update
+branch'). Treat them as work you did not write and must not silently rewrite.
 
 Push to the SAME branch $BRANCH. Do not open a second PR."
   elif [ -n "$EXISTING_PR" ]; then
@@ -710,12 +899,54 @@ except Exception: d={}
 e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
 json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
-    bash "$SCRIPT_DIR/pr-review-agent.sh" "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
+    $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
       || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
     FINAL_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
+    # RE-GATE THE RECORD BEFORE REPORTING ON IT (PR #30 review round 2, major 3).
+    # The reviewer above can fail -- it is a `|| say WARN` line, not a hard stop --
+    # and when it does, this read returns the SAME record the gate at the top of
+    # this run already refused to trust. Reporting "converged ... waits on founder
+    # merge" off it put that line two lines below "the code at the head was never
+    # reviewed", and the closing line is the one an operator scans. Unreachable
+    # before ASK-219 (gate 10 skipped the issue before step 5 could run), which is
+    # why arming exit 40 is what exposed it.
+    #
+    # Both shas are re-read rather than reused: a round that pushed moved the head,
+    # so the values from the top of the loop describe a state that no longer
+    # exists. The gate is the ONE reader of the comparison -- deriving it here
+    # would be a second reader with drifting semantics.
+    FINAL_REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
+    FINAL_CURRENT_SHA="$(pr_head_sha "$PR_NUM")"
+    # AND THE GATE'S NOTE IS SAID, NOT SWALLOWED (PR #30 review round 3, minor 2).
+    # converge.sh's own call site states the rule this line broke: "Swallowing it
+    # would silently grandfather the blind spot it announces." The reviewer always
+    # writes head_sha and writes it EMPTY when its own `gh pr view` could not
+    # answer, and a fresh issue reaches step 5 with no prior PR -- so the
+    # top-of-run gate, the one that does `say` its NOTE, never ran. The run then
+    # closed on "converged ... waits on founder merge" with nothing anywhere
+    # saying the approval is pinned to no commit, which is the one thing that
+    # separates it from a verified one. The BEHAVIOUR is right and settled
+    # (absent is not drift, fail toward terminal); the missing thing was the
+    # sentence. Adds no per-run noise: the gate is silent whenever both shas were
+    # read, which is every healthy round.
+    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA")"; FINAL_GATE=$?
+    [ -n "$FINAL_GATE_NOTE" ] && say "$FINAL_GATE_NOTE"
+    # NO PAGE HERE, deliberately, and it is the one place in this pass that buys
+    # silence: the NEXT scheduled run gates this same PR at 40, spends a drift
+    # round, and pages once at the cap. Paging here too would double-page the same
+    # unreviewed head on every round. What this line owes the operator is the
+    # truth, not a second alarm.
+    #
+    # It reports and falls THROUGH to the release at step 6 rather than
+    # `continue`-ing: a claim held by a run that already finished wedges this
+    # issue for every later run, which is worse than the wrong log line this
+    # replaces.
+    if [ "$FINAL_GATE" = "40" ]; then
+      say "$ISSUE NOT converged: PR #$PR_NUM still reads '$FINAL_VERDICT' recorded at $FINAL_REVIEWED_SHA while the head is $FINAL_CURRENT_SHA -- this round's review wrote no record, so the code at the head is still unreviewed. Re-review next run ($(drift_rounds_for "$ISSUE")/$MAX_DRIFT_ROUNDS drift round(s) spent)."
+    else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")
         say "$ISSUE converged: $FINAL_VERDICT after $ROUNDS round(s); PR #$PR_NUM waits on founder merge" ;;
@@ -724,6 +955,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       *)
         say "$ISSUE: no verdict recorded for PR #$PR_NUM (round $ROUNDS) -- review may have died; see $REVIEWS_DIR" ;;
     esac
+    fi
   else
     say "no PR found for $BRANCH; nothing to review"
   fi

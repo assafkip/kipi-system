@@ -77,6 +77,18 @@ pr_merge_state() {
   gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
 }
 
+# pr_head_sha <pr-number>
+# The commit at the tip of the PR's head branch RIGHT NOW (GitHub's headRefOid),
+# or empty when gh cannot answer. ONE reader, for the same reason pr_merge_state
+# is one: both drivers have to agree on what "the current head" means before they
+# can compare it to the sha a review pinned, and two callers each shelling their
+# own `gh pr view` is two readers of one input with drifting semantics -- the
+# defect class this file exists to close. Empty on any failure, which rework_gate
+# reads as "unknown, fall back and say so", never as drift.
+pr_head_sha() {
+  gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]'
+}
+
 # _sha_norm <sha>
 # Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
 # newline are not drift. A PREFIX is deliberately NOT treated as a match: both
