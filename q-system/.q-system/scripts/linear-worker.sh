@@ -468,6 +468,13 @@ while IFS= read -r ISSUE; do
     CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
     GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
+    # THE DRIFT STREAK ENDS THE MOMENT THE GATE STOPS SAYING 40, and this has to
+    # sit ABOVE the branches: gates 10 and 20 both `continue`, so a clear placed
+    # with the gate-40 block would never run on the one path that matters most --
+    # the review came back, repinned the record, and the PR is healthy again.
+    # (Observed RED as P5: drift_rounds stayed at 2 through a full heal.)
+    # 40 is the ONE reader's own answer, so no second sha comparison lives here.
+    [ "$GATE" != "40" ] && clear_drift_rounds "$ISSUE"
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -476,10 +483,6 @@ while IFS= read -r ISSUE; do
       say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
     fi
-    # THE STREAK ENDS THE MOMENT THE GATE STOPS SAYING 40. Placed here, before
-    # the branches, so it runs on every verdict -- a review that repinned the
-    # record ended the streak, and so did a push that drew REQUEST CHANGES.
-    [ "$GATE" != "40" ] && clear_drift_rounds "$ISSUE"
     if [ "$GATE" = "40" ]; then
       # STALE. The record approves a commit that is no longer the head, so nobody
       # has read the code that is actually there. Dispatch a RE-REVIEW round on
