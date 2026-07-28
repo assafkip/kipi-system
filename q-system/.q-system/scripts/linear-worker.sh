@@ -901,6 +901,19 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
     $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
       || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    # THE INDEPENDENT SECOND OPINION (ASK-221). The reviewer above is Claude and
+    # so is the PR author -- different process, no shared memory, but the same
+    # lab and model family, so the blind spots stay correlated. This run is a
+    # different lab's model through the same script, posting kipi/codex-approved.
+    #
+    # It runs AFTER, never instead: it writes into pr-reviews/codex/ and touches
+    # neither pr-<N>.verdict.json nor the pr-<N>-*.md glob, so every gate below
+    # (FINAL_VERDICT, the drift check, converge) still reads exactly one writer.
+    # Its own failure mode is handled inside the reviewer (Opus fallback + a page
+    # on the transition), so a codex outage cannot take this loop down: the worst
+    # case here is one WARN line and a review nobody blocked on.
+    $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine codex >>"$LOG" 2>&1 \
+      || say "WARN: codex second-opinion review failed on PR #$PR_NUM (the Claude review above stands)"
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.

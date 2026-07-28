@@ -34,7 +34,23 @@
 # either stamp `codex-adversarial` (a false record) or skip the stamp and never
 # approve. In a repo whose thesis is receipts, the honest token had to exist first.
 #
+# TWO ENGINES, ONE SCRIPT (ASK-221)
+# ---------------------------------
+# The default reviewer is `claude -p` and the PR author is also Claude. Different
+# process, no shared memory, genuinely useful -- but the same lab and the same
+# model family, so the blind spots stay CORRELATED. Fresh context is not an
+# independent mind. `--engine codex` runs a different lab's model through this
+# same script and posts a separate commit status, which is real decorrelation.
+#
+# It is a FLAG, not a second script, on purpose: sha capture (ASK-216), verdict
+# derivation from labelled severities, the commit-status post (ASK-217) and
+# spillover capture all stay shared and identical. A separate codex script would
+# be a second writer with its own semantics -- the defect class this repo keeps
+# finding. What the engine changes is exactly three things: which binary runs,
+# which status context it posts, and which directory its artifacts land in.
+#
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
+#                            [--engine claude|codex]
 #         --post also comments the review on the PR and the Linear issue.
 set -uo pipefail
 
@@ -43,26 +59,64 @@ SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
 TIMEOUT_SECONDS=2400
+NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
+
+# PIN THE REVIEWER'S IDENTITY. Before ASK-221 the claude engine passed no
+# --model and silently inherited whatever the calling session defaulted to, so
+# "the reviewer" was a different model depending on who woke it. A reviewer whose
+# identity drifts cannot be reasoned about: the severity anchors are calibrated
+# against a specific bar, and a weaker model drops exactly the subtle findings
+# that earn this thing its keep. Env-overridable so a model bump is a config
+# change, not an edit to a script that gates every PR in the repo.
+CLAUDE_MODEL="${KIPI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
+CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
 # semantics -- the defect class review round 2 flagged on this very PR line.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
-PR=""; ISSUE=""; POST=0
+PR=""; ISSUE=""; POST=0; ENGINE="claude"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --issue) shift; ISSUE="${1:-}" ;;
-    --post)  POST=1 ;;
+    --issue)  shift; ISSUE="${1:-}" ;;
+    --engine) shift; ENGINE="${1:-}" ;;
+    --post)   POST=1 ;;
     -*) echo "unknown arg: $1" >&2; exit 1 ;;
     *) PR="$1" ;;
   esac
   shift || true
 done
-[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]" >&2; exit 1; }
+[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
 
-mkdir -p "$OUT_DIR"
+# THE THREE THINGS THE ENGINE CHANGES. Everything else below this block is
+# shared, which is the whole reason this is a flag and not a second script.
+#
+# SEPARATE DIRECTORIES matter more than they look. review_round() globs
+# `pr-<N>-*.md`, and the verdict record is written next to the review, so a codex
+# review dropped into the claude directory would (a) advance the claude
+# reviewer's round counter and arm the anti-re-litigation rule a round early, and
+# (b) overwrite pr-<N>.verdict.json -- the file converge.sh and linear-worker.sh
+# gate the entire loop on. That would make codex the loop's verdict writer by
+# accident, which no gate expects. One directory per engine, one writer each.
+case "$ENGINE" in
+  claude) ENGINE_DIR="$OUT_DIR";         STATUS_CONTEXT="kipi/reviewer-approved"; MINOR_TAG="" ;;
+  codex)  ENGINE_DIR="$OUT_DIR/codex";   STATUS_CONTEXT="kipi/codex-approved";    MINOR_TAG="codex " ;;
+  *) echo "unknown engine: '$ENGINE' (expected claude|codex)" >&2; exit 1 ;;
+esac
+# Degraded is a property of the ENGINE, not of a PR: codex being down is one
+# fact, and paging per-PR would turn one outage into a page per open PR.
+DEGRADED_STATE="$OUT_DIR/codex/degraded.state"
+DEGRADED=0
+# Set when codex answered with nothing parseable. It is a SEPARATE flag from the
+# derived verdict because verdict_from_findings reads an unclosed FINDINGS block
+# as an EMPTY one and returns APPROVE -- so "the derivation produced something"
+# is not evidence that the review said anything. Caught by the truncated-stream
+# case in test-severity-floor.sh, which passed the first cut of this fix.
+CODEX_UNUSABLE=0
+
+mkdir -p "$ENGINE_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$OUT_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
+REVIEW="$ENGINE_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -95,8 +149,8 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)
-ROUND="$(review_round "$OUT_DIR" "$PR")"
-echo "  round: $ROUND"
+ROUND="$(review_round "$ENGINE_DIR" "$PR")"
+echo "  round: $ROUND (engine: $ENGINE)"
 
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
@@ -231,13 +285,99 @@ FINDINGS:
 severity|one-sentence claim|file:line
 END FINDINGS"
 
-echo "$(TS) running the reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
-if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$SKEL' && claude -p \"\$1\" </dev/null > '$REVIEW' 2>&1" _ "$PROMPT"; then
-  echo "$(TS) review written: $REVIEW"
+# ONE ATTEMPT PER ENGINE, and the fallback is one more. Codex costs real tokens
+# per PR (~26k on a trivial prompt, far more on a real diff), so a retry loop
+# here is a runaway bill on every scheduled run against every open PR. Bounded
+# exactly as the existing reviewer already is: the same wall clock, no retries.
+#
+# `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
+# additional input from stdin..."), and outside a trusted directory it refuses
+# with "Not inside a trusted directory". Both are load-bearing, not decoration.
+run_engine() {   # run_engine <claude|codex> <destination-file>
+  case "$1" in
+    claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "cd '$SKEL' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+    codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$SKEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+  esac
+}
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block.
+# The closing line is what makes this a real check: verdict_from_findings uses
+# `sed -n '/^FINDINGS:/,/^END FINDINGS/p'`, which prints to EOF when the range
+# never closes -- so a stream that died right after opening the block yields an
+# EMPTY findings list, and an empty list derives APPROVE. A truncated review that
+# green-lights a PR nobody read is the worst outcome available in this script.
+review_has_complete_findings_block() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  grep -q '^FINDINGS:'    "$f" 2>/dev/null || return 1
+  grep -q '^END FINDINGS' "$f" 2>/dev/null || return 1
+}
+
+# PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
+# cry-wolf failure: it trains the operator to skim, which costs the real alert
+# later. Both edges earn their one line -- going degraded means the two statuses
+# stopped being independent, and an operator who never hears the recovery cannot
+# tell a live second opinion from an Opus stand-in wearing its context.
+note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
+  local now="$1" reason="${2:-}" prev="" msg
+  [ -f "$DEGRADED_STATE" ] && prev="$(tr -dc '01' < "$DEGRADED_STATE" 2>/dev/null | head -c1)"
+  [ -n "$prev" ] || prev=0
+  mkdir -p "$(dirname "$DEGRADED_STATE")"
+  printf '%s\n' "$now" > "$DEGRADED_STATE"
+  [ "$now" = "$prev" ] && return 0
+  if [ "$now" = "1" ]; then
+    msg="reviewer: codex is not producing an independent review (PR #$PR): $reason. $STATUS_CONTEXT stops being a second lab's opinion until codex is back."
+  else
+    msg="reviewer: codex is BACK (PR #$PR) -- $STATUS_CONTEXT is an independent second opinion again."
+  fi
+  bash "$NOTIFY" "$msg" 2>/dev/null || true
+}
+
+echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
+if [ "$ENGINE" != "codex" ]; then
+  if run_engine claude "$REVIEW"; then
+    echo "$(TS) review written: $REVIEW"
+  else
+    rc=$?
+    echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
+    exit "$rc"
+  fi
+elif run_engine codex "$REVIEW"; then
+  if review_has_complete_findings_block "$REVIEW"; then
+    note_degraded_transition 0
+    echo "$(TS) review written: $REVIEW"
+  else
+    # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
+    # path: an outage leaves no review to trust, but this is an attempted review
+    # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
+    # over it would invent a verdict for a review that said nothing. It falls
+    # through UNSTATED, and unstated posts state=failure a few lines below.
+    CODEX_UNUSABLE=1
+    note_degraded_transition 1 \
+      "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
+    echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+  fi
 else
+  # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
+  # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
+  # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
+  # real hazard: both statuses would come from one model family and nobody would
+  # know the independence this engine exists to buy had been lost.
   rc=$?
-  echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
-  exit "$rc"
+  DEGRADED=1
+  mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
+  echo "$(TS) codex failed or timed out (rc=$rc); running the Opus fallback so $STATUS_CONTEXT does not wedge. Partial codex output: $REVIEW.codex-failed" >&2
+  note_degraded_transition 1 \
+    "it exited $rc, so the Opus fallback filled the slot and the status is marked DEGRADED"
+  if run_engine claude "$REVIEW"; then
+    echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+  else
+    rc=$?
+    echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+    exit "$rc"
+  fi
 fi
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
@@ -247,7 +387,18 @@ fi
 # setting the gate.
 STATED_VERDICT="$(extract_verdict "$REVIEW")"
 DERIVED_VERDICT="$(verdict_from_findings "$REVIEW")"
-if [ -n "$DERIVED_VERDICT" ]; then
+if [ "$CODEX_UNUSABLE" = "1" ]; then
+  # UNUSABLE WINS OVER THE DERIVATION, and this ordering is the whole fix. An
+  # unclosed `FINDINGS:` block parses as an EMPTY findings list, and an empty
+  # list derives APPROVE -- so a stream that died one line into the block would
+  # otherwise green-light the PR, with the truncated prose "VERDICT: APPROVE"
+  # above it agreeing. There is also no prose fallback on this slot: codex stdout
+  # carries harness noise (`hook: Stop`, `tokens used`, a repeated final line)
+  # that a whole-file token grep reads an APPROVE out of. Unstated posts
+  # state=failure, which is the safe direction -- absent evidence is not consent.
+  VERDICT=""
+  echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
+elif [ -n "$DERIVED_VERDICT" ]; then
   VERDICT="$DERIVED_VERDICT"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
     echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
@@ -291,7 +442,7 @@ if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
     [ -n "$claim" ] || continue
     MINOR_COUNT=$((MINOR_COUNT+1))
     python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
-      --source "$ISSUE" --desc "PR #$PR review minor: $claim ($loc)" >/dev/null 2>&1 \
+      --source "$ISSUE" --desc "PR #$PR ${MINOR_TAG}review minor: $claim ($loc)" >/dev/null 2>&1 \
       && CAPTURED=$((CAPTURED+1))
   done <<EOF
 $(extract_minor_findings "$REVIEW")
@@ -318,7 +469,11 @@ fi
 # holds the PR -- the safe direction. Nothing on an error path here invents one.
 post_reviewer_status() {
   local sha="$1" verdict="$2" target="$3"
-  local context="kipi/reviewer-approved" state="failure" desc
+  # The context is the ENGINE's slot: kipi/reviewer-approved for claude,
+  # kipi/codex-approved for the independent second opinion. Two contexts, one
+  # writer each, so a gate can require either or both without either engine
+  # being able to answer for the other.
+  local context="$STATUS_CONTEXT" state="failure" desc
   # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
   # written to the record; re-grepping the review prose here would be a second
   # reader with its own semantics, which is the defect class this repo keeps
@@ -327,7 +482,13 @@ post_reviewer_status() {
   case "$verdict" in
     "APPROVE"|"APPROVE WITH NITS") state="success" ;;
   esac
-  desc="$(printf '%.140s' "${verdict:-unstated: no verdict parsed from the review}")"
+  desc="${verdict:-unstated: no verdict parsed from the review}"
+  # SAY IT IN THE SLOT ITSELF. The page fires once on the transition and is gone;
+  # the status description is what a human reads on the PR weeks later. Without
+  # this marker a green kipi/codex-approved is indistinguishable from a real
+  # second opinion, and the whole point of this engine is that it is not Claude.
+  [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
+  desc="$(printf '%.140s' "$desc")"
   local args=(api -X POST "repos/{owner}/{repo}/statuses/$sha"
               -f "state=$state" -f "context=$context" -f "description=$desc")
   # Link only a real URL. The PR comment just above is what --post creates; when
@@ -355,7 +516,7 @@ if [ "$POST" = "1" ]; then
   fi
   if [ -n "$ISSUE" ]; then
     python3 "$SYNC" progress "$ISSUE" \
-      "Adversarial review of PR #$PR complete. Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
+      "Adversarial review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
       --agent "reviewer" >/dev/null 2>&1 \
       && echo "  progress noted on $ISSUE" || true
   fi
