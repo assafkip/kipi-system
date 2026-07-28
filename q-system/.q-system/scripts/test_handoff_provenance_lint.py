@@ -112,8 +112,34 @@ def case_bare_provenance_word_blocks() -> bool:
     return run(HANDOFF, "- 1,366 rows flagged. provenance matters here\n") == 2
 
 
+HANDOFF = "memory/last-handoff.md"
+
+
+def case_dated_markdown_header_passes() -> bool:
+    """ASK-231 / sp-be424cdd: the shape the skeleton's OWN handoff template uses.
+    META_RE only matched `key: value`, so this header tripped DATE_RE and the lint
+    blocked the canonical artifact it exists to protect."""
+    return run(HANDOFF, "# Session Handoff - 2026-06-11 EOD\n\nprose, no claims.\n") == 0
+
+
+def case_dated_claim_still_blocks() -> bool:
+    """The half that keeps the case above honest. Reversal #5 WAS a date claim, so
+    if a dated ASSERTION ever stops blocking, this lint has lost its own scar."""
+    return run(HANDOFF, "# Session Handoff - 2026-06-11 EOD\n\n"
+                        "- a client row is dated 2026-12-21, five months out\n") == 2
+
+
+def case_number_in_a_header_still_blocks() -> bool:
+    """The exemption covers dates in headers, NOT numbers in headers -- otherwise a
+    claim could be laundered by prefixing it with a `#`."""
+    return run(HANDOFF, "## the sheet had 1,177 rows\n") == 2
+
+
 CASES = [
     ("a bare number blocks", case_bare_number_blocks),
+    ("dated markdown header passes (ASK-231)", case_dated_markdown_header_passes),
+    ("a dated claim still blocks", case_dated_claim_still_blocks),
+    ("a number in a header still blocks", case_number_in_a_header_still_blocks),
     ("shared enum `validated` passes", case_shared_enum_validated_passes),
     ("shared enum `inferred` passes", case_shared_enum_inferred_passes),
     ("a typo'd enum value still blocks", case_typod_enum_value_still_blocks),

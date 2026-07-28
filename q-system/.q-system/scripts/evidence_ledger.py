@@ -47,6 +47,26 @@ REQUIRED_FIELDS = ("claim_id", "claim", "source", "command", "result", "verified
 NUM_RE = re.compile(r"(?<![\w.$])(\d[\d,]*\.?\d*)(?![\w])")
 MIN_SIGNIFICANT_DIGITS = 2
 
+# A date is not a measurement a client acts on, and treating it as one made the gate
+# unusable (sp-f551ef30, ASK-232): `zach-info-request.md` blocked on ['13','2026'],
+# both of which fell out of a date. The only ways past that are to invent ledger rows
+# for calendar facts or to bypass the gate -- each worse than the gate not firing.
+#
+# Two shapes are dropped before the number scan:
+#   ISO dates   2026-07-28   removed whole, so 07 and 28 never become "numbers"
+#   bare years  1900..2100   a standalone year is a date, not a count
+# `13` in "13 workflows" is NOT a date and stays gated. That is the line this draws.
+#
+# HONEST BOUNDARY: a real measurement that happens to be a 4-digit number in
+# 1900..2100 ("2026 orders shipped") is exempted and will pass unbacked. Declared
+# hole, not a silent one -- the alternative blocks every draft that names a year.
+ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+YEAR_MIN, YEAR_MAX = 1900, 2100
+
+
+def _is_year(norm: str) -> bool:
+    return len(norm) == 4 and norm.isdigit() and YEAR_MIN <= int(norm) <= YEAR_MAX
+
 # A quoted span long enough to be an attribution rather than a turn of phrase.
 SPAN_RE = re.compile(r"[\"“]([^\"”\n]{3,300})[\"”]")
 MIN_SPAN_WORDS = 4
@@ -189,13 +209,34 @@ def _evidence_blob(repo=None) -> str:
                      for r in read(repo))
 
 
+def adopted(repo=None) -> bool:
+    """Has this instance started keeping a ledger at all?
+
+    WHY (ASK-233): with no ledger, every row lookup misses, so EVERY number in a
+    client draft is unbacked and the first write to output/outreach/ blocks on all
+    of them at once. The gate was most hostile exactly where it had zero signal to
+    offer, which is a wall rather than incremental adoption -- and 21 instances
+    received these scripts with no ledger in any of them.
+
+    An absent ledger is now "not adopted yet" and the gate stands down. A ledger
+    with even one row means the instance opted in, and enforcement is full strength
+    from that point on. The file's existence is the switch.
+    """
+    return ledger_path(repo).exists()
+
+
 def resolve_numbers(repo, text: str) -> list[str]:
     """Numbers in `text` that trace to no ledger row. Empty list = everything traces."""
+    if not adopted(repo):
+        return []
+    text = ISO_DATE_RE.sub(" ", text)  # a date is not a measurement; see ISO_DATE_RE
     grounded = {_norm_number(m.group(1)) for m in NUM_RE.finditer(_evidence_blob(repo))}
     missing = []
     for m in NUM_RE.finditer(text):
         norm = _norm_number(m.group(1))
         if len(norm.replace(".", "")) < MIN_SIGNIFICANT_DIGITS:
+            continue
+        if _is_year(norm):
             continue
         if norm in grounded:
             continue
@@ -205,6 +246,8 @@ def resolve_numbers(repo, text: str) -> list[str]:
 
 def resolve_spans(repo, text: str) -> list[str]:
     """Quoted spans in `text` that appear in no ledger row."""
+    if not adopted(repo):
+        return []
     blob = _evidence_blob(repo).lower()
     missing = []
     for m in SPAN_RE.finditer(text):

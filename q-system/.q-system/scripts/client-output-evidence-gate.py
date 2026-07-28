@@ -28,6 +28,16 @@ that happen to share a value will pass. It also cannot see a false claim carryin
 numbers and no quotes -- prose assertions stay ungated here; the Stop-hook grounding
 guard is what covers those.
 
+Three further holes, all declared rather than silent (ASK-232 / ASK-233):
+  - ISO dates and bare years (1900-2100) are not treated as measurements. A real
+    count that happens to be a 4-digit year ("2026 orders shipped") passes unbacked.
+  - An instance with NO `canonical/evidence.jsonl` is "not adopted yet" and this
+    gate stands down entirely. The file's existence is the opt-in switch; one row
+    turns enforcement on at full strength.
+  - Therefore this gate proves nothing in an instance that never started a ledger.
+    That is deliberate: the previous behaviour blocked every number in the first
+    draft an instance ever wrote, which taught people to reach for the bypass.
+
 Contract: reads hook JSON on stdin. exit 0 = pass, exit 2 = block. stdlib only.
 """
 from __future__ import annotations

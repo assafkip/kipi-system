@@ -90,11 +90,54 @@ def case_single_digits_do_not_block() -> bool:
                "Three things:\n1. First\n2. Second\n3. Third\n") == 0
 
 
-def case_no_ledger_still_blocks_a_number() -> bool:
-    """An instance with no ledger has verified nothing; a claimed count is unbacked."""
+def case_no_ledger_is_a_no_op() -> bool:
+    """DECISION CHANGED 2026-07-28 (ASK-233). This case previously asserted the
+    opposite -- "no ledger still blocks a number" -- on the reasoning that an
+    instance which verified nothing has backed nothing.
+
+    That reasoning is right about the epistemics and wrong about the outcome. With
+    no ledger every lookup misses, so the FIRST draft an instance ever writes blocks
+    on every number in it at once, with no incremental path. The gate was harshest
+    exactly where it had zero signal, and the only way through was the bypass marker
+    -- which turns the gate off permanently for that file. 21 instances received
+    these scripts with no ledger in any of them.
+
+    So an absent ledger now means "not adopted yet" and the gate stands down. The
+    file's existence is the opt-in switch. The pairing case below proves adoption
+    flips enforcement back on at full strength, so this is a bootstrap allowance and
+    not a way to disable the gate by deleting a file."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-thing" / "canonical").mkdir(parents=True)
+    return run(tmp, OUTREACH, "We found 4,200 duplicate rows.\n") == 0
+
+
+def case_one_ledger_row_turns_enforcement_back_on() -> bool:
+    """The negative half of the case above: once the ledger EXISTS, an unbacked
+    number blocks again. Without this, "no ledger no-ops" would be indistinguishable
+    from "the gate never fires"."""
+    tmp = Path(tempfile.mkdtemp())
+    canon = tmp / "q-thing" / "canonical"
+    canon.mkdir(parents=True)
+    (canon / "evidence.jsonl").write_text(json.dumps({
+        "claim_id": "ev-0000000000", "claim": "unrelated fact", "source": "s",
+        "command": "true", "result": "ok", "verified_at": "2026-07-28T00:00:00Z",
+    }) + "\n", encoding="utf-8")
     return run(tmp, OUTREACH, "We found 4,200 duplicate rows.\n") == 2
+
+
+def case_a_date_is_not_a_measurement() -> bool:
+    """ASK-232: `zach-info-request.md` blocked on ['13','2026'], both out of a date.
+    A dated line passes; a genuine unbacked count on the same line still blocks."""
+    tmp = Path(tempfile.mkdtemp())
+    canon = tmp / "q-thing" / "canonical"
+    canon.mkdir(parents=True)
+    (canon / "evidence.jsonl").write_text(json.dumps({
+        "claim_id": "ev-0000000001", "claim": "unrelated", "source": "s",
+        "command": "true", "result": "ok", "verified_at": "2026-07-28T00:00:00Z",
+    }) + "\n", encoding="utf-8")
+    dated_only = run(tmp, OUTREACH, "Recorded on 2026-07-28, our 2026 plan.\n")
+    with_count = run(tmp, OUTREACH, "On 2026-07-28 we found 47 duplicates.\n")
+    return dated_only == 0 and with_count == 2
 
 
 CASES = [
@@ -105,7 +148,9 @@ CASES = [
     ("skip marker bypasses", case_skip_marker_bypasses),
     ("unsourced quote blocks", case_unsourced_quote_blocks),
     ("single digits do not block", case_single_digits_do_not_block),
-    ("no ledger still blocks a number", case_no_ledger_still_blocks_a_number),
+    ("no ledger is a no-op (ASK-233)", case_no_ledger_is_a_no_op),
+    ("one ledger row turns enforcement back on", case_one_ledger_row_turns_enforcement_back_on),
+    ("a date is not a measurement (ASK-232)", case_a_date_is_not_a_measurement),
 ]
 
 

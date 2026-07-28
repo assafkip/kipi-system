@@ -57,6 +57,20 @@ NUM_RE = re.compile(r"(?<![\w.$-])(\d[\d,]*\.?\d*)(?![\w-])")
 # Matched separately: NUM_RE's hyphen boundaries deliberately reject `2026-12-21`, so
 # a date-shaped claim would slip through the number scan that is supposed to catch it.
 DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+# A markdown header carrying a date is metadata, the same as `Date: ...`, and it is
+# the shape the skeleton's OWN handoff template uses: `# Session Handoff - 2026-06-11
+# EOD`. META_RE only recognises `key: value`, so that header matched nothing, DATE_RE
+# fired, and the lint blocked the canonical artifact it exists to protect
+# (sp-be424cdd, ASK-231).
+#
+# This exempts a header from the DATE check ONLY. Numbers in a header are still
+# scanned, so `## the sheet had 1177 rows` still blocks. That distinction is the
+# whole point: the scar (reversal #5) WAS a date claim -- "a row is dated 2026-12-21,
+# five months in the future" -- so blanket-exempting dates would blind this lint to
+# the exact defect it was built for. A heading names a section; a bullet asserts a
+# finding. Only the former is exempt, and only for dates.
+HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s")
 MIN_SIGNIFICANT_DIGITS = 2
 
 # `[verified: <cmd>]` is this lint's own form and stays accepted. Everything else
@@ -92,7 +106,7 @@ def unlabelled_lines(body: str) -> list[tuple[int, str]]:
     for n, line in enumerate(body.splitlines(), 1):
         if has_provenance(line) or META_RE.match(line):
             continue
-        if DATE_RE.search(line):
+        if DATE_RE.search(line) and not HEADER_RE.match(line):
             out.append((n, line.strip()))
             continue
         for m in NUM_RE.finditer(line):
