@@ -290,6 +290,7 @@ PASS=0
 FAIL=0
 SKIP=0
 GATE_FAIL=""
+UNDECLARED=""
 MODEL_RUN=0
 DRY_MODEL_ROOT=""
 ARCHIVE_TMP=""
@@ -840,7 +841,7 @@ reject_untracked_config_collisions() {
 
 trap cleanup_updater_temps EXIT
 
-while IFS='|' read -r name path prefix itype; do
+while IFS='|' read -r name path prefix itype declared; do
   # Filter INSIDE the loop, not in the feed, so an --only name that matches
   # nothing is caught by the post-loop check rather than reading as an empty
   # registry.
@@ -859,9 +860,26 @@ while IFS='|' read -r name path prefix itype; do
   # Standalone repos have no skeleton subtree; nothing to sync and the updater
   # must not auto-commit or rsync into them. (A null subtree_prefix used to
   # crash the registry parser below -- keep this guard before any mutation.)
+  #
+  # Receiving nothing is legitimate. Receiving nothing SILENTLY is not: this
+  # branch printed one identical line either way, so `reddit-build-radar` sat in
+  # the fleet's 24 governed instances with 0 skeleton capabilities -- no
+  # token-guard, no .claude/rules/, no capability gate -- and every fleet-wide
+  # claim about gates holding had an exception nobody could see (ASK-117). The
+  # declaration is what separates a decision from an oversight, so an entry
+  # without one is a run failure, not a skip.
   if [ "$itype" = "standalone" ] || [ -z "$prefix" ]; then
-    echo "  SKIP: standalone (not skeleton-managed)"
-    SKIP=$((SKIP + 1))
+    if [ "$declared" = "declared" ]; then
+      echo "  SKIP: declared not skeleton-managed (skeleton_managed=false)"
+      SKIP=$((SKIP + 1))
+    else
+      echo "  UNDECLARED NON-PROPAGATING: registered as an instance but receives"
+      echo "    no skeleton propagation, and nothing on record says that is intended."
+      echo "    Add \"skeleton_managed\": false to its instance-registry.json entry"
+      echo "    with a note, or give it a subtree_prefix so it actually syncs."
+      UNDECLARED="$UNDECLARED $name"
+      FAIL=$((FAIL + 1))
+    fi
     echo ""
     continue
   fi
@@ -1491,7 +1509,11 @@ for i in d['instances']:
         continue
     t = i.get('type', 'subtree')
     prefix = i.get('subtree_prefix') or ''
-    print(i['name'] + '|' + i['path'] + '|' + prefix + '|' + t)
+    # Only an explicit false counts as a declaration. A missing key is the
+    # reddit-build-radar state -- registered, receiving nothing, nobody on the
+    # record for it -- and must not read the same as a deliberate opt-out.
+    declared = 'declared' if i.get('skeleton_managed') is False else 'undeclared'
+    print(i['name'] + '|' + i['path'] + '|' + prefix + '|' + t + '|' + declared)
 ")
 
 if [ -n "$ONLY" ] && [ "$((PASS+FAIL+SKIP))" -eq 0 ]; then
@@ -1505,6 +1527,12 @@ echo "  Failed:  $FAIL"
 echo "  Skipped: $SKIP"
 if [ -n "${GATE_FAIL:-}" ]; then
   echo "  CAPABILITY GATE RED in:$GATE_FAIL"
+fi
+# In the summary, not only inline: a real run prints ~40 lines per instance and
+# the summary is what gets read. An ungoverned instance that only appears on
+# line 300 of 900 is still, in practice, silent.
+if [ -n "${UNDECLARED:-}" ]; then
+  echo "  UNDECLARED NON-PROPAGATING:$UNDECLARED"
 fi
 
 [ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && exit 0 || exit 1

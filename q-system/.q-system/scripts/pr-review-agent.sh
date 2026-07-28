@@ -74,10 +74,22 @@ run_bounded() {
 }
 
 command -v gh >/dev/null 2>&1 || { echo "gh CLI required" >&2; exit 1; }
-PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null)" || { echo "no PR #$PR" >&2; exit 1; }
+# ONE read of the PR's state, and the head sha comes out of it (ASK-216).
+# Capturing it here -- before the reviewer is dispatched, in the same API read
+# that proves the PR exists -- is the whole point: looked up AFTER the review,
+# a push landing mid-review would make the record claim a commit the reviewer
+# never saw, which is worse than no sha because it looks authoritative. Erring
+# the other way (a push between here and the reviewer's own `gh pr diff`) pins
+# the OLDER sha, which reads as drift and routes to a re-review. Safe direction.
+# The sha is first in the tuple so a tab inside a PR title cannot displace it.
+PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null)" \
+  || { echo "no PR #$PR" >&2; exit 1; }
+HEAD_SHA="${PR_META%%$'\t'*}"
+PR_TITLE="${PR_META#*$'\t'}"
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
+echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
 # $REVIEW is only a variable at this point -- the file is not created until the
@@ -249,14 +261,22 @@ echo "  verdict: ${VERDICT:-unstated}"
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
 # in the timestamped .md files.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" <<'PY'
+#
+# head_sha is the commit this review actually examined, captured before the
+# reviewer ran (ASK-216). Without it the record binds an approval to a PR
+# NUMBER, and the worker reuses one PR across rounds, so any later push inherits
+# the approval. The key is ALWAYS written -- empty when `gh` could not answer --
+# because rework_gate reads empty as "unknown, fall back and say so", and a
+# key that sometimes vanishes is a shape the reader would have to guess at.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd = sys.argv[1:9]
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha = sys.argv[1:10]
 out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
-           "round": int(rnd), "review": review, "ts": ts}, open(out, "w"), indent=2)
+           "round": int(rnd), "review": review, "head_sha": head_sha,
+           "ts": ts}, open(out, "w"), indent=2)
 PY
 
 # Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
@@ -279,9 +299,60 @@ EOF
   echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
 fi
 
+# The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
+#
+# WHY THIS EXISTS: the verdict record above is a LOCAL file. GitHub cannot see
+# it, so no platform mechanism can gate on it, so every approved PR ends its
+# life waiting on a human. Every prior-art integrator (merge queue, Bors,
+# Mergify, Kodiak) has one shape: every precondition is a required status check
+# and the platform does the merging. pr-receipt-gate.py is already a CI step;
+# this was the one piece still stuck on disk.
+#
+# WHY A STATUS AND NOT A PR REVIEW: a commit status needs no second identity. A
+# PR *review* would deadlock -- this agent runs as the account that authors
+# these PRs, and GitHub forbids self-approval. Proven live on PR #23, 2026-07-27.
+#
+# ABSENT IS NOT APPROVED, and that is the point. A reviewer that fails or times
+# out exits well above this, before the verdict is even computed, so no status is
+# posted at all. Once this context becomes a REQUIRED check, "absent" is what
+# holds the PR -- the safe direction. Nothing on an error path here invents one.
+post_reviewer_status() {
+  local sha="$1" verdict="$2" target="$3"
+  local context="kipi/reviewer-approved" state="failure" desc
+  # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
+  # written to the record; re-grepping the review prose here would be a second
+  # reader with its own semantics, which is the defect class this repo keeps
+  # finding. Anything that is not an approval -- including an unstated verdict --
+  # is a failure, so an unparseable review cannot pass a gate by accident.
+  case "$verdict" in
+    "APPROVE"|"APPROVE WITH NITS") state="success" ;;
+  esac
+  desc="$(printf '%.140s' "${verdict:-unstated: no verdict parsed from the review}")"
+  local args=(api -X POST "repos/{owner}/{repo}/statuses/$sha"
+              -f "state=$state" -f "context=$context" -f "description=$desc")
+  # Link only a real URL. The PR comment just above is what --post creates; when
+  # that failed there is nothing to link, and a local file path is not a URL.
+  case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
+  if gh "${args[@]}" >/dev/null 2>&1; then
+    echo "  commit status posted: $context=$state on $sha"
+  else
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
+  fi
+}
+
 if [ "$POST" = "1" ]; then
-  gh pr comment "$PR" --body-file "$REVIEW" >/dev/null 2>&1 \
-    && echo "  posted to PR #$PR" || echo "  WARN: could not comment on PR" >&2
+  COMMENT_URL=""
+  COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW" 2>/dev/null)" \
+    && echo "  posted to PR #$PR" \
+    || { COMMENT_URL=""; echo "  WARN: could not comment on PR" >&2; }
+  # No sha, no status. A status on a guessed commit is worse than none because
+  # it looks authoritative -- the same reason ASK-216 captured the sha before
+  # dispatch instead of looking it up afterwards.
+  if [ -n "$HEAD_SHA" ]; then
+    post_reviewer_status "$HEAD_SHA" "$VERDICT" "$COMMENT_URL"
+  else
+    echo "  no head sha for PR #$PR: posting NO commit status (a status on a guessed sha looks authoritative)"
+  fi
   if [ -n "$ISSUE" ]; then
     python3 "$SYNC" progress "$ISSUE" \
       "Adversarial review of PR #$PR complete. Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \

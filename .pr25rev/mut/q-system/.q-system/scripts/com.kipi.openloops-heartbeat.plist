@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Autonomous open-loops heartbeat. Fires twice daily; wakes a headless agent only
+     when there is open [needs you] work, to advance/close it. Replaces the ping.
+     Disable: launchctl unload ~/Library/LaunchAgents/com.kipi.openloops-heartbeat.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kipi.openloops-heartbeat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/open-loops-heartbeat.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>KIPI_REPO</key>
+    <string>__KIPI_REPO__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>40</integer></dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardErrorPath</key>
+  <string>/tmp/kipi-openloops-heartbeat.err</string>
+</dict>
+</plist>

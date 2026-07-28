@@ -61,7 +61,10 @@ say() { echo "$(TS) converge[$ISSUE] $*" | tee -a "$LOG"; }
 
 BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
 pr_for_branch() { gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null; }
-head_sha()      { gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null; }
+# The head sha comes from pr_head_sha in the shared lib, not a local copy of the
+# same `gh pr view`: this driver and linear-worker.sh now BOTH compare it against
+# the sha a review pinned, and two private readers of one input is how those two
+# comparisons drift apart.
 
 if [ "$DRY" = "1" ]; then
   PR="$(pr_for_branch)"
@@ -156,12 +159,59 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   fi
 
   VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
-  SHA="$(head_sha "$PR")"
+  SHA="$(pr_head_sha "$PR")"
+  REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
 
-  rework_gate "$VERDICT"; GATE=$?
+  # ARGUMENT 2 IS THE MERGE STATE, and this driver still does not read it: ASK-212
+  # scoped mergeability to the worker, which runs first inside every round here.
+  # "" is byte-identical to the one-argument form this call used before, so the
+  # merge half of the gate behaves exactly as it did.
+  #
+  # ARGUMENTS 3 AND 4 ARM ASK-216 (ASK-219, sp-a27722e7). That drift exit shipped
+  # with NO caller passing them -- this call site was the one-argument form named
+  # in its own comment -- so exit 40 could never fire. Observed live 2026-07-28:
+  # an approval recorded at bf641ad and a head of c063c3d converged in three
+  # seconds as "waiting on founder merge only". The reviewed sha comes from the
+  # record the reviewer wrote; the current head is the ONE `gh pr view` read on
+  # the line above, reused rather than read a second time.
+  #
+  # The gate's NOTE goes through `say` so it lands in the run log with everything
+  # else. Swallowing it would silently grandfather the blind spot it announces.
+  GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA")"; GATE=$?
+  [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
   if [ "$GATE" = "10" ]; then
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Waiting on founder merge only."
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR ready to merge" 2>/dev/null || true
+    # NOBODY IS WAITING (ASK-222; PR #33 review, finding 2, one layer out from
+    # where it was filed). This line and the page under it are the SECOND reporter
+    # of the same state the worker's closing line reports -- and this is the half
+    # that Slacks, so it is the one an operator actually reads at 3am. Both said
+    # "waiting on founder merge only" / "ready to merge", true only while nothing
+    # armed auto-merge. The worker runs first inside every round here and arms
+    # every PR it touches, so the merge is the platform's job now.
+    #
+    # It still does NOT re-probe `gh pr view --json autoMergeRequest`: that would
+    # be a second reader of the arm state with its own semantics, drifting from
+    # the worker's. But the alternative to a second reader is NOT an assertion,
+    # which is what this was -- the comment here used to justify the claim with
+    # "the worker arms every PR it touches", and the worker's gate skipped this
+    # exact population 400 lines above its arm, so the sentence was false for
+    # every PR that reached this line (PR #33 review round 3, finding 1 -- major).
+    # It reads the record the ONE reader publishes. Three states, three sentences.
+    #
+    # An empty record means nothing recorded an arm for this PR -- the worker
+    # declined the issue this round, or never got that far -- so this claims
+    # nothing and hands over the command instead.
+    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
+    case "$AUTOMERGE" in
+      armed)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" 2>/dev/null || true ;;
+      unarmed)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+      *)
+        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+    esac
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
@@ -170,14 +220,40 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     exit 7
   fi
 
+  # 40 = STALE. The verdict approves a commit that is no longer the head, so the
+  # code sitting at the head has never been read. NOT terminal and never a merge:
+  # another round runs, and the review at the end of it writes a record pinned to
+  # the current head, which is the only thing that clears this.
+  #
+  # Deliberately falls THROUGH to the no-progress guard below rather than
+  # `continue`-ing past it. If the head and the verdict both stop moving, that
+  # guard stops the loop at exit 5; skipping it would re-review the same PR every
+  # round to the cap, which is the cry-wolf failure this exit has to avoid.
+  if [ "$GATE" = "40" ]; then
+    say "round $ROUND: PR #$PR reads '$VERDICT', but that verdict was recorded at $REVIEWED_SHA and the head is now $SHA -- the code at the head was never reviewed. NOT done; re-reviewing."
+  fi
+
   # NO PROGRESS (exit 5). Same verdict AND the branch head never moved means the
   # rework pass changed nothing -- running it again re-reads the same review and
   # produces the same nothing. Requiring BOTH avoids a false stop: a real fix
   # that happens to draw the same verdict again still moves the sha, and that is
   # convergence in progress, not a stall.
   if [ "$VERDICT" = "$LAST_VERDICT" ] && [ -n "$LAST_SHA" ] && [ "$SHA" = "$LAST_SHA" ]; then
-    say "STOP exit-5: round $ROUND changed no code and drew the same verdict '$VERDICT'. Not burning another round."
-    bash "$NOTIFY" "converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND" 2>/dev/null || true
+    # THE PAGE HAS TO CARRY THE DRIFT, because it is the only thing that reaches
+    # the founder's phone (PR #30 review round 2, minor 4). Gate 40 falls through
+    # to this guard on purpose, so a stuck drift -- a held claim, a tree that
+    # needs a human, a reviewer that is down -- exits here. The generic text read
+    # "stalled at 'APPROVE WITH NITS', no code change in round N", which is a
+    # benign stall on an approved PR. The gate-40 line above is in the run log;
+    # the log is not what wakes anyone.
+    STALL_LOG="STOP exit-5: round $ROUND changed no code and drew the same verdict '$VERDICT'. Not burning another round."
+    STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
+    if [ "$GATE" = "40" ]; then
+      STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
+      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
+    fi
+    say "$STALL_LOG"
+    bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"

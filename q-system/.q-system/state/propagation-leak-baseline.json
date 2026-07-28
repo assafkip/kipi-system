@@ -1,249 +1,4 @@
 {
-  "schema_version": 1,
-  "blocking_classes": [
-    "case_proof_gap",
-    "client_identity",
-    "dated_interaction",
-    "pricing",
-    "relationship",
-    "source_identity",
-    "sourced_interaction"
-  ],
-  "classifier_sha256": "cc1bbe24488d547c73d818e0fcc943ed993e3a9c9d08208a8b8cedc1d8269ca7",
-  "entries": [
-    {
-      "path": "plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml",
-      "fact_class": "client_identity",
-      "indent": "nested",
-      "line_sha256": "798ba272a5ff7d3516b69bda7332c4a6e5fdfd9521a7f3befde0cc2ee75ce23e",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/sources/linkedin-prospects.yaml: `prospect: string` is a schema type declaration, not a populated field"
-    },
-    {
-      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "47338542b859c8e1fa3444d62f3c10554df1af8a5dc0f3794c8e8b6df3e72585",
-      "count": 4,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py: `source: dict[str, Any],` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "cf458e0b434a3dc114a779f0255e20fb8a92becc24e634a0f6c832a02b018c86",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/src/kipi_mcp/competitive_intel.py: `source: str` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/executors/http_executor.py",
-      "fact_class": "client_identity",
-      "indent": "nested",
-      "line_sha256": "80a5631c0ae56e698c84d9c469b6ff15621a5eac3558e2e8e7156789dd9e2063",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/src/kipi_mcp/executors/http_executor.py: `client: httpx.AsyncClient,` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py",
-      "fact_class": "client_identity",
-      "indent": "nested",
-      "line_sha256": "cf97bf74018497e40c569f103b60cb63ca3f13114d68fed4317bd4610dcfb830",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py: `company: Company or project name to derive the slug from.` is a docstring parameter description, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "cb8af87103aa8da713e8881951ebe3f629bc4181538a30058e8b661c670c448e",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py: `source: Source file the claim was checked against.` is a docstring parameter description, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-core/skills/headline-engineering/references/research-receipts.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "020973afde55d94e1067bef3cbdd50d8b530540a431339eaec7783d17fb44036",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/skills/headline-engineering/references/research-receipts.md: `Source: web research, May 2026, multiple aggregators ([teract.ai](https:/...` is a citation of a public source or its public author, not a client"
-    },
-    {
-      "path": "plugins/kipi-core/skills/headline-engineering/references/research-receipts.md",
-      "fact_class": "sourced_interaction",
-      "indent": "top",
-      "line_sha256": "5b101b8cb6918819307face143e4c81efae0135d6d7a98b714e8a22ef0db60a9",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/skills/headline-engineering/references/research-receipts.md: `Source: direct Reddit MCP pulls on 2026-05-20, top-of-month sorted across...` is a citation of a public source or its public author, not a client"
-    },
-    {
-      "path": "plugins/kipi-core/skills/research-mode/SKILL.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "e78144190ccf405638a06d41076d2893aa901a319c6e0271d8f9acddf88c1968",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/skills/research-mode/SKILL.md: `Source: [Anthropic - Reduce Hallucinations](https://docs.anthropic.com/en...` is a citation of a public source or its public author, not a client"
-    },
-    {
-      "path": "plugins/kipi-core/skills/research-mode/references/anthropic-reduce-hallucinations.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "4ff0e9e962e6af6db34c972abcc142145efefe500179f6b6ea1ad83f54384dec",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-core/skills/research-mode/references/anthropic-reduce-hallucinations.md: `Source: https://docs.anthropic.com/en/docs/test-and-evaluate/strengthen-g...` is a citation of a public source or its public author, not a client"
-    },
-    {
-      "path": "plugins/kipi-design/skills/brand/references/asset-organization.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "83e7b16ee6d25e196858b0ff4fe65a049ff490bde32d4f41af1c01091076f244",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/brand/references/asset-organization.md: `| source | imagen-4, veo-3, user-upload, canva, figma |` is a table row of column labels or tool options, not data"
-    },
-    {
-      "path": "plugins/kipi-design/skills/brand/scripts/inject-brand-context.cjs",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "eee588fddfce8eaf16fc6f338e6948db83d10e1af855ea1c7b0c8f7213f676a8",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/brand/scripts/inject-brand-context.cjs: `source: resolvedPath,` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "plugins/kipi-design/skills/design/references/slides-copywriting-formulas.md",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "29663817cb2376651fc778d2548e1a5729db9b05af40cd229173af76f89cfea5",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/design/references/slides-copywriting-formulas.md: `| Pricing | Value Stack | confidence |` is a table row of column labels or tool options, not data"
-    },
-    {
-      "path": "plugins/kipi-design/skills/ui-ux-pro-max/data/design.csv",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/ui-ux-pro-max/data/design.csv: `Visual DNA:\u00a0Relentless motion and aggressive scale. Numbers tower over la...` is design-style prose whose numerals trip the currency pattern"
-    },
-    {
-      "path": "plugins/kipi-design/skills/ui-ux-pro-max/data/draft.csv",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/ui-ux-pro-max/data/draft.csv: `Visual DNA:\u00a0Relentless motion and aggressive scale. Numbers tower over la...` is design-style prose whose numerals trip the currency pattern"
-    },
-    {
-      "path": "plugins/kipi-design/skills/ui-ux-pro-max/src/data/design.csv",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/ui-ux-pro-max/src/data/design.csv: `Visual DNA:\u00a0Relentless motion and aggressive scale. Numbers tower over la...` is design-style prose whose numerals trip the currency pattern"
-    },
-    {
-      "path": "plugins/kipi-design/skills/ui-ux-pro-max/src/data/draft.csv",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "5bd26c17e73cd19f115fc11fca9a0ceb2613622ca547b232a68c50c9c59c62a2",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/kipi-design/skills/ui-ux-pro-max/src/data/draft.csv: `Visual DNA:\u00a0Relentless motion and aggressive scale. Numbers tower over la...` is design-style prose whose numerals trip the currency pattern"
-    },
-    {
-      "path": "plugins/prd-os/scripts/config.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "ad74d100f79a070611f96728913ca63755400ddbb2a603585f6742db1ab5dbf8",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/prd-os/scripts/config.py: `source: Optional[Path] = None` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "plugins/prd-os/tests/test_propose_skeptic_antipatterns.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "beab5768f43633f13a1ea786ed99b0f32a85a525e55e3798863b65fc958d0b92",
-      "count": 1,
-      "justification": "read 2026-07-25 in plugins/prd-os/tests/test_propose_skeptic_antipatterns.py: `source: str = \"codex-review\",` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "q-system/.q-system/agent-pipeline/agents/05-lead-sourcing.md",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "5dbf758156a04e4a35ae478c425c67c188b629a34eff03fd64032e40c5c4e13a",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/agent-pipeline/agents/05-lead-sourcing.md: `**Budget cap (ENFORCED):** Total Apify spend across Instagram + TikTok mu...` is our own tool spend guidance, not client pricing"
-    },
-    {
-      "path": "q-system/.q-system/agent-pipeline/agents/_cadence-config.md",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "c70e986e5dcec3119c33943ac5c34b9e59810c8042a925f6c527ff8906da8504",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/agent-pipeline/agents/_cadence-config.md: `**Budget cap:** Do not exceed $2 total Apify spend per morning run across...` is our own tool spend guidance, not client pricing"
-    },
-    {
-      "path": "q-system/.q-system/commands.md",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "dacb346ae0cd05c6920ef60ca09d10af5bec2a233a49eb9ddc62d7f4b32b7c35",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/commands.md: `**Cost estimate:** Apify ~$0.50 per run (X/Twitter only). The canonical R...` is our own tool spend guidance, not client pricing"
-    },
-    {
-      "path": "q-system/.q-system/onboarding/guides/connect-gamma.md",
-      "fact_class": "pricing",
-      "indent": "top",
-      "line_sha256": "a852b5c00dd02c8bedf03874793a11bda2c3acc199cee657ae25a502f8517b8d",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/onboarding/guides/connect-gamma.md: `| \"Is Gamma free?\" | \"Gamma has a free tier with limited presentations. P...` is a table row of column labels or tool options, not data"
-    },
-    {
-      "path": "q-system/.q-system/scripts/memory_reflect.py",
-      "fact_class": "source_identity",
-      "indent": "nested",
-      "line_sha256": "ee18816332e769c2b3ac7e6bff26283e544ac6924459048c37090658c4e6f78c",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/scripts/memory_reflect.py: `source: dict[str, str] = {}` is a parameter type annotation in source code, nothing asserted"
-    },
-    {
-      "path": "q-system/.q-system/state-model.md",
-      "fact_class": "case_proof_gap",
-      "indent": "top",
-      "line_sha256": "1725bf79557b8124b3947c1ac139c18e7aaecbb859192a19e07930be0d1abff2",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/state-model.md: `| Proof gaps | `canonical/objections.md` | DEBRIEF mode |` is a table row of column labels or tool options, not data"
-    },
-    {
-      "path": "q-system/.q-system/tests/separation/test_template_restoration.py",
-      "fact_class": "case_proof_gap",
-      "indent": "top",
-      "line_sha256": "214e81f9dfabba0c353e1155b91682b8d42be2d8d6922477f81513868610b23b",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/.q-system/tests/separation/test_template_restoration.py: `- **Gaps:** (what we still can't answer well)` is a markdown template placeholder inside a test fixture"
-    },
-    {
-      "path": "q-system/.q-system/tests/separation/test_template_restoration.py",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "fd84ff02767cdc1dba7ccc13ef017aa27be739252d57afa360ece65b8cc63747",
-      "count": 2,
-      "justification": "read 2026-07-25 in q-system/.q-system/tests/separation/test_template_restoration.py: `- **Source:** [Person] - [Date]` is a markdown template placeholder inside a test fixture"
-    },
-    {
-      "path": "q-system/research/cc-workflow-learnings-2026-06-02.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "4e4f1c717ddb2b22e7e18766fbba97bed1052f05486f393b00f529da38bad315",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/research/cc-workflow-learnings-2026-06-02.md: `Source: viral article by mvanhorn (author of `last30days`, #3 contributor...` is a citation of a public source or its public author, not a client"
-    },
-    {
-      "path": "q-system/research/skill-article-skillopt-2026-05-31.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "1707f3047f20c1b000508d9805e4ea8b0c52e05fd7e025ce19583e2fe4019984",
-      "count": 1,
-      "justification": "read 2026-07-25 in q-system/research/skill-article-skillopt-2026-05-31.md: `**Source:** arXiv:2605.23904 \u2014 \"SkillOpt: Executive Strategy for Self-Evo...` is a citation of a public source or its public author, not a client"
-    }
-  ],
   "_readme": [
     "ARMED 2026-07-25. Each entry quotes the line that was actually read, then",
     "says what it is. None is a client name, a deal amount, or a real",
@@ -259,5 +14,26 @@
     "Reviewable only because the classifier was narrowed first: `name` and",
     "`date` are no longer fact signals (118 and 90 of 253 findings, not one a",
     "client). 253 -> 29. Re-baseline with rebaseline_document(); do not hand-edit."
-  ]
+  ],
+  "blocking_classes": [
+    "case_proof_gap",
+    "client_identity",
+    "dated_interaction",
+    "pricing",
+    "relationship",
+    "source_identity",
+    "sourced_interaction"
+  ],
+  "classifier_sha256": "cb5c31f32e12669210a36fc4434c0430037db1da8fe8765d856d67251dbfeeb2",
+  "entries": [
+    {
+      "count": 1,
+      "fact_class": "source_identity",
+      "indent": "top",
+      "justification": "read 2026-07-25 in q-system/research/cc-workflow-learnings-2026-06-02.md: `Source: viral article by mvanhorn (author of `last30days`, #3 contributor...` is a citation of a public source or its public author, not a client",
+      "line_sha256": "4e4f1c717ddb2b22e7e18766fbba97bed1052f05486f393b00f529da38bad315",
+      "path": "q-system/research/cc-workflow-learnings-2026-06-02.md"
+    }
+  ],
+  "schema_version": 1
 }

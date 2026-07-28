@@ -1,0 +1,16 @@
+
+BLOCK: this commit names no Linear issue.
+
+  subject: chore: no issue id here
+
+Every commit records the work it belongs to. Pick one:
+
+  1. Add the issue id anywhere in the message:
+       fix(gate): restamp classifier (ASK-61)
+
+  2. No issue yet? Create one, then reference it.
+
+  3. Genuinely not issue-worthy (typo, formatting):
+       chore: fix typo [no-issue: docs typo]
+     This is logged to the bypass ledger, not waved through.
+

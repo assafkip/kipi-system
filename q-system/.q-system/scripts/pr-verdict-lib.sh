@@ -66,18 +66,161 @@ verdict_from_findings() {
   fi
 }
 
-# rework_gate <verdict>
+# pr_merge_state <pr-number>
+# GitHub's mergeStateStatus for a PR: CLEAN | DIRTY | BEHIND | BLOCKED |
+# UNSTABLE | DRAFT | HAS_HOOKS | UNKNOWN, or empty when gh cannot answer.
+# ONE reader of this state, for the same reason this file exists at all: the
+# worker and the driver both need it, and two callers each shelling their own
+# `gh pr view` is two readers of one input with drifting semantics. Empty on any
+# failure, which the gate treats as "still merges" -- see rework_gate.
+pr_merge_state() {
+  gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
+}
+
+# pr_head_sha <pr-number>
+# The commit at the tip of the PR's head branch RIGHT NOW (GitHub's headRefOid),
+# or empty when gh cannot answer. ONE reader, for the same reason pr_merge_state
+# is one: both drivers have to agree on what "the current head" means before they
+# can compare it to the sha a review pinned, and two callers each shelling their
+# own `gh pr view` is two readers of one input with drifting semantics -- the
+# defect class this file exists to close. Empty on any failure, which rework_gate
+# reads as "unknown, fall back and say so", never as drift.
+pr_head_sha() {
+  gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]'
+}
+
+# --- the arm-state record (ASK-222, PR #33 review round 3, finding 1) --------
+# record_automerge <path> <armed|unarmed|unknown>   -- written by the ONE reader
+# automerge_from_record <path>                      -- read by everyone else
+#
+# WHY A RECORD AND NOT A SECOND PROBE. linear-worker.sh asks GitHub whether a PR
+# has auto-merge on. converge.sh reports on the same PR minutes later and has to
+# say who merges it. Giving converge its own `gh pr view --json autoMergeRequest`
+# would be two readers of one input with drifting semantics -- the defect class
+# this whole file exists to close, and converge's own call sites refuse it
+# elsewhere. The alternative it reached for instead was an ASSERTION: a comment
+# claiming "the worker arms every PR it touches", which was false for every PR
+# the worker skipped as done, so the founder's phone got "no human merge needed"
+# on PRs nothing had armed. A record is neither: it is the one reader's own
+# answer, published, exactly like the verdict record two functions up.
+#
+# STALENESS, STATED. The record is rewritten every time the worker reaches the
+# PR. A run that never got there (another session's claim, a worktree that could
+# not be made) leaves the previous run's word standing. That is safe in the
+# direction that matters: "armed" only goes false if a human turns auto-merge
+# off, and "unarmed"/"unknown" both point the operator at the fallback command,
+# which is a no-op on a PR that is in fact armed. Absent means absent -- the
+# reader gets an empty string and must claim nothing.
+record_automerge() {
+  printf '%s\n' "$2" > "$1" 2>/dev/null || true
+}
+
+automerge_from_record() {
+  [ -s "$1" ] || return 0
+  tr -d '[:space:]' < "$1" 2>/dev/null
+}
+
+# _sha_norm <sha>
+# Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
+# newline are not drift. A PREFIX is deliberately NOT treated as a match: both
+# sides of the comparison come from GitHub's full 40-char headRefOid, so a short
+# sha means something unexpected wrote the record, and reading that as "same
+# commit" would be a guess in the never-merge direction's favour.
+_sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
+
+# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
-#   10 = approved    (APPROVE or APPROVE WITH NITS -- nothing to rework; the PR
-#                     waits on the founder. Minors were captured, not wedged.)
+#   10 = approved    (APPROVE or APPROVE WITH NITS *and it still merges* --
+#                     nothing to rework; the PR waits on the founder. Minors
+#                     were captured, not wedged.)
 #   20 = unreviewed  (no verdict -- with no review there is no spec; refuse and
 #                     point at `kipi review <PR#> --post` instead of guessing)
+#   30 = conflicted  (approved, but it no longer merges -- a REBASE round, not a
+#                     review round. Distinct from 0 so the caller can cap it
+#                     separately; see the caller-owned cap note below.)
+#   40 = stale       (approving, but at a sha that is no longer the PR's head --
+#                     re-review at the new sha. NEVER merge, never auto-approve.)
+#
+# WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
+# ----------------------------------------------------------
+# A verdict is a statement about a diff at a moment. The merge state is a
+# statement about that diff against main NOW, and main moves underneath it. PR
+# #11 was approved at 06:08Z; #16 landed at 17:30Z and broke it. Reading the
+# verdict alone, both converge and a direct worker run skipped #11 in under two
+# seconds and reported "waiting on founder merge only" -- so the loop could not
+# dispatch the one thing actually blocking the merge, and a human had to
+# diagnose it by hand. An approved PR that does not merge is not done.
+#
+# ONLY A STATED DIRTY OR BEHIND COUNTS. BLOCKED is a branch-protection state a
+# rebase cannot fix, UNSTABLE is a failing non-required check, UNKNOWN is GitHub
+# still computing, and empty is gh failing. Treating any of those as a conflict
+# would manufacture rebase rounds on healthy PRs every time the API was slow --
+# the wrong-refusal failure that would stall every instance's worker at once.
+# Fail toward "terminal": a missed conflict costs one human diagnosis, a
+# manufactured one costs unbounded model budget on every PR at once.
+#
+# 30 IS NOT 0, AND THE CAP IS THE CALLER'S (PR #22 round-3 review, finding 4)
+# --------------------------------------------------------------------------
+# Making APPROVE non-terminal opens an unbounded rework path: an unresolvable
+# conflict yields infinite rounds, and every round writes a permanent Linear
+# comment on an object that cannot be deleted. So this returns a DISTINCT code
+# rather than folding into 0. The caller caps conflict rounds on its own budget,
+# separate from the review-round budget -- a PR that has converged on content
+# must not lose its review rounds to rebase attempts. The gate answers "is this
+# a conflict?"; it does not answer "have we tried enough times?", because the
+# round ledger lives with the caller that owns the dispatch.
+#
+# The ONE-ARGUMENT form keeps its original semantics exactly (no merge state
+# supplied reads as "still merges"), because converge.sh calls it that way and a
+# silent behaviour change on the short form is a fleet-wide bug.
+#
+# WHY THE SHA IS PART OF THE GATE (ASK-216, sp-12f99480)
+# ------------------------------------------------------
+# A verdict record keyed on a PR NUMBER says "this PR was approved", never "this
+# CODE was approved". The worker reuses one branch and one PR across rework
+# rounds (linear-worker.sh:328), so every push landing after an approval
+# inherited that approval silently. Today that is a stale skip; under an
+# integrator it is an auto-merge of code no reviewer ever read, on a repo whose
+# main fans out fleet-wide through `kipi update`. pr-receipt-gate.py already
+# reasons this way with --head-sha; a verdict is the same class of claim.
+#
+# ABSENT IS NOT DRIFT. Every record written before this change lacks the field,
+# so absent falls back to verdict-only and SAYS SO on stdout -- reading
+# absent-as-drift would re-review every converged PR on the board at once. Same
+# posture when the CURRENT head cannot be read: fail toward terminal, exactly as
+# an empty merge state does above. A manufactured re-review round costs the
+# whole fleet at once; a missed one costs a single human diagnosis.
+#
+# DRIFT OUTRANKS THE MERGE STATE. When both fire, the sha wins: a rebase round
+# dispatched on a diff nobody reviewed is the same unreviewed-code path wearing
+# a rebase coat. Re-review first; the fresh record then decides.
+#
+# 40 IS NOT 10 AND NOT 30. Callers passing 1 or 2 arguments (converge.sh,
+# linear-worker.sh -- neither touched by this issue) can never see it, and a
+# caller that does not know 40 falls out of its if-chain into the rework path,
+# which is the safe direction: not terminal, never a merge.
 rework_gate() {
-  case "${1:-}" in
+  local verdict="${1:-}" merge_state="${2:-}" reviewed_sha="${3:-}" current_sha="${4:-}"
+  case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
-    "APPROVE"|"APPROVE WITH NITS")        return 10 ;;
+    "APPROVE"|"APPROVE WITH NITS")
+      # Silent unless a caller actually asked for the sha check, so the short
+      # forms stay byte-identical and no line is printed on every worker run.
+      if [ -n "$reviewed_sha" ] || [ -n "$current_sha" ]; then
+        if [ -z "$reviewed_sha" ]; then
+          echo "  NOTE: no head_sha in this verdict record (written before ASK-216) -- cannot tell an approval from one inherited by a later push; falling back to verdict-only"
+        elif [ -z "$current_sha" ]; then
+          echo "  NOTE: could not read the PR's current head_sha; not manufacturing a re-review round on an unreadable head"
+        elif [ "$(_sha_norm "$reviewed_sha")" != "$(_sha_norm "$current_sha")" ]; then
+          return 40
+        fi
+      fi
+      case "$merge_state" in
+        "DIRTY"|"BEHIND")                 return 30 ;;
+        *)                                return 10 ;;
+      esac ;;
     *)                                    return 20 ;;
   esac
 }
@@ -112,5 +255,18 @@ verdict_from_record() {
   [ -s "$f" ] || return 0
   python3 -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("verdict",""))
+except Exception: pass' "$f" 2>/dev/null || true
+}
+
+# head_sha_from_record <verdict-json>
+# Reads the `head_sha` field: the commit the review actually examined. EMPTY for
+# every record written before ASK-216, for a corrupt record, and for a run where
+# `gh` could not answer -- all three are the same thing to rework_gate, which
+# reads empty as "unknown, fall back and say so", never as drift.
+head_sha_from_record() {
+  local f="$1"
+  [ -s "$f" ] || return 0
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("head_sha","") or "")
 except Exception: pass' "$f" 2>/dev/null || true
 }
