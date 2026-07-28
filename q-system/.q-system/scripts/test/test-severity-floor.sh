@@ -479,7 +479,15 @@ ok "it stopped at the conflict cap, not as unreviewed"
 PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
-grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
+# RE-ANCHORED ON THE ACTION, NOT THE PHRASE (ASK-223). This asserted the literal
+# words "needs a human", which every page in this pipeline used to end with and
+# which told the founder nothing at 3am. The contract now is diagnosis + a
+# runnable command, linted across both scripts by
+# test-linear-pipeline-health.sh. Checking for the command is strictly stronger
+# than checking for the old phrase: "needs a human" passes on a page that names
+# no next step, `Do: gh pr checkout` cannot.
+grep -q "Do: gh pr checkout" "$W2/pages.txt" \
+  || fail "the page does not carry the command that resolves the conflict: $(cat "$W2/pages.txt")"
 ok "exactly one page across two runs at the cap (no per-cycle noise)"
 
 # --- G. approved + CLEAN must still be left alone ----------------------------

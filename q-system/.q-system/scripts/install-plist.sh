@@ -15,6 +15,14 @@
 #
 # Usage: bash q-system/.q-system/scripts/install-plist.sh <label> [--render-only <out>]
 #   e.g. bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-health
+#
+# WATCHDOG JOBS THIS INSTALLS (each runs a script that watches something OTHER
+# than itself, which is the only place a watcher can see a silent death from):
+#   com.kipi.fleet-health          -> fleet-health-daily.py
+#   com.kipi.launchd-health        -> launchd-health-check.py (watches launchd)
+#   com.kipi.linear-pipeline-health -> linear-pipeline-health.py (ASK-223; watches
+#       converge.sh / linear-worker.sh from OUTSIDE, because every pager those two
+#       carry dies with the process that was supposed to send it)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

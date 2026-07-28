@@ -211,9 +211,19 @@ ok "--dry is read-only and reports the real number; an unknown flag refuses"
 for script in "$CONVERGE" "$WORKER"; do
   [ -f "$script" ] || fail "missing $script"
   MISSING=0
+  FOUND=0
   while IFS= read -r line; do
+    # `grep -n` prefixes NNN:, so a comment test has to strip that first -- the
+    # naive `grep -v '^#'` matched nothing and let a prose line about $NOTIFY
+    # count as an unactioned page.
+    body="${line#*:}"
+    case "${body#"${body%%[![:space:]]*}"}" in "#"*) continue ;; esac
+    FOUND=$((FOUND + 1))
     case "$line" in *"Do: "*) ;; *) echo "  no action: $line" >&2; MISSING=$((MISSING + 1)) ;; esac
-  done < <(grep -n 'bash "\$NOTIFY"' "$script" | grep -v '^\s*#')
+  done < <(grep -n 'bash "\$NOTIFY"' "$script")
+  # A lint that finds nothing to lint passes for the wrong reason. If the pages
+  # are ever renamed out from under this grep, that is a RED, not a green.
+  [ "$FOUND" -gt 0 ] || fail "$(basename "$script") has no \$NOTIFY pages -- the lint matched nothing"
   [ "$MISSING" = "0" ] \
     || fail "$(basename "$script") has $MISSING page(s) with no 'Do: ' action"
 done

@@ -699,7 +699,7 @@ while IFS= read -r ISSUE; do
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
         if claim_page_once "$ISSUE" conflict_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) -- the conflict is one the loop cannot resolve, so an approved PR is stuck and will never land on its own. Do: gh pr checkout $EXISTING_PR && git rebase origin/main, resolve, push" 2>/dev/null || true
         fi
         continue
       fi
@@ -832,7 +832,7 @@ while IFS= read -r ISSUE; do
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
       say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
       if claim_page_once "$ISSUE" tree_paged; then
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits AND has uncommitted local work, so the loop refuses to touch it rather than destroy that work. Nothing progresses on $ISSUE until it is cleared. Do: cd $TREE && git status, then either commit and push, or stash it" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -1029,7 +1029,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      bash "$NOTIFY" "worker: $ISSUE gave up after $MAX_ATTEMPTS attempts. The loop will not pick it up again, so the work is stranded until someone looks -- a repeated give-up is almost always scope or a wrong DoR, not a flaky run. Do: tail -100 $LOG for the last failure, then either fix the DoR or split it with kipi linear issue \"<one change>\"" 2>/dev/null || true
     fi
   fi
 

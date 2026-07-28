@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Outside watcher for the Linear pipeline (ASK-223).
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh, the same convention com.kipi.fleet-health.plist uses. A plist
+     that hardcodes the founder's home is unusable on any other machine and fails
+     validate-separation's skeleton sweep (ASK-191).
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-pipeline-health
+
+     WHY launchd AND NOT A STEP INSIDE THE PIPELINE: the whole point is to observe
+     from OUTSIDE the processes that fail. A check that runs inside converge dies
+     when converge dies, which is the silent death this watches for. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kipi.linear-pipeline-health</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/linear-pipeline-health.py</string>
+  </array>
+
+  <!-- Every 15 minutes. Tuned against GREEN_STALL_MINUTES (20): a PR that goes
+       green is reported within one cycle of crossing that line, and a breakage
+       nobody fixes still pages at most once per RE_PING_TTL_SECONDS (6h) because
+       the dedupe ledger is what limits volume, not the interval. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.config/kipi/linear-pipeline-health.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.config/kipi/linear-pipeline-health.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>__KIPI_REPO__</string>
+</dict>
+</plist>
