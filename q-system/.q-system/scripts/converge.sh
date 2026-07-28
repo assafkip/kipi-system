@@ -171,12 +171,26 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # up unseen. The autonomy contract already pre-authorizes merge during
     # unattended runs, so the merge happens here and the only thing left worth
     # waking someone for is a merge that FAILED.
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merging."
-    if MERGE_OUT="$(gh pr merge "$PR" --squash 2>&1)"; then
-      say "merged PR #$PR (squash). Silent by design -- see this log for the record."
+    # --auto, NOT a bare merge. A bare `gh pr merge --squash` merges RIGHT NOW or
+    # fails, and at this moment `validate` is often still running on the head the
+    # reviewer just approved -- so the bare form would fail on timing alone and
+    # page "auto-merge FAILED" on a PR that was about to be perfectly fine. That
+    # is the cry-wolf failure this whole change set exists to remove.
+    #
+    # --auto hands the decision to GitHub, which holds the PR until every required
+    # context is green (`validate` + `kipi/reviewer-approved`, armed 2026-07-28)
+    # and then merges with nobody watching. It also SURVIVES THIS PROCESS DYING,
+    # which a bare merge cannot: converge exits on the next line.
+    #
+    # Same mechanism the worker arms at PR-open time (ASK-222), deliberately. Two
+    # call sites, ONE mechanism -- arming twice is a no-op. Two different merge
+    # mechanisms would be the two-writers defect this repo keeps finding.
+    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Arming auto-merge."
+    if MERGE_OUT="$(gh pr merge "$PR" --squash --auto 2>&1)"; then
+      say "auto-merge armed on PR #$PR; GitHub merges it when the required checks pass. Silent by design -- see this log for the record."
     else
-      say "MERGE FAILED for PR #$PR: $MERGE_OUT"
-      bash "$NOTIFY" "converge $ISSUE: PR #$PR PASSED review ($VERDICT) but auto-merge FAILED. Reason: $(printf '%s' "$MERGE_OUT" | head -1). Do: gh pr merge $PR --squash" 2>/dev/null || true
+      say "ARMING FAILED for PR #$PR: $MERGE_OUT"
+      bash "$NOTIFY" "converge $ISSUE: PR #$PR PASSED review ($VERDICT) but auto-merge could NOT be armed, so it will sit unmerged forever. Reason: $(printf '%s' "$MERGE_OUT" | head -1). Do: gh pr merge $PR --squash --auto" 2>/dev/null || true
     fi
     exit 1
   fi
