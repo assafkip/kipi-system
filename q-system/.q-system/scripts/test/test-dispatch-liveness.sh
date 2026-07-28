@@ -50,6 +50,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 DISPATCH="$REPO_ROOT/kipi-dispatch.sh"
 [ -f "$DISPATCH" ] || { echo "FATAL: kipi-dispatch.sh not found at $DISPATCH" >&2; exit 1; }
 
+# A UNIQUE issue id per run. Every assertion here goes through the GLOBAL
+# process table, so a hardcoded id makes two concurrent runs of this suite (the
+# capability gate runs the fleet's tests together) see each other's decoys: one
+# run's live converge satisfies the other run's duplicate guard, and cases fail
+# for a reason that has nothing to do with the code under test. Observed exactly
+# that way on 2026-07-28 -- 17/17 standalone, 15/17 under the gate.
+ISS="ASK-9$$"
+
 ROOT="$(mktemp -d)"
 trap 'pkill -f "$ROOT/converge.sh" 2>/dev/null; rm -r -- "$ROOT" 2>/dev/null' EXIT
 
@@ -80,10 +88,10 @@ make_kipi() {  # make_kipi <alive|dead>
   cat > "$FAKE_REPO/kipi" <<SH
 #!/usr/bin/env bash
 case "\$1" in
-  work) printf '1 ready issue\n[dry] would work ASK-930\n' ;;
+  work) printf '1 ready issue\n[dry] would work $ISS\n' ;;
   converge)
     if [ "$1" = "alive" ]; then
-      exec bash "$ROOT/converge.sh" --issue ASK-930 --max-rounds 3
+      exec bash "$ROOT/converge.sh" --issue $ISS --max-rounds 3
     fi
     # "dead": exit immediately, exactly like a child launchd has reaped.
     exit 0
@@ -119,7 +127,7 @@ reset_state() {
 echo "test-dispatch-liveness.sh"
 
 # --- 1. a dispatch that dies immediately is reported as DIED ----------------
-# THE REGRESSION. With the old code this case printed "dispatched ASK-930" and
+# THE REGRESSION. With the old code this case printed "dispatched $ISS" and
 # exited 0 while nothing ran.
 reset_state
 make_kipi dead
@@ -133,7 +141,7 @@ else
   bad "1b the log says the dispatch died" "$(dlog)"
 fi
 
-if dlog | grep -q "dispatched ASK-930 (confirmed running)"; then
+if dlog | grep -q "dispatched $ISS (confirmed running)"; then
   bad "1c it does NOT claim the run is confirmed" "$(dlog)"
 else
   ok "1c it does NOT claim the run is confirmed"
@@ -188,6 +196,97 @@ if grep -qE '^\s*nohup \./kipi converge' "$DISPATCH"; then
   bad "3b the reaped nohup form has not come back" "nohup ./kipi converge is back in kipi-dispatch.sh"
 else
   ok "3b the reaped nohup form has not come back"
+fi
+
+# --- 4. an unrelated live converge must not vouch for a dead child ----------
+# PR #39 review, finding 1. The first cut of this liveness check asked "is SOME
+# converge for this issue in the process table?" -- so any other converge on the
+# same issue answered on the dead child's behalf, rebuilding the exact
+# silent-success hole one layer up.
+#
+# The reviewer's chain, reproduced here: the child is launched, it spawns a
+# DECOY that matches the process-table pattern and then dies itself. A
+# table-grep sees the decoy and reports "confirmed running". A pid-bound check
+# sees the child it actually launched is gone and reports DIED.
+#
+# The decoy is started by the child rather than beforehand on purpose: started
+# beforehand, the duplicate-dispatch guard would skip the issue and the
+# liveness check would never run at all.
+reset_state
+cat > "$FAKE_REPO/kipi" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  work) printf '1 ready issue\n[dry] would work $ISS\n' ;;
+  converge)
+    # Spawn something that LOOKS like a live converge for this issue...
+    # Plain background, not setsid: macOS ships no setsid(1), so that spelling
+    # is a command-not-found and the decoy never starts, which would make this
+    # whole case pass for the wrong reason. The child is already in its own
+    # session (the dispatcher put it there), so its children survive anyway.
+    # NOTE: no backticks anywhere in this heredoc -- it is unquoted (<<SH) so
+    # backticks would run as command substitution while the stub is WRITTEN.
+    bash "$ROOT/converge.sh" --issue $ISS --max-rounds 3 >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    # ...then die, exactly as a reaped child does.
+    exit 0
+    ;;
+esac
+SH
+chmod +x "$FAKE_REPO/kipi"
+run_dispatch >/dev/null; RC=$?
+
+check "4a a decoy converge does not make a dead dispatch succeed" "$RC" "1"
+
+if dlog | grep -q "DISPATCH DIED"; then
+  ok "4b the dead child is still reported as died"
+else
+  bad "4b the dead child is still reported as died" "$(dlog)"
+fi
+
+if grep -q "died immediately" "$PAGES" 2>/dev/null; then
+  ok "4c the founder is still paged"
+else
+  bad "4c the founder is still paged" "$(cat "$PAGES" 2>/dev/null)"
+fi
+
+pkill -f "$ROOT/converge.sh" 2>/dev/null
+
+# The check must be bound to the launched pid, not to a table search. Structural
+# because the race above is the only behavioural way in, and it is easy to
+# "simplify" this back to a grep while every case still passes.
+if grep -q 'kill -0 "$CHILD_PID"' "$DISPATCH"; then
+  ok "4d the liveness check watches the pid it launched"
+else
+  bad "4d the liveness check watches the pid it launched" \
+    "kill -0 \$CHILD_PID is gone; an unrelated converge can vouch for a dead child again"
+fi
+
+# --- 5. the duplicate guard no longer uses the \b that never fires ---------
+# PR #39 review, finding 2. The guard used `pgrep -f "...ASK-n\b"`, and BSD
+# pgrep reads \b as a literal b, so it has never fired on macOS -- the only
+# platform it runs on. Harmless only while every child was being reaped anyway;
+# children surviving is exactly what makes it reachable.
+#
+# STRUCTURAL, NOT BEHAVIOURAL, AND THAT IS A DELIBERATE LIMIT. Driving it for
+# real means putting a decoy converge in the GLOBAL process table and asserting
+# the dispatcher sees it -- which races against any other run of this suite and
+# against real converge runs on the machine. That version was written first and
+# was flaky under the capability gate (17/17 alone, 15/17 alongside the fleet's
+# other tests), and a flaky gate is worse than a narrow one: it teaches everyone
+# to re-run until green. The regex itself is verified by hand against a live
+# process; this pins the spelling so the \b cannot come back.
+# A non-racy behavioural version is captured as spillover.
+if grep -qE 'pgrep -f "converge\.sh --issue \$NEXT' "$DISPATCH"; then
+  bad "5a the duplicate guard does not use the \\b that BSD pgrep ignores" \
+    "the pgrep+\\b form is back in kipi-dispatch.sh; the guard will never fire on macOS"
+else
+  ok "5a the duplicate guard does not use the \\b that BSD pgrep ignores"
+fi
+
+if grep -c 'ps -Ao args=' "$DISPATCH" | grep -q '[1-9]'; then
+  ok "5b the guard matches on full command lines, portably"
+else
+  bad "5b the guard matches on full command lines, portably" "ps -Ao args= is gone from kipi-dispatch.sh"
 fi
 
 echo

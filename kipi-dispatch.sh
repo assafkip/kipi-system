@@ -174,7 +174,15 @@ fi
 
 # Belt and braces against the race between dispatch and the In Progress
 # transition: two converge runs on one issue would fight over one worktree.
-if pgrep -f "converge.sh --issue $NEXT\b" >/dev/null 2>&1; then
+#
+# NOT pgrep, and NOT \b (PR #39 review, finding 2). BSD pgrep reads `\b` as a
+# literal `b`, so this guard has never fired on macOS -- the only platform it
+# runs on. It was harmless while every dispatched child was being reaped
+# instantly; the moment children survive (the fix below), it becomes reachable
+# and lets a second converge start on an issue that already has one. Same
+# `ps -Ao args=` form and same [c] self-match guard as the liveness check.
+if ps -Ao args= 2>/dev/null \
+     | grep -qE "[c]onverge\.sh --issue ${NEXT}([[:space:]]|\$)"; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
 fi
@@ -206,15 +214,28 @@ say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget
 # macOS ships no setsid(1), so python3 is how setsid(2) gets called. A new
 # session means a new process group with no controlling terminal, which is
 # outside the group launchd tears down.
-python3 - "$HOME/.config/kipi/converge-$NEXT.log" \
+CONVERGE_LOG="$HOME/.config/kipi/converge-$NEXT.log"
+# A RUN BOUNDARY, because the log is appended (PR #39 review, finding 3). The
+# failure page points the operator at this file; without a marker they cannot
+# tell where a re-dispatch's output starts and are reading the previous run's
+# tail as if it were this one's.
+printf '\n===== dispatch %s  %s  rounds=%s =====\n' \
+  "$NEXT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MAX_ROUNDS" >> "$CONVERGE_LOG"
+
+CHILD_PID="$(python3 - "$CONVERGE_LOG" \
          ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" <<'PY'
 import subprocess, sys
 log_path, argv = sys.argv[1], sys.argv[2:]
 # Append, never truncate: a re-dispatch of the same issue must not erase the
 # evidence of the previous run (the burst incident truncated a live log with >).
 log = open(log_path, "ab", buffering=0)
-subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+p = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+# The PID is the whole point: the caller has to watch THE CHILD IT LAUNCHED,
+# not "some converge for this issue". `kipi` runs converge.sh with bash rather
+# than exec, so this pid stays alive exactly as long as the run does.
+print(p.pid)
 PY
+)"
 RC=$?
 if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
@@ -234,23 +255,32 @@ fi
 # an alert earns itself muted. The boundary is done in grep, which does support
 # it, against `pgrep -fl` output.
 #
-# NOR `pgrep -fl`. Its -l means two different things: on macOS it prints the full
-# command line, on Linux (procps) it prints only the process NAME, so the issue
-# id is simply not in the output there and a healthy run reads as died. That is
-# not academic -- it failed exactly that way on CI.
+# WATCH THE PID, NOT THE PROCESS TABLE (PR #39 review, finding 1). Asking "is
+# some converge for this issue running?" lets an UNRELATED live converge answer
+# on the dead child's behalf -- which is the exact silent-success hole this
+# check exists to close, rebuilt one layer up. The reachable chain the reviewer
+# walked: the duplicate guard above was dead on macOS, so a second converge
+# started while one was live, converge.sh refused the claim and that child died
+# instantly, and the table still held converge #1. Success reported, budget
+# spent, nobody paged.
 #
-# `ps -Ao args=` prints full command lines on both. The [c] bracket is the
-# standard trick to stop this grep from matching ITSELF: the pattern matches the
-# text "converge", while this process's own command line contains the literal
-# "[c]onverge", which does not.
+# `kill -0` sends no signal; it only asks whether the pid is still there.
+# Checked every second rather than once, so a child that dies at t+4 is caught
+# too -- "alive at least once" would pass a run that fell over immediately after
+# starting, which is most of the ways this actually fails.
 DISPATCH_OK=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if ps -Ao args= 2>/dev/null \
-       | grep -qE "[c]onverge\.sh --issue ${NEXT}([[:space:]]|\$)"; then
-    DISPATCH_OK=1; break
-  fi
-  sleep 1
-done
+case "$CHILD_PID" in
+  ''|*[!0-9]*)
+    say "DISPATCH DIED: no child pid was returned for $NEXT"
+    ;;
+  *)
+    DISPATCH_OK=1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! kill -0 "$CHILD_PID" 2>/dev/null; then DISPATCH_OK=0; break; fi
+      sleep 1
+    done
+    ;;
+esac
 if [ "$DISPATCH_OK" -eq 1 ]; then
   say "dispatched $NEXT (confirmed running)"
 else
