@@ -494,14 +494,19 @@ def _is_successful_commit(command, tool_response):
     git-commit verb, not a dry-run, no error, and output that isn't a no-op."""
     if not _invokes_git_commit(command):
         return False
-    text = ""
-    if isinstance(tool_response, dict):
-        if tool_response.get("error"):
-            return False
-        text = (str(tool_response.get("stdout", "")) + " "
-                + str(tool_response.get("stderr", ""))).lower()
-    elif isinstance(tool_response, str):
-        text = tool_response.lower()
+    if isinstance(tool_response, dict) and tool_response.get("error"):
+        return False
+    text, code = _response_text_and_code(tool_response)
+    # A non-zero exit code is a failed commit even when the response carries no
+    # `error` key. Without this the two readers of one response disagreed: a
+    # refusal delivered as exit_code=1 was a gate refusal to
+    # _commit_gate_refusal and a landed commit here — so it reset the ceiling
+    # and cleared the budget it had just minted, one branch earlier in the same
+    # if/elif chain. (Narrower than sp-1078fbe2, which is the case where the
+    # response carries no failure signal at all; that stays captured, not fixed.)
+    if code is not None and code != 0:
+        return False
+    text = text.lower()
     if "nothing to commit" in text or "no changes added to commit" in text:
         return False
     return True
