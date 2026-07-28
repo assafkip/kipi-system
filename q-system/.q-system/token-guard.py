@@ -42,6 +42,8 @@ Exit codes:
 import hashlib
 import json
 import os
+import re
+import shlex
 import sys
 import time
 
@@ -60,6 +62,8 @@ EDIT_FAIL_LIMIT = 3         # Edit attempts on same file without success = block
 AGENT_NO_OUTPUT_LIMIT = 3   # Agent spawns with no write between them = warn
 STALL_TIME_SECONDS = 120    # Seconds since last write + calls = warn
 STALL_MIN_CALLS = 10        # Minimum calls before time-based stall triggers
+GATE_GRACE = 8              # Calls granted at the ceiling to clear a gate that refused the commit
+GATE_GRACE_GRANTS = 1       # Grants per user-message window (bounded: no re-arming ratchet)
 
 # Sensitive file patterns
 SENSITIVE_PATTERNS = (".env", ".pem", ".key", "credentials")
@@ -154,6 +158,9 @@ def load_cache(actor_key):
         "last_write_time": time.time(),
         "calls_since_write": 0,
         "last_volume_reset": time.time(),
+        "gate_grace_remaining": 0,
+        "gate_grace_gate": None,
+        "gate_grace_grants": 0,
     }
 
 
@@ -265,9 +272,21 @@ def check_exact_retry(tool_name, tool_input, cache):
 
 
 def check_volume(cache):
-    """Block at ceiling, warn at warning threshold."""
+    """Block at ceiling, warn at warning threshold.
+
+    The gate-refusal budget is spent HERE and nowhere else — only on a call the
+    ceiling would otherwise have blocked. That is why granting it eagerly (on any
+    refused commit, at any call count) costs nothing: a run that never reaches the
+    ceiling never touches it."""
     calls = cache.get("tool_calls_since_user", 0)
     if calls >= VOLUME_CEILING:
+        gate = cache.get("gate_grace_gate")
+        remaining = cache.get("gate_grace_remaining", 0)
+        if remaining > 0:
+            cache["gate_grace_remaining"] = remaining - 1
+            return ("warn", f"{gate} refused your commit, so you have {remaining - 1} call(s) left to satisfy that gate and retry `git commit` (which is exempt from this ceiling). At zero this run hard-stops. Do nothing else with these calls.")
+        if gate:
+            return ("block", f"{gate} refused the checkpoint and the {GATE_GRACE}-call grace budget is spent. Stop. Report what {gate} is asking for, what you tried, and that the work is staged and uncommitted.")
         return ("block", f"{VOLUME_CEILING} tool calls without user input or a commit. Commit finished work now (git commit is exempt from this ceiling and resets it), or stop and summarize what you've accomplished and what's remaining.")
     if calls >= VOLUME_WARNING and cache.get("warnings_issued", 0) == 0:
         remaining = VOLUME_CEILING - calls
@@ -431,24 +450,230 @@ def _is_commit_command(tool_name, tool_input):
     return "git commit" in cmd and "--dry-run" not in cmd
 
 
+def _invokes_git_commit(command):
+    """True only when the command actually RUNS `git commit`.
+
+    A substring test on the command text is not that: `grep -rn "git commit"
+    canonical/` carries the string and ships nothing, and a failing one was read
+    as a refused checkpoint (PR #27 review, finding 2). Tokenising drops the
+    quoted mention while keeping `cd x && git commit -m y`.
+
+    Deliberately NOT used by _is_commit_command above. There the error costs run
+    the other way: a false negative blocks the checkpoint the ceiling is asking
+    for and deadlocks the run, while a false positive only exempts one harmless
+    call from the ceiling. Here — and in _is_successful_commit — a false positive
+    is the expensive one: it mints a grace budget, or resets the ceiling, for a
+    command that committed nothing. Two readers, two error budgets, on purpose."""
+    if not command or "--dry-run" in command:
+        return False
+    try:
+        tokens = shlex.split(command, comments=True)
+    except ValueError:
+        tokens = command.split()
+    index = 0
+    while index < len(tokens):
+        if tokens[index] == "git" or tokens[index].endswith("/git"):
+            cursor = index + 1
+            while cursor < len(tokens) and tokens[cursor].startswith("-"):
+                # git's global options; the two-word forms swallow their value.
+                if tokens[cursor] in ("-c", "-C", "--git-dir", "--work-tree",
+                                      "--namespace", "--exec-path"):
+                    cursor += 2
+                else:
+                    cursor += 1
+            if cursor < len(tokens) and tokens[cursor] == "commit":
+                return True
+        index += 1
+    return False
+
+
 def _is_successful_commit(command, tool_response):
     """True only for a `git commit` that actually created a commit. A no-op
     ('nothing to commit'), a --dry-run, or a failed commit is NOT progress and must not
     reset the volume counter — only a real commit does. Conservative: requires the
     git-commit verb, not a dry-run, no error, and output that isn't a no-op."""
-    if not command or "git commit" not in command or "--dry-run" in command:
+    if not _invokes_git_commit(command):
         return False
-    text = ""
-    if isinstance(tool_response, dict):
-        if tool_response.get("error"):
-            return False
-        text = (str(tool_response.get("stdout", "")) + " "
-                + str(tool_response.get("stderr", ""))).lower()
-    elif isinstance(tool_response, str):
-        text = tool_response.lower()
+    if isinstance(tool_response, dict) and tool_response.get("error"):
+        return False
+    text, code = _response_text_and_code(tool_response)
+    # A non-zero exit code is a failed commit even when the response carries no
+    # `error` key. Without this the two readers of one response disagreed: a
+    # refusal delivered as exit_code=1 was a gate refusal to
+    # _commit_gate_refusal and a landed commit here — so it reset the ceiling
+    # and cleared the budget it had just minted, one branch earlier in the same
+    # if/elif chain. (Narrower than sp-1078fbe2, which is the case where the
+    # response carries no failure signal at all; that stays captured, not fixed.)
+    if code is not None and code != 0:
+        return False
+    text = text.lower()
     if "nothing to commit" in text or "no changes added to commit" in text:
         return False
     return True
+
+
+# --- The gate-refusal grace budget (ASK-215) ---------------------------------
+# The commit exemption above covers the commit COMMAND. It does not cover the
+# commit's PRECONDITIONS. A commit refused by a pre-commit gate is not a
+# checkpoint, and satisfying that gate needs an Edit the ceiling blocks — so the
+# run deadlocks with everything staged and nothing committed (observed 2026-07-27
+# on ASK-214: lefthook's plugin-version-bump refused the checkpoint, the agent had
+# 18 of 20 tests done, and the work was recovered by hand).
+#
+# The fix is a BOUNDED budget, not an allowlist. This repo has seven blocking
+# pre-commit gates and each can demand a different file; exempting plugin.json
+# specifically is whack-a-mole that the next gate defeats. The budget is blind to
+# which gate fired, so it also covers gates that do not exist yet.
+
+# Failures of `git commit` that are NOT a gate refusing the checkpoint. The no-op
+# entries are the load-bearing ones: without them an agent could mint budget with
+# an empty commit, which is the runaway loop the ceiling exists to stop.
+NON_GATE_COMMIT_FAILURES = (
+    "nothing to commit",
+    "no changes added to commit",
+    "nothing added to commit",
+    "empty commit message",
+    "not a git repository",
+    "please tell me who you are",
+    "unmerged files",
+    "needs merge",
+    # Transient / environmental git failures. A lock collision is routine in
+    # this fleet, not exotic: a 15-minute auto-committer and parallel sessions
+    # share a checkout. Reporting one as "a pre-commit gate refused the
+    # checkpoint" spends the whole budget chasing a gate that does not exist and
+    # then hands the operator a fabricated diagnosis at 3am (PR #27 review,
+    # finding 1). Nothing is lost by excluding them: the recovery is to retry
+    # `git commit`, which the ceiling already exempts, so no budget is needed.
+    "index.lock",
+    "another git process",
+    "cannot lock ref",
+    "gpg failed to sign",
+    "failed to write commit object",
+)
+
+# git's OWN failures exit 128. git normalises EVERY hook refusal to exit 1,
+# whatever status the hook returned — captured 2026-07-28 by
+# q-system/output/capture-git-transient-failures.sh (hook exits 1, 2, 3, 42 and
+# 128 all produced git exit 1; index.lock, cannot-lock-ref and a gpg failure all
+# produced 128). So a 128 is git failing, never a gate refusing. It is the one
+# near-positive signal available, since git prints no marker of its own, and it
+# covers transient failures whose text nobody has enumerated yet.
+GIT_SELF_FAILURE_EXIT = 128
+
+# lefthook v2 marks each FAILED command in its summary with a boxing glove
+# (passing ones get a check mark). Verified against real output 2026-07-27.
+LEFTHOOK_FAIL_MARK = "\U0001f94a"
+
+# Words a gate shouts as a prefix; they are severity labels, not gate names.
+_NOT_A_GATE_NAME = frozenset(("block", "error", "fail", "failed", "warning",
+                              "fatal", "traceback", "hint", "usage", "note"))
+
+
+def _response_text_and_code(tool_response):
+    """(combined output text, exit code or None) from a tool_response. The Bash
+    response shape is not pinned by contract, so read every key the fleet has
+    observed — same key set as rca-notify.py's looks_failed."""
+    if isinstance(tool_response, str):
+        return tool_response, None
+    if not isinstance(tool_response, dict):
+        return "", None
+    code = tool_response.get("exit_code", tool_response.get("returncode"))
+    if not isinstance(code, int):
+        # The runtime reports a failed Bash call as an `error` STRING
+        # ("Exit code 128"), not an integer field. Parsing it is what makes the
+        # exit-128 rule reachable on the shape the runtime actually sends; the
+        # integer keys stay supported because the shape is not pinned.
+        match = re.search(r"exit code\s+(\d+)",
+                          str(tool_response.get("error", "")), re.I)
+        code = int(match.group(1)) if match else None
+    parts = []
+    for key in ("stdout", "stderr", "output", "content"):
+        value = tool_response.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return "\n".join(parts), code if isinstance(code, int) else None
+
+
+def _refusing_gate_name(text):
+    """Best-effort name of the gate that refused the commit.
+
+    git passes a hook's output through verbatim and adds NO marker of its own
+    (verified 2026-07-27: a hook-refused commit printed only the hook's text and
+    exit 1), so the name can only come from the gate's own output. Two readers,
+    then a generic label — the block message must never fall back to "50 tool
+    calls", which is the wrong reason and sent the ASK-214 agent back into the
+    deadlock instead of at the gate."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(LEFTHOOK_FAIL_MARK):
+            rest = stripped[len(LEFTHOOK_FAIL_MARK):].strip(" ️")
+            name = rest.split(":")[0].split("(")[0].strip()
+            if name and " " not in name:
+                return name
+    # A plain hook / husky / pre-commit-framework line: "my-gate: refused".
+    # Only UNINDENTED lines are candidates. A gate prints its name at the left
+    # margin and indents the detail beneath it, and without that rule this
+    # repo's own commit-msg gate was named `subject`, off its indented
+    # "  subject: <the message>" detail line (PR #27 review, finding 4).
+    for line in text.splitlines():
+        if not line[:1].strip():
+            continue
+        head = line.strip().split(":")[0]
+        if (head and head != line.strip() and " " not in head
+                and len(head) <= 48 and head[0].isalnum()
+                and head.lower() not in _NOT_A_GATE_NAME):
+            return head
+    return "a pre-commit gate"
+
+
+def _commit_gate_refusal(command, tool_response):
+    """The name of the gate that refused this `git commit`, or None.
+
+    Deliberately narrow on WHAT it excludes and blind to WHICH gate fired: any
+    commit that failed, other than the known non-gate failures above, is treated
+    as a refused checkpoint. A mis-read costs at most GATE_GRACE calls; missing a
+    real refusal costs the whole run."""
+    if not _invokes_git_commit(command):
+        return None
+    text, code = _response_text_and_code(tool_response)
+    errored = bool(isinstance(tool_response, dict) and tool_response.get("error"))
+    failed = errored or (code is not None and code != 0)
+    if not failed:
+        return None
+    if code == GIT_SELF_FAILURE_EXIT:
+        return None
+    lowered = text.lower()
+    for phrase in NON_GATE_COMMIT_FAILURES:
+        if phrase in lowered:
+            return None
+    return _refusing_gate_name(text)
+
+
+def grant_gate_grace(cache, gate):
+    """Record the refusing gate always; hand out budget at most
+    GATE_GRACE_GRANTS times per user-message window.
+
+    Re-arming on every refusal would turn the ceiling into an endless ratchet —
+    refuse, get 8, spend 8, refuse again — which is the runaway loop the ceiling
+    exists to stop. A second refusal updates the NAME (so the hard stop cites the
+    gate actually blocking now) without topping the budget up: the budget is per
+    deadlock episode, not per gate."""
+    cache["gate_grace_gate"] = gate
+    if cache.get("gate_grace_grants", 0) >= GATE_GRACE_GRANTS:
+        return cache
+    cache["gate_grace_grants"] = cache.get("gate_grace_grants", 0) + 1
+    cache["gate_grace_remaining"] = GATE_GRACE
+    return cache
+
+
+def clear_gate_grace(cache):
+    """The checkpoint landed, so the episode is over. Clearing matters: stale
+    budget left on the cache would silently widen a LATER ceiling in the same
+    session by GATE_GRACE calls."""
+    cache["gate_grace_remaining"] = 0
+    cache["gate_grace_gate"] = None
+    cache["gate_grace_grants"] = 0
+    return cache
 
 
 def reset_per_message_counters(cache):
@@ -465,6 +690,7 @@ def reset_per_message_counters(cache):
     cache["last_write_time"] = time.time()
     cache["calls_since_write"] = 0
     cache["last_volume_reset"] = time.time()
+    cache = clear_gate_grace(cache)
     return cache
 
 
@@ -506,6 +732,7 @@ def reset_volume_if_committed(cache):
         cache["agent_calls_since_user"] = 0
         cache["warnings_issued"] = 0
         cache["last_volume_reset"] = time.time()
+        cache = clear_gate_grace(cache)
     return cache
 
 
@@ -568,7 +795,19 @@ def main():
             cache["agent_calls_since_user"] = 0
             cache["warnings_issued"] = 0
             cache["last_volume_reset"] = time.time()
+            cache = clear_gate_grace(cache)
             save_cache(actor, cache)
+        # A commit REFUSED by a pre-commit gate is the other half of the valve.
+        # It is not progress, so it must not reset the counter — but the gate's
+        # precondition needs an Edit the ceiling blocks, so the run gets a bounded
+        # budget to satisfy the gate and retry. See the grace block above (ASK-215).
+        elif tool_name == "Bash":
+            gate = _commit_gate_refusal(
+                tool_input.get("command", ""), hook_input.get("tool_response"))
+            if gate:
+                cache = load_cache(actor)
+                cache = grant_gate_grace(cache, gate)
+                save_cache(actor, cache)
         sys.exit(0)
 
     # Load cache, update counters from this invocation. The commit-progress
@@ -598,6 +837,20 @@ def main():
     # ceiling is asking for; blocking it deadlocks the run (the PostToolUse commit-reset
     # can't fire if the commit never runs). Sensitive-file + exact-retry checks above still
     # apply to commits; only the volume ceiling is skipped.
+    #
+    # A volume WARNING is held, not emitted here. warn() exits 0, so emitting it
+    # inline made checks 4-11 unreachable — for the whole grace budget, an agent
+    # spiralling on the gate file got GATE_GRACE unchecked edit attempts and
+    # never heard "your edit approach is wrong", then got a block that blamed the
+    # gate (PR #27 review, finding 3). Held warnings are emitted at the end, or
+    # carried into a later warning; a later BLOCK outranks them and wins.
+    pending_warning = None
+
+    def emit_warning(message):
+        if pending_warning and message != pending_warning:
+            message = pending_warning + "\n\n" + message
+        warn(message)
+
     if not _is_commit_command(tool_name, tool_input):
         result = check_volume(cache)
         if result:
@@ -606,8 +859,7 @@ def main():
                 cache = uncount_blocked_attempt(cache, tool_name, tool_input)
                 save_cache(actor, cache)
                 block(msg)
-            save_cache(actor, cache)
-            warn(msg)
+            pending_warning = msg
 
     # 4. Subagent ceiling
     msg = check_agent_ceiling(tool_name, cache)
@@ -627,19 +879,19 @@ def main():
     msg = check_read_spiral(tool_name, cache)
     if msg:
         save_cache(actor, cache)
-        warn(msg)
+        emit_warning(msg)
 
     # 7. File re-read warning
     msg = check_file_reread(tool_name, tool_input, cache)
     if msg:
         save_cache(actor, cache)
-        warn(msg)
+        emit_warning(msg)
 
     # 8. Grep drift warning
     msg = check_grep_drift(tool_name, cache)
     if msg:
         save_cache(actor, cache)
-        warn(msg)
+        emit_warning(msg)
 
     # 9. Edit spiral block
     msg = check_edit_spiral(tool_name, tool_input, cache)
@@ -652,16 +904,18 @@ def main():
     msg = check_agent_no_output(tool_name, cache)
     if msg:
         save_cache(actor, cache)
-        warn(msg)
+        emit_warning(msg)
 
     # 11. Time stall warning
     msg = check_time_stall(cache)
     if msg:
         save_cache(actor, cache)
-        warn(msg)
+        emit_warning(msg)
 
     # All clear
     save_cache(actor, cache)
+    if pending_warning:
+        warn(pending_warning)
     sys.exit(0)
 
 
