@@ -209,8 +209,21 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # that happens to draw the same verdict again still moves the sha, and that is
   # convergence in progress, not a stall.
   if [ "$VERDICT" = "$LAST_VERDICT" ] && [ -n "$LAST_SHA" ] && [ "$SHA" = "$LAST_SHA" ]; then
-    say "STOP exit-5: round $ROUND changed no code and drew the same verdict '$VERDICT'. Not burning another round."
-    bash "$NOTIFY" "converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND" 2>/dev/null || true
+    # THE PAGE HAS TO CARRY THE DRIFT, because it is the only thing that reaches
+    # the founder's phone (PR #30 review round 2, minor 4). Gate 40 falls through
+    # to this guard on purpose, so a stuck drift -- a held claim, a tree that
+    # needs a human, a reviewer that is down -- exits here. The generic text read
+    # "stalled at 'APPROVE WITH NITS', no code change in round N", which is a
+    # benign stall on an approved PR. The gate-40 line above is in the run log;
+    # the log is not what wakes anyone.
+    STALL_LOG="STOP exit-5: round $ROUND changed no code and drew the same verdict '$VERDICT'. Not burning another round."
+    STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
+    if [ "$GATE" = "40" ]; then
+      STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
+      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
+    fi
+    say "$STALL_LOG"
+    bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"
