@@ -35,6 +35,26 @@ A pid cannot serve as that token: this is a CLI that exits immediately after
 writing the lock, so the recorded pid is a dead process within milliseconds.
 The token comes from the session's own environment.
 
+THE HOLDER'S LIVENESS IS A SEPARATE, OPTIONAL FIELD (ASK-189)
+-------------------------------------------------------------
+Because the session token says WHO holds the tree but nothing says whether that
+holder still exists, a killed session leaked its claim forever. Measured twice
+2026-07-27: a run was SIGKILLed, the claim stayed held by a session with zero
+processes alive, and a human had to run `release --holder`. SIGKILL cannot be
+trapped, so no in-process cleanup can ever close this -- the lock must be able
+to tell ON READ that its holder is gone.
+
+The caller therefore names a process that lives for the WHOLE run via
+`--holder-pid` (linear-worker.sh passes its own `$$`). That is the piece that was
+missing: not that pids are useless here, but that nothing long-lived was ever
+written down.
+
+The direction of doubt is one-way and load-bearing: a reclaim happens only on
+POSITIVE PROOF of death. A missing field, an unreadable `ps`, a permission error
+-- anything unknown -- reads as ALIVE and the claim stands. Leaking a lock wedges
+a board and a human notices; reclaiming a LIVE holder's tree hands two workers
+the same files, which is scar 53f2eeb and nobody notices.
+
 FAIL CLOSED, EVERYWHERE
 -----------------------
 A mutex that grants under doubt is worse than none, because callers trust it.
@@ -71,6 +91,33 @@ STARTED_STATUS_TYPES = ("started",)
 STARTED_STATUS_NAMES = ("in progress", "in review")
 
 GUARD_TIMEOUT_SECONDS = 5.0
+# `ps` is a local read that normally returns in milliseconds. The bound exists so
+# a wedged process table can never hang the mutex; a timeout reads as "unknown",
+# which reads as alive.
+PS_TIMEOUT_SECONDS = 5.0
+
+# `ps -o lstart=` renders the start time in the READING process's timezone and
+# locale. The write and the read are different processes, hours apart, so an
+# unpinned render turned a LIVE holder into "the pid was recycled" the moment the
+# system timezone moved -- macOS sets the zone automatically and a laptop that
+# travels flips it. That is the mutex handing a live worker's tree to a second
+# worker, which is scar 53f2eeb and the one direction this feature must never go.
+# Measured 2026-07-27, one pid, same instant:
+#   TZ=UTC        -> 'Tue Jul 28 01:52:53 2026'
+#   TZ=Asia/Tokyo -> 'Tue Jul 28 10:52:53 2026'
+# Both the write and the read go through _proc_snapshot, so pinning it in one
+# place is what keeps the two sides of the comparison rendering identically.
+_PS_ENV = {**os.environ, "TZ": "UTC", "LC_ALL": "C"}
+
+# THE KEY CARRIES ITS FORMAT, because the format changed once. Records written
+# before the pin above hold a LOCAL-time render under the old name
+# `holder_pid_start`; comparing one of those against a UTC render says "recycled
+# pid" about a holder that is alive and working -- this fix causing the exact
+# defect it fixes, for the length of the upgrade window (a `kipi update` can
+# replace this script while a claim is held). Under a new name an old record
+# simply has no recorded start time, which already reads as unknown, which reads
+# as alive. Downgrade is safe for the same reason, in the other direction.
+HOLDER_START_KEY = "holder_pid_start_utc"
 
 
 class CorruptLock(Exception):
@@ -164,6 +211,88 @@ def _pid_alive(pid: int) -> bool:
     except (OverflowError, ValueError, TypeError):
         return False
     return True
+
+
+def _proc_snapshot(pid: int) -> tuple[str, str] | None:
+    """(start_time, state) for `pid` as `ps` sees it, or None when it cannot say.
+
+    `lstart` is the process's ABSOLUTE start time, which is what distinguishes
+    the recorded holder from an unrelated process that later inherited its pid.
+    `state` is here because a SIGKILLed process stays a ZOMBIE until its parent
+    reaps it, and `os.kill(pid, 0)` succeeds on a zombie -- so the pid check
+    alone reads a killed holder as alive for as long as nobody waits on it.
+
+    The environment is PINNED (`_PS_ENV`): `lstart` is rendered in the reading
+    process's timezone, and the writer and the reader are different processes.
+
+    None on any doubt (ps missing, non-zero, unparseable, slow). Callers must
+    treat None as "cannot prove death", never as death.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "lstart=,state="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PS_TIMEOUT_SECONDS,
+            env=_PS_ENV,
+        )
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    parts = result.stdout.strip().rsplit(None, 1)
+    if len(parts) != 2 or not parts[0].strip():
+        return None
+    return parts[0].strip(), parts[1].strip()
+
+
+def holder_death_reason(record: dict) -> str | None:
+    """Why this claim's holder is PROVABLY gone, or None when it must be respected.
+
+    The one-way doubt rule from the module docstring is implemented here and
+    nowhere else: every path that cannot prove death returns None.
+    """
+    pid = record.get("holder_pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None  # no long-lived holder was ever recorded; respect the claim
+    if not _pid_alive(pid):
+        return f"holder process {pid} no longer exists"
+    snapshot = _proc_snapshot(pid)
+    if snapshot is None:
+        return None  # ps could not answer, and silence is not proof
+    started, state = snapshot
+    if state.upper().startswith("Z"):
+        return f"holder process {pid} was killed and is a zombie awaiting reap"
+    recorded_start = record.get(HOLDER_START_KEY)
+    if isinstance(recorded_start, str) and recorded_start and recorded_start != started:
+        return (
+            f"pid {pid} now belongs to a process started {started!r}, not the "
+            f"holder recorded at {recorded_start!r} (the pid was recycled)"
+        )
+    return None
+
+
+def holder_fields(pid: int | None) -> dict:
+    """The liveness fields to store for a claim, empty when no holder was named.
+
+    Empty is the correct answer for a caller that has nothing long-lived to
+    point at, and it is why THIS process never records its own pid: the CLI
+    exits milliseconds after writing the lock, so a self-recorded pid would make
+    every claim instantly reclaimable -- the mutex disabled outright.
+
+    A pid whose start time cannot be read is still recorded, with no start key.
+    That is strictly better than recording nothing: `_pid_alive` alone still
+    catches the plain "holder is gone" case, and the absent key only costs the
+    recycling refinement.
+    """
+    if pid is None:
+        return {}
+    fields: dict = {"holder_pid": pid}
+    snapshot = _proc_snapshot(pid)
+    if snapshot is not None:
+        fields[HOLDER_START_KEY] = snapshot[0]
+    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -429,10 +558,28 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 held.update(
                     issue_id=args.issue_id, refreshed_at=_now_iso(), agent=args.agent
                 )
+                # Refresh liveness too, so a long run's record keeps describing a
+                # process that is really there. A re-claim that names no holder
+                # leaves the recorded one alone rather than dropping to "no
+                # liveness" -- same direction of doubt as everywhere else.
+                held.update(holder_fields(args.holder_pid))
                 write_claim(held)
                 print(f"already held by this session: {args.issue_id}")
                 return EXIT_OK
 
+            gone = holder_death_reason(held)
+            if gone is not None:
+                # Said out loud, on stderr, every time. A mutex that silently
+                # hands a resource from one holder to another is indistinguishable
+                # from a mutex that never worked, and the operator debugging a
+                # two-workers-one-tree collision has to be able to see this line.
+                sys.stderr.write(
+                    f"RECLAIMED: the claim held by {_describe(held)} is stale -- "
+                    f"{gone}. Taking the tree; no --break-stale needed.\n"
+                )
+                held = None
+
+        if held is not None:
             if args.break_stale:
                 # Compare-and-swap, not a blind steal. Scar, adversarial review
                 # 2026-07-26: --break-stale took a demonstrably LIVE claim on
@@ -486,6 +633,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                 "agent": args.agent,
                 "session": session,
                 "acquired_at": _now_iso(),
+                **holder_fields(args.holder_pid),
             }
         )
         print(f"claimed {args.issue_id} for {args.agent} (session {session})")
@@ -527,7 +675,22 @@ def cmd_status(_args: argparse.Namespace) -> int:
     if held is None:
         print("no claim held in this working tree")
         return EXIT_OK
-    print(f"{held.get('issue_id')} claimed by {_describe(held)}")
+    line = f"{held.get('issue_id')} claimed by {_describe(held)}"
+    # `status` is what a human runs on a board that looks wedged. Reporting a
+    # provably-dead holder as a live claim is the REPORT contradicting the
+    # detector: `claim` reclaims that same record one line later. The fix landing
+    # on the detector alone would leave the operator reading the wrong answer
+    # from the one command they actually type.
+    #
+    # APPENDED, never substituted, and the exit code stays 0: the existing text
+    # has a reader (test-linear-claim.sh case 20 pulls the session token out of
+    # this line with sed), and a rewritten line or a new non-zero exit would
+    # break callers while every assertion about staleness still passed. This
+    # tells the truth; it does not become a new gate.
+    gone = holder_death_reason(held)
+    if gone is not None:
+        line += f" [STALE: {gone} -- the next claim will reclaim this tree]"
+    print(line)
     return EXIT_OK
 
 
@@ -545,6 +708,13 @@ def main() -> int:
     p.add_argument("--remote-state", help="verbatim mcp__linear__get_issue response")
     p.add_argument("--break-stale", action="store_true", help="requires --holder")
     p.add_argument("--holder", help="the session token you are deliberately breaking")
+    # Deliberately NOT type=int: argparse exits 2 on a bad value, and 2 is not
+    # this tool's vocabulary -- same reason --agent is validated by hand below.
+    p.add_argument(
+        "--holder-pid",
+        help="pid of a process that lives for the WHOLE run (the worker shell's "
+        "$$), so a killed holder's claim can be reclaimed on read",
+    )
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("release", help="drop this working tree's claim")
@@ -563,6 +733,24 @@ def main() -> int:
     if args.cmd in ("claim", "release") and not args.agent:
         sys.stderr.write(f"--agent is required for `{args.cmd}`.\n")
         return EXIT_USAGE
+    if args.cmd == "claim":
+        # A junk --holder-pid is a USAGE error, never a quietly dropped field. A
+        # caller that believes it recorded liveness and did not has a lock that
+        # leaks exactly as before, with nothing on screen to say so.
+        raw_pid = getattr(args, "holder_pid", None)
+        if raw_pid is None:
+            args.holder_pid = None
+        else:
+            try:
+                args.holder_pid = int(raw_pid)
+            except (TypeError, ValueError):
+                sys.stderr.write(f"--holder-pid must be a pid; got {raw_pid!r}.\n")
+                return EXIT_USAGE
+            if args.holder_pid <= 0:
+                sys.stderr.write(
+                    f"--holder-pid must be a positive pid; got {args.holder_pid}.\n"
+                )
+                return EXIT_USAGE
     try:
         return args.func(args)
     except TreeUnknown as exc:

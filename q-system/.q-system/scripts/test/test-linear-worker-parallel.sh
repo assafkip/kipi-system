@@ -182,7 +182,46 @@ grep -qi "claimed by another session" "$WORK/d.out" \
   || fail "the refused run did not report a collision. It said: $(grep -i 'skip\|INFRA' "$WORK/d.out" | head -2)"
 ok "the refused run reports the collision (exit 3), not a generic infra failure"
 
-# --- 5. the script still parses -------------------------------------------
+# --- 5. a reclaim is SAID OUT LOUD in the run log ---------------------------
+# The claim's stderr used to go to /dev/null here, so a tree CHANGING HANDS left
+# the log showing a normal `start ASK-xxx` and nothing else (PR #31 review,
+# finding 2). A mutex that silently moves a resource from one holder to another
+# is indistinguishable from one that never worked, and this line is the only
+# evidence an operator has at 3am. Driven through the real worker, not grepped
+# out of its source: the defect was a shell redirect, which a grep cannot see.
+: > "$WORK/worked.txt"
+ETREE="$WORK/state-e/worktrees/ask-eee"
+mkdir -p "$WORK/state-e/worktrees"
+git -C "$WORK/skel" worktree add -q -b sana/ask-eee "$ETREE" main \
+  || fail "could not create the worktree this case seeds"
+
+# A holder pid that is provably gone: spawned, killed, reaped.
+sh -c 'exec sleep 300' >/dev/null 2>&1 &
+DEADPID=$!
+kill -9 "$DEADPID" 2>/dev/null || true
+wait "$DEADPID" 2>/dev/null || true
+
+# "$REAL_PY", not `python3`: the PATH stub above intercepts `python3 -`.
+"$REAL_PY" - "$ETREE/.linear-claims.json" "$DEADPID" <<'PY'
+import json, sys
+json.dump({"issue_id": "ASK-EEE", "agent": "someone-else", "session": "sess-killed",
+           "acquired_at": "2026-07-27T00:00:00Z", "holder_pid": int(sys.argv[2])},
+          open(sys.argv[1], "w"))
+PY
+
+( cd "$WORK/skel" \
+  && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-e" \
+     bash "$WORKER" --apply --issue ASK-EEE --limit 1 ) >"$WORK/e.out" 2>&1
+
+grep -q "ask-eee" "$WORK/worked.txt" \
+  || fail "the worker never took the tree from the dead holder at all: $(grep -i 'skip\|INFRA' "$WORK/e.out" | head -2)"
+ok "a claim left by a killed holder is reclaimed by the real worker, no human needed"
+
+grep -q "RECLAIMED:" "$WORK/e.out" \
+  || fail "the worker took a tree from a dead holder and said NOTHING in its log. It logged: $(grep -i 'start\|skip\|INFRA' "$WORK/e.out" | head -3)"
+ok "the reclaim is reported in the worker's run log, not swallowed by the redirect"
+
+# --- 6. the script still parses -------------------------------------------
 bash -n "$WORKER" || fail "linear-worker.sh does not parse"
 ok "linear-worker.sh parses (bash -n)"
 

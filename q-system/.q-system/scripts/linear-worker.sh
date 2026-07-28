@@ -632,8 +632,41 @@ while IFS= read -r ISSUE; do
   # `rc=$?` cannot live under `if ! cmd`: bash sets $? from the NEGATION there, so
   # it read 0 on every failure and the collision branch was unreachable -- a real
   # collision reported as "INFRA: claim failed rc=0". Capture the status directly.
-  ( cd "$TREE" && python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1
+  #
+  # --holder-pid IS THIS SCRIPT'S OWN PID (ASK-189). The claiming python3 exits
+  # within milliseconds, so its pid means nothing -- but THIS shell lives for the
+  # entire run, and until now that fact was simply never written down. With it
+  # recorded, a claim left behind by a killed run is reclaimable on read instead
+  # of wedging the tree until a human runs `release --holder`. Measured twice
+  # 2026-07-27; the kills were SIGKILL, which converge.sh's TERM/INT/HUP trap
+  # cannot ever catch.
+  #
+  # `$$` and not `$BASHPID`: this line runs inside a subshell inside the pipeline
+  # subshell of the `while` loop, and `$$` stays the SCRIPT's pid through both
+  # (verified). `$BASHPID` would be the innermost subshell, dead on the next line
+  # -- and it does not exist at all in the bash 3.2 macOS ships.
+  #
+  # RESIDUAL, stated rather than papered over: if this shell alone is killed and
+  # its backgrounded `claude` child is orphaned, the holder reads dead while work
+  # continues. That needs a targeted kill of this pid only; a timeout, a killed
+  # process group, a slept laptop or a reboot -- every case actually observed --
+  # takes the whole tree down together.
+  #
+  # STDERR IS KEPT. With `>/dev/null 2>&1` a tree CHANGING HANDS left this log
+  # showing a normal `start ASK-xxx` and nothing else, so the one line an
+  # operator has while debugging a two-workers-one-tree collision was the one
+  # line thrown away -- the fix landing on the detector and not on the report
+  # (PR #31 review, finding 2). Only the RECLAIMED line is echoed: an ordinary
+  # refusal already gets its own `skip ... claimed by another session` below, and
+  # repeating that here would trade a missing signal for a duplicated one.
+  CLAIM_ERR="$(mktemp)"
+  ( cd "$TREE" && python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" \
+      --holder-pid "$$" ) >/dev/null 2>"$CLAIM_ERR"
   rc=$?
+  while IFS= read -r claim_line; do
+    case "$claim_line" in RECLAIMED:*) say "$claim_line" ;; esac
+  done < "$CLAIM_ERR"
+  rm -f "$CLAIM_ERR"
   if [ "$rc" != "0" ]; then
     if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
     say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue
