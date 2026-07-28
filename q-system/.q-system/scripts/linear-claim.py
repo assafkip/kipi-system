@@ -96,6 +96,29 @@ GUARD_TIMEOUT_SECONDS = 5.0
 # which reads as alive.
 PS_TIMEOUT_SECONDS = 5.0
 
+# `ps -o lstart=` renders the start time in the READING process's timezone and
+# locale. The write and the read are different processes, hours apart, so an
+# unpinned render turned a LIVE holder into "the pid was recycled" the moment the
+# system timezone moved -- macOS sets the zone automatically and a laptop that
+# travels flips it. That is the mutex handing a live worker's tree to a second
+# worker, which is scar 53f2eeb and the one direction this feature must never go.
+# Measured 2026-07-27, one pid, same instant:
+#   TZ=UTC        -> 'Tue Jul 28 01:52:53 2026'
+#   TZ=Asia/Tokyo -> 'Tue Jul 28 10:52:53 2026'
+# Both the write and the read go through _proc_snapshot, so pinning it in one
+# place is what keeps the two sides of the comparison rendering identically.
+_PS_ENV = {**os.environ, "TZ": "UTC", "LC_ALL": "C"}
+
+# THE KEY CARRIES ITS FORMAT, because the format changed once. Records written
+# before the pin above hold a LOCAL-time render under the old name
+# `holder_pid_start`; comparing one of those against a UTC render says "recycled
+# pid" about a holder that is alive and working -- this fix causing the exact
+# defect it fixes, for the length of the upgrade window (a `kipi update` can
+# replace this script while a claim is held). Under a new name an old record
+# simply has no recorded start time, which already reads as unknown, which reads
+# as alive. Downgrade is safe for the same reason, in the other direction.
+HOLDER_START_KEY = "holder_pid_start_utc"
+
 
 class CorruptLock(Exception):
     """The lock exists but cannot be understood. Callers refuse, never grant."""
@@ -199,6 +222,9 @@ def _proc_snapshot(pid: int) -> tuple[str, str] | None:
     reaps it, and `os.kill(pid, 0)` succeeds on a zombie -- so the pid check
     alone reads a killed holder as alive for as long as nobody waits on it.
 
+    The environment is PINNED (`_PS_ENV`): `lstart` is rendered in the reading
+    process's timezone, and the writer and the reader are different processes.
+
     None on any doubt (ps missing, non-zero, unparseable, slow). Callers must
     treat None as "cannot prove death", never as death.
     """
@@ -209,6 +235,7 @@ def _proc_snapshot(pid: int) -> tuple[str, str] | None:
             text=True,
             check=False,
             timeout=PS_TIMEOUT_SECONDS,
+            env=_PS_ENV,
         )
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         return None
@@ -237,7 +264,7 @@ def holder_death_reason(record: dict) -> str | None:
     started, state = snapshot
     if state.upper().startswith("Z"):
         return f"holder process {pid} was killed and is a zombie awaiting reap"
-    recorded_start = record.get("holder_pid_start")
+    recorded_start = record.get(HOLDER_START_KEY)
     if isinstance(recorded_start, str) and recorded_start and recorded_start != started:
         return (
             f"pid {pid} now belongs to a process started {started!r}, not the "
@@ -264,7 +291,7 @@ def holder_fields(pid: int | None) -> dict:
     fields: dict = {"holder_pid": pid}
     snapshot = _proc_snapshot(pid)
     if snapshot is not None:
-        fields["holder_pid_start"] = snapshot[0]
+        fields[HOLDER_START_KEY] = snapshot[0]
     return fields
 
 
@@ -648,7 +675,22 @@ def cmd_status(_args: argparse.Namespace) -> int:
     if held is None:
         print("no claim held in this working tree")
         return EXIT_OK
-    print(f"{held.get('issue_id')} claimed by {_describe(held)}")
+    line = f"{held.get('issue_id')} claimed by {_describe(held)}"
+    # `status` is what a human runs on a board that looks wedged. Reporting a
+    # provably-dead holder as a live claim is the REPORT contradicting the
+    # detector: `claim` reclaims that same record one line later. The fix landing
+    # on the detector alone would leave the operator reading the wrong answer
+    # from the one command they actually type.
+    #
+    # APPENDED, never substituted, and the exit code stays 0: the existing text
+    # has a reader (test-linear-claim.sh case 20 pulls the session token out of
+    # this line with sed), and a rewritten line or a new non-zero exit would
+    # break callers while every assertion about staleness still passed. This
+    # tells the truth; it does not become a new gate.
+    gone = holder_death_reason(held)
+    if gone is not None:
+        line += f" [STALE: {gone} -- the next claim will reclaim this tree]"
+    print(line)
     return EXIT_OK
 
 

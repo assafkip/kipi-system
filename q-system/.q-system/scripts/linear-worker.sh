@@ -512,9 +512,22 @@ while IFS= read -r ISSUE; do
   # continues. That needs a targeted kill of this pid only; a timeout, a killed
   # process group, a slept laptop or a reboot -- every case actually observed --
   # takes the whole tree down together.
+  #
+  # STDERR IS KEPT. With `>/dev/null 2>&1` a tree CHANGING HANDS left this log
+  # showing a normal `start ASK-xxx` and nothing else, so the one line an
+  # operator has while debugging a two-workers-one-tree collision was the one
+  # line thrown away -- the fix landing on the detector and not on the report
+  # (PR #31 review, finding 2). Only the RECLAIMED line is echoed: an ordinary
+  # refusal already gets its own `skip ... claimed by another session` below, and
+  # repeating that here would trade a missing signal for a duplicated one.
+  CLAIM_ERR="$(mktemp)"
   ( cd "$TREE" && python3 "$CLAIM" claim "$ISSUE" --agent "$AGENT" --session "$SESSION" \
-      --holder-pid "$$" ) >/dev/null 2>&1
+      --holder-pid "$$" ) >/dev/null 2>"$CLAIM_ERR"
   rc=$?
+  while IFS= read -r claim_line; do
+    case "$claim_line" in RECLAIMED:*) say "$claim_line" ;; esac
+  done < "$CLAIM_ERR"
+  rm -f "$CLAIM_ERR"
   if [ "$rc" != "0" ]; then
     if [ "$rc" = "3" ]; then say "skip $ISSUE: working tree is claimed by another session"; continue; fi
     say "INFRA: claim failed rc=$rc on $ISSUE (not counted against the issue)"; continue

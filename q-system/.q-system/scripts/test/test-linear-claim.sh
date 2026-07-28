@@ -312,7 +312,7 @@ spawn_holder() {   # a process that lives until this suite kills it
 }
 reap() { kill -9 "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
-# --- 21. a LIVE holder is respected; a SIGKILLed one is reclaimable --------
+# --- 21. a LIVE holder is respected ---------------------------------------
 rm -f "$KIPI_LINEAR_CLAIMS"
 HOLDER="$(spawn_holder)"
 r=$(rc claim ASK-KILL --agent agent-a --session sess-DEAD --holder-pid "$HOLDER")
@@ -322,16 +322,58 @@ r=$(rc claim ASK-KILL2 --agent agent-b --session sess-B)
   fail "a claim whose holder pid is ALIVE was reclaimed (exit $r) -- the mutex is off, which is worse than the leak"
 ok "a claim whose holder process is alive is still refused"
 
-kill -9 "$HOLDER" 2>/dev/null || true
-# NOT reaped yet, on purpose. A SIGKILLed child is a ZOMBIE until its parent
-# waits, and `os.kill(pid, 0)` SUCCEEDS on a zombie -- so a pid-only liveness
-# check reads a killed holder as alive and the board stays wedged anyway.
-r=$(rc claim ASK-KILL2 --agent agent-b --session sess-B)
+reap "$HOLDER"
+
+# --- 21b. THE ZOMBIE: os.kill says alive while the process is dead ---------
+# `os.kill(pid, 0)` SUCCEEDS on a SIGKILLed process until its parent reaps it, so
+# a pid-only liveness check reads the measured scar as "holder alive" and the
+# board stays wedged. That is the half of the check `ps -o state=` earns.
+#
+# THE FIXTURE IS THE WHOLE CASE. v1 spawned the holder as a direct child of this
+# suite; bash reaps its own children in its SIGCHLD handler before the claim ever
+# runs, so the case travelled the pid-is-GONE path and stayed green with zombie
+# detection deleted -- proven by mutation in the PR #31 review, finding 3. A
+# zombie needs a parent that is alive and never wait()s: `sh` forks the holder,
+# then execs into `sleep`, which has no SIGCHLD handling at all.
+#
+# The preconditions are ASSERTED, not assumed, so this can never silently decay
+# back into a duplicate of case 22.
+rm -f "$KIPI_LINEAR_CLAIMS"
+ZPIDFILE="$WORK/zombie.pid"
+: > "$ZPIDFILE"
+sh -c 'sleep 300 & echo $! > "$1"; exec sleep 600' sh "$ZPIDFILE" >/dev/null 2>&1 &
+ZPARENT=$!
+i=0
+while [ ! -s "$ZPIDFILE" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+ZOMBIE="$(cat "$ZPIDFILE" 2>/dev/null || echo '')"
+[ -n "$ZOMBIE" ] || fail "the zombie fixture never reported a holder pid"
+
+run claim ASK-ZOMB --agent agent-a --session sess-DEAD --holder-pid "$ZOMBIE"
+kill -9 "$ZOMBIE" 2>/dev/null || true
+ZSTATE=""
+i=0
+while [ "$i" -lt 200 ]; do
+  ZSTATE="$(ps -p "$ZOMBIE" -o state= 2>/dev/null | tr -d ' ')"
+  case "$ZSTATE" in Z*) break ;; esac
+  sleep 0.05
+  i=$((i + 1))
+done
+case "$ZSTATE" in
+  Z*) : ;;
+  *)  fail "the fixture did not produce a zombie (ps state=[$ZSTATE]); without one this case silently duplicates case 22" ;;
+esac
+python3 -c 'import os,sys; os.kill(int(sys.argv[1]), 0)' "$ZOMBIE" 2>/dev/null \
+  || fail "os.kill reports the zombie GONE, so this case would not exercise the zombie path at all"
+ok "the fixture really makes a zombie: ps says Z while os.kill(pid,0) still succeeds"
+
+r=$(rc claim ASK-ZOMB2 --agent agent-b --session sess-B)
 [ "$r" = "$EXIT_OK" ] || \
   fail "a SIGKILLed holder that is still an unreaped zombie blocked the tree (exit $r): $(cat "$WORK/err")"
 ok "a claim whose SIGKILLed holder is an unreaped zombie is reclaimable"
-reap "$HOLDER"
-run release ASK-KILL2 --agent agent-b --session sess-B
+kill -9 "$ZPARENT" 2>/dev/null || true
+wait "$ZPARENT" 2>/dev/null || true
+reap "$ZOMBIE"
+run release ASK-ZOMB2 --agent agent-b --session sess-B
 
 # --- 22. the measured scar end-state: holder fully gone, no human needed ---
 rm -f "$KIPI_LINEAR_CLAIMS"
@@ -369,7 +411,8 @@ import json, sys
 json.dump({"issue_id": "ASK-RECYCLE", "agent": "agent-a", "session": "sess-OLD",
            "acquired_at": "2026-07-01T00:00:00Z",
            "holder_pid": int(sys.argv[2]),
-           "holder_pid_start": "Thu Jan  1 00:00:00 1970"}, open(sys.argv[1], "w"))
+           # the key name carries the render format; see HOLDER_START_KEY
+           "holder_pid_start_utc": "Thu Jan  1 00:00:00 1970"}, open(sys.argv[1], "w"))
 PY
 r=$(rc claim ASK-FRESH --agent agent-b --session sess-B)
 [ "$r" = "$EXIT_OK" ] || \
@@ -420,5 +463,78 @@ if [ "$(cat "$LIVE_LOCK" 2>/dev/null || echo '<absent>')" = "$LIVE_LOCK_BEFORE" 
 else
   fail "the suite MUTATED the live lock at repo root; the env override is not honored"
 fi
+
+# --- 26. A TIMEZONE CHANGE IS NOT A RECYCLED PID --------------------------
+# `ps -o lstart=` renders in the READING process's timezone. The claim is written
+# by one process and read by another hours later, so an unpinned render made a
+# LIVE holder read as "the pid was recycled" the moment the system zone moved --
+# macOS sets the zone automatically, and a laptop that travels flips it. That is
+# the mutex handing a live worker's tree to a second worker (scar 53f2eeb), the
+# one direction this feature must never go. PR #31 review, finding 1.
+rc_tz() {
+  local z="$1"; shift
+  set +e; TZ="$z" python3 "$CLAIM" "$@" >"$WORK/out" 2>"$WORK/err"; local r=$?; set -e
+  echo "$r"
+}
+rm -f "$KIPI_LINEAR_CLAIMS"
+HOLDER="$(spawn_holder)"
+r=$(rc_tz UTC claim ASK-TZ --agent agent-a --session sess-A --holder-pid "$HOLDER")
+[ "$r" = "$EXIT_OK" ] || fail "the claim recording the holder's start time was refused (exit $r): $(cat "$WORK/err")"
+r=$(rc_tz Asia/Tokyo claim ASK-TZ2 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_COLLISION" ] || \
+  fail "a LIVE holder was reclaimed because the timezone changed between claim and read (exit $r): $(cat "$WORK/err")"
+ok "a timezone change between claim and read does not make a live holder look recycled"
+reap "$HOLDER"
+
+# --- 27. A PRE-PIN RECORD IS NOT READ AS A RECYCLED PID -------------------
+# The layer ABOVE the fix in case 26. Records written before the pin hold a
+# local-time render; a UTC-pinned reader compares those two strings, sees a
+# difference, and reclaims a holder that is alive and working -- the fix causing
+# the exact defect it fixes, for the length of the upgrade window (`kipi update`
+# can replace the script while a claim is held). The recorded format therefore
+# lives in the KEY NAME, so an old record simply has no start time under the new
+# key: unknown, which reads as alive.
+rm -f "$KIPI_LINEAR_CLAIMS"
+HOLDER="$(spawn_holder)"
+TZ=Asia/Tokyo python3 - "$KIPI_LINEAR_CLAIMS" "$HOLDER" <<'PY'
+import json, subprocess, sys
+pid = int(sys.argv[2])
+# byte-for-byte what the pre-pin build wrote: ps rendered in the WRITER's zone
+started = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                         capture_output=True, text=True).stdout.strip()
+json.dump({"issue_id": "ASK-PREPIN", "agent": "agent-a", "session": "sess-OLD",
+           "acquired_at": "2026-07-27T00:00:00Z", "holder_pid": pid,
+           "holder_pid_start": started}, open(sys.argv[1], "w"))
+PY
+r=$(rc claim ASK-PREPIN2 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_COLLISION" ] || \
+  fail "a LIVE holder recorded in the pre-pin start-time format was reclaimed (exit $r); upgrading must not steal a running worker's tree"
+ok "a claim record in the pre-pin start-time format is respected, not read as recycled"
+reap "$HOLDER"
+
+# --- 28. `status` must not call a dead holder's claim live ----------------
+# `status` is the command a human runs on a board that looks wedged. Saying
+# "claimed by ..." about a holder that `claim` reclaims one line later is the
+# report contradicting the detector. PR #31 review, finding 4.
+rm -f "$KIPI_LINEAR_CLAIMS"
+HOLDER="$(spawn_holder)"
+run claim ASK-STAT --agent agent-a --session sess-STAT --holder-pid "$HOLDER"
+python3 "$CLAIM" status >"$WORK/out" 2>&1
+if grep -qi "stale" "$WORK/out"; then
+  fail "status called a LIVE holder's claim stale: $(cat "$WORK/out")"
+fi
+ok "status does not call a live holder's claim stale"
+reap "$HOLDER"
+python3 "$CLAIM" status >"$WORK/out" 2>&1
+grep -qi "stale" "$WORK/out" || \
+  fail "status reported a holder with zero processes alive as a live claim: $(cat "$WORK/out")"
+ok "status says so when the holder it reports is provably gone"
+# The note is APPENDED, never substituted: case 20 reads the session token out of
+# this exact line with sed, and a rewritten line would break that reader while
+# every assertion above still passed.
+S_PARSED="$(python3 "$CLAIM" status | sed -n 's/.*session \([^)]*\)).*/\1/p')"
+[ "$S_PARSED" = "sess-STAT" ] || fail "the status line's session field stopped parsing (got '$S_PARSED')"
+ok "the status line still parses for its existing reader"
+rm -f "$KIPI_LINEAR_CLAIMS"
 
 echo "PASS: linear-claim ($PASS checks)"
