@@ -233,10 +233,20 @@ fi
 # never matches and a HEALTHY run gets reported as died -- a false alarm is how
 # an alert earns itself muted. The boundary is done in grep, which does support
 # it, against `pgrep -fl` output.
+#
+# NOR `pgrep -fl`. Its -l means two different things: on macOS it prints the full
+# command line, on Linux (procps) it prints only the process NAME, so the issue
+# id is simply not in the output there and a healthy run reads as died. That is
+# not academic -- it failed exactly that way on CI.
+#
+# `ps -Ao args=` prints full command lines on both. The [c] bracket is the
+# standard trick to stop this grep from matching ITSELF: the pattern matches the
+# text "converge", while this process's own command line contains the literal
+# "[c]onverge", which does not.
 DISPATCH_OK=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if pgrep -fl "converge.sh --issue" 2>/dev/null \
-       | grep -qE "[[:space:]]${NEXT}([[:space:]]|\$)"; then
+  if ps -Ao args= 2>/dev/null \
+       | grep -qE "[c]onverge\.sh --issue ${NEXT}([[:space:]]|\$)"; then
     DISPATCH_OK=1; break
   fi
   sleep 1
