@@ -672,6 +672,9 @@ def run(dry_run):
         # The report has to say this out loud. "0 broken" from a cycle that could
         # not see is the same sentence as "0 broken" from a healthy pipeline, and
         # the founder reads both as good news.
+        # sp-ba3552fc: this PRINTS, it does not page. A watcher blind for many
+        # cycles in a row (expired token, Linear outage) therefore stays quiet.
+        # Captured, not fixed here.
         print(f"DEGRADED: could not observe {', '.join(sorted(unobserved))} "
               f"-- prior findings for those states carried forward, not cleared")
 
