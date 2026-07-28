@@ -174,7 +174,27 @@ fi
 
 # Belt and braces against the race between dispatch and the In Progress
 # transition: two converge runs on one issue would fight over one worktree.
-if pgrep -f "converge.sh --issue $NEXT\b" >/dev/null 2>&1; then
+#
+# NOT pgrep, and NOT \b (PR #39 review, finding 2). BSD pgrep reads `\b` as a
+# literal `b`, so this guard has never fired on macOS -- the only platform it
+# runs on. It was harmless while every dispatched child was being reaped
+# instantly; the moment children survive (the fix below), it becomes reachable
+# and lets a second converge start on an issue that already has one. Same
+# `ps -Ao args=` form and same [c] self-match guard as the liveness check.
+# NO PIPE INTO grep -q, and that is the whole point (PR #39 review r3,
+# finding 1). `ps ... | grep -q` under `set -o pipefail` fires only sometimes:
+# grep -q exits the instant it matches, ps then takes SIGPIPE and dies 141, and
+# pipefail makes 141 the status of the whole pipeline -- so the `if` does NOT
+# run its body. Whether ps has finished writing before grep leaves is a race,
+# so the guard worked load-dependently, which is worse than never working
+# because it looks fine when you test it by hand.
+#
+# A snapshot into a variable plus bash's own =~ removes the pipeline entirely,
+# so there is nothing to SIGPIPE and nothing for pipefail to poison. It also
+# removes the need for the [c] self-match trick: with no grep process there is
+# no grep command line in the table to match.
+PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
+if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
 fi
@@ -184,9 +204,100 @@ fi
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
 
 say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
-nohup ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" \
-  > "$HOME/.config/kipi/converge-$NEXT.log" 2>&1 &
-disown
 
-say "dispatched $NEXT"
+# THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE.
+#
+# This was `nohup ... & disown`, which is correct in an interactive shell and
+# WRONG under launchd. launchd reaps the job's whole process group when the main
+# process exits; nohup only blocks SIGHUP, so the converge was killed the instant
+# this script returned. Every launchd dispatch since the dispatcher was installed
+# died that way, and the failure was invisible by construction: the log file is
+# created by the redirect before the child dies, so it exists and is 0 bytes,
+# `say "dispatched $NEXT"` still runs, and the budget counter is already spent.
+# The loop reported four healthy dispatches of ASK-224 on 2026-07-28 and did no
+# work at all -- it only spent the subscription.
+#
+# PROVEN, not reasoned about. A launchd job whose only act was
+# `nohup bash -c "sleep 25; touch F" & disown; exit`:
+#     under launchd   F never written  (child killed)
+#     same script from an interactive shell   F written (child survived)
+# and with the setsid form below, under launchd, F is written.
+#
+# macOS ships no setsid(1), so python3 is how setsid(2) gets called. A new
+# session means a new process group with no controlling terminal, which is
+# outside the group launchd tears down.
+CONVERGE_LOG="$HOME/.config/kipi/converge-$NEXT.log"
+# A RUN BOUNDARY, because the log is appended (PR #39 review, finding 3). The
+# failure page points the operator at this file; without a marker they cannot
+# tell where a re-dispatch's output starts and are reading the previous run's
+# tail as if it were this one's.
+printf '\n===== dispatch %s  %s  rounds=%s =====\n' \
+  "$NEXT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MAX_ROUNDS" >> "$CONVERGE_LOG"
+
+CHILD_PID="$(python3 - "$CONVERGE_LOG" \
+         ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" <<'PY'
+import subprocess, sys
+log_path, argv = sys.argv[1], sys.argv[2:]
+# Append, never truncate: a re-dispatch of the same issue must not erase the
+# evidence of the previous run (the burst incident truncated a live log with >).
+log = open(log_path, "ab", buffering=0)
+p = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+# The PID is the whole point: the caller has to watch THE CHILD IT LAUNCHED,
+# not "some converge for this issue". `kipi` runs converge.sh with bash rather
+# than exec, so this pid stays alive exactly as long as the run does.
+print(p.pid)
+PY
+)"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  # A launch that failed must NOT report success -- that is the same shape as
+  # the bug above. The budget slot is already spent, so say so plainly.
+  say "FAILED to launch converge for $NEXT (rc=$RC); the budget slot is spent"
+  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error."
+  exit 1
+fi
+
+# PROVE IT IS ALIVE BEFORE CLAIMING IT. The whole defect above was a dispatch
+# that reported success into a void, so the report is now evidence-backed: the
+# process either shows up in the table or the founder hears about it.
+#
+# NOT `pgrep -f "...$NEXT\b"`. \b is a GNU regex extension and BSD pgrep (macOS,
+# where this actually runs under launchd) does not honour it, so that pattern
+# never matches and a HEALTHY run gets reported as died -- a false alarm is how
+# an alert earns itself muted. The boundary is done in grep, which does support
+# it, against `pgrep -fl` output.
+#
+# WATCH THE PID, NOT THE PROCESS TABLE (PR #39 review, finding 1). Asking "is
+# some converge for this issue running?" lets an UNRELATED live converge answer
+# on the dead child's behalf -- which is the exact silent-success hole this
+# check exists to close, rebuilt one layer up. The reachable chain the reviewer
+# walked: the duplicate guard above was dead on macOS, so a second converge
+# started while one was live, converge.sh refused the claim and that child died
+# instantly, and the table still held converge #1. Success reported, budget
+# spent, nobody paged.
+#
+# `kill -0` sends no signal; it only asks whether the pid is still there.
+# Checked every second rather than once, so a child that dies at t+4 is caught
+# too -- "alive at least once" would pass a run that fell over immediately after
+# starting, which is most of the ways this actually fails.
+DISPATCH_OK=0
+case "$CHILD_PID" in
+  ''|*[!0-9]*)
+    say "DISPATCH DIED: no child pid was returned for $NEXT"
+    ;;
+  *)
+    DISPATCH_OK=1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! kill -0 "$CHILD_PID" 2>/dev/null; then DISPATCH_OK=0; break; fi
+      sleep 1
+    done
+    ;;
+esac
+if [ "$DISPATCH_OK" -eq 1 ]; then
+  say "dispatched $NEXT (confirmed running)"
+else
+  say "DISPATCH DIED: $NEXT was launched but no converge process is alive after 10s"
+  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child."
+  exit 1
+fi
 exit 0

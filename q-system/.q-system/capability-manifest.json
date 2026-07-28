@@ -309,6 +309,10 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
