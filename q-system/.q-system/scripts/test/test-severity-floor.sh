@@ -678,6 +678,191 @@ grep -q 'MAX_CONFLICT_ROUNDS' "$WORKER" \
   || fail "linear-worker.sh has no conflict-round cap"
 ok "worker wiring: merge state read through the lib, conflict cap present"
 
+# =============================================================================
+# THE VERDICT IS BOUND TO A SHA, NOT TO A PR NUMBER (ASK-216, sp-12f99480)
+# =============================================================================
+# THE DEFECT: the verdict record keyed on a PR NUMBER and carried no sha. The
+# worker reuses one branch and one PR across rework rounds, so every push after
+# an approval silently inherited that approval. Nothing in the record could tell
+# "reviewed and approved" from "approved, then three more commits landed".
+#
+# OBSERVED 2026-07-27, the live record for PR #25:
+#   {"pr":25,"issue":"ASK-212","verdict":"APPROVE WITH NITS", ... }  <- no sha
+#
+# Today that costs a stale skip. With an integrator on top it is an auto-merge
+# of code no reviewer ever read, on a repo whose main fans out fleet-wide.
+#
+# THE SHAPE OF THE FIX: the writer pins the sha the review actually read, and
+# the gate refuses to call an approval at a DIFFERENT sha terminal (exit 40 --
+# re-review at the new head; never merge, never auto-approve).
+SHA_A="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+SHA_B="ffeeddccbbaa99887766554433221100aabbccdd"
+
+# gate_sha <want-rc> <verdict> <merge-state> <recorded-sha> <current-sha> <why>
+# Never touches the live GitHub API: both shas are scripted, which is also the
+# only way to hold "the head moved" still long enough to assert on it.
+gate_sha() {
+  local want="$1" verdict="$2" state="$3" rec="$4" cur="$5" why="$6" got
+  rework_gate "$verdict" "$state" "$rec" "$cur" >/dev/null; got=$?
+  [ "$got" = "$want" ] \
+    || fail "rework_gate '$verdict' '$state' rec='$rec' cur='$cur' -> $got, want $want ($why)"
+  ok "$why"
+}
+
+# --- L1. an approval at a sha that is no longer the head is NOT terminal -----
+gate_sha 40 "APPROVE"           "CLEAN" "$SHA_A" "$SHA_B" \
+  "approved at a sha that is no longer the head is stale, not terminal"
+gate_sha 40 "APPROVE WITH NITS" "CLEAN" "$SHA_A" "$SHA_B" \
+  "approve-with-nits at a stale sha is stale too"
+
+# Drift wins over the merge state. Both are true here, and a rebase round on a
+# diff nobody reviewed is the same unreviewed-code path wearing a rebase coat:
+# re-review first, then the fresh record decides whether it is a rebase round.
+gate_sha 40 "APPROVE"           "DIRTY" "$SHA_A" "$SHA_B" \
+  "drift outranks DIRTY: re-review at the new head before any rebase round"
+
+# --- L2. a matching sha keeps every one of today's outcomes ------------------
+# The converged-PR half. Too strict here and every approved PR on the board
+# re-reviews forever, burning model budget and writing a permanent Linear
+# comment each round.
+gate_sha 10 "APPROVE"           "CLEAN" "$SHA_A" "$SHA_A" \
+  "a matching sha stays terminal (a converged PR does not re-review forever)"
+gate_sha 10 "APPROVE WITH NITS" "CLEAN" "$SHA_A" "$SHA_A" \
+  "approve-with-nits at the reviewed sha stays terminal"
+gate_sha 30 "APPROVE"           "DIRTY" "$SHA_A" "$SHA_A" \
+  "reviewed sha + DIRTY is still a rebase round (ASK-212 survives)"
+gate_sha 10 "APPROVE"           "CLEAN" "ABC123DEF" "abc123def" \
+  "sha comparison is case-insensitive (hex case is not drift)"
+
+# A non-approving verdict already routes to rework; drift cannot make it worse,
+# and must not change its code (the rework loop owns that PR either way).
+gate_sha 0  "REQUEST CHANGES"   "CLEAN" "$SHA_A" "$SHA_B" \
+  "drift does not change a REQUEST CHANGES verdict (already rework)"
+gate_sha 20 ""                  "CLEAN" "$SHA_A" "$SHA_B" \
+  "drift does not rescue an unreviewed PR from gate 20"
+
+# --- L3. ABSENT is not DRIFT, and the gate says so --------------------------
+# Every record written before this change lacks the field. Reading absent as
+# drift would re-review every converged PR on the board at once. So absent falls
+# back to today's behaviour -- and announces the blind spot instead of being
+# silently grandfathered.
+NOTE="$(rework_gate "APPROVE" "CLEAN" "" "$SHA_B")"; GOT=$?
+[ "$GOT" = "10" ] \
+  || fail "a record with NO head_sha must behave as it does today (got $GOT, want 10).
+      Reading absent-as-drift re-reviews every pre-ASK-216 PR on the board at once."
+ok "absent head_sha falls back to today's behaviour (no mass re-review)"
+
+printf '%s' "$NOTE" | grep -qi 'head_sha' \
+  || fail "the gate fell back on an unpinned verdict SILENTLY. The blind spot has to be
+      stated on stdout, not grandfathered. It said: '$NOTE'"
+ok "the gate names the unpinned-verdict blind spot on stdout"
+
+# The mirror case: the record pins a sha but the CURRENT head could not be read
+# (gh down, API slow). Same posture as ASK-212's empty merge state -- fail
+# toward terminal, because a manufactured re-review round costs every PR in the
+# fleet at once while a missed one costs a single human diagnosis.
+NOTE2="$(rework_gate "APPROVE" "CLEAN" "$SHA_A" "")"; GOT=$?
+[ "$GOT" = "10" ] \
+  || fail "an unreadable current head manufactured a re-review round (got $GOT, want 10)"
+printf '%s' "$NOTE2" | grep -qi 'head' \
+  || fail "a failed head lookup was swallowed silently: '$NOTE2'"
+ok "an unreadable current head does not manufacture a re-review round, and says so"
+
+# The one- and two-argument forms are what converge.sh and linear-worker.sh call
+# today, and this issue does not touch either file. They must be byte-identical
+# in behaviour AND silent -- a note printed on every worker run is the cry-wolf
+# failure, not a safety feature.
+QUIET="$(rework_gate "APPROVE" "CLEAN")"; GOT=$?
+[ "$GOT" = "10" ] || fail "two-arg rework_gate 'APPROVE' 'CLEAN' changed: got $GOT, want 10"
+[ -z "$QUIET" ] || fail "the two-arg form now prints on every call: '$QUIET'. That is a line on
+      every worker run for every PR, which trains the operator to skim the real ones."
+QUIET1="$(rework_gate "APPROVE")"; GOT=$?
+[ "$GOT" = "10" ] || fail "one-arg rework_gate 'APPROVE' changed: got $GOT, want 10"
+[ -z "$QUIET1" ] || fail "the one-arg form (converge.sh) now prints on every call: '$QUIET1'"
+ok "the one- and two-arg forms are unchanged and silent (converge.sh, linear-worker.sh)"
+
+# --- L4. record -> gate chain, the way a consumer will actually use it -------
+cat > "$W2/pr-901.verdict.json" <<EOF
+{"pr": 901, "issue": "ASK-901", "verdict": "APPROVE", "head_sha": "$SHA_A",
+ "review": "/tmp/x.md", "ts": "2026-07-27T05:00:00Z"}
+EOF
+[ "$(head_sha_from_record "$W2/pr-901.verdict.json")" = "$SHA_A" ] \
+  || fail "head_sha round-trip out of the record failed"
+rework_gate "$(verdict_from_record "$W2/pr-901.verdict.json")" CLEAN \
+            "$(head_sha_from_record "$W2/pr-901.verdict.json")" "$SHA_B" >/dev/null
+[ $? = 40 ] || fail "record -> gate chain: an approved record at a stale head must not be terminal"
+ok "record -> gate chain: approved record + moved head -> re-review, not merge"
+
+# A record written before this change (the whole board today) yields empty, and
+# empty is the absent case above -- not a crash and not a drift claim.
+[ -z "$(head_sha_from_record "$WORK/pr-99.verdict.json")" ] \
+  || fail "a pre-ASK-216 record must yield an EMPTY head sha, never a guess"
+ok "a pre-ASK-216 record (no head_sha key) reads as empty, not as drift"
+
+[ -z "$(head_sha_from_record "$WORK/pr-98.verdict.json")" ] \
+  || fail "a corrupt record must yield an empty head sha, not crash"
+ok "a corrupt record reads as an empty head sha (fails closed, same as the verdict)"
+
+# --- M. the WRITER pins the sha, asserted on the JSON it really produces -----
+# Not a hand-rolled fixture: the real pr-review-agent.sh runs end to end with
+# `gh` and `claude` stubbed, and the assertion is on the record it wrote. The
+# fixture rule (test-linear-claim.sh scar) is exactly this -- a record shaped by
+# the same mind as the reader proves nothing.
+#
+# ISOLATION: HOME is redirected so OUT_DIR lands in the temp tree, and the
+# stubbed review derives APPROVE with an EMPTY findings block, so the spillover
+# capture path (live ledger) is never entered.
+SW="$W2/stub-writer"; mkdir -p "$SW" "$W2/home-writer"
+# The section-E stub set swallows `python3 -` (it fakes the ready-issues query),
+# and the record writer IS a `python3 -` heredoc. So this section needs a real
+# python3 ahead of it on PATH.
+cat > "$SW/python3" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_PY" "\$@"
+EOF
+cat > "$SW/gh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  "pr view 901 --json"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  *) exit 1 ;;
+esac
+exit 0
+EOF
+cat > "$SW/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '## VERDICT: APPROVE\n\nNothing survived reproduction.\n\nFINDINGS:\nEND FINDINGS\n'
+EOF
+chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
+
+( PATH="$SW:$PATH" HOME="$W2/home-writer" bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
+REC="$W2/home-writer/.config/kipi/pr-reviews/pr-901.verdict.json"
+[ -s "$REC" ] \
+  || fail "the reviewer wrote no verdict record at all. It said:
+$(sed 's/^/        /' "$W2/writer.out")"
+
+[ "$("$REAL_PY" -c "import json;print('head_sha' in json.load(open('$REC')))")" = "True" ] \
+  || fail "THE DEFECT: the record the REAL writer just produced has NO head_sha key, so the
+      approval binds to a PR number and any later push inherits it. Record was:
+$(sed 's/^/        /' "$REC")"
+ok "the writer's record carries a head_sha key"
+
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$REC')).get('head_sha',''))")" = "$SHA_A" ] \
+  || fail "the record pinned the wrong sha: got
+      '$("$REAL_PY" -c "import json;print(json.load(open('$REC')).get('head_sha',''))")', want '$SHA_A'"
+ok "the pinned sha is the head the reviewer was pointed at"
+
+# The sha must be read BEFORE the reviewer runs, from the state it reads. Looked
+# up afterwards, a push landing mid-review makes the record claim a commit the
+# reviewer never saw -- worse than no sha, because it looks authoritative.
+SHA_LINE="$(grep -n 'headRefOid' "$REVIEWER" | head -1 | cut -d: -f1)"
+RUN_LINE="$(grep -n 'run_bounded "\$TIMEOUT_SECONDS"' "$REVIEWER" | head -1 | cut -d: -f1)"
+[ -n "$SHA_LINE" ] || fail "pr-review-agent.sh never reads headRefOid; it cannot pin a sha"
+[ -n "$RUN_LINE" ] || fail "could not find the reviewer dispatch line to order against"
+[ "$SHA_LINE" -lt "$RUN_LINE" ] \
+  || fail "the head sha is captured AFTER the reviewer runs (line $SHA_LINE vs $RUN_LINE). A push
+      landing mid-review would make the record claim a commit the reviewer never read."
+ok "the head sha is captured before the review is taken, not looked up afterwards"
+
 bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
 ok "the lib parses (bash -n)"
 

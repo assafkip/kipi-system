@@ -77,7 +77,15 @@ pr_merge_state() {
   gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
 }
 
-# rework_gate <verdict> [merge-state]
+# _sha_norm <sha>
+# Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
+# newline are not drift. A PREFIX is deliberately NOT treated as a match: both
+# sides of the comparison come from GitHub's full 40-char headRefOid, so a short
+# sha means something unexpected wrote the record, and reading that as "same
+# commit" would be a guess in the never-merge direction's favour.
+_sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
+
+# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
@@ -89,6 +97,8 @@ pr_merge_state() {
 #   30 = conflicted  (approved, but it no longer merges -- a REBASE round, not a
 #                     review round. Distinct from 0 so the caller can cap it
 #                     separately; see the caller-owned cap note below.)
+#   40 = stale       (approving, but at a sha that is no longer the PR's head --
+#                     re-review at the new sha. NEVER merge, never auto-approve.)
 #
 # WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
 # ----------------------------------------------------------
@@ -122,11 +132,48 @@ pr_merge_state() {
 # The ONE-ARGUMENT form keeps its original semantics exactly (no merge state
 # supplied reads as "still merges"), because converge.sh calls it that way and a
 # silent behaviour change on the short form is a fleet-wide bug.
+#
+# WHY THE SHA IS PART OF THE GATE (ASK-216, sp-12f99480)
+# ------------------------------------------------------
+# A verdict record keyed on a PR NUMBER says "this PR was approved", never "this
+# CODE was approved". The worker reuses one branch and one PR across rework
+# rounds (linear-worker.sh:328), so every push landing after an approval
+# inherited that approval silently. Today that is a stale skip; under an
+# integrator it is an auto-merge of code no reviewer ever read, on a repo whose
+# main fans out fleet-wide through `kipi update`. pr-receipt-gate.py already
+# reasons this way with --head-sha; a verdict is the same class of claim.
+#
+# ABSENT IS NOT DRIFT. Every record written before this change lacks the field,
+# so absent falls back to verdict-only and SAYS SO on stdout -- reading
+# absent-as-drift would re-review every converged PR on the board at once. Same
+# posture when the CURRENT head cannot be read: fail toward terminal, exactly as
+# an empty merge state does above. A manufactured re-review round costs the
+# whole fleet at once; a missed one costs a single human diagnosis.
+#
+# DRIFT OUTRANKS THE MERGE STATE. When both fire, the sha wins: a rebase round
+# dispatched on a diff nobody reviewed is the same unreviewed-code path wearing
+# a rebase coat. Re-review first; the fresh record then decides.
+#
+# 40 IS NOT 10 AND NOT 30. Callers passing 1 or 2 arguments (converge.sh,
+# linear-worker.sh -- neither touched by this issue) can never see it, and a
+# caller that does not know 40 falls out of its if-chain into the rework path,
+# which is the safe direction: not terminal, never a merge.
 rework_gate() {
-  local verdict="${1:-}" merge_state="${2:-}"
+  local verdict="${1:-}" merge_state="${2:-}" reviewed_sha="${3:-}" current_sha="${4:-}"
   case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
     "APPROVE"|"APPROVE WITH NITS")
+      # Silent unless a caller actually asked for the sha check, so the short
+      # forms stay byte-identical and no line is printed on every worker run.
+      if [ -n "$reviewed_sha" ] || [ -n "$current_sha" ]; then
+        if [ -z "$reviewed_sha" ]; then
+          echo "  NOTE: no head_sha in this verdict record (written before ASK-216) -- cannot tell an approval from one inherited by a later push; falling back to verdict-only"
+        elif [ -z "$current_sha" ]; then
+          echo "  NOTE: could not read the PR's current head_sha; not manufacturing a re-review round on an unreadable head"
+        elif [ "$(_sha_norm "$reviewed_sha")" != "$(_sha_norm "$current_sha")" ]; then
+          return 40
+        fi
+      fi
       case "$merge_state" in
         "DIRTY"|"BEHIND")                 return 30 ;;
         *)                                return 10 ;;
@@ -165,5 +212,18 @@ verdict_from_record() {
   [ -s "$f" ] || return 0
   python3 -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("verdict",""))
+except Exception: pass' "$f" 2>/dev/null || true
+}
+
+# head_sha_from_record <verdict-json>
+# Reads the `head_sha` field: the commit the review actually examined. EMPTY for
+# every record written before ASK-216, for a corrupt record, and for a run where
+# `gh` could not answer -- all three are the same thing to rework_gate, which
+# reads empty as "unknown, fall back and say so", never as drift.
+head_sha_from_record() {
+  local f="$1"
+  [ -s "$f" ] || return 0
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("head_sha","") or "")
 except Exception: pass' "$f" 2>/dev/null || true
 }
