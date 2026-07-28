@@ -181,8 +181,20 @@ fi
 # instantly; the moment children survive (the fix below), it becomes reachable
 # and lets a second converge start on an issue that already has one. Same
 # `ps -Ao args=` form and same [c] self-match guard as the liveness check.
-if ps -Ao args= 2>/dev/null \
-     | grep -qE "[c]onverge\.sh --issue ${NEXT}([[:space:]]|\$)"; then
+# NO PIPE INTO grep -q, and that is the whole point (PR #39 review r3,
+# finding 1). `ps ... | grep -q` under `set -o pipefail` fires only sometimes:
+# grep -q exits the instant it matches, ps then takes SIGPIPE and dies 141, and
+# pipefail makes 141 the status of the whole pipeline -- so the `if` does NOT
+# run its body. Whether ps has finished writing before grep leaves is a race,
+# so the guard worked load-dependently, which is worse than never working
+# because it looks fine when you test it by hand.
+#
+# A snapshot into a variable plus bash's own =~ removes the pipeline entirely,
+# so there is nothing to SIGPIPE and nothing for pipefail to poison. It also
+# removes the need for the [c] self-match trick: with no grep process there is
+# no grep command line in the table to match.
+PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
+if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
 fi

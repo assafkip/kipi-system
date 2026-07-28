@@ -101,10 +101,16 @@ SH
   chmod +x "$FAKE_REPO/kipi"
 }
 
+# KIPI_DISPATCH_MAX IS PINNED HIGH ON PURPOSE (PR #39 review r3, finding 2).
+# The dispatcher's concurrency cap counts live converge runs from the GLOBAL
+# process table, so without this the suite is at the mercy of whatever else is
+# running on the box: two unrelated converge runs and the dispatcher skips
+# before it reaches anything under test, taking 8 of 16 cases red. That is the
+# flakiness previously blamed on one case; it was the cap all along.
 run_dispatch() {
   ( cd "$FAKE_REPO" && HOME="$ROOT/home" PATH="$ROOT/bin:$PATH" \
       KIPI_REPO="$FAKE_REPO" KIPI_NOTIFY="$ROOT/notify.sh" \
-      KIPI_DISPATCH_DAILY_MAX=9 \
+      KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
       bash "$DISPATCH" 2>&1 )
 }
 
@@ -288,6 +294,44 @@ if grep -c 'ps -Ao args=' "$DISPATCH" | grep -q '[1-9]'; then
 else
   bad "5b the guard matches on full command lines, portably" "ps -Ao args= is gone from kipi-dispatch.sh"
 fi
+
+# --- 6. the duplicate guard actually fires, driven for real -----------------
+# The behavioural half of case 5, restored once BOTH causes of its earlier
+# flakiness were understood and fixed: the issue id is unique per run (so two
+# runs of this suite cannot see each other's decoy) and run_dispatch pins
+# KIPI_DISPATCH_MAX (so the concurrency cap cannot skip before the guard is
+# reached). Blaming the process table was wrong; it was the cap.
+#
+# THIS IS THE CASE THAT CATCHES THE SIGPIPE BUG. A structural grep cannot: the
+# `ps ... | grep -q` spelling looked correct and failed ~35% of the time because
+# pipefail turned grep -q's early exit into a 141 for the whole pipeline. Only
+# running it can tell.
+reset_state
+make_kipi alive
+bash "$ROOT/converge.sh" --issue "$ISS" --max-rounds 3 >/dev/null 2>&1 &
+DECOY2=$!
+disown "$DECOY2" 2>/dev/null || true
+sleep 1
+
+# Run it several times: the SIGPIPE race is load-dependent, so a single green
+# pass proves nothing. Every one of them must skip.
+GUARD_FIRED=0; GUARD_RUNS=5
+for _ in $(seq 1 "$GUARD_RUNS"); do
+  run_dispatch >/dev/null
+  if dlog | grep -q "skip $ISS: a converge run for it is already live"; then
+    GUARD_FIRED=$((GUARD_FIRED + 1))
+  fi
+  : > "$ROOT/home/.config/kipi/dispatch.log"
+done
+
+check "6a the guard fires on EVERY attempt, not most of them" \
+  "$GUARD_FIRED" "$GUARD_RUNS"
+
+check "6b no budget slot is spent while the issue is already live" \
+  "$(cat "$ROOT/home/.config/kipi/dispatch-count-"* 2>/dev/null || echo 0)" "0"
+
+kill "$DECOY2" 2>/dev/null
+pkill -f "$ROOT/converge.sh" 2>/dev/null
 
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"
