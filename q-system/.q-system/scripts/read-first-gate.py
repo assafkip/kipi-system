@@ -44,6 +44,37 @@ METHODOLOGY = "q-system/methodology/anti-hallucination.md"
 LESSONS_DIR = "q-system/lessons"
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# Machine-generated pipeline artifacts, exempt from the required-reading gate.
+#
+# WHY (ASK-235, 2026-07-28): this gate fires on the FIRST write of a session and
+# reads the session's own transcript. A morning-pipeline subagent is spawned to do
+# one narrow job -- write a bus file -- and the required reading happened in the
+# ORCHESTRATOR's context, not the subagent's. Measured: feeding evaluate() a
+# realistic data-ingest subagent transcript returns both reads missing, so the bus
+# write exits 2. A control transcript that did open both is allowed, so the check
+# discriminates rather than always-blocking.
+#
+# It could not be settled on this machine WHICH transcript a subagent hook is
+# handed: no transcript on disk carries isSidechain=True, so subagent turns are not
+# appended to the parent, but no subagent transcript was available to inspect
+# either. That ambiguity is exactly why the exemption is keyed to the WRITE TARGET
+# and not to an undocumented subagent field -- a target-based rule is correct under
+# both branches, and it is inspectable from the payload the hook already gets.
+#
+# Scoping it this way also matches what the gate is FOR. The scar was six confident
+# conclusions, one of which reached a client email draft. Those live in drafts,
+# handoffs, canonical and plans -- all still gated. A bus file is an intermediate
+# artifact a later step consumes, not a conclusion anyone acts on directly.
+#
+# HONEST BOUNDARY: this exempts by destination, so a subagent whose first write
+# targets a NON-generated path is still blocked. That case is not covered here and
+# stays open in ASK-235.
+GENERATED_TARGETS = (
+    "/agent-pipeline/bus/",
+    "/output/morning-log",
+    "/.prd-os/",
+)
+
 
 def _records(transcript_path) -> list[dict]:
     p = Path(transcript_path) if transcript_path else None
@@ -91,6 +122,10 @@ def evaluate(repo: Path, uses, target: str) -> list[str]:
     # on its own bootstrap blocks the fix too.
     norm_target = target.replace("\\", "/")
     if METHODOLOGY in norm_target or LESSONS_DIR in norm_target:
+        return []
+
+    # A generated pipeline artifact is not a conclusion; see GENERATED_TARGETS.
+    if any(marker in norm_target for marker in GENERATED_TARGETS):
         return []
 
     missing = []

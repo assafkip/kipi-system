@@ -133,8 +133,34 @@ def case_missing_transcript_no_ops() -> bool:
     return run(repo, repo / "does-not-exist.jsonl") == 0
 
 
+BUS = "q-consult/.q-system/agent-pipeline/bus/2026-07-28/data-ingest.json"
+
+# A morning-pipeline subagent reads instance state, then writes its bus artifact.
+# It never opens the methodology doc or a lesson, because that reading belongs to
+# the orchestrator that spawned it.
+SUBAGENT_READS = [("Read", "q-consult/my-project/current-state.md")]
+
+
+def case_subagent_bus_write_is_exempt() -> bool:
+    """ASK-235: the wedge. Without the GENERATED_TARGETS exemption this returns 2
+    and the morning pipeline stops fleet-wide on a gate nobody can see firing."""
+    repo = _repo()
+    return run(repo, _transcript(repo, SUBAGENT_READS), target=BUS) == 0
+
+
+def case_non_generated_write_still_blocks() -> bool:
+    """The negative half, and the one that gives the case above its meaning: the
+    SAME ungrounded transcript writing a NON-generated path must still block. If
+    this ever passes, the exemption has become a blanket off-switch."""
+    repo = _repo()
+    return run(repo, _transcript(repo, SUBAGENT_READS),
+               target="q-consult/output/outreach/client-note.md") == 2
+
+
 CASES = [
     ("first write with no reads blocks", case_first_write_with_no_reads_blocks),
+    ("subagent bus write is exempt (ASK-235)", case_subagent_bus_write_is_exempt),
+    ("non-generated write still blocks", case_non_generated_write_still_blocks),
     ("methodology read but no lesson blocks", case_methodology_read_but_no_lesson_blocks),
     ("both read passes", case_both_read_passes),
     ("second write of the session passes", case_second_write_passes),
