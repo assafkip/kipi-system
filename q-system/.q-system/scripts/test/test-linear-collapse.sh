@@ -44,13 +44,20 @@ CAP_RULES = ["anti-misclassification", "audhd-interaction", "coding-standards",
              "design-auto-invoke", "folder-structure"]
 
 def cap_family():
-    """The 5 known-identical CAP-0n issues (ASK-130..134)."""
+    """The 5 known-identical CAP-0n issues (ASK-130..134).
+
+    The kipi-key namespace is `kipi-system/`, matching the REAL ledger
+    (`kipi-system/rule-anti-misclassification`, ...). An earlier revision of this
+    fixture invented a `cap-scan/` scanner namespace that no producer emits; the
+    different-producer guard then looked stronger here than it is on the board
+    (PR #35 review, finding 4).
+    """
     out = []
     for n, rule in enumerate(CAP_RULES, start=1):
         out.append(issue(
             "ASK-%d" % (129 + n),
             "CAP-%02d rule %s: %s guardrails" % (n, rule, rule),
-            "<!-- kipi-key: cap-scan/%s -->\n\n**Files:**\n\n"
+            "<!-- kipi-key: kipi-system/rule-%s -->\n\n**Files:**\n\n"
             "* `.claude/rules/%s.md`\n\nClaims ENFORCED with no enforcement." % (rule, rule)))
     return out
 
@@ -64,6 +71,26 @@ def job_family():
                   "`~/Library/LaunchAgents/%s.plist`." % (job, job.replace("/", ".")))
             for ident, job in JOBS]
 
+def job_family_big(n=22):
+    """`n` issues in the REAL producer's real format (linear-job-migration.py:166).
+
+    Big enough to cross MAX_TARGETS_PER_ISSUE, because the finding-1 failure only
+    bites once the ingested roster overflows the cap and evicts the survivor's own
+    target. Each member names TWO targets: its launchd label and its script path.
+    """
+    out = []
+    for i in range(1, n + 1):
+        label = "com.cole.job%02d" % i
+        out.append(issue(
+            "ASK-%d" % (299 + i),
+            "Migrate %s to Linear-tracked execution" % label,
+            "<!-- kipi-key: job-migration/%s -->\n\n"
+            "Migrate `%s` onto Linear-tracked execution.\n\n"
+            "| Field | Value |\n| -- | -- |\n| State | loaded |\n"
+            "| Runs | `q-system/.q-system/scripts/job%02d.py` |\n" % (
+                label.replace(".", "-"), label, i)))
+    return out
+
 # Shares the word "migrate" AND a com.* token with job_family, different shape.
 NEAR_MISS = issue("ASK-190", "migrate com.kipi/nightly-sweep off launchd entirely",
                   "<!-- kipi-key: job-migration/com.kipi/nightly-sweep -->\n\nunrelated shape")
@@ -71,18 +98,33 @@ NEAR_MISS = issue("ASK-190", "migrate com.kipi/nightly-sweep off launchd entirel
 class Fake:
     """Records the ORDER of every write, and refuses a close whose record is
     not already on disk -- that is check 6 (`sp-b5dcf944`: linear-triage.py
-    --apply died mid-run after closing 32 issues with no audit file at all)."""
-    def __init__(self, audit):
+    --apply died mid-run after closing 32 issues with no audit file at all).
+
+    Pass the loaded module as `c` for a writer with the same side effects the
+    real one has on the board: the description gets the spliced block, a comment
+    lands, a close flips the state. Without `c` it only records calls. Anything
+    that spans two passes needs the side effects -- pass 2 reads what pass 1
+    wrote, and both PR #35 review majors live in exactly that read.
+    """
+    def __init__(self, audit, c=None):
         self.log = []
         self.audit = audit
         self.batched = False
+        self.c = c
 
     def write_survivor_block(self, iss, block):
         self.log.append(("dor", iss["identifier"]))
+        if self.c:
+            new = self.c.splice_block(iss.get("description") or "", block)
+            if new == (iss.get("description") or ""):
+                return "dor-unchanged"
+            iss["description"] = new
         return "dor-written"
 
     def add_comment(self, iss, body):
         self.log.append(("comment", iss["identifier"]))
+        if self.c:
+            iss["comments"]["nodes"].append({"id": "c-new", "body": body})
         return "comment-added"
 
     def close_issue(self, iss):
@@ -91,6 +133,8 @@ class Fake:
                    for r in recs):
             self.batched = True
         self.log.append(("close", iss["identifier"]))
+        if self.c:
+            iss["state"] = {"name": "Canceled", "type": "canceled"}
         return "closed"
 PYFX
 
@@ -154,17 +198,37 @@ print(json.dumps("ASK-190" in [i["identifier"] for i in f["members"]]))
 PY
 )"
 
-# Same title shape, different scanner. Two producers filing the same sentence are
-# two families; one fix does not cover both.
-check "identical template from a different producer is a separate family" '2' \
+# Same title shape, different kipi-key namespace. `cole-gtm/` and `job-migration/`
+# are both real ledger namespaces; one fix does not cover both.
+check "identical template from a different namespace is a separate family" '2' \
   "$(pyrun <<'PY'
 import sys; sys.path.insert(0, sys.argv[2]); import _fx
 c = _fx.load(sys.argv[1])
-alien = [_fx.issue("ASK-300", "migrate com.x/a to Linear-tracked execution",
-                   "<!-- kipi-key: other-scan/a -->"),
-         _fx.issue("ASK-301", "migrate com.x/b to Linear-tracked execution",
-                   "<!-- kipi-key: other-scan/b -->")]
+alien = [_fx.issue("ASK-400", "migrate com.x/a to Linear-tracked execution",
+                   "<!-- kipi-key: cole-gtm/cap-45-plugin-fleet -->"),
+         _fx.issue("ASK-401", "migrate com.x/b to Linear-tracked execution",
+                   "<!-- kipi-key: cole-gtm/cap-44-code-health-scanner-suite -->")]
 print(len(c.detect_families(_fx.job_family() + alien)))
+PY
+)"
+
+# PR #35 review, finding 4, pinned rather than argued. `producer()` returns the
+# kipi-key NAMESPACE, and on the real ledger 122 of 188 issues resolve to a repo
+# (`kipi-system/`, `cole-gtm/`), not a scanner. So two different scanners writing
+# into one namespace share a bucket and only the title template separates them.
+# This case documents that residual (sp-ab2d1067): if someone strengthens the key,
+# this check fails and they update it on purpose instead of by accident.
+check "residual: one kipi-key namespace is one bucket, scanners inside it are not split" '1' \
+  "$(pyrun <<'PY'
+import sys; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+# left: filed by the CAP rule scanner. right: filed by the unwired-engine audit.
+# Same namespace on the real board, same title template -> one family.
+same_ns = [_fx.issue("ASK-500", "CAP-90 rule alpha-one: alpha-one guardrails",
+                     "<!-- kipi-key: kipi-system/rule-alpha-one -->"),
+           _fx.issue("ASK-501", "CAP-91 rule beta-two: beta-two guardrails",
+                     "<!-- kipi-key: kipi-system/unwired-engine-audit -->")]
+print(len(c.detect_families(same_ns)))
 PY
 )"
 
@@ -340,6 +404,185 @@ f = c.detect_families(_fx.cap_family())[0]
 block = c.survivor_block(f, "t")
 once = c.splice_block("original text", block)
 print(json.dumps(c.splice_block(once, block) == once and "original text" in once))
+PY
+)"
+
+echo "== second pass: the survivor must not ingest the block it wrote =="
+
+# PR #35 review, finding 1. member_targets() read title + WHOLE description, and
+# after pass 1 the survivor's description CONTAINS the roster naming every other
+# member's target. Pass 2 read them back as the survivor's own and the 20-target
+# cap evicted the survivor's REAL target from its own row -- the exact failure the
+# module docstring says the roster exists to prevent.
+check "the survivor's own targets survive a read of its own roster block" 'true' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+issues = _fx.job_family_big(22)
+fam = c.detect_families(issues)[0]
+sur = fam["survivor"]
+own = c.member_targets(sur)
+sur["description"] = c.splice_block(sur["description"], c.survivor_block(fam, "t"))
+print(json.dumps(c.member_targets(sur) == own))
+PY
+)"
+
+check "no other member's target lands in the survivor's own row on pass 2" 'true' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+issues = _fx.job_family_big(22)
+sur = issues[0]
+sur["description"] = c.splice_block(
+    sur["description"], c.survivor_block(c.detect_families(issues)[0], "t"))
+block2 = c.survivor_block(c.detect_families(issues)[0], "t")
+row = [l for l in block2.splitlines() if l.startswith("| ASK-300 ")][0]
+print(json.dumps("job01.py" in row and "com.cole.job02" not in row))
+PY
+)"
+
+echo "== resume: rows the previous pass closed stay on the roster =="
+
+# PR #35 review, finding 2. Production only ever feeds detect_families() from
+# fetch_open(), so pass 2 cannot see what pass 1 closed. Rebuilding the block from
+# the open members alone DELETED the closed members' rows -- while their pointer
+# comments still said "enumerated in ASK-130, so the family fix has to cover it".
+cat > "$TMP/_resume.py" <<'PYRES'
+import json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _fx
+
+def resumed_survivor_description(c, tmp, tag):
+    """Run 1 dies after two closes; run 2 sees only what fetch_open() would."""
+    audit = os.path.join(tmp, "resume-%s.jsonl" % tag)
+    open(audit, "w").close()
+    issues = _fx.cap_family()
+
+    class Die(_fx.Fake):
+        def close_issue(self, iss):
+            out = _fx.Fake.close_issue(self, iss)
+            if len([e for e in self.log if e[0] == "close"]) >= 2:
+                raise RuntimeError("simulated mid-run death (sp-b5dcf944)")
+            return out
+
+    try:
+        c.apply_family(c.detect_families(issues)[0], Die(audit, c), audit, ts="t1")
+    except RuntimeError:
+        pass
+    still_open = [i for i in issues if not c.is_closed(i)]   # == fetch_open()
+    c.apply_family(c.detect_families(still_open)[0], _fx.Fake(audit, c), audit, ts="t2")
+    return issues[0]["description"]
+PYRES
+
+check "a resumed pass keeps the rows of the members the first pass closed" '["ASK-130", "ASK-131", "ASK-132", "ASK-133", "ASK-134"]' \
+  "$(pyrun <<'PY'
+import sys, json, re; sys.path.insert(0, sys.argv[2]); import _fx, _resume
+c = _fx.load(sys.argv[1])
+desc = _resume.resumed_survivor_description(c, sys.argv[2], "ids")
+print(json.dumps(sorted(set(re.findall(r"ASK-1\d\d", desc)))))
+PY
+)"
+
+check "the roster header counts the whole family, not just what is still open" '## Collapsed family — 5 issues, one change' \
+  "$(pyrun <<'PY'
+import sys; sys.path.insert(0, sys.argv[2]); import _fx, _resume
+c = _fx.load(sys.argv[1])
+desc = _resume.resumed_survivor_description(c, sys.argv[2], "hdr")
+print([l for l in desc.splitlines() if l.startswith("## Collapsed family")][0])
+PY
+)"
+
+check "every member's target is still enumerated after the resumed pass" 'true' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx, _resume
+c = _fx.load(sys.argv[1])
+desc = _resume.resumed_survivor_description(c, sys.argv[2], "targets")
+print(json.dumps(all(".claude/rules/%s.md" % r in desc for r in _fx.CAP_RULES)))
+PY
+)"
+
+check "a prior row for an issue no longer in the family is preserved" '["ASK-130", "ASK-131", "ASK-199"]' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+fam = c.detect_families(_fx.cap_family()[:2])[0]
+prior = [{"identifier": "ASK-199", "title": "closed by an earlier pass",
+          "targets": [".claude/rules/gone.md"]}]
+print(json.dumps([r["identifier"] for r in c.family_rows(fam, prior)]))
+PY
+)"
+
+# The merge only works if the block this script writes can be read back exactly.
+# A title carrying a pipe is the one character that can break the table parse.
+check "the roster round-trips: parse_block_rows reads back what survivor_block wrote" 'true' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+fam = c.detect_families(_fx.cap_family())[0]
+fam["members"][1]["title"] = "CAP-02 rule a | b: pipes in titles guardrails"
+back = c.parse_block_rows(c.survivor_block(fam, "t"))
+want = [{"identifier": m["identifier"], "title": m["title"],
+         "targets": c.member_targets(m)} for m in fam["members"]]
+print(json.dumps(back == want))
+PY
+)"
+
+check "a pass that adds no row does not rewrite the survivor description" 'dor-unchanged' \
+  "$(pyrun <<'PY'
+import sys, os; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+audit = os.path.join(sys.argv[2], "noop.jsonl"); open(audit, "w").close()
+issues = _fx.cap_family()
+c.apply_family(c.detect_families(issues)[0], _fx.Fake(audit, c), audit, ts="t1")
+recs = c.apply_family(c.detect_families(issues)[0], _fx.Fake(audit, c), audit, ts="t2")
+print([r["outcome"] for r in recs if r["step"] == "survivor-dor"][0])
+PY
+)"
+
+echo "== a step that did not happen is never counted as applied =="
+
+# PR #35 review, finding 3. close_issue() returned the STRING "NOT-CLOSED (...)",
+# apply_family recorded it as an outcome, and main() did done += 1 regardless --
+# so a run that commented on 49 permanent issues and closed none printed
+# "1/1 family/families applied." and exited 0.
+check "close_issue with no canceled-type state raises instead of returning a string" 'true' \
+  "$(pyrun <<'PY'
+import sys, json; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+try:
+    c.LinearWriter(None, None).close_issue({"id": "x", "identifier": "ASK-1"})
+    print(json.dumps(False))
+except RuntimeError:
+    print(json.dumps(True))
+PY
+)"
+
+check "a step whose outcome is not a real write makes the family incomplete" '[["ASK-131", "closed", "NOT-CLOSED (stubbed)"]]' \
+  "$(pyrun <<'PY'
+import sys, json, os; sys.path.insert(0, sys.argv[2]); import _fx
+c = _fx.load(sys.argv[1])
+audit = os.path.join(sys.argv[2], "incomplete.jsonl"); open(audit, "w").close()
+class Stub(_fx.Fake):
+    def close_issue(self, iss):
+        _fx.Fake.close_issue(self, iss)
+        return "NOT-CLOSED (stubbed)"
+recs = c.apply_family(c.detect_families(_fx.cap_family()[:2])[0],
+                      Stub(audit), audit, ts="t")
+print(json.dumps(c.incomplete_steps(recs)))
+PY
+)"
+
+check "the offline fixture seam refuses --apply instead of crashing on a None client" '1' \
+  "$(pyrun <<'PY'
+import sys, os, subprocess, json
+sys.path.insert(0, sys.argv[2]); import _fx
+env = dict(os.environ, KIPI_COLLAPSE_FIXTURE=os.path.join(sys.argv[2], "fx2.json"))
+json.dump(_fx.cap_family(), open(env["KIPI_COLLAPSE_FIXTURE"], "w"))
+r = subprocess.run([sys.executable, sys.argv[1], "--apply"], env=env,
+                   capture_output=True, text=True, stdin=subprocess.DEVNULL)
+assert "Traceback" not in r.stderr, r.stderr
+assert "KIPI_COLLAPSE_FIXTURE" in r.stderr, r.stderr
+print(r.returncode)
 PY
 )"
 

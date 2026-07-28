@@ -23,10 +23,25 @@ target, and every absorbed issue closed with a comment pointing at the survivor.
 `survivor_block()` builds the union; `test-linear-collapse.sh` asserts the union
 rather than a sample, because a sample assertion passes on the bug.
 
+THE ROSTER IS THE ONE ARTIFACT, SO TWO RULES PROTECT IT (PR #35 review)
+
+1. The roster is read back and MERGED, never rebuilt. Production feeds
+   `detect_families()` from `fetch_open()`, so a second pass cannot see the
+   members the first pass closed. Rebuilding from the open members deleted their
+   rows while their pointer comments still said "enumerated in <survivor>" --
+   the survivor stopped naming the very targets it inherited. `family_rows()`
+   merges `parse_block_rows()` of the existing block with this pass's members,
+   and the roster only ever grows.
+2. Nothing reads the roster as issue content. `strip_block()` removes the block
+   before `member_targets()` / `producer()` look at a description. Without it
+   the survivor ingested its own roster on pass 2, and the 20-target cap evicted
+   the survivor's real target from its own row.
+
 WHY THE DETECTOR IS DETERMINISTIC AND STRICT
 
 No model call. Two issues collapse only when their titles normalise to the
-BYTE-IDENTICAL template and they were filed by the same producer. That under-
+BYTE-IDENTICAL template and they carry the same kipi-key namespace (see
+`producer()` for what that namespace really is, and its residual). That under-
 collapses in the tail (a hand-edited title drops out of its family) and that is
 the safe direction: under-collapse leaves an issue on the board for a human to
 look at, over-collapse closes real distinct work behind a fix that never covers
@@ -51,10 +66,14 @@ close happens before its own record is on disk.
 
 EXIT CODES -- this script never lies about failure
   0  ran; every family in the plan was fully applied (or it was a dry run)
-  1  usage error
-  9  the run could not finish what it started (a write raised). Partial results
-     are printed and the audit file holds every write that did land, but the
-     exit code says the pass is incomplete.
+  1  usage error (including --apply under the offline fixture seam)
+  9  the pass is not complete. Three ways in: a write raised; a step reported
+     something other than a real write (`incomplete_steps`); or the preflight
+     refused to start because the team has no canceled-type state to close
+     absorbed issues into. Partial results are printed and the audit file holds
+     every write that did land, but the exit code says the pass is incomplete.
+     A family counts as applied only when every one of its recorded steps says
+     it happened -- "the loop did not raise" is not evidence.
 
 Usage:
   linear-collapse.py                          # dry, prints the plan
@@ -179,13 +198,43 @@ def is_collapsible_template(template: str) -> bool:
             and len(literal_words(template)) >= MIN_LITERAL_WORDS)
 
 
-def producer(issue: dict) -> str:
-    """Which scanner filed this, from its kipi-key marker, or "" if a human did.
+def strip_block(description: str | None) -> str:
+    """The description WITHOUT the roster block this script owns.
 
-    Part of the family key: two scanners emitting the same sentence are two
-    families, and one fix does not cover both.
+    One description, two readers, and they must never be confused: everything
+    OUTSIDE the markers is what the issue itself says (this function), everything
+    INSIDE them is what a previous pass recorded (`parse_block_rows`).
+
+    PR #35 review finding 1: `member_targets` read the whole string, so on the
+    second pass the survivor ingested the roster the FIRST pass wrote -- every
+    other member's target read back as its own -- and MAX_TARGETS_PER_ISSUE then
+    evicted the survivor's real target from its own row. The roster exists to
+    stop exactly that kind of target going dark, so it must not cause it.
     """
-    m = KIPI_KEY_RE.search(issue.get("description") or "")
+    desc = description or ""
+    start = desc.find(BLOCK_OPEN)
+    end = desc.find(BLOCK_CLOSE)
+    if start != -1 and end != -1 and end > start:
+        return desc[:start] + desc[end + len(BLOCK_CLOSE):]
+    return desc
+
+
+def producer(issue: dict) -> str:
+    """The kipi-key NAMESPACE (first path segment), or "" if a human filed it.
+
+    Part of the family key: two namespaces emitting the same sentence are two
+    families, and one fix does not cover both.
+
+    Known residual (sp-ab2d1067, PR #35 review finding 4): a namespace is only
+    sometimes a scanner. On the real ledger 122 of 188 issues resolve to a REPO
+    (`kipi-system/`, `cole-gtm/`) and only 36 to a scanner (`job-migration/`).
+    Inside one repo namespace, different scanners share a bucket and the title
+    template is the only thing separating them -- `is_collapsible_template()`
+    and byte-exact template equality carry that weight, not this function.
+    `test-linear-collapse.sh` pins both halves so the residual cannot drift
+    silently.
+    """
+    m = KIPI_KEY_RE.search(strip_block(issue.get("description")))
     return m.group(1) if m else ""
 
 
@@ -194,20 +243,31 @@ def issue_number(identifier: str) -> int:
     return int(m.group(1)) if m else 10 ** 9
 
 
-def member_targets(issue: dict) -> list:
-    """Every distinct thing this issue names: job labels, then repo paths.
+def all_targets(issue: dict) -> list:
+    """Every distinct thing this issue names, uncapped: job labels, then paths.
 
-    Read from the title AND the description, because the job-migration family
-    carries its only distinguishing token in the title.
+    Read from the title AND the description MINUS the block this script owns.
+    The title matters because the job-migration family carries its only
+    distinguishing token there. The block must be excluded because it names
+    every OTHER member's target -- see `strip_block`.
     """
-    text = (issue.get("title") or "") + "\n" + (issue.get("description") or "")
+    text = (issue.get("title") or "") + "\n" + strip_block(issue.get("description"))
     out: list = []
     for hit in JOB_LABEL_RE.findall(text) + PATH_RE.findall(text):
         if hit not in out:
             out.append(hit)
-        if len(out) >= MAX_TARGETS_PER_ISSUE:
-            break
     return out
+
+
+def member_targets(issue: dict) -> list:
+    """`all_targets` capped, because one row cannot be unbounded.
+
+    The cap used to be reachable by accident (the roster read itself back into
+    this list); with the block stripped, only an issue that genuinely names more
+    than 20 labels and paths reaches it. sp-d3fd8070 tracks making that case
+    visible in the roster instead of silently truncated.
+    """
+    return all_targets(issue)[:MAX_TARGETS_PER_ISSUE]
 
 
 def detect_families(issues: list, min_family: int = 2) -> list:
@@ -244,38 +304,102 @@ def detect_families(issues: list, min_family: int = 2) -> list:
 
 # --- the text this script writes -------------------------------------------
 
-def survivor_block(family: dict, ts: str | None = None) -> str:
+ROW_SPLIT_RE = re.compile(r"(?<!\\)\|")
+THIS_ISSUE = " (this issue)"
+NO_TARGET = "_(no explicit target)_"
+
+
+def _cells(line: str) -> list:
+    """The cells of one markdown table row, un-escaping the pipes we escaped."""
+    parts = ROW_SPLIT_RE.split(line)
+    return [p.strip().replace("\\|", "|") for p in parts[1:-1]]
+
+
+def parse_block_rows(description: str | None) -> list:
+    """The rows a PREVIOUS pass wrote, read back out of the survivor's block.
+
+    Reads only INSIDE the markers -- the mirror of `strip_block`, which reads only
+    outside them. Returns [] when there is no block yet.
+    """
+    desc = description or ""
+    start = desc.find(BLOCK_OPEN)
+    end = desc.find(BLOCK_CLOSE)
+    if start == -1 or end == -1 or end < start:
+        return []
+    rows = []
+    for line in desc[start:end].splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = _cells(line)
+        if len(cells) != 3 or cells[0] == "issue" or set(cells[0]) <= set("-: "):
+            continue                                   # header and separator rows
+        ident = cells[0]
+        if ident.endswith(THIS_ISSUE):
+            ident = ident[:-len(THIS_ISSUE)]
+        targets = [t.strip("` ") for t in cells[2].split(",")
+                   if t.strip("` ") and not t.strip().startswith("_(")]
+        rows.append({"identifier": ident, "title": cells[1], "targets": targets})
+    return rows
+
+
+def family_rows(family: dict, prior_rows=()) -> list:
+    """This pass's members MERGED with the rows a previous pass already wrote.
+
+    PR #35 review finding 2. Production only ever feeds `detect_families()` from
+    `fetch_open()`, so a resumed pass CANNOT see the members the previous pass
+    closed. Rebuilding the table from the current family alone deleted their rows
+    -- while their pointer comments still said "enumerated in <survivor>, so the
+    family fix has to cover it". The roster only ever grows: a row is the record
+    of an issue that was closed against this one, and closing it is precisely why
+    the row must outlive it.
+
+    A member seen in THIS pass wins over its prior row (its title or targets may
+    have been edited since). Ordered by issue number so a rewrite is a diff, not
+    a reshuffle.
+    """
+    rows = {r["identifier"]: dict(r) for r in prior_rows}
+    for m in family["members"]:
+        rows[m["identifier"]] = {"identifier": m["identifier"],
+                                 "title": m.get("title") or "",
+                                 "targets": member_targets(m)}
+    return sorted(rows.values(), key=lambda r: issue_number(r["identifier"]))
+
+
+def survivor_block(family: dict, ts: str | None = None, prior_rows=()) -> str:
     """The roster that makes the collapse safe: every member, every target.
 
     This is the artifact the DoR of ASK-226 is about. If a member's target is
     missing here, the family fix will not cover it, the issue that named it is
-    closed, and nothing on the board remembers it existed.
+    closed, and nothing on the board remembers it existed. `prior_rows` is what
+    an earlier pass recorded; it is merged in, never replaced.
     """
     ts = ts or _now()
     survivor = family["survivor"]["identifier"]
+    merged = family_rows(family, prior_rows)
     rows = []
-    for m in family["members"]:
-        targets = member_targets(m)
-        cell = ", ".join("`%s`" % t for t in targets) if targets else "_(no explicit target)_"
-        label = m["identifier"] + (" (this issue)" if m["identifier"] == survivor else "")
-        rows.append("| %s | %s | %s |" % (label, (m.get("title") or "").replace("|", "\\|"), cell))
+    for r in merged:
+        cell = ", ".join("`%s`" % t for t in r["targets"]) if r["targets"] else NO_TARGET
+        label = r["identifier"] + (THIS_ISSUE if r["identifier"] == survivor else "")
+        rows.append("| %s | %s | %s |" % (label, (r["title"] or "").replace("|", "\\|"), cell))
 
     return "\n".join([
         BLOCK_OPEN,
-        "## Collapsed family — %d issues, one change" % len(family["members"]),
+        "## Collapsed family — %d issues, one change" % len(merged),
         "",
         "These %d issues are the same machine-filed template with a different "
         "target in each. They are ONE change, not %d. Every member's specific "
         "target is enumerated below; a fix that covers the shape but skips one "
         "of these rows leaves that target dark, which is the whole reason these "
         "were collapsed instead of closed."
-        % (len(family["members"]), len(family["members"])),
+        % (len(merged), len(merged)),
         "",
         "| issue | title | target(s) |",
         "|---|---|---|",
         *rows,
         "",
-        "Filed by: `%s`. Title template: `%s`." % (family["producer"] or "(human)", family["template"]),
+        "kipi-key namespace: `%s`. Title template: `%s`."
+        % (family["producer"] or "(human)", family["template"]),
         "",
         "<sub>`linear-collapse.py` %s. The absorbed issues are closed with a "
         "comment pointing here. Wrong call? Reopen any of them — nothing was "
@@ -284,14 +408,20 @@ def survivor_block(family: dict, ts: str | None = None) -> str:
     ])
 
 
-def absorb_comment(family: dict, member: dict, ts: str | None = None) -> str:
+def absorb_comment(family: dict, member: dict, ts: str | None = None,
+                   roster_size: int | None = None) -> str:
     ts = ts or _now()
     targets = member_targets(member)
     mine = ", ".join("`%s`" % t for t in targets) if targets else "this issue's target"
+    # The family size a member is told it belongs to is the ROSTER size, not the
+    # size of this pass. On a resumed pass this pass sees only what is still open,
+    # and a comment that says "one of 3" about a family of 5 is a permanent
+    # miscount on a permanent object.
+    size = roster_size if roster_size is not None else len(family["members"])
     return "\n".join([
         ABSORB_MARKER,
         "**Collapsed into %s** — one of %d template-identical issues filed by "
-        "`%s`." % (family["survivor"]["identifier"], len(family["members"]),
+        "`%s`." % (family["survivor"]["identifier"], size,
                    family["producer"] or "a human"),
         "",
         "%s is enumerated in %s, so the family fix has to cover it. Closing here "
@@ -315,6 +445,21 @@ def splice_block(description: str, block: str) -> str:
     if start != -1 and end != -1 and end > start:
         return desc[:start] + block + desc[end + len(BLOCK_CLOSE):]
     return (desc.rstrip() + "\n\n" + block) if desc.strip() else block
+
+
+# The block's footer stamp is the ONLY part that changes on a pass that found
+# nothing new, so the write decision has to ignore it.
+STAMP_RE = re.compile(r"^<sub>`linear-collapse\.py` .*$", re.M)
+
+
+def block_is_current(description: str | None, block: str) -> bool:
+    """True when splicing `block` in would change nothing but the timestamp.
+
+    Without this, every resumed pass rewrites the survivor's description forever
+    -- a permanent object mutated to say the same thing with a newer clock.
+    """
+    desc = description or ""
+    return STAMP_RE.sub("", splice_block(desc, block)) == STAMP_RE.sub("", desc)
 
 
 # --- writing ---------------------------------------------------------------
@@ -370,10 +515,36 @@ class LinearWriter:
         # 'canceled', never 'completed': marking an absorbed issue Done would
         # claim work was finished that nobody did, and that lie outlives the board.
         if not self.close_state_id:
-            return "NOT-CLOSED (no canceled-type state on this team)"
+            # PR #35 review finding 3: this used to RETURN "NOT-CLOSED (...)".
+            # apply_family recorded the string as an outcome and main() counted
+            # the family applied anyway, so a run that commented "collapsed" on
+            # every absorbed issue and closed none printed "1/1 applied" and
+            # exited 0. main() now refuses before the first write; this raise is
+            # the backstop for any other caller.
+            raise RuntimeError(
+                "no canceled-type workflow state on this team, so %s cannot be "
+                "closed. Refusing to leave a permanent 'collapsed' comment "
+                "behind a close that cannot happen." % issue.get("identifier"))
         self.ls.graphql(self.ls.ISSUE_UPDATE,
                         {"id": issue["id"], "input": {"stateId": self.close_state_id}})
         return "closed"
+
+
+# Every outcome that means the step actually did its job. Anything else is a step
+# that did not happen, and `incomplete_steps` makes main() say so.
+OK_OUTCOMES = ("dor-written", "dor-unchanged", "comment-added", "already-present",
+               "closed", "already-closed")
+
+
+def incomplete_steps(records: list) -> list:
+    """[[issue, step, outcome], ...] for every step that did not do its job.
+
+    The completion count is driven by what the records SAY happened, not by "the
+    loop did not raise" (PR #35 review finding 3). A writer that reports a
+    non-write is now a non-zero exit, whatever the reason it reports.
+    """
+    return [[r["issue"], r["step"], r["outcome"]] for r in records
+            if r.get("outcome") not in OK_OUTCOMES]
 
 
 def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -> list:
@@ -386,12 +557,24 @@ def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -
     """
     ts = ts or _now()
     survivor = family["survivor"]
+    # Read the previous pass's roster BEFORE writing over it. `family_size` is
+    # what this pass can see (fetch_open hides what an earlier pass closed);
+    # `roster_size` is the whole family the survivor now carries. Recording only
+    # the first would make the audit file understate every resumed pass.
+    prior_rows = parse_block_rows(survivor.get("description"))
+    roster_size = len(family_rows(family, prior_rows))
     base = {"ts": ts, "survivor": survivor["identifier"],
             "template": family["template"], "producer": family["producer"],
-            "family_size": len(family["members"])}
+            "family_size": len(family["members"]), "roster_size": roster_size}
     records = []
 
-    out = writer.write_survivor_block(survivor, survivor_block(family, ts))
+    block = survivor_block(family, ts, prior_rows)
+    # The skip lives here, not in the writer: a test double that had to reproduce
+    # it would be asserting its own logic instead of this file's.
+    if block_is_current(survivor.get("description"), block):
+        out = "dor-unchanged"
+    else:
+        out = writer.write_survivor_block(survivor, block)
     records.append(append_record(audit_path, dict(
         base, issue=survivor["identifier"], step="survivor-dor", outcome=out)))
 
@@ -404,7 +587,8 @@ def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -
                 base, issue=member["identifier"], step="commented",
                 outcome="already-present")))
         else:
-            out = writer.add_comment(member, absorb_comment(family, member, ts))
+            out = writer.add_comment(
+                member, absorb_comment(family, member, ts, roster_size))
             records.append(append_record(audit_path, dict(
                 base, issue=member["identifier"], step="commented", outcome=out)))
 
@@ -453,6 +637,14 @@ def load_issues(args):
     """
     fixture = os.environ.get("KIPI_COLLAPSE_FIXTURE")
     if fixture:
+        if args.apply:
+            # There is no client behind the fixture, so --apply used to die in
+            # closed_state_id() with `NoneType has no attribute graphql`. A
+            # traceback is not a refusal: say what the seam is and exit 1.
+            print("KIPI_COLLAPSE_FIXTURE is a read-only offline seam and cannot "
+                  "--apply: there is no Linear connection behind it. Unset it to "
+                  "write against the real board.", file=sys.stderr)
+            raise SystemExit(1)
         return json.loads(Path(fixture).read_text()), None, None
     ls = _load(HERE / "linear-sync.py", "ls")
     team_id = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % args.team,
@@ -472,12 +664,23 @@ def print_plan(families: list, total: int) -> None:
     for f in families:
         print("FAMILY  %-10s survivor, %d absorbed   template: %s"
               % (f["survivor"]["identifier"], len(f["absorbed"]), f["template"]))
-        print("        filed by: %s" % (f["producer"] or "(human)"))
+        print("        kipi-key namespace: %s" % (f["producer"] or "(human)"))
         for m in f["members"]:
             targets = member_targets(m)
             mark = "SURVIVOR" if m is f["survivor"] else "absorb  "
             print("        %s %-10s %s" % (mark, m["identifier"],
                                            ", ".join(targets) or "(no explicit target)"))
+        # What an earlier pass already collapsed into this survivor. The plan
+        # would otherwise read as "this family is 3" for a family of 5, because
+        # fetch_open() cannot show the two that pass closed.
+        seen = {m["identifier"] for m in f["members"]}
+        carried = [r for r in parse_block_rows(f["survivor"].get("description"))
+                   if r["identifier"] not in seen]
+        for r in carried:
+            print("        kept     %-10s %s   (closed by an earlier pass)"
+                  % (r["identifier"], ", ".join(r["targets"]) or "(no explicit target)"))
+        if carried:
+            print("        roster after this pass: %d row(s)" % (len(seen) + len(carried)))
         print()
 
 
@@ -512,15 +715,34 @@ def main() -> int:
               "objects." % sum(len(f["absorbed"]) for f in families))
         return 0
 
+    # Preflight before the FIRST write, not per close. Every absorbed issue gets
+    # a permanent "collapsed into X" comment immediately before its close; if the
+    # close can never happen, those comments are a lie this script cannot retract.
+    close_id = closed_state_id(ls, team_id)
+    if not close_id:
+        print("REFUSED: team %s has no canceled-type workflow state, so absorbed "
+              "issues cannot be closed. Nothing was written. Commenting "
+              "'collapsed' on %d permanent issues that then stay open is worse "
+              "than not running." % (args.team,
+                                     sum(len(f["absorbed"]) for f in families)),
+              file=sys.stderr)
+        return 9
+
     audit = args.out or str(REPO / DEFAULT_AUDIT.format(
         date=datetime.now(timezone.utc).strftime("%Y-%m-%d")))
     Path(audit).parent.mkdir(parents=True, exist_ok=True)
-    writer = LinearWriter(ls, closed_state_id(ls, team_id))
+    writer = LinearWriter(ls, close_id)
 
-    done, failed = 0, None
+    done, partial, failed = 0, [], None
     try:
         for f in families:
-            apply_family(f, writer, audit)
+            records = apply_family(f, writer, audit)
+            bad = incomplete_steps(records)
+            if bad:
+                partial.append((f["survivor"]["identifier"], bad))
+                print("PARTIAL %s: %d step(s) did not land"
+                      % (f["survivor"]["identifier"], len(bad)))
+                continue
             done += 1
             print("applied %s (+%d absorbed)" % (f["survivor"]["identifier"],
                                                  len(f["absorbed"])))
@@ -532,6 +754,16 @@ def main() -> int:
         print("INCOMPLETE: %d/%d family/families applied before the run stopped "
               "(%s). Every write that landed is in the audit file; re-running is "
               "safe and resumes." % (done, len(families), failed), file=sys.stderr)
+        return 9
+    if partial:
+        # done is the count of families every step of which reported a real
+        # write. A family with one dead step is not applied, and printing N/N
+        # here was the half of finding 3 that needed no strange input to fire.
+        print("INCOMPLETE: %d/%d family/families applied; %d had step(s) that "
+              "did not land:" % (done, len(families), len(partial)), file=sys.stderr)
+        for ident, bad in partial:
+            for issue_id, step, outcome in bad:
+                print("  %-10s %-12s %s" % (issue_id, step, outcome), file=sys.stderr)
         return 9
     print("%d/%d family/families applied." % (done, len(families)))
     return 0

@@ -358,7 +358,7 @@
     },
     {
       "path": "q-system/.q-system/scripts/linear-collapse.py",
-      "reason": "built and tested (21 cases) but deliberately unwired: --apply closes dozens of permanent Linear objects in one pass, so no trigger exists until the founder reads a full dry-run roster of the real board. Same gate as linear-triage.py -- collapse must run BEFORE the DoR drafter manufactures readiness on duplicate-template issues",
+      "reason": "built and tested (33 cases) but deliberately unwired: --apply closes dozens of permanent Linear objects in one pass, so no trigger exists until the founder reads a full dry-run roster of the real board. Same gate as linear-triage.py -- collapse must run BEFORE the DoR drafter manufactures readiness on duplicate-template issues",
       "spillover_id": "sp-ffc69720"
     },
     {
