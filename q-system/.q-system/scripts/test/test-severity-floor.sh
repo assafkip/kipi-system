@@ -317,11 +317,14 @@ gate_is 0  "BLOCK"             "DIRTY"    "BLOCK is review rework regardless of 
 gate_is 20 ""                  "DIRTY"    "no verdict is still unreviewed, not rework"
 gate_is 20 "garbage"           "CLEAN"    "an unrecognised verdict is still unreviewed"
 
-# converge.sh calls this with ONE argument. A silent behaviour change on the
-# short form would be a fleet-wide bug in a file this issue does not touch.
+# The short form is the gate's DEFAULT semantics: no merge state supplied reads
+# as "still merges". converge.sh called it this way until ASK-219 (it now passes
+# four arguments, section O), so this is no longer pinned to a live caller -- it
+# pins the contract every future caller inherits, and a silent change to it would
+# be a fleet-wide bug found by nobody.
 rework_gate "APPROVE"; [ $? = 10 ] || fail "one-arg rework_gate 'APPROVE' no longer returns 10"
 rework_gate "REQUEST CHANGES"; [ $? = 0 ] || fail "one-arg rework_gate 'REQUEST CHANGES' no longer returns 0"
-ok "the one-argument form keeps its original semantics (converge.sh is unchanged)"
+ok "the one-argument form keeps its original default semantics"
 
 # --- the real worker, end to end ---------------------------------------------
 # The unit cases above would pass on a lib nobody calls with the second argument,
@@ -370,6 +373,14 @@ echo "worked" >> "$W2/worked.txt"
 if [ ! -s "$W2/tree-log.txt" ]; then
   git log --oneline -n 20 > "$W2/tree-log.txt" 2>&1
 fi
+# THE PROMPT ITSELF, same first-writer-wins reasoning (PR #30 review, major 1).
+# WHICH prompt the worker hands the work-phase agent is the whole difference
+# between a drift round and a rework round, and it was previously unobservable
+# from outside the script -- so "gate 40 sends the review-answering prompt at an
+# approving review with no findings" could only ever be found by reading source.
+if [ ! -s "$W2/prompt.txt" ]; then
+  printf '%s\n' "\$*" > "$W2/prompt.txt"
+fi
 exit 0
 EOF
 # The page sink. "Did anyone get told, and how many times?" is answered by
@@ -382,13 +393,19 @@ chmod +x "$STUB/python3" "$STUB/claude" "$W2/notify.sh"
 export PATH="$STUB:$PATH"
 [ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub"
 
-# gh_says <pr> <mergeStateStatus>
+# gh_says <pr> <mergeStateStatus> [headRefOid]
+# The third argument is OPTIONAL and defaults to empty, so every pre-ASK-219
+# caller below keeps reporting an unreadable head -- which is the state the whole
+# board was in before the writer started pinning shas. Sections E-K therefore
+# assert the same outcomes on the same inputs after the callers grew their sha
+# arguments, which is the point: absent must not become drift.
 gh_says() {
   cat > "$STUB/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   "pr list"*)                                  echo $1 ;;
   "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+  "pr view $1 --json headRefOid"*)             echo ${3:-} ;;
 esac
 exit 0
 EOF
@@ -475,7 +492,11 @@ run_worker "$S_OK" "$W2/ok.out"
 
 [ ! -s "$W2/worked.txt" ] \
   || fail "an approved AND CLEAN PR was reworked; this fix must not loop on healthy PRs"
-grep -q "nothing to rework, waiting on founder merge" "$W2/ok.out" \
+# "nothing to rework" and not the merge half of the sentence: gate 10 now reports
+# the arm state (ASK-222), so pinning "waiting on founder merge" here would pin
+# the misstatement this issue removed. What section G is about is WHICH GATE the
+# skip came from, and that is what this anchors.
+grep -q "nothing to rework" "$W2/ok.out" \
   || fail "section G skipped for the WRONG REASON -- it must reach gate 10 (approved+clean),
       not gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/ok.out" | head -1)"
 [ ! -s "$W2/pages.txt" ] || fail "a healthy approved PR paged the founder: $(cat "$W2/pages.txt")"
@@ -630,7 +651,8 @@ gh_says 783 CLEAN
 : > "$W2/worked.txt"; : > "$W2/pages.txt"
 run_worker_in "$R_CLEAR/skel" "$S_CLEAR" "$W2/clear.out"
 
-grep -q "nothing to rework, waiting on founder merge" "$W2/clear.out" \
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/clear.out" \
   || fail "section J skipped for the WRONG REASON; it must reach gate 10 (approved + CLEAN).
       The worker said: $(grep -i skip "$W2/clear.out" | head -1)"
 LC="$S_CLEAR/linear-worker-attempts.json"
@@ -768,10 +790,11 @@ printf '%s' "$NOTE2" | grep -qi 'head' \
   || fail "a failed head lookup was swallowed silently: '$NOTE2'"
 ok "an unreadable current head does not manufacture a re-review round, and says so"
 
-# The one- and two-argument forms are what converge.sh and linear-worker.sh call
-# today, and this issue does not touch either file. They must be byte-identical
-# in behaviour AND silent -- a note printed on every worker run is the cry-wolf
-# failure, not a safety feature.
+# The one- and two-argument forms were what converge.sh and linear-worker.sh
+# called before ASK-219 wired the sha through (both now pass four; section O).
+# They must stay byte-identical in behaviour AND silent -- a note printed on
+# every call is the cry-wolf failure, not a safety feature, and silence is what
+# lets a caller adopt the short form without adding a line to every run.
 QUIET="$(rework_gate "APPROVE" "CLEAN")"; GOT=$?
 [ "$GOT" = "10" ] || fail "two-arg rework_gate 'APPROVE' 'CLEAN' changed: got $GOT, want 10"
 [ -z "$QUIET" ] || fail "the two-arg form now prints on every call: '$QUIET'. That is a line on
@@ -1040,6 +1063,1246 @@ CALL="$(status_call "$N6")"
 printf '%s' "$CALL" | grep -q 'target_url=' \
   && fail "with no comment URL available the reviewer invented a target_url: $CALL"
 ok "no comment URL means no target_url (omitted, not invented)"
+
+# =============================================================================
+# THE CALLERS PASS THE SHA (ASK-219, sp-a27722e7)
+# =============================================================================
+# THE DEFECT: ASK-216 shipped the drift check above and NOTHING ever called it
+# with the arguments that arm it. converge.sh passed ONE argument and
+# linear-worker.sh TWO, so exit 40 could not fire on any real code path. Section
+# L proves the reader is right; it cannot prove anyone reads it, and a reader
+# with no caller is the wiring-check defect class -- text in a file is not
+# wiring.
+#
+# OBSERVED 2026-07-28 on the live board, not hypothetical:
+#   pr-27.verdict.json  "verdict":"APPROVE WITH NITS"  "head_sha":"bf641ad8..."
+#   git push origin sana/ask-215                       -> new head c063c3dd
+#   ./kipi converge --issue ASK-215 --max-rounds 2
+#   00:27:09Z converge[ASK-215] DONE exit-1: PR #27 verdict 'APPROVE WITH NITS'
+#                               after 1 round(s). Waiting on founder merge only.
+# Three seconds to call an approval of a commit nobody had read terminal.
+#
+# So both drivers are run FOR REAL below, with `gh` stubbed. Re-testing the lib
+# would pass on exactly the code that shipped broken.
+CONV="$ROOT/q-system/.q-system/scripts/converge.sh"
+[ -f "$CONV" ] || fail "converge.sh does not exist at $CONV"
+
+# The fake worker. converge dispatches a round, THEN gates on the verdict record,
+# which each case seeds -- so the gate is what is under test and a real worker
+# would only bury it under an hour of model spend.
+cat > "$STUB/convworker" <<EOF
+#!/usr/bin/env bash
+printf 'dispatched\n' >> "$W2/converge-dispatch.txt"
+exit 0
+EOF
+chmod +x "$STUB/convworker"
+
+CRC=0
+# run_converge <state-dir> <out> [max-rounds]
+run_converge() {
+  ( cd "$W2/skel" \
+    && HOME="$W2/home" KIPI_STATE_DIR="$1" KIPI_NOTIFY="$W2/notify.sh" \
+       KIPI_CONVERGE_WORKER="$STUB/convworker" \
+       bash "$CONV" --issue ASK-AAA --max-rounds "${3:-1}" ) >"$2" 2>&1
+  CRC=$?
+}
+
+# seed_record <state-dir> <pr> <verdict> [head_sha]
+# Omitting the sha writes the shape EVERY record on the board had before
+# ASK-216, which case O3 needs to stay exactly as it is today.
+seed_record() {
+  mkdir -p "$1/pr-reviews"
+  if [ -n "${4:-}" ]; then
+    printf '{"verdict":"%s","pr":%s,"head_sha":"%s"}\n' "$3" "$2" "$4" \
+      > "$1/pr-reviews/pr-$2.verdict.json"
+  else
+    printf '{"verdict":"%s","pr":%s}\n' "$3" "$2" > "$1/pr-reviews/pr-$2.verdict.json"
+  fi
+}
+
+# --- O1. converge: an approval at a stale sha is NOT terminal ----------------
+# THE REPRODUCER. Exit code, not log prose: 1 is converge's "goal met, waiting on
+# the founder" and it is the wrong answer here, because the head carries code no
+# reviewer has read. With a 1-round cap the right answer is 2 (cap reached still
+# unconverged) -- another round was needed and the budget ran out, which is
+# honest, where exit 1 is a lie.
+S_DRIFT="$W2/state-drift"; mkdir -p "$S_DRIFT"
+seed_record "$S_DRIFT" 801 "APPROVE WITH NITS" "$SHA_A"
+gh_says 801 CLEAN "$SHA_B"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_DRIFT" "$W2/conv-drift.out" 1
+
+[ "$CRC" != "1" ] \
+  || fail "THE DEFECT: converge exited 1 (goal met) on PR #801, whose approval was recorded at
+      $SHA_A while the head is $SHA_B. It called an approval of code
+      nobody reviewed terminal. Under auto-merge that merges unreviewed code fleet-wide. It said:
+$(sed 's/^/        /' "$W2/conv-drift.out")"
+[ "$CRC" = "2" ] \
+  || fail "converge exited $CRC on a stale approval; expected 2 (the round cap, still unconverged).
+      Any other code means it stopped for a reason this case did not set up. It said:
+$(sed 's/^/        /' "$W2/conv-drift.out")"
+ok "converge: an approval at a stale sha does not exit 1 (goal met)"
+
+grep -qi "waiting on founder merge" "$W2/conv-drift.out" \
+  && fail "converge still told the operator a PR with unreviewed code at its head was merely
+      waiting on the founder"
+ok "converge does not report a stale approval as waiting on the founder"
+
+# Pin WHY it did not converge. Without this the case passes for any reason
+# converge declines -- the vacuous-test defect the PR #25 round-3 review found.
+grep -q "$SHA_A" "$W2/conv-drift.out" && grep -q "$SHA_B" "$W2/conv-drift.out" \
+  || fail "converge did not name BOTH the reviewed sha and the current head, so an operator
+      reading the log cannot tell drift from any other non-convergence. It said:
+$(sed 's/^/        /' "$W2/conv-drift.out")"
+ok "converge names the reviewed sha and the head it drifted to"
+
+# --- O2. converge: a MATCHING sha still converges ----------------------------
+# The cry-wolf half, and it matters as much as the catch: too strict here and
+# every approved PR on the board re-reviews forever, burning model budget and
+# writing a permanent Linear comment every round.
+S_SAME="$W2/state-same"; mkdir -p "$S_SAME"
+seed_record "$S_SAME" 802 "APPROVE WITH NITS" "$SHA_A"
+gh_says 802 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_SAME" "$W2/conv-same.out" 1
+
+[ "$CRC" = "1" ] \
+  || fail "a converged PR (approved at the sha that IS the head) no longer exits 1: got $CRC.
+      This fix must not turn every approved PR into an endless re-review. It said:
+$(sed 's/^/        /' "$W2/conv-same.out")"
+grep -q "DONE exit-1" "$W2/conv-same.out" \
+  || fail "converge exited 1 without the terminal message; it converged for the wrong reason"
+# THE SECOND REPORTER OF THE SAME STATE (PR #33 review, finding 2, one layer out).
+# converge's terminal line and its page are what the operator actually reads at
+# 3am -- it is the half of this pair that Slacks. Both said the PR was "waiting on
+# founder merge" / "ready to merge", which was true only while nothing armed
+# auto-merge. Fixing the worker's closing line and leaving converge's would put
+# the pre-fix picture on the founder's phone and the fixed one in a log file.
+grep -qi "waiting on founder merge\|waits on founder merge\|ready to merge" "$W2/conv-same.out" \
+  && fail "converge still closes an approved PR by telling the operator a founder must merge it.
+      The worker armed auto-merge before this line ran; GitHub merges it. It said:
+$(sed 's/^/        /' "$W2/conv-same.out")"
+grep -qi "waiting on founder merge\|ready to merge" "$W2/pages.txt" \
+  && fail "converge's PAGE -- the line that reaches the founder's phone -- still says a human owes
+      this PR a merge: $(cat "$W2/pages.txt")"
+grep -qi "auto-merge" "$W2/conv-same.out" \
+  || fail "converge's terminal line never names auto-merge, so it does not say what does own the
+      merge now that no founder does. It said:
+$(sed 's/^/        /' "$W2/conv-same.out")"
+ok "converge: an approval at the sha that IS the head still converges (no cry-wolf)"
+ok "converge's terminal line and page name auto-merge as the merge path, not a founder"
+
+# --- O3. converge: a record with NO head_sha behaves as today, and says so ----
+# Every record written before ASK-216 lacks the field. Reading absent as drift
+# would re-review the entire board at once.
+S_NOSHA="$W2/state-nosha"; mkdir -p "$S_NOSHA"
+seed_record "$S_NOSHA" 803 "APPROVE"
+gh_says 803 CLEAN "$SHA_B"
+: > "$W2/converge-dispatch.txt"
+run_converge "$S_NOSHA" "$W2/conv-nosha.out" 1
+
+[ "$CRC" = "1" ] \
+  || fail "a pre-ASK-216 record (no head_sha) changed converge's answer: got $CRC, want 1.
+      Absent is not drift; reading it that way re-reviews every PR on the board at once."
+grep -qi 'head_sha' "$W2/conv-nosha.out" \
+  || fail "converge fell back on an unpinned verdict SILENTLY. The blind spot has to reach the
+      operator, not be grandfathered. It said:
+$(sed 's/^/        /' "$W2/conv-nosha.out")"
+ok "converge: an unpinned record behaves as today AND names the blind spot"
+
+# --- O4. converge: an unreadable head falls toward terminal, and says so ------
+# Same posture as ASK-212's empty merge state. A manufactured re-review round
+# costs every PR in the fleet at once; a missed one costs one human diagnosis.
+S_GHDOWN="$W2/state-ghdown"; mkdir -p "$S_GHDOWN"
+seed_record "$S_GHDOWN" 804 "APPROVE" "$SHA_A"
+gh_says 804 CLEAN ""
+: > "$W2/converge-dispatch.txt"
+run_converge "$S_GHDOWN" "$W2/conv-ghdown.out" 1
+
+[ "$CRC" = "1" ] \
+  || fail "an unreadable current head manufactured a non-terminal round in converge: got $CRC, want 1"
+grep -qi 'head' "$W2/conv-ghdown.out" \
+  || fail "converge swallowed a failed head lookup silently:
+$(sed 's/^/        /' "$W2/conv-ghdown.out")"
+ok "converge: an unreadable head does not manufacture a round, and says so"
+
+# --- O5. the WORKER dispatches on drift instead of skipping as done ----------
+# The second caller. It passes $MERGE_STATE as argument 2 already, so this is the
+# case that proves the sha arguments were appended rather than inserted.
+R_DRIFT="$W2/repo-drift"; make_repo "$R_DRIFT"
+S_WDRIFT="$W2/state-wdrift"; mkdir -p "$S_WDRIFT"
+seed_record "$S_WDRIFT" 805 "APPROVE WITH NITS" "$SHA_A"
+gh_says 805 CLEAN "$SHA_B"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"
+run_worker_in "$R_DRIFT/skel" "$S_WDRIFT" "$W2/wdrift.out"
+
+grep -q worked "$W2/worked.txt" 2>/dev/null \
+  || fail "THE DEFECT, worker half: PR #805 is approved at $SHA_A but the head is
+      $SHA_B, and the worker skipped it as done. The code at the head is
+      unreviewed and nothing in the loop will ever look at it. It said:
+      $(grep -i skip "$W2/wdrift.out" | head -1)"
+ok "worker: a stale approval is dispatched, not skipped as done"
+
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/wdrift.out" \
+  && fail "the worker still reported a PR with unreviewed code at its head as waiting on the founder"
+ok "worker: a stale approval is not reported as waiting on the founder"
+
+grep -q "$SHA_A" "$W2/wdrift.out" && grep -q "$SHA_B" "$W2/wdrift.out" \
+  || fail "the worker dispatched without naming the reviewed sha and the head, so the operator
+      cannot tell a drift round from an ordinary rework round. It said:
+$(sed 's/^/        /' "$W2/wdrift.out")"
+ok "worker: the drift dispatch names the reviewed sha and the head"
+
+# --- O6. the worker still leaves a CONVERGED PR alone ------------------------
+S_WSAME="$W2/state-wsame"; mkdir -p "$S_WSAME"
+seed_record "$S_WSAME" 806 "APPROVE WITH NITS" "$SHA_A"
+gh_says 806 CLEAN "$SHA_A"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker "$S_WSAME" "$W2/wsame.out"
+
+[ ! -s "$W2/worked.txt" ] \
+  || fail "an approved PR at the sha that IS the head was reworked; this fix must not loop on
+      healthy PRs"
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/wsame.out" \
+  || fail "the worker skipped PR #806 for the WRONG REASON -- it must reach gate 10, not gate 20.
+      It said: $(grep -i skip "$W2/wsame.out" | head -1)"
+[ ! -s "$W2/pages.txt" ] || fail "a converged PR paged the founder: $(cat "$W2/pages.txt")"
+ok "worker: a converged PR at the reviewed sha is still left alone at gate 10"
+
+# --- O7. the worker's argument ORDER survived: merge state is still arg 2 -----
+# A reviewed sha that MATCHES plus DIRTY must still be gate 30. If the sha
+# arguments had been inserted ahead of the merge state instead of appended, this
+# would fall to gate 10 and ASK-212 would silently regress.
+R_ORDER="$W2/repo-order"; make_repo "$R_ORDER"
+S_ORDER="$W2/state-order"; mkdir -p "$S_ORDER"
+seed_record "$S_ORDER" 807 "APPROVE" "$SHA_A"
+gh_says 807 DIRTY "$SHA_A"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_ORDER/skel" "$S_ORDER" "$W2/worder.out"
+
+grep -q "rebase round 1/" "$W2/worder.out" \
+  || fail "ASK-212 REGRESSED: an approved PR at the reviewed sha that GitHub reports DIRTY no
+      longer gets a rebase round. The merge state stopped landing in argument 2. It said:
+$(sed 's/^/        /' "$W2/worder.out")"
+ok "worker: the merge state still lands in argument 2 (ASK-212 intact)"
+
+# --- O8. drift OUTRANKS the merge state, end to end --------------------------
+# Both fire. A rebase round dispatched on a diff nobody reviewed is the same
+# unreviewed-code path wearing a rebase coat, so the re-review has to win and the
+# fresh record then decides whether a rebase round is needed.
+R_BOTH="$W2/repo-both"; make_repo "$R_BOTH"
+S_BOTH="$W2/state-both"; mkdir -p "$S_BOTH"
+seed_record "$S_BOTH" 808 "APPROVE" "$SHA_A"
+gh_says 808 DIRTY "$SHA_B"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_BOTH/skel" "$S_BOTH" "$W2/wboth.out"
+
+grep -q worked "$W2/worked.txt" 2>/dev/null \
+  || fail "neither the drift nor the conflict path dispatched anything: $(grep -i skip "$W2/wboth.out" | head -1)"
+grep -q "dispatching rebase round" "$W2/wboth.out" \
+  && fail "a rebase round was dispatched on a diff nobody reviewed. Drift must be resolved first;
+      the fresh review then decides whether this is also a conflict."
+LB="$S_BOTH/linear-worker-attempts.json"
+[ "$("$REAL_PY" -c "
+import json
+try: d=json.load(open('$LB'))
+except Exception: d={}
+print(d.get('ASK-AAA',{}).get('conflict_rounds',0))")" = "0" ] \
+  || fail "a drift round spent the CONFLICT budget. The two are separate budgets; spending the
+      rebase budget on re-reviews makes a real conflict un-dispatchable later."
+ok "worker: drift outranks DIRTY and spends no conflict round"
+
+# =============================================================================
+# WHAT THE DRIFT ROUND ACTUALLY DOES (PR #30 review round 2, ASK-219)
+# =============================================================================
+# Section O proves exit 40 now FIRES on both real call sites. It says nothing
+# about what the round it dispatches then does, and that is where round 2 of the
+# review found three defects: the round carried the review-answering prompt at a
+# review with NO findings, it had no budget and never paged, and the run closed
+# by reporting CONVERGED off the same stale record it had just refused to trust.
+#
+# Every case below needs the REVIEWER to be down, because that is the state all
+# three live in: the drift only persists when nothing rewrites the record. The
+# real reviewer costs an adversarial review per case, so linear-worker.sh gained
+# KIPI_PR_REVIEWER -- the same seam converge.sh already has for its worker.
+cat > "$STUB/reviewer-down" <<'EOF'
+#!/usr/bin/env bash
+echo "reviewer is down" >&2
+exit 1
+EOF
+# The healthy half: writes a record pinned to the head it just read, which is the
+# ONLY thing that clears drift. Needed to prove the drift streak ENDS.
+cat > "$STUB/reviewer-ok" <<EOF
+#!/usr/bin/env bash
+PR="\$1"
+SHA="\$(gh pr view "\$PR" --json headRefOid -q .headRefOid 2>/dev/null)"
+mkdir -p "\$KIPI_STATE_DIR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":%s,"head_sha":"%s"}\n' "\$PR" "\$SHA" \
+  > "\$KIPI_STATE_DIR/pr-reviews/pr-\$PR.verdict.json"
+exit 0
+EOF
+chmod +x "$STUB/reviewer-down" "$STUB/reviewer-ok"
+
+# run_worker_rev <skel> <state-dir> <out> <reviewer>
+run_worker_rev() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_PR_REVIEWER="$4" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
+  return 0
+}
+
+ledger_key() {  # ledger_key <state-dir> <key>
+  "$REAL_PY" -c "
+import json
+try: d=json.load(open('$1/linear-worker-attempts.json'))
+except Exception: d={}
+print(d.get('ASK-AAA',{}).get('$2',0))"
+}
+
+# --- P1. the drift round must NOT carry the review-answering prompt ----------
+# linear-worker.sh's own comment above the prompt selector says why: 'handing the
+# agent "the review is the spec, answer every finding" against a review with no
+# findings is how ASK-208 rounds 1 and 2 both did code polish while the conflict
+# went untouched.' Gate 30 got its own prompt for exactly that reason; gate 40
+# fell through to the rework prompt. The most common drift producer is a HUMAN
+# (a founder push, GitHub's "Update branch"), so at 3am this dispatched a 1800s
+# model round told to answer findings that do not exist, on top of someone
+# else's commit, pushing to the same branch.
+R_P1="$W2/repo-p1"; make_repo "$R_P1"
+S_P1="$W2/state-p1"; mkdir -p "$S_P1"
+seed_record "$S_P1" 811 "APPROVE WITH NITS" "$SHA_A"
+gh_says 811 CLEAN "$SHA_B"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/tree-log.txt"; : > "$W2/prompt.txt"
+run_worker_rev "$R_P1/skel" "$S_P1" "$W2/p1.out" "$STUB/reviewer-down"
+
+[ -s "$W2/prompt.txt" ] \
+  || fail "the drift round dispatched no work-phase prompt at all, so this case cannot judge it.
+      The worker said:
+$(sed 's/^/        /' "$W2/p1.out")"
+grep -q "THE REVIEW IS THE SPEC FOR THIS PASS" "$W2/prompt.txt" \
+  && fail "THE DEFECT: the drift round handed Sana the REWORK prompt -- 'the review is the spec
+      for this pass, for EACH finding either fix it or reply why it is not a defect' -- against a
+      review whose verdict is APPROVE WITH NITS. There are no findings to answer. This is the
+      exact prompt linear-worker.sh's own comment at the selector says must not be used on an
+      approved diff. The prompt was:
+$(sed 's/^/        /' "$W2/prompt.txt")"
+ok "the drift round does not carry the review-answering prompt"
+
+grep -q "$SHA_A" "$W2/prompt.txt" && grep -q "$SHA_B" "$W2/prompt.txt" \
+  || fail "the drift round's prompt never names the reviewed sha or the head it drifted to, so
+      the agent cannot tell WHY it was woken up. The prompt was:
+$(sed 's/^/        /' "$W2/prompt.txt")"
+ok "the drift round's prompt names the reviewed sha and the unreviewed head"
+
+grep -qi "re-review round" "$W2/prompt.txt" \
+  || fail "the drift round's prompt does not tell the agent what KIND of round this is. Gate 30
+      says 'THIS IS A REBASE ROUND'; gate 40 has to be equally explicit or the agent defaults to
+      inventing work on an approved diff. The prompt was:
+$(sed 's/^/        /' "$W2/prompt.txt")"
+ok "the drift round's prompt states that this is a re-review round"
+
+# --- P2. the run must not report CONVERGED off the record it just distrusted --
+# Two lines apart in the same run: 'the code at the head was never reviewed' and
+# 'converged ... waits on founder merge'. The last line is the one an operator
+# scans, and it reported success for work that did not happen. Unreachable before
+# ASK-219 (gate 10 skipped the issue before step 5 could run).
+# The exact shape of the false claim ("ASK-AAA converged:"), not the bare word --
+# the truthful replacement line says "NOT converged" and must not match.
+grep -q "ASK-AAA converged:" "$W2/p1.out" \
+  && fail "THE DEFECT: the run announced the head was never reviewed, dispatched a round whose
+      review then FAILED, and closed by re-reading the same stale record and calling the issue
+      CONVERGED. Nothing reviewed the head; the record still pins $SHA_A. It said:
+$(sed 's/^/        /' "$W2/p1.out")"
+ok "a drift round whose review failed is not reported as converged"
+
+grep -qi "waits on founder merge" "$W2/p1.out" \
+  && fail "the run closed by telling the operator PR #811 waits on founder merge, while the code
+      at its head has never been read by any reviewer"
+ok "a drift round whose review failed is not reported as waiting on founder merge"
+
+grep -q "$SHA_B" "$W2/p1.out" \
+  || fail "the run's closing line does not name the head that is still unreviewed, so the operator
+      cannot act on it. It said:
+$(sed 's/^/        /' "$W2/p1.out")"
+ok "the closing line names the head that is still unreviewed"
+
+# --- P3. gate 40 has a ROUND BUDGET and pages at the cap ----------------------
+# pr-verdict-lib.sh states the rule this violated: 'Making APPROVE non-terminal
+# opens an unbounded rework path ... every round writes a permanent Linear
+# comment on an object that cannot be deleted. So this returns a DISTINCT code
+# ... The caller caps conflict rounds on its own budget.' Gate 40 also makes
+# APPROVE non-terminal, and the caller gave it no budget. Measured on the PR head
+# before this fix: 5 scheduled runs -> 5 model rounds, 10 permanent Linear
+# comments, 0 founder pages, and the only budget in the file (conflict_rounds)
+# untouched at 0.
+R_P3="$W2/repo-p3"; make_repo "$R_P3"
+S_P3="$W2/state-p3"; mkdir -p "$S_P3"
+seed_record "$S_P3" 812 "APPROVE" "$SHA_A"
+gh_says 812 CLEAN "$SHA_B"
+: > "$W2/pages.txt"
+DISPATCHED=0
+for i in 1 2 3 4 5; do
+  : > "$W2/prompt.txt"
+  run_worker_rev "$R_P3/skel" "$S_P3" "$W2/p3-$i.out" "$STUB/reviewer-down"
+  grep -q "^.*start ASK-AAA on " "$W2/p3-$i.out" && DISPATCHED=$((DISPATCHED+1))
+done
+
+[ "$DISPATCHED" -le 2 ] \
+  || fail "THE DEFECT: 5 scheduled runs against one persistently-failing reviewer dispatched
+      $DISPATCHED model rounds. Gate 40 has no cap, so a dead reviewer at 3am is an unbounded loop
+      of model rounds and undeletable Linear comments. Gate 30 stops at 2."
+[ "$DISPATCHED" = "2" ] \
+  || fail "the drift budget dispatched $DISPATCHED round(s), expected exactly 2 (MAX_DRIFT_ROUNDS).
+      Fewer means it stopped for a reason this case did not set up. Run 1 said:
+$(sed 's/^/        /' "$W2/p3-1.out")"
+ok "gate 40 stops after its round budget (2), not once per scheduled run forever"
+
+grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
+  || fail "the capped run skipped for the WRONG REASON: it must stop at the DRIFT cap, not at
+      gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
+ok "it stopped at the drift cap, not as approved or unreviewed"
+
+PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+[ "$PAGES" = "1" ] \
+  || fail "expected EXACTLY 1 founder page across 5 runs at the drift cap, got $PAGES. Zero means
+      unreviewed code sits at the head of an approved PR with nobody told; more than one is the
+      per-cycle noise that trains the operator to skim. Pages were:
+$(sed 's/^/        /' "$W2/pages.txt")"
+grep -q "$SHA_B" "$W2/pages.txt" \
+  || fail "the page does not name the unreviewed head, so it reads as a benign stall on an
+      approved PR. It said: $(cat "$W2/pages.txt")"
+grep -qi "never reviewed\|unreviewed" "$W2/pages.txt" \
+  || fail "the page never says the code at the head is unreviewed: $(cat "$W2/pages.txt")"
+ok "exactly one page at the drift cap, and it names the unreviewed head"
+
+# --- P4. the drift budget is its OWN counter ---------------------------------
+# Three budgets, three questions. A drift round that spent the conflict budget
+# would leave a real conflict un-dispatchable later; one that spent `count`
+# would mark good work STUCK.
+[ "$(ledger_key "$S_P3" drift_rounds)" = "2" ] \
+  || fail "drift rounds are not recorded under their own ledger key, so nothing can ever reach the
+      cap: $(cat "$S_P3/linear-worker-attempts.json" 2>/dev/null)"
+[ "$(ledger_key "$S_P3" conflict_rounds)" = "0" ] \
+  || fail "a drift round spent the CONFLICT budget"
+[ "$(ledger_key "$S_P3" count)" = "0" ] \
+  || fail "a drift round burned the failed-ATTEMPT budget; a round that ran is not a failure"
+ok "drift rounds are counted separately from conflict rounds and failed attempts"
+
+# --- P5. the drift streak ENDS when a review repins the record ----------------
+# PR #25 finding 3, one layer out: nothing cleared the conflict keys, so the cap
+# counted every conflict in the issue's LIFETIME and the third one was
+# permanently un-dispatchable AND silent (already paged). A drift budget with no
+# clear path repeats that exactly.
+R_P5="$W2/repo-p5"; make_repo "$R_P5"
+S_P5="$W2/state-p5"; mkdir -p "$S_P5"
+seed_record "$S_P5" 813 "APPROVE" "$SHA_A"
+gh_says 813 CLEAN "$SHA_B"
+: > "$W2/pages.txt"
+run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-drift.out" "$STUB/reviewer-down"
+[ "$(ledger_key "$S_P5" drift_rounds)" = "1" ] \
+  || fail "the first drift round was not counted; the P5 fixture is not in the state it needs"
+
+# The reviewer comes back up and repins the record to the head. Next run sees no
+# drift at all -- and the streak that led here has to end with it.
+run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-heal.out" "$STUB/reviewer-ok"
+run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-clear.out" "$STUB/reviewer-down"
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/p5-clear.out" \
+  || fail "after a review repinned the record to the head, the PR is no longer drifting and must
+      reach gate 10. It said: $(grep -i skip "$W2/p5-clear.out" | head -1)"
+[ "$(ledger_key "$S_P5" drift_rounds)" = "0" ] \
+  || fail "the drift streak survived the drift being RESOLVED, so the budget counts an issue's
+      LIFETIME drifts. The third genuine drift in this issue's life would then be permanently
+      un-dispatchable and silent (drift_paged already true). Ledger:
+      $(cat "$S_P5/linear-worker-attempts.json" 2>/dev/null)"
+ok "a review that repins the record ends the drift streak and refills the budget"
+
+# --- P6. converge's page on a STUCK drift says the head is unreviewed --------
+# Gate 40 falls through to the no-progress guard on purpose. When the head stops
+# moving (claim held, tree needs a human, reviewer down), converge exits 5 and
+# pages -- and that page is the ONLY thing that reaches the founder's phone. It
+# read 'stalled at APPROVE WITH NITS, no code change in round 2', which is a
+# benign stall on an approved PR. The gate-40 line is in the log; the log is not
+# what wakes anyone.
+S_PSTALL="$W2/state-pstall"; mkdir -p "$S_PSTALL"
+seed_record "$S_PSTALL" 814 "APPROVE WITH NITS" "$SHA_A"
+gh_says 814 CLEAN "$SHA_B"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_PSTALL" "$W2/conv-stall.out" 3
+
+[ "$CRC" = "5" ] \
+  || fail "converge did not reach the no-progress guard on a frozen drifting head: got $CRC, want 5.
+      It said:
+$(sed 's/^/        /' "$W2/conv-stall.out")"
+[ -s "$W2/pages.txt" ] || fail "converge exited 5 without paging anyone"
+grep -qi "never reviewed\|unreviewed" "$W2/pages.txt" \
+  || fail "THE DEFECT: the only thing that reaches the founder's phone on a stuck drift never
+      mentions that unreviewed code sits at the head. It reads as a benign stall on an approved
+      PR. The page was: $(cat "$W2/pages.txt")"
+grep -q "$SHA_B" "$W2/pages.txt" \
+  || fail "the page does not name the unreviewed head: $(cat "$W2/pages.txt")"
+ok "converge's stall page says the head is unreviewed and names it"
+
+# --- P7. ARGUMENT 3 IS NOT ARGUMENT 4, at both call sites --------------------
+# O3 grepped for 'head_sha' and O4 for 'head'. Both fallback NOTEs contain both
+# substrings, so swapping the reviewed sha and the current head at either call
+# site left the suite at 100/100. The two NOTEs say different things; assert the
+# text that is UNIQUE to each, and assert the other one is absent.
+NOTE_UNPINNED="written before ASK-216"
+NOTE_UNREADABLE="could not read the PR's current head_sha"
+
+# Arg 3 empty (record predates ASK-216), arg 4 readable -> the UNPINNED note.
+# Swap the two and this becomes the UNREADABLE note instead.
+grep -q "$NOTE_UNPINNED" "$W2/conv-nosha.out" \
+  || fail "converge: an unpinned record did not produce the unpinned-record NOTE. If arguments 3
+      and 4 are swapped at that call site, an unpinned record reports 'could not read the PR's
+      current head_sha' and sends the operator after a phantom GitHub outage. It said:
+$(sed 's/^/        /' "$W2/conv-nosha.out")"
+grep -qF "$NOTE_UNREADABLE" "$W2/conv-nosha.out" \
+  && fail "converge reported an UNREADABLE HEAD on a record that simply has no head_sha -- the
+      arguments are the wrong way round at that call site"
+ok "converge: an unpinned record reports the unpinned NOTE, not an unreadable head"
+
+# Arg 3 pinned, arg 4 empty (gh down) -> the UNREADABLE note, and NOT the other.
+grep -qF "$NOTE_UNREADABLE" "$W2/conv-ghdown.out" \
+  || fail "converge: an unreadable head did not produce the unreadable-head NOTE. It said:
+$(sed 's/^/        /' "$W2/conv-ghdown.out")"
+grep -q "$NOTE_UNPINNED" "$W2/conv-ghdown.out" \
+  && fail "converge blamed a MISSING head_sha in the record for what is a gh outage -- the
+      arguments are the wrong way round at that call site"
+ok "converge: an unreadable head reports the unreadable NOTE, not a missing head_sha"
+
+# The same pinning at the WORKER's call site, which O5-O8 never covered: every
+# worker case there passes both shas non-empty, so a swap is invisible.
+R_P7A="$W2/repo-p7a"; make_repo "$R_P7A"
+S_P7A="$W2/state-p7a"; mkdir -p "$S_P7A"
+seed_record "$S_P7A" 815 "APPROVE"            # no head_sha: arg 3 is empty
+gh_says 815 CLEAN "$SHA_B"                    # arg 4 is readable
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_P7A/skel" "$S_P7A" "$W2/p7a.out"
+grep -q "$NOTE_UNPINNED" "$W2/p7a.out" \
+  || fail "worker: an unpinned record did not produce the unpinned-record NOTE at the worker's
+      call site. It said:
+$(sed 's/^/        /' "$W2/p7a.out")"
+grep -qF "$NOTE_UNREADABLE" "$W2/p7a.out" \
+  && fail "worker: arguments 3 and 4 are swapped -- an unpinned record was reported as an
+      unreadable head"
+ok "worker: argument 3 is the RECORD's sha (an unpinned record says so)"
+
+R_P7B="$W2/repo-p7b"; make_repo "$R_P7B"
+S_P7B="$W2/state-p7b"; mkdir -p "$S_P7B"
+seed_record "$S_P7B" 816 "APPROVE" "$SHA_A"   # arg 3 is pinned
+gh_says 816 CLEAN ""                          # arg 4 unreadable: gh is down
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_in "$R_P7B/skel" "$S_P7B" "$W2/p7b.out"
+grep -qF "$NOTE_UNREADABLE" "$W2/p7b.out" \
+  || fail "worker: an unreadable head did not produce the unreadable-head NOTE. It said:
+$(sed 's/^/        /' "$W2/p7b.out")"
+grep -q "$NOTE_UNPINNED" "$W2/p7b.out" \
+  && fail "worker: arguments 3 and 4 are swapped -- a gh outage was blamed on a record written
+      before ASK-216"
+[ ! -s "$W2/worked.txt" ] \
+  || fail "worker: an unreadable head manufactured a round (it must fall toward terminal)"
+ok "worker: argument 4 is the CURRENT head (a gh outage says so)"
+
+# =============================================================================
+# THE DRIFT BUDGET UNDER A HEAD NOBODY COULD READ (PR #30 review round 3)
+# =============================================================================
+# P3 proves the cap holds while `gh pr view --json headRefOid` answers on every
+# run. It cannot see this: its fixture is seeded ONCE and never varies the one
+# input that clears the budget. `pr_head_sha` returns empty on any gh failure,
+# rework_gate then falls toward terminal and returns 10 -- not 40 -- so a clear
+# conditioned only on "the gate did not say 40" REFILLS the budget from a state
+# nobody read, and pops `drift_paged` with it. clear_conflict_rounds' own comment
+# forbids exactly this: "refilling a budget from a state nobody actually read is
+# how an unresolvable conflict gets infinite rounds."
+#
+# Not invented: `gh_says <pr> <state> ""` is this suite's own fixture for that
+# state, already driving O4, L3 and P7B. It needs `gh pr view` to fail while
+# `gh pr list` succeeds -- a total outage leaves EXISTING_PR empty and skips the
+# whole gate block.
+
+# --- P8. an unreadable head must not refill the drift budget -----------------
+R_P8="$W2/repo-p8"; make_repo "$R_P8"
+S_P8="$W2/state-p8"; mkdir -p "$S_P8"
+seed_record "$S_P8" 817 "APPROVE" "$SHA_A"
+: > "$W2/pages.txt"
+P8_DISPATCHED=0
+P8_AFTER_BLIND=""
+for i in 1 2 3 4 5 6 7 8 9; do
+  # Every third run, gh answers the head lookup with nothing.
+  case "$i" in
+    3|6|9) gh_says 817 CLEAN "" ;;
+    *)     gh_says 817 CLEAN "$SHA_B" ;;
+  esac
+  : > "$W2/prompt.txt"
+  run_worker_rev "$R_P8/skel" "$S_P8" "$W2/p8-$i.out" "$STUB/reviewer-down"
+  grep -q "start ASK-AAA on " "$W2/p8-$i.out" && P8_DISPATCHED=$((P8_DISPATCHED+1))
+  # Snapshot right after the FIRST blind run, while the budget is fully spent.
+  [ "$i" = "3" ] && P8_AFTER_BLIND="$(ledger_key "$S_P8" drift_rounds)"
+done
+
+[ "$P8_AFTER_BLIND" = "2" ] \
+  || fail "THE DEFECT: two drift rounds were spent, then ONE run could not read the head, and the
+      streak went from 2 to $P8_AFTER_BLIND. The head lookup failing is not a statement that the
+      drift is over -- nobody read anything. clear_conflict_rounds clears only on a STATED CLEAN
+      for this exact reason. Ledger after run 3:
+      $(cat "$S_P8/linear-worker-attempts.json" 2>/dev/null)"
+ok "an unreadable head does not refill the drift budget"
+
+[ "$P8_DISPATCHED" = "2" ] \
+  || fail "THE DEFECT: 9 scheduled runs against one persistently-failing reviewer, with the head
+      unreadable on runs 3/6/9, dispatched $P8_DISPATCHED model rounds; MAX_DRIFT_ROUNDS is 2. Each
+      blind run resets the streak, so the cap is never reached and the loop is unbounded again --
+      the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
+ok "the drift cap holds across runs whose head could not be read"
+
+P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+[ "$P8_PAGES" = "1" ] \
+  || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
+      never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
+      than one means a blind run popped drift_paged and re-paged the same head. Pages were:
+$(sed 's/^/        /' "$W2/pages.txt")"
+grep -q "$SHA_B" "$W2/pages.txt" \
+  || fail "the page does not name the unreviewed head: $(cat "$W2/pages.txt")"
+ok "exactly one page across 9 runs, and a blind run does not un-page the issue"
+
+# --- P9. step 5 must not swallow the gate's own NOTE -------------------------
+# converge.sh:180 states the rule this call site broke: "The gate's NOTE goes
+# through `say` so it lands in the run log with everything else. Swallowing it
+# would silently grandfather the blind spot it announces." The step-5 re-gate
+# sent it to /dev/null. pr-review-agent.sh always writes head_sha and writes it
+# EMPTY when its own `gh pr view` could not answer, so an approval pinned to
+# nothing closes the run as "converged ... waits on founder merge" with no line
+# anywhere saying the approval could not be tied to a commit. The behaviour is
+# correct and settled (absent is not drift, fail toward terminal); the missing
+# thing is the sentence that says so.
+#
+# The seeded record is REQUEST CHANGES so the TOP-of-run gate returns 0 without
+# emitting any NOTE -- step 5 is then the only possible source of one.
+cat > "$STUB/reviewer-unpinned" <<EOF
+#!/usr/bin/env bash
+PR="\$1"
+mkdir -p "\$KIPI_STATE_DIR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":%s,"head_sha":""}\n' "\$PR" \
+  > "\$KIPI_STATE_DIR/pr-reviews/pr-\$PR.verdict.json"
+exit 0
+EOF
+chmod +x "$STUB/reviewer-unpinned"
+
+R_P9="$W2/repo-p9"; make_repo "$R_P9"
+S_P9="$W2/state-p9"; mkdir -p "$S_P9"
+seed_record "$S_P9" 818 "REQUEST CHANGES" "$SHA_A"
+gh_says 818 CLEAN "$SHA_B"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/prompt.txt"
+run_worker_rev "$R_P9/skel" "$S_P9" "$W2/p9.out" "$STUB/reviewer-unpinned"
+
+grep -q "ASK-AAA converged:" "$W2/p9.out" \
+  || fail "the P9 fixture never reached step 5's closing line, so it cannot judge what step 5
+      printed. The run said:
+$(sed 's/^/        /' "$W2/p9.out")"
+grep -q "$NOTE_UNPINNED" "$W2/p9.out" \
+  || fail "THE DEFECT: the reviewer wrote an approval with an EMPTY head_sha, the gate said so on
+      stdout, and step 5 sent that NOTE to /dev/null. The run closed with 'converged ... waits on
+      founder merge' and nothing anywhere says the approval is pinned to no commit -- which is the
+      one thing that separates it from a verified one. It said:
+$(sed 's/^/        /' "$W2/p9.out")"
+ok "step 5 says when the record it converged off is pinned to nothing"
+
+# =============================================================================
+# EVERY PR THE WORKER TOUCHES ARMS ITS OWN AUTO-MERGE (ASK-222)
+# =============================================================================
+# THE DEFECT: nothing in CODE armed auto-merge. Every required piece already
+# existed and was proven -- `kipi/reviewer-approved` is a REQUIRED context,
+# watched refusing on ABSENT and on FAILURE (PRs #27, #30), and PR #30 merged
+# itself at 01:38:07Z with no human once auto-merge was armed. The one missing
+# piece was WHO ARMS IT: a hand-typed `gh pr merge --auto --squash <n>` plus a
+# watcher loop inside an interactive session. Both die when the terminal closes,
+# so a PR opened after that sits green forever with nobody left to merge it. A
+# human remembering, or a session staying open, is not enforcement.
+#
+# Every case below drives the REAL worker with `gh` stubbed to a CALL LOG, and
+# asserts on what the worker actually asked GitHub to do. Never the live API.
+ARMLOG="$W2/gh-arm.log"
+
+# gh_arm <pr> <merge-state> <head-sha> <merge-rc> <armed>
+#   <merge-rc>  what `gh pr merge --auto` exits with (non-zero = the API refused)
+#   <armed>     what `gh pr view --json autoMergeRequest` reports: "true" once
+#               this PR is already armed, "false" while it is not
+gh_arm() {
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr list"*)                                  echo $1 ;;
+  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+  "pr view $1 --json headRefOid"*)             echo $3 ;;
+  "pr view $1 --json autoMergeRequest"*)       echo $5 ;;
+  "pr merge"*)                                 exit $4 ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# gh_arm_opens <pr> -- THE OTHER PATH. There is no PR at all until the worker
+# opens one itself (the agent ended its turn without opening it, ASK-184), so
+# `pr list` answers only after a `pr create` has been seen.
+gh_arm_opens() {
+  rm -f "$W2/pr-created"
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr create"*)                                : > "$W2/pr-created" ;;
+  "pr list"*)                                  [ -f "$W2/pr-created" ] && echo $1 ;;
+  "pr view $1 --json autoMergeRequest"*)       echo false ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# The reviewer logs into the SAME file as `gh`, which is the only way to assert
+# ORDER: arming has to happen BEFORE the review, or the unattended path needs
+# something to come back afterwards and do it -- the gap this issue exists for.
+cat > "$STUB/reviewer-arm" <<EOF
+#!/usr/bin/env bash
+printf 'REVIEWER RAN on %s\n' "\$1" >> "$ARMLOG"
+mkdir -p "\$KIPI_STATE_DIR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":%s,"head_sha":"%s"}\n' "\$1" "$SHA_A" \
+  > "\$KIPI_STATE_DIR/pr-reviews/pr-\$1.verdict.json"
+exit 0
+EOF
+chmod +x "$STUB/reviewer-arm"
+
+# The work-phase agent COMMITS, which sections E-P never needed: the
+# worker-opened path only fires when the branch is ahead of origin/main.
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+echo "worked" >> "$W2/worked.txt"
+"$REAL_GIT" -c user.email=t@t.t -c user.name=t commit -q --allow-empty \
+  -m "the agent's work (ASK-AAA)" 2>/dev/null
+exit 0
+EOF
+# The agent that pushes NOTHING: no commits ahead, so no PR is opened and there
+# is nothing to arm.
+cat > "$STUB/claude-idle" <<EOF
+#!/usr/bin/env bash
+echo "worked" >> "$W2/worked.txt"
+exit 0
+EOF
+chmod +x "$STUB/claude" "$STUB/claude-idle"
+
+# run_worker_arm <skel> <state-dir> <out> -- keeps the REAL exit code, which
+# run_worker/run_worker_in deliberately throw away. A failure to arm must not
+# change it.
+ARM_RC=0
+run_worker_arm() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_PR_REVIEWER="$STUB/reviewer-arm" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
+  ARM_RC=$?
+}
+
+# `grep -c` PRINTS the count and EXITS 1 when that count is zero, so a `|| echo 0`
+# fallback here emits "0" twice and every zero-call assertion fails on a two-line
+# value. Swallow the status, keep grep's own number.
+arm_calls() { grep -c "^pr merge --auto" "$ARMLOG" 2>/dev/null || true; }
+
+# --- Q1. the PR the AGENT opened gets armed ----------------------------------
+# A rework round: PR #830 already exists (the agent opened it on an earlier run)
+# and its recorded verdict is REQUEST CHANGES, so the gate routes it through and
+# step 5 resolves PR_NUM from `gh pr list` -- the first of the two paths.
+R_ARM1="$W2/repo-arm1"; make_repo "$R_ARM1"
+S_ARM1="$W2/state-arm1"; mkdir -p "$S_ARM1"
+seed_record "$S_ARM1" 830 "REQUEST CHANGES" "$SHA_A"
+gh_arm 830 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM1/skel" "$S_ARM1" "$W2/arm1.out"
+
+grep -q "^pr merge --auto --squash 830$" "$ARMLOG" \
+  || fail "THE DEFECT: the worker ran a full round on PR #830 and never armed auto-merge. The PR
+      now waits on a human or on a watcher process that dies with the terminal, which is the
+      silent stall this issue exists to kill. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the PR the agent opened is armed: gh pr merge --auto --squash 830"
+
+MERGE_LINE="$(grep -n '^pr merge --auto' "$ARMLOG" | head -1 | cut -d: -f1)"
+REVIEW_LINE="$(grep -n '^REVIEWER RAN' "$ARMLOG" | head -1 | cut -d: -f1)"
+[ -n "$MERGE_LINE" ] && [ -n "$REVIEW_LINE" ] && [ "$MERGE_LINE" -lt "$REVIEW_LINE" ] \
+  || fail "auto-merge was armed AFTER the review (merge at line ${MERGE_LINE:-none}, review at
+      line ${REVIEW_LINE:-none}). Arming after the review re-creates the gap: something has to
+      come back once the review lands. --auto is not 'merge now' -- GitHub holds the PR until
+      every required context is green -- so arming early is both safe and the point. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the arm happens BEFORE the review (--auto holds until the required checks are green)"
+
+[ "$ARM_RC" = "0" ] || fail "arming changed the worker's exit code to $ARM_RC"
+ok "arming a PR leaves the run's exit code alone"
+
+# THE CLOSING LINE REPORTS WHO MERGES IT (PR #33 review, finding 2 -- minor).
+# Two lines after "auto-merge armed on PR #830", the same run told the operator
+# "PR #830 waits on founder merge". It does not; GitHub does. The closing line is
+# the one an operator scans, so a fix that lands on the arm and not on the report
+# leaves the operator with the pre-fix picture of who owes the merge.
+CONV_LINE="$(grep 'ASK-AAA converged:' "$W2/arm1.out" | tail -1)"
+[ -n "$CONV_LINE" ] \
+  || fail "the Q1 fixture never reached the converged line, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm1.out")"
+case "$CONV_LINE" in
+  *"waits on founder merge"*|*"waits on a human merge"*)
+    fail "THE REPORT DID NOT MOVE WITH THE FIX: this run armed auto-merge on PR #830 and then
+      closed by telling the operator the PR waits on a human to merge it. Nobody is waiting --
+      GitHub merges it once the required contexts are green. It said:
+        $CONV_LINE" ;;
+esac
+case "$CONV_LINE" in
+  *armed*) : ;;
+  *) fail "the closing line does not say the PR is armed, so the operator cannot tell an
+      auto-merging PR from one that needs their hand. It said:
+        $CONV_LINE" ;;
+esac
+ok "the closing line on an armed PR says GitHub merges it, not a human"
+
+# --- Q2. the PR the WORKER opened gets armed too -----------------------------
+# One is not the other: this PR does not exist when the run starts. The agent
+# ends its turn without opening it (ASK-184), the worker opens it at step 5, and
+# the arm has to fire on THAT number.
+R_ARM2="$W2/repo-arm2"
+mkdir -p "$R_ARM2"
+git init -q --bare "$R_ARM2/origin"
+git init -q "$R_ARM2/skel"
+G -C "$R_ARM2/skel" commit -q --allow-empty -m "base commit"
+git -C "$R_ARM2/skel" branch -M main
+git -C "$R_ARM2/skel" remote add origin "$R_ARM2/origin"
+git -C "$R_ARM2/skel" push -q -u origin main
+S_ARM2="$W2/state-arm2"; mkdir -p "$S_ARM2"
+gh_arm_opens 831
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM2/skel" "$S_ARM2" "$W2/arm2.out"
+
+grep -q "opened PR #831" "$W2/arm2.out" \
+  || fail "the Q2 fixture never reached the worker-opened path, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm2.out")"
+grep -q "^pr merge --auto --squash 831$" "$ARMLOG" \
+  || fail "the worker OPENED PR #831 itself and then left it unarmed. This is the path where no
+      human was ever involved, so it is the one that most needs arming. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the PR the worker opened itself is armed too (both paths, not one)"
+
+# --- Q3. a refused arm is LOUD and does not fail the run ---------------------
+# An unarmed PR is invisible by construction: everything green, nothing merges,
+# no signal. So the failure has to be said. It must not stop the review or move
+# the exit code -- the PR still stands, and the cost is one human command.
+R_ARM3="$W2/repo-arm3"; make_repo "$R_ARM3"
+S_ARM3="$W2/state-arm3"; mkdir -p "$S_ARM3"
+seed_record "$S_ARM3" 832 "REQUEST CHANGES" "$SHA_A"
+gh_arm 832 CLEAN "$SHA_A" 1 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM3/skel" "$S_ARM3" "$W2/arm3.out"
+
+grep -qi "auto-merge" "$W2/arm3.out" \
+  || fail "THE SILENT STALL: gh refused to arm PR #832 and the run said nothing about it. The PR
+      goes green and never merges, with no line anywhere saying why. It said:
+$(sed 's/^/        /' "$W2/arm3.out")"
+grep -q "832" "$W2/arm3.out" \
+  || fail "the auto-merge warning does not name the PR, so nobody can act on it"
+ok "a refused arm is said out loud, naming the PR"
+
+# LOUD MEANS $NOTIFY, NOT $LOG (PR #33 review, finding 1 -- major). `say` is
+# `tee -a "$LOG"`, and under the launchd heartbeat $LOG is a file nobody opens at
+# 3am. This worker's channel for "a human must do something" is `bash "$NOTIFY"`,
+# used at five other sites in the same file, and this failure state is precisely
+# that: the message itself ends "until someone runs: gh pr merge --auto". An
+# unarmed PR goes green, never merges, and if nothing pages, the silent stall
+# this issue exists to kill has just moved one step down.
+[ -s "$W2/pages.txt" ] \
+  || fail "THE STALL MOVED, IT DID NOT DIE: gh refused to arm PR #832 and nobody was paged. The
+      warning went to \$LOG only, which at 3am under launchd reaches no one. The PR goes green,
+      never merges, and the first human to know is whoever happens to open GitHub. The run said:
+$(sed 's/^/        /' "$W2/arm3.out")"
+grep -q "832" "$W2/pages.txt" \
+  || fail "the page does not name the PR, so the operator cannot act on it: $(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 832" "$W2/pages.txt" \
+  || fail "the page does not carry the one command that fixes it: $(cat "$W2/pages.txt")"
+ok "a refused arm PAGES the founder, naming the PR and the command that fixes it"
+
+grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
+  || fail "a failed arm killed the review. The PR must still stand and still be reviewed. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+[ "$ARM_RC" = "0" ] \
+  || fail "a failed arm changed the run's exit code to $ARM_RC. The driver would read a healthy
+      run as a worker failure and burn an attempt on it."
+ok "a failed arm still reviews the PR and leaves the exit code unchanged"
+
+# --- Q4. re-running on an ALREADY-ARMED PR is a no-op, not an error ----------
+# The worker re-runs on the same PR every rework round. A WARN per round trains
+# the operator to skim the one that matters, and a non-zero exit would read as a
+# worker failure -- so the state is asked for first rather than armed-and-forgiven.
+R_ARM4="$W2/repo-arm4"; make_repo "$R_ARM4"
+S_ARM4="$W2/state-arm4"; mkdir -p "$S_ARM4"
+seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
+gh_arm 833 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4a.out"
+[ "$(arm_calls)" = "1" ] || fail "round 1 did not arm PR #833 exactly once (got $(arm_calls))"
+
+# Round 2: GitHub now reports the PR as already armed, and `gh pr merge` would
+# refuse. Nothing should call it, and nothing should warn.
+seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
+gh_arm 833 CLEAN "$SHA_A" 1 true
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4b.out"
+
+[ "$(arm_calls)" = "0" ] \
+  || fail "the second round re-armed an already-armed PR. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+# WARN, not the bare word: the closing line now names auto-merge on every healthy
+# round on purpose (it is what tells the operator no human owes this PR a merge),
+# so the thing that must not repeat is the WARNING, which is what this case was
+# ever about. Asserted on both channels -- a page per rework round is the version
+# of this noise that reaches a phone.
+grep -qi "WARN.*auto-merge" "$W2/arm4b.out" \
+  && fail "an already-armed PR produced a warning on the re-run. Every rework round would repeat
+      it, and noise is what makes the real warning unreadable. It said:
+$(grep -i auto-merge "$W2/arm4b.out")"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "an already-armed PR paged the founder on a re-run. Every rework round would page again
+      for a PR that is fine: $(cat "$W2/pages.txt")"
+[ "$ARM_RC" = "0" ] || fail "a re-run on an armed PR exited $ARM_RC"
+ok "a re-run on an already-armed PR: no call, no warning, no error"
+
+# --- Q5. no PR means nothing to arm ------------------------------------------
+# The agent pushed nothing, so no PR is opened. Arming must not be attempted
+# against an empty PR number -- `gh pr merge --auto --squash ''` would act on
+# whatever branch the cwd happens to be on.
+R_ARM5="$W2/repo-arm5"
+mkdir -p "$R_ARM5"
+git init -q --bare "$R_ARM5/origin"
+git init -q "$R_ARM5/skel"
+G -C "$R_ARM5/skel" commit -q --allow-empty -m "base commit"
+git -C "$R_ARM5/skel" branch -M main
+git -C "$R_ARM5/skel" remote add origin "$R_ARM5/origin"
+git -C "$R_ARM5/skel" push -q -u origin main
+S_ARM5="$W2/state-arm5"; mkdir -p "$S_ARM5"
+cp "$STUB/claude-idle" "$STUB/claude"
+gh_arm_opens 834
+: > "$ARMLOG"; : > "$W2/worked.txt"
+run_worker_arm "$R_ARM5/skel" "$S_ARM5" "$W2/arm5.out"
+
+grep -q "no PR found" "$W2/arm5.out" \
+  || fail "the Q5 fixture did not reach the no-PR branch, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm5.out")"
+[ "$(arm_calls)" = "0" ] \
+  || fail "auto-merge was armed with no PR to arm. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "no PR means no arm call at all"
+
+# --- Q6/Q7. the probe's rc is part of its answer -----------------------------
+# PR #33 review, finding 3 (minor). `gh pr view ... 2>/dev/null` threw away both
+# stderr AND the exit code, so a rate limit or a network blip produced the same
+# empty string as "not armed" -- and `gh pr merge --auto` on an ALREADY-ARMED PR
+# returns non-zero on some gh versions. The pair yields a WARN about a PR that is
+# armed and will merge, telling the operator to run a command already run. The
+# probe exists to kill exactly that noise; it held on the happy path and dropped
+# it on the error path, which is the path that only happens at 3am.
+#
+# gh_arm_probe <pr> <merge-state> <head-sha> <merge-rc> <probe1> <probe2>
+#   <probe1>/<probe2>  successive answers from `pr view --json autoMergeRequest`:
+#                      "true", "false", or FAIL (exits 1 with no output, which is
+#                      what a rate limit or a dropped connection looks like).
+gh_arm_probe() {
+  rm -f "$W2/probe-n"
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr list"*)                                  echo $1 ;;
+  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+  "pr view $1 --json headRefOid"*)             echo $3 ;;
+  "pr view $1 --json autoMergeRequest"*)
+    N=\$(cat "$W2/probe-n" 2>/dev/null || echo 0); N=\$((N+1)); echo "\$N" > "$W2/probe-n"
+    if [ "\$N" = "1" ]; then A="$5"; else A="$6"; fi
+    [ "\$A" = "FAIL" ] && exit 1
+    echo "\$A" ;;
+  "pr merge"*)                                 exit $4 ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# Q6. a gh blip on an ARMED PR must not cry wolf. PR #836 IS armed. The first
+# probe cannot answer, so the arm is attempted (the right move: an unarmed PR is
+# the expensive state), gh refuses it because it is already armed, and the run
+# then has to tell "already armed" from "broken" before it says anything.
+R_ARM6="$W2/repo-arm6"; make_repo "$R_ARM6"
+S_ARM6="$W2/state-arm6"; mkdir -p "$S_ARM6"
+seed_record "$S_ARM6" 836 "REQUEST CHANGES" "$SHA_A"
+gh_arm_probe 836 CLEAN "$SHA_A" 1 FAIL true
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM6/skel" "$S_ARM6" "$W2/arm6.out"
+
+grep -qi "sit green and unmerged" "$W2/arm6.out" \
+  && fail "CRY WOLF: PR #836 is armed and WILL merge, and the run told the operator it will sit
+      green and unmerged until a human runs a command that is already done. One gh blip on the
+      probe was enough. It said:
+$(grep -i 'auto-merge' "$W2/arm6.out")"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "an armed PR paged the founder off a transient gh failure: $(cat "$W2/pages.txt")"
+CONV6="$(grep 'ASK-AAA converged:' "$W2/arm6.out" | tail -1)"
+case "$CONV6" in
+  *armed*) : ;;
+  *) fail "the closing line does not report PR #836 as armed even though the state probe says it
+      is. It said:
+        ${CONV6:-<no converged line at all>}" ;;
+esac
+ok "a gh blip on an armed PR: no false warning, no page, and the report still says armed"
+
+# Q7. and when NOTHING can tell -- the arm refused and neither probe answered --
+# the run must still be audible, because that is the state where the PR may
+# genuinely be unarmed. What it may not do is assert the thing it cannot back.
+# Buying quiet here would be the fix re-creating the silence it exists to kill.
+R_ARM7="$W2/repo-arm7"; make_repo "$R_ARM7"
+S_ARM7="$W2/state-arm7"; mkdir -p "$S_ARM7"
+seed_record "$S_ARM7" 837 "REQUEST CHANGES" "$SHA_A"
+gh_arm_probe 837 CLEAN "$SHA_A" 1 FAIL FAIL
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM7/skel" "$S_ARM7" "$W2/arm7.out"
+
+grep -qi "auto-merge" "$W2/arm7.out" \
+  || fail "gh could neither arm PR #837 nor read its state and the run said nothing at all. It said:
+$(sed 's/^/        /' "$W2/arm7.out")"
+grep -qi "sit green and unmerged" "$W2/arm7.out" \
+  && fail "the run asserted PR #837 will sit green and unmerged. Nothing here knows that: gh
+      refused the arm and refused the state, so the honest word is that it could not tell."
+[ -s "$W2/pages.txt" ] \
+  || fail "SILENCE BOUGHT BY THE FIX: gh could not arm PR #837 and could not read its state, and
+      nobody was paged. This is the one branch where the PR may really be unarmed, so quieting it
+      re-creates the stall one layer down. The run said:
+$(sed 's/^/        /' "$W2/arm7.out")"
+grep -q "837" "$W2/pages.txt" || fail "the page does not name the PR: $(cat "$W2/pages.txt")"
+grep -qi "sit green and unmerged" "$W2/pages.txt" \
+  && fail "the page repeats the claim the run cannot back: $(cat "$W2/pages.txt")"
+[ "$ARM_RC" = "0" ] || fail "an unreadable auto-merge state changed the run's exit code to $ARM_RC"
+ok "an unreadable auto-merge state pages, says it could not tell, and claims nothing more"
+
+# =============================================================================
+# R. THE POPULATION THE WORKER SKIPS IS STILL A POPULATION (PR #33 round 3)
+# =============================================================================
+# THE DEFECT (major, filed on converge.sh:198). Gate 10 -- approved, clean, no
+# drift -- `continue`s 400+ lines ABOVE the arm at step 5. So the PRs with
+# NOTHING LEFT BUT THE MERGE, the exact population this issue exists for, were
+# the one population nothing armed. converge.sh then Slacked "auto-merge lands
+# it, no human merge needed" across that state, justified by a comment claiming
+# the worker "arms every PR it touches". It did not touch them.
+#
+# Every case drives the REAL worker and the REAL converge against a `gh` call
+# log. Never the live API.
+
+# --- R1. an approved PR is armed AT THE GATE, not only inside a round --------
+R_ARM8="$W2/repo-arm8"; make_repo "$R_ARM8"
+S_ARM8="$W2/state-arm8"; mkdir -p "$S_ARM8"
+seed_record "$S_ARM8" 900 "APPROVE" "$SHA_A"
+gh_arm 900 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM8/skel" "$S_ARM8" "$W2/arm8.out"
+
+grep -q "skip ASK-AAA: PR #900" "$W2/arm8.out" \
+  || fail "the R1 fixture never reached the approved-and-done gate, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm8.out")"
+grep -q "^pr merge --auto --squash 900$" "$ARMLOG" \
+  || fail "THE DEFECT: PR #900 is approved, clean, and pinned to its own head -- there is nothing
+      left to do but merge it -- and the worker skipped it without arming auto-merge. This is the
+      population the issue is named for, and it is the one the arm never reached: the gate
+      \`continue\`s hundreds of lines above it. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "an approved PR is armed at the gate that skips it, not only inside a rework round"
+
+# ARMING IS NOT A ROUND. The skip must stay a skip: no agent dispatched, no
+# reviewer, no Linear comment. A fix that arms by turning done PRs back into
+# rework rounds would burn model spend on every scheduled run forever.
+[ ! -s "$W2/worked.txt" ] \
+  || fail "arming at the gate dispatched the work agent on a PR that was already approved and
+      clean. The skip has to stay a skip; only the arm is new."
+grep -q "^REVIEWER RAN" "$ARMLOG" \
+  && fail "arming at the gate re-reviewed an already-approved PR. Every scheduled run would pay
+      for a review of a PR with nothing left to review. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+[ "$ARM_RC" = "0" ] || fail "arming at the gate changed the run's exit code to $ARM_RC"
+ok "arming at the gate stays a skip: no agent, no reviewer, no change to the exit code"
+
+# --- R2. the gate's own line reports who merges it ---------------------------
+# PR #33 round 3, finding 2 (minor). Round 2 fixed this exact sentence at the
+# closing line and at converge's, and left the third site. For a PR armed a round
+# ago, no founder is waiting; the line is the misstatement the issue set out to
+# remove.
+SKIP900="$(grep 'skip ASK-AAA: PR #900' "$W2/arm8.out" | tail -1)"
+case "$SKIP900" in
+  *"waiting on founder merge"*|*"waits on founder merge"*)
+    fail "THE THIRD SITE: the same run armed auto-merge on PR #900 and the skip line still tells
+      the operator a founder owes it a merge. It said:
+        $SKIP900" ;;
+esac
+case "$SKIP900" in
+  *armed*) : ;;
+  *) fail "the gate's skip line does not say whether the PR is armed, so an operator scanning the
+      log cannot tell an auto-merging PR from one that needs their hand. It said:
+        $SKIP900" ;;
+esac
+ok "the gate-10 skip line reports the arm state, not a founder who is not waiting"
+
+# --- R3. the arm state is PUBLISHED, so the second reporter reads it ---------
+# converge.sh cannot assert arm state it never read, and re-probing `gh` there
+# would be a second reader of one input with its own semantics -- the defect
+# pr-verdict-lib.sh exists to close. So the ONE reader publishes its answer and
+# the other reporter reads the record, exactly like the verdict record.
+#
+# This assertion is what keeps the converge fixtures below honest: they seed the
+# record, and this pins that the REAL worker writes that same file with that same
+# vocabulary. A fixture built on a key no producer emits proves nothing.
+AMREC="$S_ARM8/pr-reviews/pr-900.automerge"
+[ -s "$AMREC" ] \
+  || fail "the worker armed PR #900 and recorded nothing, so the only thing converge could do is
+      assert or guess. Expected the arm state at $AMREC"
+[ "$(tr -d '[:space:]' < "$AMREC")" = "armed" ] \
+  || fail "the worker armed PR #900 and recorded '$(cat "$AMREC")' instead of 'armed'"
+ok "the worker publishes the arm state it read, so the second reporter never has to assert it"
+
+# --- R4. converge reports the RECORDED state, and only that ------------------
+S_CV_ARM="$W2/state-conv-armed"; mkdir -p "$S_CV_ARM/pr-reviews"
+seed_record "$S_CV_ARM" 902 "APPROVE" "$SHA_A"
+printf 'armed\n' > "$S_CV_ARM/pr-reviews/pr-902.automerge"
+gh_says 902 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_ARM" "$W2/conv-armed.out" 1
+[ "$CRC" = "1" ] \
+  || fail "converge exited $CRC on an approved, armed PR; expected 1 (goal met). It said:
+$(sed 's/^/        /' "$W2/conv-armed.out")"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  || fail "the worker recorded PR #902 as armed and converge's page does not say the merge is
+      handled. The healthy case has to stay readable or the operator checks every one by hand:
+$(cat "$W2/pages.txt")"
+ok "converge says no human owes the merge when the worker RECORDED the PR armed"
+
+S_CV_UN="$W2/state-conv-unarmed"; mkdir -p "$S_CV_UN/pr-reviews"
+seed_record "$S_CV_UN" 903 "APPROVE" "$SHA_A"
+printf 'unarmed\n' > "$S_CV_UN/pr-reviews/pr-903.automerge"
+gh_says 903 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_UN" "$W2/conv-unarmed.out" 1
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "THE DEFECT ON THE PHONE: the worker recorded PR #903 as NOT armed and converge Slacked
+      that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
+      fine -- the silent stall relocated into the alert channel. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
+  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
+      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
+ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
+
+S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"
+seed_record "$S_CV_NONE" 904 "APPROVE" "$SHA_A"
+gh_says 904 CLEAN "$SHA_A"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge "$S_CV_NONE" "$W2/conv-none.out" 1
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "NOTHING RECORDED THE ARM and converge asserted it anyway. This is the reviewer's own
+      repro: the worker never reached the arm this round, so the claim is backed by a comment
+      rather than by a read. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "gh pr merge --auto --squash 904" "$W2/conv-none.out" \
+  || fail "converge could not read the arm state and did not leave the operator the fallback
+      command. It said:
+$(sed 's/^/        /' "$W2/conv-none.out")"
+ok "converge claims nothing about a PR whose arm state nobody recorded"
+
+# --- R5. an unarmed PR pages ONCE, and the flag CLEARS -----------------------
+# PR #33 round 3, finding 3 (minor). The comment justified per-run paging as "the
+# same shape as the approved-but-blocked pages above, which also fire per run".
+# All three of those go through claim_page_once and fire once per ISSUE. With the
+# arm now running at the gate -- which repeats on EVERY scheduled run for as long
+# as the PR sits there -- per-run paging is not merely an inaccurate comment, it
+# is a page every cycle forever. The code moves to the claim the comment makes.
+R_ARM9="$W2/repo-arm9"; make_repo "$R_ARM9"
+S_ARM9="$W2/state-arm9"; mkdir -p "$S_ARM9"
+seed_record "$S_ARM9" 901 "APPROVE" "$SHA_A"
+gh_arm 901 CLEAN "$SHA_A" 1 false
+: > "$ARMLOG"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9a.out"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9b.out"
+PAGES_N="$(grep -c . "$W2/pages.txt" 2>/dev/null || true)"
+[ -n "$PAGES_N" ] && [ "$PAGES_N" != "0" ] \
+  || fail "the R5 fixture never paged at all, so it cannot judge the cardinality. Runs said:
+$(sed 's/^/        /' "$W2/arm9a.out")"
+[ "$PAGES_N" = "1" ] \
+  || fail "an unarmed PR paged $PAGES_N times across 2 runs. Nothing about the PR changed between
+      them, and the gate re-reaches this state on every scheduled run for as long as it sits
+      there -- so this is a page every cycle, forever, for one unchanged fact. Noise is what
+      makes the real page unreadable (founder-notifications.md). Pages:
+$(sed 's/^/        /' "$W2/pages.txt")"
+ok "an unarmed PR pages ONCE across repeated runs, not once per run"
+
+# THE ONCE-ONLY FLAG HAS TO CLEAR, or the second time this PR is genuinely
+# unarmed it is silent forever -- the PR #25 finding-3 scar that
+# clear_conflict_rounds and clear_drift_rounds both carry.
+gh_arm 901 CLEAN "$SHA_A" 0 true
+: > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9c.out"
+[ ! -s "$W2/pages.txt" ] \
+  || fail "PR #901 is armed and the run paged anyway: $(cat "$W2/pages.txt")"
+gh_arm 901 CLEAN "$SHA_A" 1 false
+: > "$W2/pages.txt"
+run_worker_arm "$R_ARM9/skel" "$S_ARM9" "$W2/arm9d.out"
+[ -s "$W2/pages.txt" ] \
+  || fail "PERMANENTLY SILENT: PR #901 was armed, then became unarmed again, and the once-only
+      page never fired because nothing cleared the flag. A page that can only ever fire once in
+      an issue's life is a page that is missing exactly when the state comes back. The run said:
+$(sed 's/^/        /' "$W2/arm9d.out")"
+ok "the once-only page clears when the PR is seen armed, so a NEW unarmed state still pages"
+
+# --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
+grep -q 'pr merge --auto --squash' "$WORKER" \
+  || fail "linear-worker.sh never arms auto-merge"
+ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | head -1 | cut -d: -f1)"
+REV_SRC="$(grep -n 'REVIEWER_CMD' "$WORKER" | grep -v '^.*REVIEWER_CMD=' | head -1 | cut -d: -f1)"
+[ -n "$ARM_SRC" ] && [ -n "$REV_SRC" ] && [ "$ARM_SRC" -lt "$REV_SRC" ] \
+  || fail "the arm does not sit before the reviewer call in linear-worker.sh (arm at
+      ${ARM_SRC:-none}, reviewer at ${REV_SRC:-none})"
+ok "worker wiring: the arm is in the worker and precedes the review call"
+
+# BOTH POPULATIONS, asserted on the CALL SITES rather than on the one `gh pr
+# merge` line. Once the arm became a function, the line above moved to the
+# helper's definition near the top of the file and stopped saying anything about
+# where it is USED -- so this pins the two callers: the gate that skips a done PR,
+# and step 5 for a PR inside a round. One caller is how this round's major got in.
+ARM_CALLS="$(grep -c 'arm_automerge "' "$WORKER" 2>/dev/null || true)"
+[ "${ARM_CALLS:-0}" -ge 2 ] \
+  || fail "linear-worker.sh calls the arm from ${ARM_CALLS:-0} site(s). It needs both: the gate
+      that skips an approved PR (nothing left but the merge -- the population this issue is
+      named for) and step 5 (a PR inside a round). One caller leaves a whole population unarmed
+      while the report says otherwise."
+GATE10_SRC="$(grep -n 'GATE" = "10"' "$WORKER" | head -1 | cut -d: -f1)"
+GATE_ARM_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /arm_automerge "/ {print NR; exit}' "$WORKER")"
+CONT_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /^ *continue$/ {print NR; exit}' "$WORKER")"
+[ -n "$GATE_ARM_SRC" ] && [ -n "$CONT_SRC" ] && [ "$GATE_ARM_SRC" -lt "$CONT_SRC" ] \
+  || fail "the gate-10 branch \`continue\`s at line ${CONT_SRC:-none} before it arms (arm at
+      ${GATE_ARM_SRC:-none}). That is the original defect verbatim: the skip exits the iteration
+      above the arm, so the done PRs are never touched."
+ok "worker wiring: the approved-PR gate arms BEFORE it skips the issue"
+
+grep -q 'automerge_from_record' "$CONV" \
+  || fail "converge.sh reports on auto-merge without reading the arm state the worker recorded.
+      Asserting a state nobody read is what put 'no human merge needed' on an unarmed PR."
+ok "converge wiring: the second reporter READS the arm state instead of asserting it"
+
+bash -n "$CONV" || fail "converge.sh does not parse"
+ok "converge.sh parses (bash -n)"
 
 bash -n "$REVIEWER" || fail "pr-review-agent.sh does not parse"
 ok "the reviewer parses (bash -n)"
