@@ -106,14 +106,32 @@ fi
 # One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) = 6 sessions.
 # So DAILY_MAX is roughly "sessions per day / 6".
 DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
-# LOCAL date, not UTC. Founder-set 2026-07-28. A UTC budget day rolls over at
-# 17:00 PDT, so spending the cap overnight left the loop idle through the whole
-# working day and refilled it at teatime -- the budget window was inverted
-# against the day it is meant to serve. Local midnight gives a fresh budget each
-# morning. `date` with no -u is the local date, and the file name carries it, so
-# the rollover needs no timer: a new day is simply a new file that reads 0.
-TODAY="$(date +%Y-%m-%d)"
-COUNT_FILE="$HOME/.config/kipi/dispatch-count-$TODAY"
+# The budget day starts at RESET_HOUR LOCAL, not at midnight and not at UTC.
+# Founder-set 2026-07-28, and the reasoning is safety, not tidiness:
+#
+#   UTC midnight     rolls at 17:00 local -- refills at teatime, leaving the loop
+#                    idle through the whole working day it was meant to serve.
+#   local midnight   refills the instant the founder falls asleep, handing a full
+#                    budget to an unattended overnight run. Worst of the three.
+#   local 07:00      overnight can only spend what is LEFT from yesterday, and a
+#                    fresh budget arrives when someone is awake to watch it.
+#
+# Implemented by shifting the clock back RESET_HOUR hours and taking that date,
+# so 03:00 Tuesday still belongs to Monday's budget. The file NAME carries the
+# label, so the rollover needs no timer, no cron entry and no state machine: a
+# new budget day is simply a new filename that reads 0.
+RESET_HOUR="${KIPI_DISPATCH_RESET_HOUR:-7}"
+# BSD date (macOS) uses -v; GNU date uses -d. Try both so this is not silently
+# wrong on a Linux box, where a failed shift would fall back to today's date and
+# quietly restore the midnight behaviour.
+BUDGET_DAY="$(date -v-"${RESET_HOUR}"H +%Y-%m-%d 2>/dev/null \
+              || date -d "-${RESET_HOUR} hours" +%Y-%m-%d 2>/dev/null)"
+if [ -z "$BUDGET_DAY" ]; then
+  say "FATAL: could not compute the budget day (neither BSD nor GNU date worked)"
+  page "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
+  exit 1
+fi
+COUNT_FILE="$HOME/.config/kipi/dispatch-count-$BUDGET_DAY"
 DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
 case "$DISPATCHED_TODAY" in ''|*[!0-9]*) DISPATCHED_TODAY=0 ;; esac
 
@@ -121,8 +139,8 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   # Say it once per day, not every 15 minutes -- a budget ceiling repeated 96
   # times is the cry-wolf failure, and this is not an error state anyway.
   if [ ! -f "$COUNT_FILE.paged" ]; then
-    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched today, stopping until local midnight"
-    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until midnight tonight, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
+    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY, stopping until ${RESET_HOUR}:00 local"
+    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
     : > "$COUNT_FILE.paged"
   fi
   exit 0

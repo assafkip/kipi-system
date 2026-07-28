@@ -38,6 +38,16 @@
 		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
 		<string>4</string>
+
+		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
+		     for safety rather than tidiness: a midnight reset hands a full
+		     budget to the loop at the exact moment the founder falls asleep,
+		     so an unattended overnight run gets the whole allowance. Refilling
+		     at 07:00 means the night can only spend what is LEFT from the day
+		     before, and the fresh budget arrives when someone is awake.
+		     A budget day runs 07:00 -> 06:59 the next morning. -->
+		<key>KIPI_DISPATCH_RESET_HOUR</key>
+		<string>7</string>
 	</dict>
 
 	<key>ProgramArguments</key>
