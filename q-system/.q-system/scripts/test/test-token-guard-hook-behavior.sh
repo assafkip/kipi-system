@@ -465,4 +465,36 @@ assert cache.get("gate_grace_gate") == "plugin-version-bump", \
 EOF
 echo "ok: a refusal carried by exit_code alone is read the same as one carried by error"
 
+# --- 16) Holding the volume warning must not lose it --------------------------
+# The finding-3 fix defers the volume warning so the checks below it can run. A
+# later warning must therefore CARRY it, not replace it -- otherwise the fix
+# buys reachability by making the ceiling warning silent, which is the trade the
+# operator would never agree to.
+python3 - "$CACHE" "$SESSION" "$GUARD" <<'EOF'
+import json, re, sys, time
+src = open(sys.argv[3]).read()
+warning = int(re.search(r"^VOLUME_WARNING = (\d+)", src, re.M).group(1))
+spiral = int(re.search(r"^READ_SPIRAL_LIMIT = (\d+)", src, re.M).group(1))
+json.dump({
+    "actor_key": sys.argv[2], "tool_calls_since_user": warning,
+    "agent_calls_since_user": 0, "mcp_timestamps": [], "repeat_map": {},
+    "consecutive_reads": spiral - 1, "warnings_issued": 0, "file_read_counts": {},
+    "greps_since_write": 0, "edit_targets": {}, "agents_without_write": 0,
+    "last_write_time": time.time(), "calls_since_write": 1,
+    "last_volume_reset": time.time(),
+}, open(sys.argv[1], "w"))
+EOF
+OUT="$(run_guard "{\"session_id\": \"$SESSION\", \"hook_event_name\": \"PreToolUse\", \"tool_name\": \"Read\", \"tool_input\": {\"file_path\": \"/tmp/both-warnings-probe\"}}")" \
+  || { echo "FAIL: combined-warning path exited non-zero"; exit 1; }
+python3 - <<EOF
+import json
+context = json.loads(r'''$OUT''')["hookSpecificOutput"]["additionalContext"]
+volume, _, spiral = context.partition("\n\n")
+assert "before hard stop" in volume, \
+    f"the held volume warning was dropped by a later warning: {context!r}"
+assert spiral.strip(), \
+    f"the later read-spiral warning was dropped: {context!r}"
+EOF
+echo "ok: a held volume warning is carried by the next warning, not replaced"
+
 echo "PASS: token-guard hook behavior (warn shape + PostToolUse edit reset + blocked-attempt un-count + gate-refusal grace + non-gate classifier)"
