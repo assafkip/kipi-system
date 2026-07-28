@@ -164,6 +164,64 @@ This is the fix for diagnosis #3 in §2 and is arguably the most valuable item h
 
 ---
 
+### 5a + 5b: DONE 2026-07-28 00:41Z. Evidence, not assertion.
+
+**5a merged** as PR #29 -> `94a95263` (ASK-217). `pr-review-agent.sh` posts
+`kipi/reviewer-approved` on the sha captured before the reviewer ran: `success`
+for APPROVE / APPROVE WITH NITS, `failure` otherwise, a loud WARN when the POST
+fails, and nothing at all when the sha is empty.
+
+**Proven on a live PR** before the gate was armed, which is the §4 rule:
+
+```
+$ gh pr view 27 --json headRefOid,statusCheckRollup
+head: c063c3dd8c59c4b0c49469440e81ab4b6a93cbbf
+  validate                 SUCCESS
+  kipi/reviewer-approved   SUCCESS   -> .../pull/27#issuecomment-5098509039
+```
+
+**5b armed** only after seeing that:
+
+```
+$ gh api -X POST .../branches/main/protection/required_status_checks/contexts \
+    -f 'contexts[]=kipi/reviewer-approved'
+["validate","kipi/reviewer-approved"]
+```
+
+Pre-change protection saved to the session scratchpad
+(`branch-protection-before-5b.json`) so this is reversible. `enforce_admins` is
+false, so the auto-committer's direct pushes to `main` are unaffected. Used the
+`.../required_status_checks/contexts` endpoint deliberately: a `PATCH` on
+`/protection` REPLACES the whole payload and would have silently dropped
+settings it did not restate.
+
+**Still unproven:** the negative case. Both remaining PRs (#5, #23) were already
+red on `validate`, so neither tests the new context. The clean test is ASK-219's
+PR at the moment it opens — `validate` green, no reviewer status yet, must read
+BLOCKED. A watcher is on that window. Until that is observed, 5b is armed but
+its refusal is {{UNVALIDATED}}.
+
+### 5g-CORRECTION: ASK-219 does NOT block 5c. 5b already solved it structurally.
+
+Earlier tonight I filed ASK-219 (wire the sha-drift exit to its callers) as a
+blocker for 5c, reasoning that auto-merge on a stale approval merges unreviewed
+code. **That reasoning was superseded by 5b and is now wrong.**
+
+A commit status is bound to a sha *by construction*. Once
+`kipi/reviewer-approved` is a REQUIRED context, a push creates a new sha that
+carries no such status, so the required context reads absent and **GitHub will
+not merge it** — no local logic involved. Merge-time drift is structurally
+impossible, not merely detected.
+
+ASK-219 is still worth shipping: `converge` currently reports "waiting on founder
+merge only" for a PR whose approval is stale, which is a lie about loop state and
+a silent-success defect. But that is **loop-control honesty, not merge safety.**
+It does not gate 5c.
+
+The real remaining sequencing constraint is mundane: ASK-219 and 5c both edit
+`linear-worker.sh`, so run them serially to avoid the conflict class §8 warns
+about. Order between them does not matter; overlap does.
+
 ### 5g. WHY 5b MUST PRECEDE 5c — the order is load-bearing, not stylistic
 
 Today `required_status_checks.contexts` is exactly `["validate"]`. Enable
