@@ -1,7 +1,7 @@
 ---
 id: dr-capability-gate-green-2026-07-28
 title: Return kipi check to green: declare the six grounding tests, drop the phantom instance
-status: open
+status: closed
 priority: p0
 parent_prd: prd-deterministic-reading-2026-07-28
 allowed_files:
@@ -32,4 +32,4 @@ expected_tests declares all six grounding tests with no pre-existing entry lost;
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Return kipi check to green: declare the six grounding tests, drop the phantom instance
+- [x] Return kipi check to green: declare the six grounding tests, drop the phantom instance

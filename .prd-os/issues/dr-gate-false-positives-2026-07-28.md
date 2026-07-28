@@ -1,7 +1,7 @@
 ---
 id: dr-gate-false-positives-2026-07-28
 title: Fix the three false positives that made the shipped grounding gates unusable
-status: open
+status: closed
 priority: p0
 parent_prd: prd-deterministic-reading-2026-07-28
 allowed_files:
@@ -35,4 +35,4 @@ Dated markdown headers pass the handoff lint while dated CLAIMS and numbers-in-h
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Fix the three false positives that made the shipped grounding gates unusable
+- [x] Fix the three false positives that made the shipped grounding gates unusable

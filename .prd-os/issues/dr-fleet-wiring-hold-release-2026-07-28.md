@@ -1,7 +1,7 @@
 ---
 id: dr-fleet-wiring-hold-release-2026-07-28
 title: Ship the gates that are proven safe, hold the one that is not, with the hold enforced
-status: open
+status: closed
 priority: p0
 parent_prd: prd-deterministic-reading-2026-07-28
 allowed_files:
@@ -33,4 +33,4 @@ handoff-provenance-lint and client-output-evidence-gate are wired fleet-wide and
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Ship the gates that are proven safe, hold the one that is not, with the hold enforced
+- [x] Ship the gates that are proven safe, hold the one that is not, with the hold enforced

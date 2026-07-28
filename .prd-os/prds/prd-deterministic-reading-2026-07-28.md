@@ -1,9 +1,9 @@
 ---
 id: prd-deterministic-reading-2026-07-28
 title: Deterministic Reading
-status: approved
+status: archived
 created_at: 2026-07-28T19:00:31Z
-updated_at: 2026-07-28T21:17:14Z
+updated_at: 2026-07-28T23:07:53Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-deterministic-reading-2026-07-28-findings.jsonl
