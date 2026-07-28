@@ -195,11 +195,41 @@ false, so the auto-committer's direct pushes to `main` are unaffected. Used the
 `/protection` REPLACES the whole payload and would have silently dropped
 settings it did not restate.
 
-**Still unproven:** the negative case. Both remaining PRs (#5, #23) were already
-red on `validate`, so neither tests the new context. The clean test is ASK-219's
-PR at the moment it opens — `validate` green, no reviewer status yet, must read
-BLOCKED. A watcher is on that window. Until that is observed, 5b is armed but
-its refusal is {{UNVALIDATED}}.
+**The negative case is PROVEN.** PR #30 (ASK-219) supplied all three states on a
+live PR, so the gate is known to refuse and not merely known to allow:
+
+```
+00:43:27Z  PR #30 opened     validate:SUCCESS, no reviewer status   -> MERGEABLE BLOCKED
+           ... held BLOCKED for 11 minutes on ABSENCE alone ...
+00:54Z     reviewer ran      + kipi/reviewer-approved:FAILURE       -> MERGEABLE BLOCKED
+(earlier)  PR #27 approved   both SUCCESS                            -> merged
+```
+
+Allows on green, refuses on ABSENT, refuses on FAILURE. A gate only ever seen
+allowing is not a gate; these are the two refusals that make it one.
+
+### 5c: the platform is the integrator — proven on PR #30 before any code
+
+`gh pr merge --auto --squash 30` at 00:54:51Z. GitHub now holds the PR itself:
+
+```
+autoMergeRequest.enabledAt  2026-07-28T00:54:51Z   mergeMethod SQUASH
+mergeable MERGEABLE   mergeStateStatus BLOCKED     <- held on the FAILURE status
+```
+
+The whole chain is now live and unattended: ASK-219's round-2 agent pushes ->
+new sha -> `validate` runs -> the reviewer runs and posts a sha-bound status ->
+if approving, **GitHub merges it with no human in the path.**
+
+This is why item 6c (`pr-integrate.sh`) should not be built. There is no script
+here. Two required checks plus one platform flag, which is the §2 shape every
+prior-art integrator converged on.
+
+**5c's remaining code is small and mechanical:** `linear-worker.sh` runs
+`gh pr merge --auto --squash "$PR_NUM"` right where `PR_NUM` is resolved (~line
+699), covering both the agent-opened and worker-opened paths. Ship it AFTER
+ASK-219 lands — both edit that file, and §8's conflict class is not worth
+re-learning.
 
 ### 5g-CORRECTION: ASK-219 does NOT block 5c. 5b already solved it structurally.
 
