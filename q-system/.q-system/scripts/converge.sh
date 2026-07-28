@@ -160,13 +160,29 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 
   rework_gate "$VERDICT"; GATE=$?
   if [ "$GATE" = "10" ]; then
-    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Waiting on founder merge only."
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR ready to merge" 2>/dev/null || true
+    # why the success ping is gone (2026-07-27, founder-directed): a converged PR
+    # is routine progress, and founder-notifications.md says progress is not a
+    # ping. Three converge runs finishing together put three "ready to merge"
+    # lines in Slack inside eleven minutes -- the volume that trains someone to
+    # ignore the channel, which costs the FAILURE pings their only job.
+    #
+    # This used to say "waiting on founder merge only", and that manual step was
+    # the reason the ping had to exist: silence it without merging and PRs pile
+    # up unseen. The autonomy contract already pre-authorizes merge during
+    # unattended runs, so the merge happens here and the only thing left worth
+    # waking someone for is a merge that FAILED.
+    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merging."
+    if MERGE_OUT="$(gh pr merge "$PR" --squash 2>&1)"; then
+      say "merged PR #$PR (squash). Silent by design -- see this log for the record."
+    else
+      say "MERGE FAILED for PR #$PR: $MERGE_OUT"
+      bash "$NOTIFY" "converge $ISSUE: PR #$PR PASSED review ($VERDICT) but auto-merge FAILED. Reason: $(printf '%s' "$MERGE_OUT" | head -1). Do: gh pr merge $PR --squash" 2>/dev/null || true
+    fi
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
     say "STOP exit-7: PR #$PR has no verdict after round $ROUND -- the review died or timed out. Re-run: kipi review $PR --issue $ISSUE --post"
-    bash "$NOTIFY" "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" "converge $ISSUE: STOPPED on round $ROUND, PR #$PR has no verdict. Reason: the review died or timed out. Do: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
     exit 7
   fi
 
