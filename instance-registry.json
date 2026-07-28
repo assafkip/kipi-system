@@ -161,7 +161,8 @@
       "type": "standalone",
       "has_git": true,
       "skip_agent_check": true,
-      "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree."
+      "skeleton_managed": false,
+      "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree. skeleton_managed=false is the deliberate record (ASK-117): it receives zero skeleton propagation, so it carries none of the fleet enforcement layer (no token-guard.py, no .claude/rules/, no capability gate) and must be excluded from fleet-wide governance counts rather than counted as a governed instance."
     },
     {
       "name": "Alice",
