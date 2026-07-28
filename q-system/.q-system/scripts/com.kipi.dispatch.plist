@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
+     by install-plist.sh, which is the ONLY sanctioned way to install this. A
+     hardcoded /Users/<name> here is what test-install-plist.sh fails on, and the
+     scar it guards is worse than untidiness: a template copied straight into
+     ~/Library/LaunchAgents runs a job pinned to one machine.
+-->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -8,12 +15,12 @@
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>KIPI_REPO</key>
-		<string>/Users/assafkipnis/projects/kipi-system</string>
+		<string>__KIPI_REPO__</string>
 		<!-- Same PATH as com.kipi.openloops-heartbeat, which is the proven
 		     working `claude -p` under launchd. gh and claude both live in
 		     /opt/homebrew/bin; without it the dispatcher pages and exits. -->
 		<key>PATH</key>
-		<string>/Users/assafkipnis/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<!-- ONE at a time. Each run spawns a `claude -p` agent plus a
 		     reviewer, so this is also the spend ceiling -- but the original
 		     reason was conflicts: dispatch picked by readiness alone and had
@@ -49,7 +56,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
-		<string>/Users/assafkipnis/projects/kipi-system/kipi-dispatch.sh</string>
+		<string>__KIPI_REPO__/kipi-dispatch.sh</string>
 	</array>
 
 	<!-- Every 15 minutes. The heartbeat only TOPS UP to the concurrency cap;
@@ -64,8 +71,8 @@
 	<false/>
 
 	<key>StandardOutPath</key>
-	<string>/Users/assafkipnis/.config/kipi/dispatch.out</string>
+	<string>__HOME__/.config/kipi/dispatch.out</string>
 	<key>StandardErrorPath</key>
-	<string>/Users/assafkipnis/.config/kipi/dispatch.err</string>
+	<string>__HOME__/.config/kipi/dispatch.err</string>
 </dict>
 </plist>
