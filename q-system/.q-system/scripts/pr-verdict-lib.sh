@@ -89,6 +89,37 @@ pr_head_sha() {
   gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]'
 }
 
+# --- the arm-state record (ASK-222, PR #33 review round 3, finding 1) --------
+# record_automerge <path> <armed|unarmed|unknown>   -- written by the ONE reader
+# automerge_from_record <path>                      -- read by everyone else
+#
+# WHY A RECORD AND NOT A SECOND PROBE. linear-worker.sh asks GitHub whether a PR
+# has auto-merge on. converge.sh reports on the same PR minutes later and has to
+# say who merges it. Giving converge its own `gh pr view --json autoMergeRequest`
+# would be two readers of one input with drifting semantics -- the defect class
+# this whole file exists to close, and converge's own call sites refuse it
+# elsewhere. The alternative it reached for instead was an ASSERTION: a comment
+# claiming "the worker arms every PR it touches", which was false for every PR
+# the worker skipped as done, so the founder's phone got "no human merge needed"
+# on PRs nothing had armed. A record is neither: it is the one reader's own
+# answer, published, exactly like the verdict record two functions up.
+#
+# STALENESS, STATED. The record is rewritten every time the worker reaches the
+# PR. A run that never got there (another session's claim, a worktree that could
+# not be made) leaves the previous run's word standing. That is safe in the
+# direction that matters: "armed" only goes false if a human turns auto-merge
+# off, and "unarmed"/"unknown" both point the operator at the fallback command,
+# which is a no-op on a PR that is in fact armed. Absent means absent -- the
+# reader gets an empty string and must claim nothing.
+record_automerge() {
+  printf '%s\n' "$2" > "$1" 2>/dev/null || true
+}
+
+automerge_from_record() {
+  [ -s "$1" ] || return 0
+  tr -d '[:space:]' < "$1" 2>/dev/null
+}
+
 # _sha_norm <sha>
 # Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
 # newline are not drift. A PREFIX is deliberately NOT treated as a match: both

@@ -82,6 +82,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-unmanaged-instance.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-lessons-daily-exit.sh",
       "runner": "bash"
     },

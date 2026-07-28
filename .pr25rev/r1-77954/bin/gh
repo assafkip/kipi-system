@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+case "$*" in
+  "pr list"*)                            echo 901 ;;
+  "pr view 901 --json mergeStateStatus"*) echo DIRTY ;;
+esac
+exit 0
