@@ -190,7 +190,7 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 # environment that is down from a worker that was invoked wrong.
 if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
-  bash "$NOTIFY" "worker: git fetch failed in $SKEL -- the run did NO work. Check credentials/network." 2>/dev/null || true
+  bash "$NOTIFY" "worker: git fetch failed in $SKEL, so the run did NO work at all -- this is environmental (auth, network, or a dead remote) and nothing self-heals from it. Do: cd $SKEL && git fetch origin, fix what it reports, then re-run kipi work --apply" 2>/dev/null || true
   exit 9
 fi
 
@@ -449,7 +449,7 @@ arm_automerge() {
       # unarmed, and quieting it would re-create the stall one layer down.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE and could not read its state either -- gh answered neither. If it sits green: gh pr merge --auto --squash $pr"
       if claim_page_once "$ISSUE" automerge_unknown_paged; then
-        bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $pr" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown and it may sit green forever. Do: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     else
       AUTOMERGE="unarmed"
@@ -463,7 +463,7 @@ arm_automerge() {
       # not kill the silent stall, it relocates it.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
       if claim_page_once "$ISSUE" automerge_unarmed_paged; then
-        bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever, which is the stall that looks most like success. Do: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     fi
   fi
@@ -677,7 +677,7 @@ while IFS= read -r ISSUE; do
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
         if claim_page_once "$ISSUE" drift_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) -- code nobody has read is sitting at the head of an approved PR, and re-reviewing is not clearing it. Do: kipi review $EXISTING_PR --issue $ISSUE --post, and do NOT merge until that lands" 2>/dev/null || true
         fi
         continue
       fi

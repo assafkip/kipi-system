@@ -154,7 +154,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
-    bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" "converge $ISSUE: no PR on $BRANCH after round $ROUND (worker rc=$WRC) -- Sana could not open one, so nothing is in flight and nothing will retry. Do: tail -100 $LOG, then re-run kipi work --apply --issue $ISSUE" 2>/dev/null || true
     exit 7
   fi
 
@@ -204,19 +204,19 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     case "$AUTOMERGE" in
       armed)
         say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" 2>/dev/null || true ;;
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed. Do: nothing unless it sits green, then gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
       unarmed)
         say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved but NOT armed -- it goes green and sits there forever, which is the stall that looks most like success. Do: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
       *)
         say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- nothing recorded whether auto-merge is armed on it this run, so it may or may not land on its own. Do: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
     esac
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
     say "STOP exit-7: PR #$PR has no verdict after round $ROUND -- the review died or timed out. Re-run: kipi review $PR --issue $ISSUE --post"
-    bash "$NOTIFY" "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" "converge $ISSUE: PR #$PR has no verdict after round $ROUND -- the reviewer crashed or timed out, so the loop cannot decide anything and stopped here. Do: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
     exit 7
   fi
 
@@ -246,14 +246,24 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # "stalled at 'APPROVE WITH NITS', no code change in round N", which is a
     # benign stall on an approved PR. The gate-40 line above is in the run log;
     # the log is not what wakes anyone.
+    #
+    # THE ACTION TRAVELS WITH THE DIAGNOSIS (ASK-223). Both variants get their own
+    # STALL_ACTION rather than a shared one: a benign stall on an approved PR and
+    # unreviewed code sitting at the head need different commands, and one generic
+    # "needs a human" is the 3am page that leaves the founder to work out the rest.
+    # It is concatenated at the call site so the literal `Do: ` sits on the $NOTIFY
+    # line, which is what test-linear-pipeline-health.sh lints for -- a page whose
+    # action hides behind a variable is invisible to that lint.
     STALL_LOG="STOP exit-5: round $ROUND changed no code and drew the same verdict '$VERDICT'. Not burning another round."
-    STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
+    STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', round $ROUND changed no code, so re-running it produces the same nothing"
+    STALL_ACTION="read the last review (kipi review $PR --issue $ISSUE --post to re-run it), or split $ISSUE if the reviewer keeps asking for more than one change"
     if [ "$GATE" = "40" ]; then
       STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
-      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
+      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head of an approved PR"
+      STALL_ACTION="kipi review $PR --issue $ISSUE --post (do NOT merge it until that lands)"
     fi
     say "$STALL_LOG"
-    bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
+    bash "$NOTIFY" "$STALL_PAGE. Do: $STALL_ACTION" 2>/dev/null || true
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"
@@ -261,5 +271,5 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 done
 
 say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+bash "$NOTIFY" "converge $ISSUE: gave up after $MAX_ROUNDS rounds, still '$LAST_VERDICT'. Nothing merged, so the work is stranded. A cap-out is almost always scope -- 1-change issues converge in 1 round. Do: split it, kipi linear issue \"<one change>\", then close $ISSUE as superseded" 2>/dev/null || true
 exit 2
