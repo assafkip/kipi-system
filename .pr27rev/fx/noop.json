@@ -1,0 +1,1 @@
+{"session_id": "repro3-22944", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'wip (ASK-214)'"}, "tool_response": {"stdout": "nothing to commit, working tree clean", "stderr": "", "error": "Exit code 1"}}

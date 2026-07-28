@@ -17,9 +17,10 @@
 # LOOP EXITS (loop-exits.md -- an autonomous loop owns 2, 4, 7 at minimum)
 #   2 turn cap      MAX_CONCURRENT live converge runs, counted from the process
 #                   table, not from a state file that can lie.
-#   3 budget        DAILY_MAX issues per LOCAL day, and never more than the
-#                   free concurrency slots in one tick. The interval throttles;
-#                   the daily counter is the actual ceiling.
+#   3 budget        DAILY_MAX issues per BUDGET DAY (which starts at RESET_HOUR
+#                   local, NOT midnight -- see the budget block), and never more
+#                   than the free concurrency slots in one tick. The interval
+#                   throttles; the daily counter is the actual ceiling.
 #   4 wall clock    each converge carries --max-rounds; the reviewer is bounded
 #                   at 2400s inside pr-review-agent.sh.
 #   5 no progress   an issue moves to In Progress the moment the worker takes
@@ -137,16 +138,16 @@ page_once() {  # page_once <marker-file> <message>
   : > "$1"
 }
 
-# LOCAL date, not UTC. Founder-set 2026-07-28. A UTC budget day rolls over at
-# 17:00 PDT, so spending the cap overnight left the loop idle through the whole
-# working day and refilled it at teatime -- the budget window was inverted
-# against the day it is meant to serve. Local midnight gives a fresh budget each
-# morning. `date` with no -u is the local date, and the file name carries it, so
-# the rollover needs no timer: a new day is simply a new file that reads 0.
-#
-# Every page marker carries the same stamp, so a fault that is still true
-# tomorrow pages again tomorrow -- deduped, not muted. Read before the `cd`
+# LOCAL date, not UTC, and this stamps PAGE MARKERS only -- not the spend
+# counter. Every page marker carries this stamp, so a fault that is still true
+# tomorrow pages again tomorrow: deduped, not muted. Read before the `cd`
 # because repo-not-found needs to stamp a marker too.
+#
+# THE SPEND COUNTER USES $BUDGET_DAY INSTEAD, which rolls at RESET_HOUR local
+# rather than at midnight (see the budget block). Keep the two separate: a
+# midnight-rolling budget hands a full allowance to an unattended overnight run
+# at the moment the founder falls asleep, which is the thing RESET_HOUR exists
+# to prevent. Collapsing them back into one stamp silently reinstates it.
 TODAY="$(date +%Y-%m-%d)"
 
 # THE THREE FATAL / INFRA PAGES ARE page_once, NOT page (PR #36 r4).
@@ -499,7 +500,42 @@ fi
 # would be the cap doing a job it was never given -- and letting it DECREMENT
 # the counter would mean an afternoon burst silently eats the night's budget.
 DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
-COUNT_FILE="$HOME/.config/kipi/dispatch-count-$TODAY"   # TODAY: see the top
+
+# THE BUDGET DAY IS NOT $TODAY. It starts at RESET_HOUR LOCAL, not at midnight.
+# Founder-set 2026-07-28, and the reason is safety, not tidiness:
+#
+#   UTC midnight     rolls at 17:00 local -- refills at teatime, leaving the loop
+#                    idle through the whole working day it was meant to serve.
+#   local midnight   refills the instant the founder falls asleep, handing a full
+#                    budget to an unattended overnight run. Worst of the three.
+#   local 07:00      overnight can only spend what is LEFT from yesterday, and a
+#                    fresh budget arrives when someone is awake to watch it.
+#
+# Founder, verbatim: "i rather have the cap restart in the morning. because
+# midnight makes it so it can work while i sleep and thats not safe."
+#
+# Deliberately a SEPARATE stamp from $TODAY rather than shifting $TODAY itself:
+# $TODAY also names the page-dedup markers, and moving those is a different
+# decision that nobody made. Only the spend counter rolls at RESET_HOUR.
+#
+# Implemented by shifting the clock back RESET_HOUR hours and taking that date,
+# so 03:00 Tuesday still belongs to Monday's budget. The file NAME carries the
+# label, so the rollover needs no timer, no cron entry and no state machine: a
+# new budget day is simply a new filename that reads 0.
+RESET_HOUR="${KIPI_DISPATCH_RESET_HOUR:-7}"
+# BSD date (macOS) uses -v; GNU date uses -d. Try both so this is not silently
+# wrong on a Linux box, where a failed shift would fall back to today's date and
+# quietly restore the midnight behaviour this exists to prevent.
+BUDGET_DAY="$(date -v-"${RESET_HOUR}"H +%Y-%m-%d 2>/dev/null \
+              || date -d "-${RESET_HOUR} hours" +%Y-%m-%d 2>/dev/null)"
+if [ -z "$BUDGET_DAY" ]; then
+  say "FATAL: could not compute the budget day (neither BSD nor GNU date worked)"
+  page_once "$HOME/.config/kipi/dispatch-budgetday-$TODAY.paged" \
+    "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
+  exit 1
+fi
+
+COUNT_FILE="$HOME/.config/kipi/dispatch-count-$BUDGET_DAY"
 DISPATCHED_TODAY=0
 if [ "$BURST" -eq 0 ]; then
   DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
@@ -507,11 +543,11 @@ if [ "$BURST" -eq 0 ]; then
 fi
 
 if [ "$BURST" -eq 0 ] && [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
-  # Say it once per day, not every 15 minutes -- a budget ceiling repeated 96
-  # times is the cry-wolf failure, and this is not an error state anyway.
+  # Say it once per budget day, not every 15 minutes -- a budget ceiling
+  # repeated 96 times is the cry-wolf failure, and this is not an error anyway.
   if [ ! -f "$COUNT_FILE.paged" ]; then
-    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched today, stopping until local midnight"
-    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until midnight tonight, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
+    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY, stopping until ${RESET_HOUR}:00 local"
+    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
     : > "$COUNT_FILE.paged"
   fi
   exit 0

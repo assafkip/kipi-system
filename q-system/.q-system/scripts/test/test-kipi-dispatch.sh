@@ -648,8 +648,12 @@ check "22a --burst 0 is refused" "$RC" "2"
 check "22b --burst 0 dispatches nothing" "$(n_started)" "0"
 check "22c --burst 0 does not write the liveness beacon" \
   "$([ -f "$HOME/.config/kipi/dispatch-lastbeat" ] && echo wrote || echo clean)" "clean"
+# The budget day, NOT plain today: the counter is filed under a RESET_HOUR-
+# shifted stamp (see section 24). Between midnight and 07:00 the two differ, so
+# a plain-today spelling here checks a file the script never writes and passes
+# vacuously -- the check would quietly stop testing for seven hours a night.
 check "22d --burst 0 does not spend the daily counter" \
-  "$([ -f "$HOME/.config/kipi/dispatch-count-$(date +%Y-%m-%d)" ] && echo spent || echo clean)" "clean"
+  "$([ -f "$HOME/.config/kipi/dispatch-count-$(date -v-"${KIPI_DISPATCH_RESET_HOUR:-7}"H +%Y-%m-%d)" ] && echo spent || echo clean)" "clean"
 
 # --- 23. one file, two spellings, one intersection (finding 5) --------------
 # The r3 fix normalised `~/x` against `/Users/me/x`. It did not normalise the
@@ -668,6 +672,63 @@ if printf '%s' "$OUT" | grep -q 'skip ASK-922' && \
 else
   bad "23b the skip names the file, in one spelling" "$OUT"
 fi
+
+# --- 24. the spend budget rolls at RESET_HOUR, not at midnight --------------
+# THE REGRESSION THIS EXISTS TO CATCH, found while merging main into this branch
+# on 2026-07-28: this branch had rewritten kipi-dispatch.sh and, in the rewrite,
+# dropped RESET_HOUR entirely -- counter back on `dispatch-count-$TODAY`, log
+# line back to "stopping until local midnight", the plist key gone. All 58
+# checks above still passed, because not one of them looked at WHICH day the
+# counter is filed under. A silent revert of a founder safety decision.
+#
+# The decision, verbatim: "i rather have the cap restart in the morning. because
+# midnight makes it so it can work while i sleep and thats not safe." A midnight
+# roll refills the allowance at the moment the founder falls asleep, so an
+# unattended overnight run gets the whole budget. Rolling at 07:00 means the
+# night can only spend what is LEFT from the day before.
+#
+# RESET_HOUR is set ABOVE the current hour so the shift is guaranteed to land in
+# yesterday whatever time this suite runs. Asserting on the FILENAME is the
+# point: it is the only place the budget day is observable, and it is exactly
+# what a rewrite that reaches for $TODAY gets wrong.
+new_sandbox
+dor ASK-923 '* `kappa923.sh`'
+export KIPI_STUB_READY="ASK-923"
+NOW_HOUR="$(date +%-H)"
+export KIPI_DISPATCH_RESET_HOUR="$((NOW_HOUR + 1))"
+SHIFTED_DAY="$(date -v-"${KIPI_DISPATCH_RESET_HOUR}"H +%Y-%m-%d)"
+PLAIN_DAY="$(date +%Y-%m-%d)"
+OUT="$(run_dispatch)"
+wait_for_ends 1
+
+# Guard the fixture itself: if these two ever match, the assertions below pass
+# no matter what the script does, and the test silently stops testing.
+check "24a the fixture actually separates the two days" \
+  "$([ "$SHIFTED_DAY" != "$PLAIN_DAY" ] && echo separated || echo SAME)" "separated"
+check "24b the counter is filed under the RESET_HOUR-shifted day" \
+  "$([ -f "$HOME/.config/kipi/dispatch-count-$SHIFTED_DAY" ] && echo filed || echo missing)" "filed"
+check "24c the counter is NOT filed under plain today" \
+  "$([ -f "$HOME/.config/kipi/dispatch-count-$PLAIN_DAY" ] && echo filed || echo clean)" "clean"
+unset KIPI_DISPATCH_RESET_HOUR
+
+# The cap message has to name the hour it resumes. "until local midnight" on a
+# 07:00 budget sends the founder back at the wrong time, and it is the string
+# that gave the revert away.
+new_sandbox
+dor ASK-924 '* `lambda924.sh`'
+export KIPI_STUB_READY="ASK-924"
+export KIPI_DISPATCH_DAILY_MAX=1
+BUDGET_DAY_NOW="$(date -v-"${KIPI_DISPATCH_RESET_HOUR:-7}"H +%Y-%m-%d)"
+printf '9' > "$HOME/.config/kipi/dispatch-count-$BUDGET_DAY_NOW"
+OUT="$(run_dispatch)"
+sleep 0.3
+check "24d a capped tick dispatches nothing" "$(n_started)" "0"
+if printf '%s' "$OUT" | grep -qi 'midnight'; then
+  bad "24e the cap message names the reset hour, not midnight" "$OUT"
+else
+  ok "24e the cap message names the reset hour, not midnight"
+fi
+unset KIPI_DISPATCH_DAILY_MAX
 
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"
