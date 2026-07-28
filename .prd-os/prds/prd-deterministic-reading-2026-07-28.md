@@ -1,9 +1,9 @@
 ---
 id: prd-deterministic-reading-2026-07-28
 title: Deterministic Reading
-status: in-review
+status: approved
 created_at: 2026-07-28T19:00:31Z
-updated_at: 2026-07-28T19:07:56Z
+updated_at: 2026-07-28T21:17:14Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-deterministic-reading-2026-07-28-findings.jsonl
@@ -301,8 +301,83 @@ created.
 
 ## Issues
 
-<!-- Populated after review and approval, one entry per accepted finding. -->
+<!-- One entry per ACCEPTED finding. The reading design these findings were
+     raised against is withdrawn (refuted by ev-1fb8c8c931); these four entries
+     cover the gate-hardening work that actually shipped. -->
 
 ```json
-[]
+[
+  {
+    "id": "dr-gate-false-positives-2026-07-28",
+    "finding_id": "finding-1",
+    "title": "Fix the three false positives that made the shipped grounding gates unusable",
+    "priority": "p0",
+    "allowed_files": [
+      "q-system/.q-system/scripts/handoff-provenance-lint.py",
+      "q-system/.q-system/scripts/client-output-evidence-gate.py",
+      "q-system/.q-system/scripts/evidence_ledger.py",
+      "q-system/.q-system/scripts/test_handoff_provenance_lint.py",
+      "q-system/.q-system/scripts/test_client_output_evidence_gate.py"
+    ],
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/test_handoff_provenance_lint.py",
+      "python3 q-system/.q-system/scripts/test_client_output_evidence_gate.py",
+      "python3 q-system/.q-system/scripts/test_evidence_ledger.py"
+    ],
+    "bypass_check": "grep -q 'HEADER_RE' q-system/.q-system/scripts/handoff-provenance-lint.py && grep -q 'def adopted' q-system/.q-system/scripts/evidence_ledger.py && grep -q 'ISO_DATE_RE' q-system/.q-system/scripts/evidence_ledger.py",
+    "acceptance": "Dated markdown headers pass the handoff lint while dated CLAIMS and numbers-in-headers still block; ISO dates and bare years are not measurements while a real count on the same line still blocks; an absent evidence.jsonl is a no-op while one row restores full enforcement. Each fix ships with its negative case. ASK-231, ASK-232, ASK-233."
+  },
+  {
+    "id": "dr-capability-gate-green-2026-07-28",
+    "finding_id": "finding-10",
+    "title": "Return kipi check to green: declare the six grounding tests, drop the phantom instance",
+    "priority": "p0",
+    "allowed_files": [
+      "q-system/.q-system/capability-manifest.json",
+      "instance-registry.json",
+      ".claude/rules/evidence-ledger.md"
+    ],
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/capability-gate.py",
+      "python3 -c \"import json;d=json.load(open('instance-registry.json'));import os;assert all(os.path.isdir(os.path.expanduser(i['path'])) for i in d['instances'])\""
+    ],
+    "bypass_check": "test \"$(python3 -c \"import json;print(len(json.load(open('q-system/.q-system/capability-manifest.json'))['expected_tests']))\")\" -ge 84",
+    "acceptance": "expected_tests declares all six grounding tests with no pre-existing entry lost; provenance_vocabulary.py resolves via a real wiring surface rather than a false declared_inert; every registered instance path exists. kipi check FAIL 5 -> FAIL 0. ASK-230, ASK-234."
+  },
+  {
+    "id": "dr-fleet-wiring-hold-release-2026-07-28",
+    "finding_id": "finding-25",
+    "title": "Ship the gates that are proven safe, hold the one that is not, with the hold enforced",
+    "priority": "p0",
+    "allowed_files": [
+      "settings-template.json",
+      "q-system/.q-system/scripts/settings-template-sync-check.py",
+      "q-system/.q-system/scripts/read-first-gate.py",
+      "q-system/.q-system/scripts/test_read_first_gate.py"
+    ],
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/settings-template-sync-check.py --check",
+      "python3 q-system/.q-system/scripts/test_read_first_gate.py"
+    ],
+    "bypass_check": "test \"$(grep -c 'read-first-gate' settings-template.json)\" -eq 0 && grep -q 'read-first-gate.py' q-system/.q-system/scripts/settings-template-sync-check.py",
+    "acceptance": "handoff-provenance-lint and client-output-evidence-gate are wired fleet-wide and their SKELETON_ONLY entries removed; read-first-gate stays out of the template with a measured reason, and sync-check goes RED if that hold is silently dropped. ASK-229, ASK-235."
+  },
+  {
+    "id": "dr-one-provenance-vocabulary-2026-07-28",
+    "finding_id": "finding-7",
+    "title": "One provenance vocabulary with defined composition, read from one table by both validators",
+    "priority": "p1",
+    "allowed_files": [
+      "q-system/.q-system/scripts/provenance_vocabulary.py",
+      "q-system/.q-system/scripts/provenance-vocabulary.json",
+      "q-system/.q-system/scripts/test_provenance_vocabulary.py",
+      ".claude/rules/evidence-ledger.md"
+    ],
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/test_provenance_vocabulary.py"
+    ],
+    "bypass_check": "grep -q 'provenance_vocabulary' q-system/.q-system/scripts/handoff-provenance-lint.py && grep -q 'provenance_vocabulary' q-system/.q-system/scripts/memory-confidence-validator.py",
+    "acceptance": "The three forms are ranked rather than merely listed: ev-<id> outranks every enum value, {{UNVERIFIED}} maps to provenance: inferred, and strongest() resolves a line carrying more than one. Both validators import the same module. Shipped 5bed187, extended in ASK-230."
+  }
+]
 ```
