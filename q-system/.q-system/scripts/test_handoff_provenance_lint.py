@@ -135,10 +135,25 @@ def case_number_in_a_header_still_blocks() -> bool:
     return run(HANDOFF, "## the sheet had 1,177 rows\n") == 2
 
 
+def case_dated_claim_in_a_header_still_blocks() -> bool:
+    """Codex adversarial review 2026-07-28. A `#` must not launder a dated claim.
+    This is reversal #5 verbatim, wearing a heading -- the case that fell between
+    "numbers in a header block" and "a dated claim in a bullet blocks"."""
+    return run(HANDOFF, "## Client row dated 2026-12-21, five months out\n") == 2
+
+
+def case_long_dated_header_still_blocks() -> bool:
+    """The comma is not the only tell; a header that narrates is not a title."""
+    return run(HANDOFF,
+               "## the export we pulled on 2026-12-21 had rows dated in the future\n") == 2
+
+
 CASES = [
     ("a bare number blocks", case_bare_number_blocks),
     ("dated markdown header passes (ASK-231)", case_dated_markdown_header_passes),
     ("a dated claim still blocks", case_dated_claim_still_blocks),
+    ("a dated claim in a header still blocks", case_dated_claim_in_a_header_still_blocks),
+    ("a long dated header still blocks", case_long_dated_header_still_blocks),
     ("a number in a header still blocks", case_number_in_a_header_still_blocks),
     ("shared enum `validated` passes", case_shared_enum_validated_passes),
     ("shared enum `inferred` passes", case_shared_enum_inferred_passes),

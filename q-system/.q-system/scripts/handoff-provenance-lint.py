@@ -57,6 +57,7 @@ NUM_RE = re.compile(r"(?<![\w.$-])(\d[\d,]*\.?\d*)(?![\w-])")
 # Matched separately: NUM_RE's hyphen boundaries deliberately reject `2026-12-21`, so
 # a date-shaped claim would slip through the number scan that is supposed to catch it.
 DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+MIN_SIGNIFICANT_DIGITS = 2
 
 # A markdown header carrying a date is metadata, the same as `Date: ...`, and it is
 # the shape the skeleton's OWN handoff template uses: `# Session Handoff - 2026-06-11
@@ -71,7 +72,35 @@ DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # the exact defect it was built for. A heading names a section; a bullet asserts a
 # finding. Only the former is exempt, and only for dates.
 HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s")
-MIN_SIGNIFICANT_DIGITS = 2
+
+# ...but a `#` must not become a laundering prefix. Codex adversarial review
+# 2026-07-28 found the gap between the two tests that existed: numbers in a header
+# were still checked, and a dated CLAIM in a bullet was still checked, but a dated
+# claim in a HEADER passed. `## Client row dated 2026-12-21, five months out` is
+# reversal #5 verbatim, wearing a heading.
+#
+# So a header earns the date exemption only if it looks like a TITLE rather than an
+# assertion. Two deterministic tells, both cheap and both inspectable:
+#   - no comma: a clause after the date ("..., five months out") is argument, not a label
+#   - few words besides the date: a title names a section, it does not narrate
+# `# Session Handoff - 2026-06-11 EOD` -> 3 other words, no comma -> exempt.
+# `## Client row dated 2026-12-21, five months out` -> comma -> checked.
+#
+# HONEST BOUNDARY: a short comma-free header CAN still carry a date claim
+# ("## shipped 2026-12-21"). This narrows the hole, it does not close it. The
+# number scan is unaffected either way, so any header carrying a measurement is
+# still caught by the NUM_RE pass below.
+MAX_TITLE_WORDS = 5
+
+
+def is_title_header(line: str) -> bool:
+    """A header shaped like a section label, not like a dated assertion."""
+    if not HEADER_RE.match(line):
+        return False
+    if "," in line:
+        return False
+    rest = DATE_RE.sub(" ", line.lstrip("# \t"))
+    return len(rest.split()) <= MAX_TITLE_WORDS
 
 # `[verified: <cmd>]` is this lint's own form and stays accepted. Everything else
 # comes from provenance_vocabulary, the ONE table this and
@@ -106,7 +135,7 @@ def unlabelled_lines(body: str) -> list[tuple[int, str]]:
     for n, line in enumerate(body.splitlines(), 1):
         if has_provenance(line) or META_RE.match(line):
             continue
-        if DATE_RE.search(line) and not HEADER_RE.match(line):
+        if DATE_RE.search(line) and not is_title_header(line):
             out.append((n, line.strip()))
             continue
         for m in NUM_RE.finditer(line):
