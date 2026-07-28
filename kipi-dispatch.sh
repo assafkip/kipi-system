@@ -184,9 +184,68 @@ fi
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
 
 say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
-nohup ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" \
-  > "$HOME/.config/kipi/converge-$NEXT.log" 2>&1 &
-disown
 
-say "dispatched $NEXT"
+# THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE.
+#
+# This was `nohup ... & disown`, which is correct in an interactive shell and
+# WRONG under launchd. launchd reaps the job's whole process group when the main
+# process exits; nohup only blocks SIGHUP, so the converge was killed the instant
+# this script returned. Every launchd dispatch since the dispatcher was installed
+# died that way, and the failure was invisible by construction: the log file is
+# created by the redirect before the child dies, so it exists and is 0 bytes,
+# `say "dispatched $NEXT"` still runs, and the budget counter is already spent.
+# The loop reported four healthy dispatches of ASK-224 on 2026-07-28 and did no
+# work at all -- it only spent the subscription.
+#
+# PROVEN, not reasoned about. A launchd job whose only act was
+# `nohup bash -c "sleep 25; touch F" & disown; exit`:
+#     under launchd   F never written  (child killed)
+#     same script from an interactive shell   F written (child survived)
+# and with the setsid form below, under launchd, F is written.
+#
+# macOS ships no setsid(1), so python3 is how setsid(2) gets called. A new
+# session means a new process group with no controlling terminal, which is
+# outside the group launchd tears down.
+python3 - "$HOME/.config/kipi/converge-$NEXT.log" \
+         ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" <<'PY'
+import subprocess, sys
+log_path, argv = sys.argv[1], sys.argv[2:]
+# Append, never truncate: a re-dispatch of the same issue must not erase the
+# evidence of the previous run (the burst incident truncated a live log with >).
+log = open(log_path, "ab", buffering=0)
+subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+PY
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  # A launch that failed must NOT report success -- that is the same shape as
+  # the bug above. The budget slot is already spent, so say so plainly.
+  say "FAILED to launch converge for $NEXT (rc=$RC); the budget slot is spent"
+  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error."
+  exit 1
+fi
+
+# PROVE IT IS ALIVE BEFORE CLAIMING IT. The whole defect above was a dispatch
+# that reported success into a void, so the report is now evidence-backed: the
+# process either shows up in the table or the founder hears about it.
+#
+# NOT `pgrep -f "...$NEXT\b"`. \b is a GNU regex extension and BSD pgrep (macOS,
+# where this actually runs under launchd) does not honour it, so that pattern
+# never matches and a HEALTHY run gets reported as died -- a false alarm is how
+# an alert earns itself muted. The boundary is done in grep, which does support
+# it, against `pgrep -fl` output.
+DISPATCH_OK=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if pgrep -fl "converge.sh --issue" 2>/dev/null \
+       | grep -qE "[[:space:]]${NEXT}([[:space:]]|\$)"; then
+    DISPATCH_OK=1; break
+  fi
+  sleep 1
+done
+if [ "$DISPATCH_OK" -eq 1 ]; then
+  say "dispatched $NEXT (confirmed running)"
+else
+  say "DISPATCH DIED: $NEXT was launched but no converge process is alive after 10s"
+  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child."
+  exit 1
+fi
 exit 0
