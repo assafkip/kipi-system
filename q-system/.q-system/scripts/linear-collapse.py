@@ -162,24 +162,58 @@ MIN_TEMPLATE_TOKENS = 4
 MIN_LITERAL_WORDS = 2
 
 KIPI_KEY_RE = re.compile(r"kipi-key:\s*([^\s/]+)/")
+# The part of the kipi-key AFTER the namespace: `kipi-system/rule-quick-plan` ->
+# `rule-quick-plan`. Machine-written, unique per issue, and its first segment is
+# the only field on the issue that names WHICH scanner filed it.
+KEY_ITEM_RE = re.compile(r"kipi-key:\s*[^\s/]+/([^\s>]+)")
+
+# The real producers write `<structured head>: <free-form prose>` -- the prose is
+# the target's own description, copied out of the source file, and it differs in
+# every member of a family. Splitting on colon-then-space (never `foo:bar`, which
+# is one identifier) leaves the head, which is the part that repeats.
+HEAD_SPLIT_RE = re.compile(r":\s")
 
 # launchd labels (`com.cole/content-brain`, `com.assaf/competitive-analysis:morning`)
 # and backticked repo paths. These are the "specific target" the survivor's DoR
 # must enumerate -- the thing that goes dark if the family fix skips a member.
 JOB_LABEL_RE = re.compile(r"\bcom\.[A-Za-z0-9][A-Za-z0-9._:/-]*")
 PATH_RE = re.compile(r"`(~?[A-Za-z0-9_./-]+\.(?:py|sh|md|json|yml|yaml|plist))`")
+# The same thing WITHOUT backticks, which is how the CAP scanner writes an entry
+# point into its table (`| Entry point | .claude/rules/x.md |`). A directory
+# separator is required, so a bare word in a sentence cannot match; the negative
+# lookbehind keeps this from re-matching the tail of a path PATH_RE already took.
+BARE_PATH_RE = re.compile(
+    r"(?<![`\w/.-])((?:~/|\.{0,2}/|[A-Za-z0-9_.-]+/)[A-Za-z0-9_./-]*"
+    r"\.(?:py|sh|md|json|yml|yaml|plist))")
 MAX_TARGETS_PER_ISSUE = 20
 
 
+def title_head(title: str) -> str:
+    """The structured head of a title: everything before the first ": ".
+
+    PR #35 review round 2, finding 1. The shipped matcher normalised the WHOLE
+    title, and on the live board that found ZERO families across 129 issues --
+    including the 12 CAP-0n rule issues this script exists to collapse. The real
+    producer emits `CAP-01 rule anti-misclassification: Anti-misclassification
+    guardrails for content generation`: a structured head that repeats, then the
+    rule's own summary line, which is different prose in every member. Byte-exact
+    equality can never see through the tail, so it must not read the tail.
+
+    The tail is not discarded information -- `all_targets` still reads the full
+    title, and the roster still prints it. It is only excluded from the KEY.
+    """
+    return HEAD_SPLIT_RE.split(title or "", 1)[0]
+
+
 def title_template(title: str) -> str:
-    """The title with every identifier replaced by `<x>`.
+    """The title's HEAD with every identifier replaced by `<x>`.
 
     Two issues are the same issue iff this string matches exactly. Exact match,
     not similarity: a similarity threshold is a knob nobody can calibrate before
     it has already closed the wrong issue.
     """
     out = []
-    for raw in re.split(r"\s+", (title or "").strip().lower()):
+    for raw in re.split(r"\s+", title_head(title).strip().lower()):
         tok = raw.strip(TOKEN_EDGE)
         if not tok:
             continue
@@ -187,15 +221,50 @@ def title_template(title: str) -> str:
     return " ".join(out)
 
 
+def key_item(issue: dict) -> str:
+    """The kipi-key minus its namespace, or "" when a human filed the issue."""
+    m = KEY_ITEM_RE.search(strip_block(issue.get("description")))
+    return m.group(1) if m else ""
+
+
+def key_kind(issue: dict) -> str:
+    """The first segment of the kipi-key item: `rule-quick-plan` -> `rule`.
+
+    This is the filer's own word for what kind of thing the issue is about. It is
+    NOT a family key on its own -- `cole-gtm/cap-01-...` through `cap-45-...` all
+    share the kind `cap` and are 45 distinct capabilities. It is only ever used to
+    corroborate a head template that is already thin (`is_collapsible_template`).
+    """
+    return key_item(issue).split("-", 1)[0].lower()
+
+
 def literal_words(template: str) -> list:
     return [t for t in template.split() if t != "<x>" and t not in STOPWORDS]
 
 
-def is_collapsible_template(template: str) -> bool:
-    """False for a template too generic to identify a family."""
+def is_collapsible_template(template: str, kind: str = "") -> bool:
+    """False for a template too generic to identify a family.
+
+    Two ways to pass, and the second exists because dropping the prose tail makes
+    a real family's head genuinely short: the CAP rule family normalises to
+    `<x> rule <x>`, one literal word, under the floor.
+
+    1. THE FLOOR: enough tokens and enough literal words to stand alone.
+    2. CORROBORATION: a short head is admissible when the kipi-key's own kind
+       segment repeats one of the head's literal words -- two independent fields
+       of the issue, one of them machine-written, naming the same kind of thing.
+       `<x> rule <x>` + key `kipi-system/rule-anti-misclassification` qualifies.
+
+    Corroboration cannot loosen the guard for anything a person wrote: a
+    human-filed issue has no kipi-key, so `kind` is "" and only the floor applies.
+    It also cannot merge two different scanners in one namespace -- their kinds
+    differ, so at most one of them corroborates.
+    """
     tokens = template.split()
-    return (len(tokens) >= MIN_TEMPLATE_TOKENS
-            and len(literal_words(template)) >= MIN_LITERAL_WORDS)
+    if (len(tokens) >= MIN_TEMPLATE_TOKENS
+            and len(literal_words(template)) >= MIN_LITERAL_WORDS):
+        return True
+    return bool(kind) and kind in literal_words(template) and len(tokens) >= 2
 
 
 def strip_block(description: str | None) -> str:
@@ -253,9 +322,18 @@ def all_targets(issue: dict) -> list:
     """
     text = (issue.get("title") or "") + "\n" + strip_block(issue.get("description"))
     out: list = []
-    for hit in JOB_LABEL_RE.findall(text) + PATH_RE.findall(text):
+    for hit in (JOB_LABEL_RE.findall(text) + PATH_RE.findall(text)
+                + BARE_PATH_RE.findall(text)):
         if hit not in out:
             out.append(hit)
+    # Last resort, and the reason it exists: fixing the matcher (PR #35 review
+    # round 2, finding 1) makes the CAP family collapse for the first time, and
+    # 11 of its 14 members name their rule file in an un-backticked table cell
+    # that nothing here used to read. A roster of 11 rows saying "(no explicit
+    # target)" is precisely the silent drop the roster exists to prevent, so a
+    # machine-filed issue falls back to the id the machine gave it.
+    if not out and key_item(issue):
+        out.append(key_item(issue))
     return out
 
 
@@ -280,22 +358,36 @@ def detect_families(issues: list, min_family: int = 2) -> list:
     groups: dict = {}
     for issue in issues:
         template = title_template(issue.get("title"))
-        if not is_collapsible_template(template):
+        kind = key_kind(issue)
+        if not is_collapsible_template(template, kind):
             continue
         groups.setdefault((producer(issue), template), []).append(issue)
 
     families = []
     for (prod, template), members in sorted(groups.items()):
-        if len(members) < max(2, min_family):
+        # Two thresholds, because they answer different questions.
+        # "Is there anything to do this pass?" is about the OPEN members.
+        if len(members) < 2:
             continue
         members = sorted(members, key=lambda i: issue_number(i["identifier"]))
-        families.append({
+        family = {
             "producer": prod,
             "template": template,
             "members": members,
             "survivor": members[0],
             "absorbed": members[1:],
-        })
+        }
+        # "Is this family big enough to bother with?" is about the WHOLE family,
+        # which after a first pass is bigger than what fetch_open() can show.
+        # PR #35 review round 2, finding 2: measuring --min-family against the
+        # open members meant every close shrank the family, so a resumed pass
+        # dropped below the threshold and abandoned a member that already
+        # carried a permanent "collapsed into X" comment and was still open.
+        # The roster is the family; the open members are this pass's work.
+        roster = family_rows(family, parse_block_rows(members[0].get("description")))
+        if len(roster) < max(2, min_family):
+            continue
+        families.append(family)
     # Biggest family first: it is the biggest reduction in board size, and if a
     # run is interrupted the work that landed is the work that mattered most.
     families.sort(key=lambda f: (-len(f["members"]), f["survivor"]["identifier"]))
@@ -568,13 +660,29 @@ def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -
             "family_size": len(family["members"]), "roster_size": roster_size}
     records = []
 
+    def attempt(issue_id: str, step: str, write) -> str:
+        """Record the INTENT, do the write, record the outcome.
+
+        PR #35 review round 2, finding 2: `append_record` runs after the mutation
+        returns, so a process killed DURING a write left a permanent comment on a
+        Linear object and not one byte on disk saying it had tried. `append_record`
+        claims the audit file says what happened to every object the run touched;
+        without this it was true of every object except the one that matters most.
+        The intent row is written to disk only -- it is not returned, so it cannot
+        make a completed step look incomplete to `incomplete_steps`.
+        """
+        append_record(audit_path, dict(base, issue=issue_id, step=step,
+                                       outcome="attempting"))
+        return write()
+
     block = survivor_block(family, ts, prior_rows)
     # The skip lives here, not in the writer: a test double that had to reproduce
     # it would be asserting its own logic instead of this file's.
     if block_is_current(survivor.get("description"), block):
         out = "dor-unchanged"
     else:
-        out = writer.write_survivor_block(survivor, block)
+        out = attempt(survivor["identifier"], "survivor-dor",
+                      lambda: writer.write_survivor_block(survivor, block))
     records.append(append_record(audit_path, dict(
         base, issue=survivor["identifier"], step="survivor-dor", outcome=out)))
 
@@ -587,8 +695,9 @@ def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -
                 base, issue=member["identifier"], step="commented",
                 outcome="already-present")))
         else:
-            out = writer.add_comment(
-                member, absorb_comment(family, member, ts, roster_size))
+            body = absorb_comment(family, member, ts, roster_size)
+            out = attempt(member["identifier"], "commented",
+                          lambda m=member, b=body: writer.add_comment(m, b))
             records.append(append_record(audit_path, dict(
                 base, issue=member["identifier"], step="commented", outcome=out)))
 
@@ -597,7 +706,8 @@ def apply_family(family: dict, writer, audit_path: str, ts: str | None = None) -
                 base, issue=member["identifier"], step="closed",
                 outcome="already-closed")))
         else:
-            out = writer.close_issue(member)
+            out = attempt(member["identifier"], "closed",
+                          lambda m=member: writer.close_issue(m))
             records.append(append_record(audit_path, dict(
                 base, issue=member["identifier"], step="closed", outcome=out)))
     return records
