@@ -634,8 +634,12 @@ except RuntimeError:
     pass
 # The close record is what the crash ate. Everything BEFORE it is on disk --
 # batching to the end would leave an empty file and no idea what was touched.
+# COMPLETED steps only: the write-ahead intent rows added for round-2 finding 2
+# are a separate signal with their own cases, and this assertion is the original
+# durability contract, unchanged in value.
 recs = [json.loads(l) for l in open(audit) if l.strip()]
-print(json.dumps([[r["issue"], r["step"]] for r in recs]))
+print(json.dumps([[r["issue"], r["step"]] for r in recs
+                  if r["outcome"] != "attempting"]))
 PY
 )"
 
