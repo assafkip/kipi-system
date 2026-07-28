@@ -863,6 +863,187 @@ RUN_LINE="$(grep -n 'run_bounded "\$TIMEOUT_SECONDS"' "$REVIEWER" | head -1 | cu
       landing mid-review would make the record claim a commit the reviewer never read."
 ok "the head sha is captured before the review is taken, not looked up afterwards"
 
+# --- N. the verdict leaves the machine as a COMMIT STATUS (ASK-217) ----------
+# THE DEFECT: the verdict is a LOCAL file (~/.config/kipi/pr-reviews/...json).
+# GitHub cannot see it, so no required check can gate on it, so every approved
+# PR ends its life waiting on a human. Same harness as section M -- the REAL
+# pr-review-agent.sh runs end to end with `gh` and `claude` stubbed and HOME
+# redirected -- and every assertion below is on the gh CALL LOG, never on stdout
+# prose. "posted" printed while nothing left the machine is this repo's whole
+# defect class (something fails while reporting success), so the prose is not
+# admissible evidence here.
+#
+# A commit STATUS, not a PR review: this agent runs as the account that authors
+# these PRs and GitHub forbids self-approval, so a review would deadlock.
+STATUS_CONTEXT="kipi/reviewer-approved"
+COMMENT_URL_FIXTURE="https://github.com/o/r/pull/901#issuecomment-4242"
+
+# $1 dir  $2 review body the stubbed reviewer emits  $3 headRefOid gh reports
+# $4 "fail-status"  => the status POST exits non-zero
+#    "fail-comment" => `gh pr comment` exits non-zero, so there is no URL to thread
+mk_status_stubs() {
+  local d="$1" body="$2" oid="$3" mode="${4:-}"
+  mkdir -p "$d/bin" "$d/home"
+  : > "$d/gh-calls.log"
+  printf '%s' "$body" > "$d/review-body.txt"
+  # Section E's stub set swallows `python3 -`, and the record writer IS a
+  # `python3 -` heredoc, so a real python3 has to sit ahead of it on PATH.
+  cat > "$d/bin/python3" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_PY" "\$@"
+EOF
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+cat "$d/review-body.txt"
+EOF
+  cat > "$d/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$d/gh-calls.log"
+case "\$1 \$2" in
+  "pr view")    printf '$oid\tstatus emission under test\n' ;;
+  "pr comment") [ "$mode" = "fail-comment" ] && exit 1
+                printf '$COMMENT_URL_FIXTURE\n' ;;
+  "api -X")     [ "$mode" = "fail-status" ] && exit 1
+                printf '{"context":"$STATUS_CONTEXT","state":"ok"}\n' ;;
+esac
+exit 0
+EOF
+  chmod +x "$d/bin/python3" "$d/bin/claude" "$d/bin/gh"
+}
+
+# Sets RC and writes out.txt / err.txt SEPARATELY: check 4 asserts the failure
+# WARN reaches stderr specifically, which a combined redirect cannot tell apart.
+RC=0
+run_status_reviewer() {
+  local d="$1"; shift
+  ( PATH="$d/bin:$PATH" HOME="$d/home" bash "$REVIEWER" 901 "$@" ) \
+    >"$d/out.txt" 2>"$d/err.txt"
+  RC=$?
+}
+
+status_call() { grep 'statuses/' "$1/gh-calls.log" 2>/dev/null | head -1; }
+
+APPROVE_REVIEW='## VERDICT: APPROVE
+
+Nothing survived reproduction.
+
+FINDINGS:
+END FINDINGS
+'
+BLOCKED_REVIEW='## VERDICT: REQUEST CHANGES
+
+FINDINGS:
+major|the retry loop drops the last error|q-system/x.sh:12
+END FINDINGS
+'
+
+# N1. an APPROVE under --post emits success on the sha the reviewer READ.
+N1="$W2/st-approve"
+mk_status_stubs "$N1" "$APPROVE_REVIEW" "$SHA_A"
+run_status_reviewer "$N1" --post
+CALL="$(status_call "$N1")"
+[ -n "$CALL" ] || fail "THE DEFECT: the reviewer approved PR #901 and posted NOTHING to GitHub. The
+      verdict stayed a local file, so no required check can ever read it and the PR waits on a
+      human forever. gh was called with:
+$(sed 's/^/        /' "$N1/gh-calls.log")"
+ok "an approving review posts a commit status to GitHub"
+
+printf '%s' "$CALL" | grep -q "statuses/$SHA_A" \
+  || fail "the status went to the wrong sha. The stub's headRefOid was $SHA_A; the call was:
+      $CALL
+      A status on a sha the reviewer never read is worse than none -- it looks authoritative."
+ok "the status is posted on the exact sha the reviewer read (the stub's headRefOid)"
+
+printf '%s' "$CALL" | grep -q "context=$STATUS_CONTEXT" \
+  || fail "the status carries the wrong context; 5b makes '$STATUS_CONTEXT' required and a
+      mismatch would block every PR forever. Call was: $CALL"
+printf '%s' "$CALL" | grep -q 'state=success' \
+  || fail "an APPROVE did not map to state=success. Call was: $CALL"
+ok "APPROVE maps to state=success on context $STATUS_CONTEXT"
+
+printf '%s' "$CALL" | grep -q "target_url=$COMMENT_URL_FIXTURE" \
+  || fail "the status did not carry the PR-comment URL --post had just created, so a human
+      clicking the check lands nowhere. Call was: $CALL"
+ok "target_url is the PR comment URL --post actually created"
+
+# N2. a gate that can only ever say success is not a gate.
+N2="$W2/st-block"
+mk_status_stubs "$N2" "$BLOCKED_REVIEW" "$SHA_A"
+run_status_reviewer "$N2" --post
+CALL="$(status_call "$N2")"
+[ -n "$CALL" ] || fail "a REQUEST CHANGES review posted no status at all; the PR would look
+      unreviewed rather than refused"
+printf '%s' "$CALL" | grep -q 'state=failure' \
+  || fail "REQUEST CHANGES did not map to state=failure. A reviewer that only ever posts success
+      is a gate that cannot refuse. Call was: $CALL"
+printf '%s' "$CALL" | grep -q 'state=success' \
+  && fail "a REQUEST CHANGES review posted state=success. Call was: $CALL"
+ok "REQUEST CHANGES maps to state=failure (the gate can refuse)"
+
+# N3. --post means "write to the outside world". A human running `kipi review 23`
+# for a dry read must not move a gate on a real PR.
+N3="$W2/st-nopost"
+mk_status_stubs "$N3" "$APPROVE_REVIEW" "$SHA_A"
+run_status_reviewer "$N3"
+[ -z "$(status_call "$N3")" ] \
+  || fail "a run WITHOUT --post moved a gate on a live PR. gh calls were:
+$(sed 's/^/        /' "$N3/gh-calls.log")"
+ok "without --post no status call is made (a dry read moves nothing)"
+
+# N4. a lost status must not lose the review, and must not be silent.
+N4="$W2/st-ghfail"
+mk_status_stubs "$N4" "$APPROVE_REVIEW" "$SHA_A" fail-status
+run_status_reviewer "$N4" --post
+[ "$RC" = "0" ] \
+  || fail "a failed status POST took the whole review down (exit $RC). The verdict record is the
+      loop's hand-off; losing it to a transient GitHub error costs a full re-review."
+[ -s "$N4/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+  || fail "a failed status POST cost the verdict record, which converge.sh and linear-worker.sh
+      both read"
+grep -q "$SHA_A" "$N4/err.txt" \
+  || fail "a failed status POST did not name the sha on stderr. Operator output was:
+$(sed 's/^/        /' "$N4/err.txt")"
+grep -q "$STATUS_CONTEXT" "$N4/err.txt" \
+  || fail "a failed status POST did not name the context on stderr; the operator cannot tell
+      WHICH gate did not move. stderr was:
+$(sed 's/^/        /' "$N4/err.txt")"
+grep -qi 'warn' "$N4/err.txt" \
+  || fail "a failed status POST was not flagged as a WARN on stderr"
+grep -qi 'status.*posted\|posted.*status' "$N4/out.txt" \
+  && fail "the run reported the status as POSTED while the POST failed. That is this repo's
+      defect class exactly. stdout was:
+$(sed 's/^/        /' "$N4/out.txt")"
+ok "a failed status POST is loud on stderr, keeps the record, and exits 0"
+
+# N5. no sha, no status. A status on a guessed commit looks authoritative and is
+# the one outcome worse than posting nothing.
+N5="$W2/st-nosha"
+mk_status_stubs "$N5" "$APPROVE_REVIEW" ""
+run_status_reviewer "$N5" --post
+[ -z "$(status_call "$N5")" ] \
+  || fail "with an EMPTY headRefOid the reviewer still posted a status, so it guessed a sha.
+      gh calls were:
+$(sed 's/^/        /' "$N5/gh-calls.log")"
+grep -qi 'head sha' "$N5/out.txt" \
+  || fail "the reviewer skipped the status silently on an empty head sha. Absent must be SAID,
+      because once the context is required, absent is what holds the PR. stdout was:
+$(sed 's/^/        /' "$N5/out.txt")"
+ok "an empty head sha posts no status at all, and says so"
+
+# N6. the comment URL is threaded, never invented. A local file path is not a URL.
+N6="$W2/st-nourl"
+mk_status_stubs "$N6" "$APPROVE_REVIEW" "$SHA_A" fail-comment
+run_status_reviewer "$N6" --post
+CALL="$(status_call "$N6")"
+[ -n "$CALL" ] || fail "a failed PR comment took the status down with it; the comment and the
+      gate are independent"
+printf '%s' "$CALL" | grep -q 'target_url=' \
+  && fail "with no comment URL available the reviewer invented a target_url: $CALL"
+ok "no comment URL means no target_url (omitted, not invented)"
+
+bash -n "$REVIEWER" || fail "pr-review-agent.sh does not parse"
+ok "the reviewer parses (bash -n)"
+
 bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
 ok "the lib parses (bash -n)"
 
