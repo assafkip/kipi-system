@@ -1686,6 +1686,257 @@ grep -q "$NOTE_UNPINNED" "$W2/p9.out" \
 $(sed 's/^/        /' "$W2/p9.out")"
 ok "step 5 says when the record it converged off is pinned to nothing"
 
+# =============================================================================
+# EVERY PR THE WORKER TOUCHES ARMS ITS OWN AUTO-MERGE (ASK-222)
+# =============================================================================
+# THE DEFECT: nothing in CODE armed auto-merge. Every required piece already
+# existed and was proven -- `kipi/reviewer-approved` is a REQUIRED context,
+# watched refusing on ABSENT and on FAILURE (PRs #27, #30), and PR #30 merged
+# itself at 01:38:07Z with no human once auto-merge was armed. The one missing
+# piece was WHO ARMS IT: a hand-typed `gh pr merge --auto --squash <n>` plus a
+# watcher loop inside an interactive session. Both die when the terminal closes,
+# so a PR opened after that sits green forever with nobody left to merge it. A
+# human remembering, or a session staying open, is not enforcement.
+#
+# Every case below drives the REAL worker with `gh` stubbed to a CALL LOG, and
+# asserts on what the worker actually asked GitHub to do. Never the live API.
+ARMLOG="$W2/gh-arm.log"
+
+# gh_arm <pr> <merge-state> <head-sha> <merge-rc> <armed>
+#   <merge-rc>  what `gh pr merge --auto` exits with (non-zero = the API refused)
+#   <armed>     what `gh pr view --json autoMergeRequest` reports: "true" once
+#               this PR is already armed, "false" while it is not
+gh_arm() {
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr list"*)                                  echo $1 ;;
+  "pr view $1 --json mergeStateStatus"*)       echo $2 ;;
+  "pr view $1 --json headRefOid"*)             echo $3 ;;
+  "pr view $1 --json autoMergeRequest"*)       echo $5 ;;
+  "pr merge"*)                                 exit $4 ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# gh_arm_opens <pr> -- THE OTHER PATH. There is no PR at all until the worker
+# opens one itself (the agent ended its turn without opening it, ASK-184), so
+# `pr list` answers only after a `pr create` has been seen.
+gh_arm_opens() {
+  rm -f "$W2/pr-created"
+  cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARMLOG"
+case "\$*" in
+  "pr create"*)                                : > "$W2/pr-created" ;;
+  "pr list"*)                                  [ -f "$W2/pr-created" ] && echo $1 ;;
+  "pr view $1 --json autoMergeRequest"*)       echo false ;;
+esac
+exit 0
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# The reviewer logs into the SAME file as `gh`, which is the only way to assert
+# ORDER: arming has to happen BEFORE the review, or the unattended path needs
+# something to come back afterwards and do it -- the gap this issue exists for.
+cat > "$STUB/reviewer-arm" <<EOF
+#!/usr/bin/env bash
+printf 'REVIEWER RAN on %s\n' "\$1" >> "$ARMLOG"
+mkdir -p "\$KIPI_STATE_DIR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":%s,"head_sha":"%s"}\n' "\$1" "$SHA_A" \
+  > "\$KIPI_STATE_DIR/pr-reviews/pr-\$1.verdict.json"
+exit 0
+EOF
+chmod +x "$STUB/reviewer-arm"
+
+# The work-phase agent COMMITS, which sections E-P never needed: the
+# worker-opened path only fires when the branch is ahead of origin/main.
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+echo "worked" >> "$W2/worked.txt"
+"$REAL_GIT" -c user.email=t@t.t -c user.name=t commit -q --allow-empty \
+  -m "the agent's work (ASK-AAA)" 2>/dev/null
+exit 0
+EOF
+# The agent that pushes NOTHING: no commits ahead, so no PR is opened and there
+# is nothing to arm.
+cat > "$STUB/claude-idle" <<EOF
+#!/usr/bin/env bash
+echo "worked" >> "$W2/worked.txt"
+exit 0
+EOF
+chmod +x "$STUB/claude" "$STUB/claude-idle"
+
+# run_worker_arm <skel> <state-dir> <out> -- keeps the REAL exit code, which
+# run_worker/run_worker_in deliberately throw away. A failure to arm must not
+# change it.
+ARM_RC=0
+run_worker_arm() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_PR_REVIEWER="$STUB/reviewer-arm" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
+  ARM_RC=$?
+}
+
+# `grep -c` PRINTS the count and EXITS 1 when that count is zero, so a `|| echo 0`
+# fallback here emits "0" twice and every zero-call assertion fails on a two-line
+# value. Swallow the status, keep grep's own number.
+arm_calls() { grep -c "^pr merge --auto" "$ARMLOG" 2>/dev/null || true; }
+
+# --- Q1. the PR the AGENT opened gets armed ----------------------------------
+# A rework round: PR #830 already exists (the agent opened it on an earlier run)
+# and its recorded verdict is REQUEST CHANGES, so the gate routes it through and
+# step 5 resolves PR_NUM from `gh pr list` -- the first of the two paths.
+R_ARM1="$W2/repo-arm1"; make_repo "$R_ARM1"
+S_ARM1="$W2/state-arm1"; mkdir -p "$S_ARM1"
+seed_record "$S_ARM1" 830 "REQUEST CHANGES" "$SHA_A"
+gh_arm 830 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM1/skel" "$S_ARM1" "$W2/arm1.out"
+
+grep -q "^pr merge --auto --squash 830$" "$ARMLOG" \
+  || fail "THE DEFECT: the worker ran a full round on PR #830 and never armed auto-merge. The PR
+      now waits on a human or on a watcher process that dies with the terminal, which is the
+      silent stall this issue exists to kill. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the PR the agent opened is armed: gh pr merge --auto --squash 830"
+
+MERGE_LINE="$(grep -n '^pr merge --auto' "$ARMLOG" | head -1 | cut -d: -f1)"
+REVIEW_LINE="$(grep -n '^REVIEWER RAN' "$ARMLOG" | head -1 | cut -d: -f1)"
+[ -n "$MERGE_LINE" ] && [ -n "$REVIEW_LINE" ] && [ "$MERGE_LINE" -lt "$REVIEW_LINE" ] \
+  || fail "auto-merge was armed AFTER the review (merge at line ${MERGE_LINE:-none}, review at
+      line ${REVIEW_LINE:-none}). Arming after the review re-creates the gap: something has to
+      come back once the review lands. --auto is not 'merge now' -- GitHub holds the PR until
+      every required context is green -- so arming early is both safe and the point. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the arm happens BEFORE the review (--auto holds until the required checks are green)"
+
+[ "$ARM_RC" = "0" ] || fail "arming changed the worker's exit code to $ARM_RC"
+ok "arming a PR leaves the run's exit code alone"
+
+# --- Q2. the PR the WORKER opened gets armed too -----------------------------
+# One is not the other: this PR does not exist when the run starts. The agent
+# ends its turn without opening it (ASK-184), the worker opens it at step 5, and
+# the arm has to fire on THAT number.
+R_ARM2="$W2/repo-arm2"
+mkdir -p "$R_ARM2"
+git init -q --bare "$R_ARM2/origin"
+git init -q "$R_ARM2/skel"
+G -C "$R_ARM2/skel" commit -q --allow-empty -m "base commit"
+git -C "$R_ARM2/skel" branch -M main
+git -C "$R_ARM2/skel" remote add origin "$R_ARM2/origin"
+git -C "$R_ARM2/skel" push -q -u origin main
+S_ARM2="$W2/state-arm2"; mkdir -p "$S_ARM2"
+gh_arm_opens 831
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM2/skel" "$S_ARM2" "$W2/arm2.out"
+
+grep -q "opened PR #831" "$W2/arm2.out" \
+  || fail "the Q2 fixture never reached the worker-opened path, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm2.out")"
+grep -q "^pr merge --auto --squash 831$" "$ARMLOG" \
+  || fail "the worker OPENED PR #831 itself and then left it unarmed. This is the path where no
+      human was ever involved, so it is the one that most needs arming. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "the PR the worker opened itself is armed too (both paths, not one)"
+
+# --- Q3. a refused arm is LOUD and does not fail the run ---------------------
+# An unarmed PR is invisible by construction: everything green, nothing merges,
+# no signal. So the failure has to be said. It must not stop the review or move
+# the exit code -- the PR still stands, and the cost is one human command.
+R_ARM3="$W2/repo-arm3"; make_repo "$R_ARM3"
+S_ARM3="$W2/state-arm3"; mkdir -p "$S_ARM3"
+seed_record "$S_ARM3" 832 "REQUEST CHANGES" "$SHA_A"
+gh_arm 832 CLEAN "$SHA_A" 1 false
+: > "$ARMLOG"; : > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_arm "$R_ARM3/skel" "$S_ARM3" "$W2/arm3.out"
+
+grep -qi "auto-merge" "$W2/arm3.out" \
+  || fail "THE SILENT STALL: gh refused to arm PR #832 and the run said nothing about it. The PR
+      goes green and never merges, with no line anywhere saying why. It said:
+$(sed 's/^/        /' "$W2/arm3.out")"
+grep -q "832" "$W2/arm3.out" \
+  || fail "the auto-merge warning does not name the PR, so nobody can act on it"
+ok "a refused arm is said out loud, naming the PR"
+
+grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
+  || fail "a failed arm killed the review. The PR must still stand and still be reviewed. Log:
+$(sed 's/^/        /' "$ARMLOG")"
+[ "$ARM_RC" = "0" ] \
+  || fail "a failed arm changed the run's exit code to $ARM_RC. The driver would read a healthy
+      run as a worker failure and burn an attempt on it."
+ok "a failed arm still reviews the PR and leaves the exit code unchanged"
+
+# --- Q4. re-running on an ALREADY-ARMED PR is a no-op, not an error ----------
+# The worker re-runs on the same PR every rework round. A WARN per round trains
+# the operator to skim the one that matters, and a non-zero exit would read as a
+# worker failure -- so the state is asked for first rather than armed-and-forgiven.
+R_ARM4="$W2/repo-arm4"; make_repo "$R_ARM4"
+S_ARM4="$W2/state-arm4"; mkdir -p "$S_ARM4"
+seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
+gh_arm 833 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/worked.txt"
+run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4a.out"
+[ "$(arm_calls)" = "1" ] || fail "round 1 did not arm PR #833 exactly once (got $(arm_calls))"
+
+# Round 2: GitHub now reports the PR as already armed, and `gh pr merge` would
+# refuse. Nothing should call it, and nothing should warn.
+seed_record "$S_ARM4" 833 "REQUEST CHANGES" "$SHA_A"
+gh_arm 833 CLEAN "$SHA_A" 1 true
+: > "$ARMLOG"; : > "$W2/worked.txt"
+run_worker_arm "$R_ARM4/skel" "$S_ARM4" "$W2/arm4b.out"
+
+[ "$(arm_calls)" = "0" ] \
+  || fail "the second round re-armed an already-armed PR. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+grep -qi "auto-merge" "$W2/arm4b.out" \
+  && fail "an already-armed PR produced a warning on the re-run. Every rework round would repeat
+      it, and noise is what makes the real warning unreadable. It said:
+$(grep -i auto-merge "$W2/arm4b.out")"
+[ "$ARM_RC" = "0" ] || fail "a re-run on an armed PR exited $ARM_RC"
+ok "a re-run on an already-armed PR: no call, no warning, no error"
+
+# --- Q5. no PR means nothing to arm ------------------------------------------
+# The agent pushed nothing, so no PR is opened. Arming must not be attempted
+# against an empty PR number -- `gh pr merge --auto --squash ''` would act on
+# whatever branch the cwd happens to be on.
+R_ARM5="$W2/repo-arm5"
+mkdir -p "$R_ARM5"
+git init -q --bare "$R_ARM5/origin"
+git init -q "$R_ARM5/skel"
+G -C "$R_ARM5/skel" commit -q --allow-empty -m "base commit"
+git -C "$R_ARM5/skel" branch -M main
+git -C "$R_ARM5/skel" remote add origin "$R_ARM5/origin"
+git -C "$R_ARM5/skel" push -q -u origin main
+S_ARM5="$W2/state-arm5"; mkdir -p "$S_ARM5"
+cp "$STUB/claude-idle" "$STUB/claude"
+gh_arm_opens 834
+: > "$ARMLOG"; : > "$W2/worked.txt"
+run_worker_arm "$R_ARM5/skel" "$S_ARM5" "$W2/arm5.out"
+
+grep -q "no PR found" "$W2/arm5.out" \
+  || fail "the Q5 fixture did not reach the no-PR branch, so it cannot judge it. It said:
+$(sed 's/^/        /' "$W2/arm5.out")"
+[ "$(arm_calls)" = "0" ] \
+  || fail "auto-merge was armed with no PR to arm. gh was called with:
+$(sed 's/^/        /' "$ARMLOG")"
+ok "no PR means no arm call at all"
+
+# --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
+grep -q 'pr merge --auto --squash' "$WORKER" \
+  || fail "linear-worker.sh never arms auto-merge"
+ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | head -1 | cut -d: -f1)"
+REV_SRC="$(grep -n 'REVIEWER_CMD' "$WORKER" | grep -v '^.*REVIEWER_CMD=' | head -1 | cut -d: -f1)"
+[ -n "$ARM_SRC" ] && [ -n "$REV_SRC" ] && [ "$ARM_SRC" -lt "$REV_SRC" ] \
+  || fail "the arm does not sit before the reviewer call in linear-worker.sh (arm at
+      ${ARM_SRC:-none}, reviewer at ${REV_SRC:-none})"
+ok "worker wiring: the arm is in the worker and precedes the review call"
+
 bash -n "$CONV" || fail "converge.sh does not parse"
 ok "converge.sh parses (bash -n)"
 

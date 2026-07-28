@@ -886,6 +886,44 @@ Review runs next. Do not merge without it." >/dev/null 2>&1) || true
   fi
 
   if [ -n "$PR_NUM" ]; then
+    # ARM AUTO-MERGE, on BOTH paths that resolve $PR_NUM above: the PR the agent
+    # opened, and the PR this worker opened because the agent did not. Until this
+    # line, arming was a hand-typed `gh pr merge --auto --squash <n>` plus a
+    # watcher loop inside an interactive session -- and both die when the terminal
+    # closes, so a PR opened after that sat green forever with nobody left to
+    # merge it. A human remembering is not enforcement.
+    #
+    # BEFORE the review, not after, and that ordering is the whole point.
+    # `--auto` is not "merge now": GitHub holds the PR until every REQUIRED
+    # context is green, and `kipi/reviewer-approved` is ABSENT until the reviewer
+    # posts it (ASK-217). Arming afterwards would need something to come back once
+    # the review lands, which is the same gap wearing a different coat.
+    #
+    # BLAST RADIUS -- READ THIS BEFORE TOUCHING BRANCH PROTECTION. With this line
+    # in place, code reaches main with no human in the path, on a repo that fans
+    # out fleet-wide through `kipi update`. The only thing between a diff and main
+    # is the set of REQUIRED contexts on the branch. Remove `kipi/reviewer-approved`
+    # from that set and this becomes an unreviewed-merge machine. It was made
+    # required FIRST, and watched refusing on ABSENT and on FAILURE (PRs #27, #30),
+    # before this was allowed to exist. This worker still never merges anything:
+    # GitHub merges, and only once the required checks pass.
+    #
+    # THE STATE IS ASKED FOR, not armed-and-forgiven. The worker re-runs on this
+    # same PR every rework round; a warning per round would train the operator to
+    # skim the one that matters, and which exit code `gh pr merge` returns for an
+    # already-armed PR varies by version. Asking makes the no-op a real no-op.
+    if [ "$( cd "$TREE" && gh pr view "$PR_NUM" --json autoMergeRequest \
+               -q '.autoMergeRequest != null' 2>/dev/null )" != "true" ]; then
+      if ( cd "$TREE" && gh pr merge --auto --squash "$PR_NUM" ) >/dev/null 2>&1; then
+        say "$ISSUE: auto-merge armed on PR #$PR_NUM (GitHub merges it once every required check is green)"
+      else
+        # LOUD, and NOT fatal. An unarmed PR is invisible by construction:
+        # everything green, nothing merges, no signal anywhere. So it is said. The
+        # PR still stands, the review still runs, and the run's exit code is
+        # unchanged -- the cost of this failure is one human command, not a round.
+        say "WARN: could not arm auto-merge on PR #$PR_NUM for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $PR_NUM"
+      fi
+    fi
     # Count review ROUNDS per issue, distinct from failed ATTEMPTS. A run that
     # succeeds but comes back REQUEST CHANGES is not a failure, so the attempts
     # counter never sees it -- yet rounds-to-approve is the number that actually
