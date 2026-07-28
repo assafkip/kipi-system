@@ -61,6 +61,33 @@ if [ "$LIVE" -ge "$MAX_CONCURRENT" ]; then
   exit 0
 fi
 
+# --- DAILY BUDGET (loop-exits.md exit 3) ---------------------------------
+# The concurrency cap bounds how many run AT ONCE. It does NOT bound how many
+# run IN A DAY -- at ~1 issue/hour that is ~24 issues and ~144 `claude -p`
+# sessions overnight, against a subscription with a real weekly ceiling.
+# Measured 2026-07-28: one interactive night spawned 89 sessions and 44 reviewer
+# runs. An unbounded heartbeat is a runaway-bill loop, which is exactly the
+# thing loop-exits.md says an autonomous loop must not be.
+#
+# One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) = 6 sessions.
+# So DAILY_MAX is roughly "sessions per day / 6".
+DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
+TODAY="$(date -u +%Y-%m-%d)"
+COUNT_FILE="$HOME/.config/kipi/dispatch-count-$TODAY"
+DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
+case "$DISPATCHED_TODAY" in ''|*[!0-9]*) DISPATCHED_TODAY=0 ;; esac
+
+if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
+  # Say it once per day, not every 15 minutes -- a budget ceiling repeated 96
+  # times is the cry-wolf failure, and this is not an error state anyway.
+  if [ ! -f "$COUNT_FILE.paged" ]; then
+    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched today, stopping until UTC midnight"
+    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until UTC midnight. Do: raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster, or leave it."
+    : > "$COUNT_FILE.paged"
+  fi
+  exit 0
+fi
+
 # gh is what every downstream step needs; failing here with a clear page beats
 # dispatching an agent that dies opening its PR.
 if ! command -v gh >/dev/null 2>&1; then
@@ -94,7 +121,11 @@ if pgrep -f "converge.sh --issue $NEXT\b" >/dev/null 2>&1; then
   exit 0
 fi
 
-say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS)"
+# Count BEFORE launching. Counting after would let a crash between the two
+# hand out a free dispatch every heartbeat -- the budget must fail closed.
+printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
+
+say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
 nohup ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" \
   > "$HOME/.config/kipi/converge-$NEXT.log" 2>&1 &
 disown
