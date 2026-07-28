@@ -567,5 +567,45 @@ def main() -> int:
     return 0
 
 
+def page_crash(exc) -> None:
+    """Page on the way down (ASK-223).
+
+    THE INCIDENT: `--apply` died on a Linear TimeoutError after commenting on 74
+    issues and CLOSING 32, and paged zero times (sp-b5dcf944). A human found it
+    by reading a log the next morning.
+
+    The outside watcher (linear-pipeline-health.py) cannot cover this: a triage
+    run leaves no PR, no branch and no converge line, so there is nothing for an
+    outside observer to notice it by. The only place this failure is visible is
+    inside the process that has it, so the pager lives here -- one page, on the
+    sanctioned channel (founder-notifications.md), carrying what already changed
+    in Linear and the command to see what is left.
+
+    Best-effort by construction: a notifier that raises would replace the real
+    traceback with its own, and the traceback is the thing worth keeping.
+    """
+    notify = Path(os.environ.get("KIPI_NOTIFY", str(HERE / "slack-notify.sh")))
+    message = (
+        f"pipeline linear-triage: crashed mid-run with "
+        f"{type(exc).__name__}: {str(exc)[:160]}. Whatever it already commented "
+        f"or CLOSED in Linear stays that way -- a crash rolls nothing back, and "
+        f"nothing else watches this job. Do: python3 "
+        f"q-system/.q-system/scripts/linear-triage.py --project kipi-system "
+        f"(no --apply) to see what is still untriaged, then re-run with --apply"
+    )
+    print(message, file=sys.stderr)
+    if not notify.exists():
+        return
+    try:
+        subprocess.run(["bash", str(notify), message], timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        RC = main()
+    except Exception as crash:  # noqa: BLE001 -- KeyboardInterrupt is not a crash
+        page_crash(crash)
+        raise
+    sys.exit(RC)

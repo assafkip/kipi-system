@@ -21,6 +21,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 HEALTH="$ROOT/q-system/.q-system/scripts/linear-pipeline-health.py"
 CONVERGE="$ROOT/q-system/.q-system/scripts/converge.sh"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
+TRIAGE="$ROOT/q-system/.q-system/scripts/linear-triage.py"
+INSTALLER="$ROOT/q-system/.q-system/scripts/install-plist.sh"
+PLIST="$ROOT/q-system/.q-system/scripts/com.kipi.linear-pipeline-health.plist"
 
 PASS=0
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -228,5 +231,232 @@ for script in "$CONVERGE" "$WORKER"; do
     || fail "$(basename "$script") has $MISSING page(s) with no 'Do: ' action"
 done
 ok "every page in converge.sh and linear-worker.sh carries a 'Do: ' action"
+
+# =============================================================================
+# CHECK 8 (review round 3, MAJOR 1): a DRAFT PR is never a green-stall.
+#
+# A draft with a green rollup is a PR the founder parked on purpose. GitHub
+# REFUSES `gh pr merge --auto` on a draft, so paging it is both a wrong
+# diagnosis and an unrunnable action. This repo's PR #4 has been exactly that
+# since 2026-07-01 -- on the first live cycle it was the ONLY thing the watcher
+# would have said, four times a day, forever.
+#
+# Two halves, and the second is the one that matters: the pure detector must
+# skip drafts, AND the live query must actually ASK for isDraft. A detector
+# reading a field nobody requested sees None and skips nothing.
+# =============================================================================
+DRAFTS="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = time.time()
+old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 6 * 3600))
+green = [{"conclusion": "SUCCESS"}]
+prs = [
+    {"number": 4, "updatedAt": old, "statusCheckRollup": green,
+     "autoMergeRequest": None, "isDraft": True},
+    {"number": 41, "updatedAt": old, "statusCheckRollup": green,
+     "autoMergeRequest": None, "isDraft": False},
+]
+print(json.dumps(m.green_not_merged_findings(prs, now)))
+PY
+)"
+echo "$DRAFTS" | grep -q '"subject": "PR #41"' \
+  || fail "a non-draft green PR is still a stall: $DRAFTS"
+case "$DRAFTS" in
+  *'"state": "green_not_merged", "subject": "PR #4"'*)
+    fail "a DRAFT PR must never be reported as a green stall: $DRAFTS" ;;
+esac
+echo "$DRAFTS" | grep -q '"state": "green_but_draft"' \
+  || fail "a skipped draft must still be OBSERVED and logged, not dropped: $DRAFTS"
+ok "a draft PR is logged silently, never paged as a green stall"
+
+# The wiring half: run the LIVE collector against a fake gh on PATH and assert
+# the isDraft field is actually requested. Without this the fix above is inert.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+OLD="$(python3 -c 'import time;print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()-21600)))')"
+case "$1 $2" in
+  "pr list")
+    echo "[{\"number\":4,\"updatedAt\":\"$OLD\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"autoMergeRequest\":null,\"isDraft\":true}]" ;;
+  "run list") echo '[]' ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$WORK/bin/gh"
+export FAKE_GH_LOG="$WORK/gh.log"
+: > "$FAKE_GH_LOG"
+LIVE="$(PATH="$WORK/bin:$PATH" python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+# The Linear half is stubbed: the suite must never reach the network.
+m.fetch_in_progress_issues = lambda: []
+observations, unobserved = m.collect_live()
+print(json.dumps({"obs": observations, "unobserved": sorted(unobserved)}))
+PY
+)"
+grep -q 'isDraft' "$FAKE_GH_LOG" \
+  || fail "collect_live never asks gh for isDraft, so the draft skip can never fire: $(cat "$FAKE_GH_LOG")"
+case "$LIVE" in
+  *'"state": "green_not_merged"'*)
+    fail "the live collector still reports a draft as a green stall: $LIVE" ;;
+esac
+ok "the live gh query requests isDraft, so the draft skip actually fires"
+
+# =============================================================================
+# CHECK 9 (review round 3, MAJOR 2): every BROKEN state is REACHABLE.
+#
+# stranded_issue shipped in the classifier table, in the PR body, and in a green
+# test -- with no collector anywhere that could emit it. The test passed because
+# the fixture seam injects the state string directly, which proves the template
+# renders, not that anything observes the world. A state nothing can observe is
+# a promise, and the founder reads the promise as coverage.
+# =============================================================================
+REACH="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+source = open(sys.argv[1]).read()
+emitted = set(re.findall(r'"state":\s*"([a-z_]+)"', source))
+declared = set(m.BROKEN_STATES)
+in_process = set(getattr(m, "IN_PROCESS_PAGED_STATES", ()))
+print(json.dumps({"unreachable": sorted(declared - emitted - in_process),
+                  "emitted": sorted(emitted)}))
+PY
+)"
+echo "$REACH" | grep -q '"unreachable": \[\]' \
+  || fail "BROKEN_STATES no collector can emit (and not declared in-process-paged): $REACH"
+ok "every broken state is either emitted by a collector or declared in-process-paged"
+
+# And the stranded detector itself: In Progress, past the window, no branch and
+# no PR. An issue with either one is somebody's live work, not a dead holder.
+STRAND="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = time.time()
+def ago(hours):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - hours * 3600))
+issues = [
+    {"identifier": "ASK-300", "startedAt": ago(9)},   # stranded
+    {"identifier": "ASK-301", "startedAt": ago(9)},   # has a PR
+    {"identifier": "ASK-302", "startedAt": ago(9)},   # has a branch
+    {"identifier": "ASK-303", "startedAt": ago(1)},   # still inside the window
+]
+print(json.dumps(m.stranded_issue_findings(
+    issues, {"ASK-301"}, {"sana/ask-302"}, now)))
+PY
+)"
+echo "$STRAND" | grep -q '"subject": "ASK-300"' || fail "a stranded issue must be found: $STRAND"
+for other in ASK-301 ASK-302 ASK-303; do
+  echo "$STRAND" | grep -q "$other" && fail "$other is not stranded: $STRAND"
+done
+ok "stranded_issue: found with no branch and no PR past the window, and only then"
+
+# =============================================================================
+# CHECK 10 (review round 3, MAJOR 3): a collector that FAILED is not a state
+# that CLEARED.
+#
+# `_gh_json` returns None on a rate limit, a network blip, or an expired token,
+# and the old code turned that into [] -- byte-identical to "main went green".
+# The ledger was rebuilt from that empty set, the key vanished, and the next
+# successful cycle read a transition and paged a breakage nobody had fixed. At
+# 96 cycles a day one flaky call turns one real break into a stream.
+# =============================================================================
+reset_all
+BREAK='[{"state":"main_red","subject":"main","facts":{"workflow":"validate","run_id":7}}]'
+observe "$BREAK"
+observe "$BREAK"
+[ "$(page_count)" = "1" ] || fail "the real breakage must page once first, got $(page_count)"
+# gh falls over: nothing observed, main_red explicitly UNOBSERVED (not cleared).
+observe '{"observations": [], "unobserved": ["main_red"]}'
+[ "$(page_count)" = "1" ] || fail "a blind cycle must not page, got $(page_count)"
+grep -q 'DEGRADED' "$WORK/out" \
+  || fail "a blind cycle must SAY it was blind, not print a clean zero: $(cat "$WORK/out")"
+# gh recovers. main was never fixed, so this is the same breakage, not a new one.
+observe "$BREAK"
+[ "$(page_count)" = "1" ] \
+  || fail "a transient collector failure must not re-page an unfixed breakage, got $(page_count)"
+# A state that genuinely clears (observed empty, nothing unobserved) still
+# re-pages when it breaks again -- the transition semantics must survive.
+observe '[]'
+observe "$BREAK"
+[ "$(page_count)" = "2" ] || fail "a genuinely cleared-then-rebroken state must page again, got $(page_count)"
+ok "a failed collector carries the ledger forward; a genuine clear still re-pages"
+
+# A tool that is MISSING is permanent and actionable, so it pages once. That is
+# not the same as a call that failed: this plist runs under launchd, whose PATH
+# is /usr/bin:/bin:/usr/sbin:/sbin, and gh lives nowhere near it.
+BLIND="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps(m.missing_tool_findings(["gh"])))
+PY
+)"
+echo "$BLIND" | grep -q '"state": "watcher_blind"' \
+  || fail "a missing tool must be its own finding: $BLIND"
+reset_all
+observe '[{"state":"watcher_blind","subject":"gh","facts":{"tool":"gh"}}]'
+[ "$(page_count)" = "1" ] || fail "watcher_blind must page once, got $(page_count)"
+grep -q 'Do: ' "$FAKE_PAGES" || fail "watcher_blind page carries no action: $(cat "$FAKE_PAGES")"
+ok "a missing tool pages once with a fix; a failing call stays silent and degraded"
+
+# =============================================================================
+# CHECK 11 (review round 3): the plist must run the watcher through a login
+# shell. /usr/bin/python3 straight from launchd gets PATH=/usr/bin:/bin:... --
+# no gh, no git -- so every collector returns nothing and the watcher is blind
+# forever while looking perfectly healthy in `launchctl list`.
+# =============================================================================
+[ -f "$PLIST" ] || fail "missing $PLIST"
+grep -q -- '-lc' "$PLIST" \
+  || fail "the plist must exec through a login shell or launchd's PATH hides gh: $PLIST"
+grep -q 'linear-pipeline-health.py' "$PLIST" || fail "the plist must run the watcher"
+ok "the launchd plist runs through a login shell, so gh is on PATH"
+
+# =============================================================================
+# CHECK 12 (review round 3, MINOR 1): install-plist.sh may only claim labels it
+# can actually install. It documented com.kipi.launchd-health, which has no
+# template -- `install-plist.sh com.kipi.launchd-health` exits 2.
+# =============================================================================
+MISSING_TPL=0
+while read -r label; do
+  [ -n "$label" ] || continue
+  if [ ! -f "$ROOT/q-system/.q-system/scripts/$label.plist" ]; then
+    echo "  no template: $label" >&2
+    MISSING_TPL=$((MISSING_TPL + 1))
+  fi
+done < <(grep -o 'com\.kipi\.[a-z][a-z-]*' "$INSTALLER" | sort -u)
+[ "$MISSING_TPL" = "0" ] \
+  || fail "install-plist.sh names $MISSING_TPL label(s) it has no template for"
+ok "every label install-plist.sh names has a template it can render"
+
+# =============================================================================
+# CHECK 13 (review round 3, MINOR 2): the incident this whole issue opens with.
+#
+# linear-triage.py --apply died on a Linear TimeoutError after commenting on 74
+# issues and CLOSING 32, and paged zero times (sp-b5dcf944). No collector here
+# can see a triage run, so the only place that failure is observable is inside
+# the process that has it. It now pages on the way down, with a Do:.
+#
+# The API endpoint is pointed at a closed local port: this never touches Linear.
+# =============================================================================
+reset_pages
+set +e
+KIPI_LINEAR_API_URL="http://127.0.0.1:1/graphql" \
+KIPI_LINEAR_API_KEY="test-key-never-used" \
+KIPI_NOTIFY="$WORK/notify.sh" \
+  python3 "$TRIAGE" --project kipi-system --limit 1 > "$WORK/out" 2>&1
+TRC=$?
+set -e
+[ "$TRC" != "0" ] || fail "a triage run against a dead endpoint must not exit 0"
+[ "$(page_count)" = "1" ] \
+  || fail "linear-triage.py crashing must page exactly once, got $(page_count): $(cat "$WORK/out")"
+grep -q 'Do: ' "$FAKE_PAGES" || fail "the triage crash page carries no action: $(cat "$FAKE_PAGES")"
+grep -q 'linear-triage' "$FAKE_PAGES" || fail "the triage crash page must name the job"
+ok "linear-triage.py crashing mid-run pages once, naming the job and the next command"
 
 echo "PASS: $PASS/$PASS checks"

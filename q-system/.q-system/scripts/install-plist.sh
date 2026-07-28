@@ -19,10 +19,16 @@
 # WATCHDOG JOBS THIS INSTALLS (each runs a script that watches something OTHER
 # than itself, which is the only place a watcher can see a silent death from):
 #   com.kipi.fleet-health          -> fleet-health-daily.py
-#   com.kipi.launchd-health        -> launchd-health-check.py (watches launchd)
 #   com.kipi.linear-pipeline-health -> linear-pipeline-health.py (ASK-223; watches
 #       converge.sh / linear-worker.sh from OUTSIDE, because every pager those two
 #       carry dies with the process that was supposed to send it)
+#
+# This comment may only name labels that have a template in this directory --
+# `usage()` below lists them from disk, and the pipeline-health suite fails on any
+# label named here with no matching .plist next to it. It once advertised the
+# launchd-health watchdog, for which this directory has no template at all, so the
+# install exits 2: documentation of a job this installer cannot install. That job
+# is loaded on the founder's machine from no committed source -- sp-ff4f494a.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

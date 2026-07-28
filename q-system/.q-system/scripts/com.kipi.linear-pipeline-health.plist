@@ -15,10 +15,18 @@
   <key>Label</key>
   <string>com.kipi.linear-pipeline-health</string>
 
+  <!-- Through a LOGIN shell, the same as com.kipi.linear-dor, and not
+       /usr/bin/python3 directly: launchd hands a job
+       PATH=/usr/bin:/bin:/usr/sbin:/sbin, where `gh` does not live. Straight
+       python3 made every gh call fail, every collector return nothing, and the
+       watcher report perfect health from total blindness -- the silent death it
+       exists to catch, reproduced inside the catcher. The `cd` is what lets
+       `gh api repos/{owner}/{repo}/...` resolve this repo. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>__KIPI_REPO__/q-system/.q-system/scripts/linear-pipeline-health.py</string>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; exec python3 q-system/.q-system/scripts/linear-pipeline-health.py</string>
   </array>
 
   <!-- Every 15 minutes. Tuned against GREEN_STALL_MINUTES (20): a PR that goes
