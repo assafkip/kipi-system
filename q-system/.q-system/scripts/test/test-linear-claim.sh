@@ -293,7 +293,118 @@ ok "the recorded holder is the claimant that was told it won"
 [ ! -e "${KIPI_LINEAR_CLAIMS}.guard" ] || fail "the O_EXCL guard leaked after the race"
 ok "no guard file leaked after the race"
 
-# --- 21. isolation proof: the live lock was never TOUCHED -----------------
+# --- 21-25. LIVENESS: a claim whose holder is provably gone (ASK-189) ------
+# Measured twice on 2026-07-27: a run was killed, the claim stayed held by a dead
+# session with zero processes alive, and every issue on the board was blocked
+# until a human ran `release --holder`. SIGKILL CANNOT BE TRAPPED, so no
+# in-process cleanup can ever close this -- converge.sh's TERM/INT/HUP trap is
+# real and still never ran. The lock has to be able to tell, ON READ, that its
+# holder is gone.
+#
+# These cases spend most of their weight on the OPPOSITE failure, which is the
+# worse one: a liveness check that reads "dead" for a HEALTHY long-running worker
+# silently disables the mutex while the suite stays green. So every case that
+# proves a reclaim is paired with one that proves a live or unknown holder is
+# still respected.
+spawn_holder() {   # a process that lives until this suite kills it
+  sh -c 'exec sleep 300' >/dev/null 2>&1 &
+  echo $!
+}
+reap() { kill -9 "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+
+# --- 21. a LIVE holder is respected; a SIGKILLed one is reclaimable --------
+rm -f "$KIPI_LINEAR_CLAIMS"
+HOLDER="$(spawn_holder)"
+r=$(rc claim ASK-KILL --agent agent-a --session sess-DEAD --holder-pid "$HOLDER")
+[ "$r" = "$EXIT_OK" ] || fail "a claim carrying --holder-pid was refused (exit $r): $(cat "$WORK/err")"
+r=$(rc claim ASK-KILL2 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_COLLISION" ] || \
+  fail "a claim whose holder pid is ALIVE was reclaimed (exit $r) -- the mutex is off, which is worse than the leak"
+ok "a claim whose holder process is alive is still refused"
+
+kill -9 "$HOLDER" 2>/dev/null || true
+# NOT reaped yet, on purpose. A SIGKILLed child is a ZOMBIE until its parent
+# waits, and `os.kill(pid, 0)` SUCCEEDS on a zombie -- so a pid-only liveness
+# check reads a killed holder as alive and the board stays wedged anyway.
+r=$(rc claim ASK-KILL2 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_OK" ] || \
+  fail "a SIGKILLed holder that is still an unreaped zombie blocked the tree (exit $r): $(cat "$WORK/err")"
+ok "a claim whose SIGKILLed holder is an unreaped zombie is reclaimable"
+reap "$HOLDER"
+run release ASK-KILL2 --agent agent-b --session sess-B
+
+# --- 22. the measured scar end-state: holder fully gone, no human needed ---
+rm -f "$KIPI_LINEAR_CLAIMS"
+HOLDER="$(spawn_holder)"
+run claim ASK-KILL3 --agent agent-a --session sess-DEAD --holder-pid "$HOLDER"
+reap "$HOLDER"
+r=$(rc claim ASK-KILL4 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_OK" ] || \
+  fail "a claim held by a session with zero processes alive still needed --break-stale (exit $r); this is the ASK-189 scar"
+grep -qi "reclaim" "$WORK/err" || \
+  fail "the reclaim was SILENT; a mutex that hands a resource to someone else says so out loud"
+ok "a claim whose holder is fully gone is reclaimed without --break-stale, and says so"
+run release ASK-KILL4 --agent agent-b --session sess-B
+
+# --- 23. a record with NO liveness field is still respected ---------------
+# Every claim written before this change, and every claim from a caller that has
+# no long-lived process to name. Missing must read as alive, never as dead.
+rm -f "$KIPI_LINEAR_CLAIMS"
+cat > "$KIPI_LINEAR_CLAIMS" <<'JSON'
+{"issue_id":"ASK-OLD","agent":"agent-a","session":"sess-OLD","acquired_at":"2026-07-01T00:00:00Z"}
+JSON
+r=$(rc claim ASK-NEW --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_COLLISION" ] || \
+  fail "a pre-liveness record with no holder_pid was reclaimed (exit $r); old records must stay respected"
+ok "a claim record with no liveness field is still respected"
+
+# --- 24. THE PID-RECYCLING TRAP -------------------------------------------
+# Pid numbers wrap. An unrelated process that inherits the dead holder's number
+# makes the leak permanent again -- the whole reason the record carries the
+# holder's START TIME and not just its pid.
+rm -f "$KIPI_LINEAR_CLAIMS"
+IMPOSTOR="$(spawn_holder)"
+python3 - "$KIPI_LINEAR_CLAIMS" "$IMPOSTOR" <<'PY'
+import json, sys
+json.dump({"issue_id": "ASK-RECYCLE", "agent": "agent-a", "session": "sess-OLD",
+           "acquired_at": "2026-07-01T00:00:00Z",
+           "holder_pid": int(sys.argv[2]),
+           "holder_pid_start": "Thu Jan  1 00:00:00 1970"}, open(sys.argv[1], "w"))
+PY
+r=$(rc claim ASK-FRESH --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_OK" ] || \
+  fail "a RECYCLED pid impersonated the dead holder and wedged the tree forever (exit $r)"
+ok "a live pid whose start time does not match the record is a recycled pid, not the holder"
+run release ASK-FRESH --agent agent-b --session sess-B
+
+# --- 25. UNKNOWN reads as ALIVE, never as dead ----------------------------
+# holder_pid recorded, holder_pid_start absent (ps could not answer at claim
+# time), holder still running. Nothing here PROVES death, so the claim stands.
+rm -f "$KIPI_LINEAR_CLAIMS"
+python3 - "$KIPI_LINEAR_CLAIMS" "$IMPOSTOR" <<'PY'
+import json, sys
+json.dump({"issue_id": "ASK-NOSTART", "agent": "agent-a", "session": "sess-OLD",
+           "acquired_at": "2026-07-01T00:00:00Z",
+           "holder_pid": int(sys.argv[2])}, open(sys.argv[1], "w"))
+PY
+r=$(rc claim ASK-FRESH2 --agent agent-b --session sess-B)
+[ "$r" = "$EXIT_COLLISION" ] || \
+  fail "a LIVE holder with no recorded start time was reclaimed (exit $r); unknown must read as alive"
+ok "a live holder with no recorded start time is respected (unknown is not proof of death)"
+reap "$IMPOSTOR"
+
+# A --holder-pid that is not a pid is a USAGE error, not a silently dropped
+# field: a caller that thinks it recorded liveness and did not has a mutex that
+# leaks exactly as before, with nothing to show for it.
+rm -f "$KIPI_LINEAR_CLAIMS"
+r=$(rc claim ASK-BADPID --agent agent-a --session sess-A --holder-pid not-a-pid)
+[ "$r" = "$EXIT_USAGE" ] || fail "--holder-pid with a non-integer gave exit $r, want $EXIT_USAGE"
+r=$(rc claim ASK-BADPID --agent agent-a --session sess-A --holder-pid 0)
+[ "$r" = "$EXIT_USAGE" ] || fail "--holder-pid 0 gave exit $r, want $EXIT_USAGE"
+ok "a --holder-pid that is not a usable pid is a usage error, never a silent drop"
+rm -f "$KIPI_LINEAR_CLAIMS"
+
+# --- 26. isolation proof: the live lock was never TOUCHED -----------------
 # Asserts the suite did not CHANGE the live lock, not that no lock exists.
 #
 # Scar 2026-07-27: this used to assert `! -e $ROOT/.linear-claims.json`, which
