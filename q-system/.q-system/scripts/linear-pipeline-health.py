@@ -57,7 +57,22 @@ DRY_FLAGS = ("--dry", "--dry-run", "-n")
 # `pr.get("isDraft")` on an unrequested field is None, which is falsy, which is
 # "not a draft". Round-3 review caught exactly that shape -- the suite asserts
 # this list reaches gh, not just that the detector reads it.
-PR_LIST_FIELDS = "number,updatedAt,statusCheckRollup,autoMergeRequest,isDraft"
+#
+# `headRefOid` is here so ONE list call serves both PR detectors. unreviewed_head
+# used to run a sequential `gh pr view` per verdict record, in a directory that
+# gains a file per PR forever and is never pruned -- 27 records was already 16.6s
+# per cycle, and the shape was unbounded (review round 4). The heads come out of
+# the same list green_not_merged already pays for, so the cost is now flat in the
+# record count.
+PR_LIST_FIELDS = "number,updatedAt,statusCheckRollup,autoMergeRequest,isDraft,headRefOid"
+
+# How many open PRs one list call is allowed to return. Batching bought O(1)
+# network cost and sold a truncation window the per-record loop did not have: at
+# exactly this many results the list may be clipped, and a PR past the edge would
+# read as "not open" -- silently un-detectable rather than merely slow. So a full
+# page marks BOTH list-fed states unobserved, which carries the ledger forward and
+# prints DEGRADED instead of claiming a clean cycle.
+PR_LIST_LIMIT = 100
 
 # Binaries the collectors cannot work without. A MISSING binary is a permanent
 # configuration error and pages; a binary that is present but whose call FAILED
@@ -239,10 +254,31 @@ def _gh_json(args):
         return None
 
 
+# A fractional-seconds field, dropped before parsing. Anchored on what follows
+# it (zone designator or end of string) so it can never eat a date component.
+FRACTIONAL_SECONDS = re.compile(r"\.\d+(?=[Z+\-]|$)")
+
+
 def _minutes_since(iso_timestamp, now):
-    """Minutes between an ISO-8601 GitHub timestamp and now. None if unparseable."""
+    """Minutes between an ISO-8601 timestamp and now. None if unparseable.
+
+    TWO PRODUCERS, TWO SHAPES. GitHub emits `2026-07-28T18:43:12Z`. Linear's
+    GraphQL emits `2026-07-27T19:50:40.412Z`. A parser that accepts only the
+    GitHub shape returns None for every Linear timestamp, and the caller that
+    skips undateable issues then skips ALL of them -- so `stranded_issue`
+    printed "nothing is stranded" while being structurally unable to fire
+    (review round 4). The suite could not see it because its fixture built
+    timestamps in the GitHub shape, which nothing produces for that field.
+
+    The fraction is DROPPED rather than parsed. Minute resolution does not care,
+    and dropping it keeps the arithmetic below byte-identical to the version
+    that was independently verified DST-safe across PST/PDT, IST/IDT and
+    CET/CEST -- `%Z` parsing "UTC" pins tm_isdst=0, which pins mktime to
+    standard time, which is what `time.timezone` corrects for.
+    """
     try:
-        stamp = time.strptime(iso_timestamp.replace("Z", "UTC"), "%Y-%m-%dT%H:%M:%S%Z")
+        text = FRACTIONAL_SECONDS.sub("", str(iso_timestamp))
+        stamp = time.strptime(text.replace("Z", "UTC"), "%Y-%m-%dT%H:%M:%S%Z")
     except Exception:
         return None
     return int((now - time.mktime(stamp) + time.timezone) / 60)
@@ -404,6 +440,22 @@ def issue_ids_in_prs(prs):
     return ids
 
 
+def branch_issue_ids(branch_names):
+    """Every issue id the branch names claim, as a SET of ids.
+
+    SET MEMBERSHIP, NOT SUBSTRING. The previous version joined every branch into
+    one blob and asked `identifier in blob`, so "ASK-22" matched "sana/ask-223"
+    and the shorter issue read as "somebody is working on it" for as long as the
+    longer branch existed -- a stranded issue silently masked by an unrelated
+    one. Same regex as issue_ids_in_prs, so both halves of "did this work reach
+    anywhere" agree on what an id is.
+    """
+    ids = set()
+    for name in branch_names or ():
+        ids.update(ISSUE_ID.findall(str(name).upper()))
+    return ids
+
+
 def stranded_issue_findings(issues, pr_issue_ids, branch_names, now,
                             hours=STRANDED_ISSUE_HOURS):
     """Pure: In Progress past the window with no branch AND no PR.
@@ -415,7 +467,7 @@ def stranded_issue_findings(issues, pr_issue_ids, branch_names, now,
     An issue with no start timestamp is SKIPPED, not reported: unknown age must
     never render as old, or every issue Linear cannot date pages at once.
     """
-    branches_blob = " ".join(branch_names or ()).upper()
+    branch_ids = branch_issue_ids(branch_names)
     findings = []
     for issue in issues or []:
         identifier = (issue.get("identifier") or "").upper()
@@ -427,7 +479,7 @@ def stranded_issue_findings(issues, pr_issue_ids, branch_names, now,
             continue
         if identifier in (pr_issue_ids or set()):
             continue
-        if identifier in branches_blob:
+        if identifier in branch_ids:
             continue
         findings.append({
             "state": "stranded_issue",
@@ -489,12 +541,14 @@ def collect_live():
 
     prs = None
     try:
-        prs = _gh_json(["pr", "list", "--state", "open", "--limit", "50",
-                        "--json", PR_LIST_FIELDS])
+        prs = _gh_json(["pr", "list", "--state", "open",
+                        "--limit", str(PR_LIST_LIMIT), "--json", PR_LIST_FIELDS])
         if prs is None:
             unobserved.add("green_not_merged")
         else:
             findings += green_not_merged_findings(prs, now)
+            if len(prs) >= PR_LIST_LIMIT:
+                unobserved.add("green_not_merged")
     except Exception as exc:  # noqa: BLE001
         unobserved.add("green_not_merged")
         print(f"green-stall check skipped: {exc}", file=sys.stderr)
@@ -505,20 +559,25 @@ def collect_live():
                 records.append(json.loads(path.read_text()))
             except Exception:
                 continue
-        heads = {}
-        blind = False
-        for record in records:
-            pr = record.get("pr")
-            if pr is None:
-                continue
-            data = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,state"])
-            if data is None:
-                blind = True  # one unanswered PR is enough to make this partial
-                continue
-            if (data.get("state") or "").upper() == "OPEN":
-                heads[pr] = data.get("headRefOid", "")
-        if blind:
+        # Reuse the open-PR list above: no per-record network call. A record whose
+        # PR is absent from it is merged or closed, and a merged PR has no
+        # unreviewed head -- same outcome the per-record `state != OPEN` skip gave,
+        # for one call instead of one per record.
+        if prs is None or len(prs) >= PR_LIST_LIMIT:
             unobserved.add("unreviewed_head")
+        heads = {}
+        if prs is not None:
+            open_heads = {pr.get("number"): pr.get("headRefOid") or "" for pr in prs}
+            for record in records:
+                # gh keys by int; the verdict record's own value is what the pure
+                # detector looks up, so key by that and coerce only for the match.
+                pr = record.get("pr")
+                try:
+                    head = open_heads.get(int(pr))
+                except (TypeError, ValueError):
+                    head = None
+                if head:
+                    heads[pr] = head
         findings += unreviewed_head_findings(records, heads)
     except Exception as exc:  # noqa: BLE001
         unobserved.add("unreviewed_head")

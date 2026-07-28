@@ -339,7 +339,10 @@ spec = importlib.util.spec_from_file_location("h", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 now = time.time()
 def ago(hours):
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - hours * 3600))
+    # The LINEAR shape, fractional seconds and all. The suite used to build the
+    # GitHub shape here, which nothing produces for startedAt -- so it stayed
+    # green while the parse rejected every real timestamp (round 4, MAJOR).
+    return time.strftime("%Y-%m-%dT%H:%M:%S.412Z", time.gmtime(now - hours * 3600))
 issues = [
     {"identifier": "ASK-300", "startedAt": ago(9)},   # stranded
     {"identifier": "ASK-301", "startedAt": ago(9)},   # has a PR
@@ -458,5 +461,164 @@ set -e
 grep -q 'Do: ' "$FAKE_PAGES" || fail "the triage crash page carries no action: $(cat "$FAKE_PAGES")"
 grep -q 'linear-triage' "$FAKE_PAGES" || fail "the triage crash page must name the job"
 ok "linear-triage.py crashing mid-run pages once, naming the job and the next command"
+
+# =============================================================================
+# CHECK 14 (review round 4, MAJOR): the timestamp shape Linear actually emits.
+#
+# `_minutes_since` parsed with %Y-%m-%dT%H:%M:%S%Z, which rejects Linear's
+# fractional seconds (`2026-07-27T19:50:40.412Z`). stranded_issue_findings skips
+# any issue it cannot date -- by design, so unknown age never renders as old --
+# so the detector was reachable, wired, and structurally unable to fire. Its
+# output ("0 findings, no DEGRADED line") is byte-identical to a healthy
+# pipeline, so nothing downstream could tell the two apart.
+#
+# Both producer shapes are pinned here: GitHub's updatedAt has no fraction and
+# is why green_not_merged worked while this did not.
+# =============================================================================
+STAMPS="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = time.time()
+base = time.gmtime(now - 9 * 3600)
+shapes = {
+    "linear": time.strftime("%Y-%m-%dT%H:%M:%S.412Z", base),   # Linear GraphQL
+    "github": time.strftime("%Y-%m-%dT%H:%M:%SZ", base),       # gh --json
+    "micros": time.strftime("%Y-%m-%dT%H:%M:%S.000001Z", base),
+}
+out = {}
+for name, stamp in shapes.items():
+    out[name] = {
+        "minutes": m._minutes_since(stamp, now),
+        "found": len(m.stranded_issue_findings(
+            [{"identifier": "ASK-400", "startedAt": stamp}], set(), [], now)),
+    }
+out["garbage"] = {"minutes": m._minutes_since("not-a-date", now)}
+print(json.dumps(out, sort_keys=True))
+PY
+)"
+for shape in linear github micros; do
+  echo "$STAMPS" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)['$shape']
+assert d['minutes'] == 540, 'minutes=%r' % d['minutes']
+assert d['found'] == 1, 'findings=%r' % d['found']
+" || fail "the $shape timestamp shape does not reach the stranded detector: $STAMPS"
+done
+echo "$STAMPS" | grep -q '"garbage": {"minutes": null}' \
+  || fail "an unparseable timestamp must still be None, not a bogus age: $STAMPS"
+ok "stranded_issue dates issues in Linear's fractional shape, GitHub's, and neither-guesses on garbage"
+
+# =============================================================================
+# CHECK 15 (review round 4, dropped-but-real): a longer issue id must not mask a
+# shorter one.
+#
+# Branch matching was a substring test over one joined blob, so "ASK-22" matched
+# "sana/ask-223" and ASK-22 read as somebody's live work for as long as that
+# unrelated branch existed. The failure is silent and permanent -- exactly the
+# shape a pager cannot afford, because the founder reads the quiet as health.
+# =============================================================================
+MASK="$(python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = time.time()
+old = time.strftime("%Y-%m-%dT%H:%M:%S.412Z", time.gmtime(now - 9 * 3600))
+issues = [{"identifier": i, "startedAt": old}
+          for i in ("ASK-22", "ASK-223", "ASK-9")]
+found = m.stranded_issue_findings(
+    issues, set(), ["sana/ask-223", "main", "feature/ASK-9-thing"], now)
+print(json.dumps({"stranded": sorted(f["subject"] for f in found),
+                  "ids": sorted(m.branch_issue_ids(
+                      ["sana/ask-223", "main", "feature/ASK-9-thing"]))}))
+PY
+)"
+echo "$MASK" | grep -q '"stranded": \["ASK-22"\]' \
+  || fail "ASK-22 is stranded and ASK-223/ASK-9 are not; got: $MASK"
+echo "$MASK" | grep -q '"ids": \["ASK-223", "ASK-9"\]' \
+  || fail "branch_issue_ids must extract whole ids, not substrings: $MASK"
+ok "a branch for ASK-223 does not mask stranded ASK-22"
+
+# =============================================================================
+# CHECK 16 (review round 4, MINOR): unreviewed_head's cost is flat in the number
+# of verdict records.
+#
+# It ran one sequential `gh pr view` per record in ~/.config/kipi/pr-reviews,
+# a directory that gains a file per PR forever and is never pruned: 27 records
+# was already 16.6s per cycle and the shape was unbounded. The heads now come
+# out of the open-PR list green_not_merged already pays for.
+#
+# The half that could regress: detection must still work. This asserts BOTH --
+# zero per-record calls AND the finding still fires on a real head mismatch.
+# =============================================================================
+mkdir -p "$WORK/state/pr-reviews" "$WORK/bin2"
+for n in $(seq 1 30); do
+  printf '{"pr":%d,"issue":"ASK-%d","verdict":"APPROVE","head_sha":"aaaa1111"}\n' \
+    "$n" "$n" > "$WORK/state/pr-reviews/pr-$n.verdict.json"
+done
+cat > "$WORK/bin2/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+  # PR 7 is open on a DIFFERENT head than the one reviewed -> one finding.
+  "pr list") echo '[{"number":7,"updatedAt":"2026-01-01T00:00:00Z","statusCheckRollup":[],"autoMergeRequest":null,"isDraft":false,"headRefOid":"bbbb2222"}]' ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$WORK/bin2/gh"
+export FAKE_GH_LOG="$WORK/gh2.log"
+: > "$FAKE_GH_LOG"
+BATCH="$(PATH="$WORK/bin2:$PATH" python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.fetch_in_progress_issues = lambda: []
+observations, unobserved = m.collect_live()
+print(json.dumps({"obs": observations, "unobserved": sorted(unobserved)}))
+PY
+)"
+VIEWS="$(grep -c '^pr view' "$FAKE_GH_LOG" || true)"
+[ "$VIEWS" = "0" ] \
+  || fail "30 verdict records cost $VIEWS per-record gh calls; the cost must be flat"
+TOTAL="$(wc -l < "$FAKE_GH_LOG" | tr -d ' ')"
+[ "$TOTAL" -le 6 ] \
+  || fail "one cycle made $TOTAL gh calls against 30 records; expected a fixed handful"
+echo "$BATCH" | grep -q '"state": "unreviewed_head", "subject": "PR #7"' \
+  || fail "batching lost the detection: an open PR past its reviewed sha must still fire: $BATCH"
+case "$BATCH" in
+  *'"subject": "PR #1"'*|*'"subject": "PR #2"'*)
+    fail "a record whose PR is not open must not fire: $BATCH" ;;
+esac
+ok "unreviewed_head costs a fixed number of gh calls at 30 records, and still detects"
+
+# And the window batching opened: a FULL page of open PRs may be clipped, so a PR
+# past the edge would read as "not open" -- undetectable rather than merely slow.
+# A full page must mark both list-fed states unobserved, not report a clean cycle.
+cat > "$WORK/bin2/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list")
+    python3 -c "
+import json
+print(json.dumps([{'number': n, 'updatedAt': '2026-01-01T00:00:00Z',
+                   'statusCheckRollup': [], 'autoMergeRequest': None,
+                   'isDraft': False, 'headRefOid': 'cccc3333'}
+                  for n in range(1, 101)]))" ;;
+  *) echo '[]' ;;
+esac
+EOF
+FULL="$(PATH="$WORK/bin2:$PATH" python3 - "$HEALTH" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.fetch_in_progress_issues = lambda: []
+print(json.dumps(sorted(m.collect_live()[1])))
+PY
+)"
+echo "$FULL" | grep -q 'green_not_merged' \
+  || fail "a clipped PR page must not read as a fully observed cycle: $FULL"
+echo "$FULL" | grep -q 'unreviewed_head' \
+  || fail "a clipped PR page leaves unreviewed_head partly blind too: $FULL"
+ok "a full page of open PRs degrades both list-fed states instead of claiming a clean cycle"
 
 echo "PASS: $PASS/$PASS checks"
