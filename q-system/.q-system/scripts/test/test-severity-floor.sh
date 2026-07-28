@@ -651,7 +651,8 @@ gh_says 783 CLEAN
 : > "$W2/worked.txt"; : > "$W2/pages.txt"
 run_worker_in "$R_CLEAR/skel" "$S_CLEAR" "$W2/clear.out"
 
-grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/clear.out" \
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/clear.out" \
   || fail "section J skipped for the WRONG REASON; it must reach gate 10 (approved + CLEAN).
       The worker said: $(grep -i skip "$W2/clear.out" | head -1)"
 LC="$S_CLEAR/linear-worker-attempts.json"
@@ -1242,7 +1243,8 @@ grep -q worked "$W2/worked.txt" 2>/dev/null \
       $(grep -i skip "$W2/wdrift.out" | head -1)"
 ok "worker: a stale approval is dispatched, not skipped as done"
 
-grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/wdrift.out" \
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/wdrift.out" \
   && fail "the worker still reported a PR with unreviewed code at its head as waiting on the founder"
 ok "worker: a stale approval is not reported as waiting on the founder"
 
@@ -1262,7 +1264,8 @@ run_worker "$S_WSAME" "$W2/wsame.out"
 [ ! -s "$W2/worked.txt" ] \
   || fail "an approved PR at the sha that IS the head was reworked; this fix must not loop on
       healthy PRs"
-grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/wsame.out" \
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/wsame.out" \
   || fail "the worker skipped PR #806 for the WRONG REASON -- it must reach gate 10, not gate 20.
       It said: $(grep -i skip "$W2/wsame.out" | head -1)"
 [ ! -s "$W2/pages.txt" ] || fail "a converged PR paged the founder: $(cat "$W2/pages.txt")"
@@ -1506,7 +1509,8 @@ run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-drift.out" "$STUB/reviewer-down"
 # drift at all -- and the streak that led here has to end with it.
 run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-heal.out" "$STUB/reviewer-ok"
 run_worker_rev "$R_P5/skel" "$S_P5" "$W2/p5-clear.out" "$STUB/reviewer-down"
-grep -q "nothing to rework"   # gate-10 anchor only; the merge half now reports the arm state (ASK-222) "$W2/p5-clear.out" \
+# gate-10 anchor only: the merge half of this sentence now reports the arm state (ASK-222)
+grep -q "nothing to rework" "$W2/p5-clear.out" \
   || fail "after a review repinned the record to the head, the PR is no longer drifting and must
       reach gate 10. It said: $(grep -i skip "$W2/p5-clear.out" | head -1)"
 [ "$(ledger_key "$S_P5" drift_rounds)" = "0" ] \
