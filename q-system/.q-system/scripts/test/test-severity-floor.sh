@@ -1582,6 +1582,110 @@ grep -q "$NOTE_UNPINNED" "$W2/p7b.out" \
   || fail "worker: an unreadable head manufactured a round (it must fall toward terminal)"
 ok "worker: argument 4 is the CURRENT head (a gh outage says so)"
 
+# =============================================================================
+# THE DRIFT BUDGET UNDER A HEAD NOBODY COULD READ (PR #30 review round 3)
+# =============================================================================
+# P3 proves the cap holds while `gh pr view --json headRefOid` answers on every
+# run. It cannot see this: its fixture is seeded ONCE and never varies the one
+# input that clears the budget. `pr_head_sha` returns empty on any gh failure,
+# rework_gate then falls toward terminal and returns 10 -- not 40 -- so a clear
+# conditioned only on "the gate did not say 40" REFILLS the budget from a state
+# nobody read, and pops `drift_paged` with it. clear_conflict_rounds' own comment
+# forbids exactly this: "refilling a budget from a state nobody actually read is
+# how an unresolvable conflict gets infinite rounds."
+#
+# Not invented: `gh_says <pr> <state> ""` is this suite's own fixture for that
+# state, already driving O4, L3 and P7B. It needs `gh pr view` to fail while
+# `gh pr list` succeeds -- a total outage leaves EXISTING_PR empty and skips the
+# whole gate block.
+
+# --- P8. an unreadable head must not refill the drift budget -----------------
+R_P8="$W2/repo-p8"; make_repo "$R_P8"
+S_P8="$W2/state-p8"; mkdir -p "$S_P8"
+seed_record "$S_P8" 817 "APPROVE" "$SHA_A"
+: > "$W2/pages.txt"
+P8_DISPATCHED=0
+P8_AFTER_BLIND=""
+for i in 1 2 3 4 5 6 7 8 9; do
+  # Every third run, gh answers the head lookup with nothing.
+  case "$i" in
+    3|6|9) gh_says 817 CLEAN "" ;;
+    *)     gh_says 817 CLEAN "$SHA_B" ;;
+  esac
+  : > "$W2/prompt.txt"
+  run_worker_rev "$R_P8/skel" "$S_P8" "$W2/p8-$i.out" "$STUB/reviewer-down"
+  grep -q "start ASK-AAA on " "$W2/p8-$i.out" && P8_DISPATCHED=$((P8_DISPATCHED+1))
+  # Snapshot right after the FIRST blind run, while the budget is fully spent.
+  [ "$i" = "3" ] && P8_AFTER_BLIND="$(ledger_key "$S_P8" drift_rounds)"
+done
+
+[ "$P8_AFTER_BLIND" = "2" ] \
+  || fail "THE DEFECT: two drift rounds were spent, then ONE run could not read the head, and the
+      streak went from 2 to $P8_AFTER_BLIND. The head lookup failing is not a statement that the
+      drift is over -- nobody read anything. clear_conflict_rounds clears only on a STATED CLEAN
+      for this exact reason. Ledger after run 3:
+      $(cat "$S_P8/linear-worker-attempts.json" 2>/dev/null)"
+ok "an unreadable head does not refill the drift budget"
+
+[ "$P8_DISPATCHED" = "2" ] \
+  || fail "THE DEFECT: 9 scheduled runs against one persistently-failing reviewer, with the head
+      unreadable on runs 3/6/9, dispatched $P8_DISPATCHED model rounds; MAX_DRIFT_ROUNDS is 2. Each
+      blind run resets the streak, so the cap is never reached and the loop is unbounded again --
+      the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
+ok "the drift cap holds across runs whose head could not be read"
+
+P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+[ "$P8_PAGES" = "1" ] \
+  || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
+      never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
+      than one means a blind run popped drift_paged and re-paged the same head. Pages were:
+$(sed 's/^/        /' "$W2/pages.txt")"
+grep -q "$SHA_B" "$W2/pages.txt" \
+  || fail "the page does not name the unreviewed head: $(cat "$W2/pages.txt")"
+ok "exactly one page across 9 runs, and a blind run does not un-page the issue"
+
+# --- P9. step 5 must not swallow the gate's own NOTE -------------------------
+# converge.sh:180 states the rule this call site broke: "The gate's NOTE goes
+# through `say` so it lands in the run log with everything else. Swallowing it
+# would silently grandfather the blind spot it announces." The step-5 re-gate
+# sent it to /dev/null. pr-review-agent.sh always writes head_sha and writes it
+# EMPTY when its own `gh pr view` could not answer, so an approval pinned to
+# nothing closes the run as "converged ... waits on founder merge" with no line
+# anywhere saying the approval could not be tied to a commit. The behaviour is
+# correct and settled (absent is not drift, fail toward terminal); the missing
+# thing is the sentence that says so.
+#
+# The seeded record is REQUEST CHANGES so the TOP-of-run gate returns 0 without
+# emitting any NOTE -- step 5 is then the only possible source of one.
+cat > "$STUB/reviewer-unpinned" <<EOF
+#!/usr/bin/env bash
+PR="\$1"
+mkdir -p "\$KIPI_STATE_DIR/pr-reviews"
+printf '{"verdict":"APPROVE","pr":%s,"head_sha":""}\n' "\$PR" \
+  > "\$KIPI_STATE_DIR/pr-reviews/pr-\$PR.verdict.json"
+exit 0
+EOF
+chmod +x "$STUB/reviewer-unpinned"
+
+R_P9="$W2/repo-p9"; make_repo "$R_P9"
+S_P9="$W2/state-p9"; mkdir -p "$S_P9"
+seed_record "$S_P9" 818 "REQUEST CHANGES" "$SHA_A"
+gh_says 818 CLEAN "$SHA_B"
+: > "$W2/worked.txt"; : > "$W2/pages.txt"; : > "$W2/prompt.txt"
+run_worker_rev "$R_P9/skel" "$S_P9" "$W2/p9.out" "$STUB/reviewer-unpinned"
+
+grep -q "ASK-AAA converged:" "$W2/p9.out" \
+  || fail "the P9 fixture never reached step 5's closing line, so it cannot judge what step 5
+      printed. The run said:
+$(sed 's/^/        /' "$W2/p9.out")"
+grep -q "$NOTE_UNPINNED" "$W2/p9.out" \
+  || fail "THE DEFECT: the reviewer wrote an approval with an EMPTY head_sha, the gate said so on
+      stdout, and step 5 sent that NOTE to /dev/null. The run closed with 'converged ... waits on
+      founder merge' and nothing anywhere says the approval is pinned to no commit -- which is the
+      one thing that separates it from a verified one. It said:
+$(sed 's/^/        /' "$W2/p9.out")"
+ok "step 5 says when the record it converged off is pinned to nothing"
+
 bash -n "$CONV" || fail "converge.sh does not parse"
 ok "converge.sh parses (bash -n)"
 

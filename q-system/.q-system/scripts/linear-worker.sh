@@ -468,13 +468,38 @@ while IFS= read -r ISSUE; do
     CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
     GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
-    # THE DRIFT STREAK ENDS THE MOMENT THE GATE STOPS SAYING 40, and this has to
-    # sit ABOVE the branches: gates 10 and 20 both `continue`, so a clear placed
-    # with the gate-40 block would never run on the one path that matters most --
-    # the review came back, repinned the record, and the PR is healthy again.
-    # (Observed RED as P5: drift_rounds stayed at 2 through a full heal.)
-    # 40 is the ONE reader's own answer, so no second sha comparison lives here.
-    [ "$GATE" != "40" ] && clear_drift_rounds "$ISSUE"
+    # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
+    # both of them scars:
+    #
+    # It sits ABOVE the branches because gates 10 and 20 both `continue`, so a
+    # clear placed with the gate-40 block would never run on the one path that
+    # matters most -- the review came back, repinned the record, the PR is
+    # healthy again. (Observed RED as P5: drift_rounds stayed at 2 through a
+    # full heal.)
+    #
+    # And it requires BOTH shas to have been read, because "the gate did not say
+    # 40" is not the same statement as "there is no drift". `pr_head_sha` returns
+    # empty on any `gh` failure and the gate then falls toward terminal and
+    # returns 10 -- so the bare `!= 40` form treated a head NOBODY COULD READ as
+    # proof the drift was over: it reset the streak AND popped `drift_paged`, and
+    # one hiccup every other run was enough to make the cap unreachable and the
+    # page never fire. clear_conflict_rounds 190 lines up refuses the identical
+    # move for the identical reason -- "refilling a budget from a state nobody
+    # actually read is how an unresolvable conflict gets infinite rounds"
+    # (PR #30 review round 3, major 1; observed RED as P8: 9 runs, 6 rounds, 0
+    # pages).
+    #
+    # This is a readability check on the gate's INPUTS, not a second sha
+    # comparison: 40 is still the one reader's own answer to "is this drift?".
+    # What it costs, stated: a blind run no longer refills the budget, so a drift
+    # that quietly resolved during a blind window can reach the cap one round
+    # early. That direction pages ("unreviewed code sits at the head, needs a
+    # human") on a run where the gate really did say 40, so the page is true when
+    # it fires -- louder, never quieter, which is the only safe way to be wrong
+    # about a budget guarding unreviewed code.
+    if [ "$GATE" != "40" ] && [ -n "$REVIEWED_SHA" ] && [ -n "$CURRENT_SHA" ]; then
+      clear_drift_rounds "$ISSUE"
+    fi
     if [ "$GATE" = "10" ]; then
       say "skip $ISSUE: PR #$EXISTING_PR verdict is '$PR_VERDICT' -- nothing to rework, waiting on founder merge"
       continue
@@ -895,7 +920,20 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # would be a second reader with drifting semantics.
     FINAL_REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
     FINAL_CURRENT_SHA="$(pr_head_sha "$PR_NUM")"
-    rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA" >/dev/null; FINAL_GATE=$?
+    # AND THE GATE'S NOTE IS SAID, NOT SWALLOWED (PR #30 review round 3, minor 2).
+    # converge.sh's own call site states the rule this line broke: "Swallowing it
+    # would silently grandfather the blind spot it announces." The reviewer always
+    # writes head_sha and writes it EMPTY when its own `gh pr view` could not
+    # answer, and a fresh issue reaches step 5 with no prior PR -- so the
+    # top-of-run gate, the one that does `say` its NOTE, never ran. The run then
+    # closed on "converged ... waits on founder merge" with nothing anywhere
+    # saying the approval is pinned to no commit, which is the one thing that
+    # separates it from a verified one. The BEHAVIOUR is right and settled
+    # (absent is not drift, fail toward terminal); the missing thing was the
+    # sentence. Adds no per-run noise: the gate is silent whenever both shas were
+    # read, which is every healthy round.
+    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA")"; FINAL_GATE=$?
+    [ -n "$FINAL_GATE_NOTE" ] && say "$FINAL_GATE_NOTE"
     # NO PAGE HERE, deliberately, and it is the one place in this pass that buys
     # silence: the NEXT scheduled run gates this same PR at 40, spends a drift
     # round, and pages once at the cap. Paging here too would double-page the same
