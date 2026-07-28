@@ -118,6 +118,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-collapse.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-create.py",
       "runner": "python3"
     },
@@ -351,6 +355,11 @@
       "path": "q-system/.q-system/scripts/instance-fact-inventory.py",
       "reason": "built for prd-skeleton-data-containment and never wired; its only references are that PRD's specs and its own test",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/linear-collapse.py",
+      "reason": "built and tested (21 cases) but deliberately unwired: --apply closes dozens of permanent Linear objects in one pass, so no trigger exists until the founder reads a full dry-run roster of the real board. Same gate as linear-triage.py -- collapse must run BEFORE the DoR drafter manufactures readiness on duplicate-template issues",
+      "spillover_id": "sp-ffc69720"
     },
     {
       "path": "q-system/.q-system/scripts/linear-triage.py",
