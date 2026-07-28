@@ -98,6 +98,14 @@ The arbitration rule between token-discipline (narrow targeted reads) and comple
 produced this failure; nothing arbitrates. Until it is decided, the manifest is the
 tiebreaker for any declared data path: name it, read all of it.
 
+## The provenance vocabulary
+
+One table, `q-system/.q-system/scripts/provenance-vocabulary.json`, read at
+runtime by `memory-confidence-validator.py` and `handoff-provenance-lint.py`.
+`ev-<id>` outranks every enum value because it points at a row carrying the
+command AND its output. `{{UNVERIFIED}}` is exactly `provenance: inferred`.
+Adding a value is a data change in one place, never a code change in two.
+
 ## Cross-references
 
 `quick-plan.md` (the read-first contract this makes executable) ·

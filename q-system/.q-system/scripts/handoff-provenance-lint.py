@@ -59,9 +59,29 @@ NUM_RE = re.compile(r"(?<![\w.$-])(\d[\d,]*\.?\d*)(?![\w-])")
 DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 MIN_SIGNIFICANT_DIGITS = 2
 
-PROVENANCE_RE = re.compile(
-    r"\[verified:|\{\{UNVERIFIED\}\}|\{\{UNVALIDATED\}\}|\{\{NEEDS_PROOF\}\}"
-    r"|\bev-[0-9a-f]{10}\b")
+# `[verified: <cmd>]` is this lint's own form and stays accepted. Everything else
+# comes from provenance_vocabulary, the ONE table this and
+# memory-confidence-validator.py both read, so a value added there reaches both.
+# Scar 2026-07-28: this lint invented a second vocabulary three days after the
+# first one shipped, and nothing collided because the file scopes differ.
+VERIFIED_RE = re.compile(r"\[verified:")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import provenance_vocabulary as PV
+except Exception:  # older instance mid-kipi-update: fall back to this lint's own set
+    PV = None
+    _FALLBACK_RE = re.compile(
+        r"\{\{UNVERIFIED\}\}|\{\{UNVALIDATED\}\}|\{\{NEEDS_PROOF\}\}"
+        r"|\bev-[0-9a-f]{10}\b")
+
+
+def has_provenance(line: str) -> bool:
+    if VERIFIED_RE.search(line):
+        return True
+    if PV is not None:
+        return PV.has_provenance(line)
+    return bool(_FALLBACK_RE.search(line))
 
 
 def unlabelled_lines(body: str) -> list[tuple[int, str]]:
@@ -70,7 +90,7 @@ def unlabelled_lines(body: str) -> list[tuple[int, str]]:
         return []
     out = []
     for n, line in enumerate(body.splitlines(), 1):
-        if PROVENANCE_RE.search(line) or META_RE.match(line):
+        if has_provenance(line) or META_RE.match(line):
             continue
         if DATE_RE.search(line):
             out.append((n, line.strip()))
@@ -103,13 +123,16 @@ def main() -> int:
         return 0
 
     listed = "\n".join(f"    line {n}: {text[:110]}" for n, text in bad[:15])
+    forms = ["    [verified: <the command you ran>]   you ran it; this is the output"]
+    if PV is not None:
+        forms += [f"    {f}" for f in PV.accepted_forms()]
+    else:
+        forms += ["    ev-xxxxxxxxxx                       a claim id from evidence.jsonl",
+                  "    {{UNVERIFIED}}                      it is an inference, and that is fine"]
     sys.stderr.write(
         "HANDOFF PROVENANCE (blocked): these lines carry a number with no source, so "
         "the next session cannot tell a measurement from a guess:\n" + listed + "\n\n"
-        "  Add one of:\n"
-        "    [verified: <the command you ran>]   you ran something and this is it\n"
-        "    ev-xxxxxxxxxx                       a claim id from evidence.jsonl\n"
-        "    {{UNVERIFIED}}                      it is an inference, and that is fine\n\n"
+        "  Add one of:\n" + "\n".join(forms) + "\n\n"
         "  Scar 2026-07-28: a handoff claimed a client row was dated five months in "
         "the future. The next session inherited it, repeated it as fact for several "
         "turns, and only checked when the founder asked. No such row existed. The "

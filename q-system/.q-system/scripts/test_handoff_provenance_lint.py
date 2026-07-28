@@ -91,8 +91,33 @@ def case_mixed_file_blocks_on_the_bad_line() -> bool:
                "- 1,366 rows are flagged review.\n") == 2
 
 
+def case_shared_enum_validated_passes() -> bool:
+    """The incumbent vocabulary now satisfies this lint. Before the shared table
+    it did not, which was two words for one idea in one repo."""
+    return run(HANDOFF, "- 1,366 rows flagged. provenance: validated\n") == 0
+
+
+def case_shared_enum_inferred_passes() -> bool:
+    """Labelling an inference is the correct move, not a lesser one."""
+    return run(HANDOFF, "- roughly 400 rows affected. provenance: inferred\n") == 0
+
+
+def case_typod_enum_value_still_blocks() -> bool:
+    """A typo must not silently satisfy the requirement."""
+    return run(HANDOFF, "- 1,366 rows flagged. provenance: verifed\n") == 2
+
+
+def case_bare_provenance_word_blocks() -> bool:
+    """The word alone, with no value, is not provenance."""
+    return run(HANDOFF, "- 1,366 rows flagged. provenance matters here\n") == 2
+
+
 CASES = [
     ("a bare number blocks", case_bare_number_blocks),
+    ("shared enum `validated` passes", case_shared_enum_validated_passes),
+    ("shared enum `inferred` passes", case_shared_enum_inferred_passes),
+    ("a typo'd enum value still blocks", case_typod_enum_value_still_blocks),
+    ("the bare word `provenance` still blocks", case_bare_provenance_word_blocks),
     ("[verified: ...] passes", case_verified_marker_passes),
     ("{{UNVERIFIED}} passes", case_unverified_marker_passes),
     ("an ev- claim id passes", case_claim_id_reference_passes),
