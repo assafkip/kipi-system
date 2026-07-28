@@ -14,15 +14,21 @@
 		     /opt/homebrew/bin; without it the dispatcher pages and exits. -->
 		<key>PATH</key>
 		<string>/Users/assafkipnis/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-		<!-- ONE at a time, deliberately. Each run spawns a `claude -p` agent
-		     plus a reviewer, so this is also the spend ceiling -- but the real
-		     reason is conflicts. The dispatcher picks by readiness and has NO
-		     idea which files an issue touches, so two concurrent runs can land
-		     on the same file (observed 2026-07-28: the next pick, ASK-223,
-		     edits the same linear-worker.sh region as the live ASK-222).
-		     Unattended, that yields a pile of conflicted PRs, which is worse
-		     than half the throughput. Raise this only once dispatch is
-		     file-disjointness aware (sp-see dispatch-conflict item). -->
+		<!-- ONE at a time. Each run spawns a `claude -p` agent plus a
+		     reviewer, so this is also the spend ceiling -- but the original
+		     reason was conflicts: dispatch picked by readiness alone and had
+		     NO idea which files an issue touches, so two concurrent runs could
+		     land on the same file (observed 2026-07-28: the next pick,
+		     ASK-223, edits the same linear-worker.sh region as the live
+		     ASK-222).
+
+		     ASK-225 made dispatch file-disjointness aware, so that reason is
+		     GONE -- a candidate now runs only when its DoR `**Files:**` set is
+		     disjoint from every live run's, and an issue whose set is unknown
+		     runs alone. This dial is still 1 because raising it is a FOUNDER
+		     decision after the new gate has been watched in the wild, not
+		     because dispatch cannot tell. Raise it to run N at once. -->
+
 		<key>KIPI_DISPATCH_MAX</key>
 		<string>1</string>
 

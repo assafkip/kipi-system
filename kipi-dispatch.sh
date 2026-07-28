@@ -17,7 +17,9 @@
 # LOOP EXITS (loop-exits.md -- an autonomous loop owns 2, 4, 7 at minimum)
 #   2 turn cap      MAX_CONCURRENT live converge runs, counted from the process
 #                   table, not from a state file that can lie.
-#   3 budget        one dispatch per heartbeat. The interval IS the rate limit.
+#   3 budget        DAILY_MAX issues per LOCAL day, and never more than the
+#                   free concurrency slots in one tick. The interval throttles;
+#                   the daily counter is the actual ceiling.
 #   4 wall clock    each converge carries --max-rounds; the reviewer is bounded
 #                   at 2400s inside pr-review-agent.sh.
 #   5 no progress   an issue moves to In Progress the moment the worker takes
@@ -43,7 +45,17 @@
 # as a stopgap. Every ready issue carries a `**Files:**` list in its DoR
 # (prd_split.py already parses it, ASK-214), so dispatch is a set-intersection
 # problem: a candidate goes only if its file set is disjoint from every LIVE
-# run's. Unknown set => never parallel. See disjointness_skip_reason().
+# run's.
+#
+# UNKNOWN SET => NOT IN PARALLEL, WHICH IS NOT THE SAME AS NEVER (PR #36 r3).
+# An unknown set intersects everything by assumption -- and "everything" is
+# EMPTY when nothing is live and nothing else has launched this pass, so such an
+# issue still runs, alone, and holds the board until it finishes. The first cut
+# refused it outright, which on the real board of 2026-07-28 (51 of 55 ready
+# issues parse to an empty set) turned a throughput unlock into a throughput
+# CUT: 1 issue/tick before the change, 0 after, forever, with the liveness
+# beacon still reporting a healthy loop. A safety gate that refuses the whole
+# board is not safe, it is off.
 set -uo pipefail
 
 REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
@@ -105,6 +117,18 @@ mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
 
+# Page at most once per marker file. Every recurring condition this script pages
+# for -- the daily cap, a broken picker, a board it cannot read -- is TRUE again
+# on the next tick, so an ungated page is 96 pings a day. That is the cry-wolf
+# failure: it trains the founder to mute the channel and costs the real alerts
+# their job. Callers pass a date-stamped marker, so the state re-pages tomorrow
+# if it is still true.
+page_once() {  # page_once <marker-file> <message>
+  [ -f "$1" ] && return 0
+  page "$2"
+  : > "$1"
+}
+
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
   page "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
@@ -156,7 +180,7 @@ issue_is_live() { live_issues | grep -qx "$1"; }
 # serialised with a skip line pointing at the wrong thing.
 fileset_for() {  # fileset_for <issue> <out-file> ; prints the failure reason
   ISSUE="$1" PRD_SPLIT="$PRD_SPLIT" python3 - > "$2" 2>"$2.err" <<'PY'
-import importlib.util, json, os, pathlib, sys
+import importlib.util, json, os, pathlib, re, sys
 
 issue = os.environ["ISSUE"]
 spec = importlib.util.spec_from_file_location("prd_split", os.environ["PRD_SPLIT"])
@@ -176,6 +200,22 @@ else:
     q = "query($id:String!){issue(id:$id){description}}"
     desc = ((ls.graphql(q, {"id": issue}) or {}).get("issue") or {}).get("description") or ""
 
+# `~/`- and `/`-anchored paths, which _extract_paths drops WHOLE: its token
+# regex is anchored at [A-Za-z0-9_.]. For prd_split's own job -- scope
+# enforcement on repo-relative paths -- that is merely narrow. For an
+# INTERSECTION it is a silent hazard, and the reason this gate refused the real
+# board: 32 of the 55 issues ready on 2026-07-28 name a
+# `~/Library/LaunchAgents/*.plist`. Worse than the refusals, a Files list that
+# MIXES a plist with a repo path yielded a set that looks complete and is not,
+# so two agents could be sent into one plist while the log called them disjoint.
+#
+# Only the ANCHOR is matched here; the tail is validated by the same
+# _PATH_TOKEN_RE, so there is still one definition of "what is a path". `~` is
+# expanded so `~/x` and `/Users/me/x` are one file, not two. Over-collection
+# (a prose mention of an absolute directory) makes the intersection MORE
+# conservative -- an extra skip with a named path, never a missed conflict.
+_ANCHORED_RE = re.compile(r"(?<![A-Za-z0-9_.~/-])(~/|/)([A-Za-z0-9_.][A-Za-z0-9_.\-/]*)")
+
 section = mod._dor_section(desc or "")
 if section is None:
     raise SystemExit(0)
@@ -189,7 +229,6 @@ if not value:
     # for a formatting reason. So take the block ourselves and hand it to the
     # SAME path tokenizer, keeping one definition of "what is a path".
     # (Upstream parser bug captured as spillover against ASK-225.)
-    import re
     m = re.search(r"(?mi)^\s*(?:[-*+]\s+)?\*\*\s*Files\s*:?\s*\*\*:?[ \t]*(.*)$", section)
     if m:
         rest = section[m.end():]
@@ -199,15 +238,24 @@ if not value:
 # nothing so the caller fails closed rather than dispatching on a guess.
 if not value or mod._UNKNOWN_RE.search(value):
     raise SystemExit(0)
-for path in mod._extract_paths(value):
+seen = set()
+def emit(path):
     # A trailing slash means the DoR was talking ABOUT a directory, not naming a
     # file to edit -- ASK-225's own Files bullet contains the prose "must NOT go
     # under the synced `q-system/` subtree". Left in, that token appears in many
     # DoRs and makes unrelated issues collide on a word. The intersection is
     # exact-match on file paths, so only file paths belong in it.
-    if path.endswith("/"):
-        continue
+    if path.endswith("/") or path in seen:
+        return
+    seen.add(path)
     print(path)
+
+for m in _ANCHORED_RE.finditer(value):
+    tail = m.group(2).rstrip(".,;:")
+    if tail and mod._PATH_TOKEN_RE.fullmatch(tail):
+        emit(os.path.expanduser(m.group(1) + tail))
+for path in mod._extract_paths(value):
+    emit(path)
 PY
   RC=$?
   [ "$RC" -eq 0 ] && return 0
@@ -216,10 +264,44 @@ PY
   return 1
 }
 
+# Does this issue have a KNOWN file set? 0 = yes (written to <out-file>),
+# 1 = unknown (parsed fine, nothing usable in it), 2 = unreadable (a fault).
+# Prints why not.
+#
+# EMPTY IS UNKNOWN, and that distinction is the whole point of this wrapper.
+# fileset_for returns non-zero only on a Python EXCEPTION, so "no `**Files:**`
+# line", "the DoR says the paths are unknown" and "every token was rejected" all
+# came back as SUCCESS with an empty file. Candidates then failed closed on that
+# input while LIVE runs failed OPEN -- `cat`ting an empty file into the union
+# contributed no constraint, so candidates were dispatched straight into a live
+# run's files, two lines under a comment promising the opposite. One helper, so
+# the candidate side and the live side cannot drift apart about what "unknown"
+# means a second time.
+fileset_known() {  # fileset_known <issue> <out-file>
+  if ! WHY_NOT="$(fileset_for "$1" "$2")"; then
+    printf '%s' "$WHY_NOT"
+    return 2
+  fi
+  [ -s "$2" ] && return 0
+  printf 'no usable `**Files:**` list in its DoR, so its file set is unknown'
+  return 1
+}
+
 # The first path present in BOTH sets, magnet files excluded. Empty when the two
 # sets are disjoint. Named so the skip line can quote it -- "they overlap" with
 # no path is a report nobody can act on.
-strip_magnets() { grep -vxF "$MAGNET_FILES" || true; }
+#
+# Magnets are matched by FULL PATH and by BARE BASENAME. Real DoRs use both
+# spellings: ASK-224 and ASK-218 each write the bare `capability-manifest.json`
+# inside a sentence saying they will NOT edit it, and a full-path-only exemption
+# missed that, serialising two of the four dispatchable issues on a file neither
+# one touches. Same root as the `q-system/` prose token: a negated mention
+# becomes a path token, so the exemption has to cover every spelling of the
+# magnet, not just the canonical one.
+magnet_patterns() {
+  for M in $MAGNET_FILES; do printf '%s\n%s\n' "$M" "${M##*/}"; done
+}
+strip_magnets() { grep -vxF -f "$MAGNETS" || true; }
 first_overlap() {  # first_overlap <fileA> <fileB>
   grep -Fx -f "$1" "$2" 2>/dev/null | strip_magnets | head -1
 }
@@ -354,9 +436,27 @@ if printf '%s' "$WORK_OUT" | grep -qi "infra_error\|authentication\|unauthorized
   exit 1
 fi
 
+# A CRASHED PICKER IS NOT AN EMPTY BOARD. WORK_RC used to be captured and never
+# read, so anything the infra grep above did not match -- a traceback, an OOM, a
+# git failure inside the worker -- fell through to "nothing ready", every 15
+# minutes, exit 0, no page. That is this fleet's own lesson (a zero result must
+# prove it is empty, not broken) failing in its own scheduler.
+if [ "$WORK_RC" -ne 0 ]; then
+  say "kipi work FAILED (exit $WORK_RC): $(printf '%s' "$WORK_OUT" | tail -5 | tr '\n' ' ' | tail -c 300)"
+  page_once "$HOME/.config/kipi/dispatch-workfail-$TODAY.paged" \
+    "kipi dispatch: \`kipi work\` exited $WORK_RC, so NO issue can be picked up. The picker is BROKEN, not the board empty -- the loop is stopped. Do: run \`bash kipi work\` in $REPO and read the error."
+  exit 1
+fi
+
+# The board total, from the worker's own count. `--limit` truncates the LIST it
+# prints, never this number, which is why the closing summary has to quote it:
+# "of 5 candidate(s)" while 55 issues are ready is exactly the silent truncation
+# that skip() exists to prevent, committed by the summary line itself.
+READY_TOTAL="$(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1 | grep -oE '^[0-9]+' || true)"
+
 CANDIDATES="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+')"
 if [ -z "$CANDIDATES" ]; then
-  say "nothing ready ($(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1))"
+  say "nothing ready (${READY_TOTAL:-an unknown number of} ready issue(s) on the board)"
   exit 0
 fi
 N_CANDIDATES="$(printf '%s\n' "$CANDIDATES" | grep -c .)"
@@ -367,17 +467,29 @@ SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 LIVE_SET="$SCRATCH/live-set"
 : > "$LIVE_SET"
+MAGNETS="$SCRATCH/magnets"
+magnet_patterns > "$MAGNETS"
+OURS="$SCRATCH/ours"
+: > "$OURS"
+
+# The issue whose UNKNOWN file set holds this whole pass -- a live run with no
+# usable Files list, or an unknown-set candidate we dispatch alone below. One
+# variable for both, because they are one fact: something is running whose files
+# we cannot name, so nothing may run beside it.
+PASS_UNKNOWN=""
 UNREADABLE_LIVE=0
 for LI in $(live_issues); do
-  # A live run whose file set cannot be read stays unknown, and unknown
-  # intersects everything -- so nothing gets dispatched alongside it. Fail
-  # closed on the side that already holds a worktree.
-  if fileset_for "$LI" "$SCRATCH/live-$LI" >/dev/null; then
-    cat "$SCRATCH/live-$LI" >> "$LIVE_SET"
-  else
-    say "note: file set for the live run $LI is unreadable; holding every candidate this pass"
-    UNREADABLE_LIVE=1
-  fi
+  # A live run whose file set is unknown or unreadable intersects everything --
+  # so nothing gets dispatched alongside it. Fail closed on the side that
+  # already holds a worktree.
+  fileset_known "$LI" "$SCRATCH/live-$LI" >/dev/null
+  case $? in
+    0) cat "$SCRATCH/live-$LI" >> "$LIVE_SET" ;;
+    1) say "note: the live run $LI has an unknown file set; nothing may run alongside it this pass"
+       PASS_UNKNOWN="$LI" ;;
+    *) say "note: the file set for the live run $LI is UNREADABLE; holding every candidate this pass"
+       UNREADABLE_LIVE=1 ;;
+  esac
 done
 
 if [ "$BURST" -gt 0 ]; then
@@ -400,6 +512,30 @@ our_active() {
   printf '%s' "$ACTIVE"
 }
 
+# The live runs that are NOT ours, read FRESH. The runs we just launched also
+# match the pgrep pattern, so a plain live count here would double-count them
+# against our own cap -- hence the exclusion by issue id rather than a simpler
+# count.
+external_live() {
+  if [ -s "$OURS" ]; then
+    live_issues | grep -vxF -f "$OURS" | grep -c . || true
+  else
+    live_issues | grep -c . || true
+  fi
+}
+
+# How long to sit waiting for a busy slot before giving up on this pass.
+# A burst is a founder standing at the terminal who asked for N runs, so waiting
+# is the point. The heartbeat is a launchd job that re-fires every 900s, so a
+# 10-minute block there would stack overlapping ticks; it gives up fast and
+# retries on the next beat, which costs nothing.
+if [ "$BURST" -gt 0 ]; then
+  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-600}"
+else
+  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-60}"
+fi
+SLOTS_FULL=0
+
 # Every candidate we do not dispatch says why. "dispatched 3 of 10" with no
 # reasons reads as "there were only 3", which is the silent-truncation failure.
 skip() { SKIPPED=$((SKIPPED+1)); say "skip $1: $2"; }
@@ -407,6 +543,14 @@ skip() { SKIPPED=$((SKIPPED+1)); say "skip $1: $2"; }
 for ISSUE in $CANDIDATES; do
   if [ "$UNREADABLE_LIVE" -eq 1 ]; then
     skip "$ISSUE" "a live run's file set is unreadable, so no overlap check is trustworthy this pass"
+    continue
+  fi
+  if [ -n "$PASS_UNKNOWN" ]; then
+    skip "$ISSUE" "$PASS_UNKNOWN is running with an unknown file set, so nothing may run alongside it; still ready for the next pass"
+    continue
+  fi
+  if [ "$SLOTS_FULL" -eq 1 ]; then
+    skip "$ISSUE" "every one of the $SLOTS slot(s) was still held after waiting ${SLOT_WAIT}s for a free slot; still ready for the next run"
     continue
   fi
   if [ "$DISPATCHED" -ge "$TARGET" ]; then
@@ -421,26 +565,50 @@ for ISSUE in $CANDIDATES; do
   fi
 
   CAND_SET="$SCRATCH/cand-$ISSUE"
-  if ! WHY="$(fileset_for "$ISSUE" "$CAND_SET")"; then
+  WHY="$(fileset_known "$ISSUE" "$CAND_SET")"; SET_RC=$?
+  if [ "$SET_RC" -eq 2 ]; then
     skip "$ISSUE" "$WHY"
     continue
   fi
-  if [ ! -s "$CAND_SET" ]; then
-    # FAIL CLOSED. An unknown file set intersects everything by assumption:
-    # guessing is exactly how two agents end up in one file.
-    skip "$ISSUE" "no usable \`**Files:**\` list in its DoR, so its file set is unknown and it cannot run in parallel. Add the paths to the DoR."
-    continue
-  fi
-
-  OVERLAP="$(first_overlap "$LIVE_SET" "$CAND_SET")"
-  if [ -n "$OVERLAP" ]; then
-    skip "$ISSUE" "its file set overlaps a live run on $OVERLAP"
-    continue
+  SOLO=0
+  if [ "$SET_RC" -eq 1 ]; then
+    # FAIL CLOSED, WHICH MEANS NOT IN PARALLEL -- NOT NEVER. An unknown file set
+    # intersects everything by assumption, and everything is EMPTY when nothing
+    # is live and nothing else has launched this pass. So it runs, alone, and
+    # holds the board until it finishes. Refusing it outright is what made this
+    # gate reject 51 of 55 real ready issues and dispatch zero, forever.
+    if [ "$LIVE" -gt 0 ] || [ "$DISPATCHED" -gt 0 ]; then
+      skip "$ISSUE" "$WHY, so it can only run ALONE and something is already running (live=$LIVE, dispatched here=$DISPATCHED). Add the paths to its DoR to let it run in parallel."
+      continue
+    fi
+    SOLO=1
+  else
+    OVERLAP="$(first_overlap "$LIVE_SET" "$CAND_SET")"
+    if [ -n "$OVERLAP" ]; then
+      skip "$ISSUE" "its file set overlaps a live run on $OVERLAP"
+      continue
+    fi
   fi
 
   # Wait for a free slot. Polling beats `wait -n`, which needs bash 4.3 and this
   # runs under macOS /bin/bash 3.2 under launchd.
-  while [ "$(( $(our_active) + LIVE ))" -ge "$SLOTS" ]; do sleep 2; done
+  #
+  # RE-READ the live count every iteration, and BOUND the wait. This used to
+  # test `our_active + LIVE`, where LIVE was the snapshot taken at the top of
+  # the pass: with live runs already filling --parallel, that condition could
+  # never go false, so a burst printed its cost estimate and then sat there
+  # forever, even after the live runs finished. A foreground command that blocks
+  # with no output and no end is worse than one that says it gave up.
+  WAITED=0
+  while [ "$(( $(our_active) + $(external_live) ))" -ge "$SLOTS" ]; do
+    if [ "$WAITED" -ge "$SLOT_WAIT" ]; then SLOTS_FULL=1; break; fi
+    [ "$WAITED" -eq 0 ] && say "waiting for one of $SLOTS slot(s) to free up (up to ${SLOT_WAIT}s)"
+    sleep 2; WAITED=$(( WAITED + 2 ))
+  done
+  if [ "$SLOTS_FULL" -eq 1 ]; then
+    skip "$ISSUE" "every one of the $SLOTS slot(s) was still held after waiting ${SLOT_WAIT}s for a free slot; still ready for the next run"
+    continue
+  fi
 
   # Count BEFORE launching. Counting after would let a crash between the two
   # hand out a free dispatch every heartbeat -- the budget must fail closed.
@@ -452,19 +620,36 @@ for ISSUE in $CANDIDATES; do
   else
     say "dispatching $ISSUE (burst $((DISPATCHED + 1))/$TARGET, at most $SLOTS at once, rounds=$MAX_ROUNDS)"
   fi
+  [ "$SOLO" -eq 1 ] && say "  ...ALONE: its DoR names no files, so nothing may run alongside it until it finishes. Add a \`**Files:**\` list to let it share the board."
 
   nohup ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" \
     > "$HOME/.config/kipi/converge-$ISSUE.log" 2>&1 &
   LAUNCHED_PIDS="$LAUNCHED_PIDS $!"
+  printf '%s\n' "$ISSUE" >> "$OURS"
   DISPATCHED=$(( DISPATCHED + 1 ))
 
   # This run is now live for the purposes of the next candidate. Without this
   # the whole change is decorative: candidates 2..N would only be checked
   # against runs that were already live when the pass started.
   cat "$CAND_SET" >> "$LIVE_SET"
+  [ "$SOLO" -eq 1 ] && PASS_UNKNOWN="$ISSUE"
 
   say "dispatched $ISSUE"
 done
 
-say "done: dispatched $DISPATCHED, skipped $SKIPPED, of $N_CANDIDATES candidate(s)"
+say "done: dispatched $DISPATCHED, skipped $SKIPPED, of $N_CANDIDATES candidate(s) examined (${READY_TOTAL:-an unknown number of} ready on the board)"
+
+# A pass that dispatched NOTHING while nothing was live and the board was not
+# empty. After the rules above, the only way to reach this is that the file sets
+# could not be READ: an unknown set now runs alone, and an overlap needs a live
+# run to overlap WITH. So it is a fault, and it had no page site -- the liveness
+# beacon kept reporting a healthy loop that was doing no work, and the only
+# other signal was a log nobody reads.
+#
+# Deliberately NOT paged when something is live: a busy loop holding candidates
+# back is the gate working, not the gate stuck.
+if [ "$BURST" -eq 0 ] && [ "$DISPATCHED" -eq 0 ] && [ "$LIVE" -eq 0 ] && [ "$N_CANDIDATES" -gt 0 ]; then
+  page_once "$HOME/.config/kipi/dispatch-stuck-$TODAY.paged" \
+    "kipi dispatch: ${READY_TOTAL:-several} issue(s) ready, nothing running, and the loop dispatched nothing -- their file sets could not be read. The Linear loop is IDLE, not busy. Do: run \`bash kipi-dispatch.sh --burst 1\` in $REPO and read the skip lines."
+fi
 exit 0
