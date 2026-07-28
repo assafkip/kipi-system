@@ -37,6 +37,31 @@
 		       launchctl unload ~/Library/LaunchAgents/com.kipi.dispatch.plist
 		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
+		<string>3</string>
+
+		<!-- ROUND CAP: 4, raised from 3 on 2026-07-28, and DAILY_MAX dropped
+		     4 -> 3 in the same breath so the spend is UNCHANGED:
+		         3 rounds x 2 sessions x 4 issues = 24
+		         4 rounds x 2 sessions x 3 issues = 24
+
+		     WHY, measured rather than guessed. Two issues capped out at 3
+		     rounds the same day. Their review histories say the cap was the
+		     problem, not the work:
+
+		       - NO finding was ever repeated across rounds, on either issue.
+		         Every round surfaced different lines and different bugs, so
+		         the agent WAS fixing what it was told; the reviewer kept
+		         finding new, deeper problems underneath.
+		       - Majors decline toward zero, and that is the convergence
+		         signal: PR #39 went 2 majors -> 2 majors -> 0 majors, and the
+		         third round returned APPROVE WITH NITS and merged. Minors
+		         never block.
+		       - PR #40 was at ONE major when the cap stopped it.
+
+		     A cap-out is the most expensive possible outcome: it spends the
+		     whole cost of the issue and produces nothing mergeable. Three
+		     issues that LAND beat four that die one round short. -->
+		<key>KIPI_DISPATCH_ROUNDS</key>
 		<string>4</string>
 
 		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,

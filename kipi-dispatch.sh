@@ -103,8 +103,11 @@ fi
 # runs. An unbounded heartbeat is a runaway-bill loop, which is exactly the
 # thing loop-exits.md says an autonomous loop must not be.
 #
-# One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) = 6 sessions.
-# So DAILY_MAX is roughly "sessions per day / 6".
+# One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) sessions, so at the
+# current cap of 4 that is 8, and DAILY_MAX is roughly "sessions per day / 8".
+#
+# The two dials move TOGETHER. Raising the round cap without lowering DAILY_MAX
+# raises the bill; the plist sets 4 rounds x 3 issues to hold it flat at 24.
 DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
 # The budget day starts at RESET_HOUR LOCAL, not at midnight and not at UTC.
 # Founder-set 2026-07-28, and the reasoning is safety, not tidiness:
