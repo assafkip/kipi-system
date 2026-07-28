@@ -25,6 +25,19 @@
 		     file-disjointness aware (sp-see dispatch-conflict item). -->
 		<key>KIPI_DISPATCH_MAX</key>
 		<string>1</string>
+
+		<!-- THE SPEND DIAL. Founder-set 2026-07-28.
+		     How many issues may be STARTED per UTC day. One issue costs up to
+		     3 rounds x (1 agent + 1 reviewer) = 6 `claude -p` sessions, so 4
+		     issues is roughly 24 sessions/day. For scale, one interactive
+		     night on 2026-07-28 spent 89.
+		     The concurrency cap above bounds how many run AT ONCE; this bounds
+		     how many run AT ALL. Without it the heartbeat is unbounded.
+		     Raise or lower this number, then:
+		       launchctl unload ~/Library/LaunchAgents/com.kipi.dispatch.plist
+		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist -->
+		<key>KIPI_DISPATCH_DAILY_MAX</key>
+		<string>4</string>
 	</dict>
 
 	<key>ProgramArguments</key>
