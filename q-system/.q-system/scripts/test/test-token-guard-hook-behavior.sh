@@ -438,8 +438,19 @@ import importlib.util, os, subprocess, sys, tempfile
 spec = importlib.util.spec_from_file_location("tg", sys.argv[1])
 tg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tg)
-repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.argv[1]))))
+# THREE dirnames: $GUARD is <repo>/q-system/.q-system/token-guard.py, so the
+# repo root is three levels up, not four. Four resolved to the repo's PARENT and
+# the gate path did not exist, so this check never ran its producer at all -- it
+# graded python3's own "can't open file" message. It passed on macOS (that text
+# starts with the interpreter's absolute path, which falls through to the generic
+# label) and failed on Linux CI (which prints "python3: can't open file", so the
+# reader took 'python3' as the gate name). A green test that never reached the
+# code under test is the exact defect class this suite exists to catch.
+repo = os.path.dirname(os.path.dirname(os.path.dirname(sys.argv[1])))
 gate = os.path.join(repo, "q-system/.q-system/scripts/linear-issue-ref-check.py")
+# Fail LOUDLY if the producer is missing, instead of silently grading the
+# interpreter's error text the way the 4-dirname version did.
+assert os.path.exists(gate), f"fixture cannot reach the real commit-msg gate: {gate}"
 msg = os.path.join(tempfile.mkdtemp(), "msg.txt")
 open(msg, "w").write("chore: no issue id here\n")
 run = subprocess.run(["python3", gate, msg], capture_output=True, text=True)
