@@ -96,10 +96,11 @@ USAGE
 }
 
 BURST=0
+BURST_GIVEN=0
 PARALLEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --burst)    shift; BURST="${1:-}" ;;
+    --burst)    shift; BURST="${1:-}"; BURST_GIVEN=1 ;;
     --parallel) shift; PARALLEL="${1:-}" ;;
     -h|--help)  usage; exit 0 ;;
     *) printf 'kipi-dispatch: unknown argument %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -109,6 +110,13 @@ done
 case "$BURST" in ''|*[!0-9]*) printf 'kipi-dispatch: --burst wants a number\n' >&2; exit 2 ;; esac
 case "$PARALLEL" in '') ;; *[!0-9]*) printf 'kipi-dispatch: --parallel wants a number\n' >&2; exit 2 ;; esac
 [ "${PARALLEL:-1}" = "0" ] && { printf 'kipi-dispatch: --parallel 0 would dispatch nothing\n' >&2; exit 2; }
+# `--burst 0` is not a burst of nothing, it is the internal value for "this is a
+# heartbeat tick", so it fell through EVERY `[ "$BURST" -gt 0 ]` branch below: it
+# spent the daily counter and wrote the liveness beacon that the beacon's own
+# comment says a burst must never write. A founder typing `--burst 0` gets the
+# scheduler's behaviour under the founder's name. Refuse it, like --parallel 0.
+[ "$BURST_GIVEN" -eq 1 ] && [ "$BURST" = "0" ] && {
+  printf 'kipi-dispatch: --burst 0 would dispatch nothing (drop the flag for a heartbeat tick)\n' >&2; exit 2; }
 
 mkdir -p "$(dirname "$LOG")"
 # Also to stdout. A burst is a foreground founder command and MUST show what it
@@ -129,9 +137,29 @@ page_once() {  # page_once <marker-file> <message>
   : > "$1"
 }
 
+# LOCAL date, not UTC. Founder-set 2026-07-28. A UTC budget day rolls over at
+# 17:00 PDT, so spending the cap overnight left the loop idle through the whole
+# working day and refilled it at teatime -- the budget window was inverted
+# against the day it is meant to serve. Local midnight gives a fresh budget each
+# morning. `date` with no -u is the local date, and the file name carries it, so
+# the rollover needs no timer: a new day is simply a new file that reads 0.
+#
+# Every page marker carries the same stamp, so a fault that is still true
+# tomorrow pages again tomorrow -- deduped, not muted. Read before the `cd`
+# because repo-not-found needs to stamp a marker too.
+TODAY="$(date +%Y-%m-%d)"
+
+# THE THREE FATAL / INFRA PAGES ARE page_once, NOT page (PR #36 r4).
+# Every condition this script pages for is TRUE again on the next tick, and
+# these three (repo gone, gh missing, Linear unreachable) persist until a human
+# fixes them. Ungated, one expired token was 96 identical Slack messages a day.
+# The `say` line still fires every tick, so the LOG keeps full fidelity; only
+# Slack is deduped. The cost is honest and worth naming: if the founder misses
+# the one page, the next one is tomorrow -- the daily re-stamp is the backstop.
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
-  page "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
+  page_once "$HOME/.config/kipi/dispatch-repo-$TODAY.paged" \
+    "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
   exit 1
 }
 
@@ -146,7 +174,17 @@ cd "$REPO" 2>/dev/null || {
 # pgrep sees the founder's actual converge runs and its concurrency assertions
 # change meaning depending on what the fleet happens to be doing. Set it (even
 # to empty) to pin the live set. Unset = the real process table.
+#
+# KIPI_DISPATCH_FAKE_LIVE_FILE (higher precedence) is re-read on EVERY call,
+# which is the whole point of it: the defect it pins is a live set read ONCE and
+# reused for the rest of the pass, and a static value cannot express "a converge
+# started while this pass was running". pgrep is already fresh per call; what
+# has to be tested is how often the script CALLS it.
 live_issues() {
+  if [ -n "${KIPI_DISPATCH_FAKE_LIVE_FILE:-}" ]; then
+    grep -oE 'ASK-[0-9]+' "$KIPI_DISPATCH_FAKE_LIVE_FILE" 2>/dev/null | sort -u || true
+    return 0
+  fi
   if [ "${KIPI_DISPATCH_FAKE_LIVE+set}" = "set" ]; then
     printf '%s\n' $KIPI_DISPATCH_FAKE_LIVE | grep . || true
     return 0
@@ -179,7 +217,8 @@ issue_is_live() { live_issues | grep -qx "$1"; }
 # `2>/dev/null` would report the second as the first and leave the board
 # serialised with a skip line pointing at the wrong thing.
 fileset_for() {  # fileset_for <issue> <out-file> ; prints the failure reason
-  ISSUE="$1" PRD_SPLIT="$PRD_SPLIT" python3 - > "$2" 2>"$2.err" <<'PY'
+  ISSUE="$1" PRD_SPLIT="$PRD_SPLIT" KIPI_DISPATCH_REPO="$REPO" \
+  python3 - > "$2" 2>"$2.err" <<'PY'
 import importlib.util, json, os, pathlib, re, sys
 
 issue = os.environ["ISSUE"]
@@ -239,13 +278,35 @@ if not value:
 if not value or mod._UNKNOWN_RE.search(value):
     raise SystemExit(0)
 seen = set()
+_repo = os.environ.get("KIPI_DISPATCH_REPO", "")
+_repo = os.path.realpath(_repo) if _repo else ""
+
 def emit(path):
     # A trailing slash means the DoR was talking ABOUT a directory, not naming a
     # file to edit -- ASK-225's own Files bullet contains the prose "must NOT go
     # under the synced `q-system/` subtree". Left in, that token appears in many
     # DoRs and makes unrelated issues collide on a word. The intersection is
-    # exact-match on file paths, so only file paths belong in it.
-    if path.endswith("/") or path in seen:
+    # exact-match on file paths, so only file paths belong in it. Checked BEFORE
+    # normalising, because realpath() strips the trailing slash that carries the
+    # signal.
+    if path.endswith("/"):
+        return
+    # ONE SPELLING PER FILE. The intersection is exact string match, so
+    # `/Users/me/projects/kipi-system/foo.sh` and `foo.sh` were two different
+    # files to it and two issues editing one file both dispatched. 6 real DoRs
+    # spell a repo path absolutely. Everything inside the repo is reduced to the
+    # repo-relative form the DoRs mostly use; realpath on both sides so a
+    # symlinked checkout (/tmp -> /private/tmp, and the founder's own path)
+    # compares equal. Paths OUTSIDE the repo -- a launchd plist under ~ -- stay
+    # absolute, which is still one canonical spelling for them.
+    path = os.path.expanduser(path)
+    if _repo and os.path.isabs(path):
+        real = os.path.realpath(path)
+        if real.startswith(_repo + os.sep):
+            path = real[len(_repo) + 1:]
+        else:
+            path = real
+    if path in seen:
         return
     seen.add(path)
     print(path)
@@ -253,7 +314,7 @@ def emit(path):
 for m in _ANCHORED_RE.finditer(value):
     tail = m.group(2).rstrip(".,;:")
     if tail and mod._PATH_TOKEN_RE.fullmatch(tail):
-        emit(os.path.expanduser(m.group(1) + tail))
+        emit(m.group(1) + tail)
 for path in mod._extract_paths(value):
     emit(path)
 PY
@@ -348,6 +409,71 @@ else
 fi
 [ "$BURST" -gt 0 ] || printf '%s' "$NOW_EPOCH" > "$BEAT_FILE"
 
+# --- ONE PICKER AT A TIME -------------------------------------------------
+# The launchd heartbeat (every 900s) and a founder's foreground `--burst` are
+# two producers of a dispatch pass. Nothing stopped them running at once, and
+# two passes reading the same live set both find the same candidate disjoint --
+# so the file-set intersection, which is the entire point of this script, is
+# computed from a state that a concurrent pass is already invalidating. The
+# founder's own `kipi converge` is a THIRD producer; the lock cannot see that
+# one, which is why the live set is also rebuilt per candidate below. Two
+# defences, two different producers.
+#
+# mkdir is the atomic primitive: macOS ships no flock(1) and this runs under
+# /bin/bash 3.2 under launchd. The holder's pid goes INSIDE the directory so a
+# SIGKILLed pass does not wedge the loop forever -- a lock nobody can clear is a
+# worse outage than the race it prevents (the reclaim-on-read rule the claim
+# mutex learned in ASK-189). A directory with no readable pid is treated as
+# YOUNG, not stale: that is the microsecond between mkdir and the pid write.
+#
+# Taken AFTER the beacon on purpose: a tick that gives up because another pass
+# holds the lock is still proof of life, and skipping the beat would make a
+# healthy loop look dead and fire a false RESUMED page later.
+LOCK_DIR="$HOME/.config/kipi/dispatch.lock"
+LOCK_HELD=0
+SCRATCH=""
+cleanup() {
+  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
+  [ "$LOCK_HELD" -eq 1 ] && rm -rf "$LOCK_DIR"
+  return 0
+}
+trap cleanup EXIT
+
+lock_holder_dead() {
+  HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  case "$HOLDER" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$HOLDER" 2>/dev/null && return 1
+  return 0
+}
+
+# A burst is a founder standing at the terminal, and a heartbeat tick is seconds
+# of picking, so waiting it out is right. The heartbeat does NOT wait for a
+# burst: launchd re-fires in 900s and a stacked tick buys nothing.
+if [ "$BURST" -gt 0 ]; then
+  LOCK_WAIT="${KIPI_DISPATCH_LOCK_WAIT:-120}"
+else
+  LOCK_WAIT="${KIPI_DISPATCH_LOCK_WAIT:-0}"
+fi
+LOCK_TRIES=0
+LOCK_RECLAIMS=0
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+  if [ "$LOCK_RECLAIMS" -lt 2 ] && lock_holder_dead; then
+    say "note: clearing a dispatch lock left behind by a killed pass (pid $HOLDER)"
+    rm -rf "$LOCK_DIR"
+    LOCK_RECLAIMS=$(( LOCK_RECLAIMS + 1 ))
+    continue
+  fi
+  if [ "$LOCK_TRIES" -ge "$LOCK_WAIT" ]; then
+    # Not a fault and not an empty board: another pass is doing this work right
+    # now. Exit 0, no page -- paging here would cry wolf on the loop WORKING.
+    say "skip: another dispatch pass is already picking (lock held by pid $(cat "$LOCK_DIR/pid" 2>/dev/null))"
+    exit 0
+  fi
+  sleep 1; LOCK_TRIES=$(( LOCK_TRIES + 1 ))
+done
+printf '%s' "$$" > "$LOCK_DIR/pid"
+LOCK_HELD=1
+
 LIVE="$(live_converges)"; LIVE="${LIVE:-0}"
 SLOTS="${PARALLEL:-$MAX_CONCURRENT}"
 if [ "$BURST" -eq 0 ] && [ "$LIVE" -ge "$MAX_CONCURRENT" ]; then
@@ -373,14 +499,7 @@ fi
 # would be the cap doing a job it was never given -- and letting it DECREMENT
 # the counter would mean an afternoon burst silently eats the night's budget.
 DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
-# LOCAL date, not UTC. Founder-set 2026-07-28. A UTC budget day rolls over at
-# 17:00 PDT, so spending the cap overnight left the loop idle through the whole
-# working day and refilled it at teatime -- the budget window was inverted
-# against the day it is meant to serve. Local midnight gives a fresh budget each
-# morning. `date` with no -u is the local date, and the file name carries it, so
-# the rollover needs no timer: a new day is simply a new file that reads 0.
-TODAY="$(date +%Y-%m-%d)"
-COUNT_FILE="$HOME/.config/kipi/dispatch-count-$TODAY"
+COUNT_FILE="$HOME/.config/kipi/dispatch-count-$TODAY"   # TODAY: see the top
 DISPATCHED_TODAY=0
 if [ "$BURST" -eq 0 ]; then
   DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
@@ -402,7 +521,8 @@ fi
 # dispatching an agent that dies opening its PR.
 if ! command -v gh >/dev/null 2>&1; then
   say "FATAL: gh not on PATH ($PATH)"
-  page "kipi dispatch: gh CLI not on PATH under launchd, so no PR can be opened. The Linear loop is stalled. Do: fix PATH in com.kipi.dispatch.plist."
+  page_once "$HOME/.config/kipi/dispatch-gh-$TODAY.paged" \
+    "kipi dispatch: gh CLI not on PATH under launchd, so no PR can be opened. The Linear loop is stalled. Do: fix PATH in com.kipi.dispatch.plist."
   exit 1
 fi
 
@@ -430,10 +550,17 @@ WORK_RC=$?
 # An infra error (Linear down, auth expired) is environmental: it will not
 # self-heal on the next heartbeat, so say so once rather than fail silently
 # every 15 minutes forever. self-healing-retry.md rule 5.
-if printf '%s' "$WORK_OUT" | grep -qi "infra_error\|authentication\|unauthorized"; then
-  say "infra error from kipi work: $(printf '%s' "$WORK_OUT" | head -3 | tr '\n' ' ')"
-  page "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
-  exit 1
+#
+# MATCH WHAT THE PRODUCER ACTUALLY PRINTS (PR #36 r4). linear-worker.sh:239 says
+# `INFRA: linear unreachable (<reason>)` through its timestamped `say` and exits
+# ZERO, and the two likeliest reasons -- linear-sync.py:341 "no Linear API key.
+# Create one at ..." and :380 "network: <errno>" -- contain none of the three
+# keywords below. So the commonest infra failure of all read as an empty board,
+# every 15 minutes, exit 0, no page. The keyword grep stays for anything that
+# reaches us by another route; `INFRA:` is the marker the worker owns.
+WORK_INFRA="$(printf '%s' "$WORK_OUT" | grep -E '(^|[[:space:]])INFRA:' | head -1)"
+if [ -z "$WORK_INFRA" ]; then
+  WORK_INFRA="$(printf '%s' "$WORK_OUT" | grep -i 'infra_error\|authentication\|unauthorized' | head -1)"
 fi
 
 # A CRASHED PICKER IS NOT AN EMPTY BOARD. WORK_RC used to be captured and never
@@ -455,16 +582,28 @@ fi
 READY_TOTAL="$(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1 | grep -oE '^[0-9]+' || true)"
 
 CANDIDATES="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+')"
+
+# THE INFRA VERDICT IS TAKEN HERE, WHERE THE BOARD IS KNOWN TO BE EMPTY, and
+# nowhere else -- one reader, not two. `INFRA:` is not always fatal: the worker
+# prints a per-issue one at :763 and :823 and keeps going, so stopping on the
+# marker alone would turn one bad issue into a stopped loop, which is the same
+# over-enforcement finding 1 already cost this file once. An infra line WITH
+# candidates is reported and stepped past; an empty board WITH an infra line is
+# a fault, because a zero result must prove it is empty, not broken.
 if [ -z "$CANDIDATES" ]; then
+  if [ -n "$WORK_INFRA" ]; then
+    say "infra error from kipi work: $WORK_INFRA"
+    page_once "$HOME/.config/kipi/dispatch-infra-$TODAY.paged" \
+      "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
+    exit 1
+  fi
   say "nothing ready (${READY_TOTAL:-an unknown number of} ready issue(s) on the board)"
   exit 0
 fi
+[ -n "$WORK_INFRA" ] && say "note: kipi work reported an infra problem but still returned candidates, continuing: $WORK_INFRA"
 N_CANDIDATES="$(printf '%s\n' "$CANDIDATES" | grep -c .)"
 
-# The union of every live run's file set. Seeded from the process table so a
-# burst launched while the heartbeat has runs in flight still respects them.
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
+SCRATCH="$(mktemp -d)"      # freed by cleanup(), together with the lock
 LIVE_SET="$SCRATCH/live-set"
 : > "$LIVE_SET"
 MAGNETS="$SCRATCH/magnets"
@@ -472,25 +611,100 @@ magnet_patterns > "$MAGNETS"
 OURS="$SCRATCH/ours"
 : > "$OURS"
 
-# The issue whose UNKNOWN file set holds this whole pass -- a live run with no
-# usable Files list, or an unknown-set candidate we dispatch alone below. One
-# variable for both, because they are one fact: something is running whose files
-# we cannot name, so nothing may run beside it.
+# ONE READ of one issue's DoR per pass, cached. The union below is rebuilt for
+# EVERY candidate -- that is the fix -- and re-fetching each live run's DoR from
+# Linear each time would turn one network call into a dozen. A DoR does not
+# change mid-pass; the LIST of live runs is the thing that has to be fresh, and
+# that comes from pgrep, which costs nothing.
+SET_FILE=""
+SET_RC=0
+SET_WHY=""
+set_for_issue() {  # set_for_issue <issue>  -> SET_FILE, SET_RC, SET_WHY
+  SET_FILE="$SCRATCH/set-$1"
+  if [ -f "$SCRATCH/rc-$1" ]; then
+    SET_RC="$(cat "$SCRATCH/rc-$1")"
+    SET_WHY="$(cat "$SCRATCH/why-$1")"
+    return 0
+  fi
+  SET_WHY="$(fileset_known "$1" "$SET_FILE")"; SET_RC=$?
+  printf '%s' "$SET_RC" > "$SCRATCH/rc-$1"
+  printf '%s' "$SET_WHY" > "$SCRATCH/why-$1"
+  return 0
+}
+
+# Say a per-issue note ONCE per pass. The union is rebuilt per candidate, so an
+# unconditional note would repeat the same line N times and bury the
+# per-candidate skips under it. Noise is how a real signal gets missed.
+note_once() {  # note_once <issue> <message>
+  [ -f "$SCRATCH/noted-$1" ] && return 0
+  : > "$SCRATCH/noted-$1"
+  say "$2"
+}
+
+# THE UNION OF EVERY FILE SET THAT IS LIVE RIGHT NOW, REBUILT PER CANDIDATE.
+# Frozen once per pass, this was the hole (PR #36 r4 finding 1): issue_is_live()
+# and external_live() both re-read pgrep, so a pass could sit in the slot wait,
+# watch one run end and another BEGIN, and still test overlap against the set it
+# built minutes earlier. Two agents in one file, reported as `skipped 0` -- the
+# exact collision this whole script exists to prevent, certified clean.
+#
+# OURS is folded in because a run we launched a moment ago may not be in the
+# process table yet, and because a finished-but-ours run still owns the files it
+# just wrote. Over-counting there costs one extra skip with a named reason;
+# under-counting costs a conflicted PR.
+#
+# PASS_UNKNOWN is one variable for one fact: something is running whose files we
+# cannot name, so nothing may run beside it. It now falls out of the rebuild
+# rather than being set by hand in two places, so a solo run we launch ourselves
+# holds the board by the same rule as one we found.
+LIVE_NOW=0
 PASS_UNKNOWN=""
 UNREADABLE_LIVE=0
-for LI in $(live_issues); do
-  # A live run whose file set is unknown or unreadable intersects everything --
-  # so nothing gets dispatched alongside it. Fail closed on the side that
-  # already holds a worktree.
-  fileset_known "$LI" "$SCRATCH/live-$LI" >/dev/null
-  case $? in
-    0) cat "$SCRATCH/live-$LI" >> "$LIVE_SET" ;;
-    1) say "note: the live run $LI has an unknown file set; nothing may run alongside it this pass"
-       PASS_UNKNOWN="$LI" ;;
-    *) say "note: the file set for the live run $LI is UNREADABLE; holding every candidate this pass"
-       UNREADABLE_LIVE=1 ;;
-  esac
-done
+refresh_live_set() {
+  : > "$LIVE_SET"
+  LIVE_NOW=0
+  PASS_UNKNOWN=""
+  UNREADABLE_LIVE=0
+  for LI in $( { live_issues; cat "$OURS"; } | sort -u ); do
+    LIVE_NOW=$(( LIVE_NOW + 1 ))
+    set_for_issue "$LI"
+    case "$SET_RC" in
+      0) cat "$SET_FILE" >> "$LIVE_SET" ;;
+      1) PASS_UNKNOWN="$LI"
+         note_once "$LI" "note: the live run $LI has an unknown file set; nothing may run alongside it" ;;
+      *) UNREADABLE_LIVE=1
+         note_once "$LI" "note: the file set for the live run $LI is UNREADABLE; holding every candidate" ;;
+    esac
+  done
+}
+
+# Why this candidate may not go, or nothing at all. Called TWICE per candidate
+# -- once before the slot wait as a cheap early-out, once after it as the
+# authoritative answer -- and it is one function on purpose: two readers of "may
+# this run" with drifting semantics is the defect class this repo keeps finding.
+# Reads the globals refresh_live_set just wrote; writes none, because it is
+# called inside a command substitution and a subshell would swallow them.
+candidate_blocked() {  # candidate_blocked <issue> <set-rc> <why> <set-file>
+  if [ "$UNREADABLE_LIVE" -eq 1 ]; then
+    printf 'a live run has an UNREADABLE file set, so no overlap check is trustworthy right now'
+    return 0
+  fi
+  if [ -n "$PASS_UNKNOWN" ]; then
+    printf '%s is running with an unknown file set, so nothing may run alongside it; still ready for the next pass' "$PASS_UNKNOWN"
+    return 0
+  fi
+  if [ "$2" -eq 1 ]; then
+    # FAIL CLOSED MEANS NOT IN PARALLEL -- NOT NEVER. An unknown file set
+    # intersects everything, and everything is EMPTY when nothing is live. So it
+    # runs, alone. Refusing it outright is what made this gate reject 51 of 55
+    # real ready issues and dispatch zero, forever.
+    [ "$LIVE_NOW" -gt 0 ] && printf '%s, so it can only run ALONE and something is already running (live=%s). Add the paths to its DoR to let it run in parallel.' "$3" "$LIVE_NOW"
+    return 0
+  fi
+  OVERLAP="$(first_overlap "$LIVE_SET" "$4")"
+  [ -n "$OVERLAP" ] && printf 'its file set overlaps a live run on %s' "$OVERLAP"
+  return 0
+}
 
 if [ "$BURST" -gt 0 ]; then
   # BEFORE launching, not after. The founder is standing here; the cost of the
@@ -540,15 +754,26 @@ SLOTS_FULL=0
 # reasons reads as "there were only 3", which is the silent-truncation failure.
 skip() { SKIPPED=$((SKIPPED+1)); say "skip $1: $2"; }
 
+# Wait for a free slot. Polling beats `wait -n`, which needs bash 4.3 and this
+# runs under macOS /bin/bash 3.2 under launchd.
+#
+# RE-READ the live count every iteration, and BOUND the wait. This used to test
+# `our_active + LIVE`, where LIVE was the snapshot taken at the top of the pass:
+# with live runs already filling --parallel, that condition could never go
+# false, so a burst printed its cost estimate and then sat there forever, even
+# after the live runs finished. A foreground command that blocks with no output
+# and no end is worse than one that says it gave up.
+wait_for_slot() {
+  WAITED=0
+  while [ "$(( $(our_active) + $(external_live) ))" -ge "$SLOTS" ]; do
+    if [ "$WAITED" -ge "$SLOT_WAIT" ]; then SLOTS_FULL=1; return 0; fi
+    [ "$WAITED" -eq 0 ] && say "waiting for one of $SLOTS slot(s) to free up (up to ${SLOT_WAIT}s)"
+    sleep 2; WAITED=$(( WAITED + 2 ))
+  done
+  return 0
+}
+
 for ISSUE in $CANDIDATES; do
-  if [ "$UNREADABLE_LIVE" -eq 1 ]; then
-    skip "$ISSUE" "a live run's file set is unreadable, so no overlap check is trustworthy this pass"
-    continue
-  fi
-  if [ -n "$PASS_UNKNOWN" ]; then
-    skip "$ISSUE" "$PASS_UNKNOWN is running with an unknown file set, so nothing may run alongside it; still ready for the next pass"
-    continue
-  fi
   if [ "$SLOTS_FULL" -eq 1 ]; then
     skip "$ISSUE" "every one of the $SLOTS slot(s) was still held after waiting ${SLOT_WAIT}s for a free slot; still ready for the next run"
     continue
@@ -564,51 +789,38 @@ for ISSUE in $CANDIDATES; do
     continue
   fi
 
-  CAND_SET="$SCRATCH/cand-$ISSUE"
-  WHY="$(fileset_known "$ISSUE" "$CAND_SET")"; SET_RC=$?
-  if [ "$SET_RC" -eq 2 ]; then
-    skip "$ISSUE" "$WHY"
+  set_for_issue "$ISSUE"
+  CAND_RC="$SET_RC"; CAND_WHY="$SET_WHY"; CAND_SET="$SET_FILE"
+  if [ "$CAND_RC" -eq 2 ]; then
+    skip "$ISSUE" "$CAND_WHY"
     continue
   fi
   SOLO=0
-  if [ "$SET_RC" -eq 1 ]; then
-    # FAIL CLOSED, WHICH MEANS NOT IN PARALLEL -- NOT NEVER. An unknown file set
-    # intersects everything by assumption, and everything is EMPTY when nothing
-    # is live and nothing else has launched this pass. So it runs, alone, and
-    # holds the board until it finishes. Refusing it outright is what made this
-    # gate reject 51 of 55 real ready issues and dispatch zero, forever.
-    if [ "$LIVE" -gt 0 ] || [ "$DISPATCHED" -gt 0 ]; then
-      skip "$ISSUE" "$WHY, so it can only run ALONE and something is already running (live=$LIVE, dispatched here=$DISPATCHED). Add the paths to its DoR to let it run in parallel."
-      continue
-    fi
-    SOLO=1
-  else
-    OVERLAP="$(first_overlap "$LIVE_SET" "$CAND_SET")"
-    if [ -n "$OVERLAP" ]; then
-      skip "$ISSUE" "its file set overlaps a live run on $OVERLAP"
-      continue
-    fi
-  fi
+  [ "$CAND_RC" -eq 1 ] && SOLO=1
 
-  # Wait for a free slot. Polling beats `wait -n`, which needs bash 4.3 and this
-  # runs under macOS /bin/bash 3.2 under launchd.
-  #
-  # RE-READ the live count every iteration, and BOUND the wait. This used to
-  # test `our_active + LIVE`, where LIVE was the snapshot taken at the top of
-  # the pass: with live runs already filling --parallel, that condition could
-  # never go false, so a burst printed its cost estimate and then sat there
-  # forever, even after the live runs finished. A foreground command that blocks
-  # with no output and no end is worse than one that says it gave up.
-  WAITED=0
-  while [ "$(( $(our_active) + $(external_live) ))" -ge "$SLOTS" ]; do
-    if [ "$WAITED" -ge "$SLOT_WAIT" ]; then SLOTS_FULL=1; break; fi
-    [ "$WAITED" -eq 0 ] && say "waiting for one of $SLOTS slot(s) to free up (up to ${SLOT_WAIT}s)"
-    sleep 2; WAITED=$(( WAITED + 2 ))
-  done
+  # Cheap early-out: a candidate that ALREADY overlaps is skipped before we
+  # spend up to ${SLOT_WAIT}s waiting for a slot it cannot use. Without this, a
+  # burst of 5 candidates all overlapping one live run would wait the full
+  # timeout five times over -- an hour of a founder's foreground command to
+  # reach an answer it had at second zero.
+  refresh_live_set
+  WHY_BLOCKED="$(candidate_blocked "$ISSUE" "$CAND_RC" "$CAND_WHY" "$CAND_SET")"
+  if [ -n "$WHY_BLOCKED" ]; then skip "$ISSUE" "$WHY_BLOCKED"; continue; fi
+
+  wait_for_slot
   if [ "$SLOTS_FULL" -eq 1 ]; then
     skip "$ISSUE" "every one of the $SLOTS slot(s) was still held after waiting ${SLOT_WAIT}s for a free slot; still ready for the next run"
     continue
   fi
+
+  # AND AGAIN, AUTHORITATIVELY. The wait above is the window: it ends precisely
+  # BECAUSE the live set changed, and the run that freed the slot is not
+  # necessarily the run that is holding it now. Same function, same data, so the
+  # two checks cannot disagree -- the second one is simply the one that is true
+  # at the moment of launch.
+  refresh_live_set
+  WHY_BLOCKED="$(candidate_blocked "$ISSUE" "$CAND_RC" "$CAND_WHY" "$CAND_SET")"
+  if [ -n "$WHY_BLOCKED" ]; then skip "$ISSUE" "$WHY_BLOCKED"; continue; fi
 
   # Count BEFORE launching. Counting after would let a crash between the two
   # hand out a free dispatch every heartbeat -- the budget must fail closed.
@@ -616,7 +828,7 @@ for ISSUE in $CANDIDATES; do
   if [ "$BURST" -eq 0 ]; then
     DISPATCHED_TODAY=$(( DISPATCHED_TODAY + 1 ))
     printf '%s' "$DISPATCHED_TODAY" > "$COUNT_FILE"
-    say "dispatching $ISSUE (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$DISPATCHED_TODAY/$DAILY_MAX)"
+    say "dispatching $ISSUE (live=$LIVE_NOW cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$DISPATCHED_TODAY/$DAILY_MAX)"
   else
     say "dispatching $ISSUE (burst $((DISPATCHED + 1))/$TARGET, at most $SLOTS at once, rounds=$MAX_ROUNDS)"
   fi
@@ -625,14 +837,12 @@ for ISSUE in $CANDIDATES; do
   nohup ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" \
     > "$HOME/.config/kipi/converge-$ISSUE.log" 2>&1 &
   LAUNCHED_PIDS="$LAUNCHED_PIDS $!"
+  # This run is now live for the purposes of every later candidate, including
+  # the seconds before the process table shows it. refresh_live_set folds OURS
+  # into the union, so this one line is what keeps candidates 2..N honest --
+  # without it the whole change is decorative.
   printf '%s\n' "$ISSUE" >> "$OURS"
   DISPATCHED=$(( DISPATCHED + 1 ))
-
-  # This run is now live for the purposes of the next candidate. Without this
-  # the whole change is decorative: candidates 2..N would only be checked
-  # against runs that were already live when the pass started.
-  cat "$CAND_SET" >> "$LIVE_SET"
-  [ "$SOLO" -eq 1 ] && PASS_UNKNOWN="$ISSUE"
 
   say "dispatched $ISSUE"
 done
@@ -647,8 +857,12 @@ say "done: dispatched $DISPATCHED, skipped $SKIPPED, of $N_CANDIDATES candidate(
 # other signal was a log nobody reads.
 #
 # Deliberately NOT paged when something is live: a busy loop holding candidates
-# back is the gate working, not the gate stuck.
-if [ "$BURST" -eq 0 ] && [ "$DISPATCHED" -eq 0 ] && [ "$LIVE" -eq 0 ] && [ "$N_CANDIDATES" -gt 0 ]; then
+# back is the gate working, not the gate stuck. Read FRESH, not from the count
+# taken at the top: a converge that started mid-pass is exactly why every
+# candidate was held, and paging "nothing is running" about it would be a lie
+# the operator gets woken for.
+LIVE_AT_END="$(live_converges)"; LIVE_AT_END="${LIVE_AT_END:-0}"
+if [ "$BURST" -eq 0 ] && [ "$DISPATCHED" -eq 0 ] && [ "$LIVE" -eq 0 ] && [ "$LIVE_AT_END" -eq 0 ] && [ "$N_CANDIDATES" -gt 0 ]; then
   page_once "$HOME/.config/kipi/dispatch-stuck-$TODAY.paged" \
     "kipi dispatch: ${READY_TOTAL:-several} issue(s) ready, nothing running, and the loop dispatched nothing -- their file sets could not be read. The Linear loop is IDLE, not busy. Do: run \`bash kipi-dispatch.sh --burst 1\` in $REPO and read the skip lines."
 fi

@@ -101,3 +101,10 @@ q-system/output/.update-check-*
 # on every run). The committed artifact is the digest the overlap pass emits.
 q-system/output/capability-maps/
 .runs/
+
+# PR-review scratch trees and gate output. `.pr36rev3/` (64 files of sandbox
+# state, DoR dumps and per-issue file sets) and an empty `.gate.out` reached a
+# PUBLIC repo through an auto-commit, because neither had a rule. Review scratch
+# is per-review and per-machine; it is never a build input.
+.pr*rev*/
+.gate.out

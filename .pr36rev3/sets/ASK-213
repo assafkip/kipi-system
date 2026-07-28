@@ -1,4 +1,0 @@
-q-system/.q-system/scripts/silent-success-lint.py
-q-system/.q-system/scripts/test/test-silent-success-lint.sh
-q-system/.q-system/capability-manifest.json
-.github/workflows/validate.yml

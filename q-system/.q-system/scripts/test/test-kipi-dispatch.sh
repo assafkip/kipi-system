@@ -27,9 +27,15 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]
 # --- fixture repo -----------------------------------------------------------
 # Every run gets its own HOME so the daily counter, the paged marker and the
 # heartbeat beacon cannot leak between cases or into the founder's real state.
+# The sandbox goes under /tmp with a template we control, NOT the default
+# $TMPDIR: case 23 writes the sandbox's own ABSOLUTE path into a DoR and asserts
+# it normalises against the repo-relative spelling of the same file, and macOS
+# hands out `/var/folders/<hash>/T/` names that can carry characters no path
+# tokenizer accepts. A test that fails on the shape of a temp dir name teaches
+# nothing.
 SANDBOX=""
 new_sandbox() {
-  SANDBOX="$(mktemp -d)"
+  SANDBOX="$(mktemp -d /tmp/kipi-dispatch-test.XXXXXX)"
   export HOME="$SANDBOX/home"
   mkdir -p "$HOME/.config/kipi" "$SANDBOX/repo"
   export KIPI_STUB_LOG="$SANDBOX/converge.log"
@@ -44,6 +50,16 @@ case "${1:-}" in
       echo "Traceback (most recent call last):" >&2
       echo "ConnectionResetError: [Errno 54] Connection reset by peer" >&2
       exit "$KIPI_STUB_WORK_RC"
+    fi
+    # The infra shape of the REAL producer, which is the one that matters:
+    # linear-worker.sh:238-241 prints one `INFRA:` line through its timestamped
+    # `say`, prints NO ready list, and exits 0. A fixture that exits non-zero
+    # here would keep passing while the production path stayed uncovered.
+    # KEEP_LIST models the OTHER shape: a per-issue INFRA line (:763, :823)
+    # printed while the board is fine and candidates are still returned.
+    if [ -n "${KIPI_STUB_WORK_MSG:-}" ]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $KIPI_STUB_WORK_MSG"
+      [ -n "${KIPI_STUB_WORK_KEEP_LIST:-}" ] || exit 0
     fi
     # The worker's own board-total line. `--limit` truncates the LIST, never
     # this count, which is why the summary must quote it and not the window.
@@ -72,7 +88,8 @@ STUB
   export KIPI_REPO="$SANDBOX/repo"
   export KIPI_NOTIFY="$SANDBOX/notify.sh"
   export KIPI_DISPATCH_DOR_FIXTURE="$SANDBOX/dor.json"
-  unset KIPI_STUB_WORK_RC KIPI_STUB_READY_COUNT KIPI_DISPATCH_PRD_SPLIT KIPI_DISPATCH_SLOT_WAIT
+  unset KIPI_STUB_WORK_RC KIPI_STUB_WORK_MSG KIPI_STUB_READY_COUNT
+  unset KIPI_DISPATCH_PRD_SPLIT KIPI_DISPATCH_SLOT_WAIT KIPI_DISPATCH_FAKE_LIVE_FILE
   # Pin the live set. The real heartbeat runs on this same machine, so reading
   # the actual process table would make every concurrency assertion depend on
   # what the fleet happens to be doing while the suite runs -- which is how 7a
@@ -478,6 +495,179 @@ fi
 OUT="$(run_dispatch)"
 check "17c the stuck page fires once a day, not every tick" "$(paged 'dispatched nothing')" "1"
 unset KIPI_DISPATCH_PRD_SPLIT
+
+# ===========================================================================
+# PR #36 review round 4. Same rule as round 3: each case is a defect the
+# reviewer reproduced, red before the fix.
+# ===========================================================================
+
+# --- 18. a converge that starts MID-PASS is seen (finding 1) ----------------
+# The union of live file sets was built ONCE before the candidate loop and
+# never rebuilt. pgrep is fresh inside issue_is_live() and external_live(), so
+# the SLOT WAIT could end because a live run finished and a different one
+# started -- and the overlap check would still be reading the set from the top
+# of the pass. Two agents in one file, reported as `skipped 0`.
+#
+# The wait is what makes the timing deterministic: the pass cannot get past it
+# until the watcher has rewritten the live set, so "mid-pass" is by
+# construction, not by luck.
+new_sandbox
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-900\nASK-901\n' > "$LIVE_FILE"      # both slots held, both disjoint
+dor ASK-900 '* `held900.sh`'
+dor ASK-901 '* `held901.sh`'
+dor ASK-999 '* `q-system/.q-system/scripts/linear-worker.sh`'   # starts mid-pass
+dor ASK-902 '* `q-system/.q-system/scripts/linear-worker.sh`'   # the candidate
+export KIPI_STUB_READY="ASK-902"
+export KIPI_DISPATCH_SLOT_WAIT=20
+( sleep 2; printf 'ASK-999\n' > "$LIVE_FILE" ) &
+WATCHER=$!
+OUT="$(run_dispatch_bounded 30 --burst 1 --parallel 2)"
+wait "$WATCHER" 2>/dev/null
+check "18a a converge that starts mid-pass blocks an overlapping candidate" "$(n_started)" "0"
+if printf '%s' "$OUT" | grep -q 'skip ASK-902' && \
+   printf '%s' "$OUT" | grep -q 'linear-worker.sh'; then
+  ok "18b the skip names the file the mid-pass run took"
+else
+  bad "18b the skip names the file the mid-pass run took" "$OUT"
+fi
+unset KIPI_DISPATCH_SLOT_WAIT
+
+# --- 19. two dispatch passes cannot pick at once (finding 1, the lock) ------
+# The heartbeat (launchd, 900s) and a foreground --burst are two producers of a
+# pass, and the founder's own `kipi converge` is a third. Rebuilding the union
+# covers the third; only a lock covers the first two, because both can read the
+# same live set and reach the same disjointness answer before either launches.
+new_sandbox
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-910\n' > "$LIVE_FILE"
+dor ASK-910 '* `held910.sh`'
+dor ASK-911 '* `alpha911.sh`'
+dor ASK-912 '* `beta912.sh`'
+export KIPI_DISPATCH_SLOT_WAIT=8
+export KIPI_STUB_READY="ASK-911"
+bash "$DISPATCH" --burst 1 --parallel 1 > "$SANDBOX/passA.out" 2>&1 &
+PASS_A=$!
+sleep 2                                   # A is now inside its slot wait
+export KIPI_STUB_READY="ASK-912"
+OUT="$(run_dispatch)"                     # a heartbeat tick while A is picking
+sleep 1   # the stub converge is backgrounded; count AFTER it could have started
+check "19a a tick refuses to pick while another pass holds the lock" "$(count_lines '^START ASK-912')" "0"
+if printf '%s' "$OUT" | grep -qi 'another dispatch pass'; then
+  ok "19b the blocked tick says why, and does not read as an empty board"
+else
+  bad "19b the blocked tick says why, and does not read as an empty board" "$OUT"
+fi
+wait "$PASS_A" 2>/dev/null
+unset KIPI_DISPATCH_SLOT_WAIT
+
+# A lock nobody can clear is a worse outage than the race it prevents: the loop
+# would go dark until a human noticed a directory. Same reclaim-on-read rule as
+# the claim mutex (ASK-189) -- a pid that is not running is not a holder.
+new_sandbox
+mkdir -p "$HOME/.config/kipi/dispatch.lock"
+printf '999999' > "$HOME/.config/kipi/dispatch.lock/pid"   # above macOS PID_MAX
+dor ASK-913 '* `gamma913.sh`'
+export KIPI_STUB_READY="ASK-913"
+OUT="$(run_dispatch)"
+wait_for_ends 1
+check "19c a lock left behind by a KILLED pass is reclaimed, not honoured forever" "$(n_started)" "1"
+
+# --- 20. a persistent infra fault pages ONCE a day (finding 2) --------------
+# All three of these conditions stay true until a human fixes them, and at
+# StartInterval 900 an ungated page is 96 identical Slack messages a day. The
+# script's own page_once comment names that failure; these three sites did not
+# use it. The LOG still gets a line every tick -- only Slack is deduped.
+new_sandbox
+dor ASK-914 '* `delta914.sh`'
+export KIPI_STUB_READY="ASK-914"
+KIPI_REPO="$SANDBOX/gone" run_dispatch >/dev/null 2>&1
+KIPI_REPO="$SANDBOX/gone" run_dispatch >/dev/null 2>&1
+KIPI_REPO="$SANDBOX/gone" run_dispatch >/dev/null 2>&1
+check "20a repo-not-found pages once across 3 ticks" "$(paged 'repo not found')" "1"
+
+new_sandbox
+dor ASK-915 '* `epsilon915.sh`'
+export KIPI_STUB_READY="ASK-915"
+for _ in 1 2 3; do PATH=/usr/bin:/bin bash "$DISPATCH" >/dev/null 2>&1; done
+check "20b gh-not-on-PATH pages once across 3 ticks" "$(paged 'gh CLI not on PATH')" "1"
+
+new_sandbox
+export KIPI_STUB_WORK_MSG="worker: infra_error unauthorized (401)"
+dor ASK-916 '* `zeta916.sh`'
+export KIPI_STUB_READY="ASK-916"
+for _ in 1 2 3; do run_dispatch >/dev/null 2>&1; done
+check "20c the Linear-unreachable page fires once across 3 ticks" "$(paged 'Linear is unreachable')" "1"
+unset KIPI_STUB_WORK_MSG
+
+# --- 21. the REAL producer's infra shape (finding 3) ------------------------
+# linear-worker.sh:239 prints `INFRA: linear unreachable (<reason>)` and exits
+# 0. The two likeliest reasons -- linear-sync.py:341 "no Linear API key..." and
+# :380 "network: <errno>" -- contain none of infra_error/authentication/
+# unauthorized. So the most common infra failure of all read as an empty board,
+# every 15 minutes, exit 0, no page.
+new_sandbox
+export KIPI_STUB_WORK_MSG="INFRA: linear unreachable (no Linear API key. Create one at https://linear.app/settings/api). Not counted against any issue."
+dor ASK-917 '* `eta917.sh`'
+export KIPI_STUB_READY="ASK-917"
+OUT="$(run_dispatch)"; RC=$?
+check "21a the worker's own INFRA marker exits non-zero" "$RC" "1"
+if printf '%s' "$OUT" | grep -qi 'nothing ready'; then
+  bad "21b an infra fault is not reported as an empty board" "$OUT"
+else
+  ok "21b an infra fault is not reported as an empty board"
+fi
+check "21c the operator is paged for it" "$(paged 'Linear is unreachable')" "1"
+unset KIPI_STUB_WORK_MSG
+
+# A per-issue INFRA line (linear-worker.sh:763, :823) is NOT a dead board: the
+# worker says it and keeps going. Stopping on it would turn one bad issue into
+# a stopped loop, which is the same over-enforcement finding 1 was.
+new_sandbox
+export KIPI_STUB_WORK_MSG=""
+dor ASK-918 '* `theta918.sh`'
+export KIPI_STUB_READY="ASK-918"
+OUT="$(KIPI_STUB_WORK_MSG='INFRA: claim failed rc=1 on ASK-777 (not counted against the issue)' KIPI_STUB_WORK_KEEP_LIST=1 run_dispatch)"
+wait_for_ends 1
+check "21d an INFRA line WITH candidates still dispatches" "$(n_started)" "1"
+unset KIPI_STUB_WORK_MSG KIPI_STUB_WORK_KEEP_LIST
+
+# --- 22. --burst 0 is refused (finding 4) -----------------------------------
+# `--parallel 0` was rejected; `--burst 0` fell through every `[ "$BURST" -gt 0
+# ]` branch and ran a full heartbeat tick -- spending the daily counter and
+# writing the liveness beacon that the beacon's own comment says a burst must
+# never write, because a burst resetting the gap masks a dead scheduler.
+new_sandbox
+dor ASK-919 '* `iota919.sh`'
+export KIPI_STUB_READY="ASK-919"
+OUT="$(run_dispatch --burst 0)"; RC=$?
+sleep 0.3
+check "22a --burst 0 is refused" "$RC" "2"
+check "22b --burst 0 dispatches nothing" "$(n_started)" "0"
+check "22c --burst 0 does not write the liveness beacon" \
+  "$([ -f "$HOME/.config/kipi/dispatch-lastbeat" ] && echo wrote || echo clean)" "clean"
+check "22d --burst 0 does not spend the daily counter" \
+  "$([ -f "$HOME/.config/kipi/dispatch-count-$(date +%Y-%m-%d)" ] && echo spent || echo clean)" "clean"
+
+# --- 23. one file, two spellings, one intersection (finding 5) --------------
+# The r3 fix normalised `~/x` against `/Users/me/x`. It did not normalise the
+# repo's own absolute path against the repo-relative spelling, so two issues
+# editing one file could both dispatch. 6 real DoRs use an absolute repo path.
+new_sandbox
+dor ASK-921 '* `q-system/.q-system/scripts/linear-worker.sh`'
+dor ASK-922 "* \`$SANDBOX/repo/q-system/.q-system/scripts/linear-worker.sh\`"
+export KIPI_STUB_READY="ASK-921 ASK-922"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "23a an absolute and a relative spelling of one file intersect" "$(n_started)" "1"
+if printf '%s' "$OUT" | grep -q 'skip ASK-922' && \
+   printf '%s' "$OUT" | grep -q 'linear-worker.sh'; then
+  ok "23b the skip names the file, in one spelling"
+else
+  bad "23b the skip names the file, in one spelling" "$OUT"
+fi
 
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"

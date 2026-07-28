@@ -1,8 +1,0 @@
-2026-07-28T04:25:25Z heartbeat: first beat on record
-2026-07-28T04:25:25Z dispatching ASK-224 (live=0 cap=1 rounds=3 budget=1/4)
-2026-07-28T04:25:25Z dispatched ASK-224
-2026-07-28T04:25:25Z skip ASK-223: target of 1 reached this run; still ready for the next one
-2026-07-28T04:25:25Z skip ASK-218: target of 1 reached this run; still ready for the next one
-2026-07-28T04:25:25Z skip ASK-213: target of 1 reached this run; still ready for the next one
-2026-07-28T04:25:25Z skip ASK-151: target of 1 reached this run; still ready for the next one
-2026-07-28T04:25:25Z done: dispatched 1, skipped 4, of 5 candidate(s) examined (25 ready on the board)

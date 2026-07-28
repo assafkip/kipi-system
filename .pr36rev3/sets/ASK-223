@@ -1,6 +1,0 @@
-q-system/.q-system/scripts/linear-pipeline-health.py
-q-system/.q-system/scripts/converge.sh
-linear-worker.sh
-q-system/.q-system/capability-manifest.json
-q-system/.q-system/scripts/test/test-linear-pipeline-health.sh
-com.kipi.fleet-health.plist
