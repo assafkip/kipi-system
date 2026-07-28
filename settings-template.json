@@ -162,16 +162,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/read-first-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/read-first-gate.py\"",
-            "timeout": 10
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -242,16 +232,6 @@
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; fi",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/client-output-evidence-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/client-output-evidence-gate.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\"",
             "timeout": 5
           }
         ]

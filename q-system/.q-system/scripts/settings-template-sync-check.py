@@ -31,6 +31,22 @@ import sys
 # is skeleton-only by design -- without this entry the check would flag itself.
 SKELETON_ONLY = {
     "settings-template-sync-check.py",
+    # HELD BACK from the fleet 2026-07-28 (ASK-229), soak-testing in the skeleton
+    # only. All three shipped blocking in 1b49d91 and each has a demonstrated false
+    # positive: read-first-gate has an unproven interaction with morning-pipeline
+    # subagents (they write bus files and may never have opened the methodology
+    # doc), handoff-provenance-lint blocks the skeleton's OWN handoff template
+    # because a dated markdown header is not exempt (sp-be424cdd), and
+    # client-output-evidence-gate reads bare years and ISO dates as unbacked
+    # measurements (sp-f551ef30). Shipping a false-positive gate to 23 instances
+    # teaches the fleet to reach for the bypass marker, which is worse than no
+    # gate. The scripts still rsync out; they land dormant because nothing invokes
+    # them. REMOVE these three entries when the gates are fixed and they go back
+    # into settings-template.json -- the entry is the held-back marker, so a stale
+    # entry means a gate silently never reached the fleet.
+    "read-first-gate.py",
+    "client-output-evidence-gate.py",
+    "handoff-provenance-lint.py",
 }
 
 # Scripts that legitimately live ONLY in settings-template.json (fleet) and not in
