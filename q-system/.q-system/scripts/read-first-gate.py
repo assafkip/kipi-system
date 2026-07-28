@@ -44,35 +44,44 @@ METHODOLOGY = "q-system/methodology/anti-hallucination.md"
 LESSONS_DIR = "q-system/lessons"
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
-# Machine-generated pipeline artifacts, exempt from the required-reading gate.
+# The ONLY destinations this gate fires on. An allowlist, not an exemption list.
 #
 # WHY (ASK-235, 2026-07-28): this gate fires on the FIRST write of a session and
-# reads the session's own transcript. A morning-pipeline subagent is spawned to do
-# one narrow job -- write a bus file -- and the required reading happened in the
-# ORCHESTRATOR's context, not the subagent's. Measured: feeding evaluate() a
-# realistic data-ingest subagent transcript returns both reads missing, so the bus
-# write exits 2. A control transcript that did open both is allowed, so the check
-# discriminates rather than always-blocking.
+# reads that session's own transcript. A morning-pipeline subagent is spawned to do
+# one narrow job, and the required reading happened in the ORCHESTRATOR's context,
+# so the subagent's transcript cannot show it. Measured: a realistic subagent
+# transcript returns both reads missing and the write exits 2. A control transcript
+# that DID open both is allowed, so the check discriminates rather than
+# always-blocking.
 #
-# It could not be settled on this machine WHICH transcript a subagent hook is
-# handed: no transcript on disk carries isSidechain=True, so subagent turns are not
-# appended to the parent, but no subagent transcript was available to inspect
-# either. That ambiguity is exactly why the exemption is keyed to the WRITE TARGET
-# and not to an undocumented subagent field -- a target-based rule is correct under
-# both branches, and it is inspectable from the payload the hook already gets.
+# The first attempt exempted generated artifacts (bus files, morning logs). That
+# was whack-a-mole and it lost: `synthesizer` writes daily-schedule-<date>.html and
+# schedule-data-<date>.json into q-system/output/, which is neither, so both still
+# blocked. Every new agent that writes a new path would re-open the same wound.
 #
-# Scoping it this way also matches what the gate is FOR. The scar was six confident
-# conclusions, one of which reached a client email draft. Those live in drafts,
-# handoffs, canonical and plans -- all still gated. A bus file is an intermediate
-# artifact a later step consumes, not a conclusion anyone acts on directly.
+# Inverting it fixes the shape rather than the instance. Default is ALLOW; the gate
+# fires only where an ungrounded claim actually does damage. That is not a
+# weakening dressed up as a design: the RCA's six reversed conclusions did their
+# harm by reaching a client email draft and a handoff that the next session
+# inherited verbatim. Those destinations are listed here. A bus file or a schedule
+# is an intermediate artifact a later step consumes and re-derives.
 #
-# HONEST BOUNDARY: this exempts by destination, so a subagent whose first write
-# targets a NON-generated path is still blocked. That case is not covered here and
-# stays open in ASK-235.
-GENERATED_TARGETS = (
-    "/agent-pipeline/bus/",
-    "/output/morning-log",
-    "/.prd-os/",
+# It also removes the dependency on an undocumented platform detail. Which
+# transcript a subagent hook receives could not be settled on this machine (no
+# transcript on disk carries isSidechain=True, and none was available to inspect),
+# and an allowlist keyed to the write target is correct under either answer.
+#
+# HONEST BOUNDARY: this is now narrower than "the first write of a session". A
+# session that writes CODE without opening the methodology doc is no longer gated
+# here. That was always the weaker half -- the gate only ever proved a file was
+# opened, never that it was read or applied -- and trading it for a rule that can
+# ship fleet-wide beats a stronger rule that has to stay switched off.
+GATED_TARGETS = (
+    "/output/outreach/",        # client-facing drafts: the RCA's worst outcome
+    "memory/last-handoff.md",   # carried reversal #5 into the next session as fact
+    "/canonical/",              # the source of truth other work derives from
+    "/output/rca/",             # a postmortem built on an unread record is worthless
+    "/output/plans/",           # the artifact the read-first contract exists to ground
 )
 
 
@@ -124,8 +133,9 @@ def evaluate(repo: Path, uses, target: str) -> list[str]:
     if METHODOLOGY in norm_target or LESSONS_DIR in norm_target:
         return []
 
-    # A generated pipeline artifact is not a conclusion; see GENERATED_TARGETS.
-    if any(marker in norm_target for marker in GENERATED_TARGETS):
+    # Allowlist: anything not a conclusion-bearing destination is none of this
+    # gate's business. See GATED_TARGETS for why this is inverted.
+    if not any(marker in norm_target for marker in GATED_TARGETS):
         return []
 
     missing = []

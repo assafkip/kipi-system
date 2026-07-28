@@ -52,7 +52,12 @@ def _transcript(tmp: Path, tool_uses: list[tuple[str, str]]) -> Path:
     return path
 
 
-def run(repo: Path, transcript: Path, target: str = "notes.md") -> int:
+# The default target is a GATED destination (see GATED_TARGETS in the gate). The
+# gate is an allowlist, so a neutral path like "notes.md" is allowed by design and
+# every case below would pass for the wrong reason. Cases that mean to exercise the
+# allowlist itself pass their own target.
+def run(repo: Path, transcript: Path,
+        target: str = "q-consult/output/outreach/client-note.md") -> int:
     payload = json.dumps({
         "transcript_path": str(transcript),
         "tool_name": "Write",
@@ -141,26 +146,61 @@ BUS = "q-consult/.q-system/agent-pipeline/bus/2026-07-28/data-ingest.json"
 SUBAGENT_READS = [("Read", "q-consult/my-project/current-state.md")]
 
 
-def case_subagent_bus_write_is_exempt() -> bool:
-    """ASK-235: the wedge. Without the GENERATED_TARGETS exemption this returns 2
-    and the morning pipeline stops fleet-wide on a gate nobody can see firing."""
+SYNTH_HTML = "q-system/output/daily-schedule-2026-07-28.html"
+SYNTH_JSON = "q-system/output/schedule-data-2026-07-28.json"
+
+
+def case_subagent_bus_write_is_allowed() -> bool:
+    """ASK-235: the wedge. A pipeline subagent writing its bus artifact must not be
+    blocked for reading its orchestrator never did in ITS transcript."""
     repo = _repo()
     return run(repo, _transcript(repo, SUBAGENT_READS), target=BUS) == 0
 
 
-def case_non_generated_write_still_blocks() -> bool:
-    """The negative half, and the one that gives the case above its meaning: the
-    SAME ungrounded transcript writing a NON-generated path must still block. If
-    this ever passes, the exemption has become a blanket off-switch."""
+def case_synthesizer_outputs_are_allowed() -> bool:
+    """The case that killed the first fix. `synthesizer` writes BOTH of these into
+    q-system/output/, which the generated-artifact exemption did not cover, so both
+    still blocked and the gate stayed unshippable. Allowlisting conclusion-bearing
+    destinations fixes the shape instead of adding two more exemptions."""
+    repo = _repo()
+    t = _transcript(repo, SUBAGENT_READS)
+    return run(repo, t, target=SYNTH_HTML) == 0 and run(repo, t, target=SYNTH_JSON) == 0
+
+
+def case_client_draft_still_blocks() -> bool:
+    """The negative half, and the one that gives every case above its meaning. The
+    SAME ungrounded transcript writing a client-facing draft must still block --
+    that is the destination the RCA's worst reversal actually reached. If this ever
+    passes, the allowlist has become a blanket off-switch."""
     repo = _repo()
     return run(repo, _transcript(repo, SUBAGENT_READS),
                target="q-consult/output/outreach/client-note.md") == 2
 
 
+def case_handoff_still_blocks() -> bool:
+    """The other destination with a scar: reversal #5 rode into the next session in
+    a handoff and was repeated as fact for several turns."""
+    repo = _repo()
+    return run(repo, _transcript(repo, SUBAGENT_READS),
+               target="q-consult/memory/last-handoff.md") == 2
+
+
+def case_ordinary_code_write_is_not_gated() -> bool:
+    """Documents the narrowing rather than hiding it. This USED to block and now
+    does not. Stated as a test so the trade is visible in the suite, not just in a
+    comment: the gate buys shippability by covering less."""
+    repo = _repo()
+    return run(repo, _transcript(repo, SUBAGENT_READS),
+               target="q-system/.q-system/scripts/some_tool.py") == 0
+
+
 CASES = [
     ("first write with no reads blocks", case_first_write_with_no_reads_blocks),
-    ("subagent bus write is exempt (ASK-235)", case_subagent_bus_write_is_exempt),
-    ("non-generated write still blocks", case_non_generated_write_still_blocks),
+    ("subagent bus write is allowed (ASK-235)", case_subagent_bus_write_is_allowed),
+    ("synthesizer outputs are allowed (ASK-235)", case_synthesizer_outputs_are_allowed),
+    ("client draft still blocks", case_client_draft_still_blocks),
+    ("handoff still blocks", case_handoff_still_blocks),
+    ("ordinary code write is not gated", case_ordinary_code_write_is_not_gated),
     ("methodology read but no lesson blocks", case_methodology_read_but_no_lesson_blocks),
     ("both read passes", case_both_read_passes),
     ("second write of the session passes", case_second_write_passes),

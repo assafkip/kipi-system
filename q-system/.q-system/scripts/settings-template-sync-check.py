@@ -31,27 +31,33 @@ import sys
 # is skeleton-only by design -- without this entry the check would flag itself.
 SKELETON_ONLY = {
     "settings-template-sync-check.py",
-    # HELD BACK from the fleet, soak-testing in the skeleton only. The entry IS the
-    # held-back marker: a stale entry means a gate silently never reached the fleet,
-    # so it is removed the moment the gate ships. handoff-provenance-lint and
-    # client-output-evidence-gate were held here on 2026-07-28 (ASK-229) and
-    # released the same day once ASK-231/232/233 fixed their false positives.
+    # NOTHING ELSE BELONGS HERE RIGHT NOW, and that is the point.
     #
-    # read-first-gate stays held (ASK-235). The risk it was held for is no longer
-    # hypothetical -- it is measured. Feeding the real evaluate() a morning-pipeline
-    # subagent transcript blocks the write, because the required reading happened in
-    # the ORCHESTRATOR's context and the subagent's transcript cannot show it.
-    # Exempting generated targets fixed bus files and morning logs, but the
-    # `synthesizer` agent writes daily-schedule-<date>.html and
-    # schedule-data-<date>.json into q-system/output/, and BOTH still block.
+    # Using this set to park a gate "temporarily" is a real pattern -- it happened
+    # on 2026-07-28, when all three grounding gates were held here (ASK-229) while
+    # their false positives were fixed, then released as each became shippable
+    # (ASK-231/232/233 for two of them, ASK-235 for read-first-gate).
     #
-    # So the gate would wedge the morning pipeline in 21 instances, on a hook whose
-    # failure is invisible from inside the pipeline. It ships when a subagent's
-    # first write is provably safe, not before. Two things would release it: an
-    # empirical answer to which transcript a subagent hook receives (no transcript
-    # on disk carries isSidechain=True, and none was available to inspect), or a
-    # first-write rule that does not depend on transcript identity at all.
-    "read-first-gate.py",
+    # It is also a fragile one, so if you are about to add an entry, read this
+    # first. A held-back gate is dormant ONLY because of its line here. The line
+    # looks like bookkeeping, it carries no expiry, and the natural way to silence
+    # a sync-check complaint is to delete the line that is "causing" it -- which
+    # silently ships a gate that was deliberately switched off. Nothing downstream
+    # would notice.
+    #
+    # So a hold is a temporary state that owes an exit, not a place to leave things:
+    #   1. Open a tracking issue FIRST and name it in the comment beside the entry,
+    #      with the measured reason for the hold. "It seemed risky" is not a reason;
+    #      ASK-235 held read-first-gate on a measured 100% block rate against a
+    #      subagent transcript, and released it when that dropped to 0.
+    #   2. The exit condition goes in the comment too, so the next person can tell
+    #      whether the hold is still earned or is just old.
+    #   3. Remove the entry the moment the gate ships. A stale entry does not fail
+    #      loudly; it means a gate quietly never reached 21 instances.
+    #
+    # The strongest version of this rule is the one applied on 2026-07-28: prefer
+    # fixing the gate so it can ship over parking it here. An empty held-back list
+    # has no fragile line for anyone to delete.
 }
 
 # Scripts that legitimately live ONLY in settings-template.json (fleet) and not in
