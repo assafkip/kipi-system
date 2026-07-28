@@ -105,15 +105,6 @@
       "has_git": true
     },
     {
-      "name": "school-negotiator",
-      "path": "/Users/assafkipnis/projects/personal/projects/school-negotiator",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": "q-negotiate",
-      "type": "subtree",
-      "has_git": true,
-      "note": "Single-purpose tuition-negotiation coach. Domain in q-negotiate/. No routines."
-    },
-    {
       "name": "gtm-partner",
       "path": "/Users/assafkipnis/projects/cole-gtm",
       "subtree_prefix": "q-system",

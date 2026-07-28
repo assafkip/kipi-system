@@ -100,11 +100,21 @@ tiebreaker for any declared data path: name it, read all of it.
 
 ## The provenance vocabulary
 
-One table, `q-system/.q-system/scripts/provenance-vocabulary.json`, read at
-runtime by `memory-confidence-validator.py` and `handoff-provenance-lint.py`.
+One table, `q-system/.q-system/scripts/provenance-vocabulary.json`, and one
+reader, `q-system/.q-system/scripts/provenance_vocabulary.py`. Both
+`memory-confidence-validator.py` and `handoff-provenance-lint.py` import that
+module rather than parsing the table themselves, so the ranking rules exist in
+exactly one place. Run it directly (`python3 provenance_vocabulary.py`) to print
+the accepted forms and their ranks.
+
 `ev-<id>` outranks every enum value because it points at a row carrying the
 command AND its output. `{{UNVERIFIED}}` is exactly `provenance: inferred`.
 Adding a value is a data change in one place, never a code change in two.
+
+Naming the module here is load-bearing, not decoration: the capability gate's
+inert-engine check scans wiring surfaces for a script's filename, and both
+importers write `import provenance_vocabulary` WITHOUT the `.py`, so the module
+read as a dead engine despite two live callers (ASK-230).
 
 ## Cross-references
 
