@@ -1,0 +1,30 @@
+# Real codex exec output captured 2026-07-28 reviewing PR #31 (head 7de67d76).
+# Fixture for ASK-221 check #1: THREE FINDINGS blocks, the FIRST of which is
+# the prompt's own template echoed back. A first-block parse reads the literal
+# word 'severity' as a severity, finds no blocker/major, and derives APPROVE
+# from a review that said REQUEST CHANGES. Parse the LAST block; allowlist the
+# severity field. Do not replace this with a hand-written fixture.
+# blocks found: 3
+
+--- block 1 ---
+FINDINGS:
+severity|one-sentence claim|file:line
+END FINDINGS
+
+--- block 2 ---
+FINDINGS:
+major|The mutex can reclaim a live holder when two invocations use different timezone or locale settings.|q-system/.q-system/scripts/linear-claim.py:241
+minor|The production worker suppresses the reclaim audit message that the implementation claims operators can see.|q-system/.q-system/scripts/linear-worker.sh:515
+minor|The zombie test does not create an unreaped zombie and therefore passes if zombie detection is removed.|q-system/.q-system/scripts/test/test-linear-claim.sh:317
+minor|status reports a provably dead holder as an active claim.|q-system/.q-system/scripts/linear-claim.py:647
+END FINDINGS
+
+--- block 3 ---
+FINDINGS:
+major|The mutex can reclaim a live holder when two invocations use different timezone or locale settings.|q-system/.q-system/scripts/linear-claim.py:241
+minor|The production worker suppresses the reclaim audit message that the implementation claims operators can see.|q-system/.q-system/scripts/linear-worker.sh:515
+minor|The zombie test does not create an unreaped zombie and therefore passes if zombie detection is removed.|q-system/.q-system/scripts/test/test-linear-claim.sh:317
+minor|status reports a provably dead holder as an active claim.|q-system/.q-system/scripts/linear-claim.py:647
+END FINDINGS
+
+VERDICT: REQUEST CHANGES
