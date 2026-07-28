@@ -55,6 +55,40 @@ cd "$REPO" 2>/dev/null || {
 # and under a bare assignment yields an empty string. Force a number.
 live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
 
+# --- LIVENESS BEACON: page when the heartbeat COMES BACK ------------------
+# Founder ask 2026-07-28: "I want to get a slack notification that the heartbeat
+# restarted when it does."
+#
+# The signal is the TRANSITION (was gone -> is back), never the level. This runs
+# every 900s, so paging per tick would be 96 pings a day -- the cry-wolf failure
+# that trains someone to mute the channel and costs the real alerts their job.
+#
+# Placed BEFORE every early exit on purpose. Most ticks legitimately skip (cap
+# reached, nothing ready), and a skip is still proof of life. Recording the beat
+# only on a dispatch would make a healthy-but-idle loop look dead, and would fire
+# a false "resumed" ping on the next dispatch.
+#
+# A gap larger than GAP_MINUTES means it was not running: reboot, a manual
+# unload/load, a crash the launchd watchdog restarted, or the Mac asleep. All
+# four are worth one line.
+GAP_MINUTES="${KIPI_DISPATCH_GAP_MINUTES:-45}"   # 3 missed ticks at 900s
+BEAT_FILE="$HOME/.config/kipi/dispatch-lastbeat"
+NOW_EPOCH="$(date -u +%s)"
+LAST_BEAT="$(cat "$BEAT_FILE" 2>/dev/null || echo "")"
+case "$LAST_BEAT" in ''|*[!0-9]*) LAST_BEAT="" ;; esac
+
+if [ -z "$LAST_BEAT" ]; then
+  say "heartbeat: first beat on record"
+  page "kipi heartbeat: STARTED. The Linear loop is live and will check for ready issues every 15 min (max ${KIPI_DISPATCH_DAILY_MAX:-4} issues/day). Nothing to do."
+else
+  GAP=$(( (NOW_EPOCH - LAST_BEAT) / 60 ))
+  if [ "$GAP" -ge "$GAP_MINUTES" ]; then
+    say "heartbeat: RESUMED after ${GAP}m without a beat"
+    page "kipi heartbeat: RESUMED after ${GAP} min down (reboot, sleep, or a reload). The Linear loop is running again. Nothing to do -- this is the all-clear, not a fault."
+  fi
+fi
+printf '%s' "$NOW_EPOCH" > "$BEAT_FILE"
+
 LIVE="$(live_converges)"; LIVE="${LIVE:-0}"
 if [ "$LIVE" -ge "$MAX_CONCURRENT" ]; then
   say "skip: $LIVE converge run(s) live, cap $MAX_CONCURRENT"
