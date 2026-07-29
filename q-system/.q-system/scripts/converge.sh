@@ -266,19 +266,39 @@ print("wrote %s at %s; left unclaimed: %s"
 PY
 }
 
+# WHY THE RECEIPT NEEDS A CHANNEL OUT OF THIS FUNCTION (PR #42 review, finding 1
+# -- major). Every failure path below reports through `say`, which reaches stdout
+# and the run log. The terminal report under it then paged the founder
+# "auto-merge armed -- GitHub lands it, no human merge needed" whether or not a
+# receipt existed, so the ONE thing that reaches a phone at 3am said the opposite
+# of what `validate` was about to do. Same inversion the no-progress guard's own
+# comment was written to fix ("THE PAGE HAS TO CARRY THE DRIFT, because it is the
+# only thing that reaches the founder's phone").
+#
+# RECEIPT_MISS is the reason no receipt covers the head, empty when one does.
+# RECEIPT_FIX is the command that fixes it. Both are read by the terminal page.
+RECEIPT_MISS=""; RECEIPT_FIX=""
+
 # receipt_ensure <sha> <verdict-record>
 # Best-effort by design and NEVER touches this run's exit code, exactly like the
 # worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
 # push a receipt onto, not a converge run that should report a different outcome.
+# It DOES change what the report says, which is a different thing: the exit code
+# is a contract other code reads, the page is what a human reads.
 receipt_ensure() {
-  local sha="$1" record="$2" tree ledger head note rc backup had=0
+  local sha="$1" record="$2" tree ledger head note rc backup had=0 ahead
+  RECEIPT_MISS=""; RECEIPT_FIX=""
   if [ -z "$sha" ]; then
     say "receipt: no head sha to pin one to, so no receipt was written"
+    RECEIPT_MISS="converge never read a head sha, so nothing could be pinned"
+    RECEIPT_FIX="read the head with 'gh pr view <pr> --json headRefOid', then write a receipt for $ISSUE at it"
     return 0
   fi
   tree="$(receipt_tree "$BRANCH")"
   if [ -z "$tree" ]; then
     say "receipt: no worktree under $SKEL is on $BRANCH, so there is no tree to commit a receipt into. Write one by hand or PR #23's gate will refuse this PR."
+    RECEIPT_MISS="no worktree under $SKEL is on $BRANCH, so there was no tree to commit into"
+    RECEIPT_FIX="git -C $SKEL worktree add <path> $BRANCH, then write a receipt for $ISSUE at $sha and push it"
     return 0
   fi
   ledger="$tree/.prd-os/receipts.jsonl"
@@ -288,6 +308,13 @@ receipt_ensure() {
   [ -f "$ledger" ] && { had=1; cp "$ledger" "$backup" 2>/dev/null || true; }
   note="$(receipt_append "$ledger" "$ISSUE" "$sha" "$record" "$head")"; rc=$?
   [ -n "$note" ] && say "receipt: $note"
+
+  # 3 is "already receipted" -- a receipt EXISTS, so it is not a miss; the push
+  # guard below still owns whether origin carries it. 4 and 5 wrote nothing.
+  if [ "$rc" = "4" ] || [ "$rc" = "5" ]; then
+    RECEIPT_MISS="the ledger write was refused ($note)"
+    RECEIPT_FIX="git -C $tree status, then write a receipt for $ISSUE at $sha into .prd-os/receipts.jsonl and push it"
+  fi
 
   if [ "$rc" = "0" ]; then
     # No --no-verify: the pre-commit ledger check (receipts-ledger-check.py) is
@@ -306,6 +333,8 @@ receipt_ensure() {
       if [ "$had" = "1" ]; then cp "$backup" "$ledger" 2>/dev/null || true
       else rm -f "$ledger" 2>/dev/null || true; fi
       say "receipt: the commit was REFUSED in $tree (see $LOG) -- rolled the ledger line back rather than leave an uncommitted receipt. PR #23's gate will refuse this PR until one lands."
+      RECEIPT_MISS="the receipt commit was REFUSED in $tree (see $LOG); the ledger line was rolled back"
+      RECEIPT_FIX="git -C $tree commit -m 'chore(receipt): prd-os receipt for $ISSUE' -- .prd-os/receipts.jsonl && git -C $tree push origin $BRANCH"
     fi
   fi
   rm -f "$backup" 2>/dev/null || true
@@ -314,11 +343,27 @@ receipt_ensure() {
   # the push is part of the write, not a follow-up. Guarded on being ahead so a
   # re-run on an already-pushed head makes no network call at all -- and so a
   # push that failed on an earlier run is retried on the next one.
-  if [ "$(git -C "$tree" rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)" != "0" ]; then
+  #
+  # AN ERROR IS NOT A ZERO (PR #42 review, finding 3). This read was
+  # `rev-list --count ... 2>/dev/null || echo 0`, which answered "nothing to
+  # push" for a clone with no refs/remotes/origin/<branch> -- a worktree cut
+  # before its first fetch of that branch. The committed receipt then never left
+  # the machine, silently, and every re-run repeated the same skip, so the retry
+  # the comment above promises could never happen on that tree. Unknown is not
+  # zero: when rev-list cannot answer, PUSH and let git decide. `Everything
+  # up-to-date` is a cheap no-op; a receipt that never reaches origin is a PR
+  # `validate` refuses forever.
+  ahead="$(git -C "$tree" rev-list --count "origin/$BRANCH..HEAD" 2>>"$LOG")" || ahead=""
+  if [ -z "$ahead" ]; then
+    say "receipt: git could not tell whether origin/$BRANCH is behind this tree (no tracking ref for it in $tree). Pushing anyway rather than reading that as nothing to push."
+  fi
+  if [ -z "$ahead" ] || [ "$ahead" != "0" ]; then
     if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
       say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
     else
       say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so validate still refuses this PR. By hand: git -C $tree push origin $BRANCH"
+      RECEIPT_MISS="the receipt is committed in $tree but the push to origin/$BRANCH FAILED (see $LOG), and CI reads the pushed head"
+      RECEIPT_FIX="git -C $tree push origin $BRANCH"
     fi
   fi
   return 0
@@ -394,15 +439,31 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
     case "$AUTOMERGE" in
       armed)
-        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" 2>/dev/null || true ;;
+        MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+        MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;
       unarmed)
-        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+        MERGE_LOG="Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
+        MERGE_PAGE="PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" ;;
       *)
-        say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
-        bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" 2>/dev/null || true ;;
+        MERGE_LOG="Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
+        MERGE_PAGE="PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" ;;
     esac
+    # ARMED OR NOT, A HEAD NO RECEIPT COVERS DOES NOT LAND. pr-receipt-gate.py is
+    # a blocking step in `validate`, the single required context on main, so it
+    # fails the very check auto-merge waits on. The armed sentence is REPLACED
+    # rather than extended: "no human merge needed" followed by "needs a human"
+    # is a page an operator learns to skim. The other two already say a human is
+    # needed and already carry the merge command, so those are extended -- both
+    # facts are true at once there and dropping either loses an action.
+    if [ -n "$RECEIPT_MISS" ]; then
+      MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. \`validate\` refuses it, so it does not merge until one lands. By hand: $RECEIPT_FIX"
+      case "$AUTOMERGE" in
+        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS) -- validate refuses it, so GitHub will NOT land it. Needs a human: $RECEIPT_FIX" ;;
+        *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so validate refuses it too: $RECEIPT_FIX" ;;
+      esac
+    fi
+    say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"
+    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
