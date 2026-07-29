@@ -608,6 +608,29 @@ ISSUE_BY_ID = """
 query($id: String!) { issue(id: $id) { id identifier title state { name type } } }
 """
 
+# THE READ HALF OF THE REVIEW CONVERSATION (ASK-221). `progress` could already
+# WRITE a comment onto an issue, so the trail was one-way: codex posted its review
+# and Sana never saw it, because the worker reads PR comments and the review
+# conversation the founder asked for lives on the Linear issue. Without a read verb
+# "they can talk to each other" is one agent talking.
+#
+# `botActor` is the FALLBACK, not the usual case: verified against ASK-221's live
+# thread 2026-07-29, `user.name` comes back as the token owner ("Assaf Kipnis") for
+# agent-written comments, because these go through the founder's API token. So the
+# API author identifies the TOKEN, never the agent -- which is exactly why the
+# agent name is carried in the BODY by `progress` and why --agent below filters on
+# text rather than on this field. botActor only covers a genuine bot integration.
+ISSUE_COMMENTS = """
+query($id: String!) {
+  issue(id: $id) {
+    id identifier title
+    comments(first: 100) {
+      nodes { id createdAt body user { name } botActor { name } }
+    }
+  }
+}
+"""
+
 
 def cmd_progress(args) -> int:
     """Post a progress note onto an issue, and optionally move its state.
@@ -644,6 +667,49 @@ def cmd_progress(args) -> int:
     # state belongs to the closeout gates (/issue-verify, /issue-closeout), which
     # refuse without receipts. Letting a comment also flip state would route
     # around them.
+    return EXIT_OK
+
+
+def cmd_comments(args) -> int:
+    """Print an issue's comment thread so an agent can READ what the other said.
+
+    Why this exists: the review conversation between Sana and the codex reviewer
+    is supposed to happen on the Linear issue (founder directive 2026-07-29), and
+    an issue is the only place both agents can see. Before this, `progress` could
+    write a comment but nothing could read one back, so each agent was posting
+    into a channel it could not hear.
+
+    Prints plain text, not JSON, on purpose: the consumer is an LLM reading its
+    own prompt context, and a JSON blob costs tokens to restate as prose.
+    """
+    try:
+        issue = graphql(ISSUE_COMMENTS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    nodes = (issue.get("comments") or {}).get("nodes") or []
+    if args.agent:
+        # Substring, not equality: `progress` writes the author into the BODY as
+        # "**sana** · <stamp>", and the API author is the integration bot for every
+        # one of these comments, so the agent name can only be matched in the text.
+        nodes = [n for n in nodes if args.agent.lower() in (n.get("body") or "").lower()]
+    if args.last and args.last > 0:
+        nodes = nodes[-args.last:]
+
+    if not nodes:
+        print(f"{issue['identifier']}: no comments match")
+        return EXIT_OK
+
+    print(f"{issue['identifier']}: {issue['title']}  ({len(nodes)} comment(s))")
+    for n in nodes:
+        who = (n.get("user") or {}).get("name") \
+            or (n.get("botActor") or {}).get("name") or "unknown"
+        print(f"\n--- {n.get('createdAt', '?')} · via {who} ---")
+        print((n.get("body") or "").strip())
     return EXIT_OK
 
 
@@ -962,6 +1028,12 @@ def main() -> int:
     p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
     p.add_argument("--evidence", help="the command and its real output")
     p.set_defaults(func=cmd_progress)
+
+    p = sub.add_parser("comments", help="read an issue's comment thread")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-221")
+    p.add_argument("--agent", help="only comments whose body names this agent")
+    p.add_argument("--last", type=int, default=0, help="only the N most recent")
+    p.set_defaults(func=cmd_comments)
 
     p = sub.add_parser("remote", help="fetch the remote snapshot plan --remote wants")
     p.add_argument("--repo", required=True)

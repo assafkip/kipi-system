@@ -550,10 +550,27 @@ if [ "$POST" = "1" ]; then
     echo "  no head sha for PR #$PR: posting NO commit status (a status on a guessed sha looks authoritative)"
   fi
   if [ -n "$ISSUE" ]; then
+    # THE REVIEWER'S HALF OF THE CONVERSATION (ASK-221, founder directive
+    # 2026-07-29: Sana and codex talk to each other in the issue's comments).
+    #
+    # This used to post a one-line summary, which is a NOTIFICATION, not a turn in
+    # a conversation: Sana had nothing to answer because the findings themselves
+    # only ever landed on the PR. Carrying the actual findings block onto the issue
+    # is what makes a reply possible, and the issue is the one surface both agents
+    # can see (the worker reads PR comments; the founder reads Linear).
+    #
+    # Attributed to "$ENGINE-reviewer", never a bare "reviewer": the whole point of
+    # the flip is that the checker is not Claude, so a thread that cannot tell you
+    # WHICH engine spoke loses the only fact that matters. It also gives Sana a
+    # string to filter on (`linear-sync.py comments --agent codex-reviewer`).
+    REVIEW_FINDINGS="$(sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$REVIEW" 2>/dev/null)"
+    [ -n "$REVIEW_FINDINGS" ] || REVIEW_FINDINGS="(no findings block parsed from this review)"
     python3 "$SYNC" progress "$ISSUE" \
-      "Adversarial review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
-      --agent "reviewer" >/dev/null 2>&1 \
-      && echo "  progress noted on $ISSUE" || true
+      "Review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.
+
+Sana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below." \
+      --agent "$ENGINE-reviewer" --evidence "$REVIEW_FINDINGS" >/dev/null 2>&1 \
+      && echo "  review posted to $ISSUE as $ENGINE-reviewer (findings included)" || true
   fi
 fi
 

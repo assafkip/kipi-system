@@ -949,18 +949,38 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
 
 ## THIS IS A REWORK, NOT A FRESH START
 
-PR #$EXISTING_PR already exists for this branch and has been reviewed by an
-adversarial senior-staff reviewer. Read the review before touching anything:
+PR #$EXISTING_PR already exists for this branch and has been reviewed by CODEX
+(gpt-5.6-sol) acting as a senior staff engineer at Meta. It is a DIFFERENT LAB'S
+MODEL, not another instance of you -- so when it reports something you are sure is
+fine, the default assumption is that it saw something you structurally cannot,
+because you and the code share one mental model and it does not.
+
+Read the review before touching anything. It is in two places:
 
   gh pr view $EXISTING_PR --comments
+  python3 q-system/.q-system/scripts/linear-sync.py comments $ISSUE
 
 THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
 re-litigate the design. For EACH finding, either:
   - fix it, and add a test that FAILS without the fix (observed red, then green), or
-  - reply on the PR with why it is not a defect, citing the code.
+  - answer it with the file:line that already handles it.
+
+## REPLY ON THE LINEAR ISSUE, NOT ONLY THE PR
+
+The review conversation lives on $ISSUE, because that is the one surface both you
+and the reviewer read (and the founder reads it too). When you have worked the
+findings, post ONE reply there:
+
+  python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
+    "<one line per finding: fixed + the test that now covers it, or answered + the file:line>" \\
+    --agent sana --evidence "<the command you ran and its real output>"
+
+One reply per rework pass, not one per finding: the issue is permanent and a
+comment per finding turns one review into ten objects nobody can read.
 
 Findings you disagree with are answered, never silently ignored -- a finding that
-gets no response reads as a finding nobody read.
+gets no response reads as a finding nobody read. "I ran X and got Y" is an answer;
+"should be fine" is not.
 
 The reviewer's own bar applies to your fixes too: a fix with no test that could
 have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
