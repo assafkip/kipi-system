@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly Definition-of-Ready pass over the Linear backlog.
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. Born hardcoding the founder's home directory (b2df00e,
+     ASK-113), which made the skeleton unusable on any other machine and failed
+     validate-separation's Full skeleton sweep; converted to the
+     openloops-heartbeat placeholder convention in ASK-191.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-dor -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-dor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi dor --limit 8 --apply</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/linear-dor.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/linear-dor.err</string>
+</dict>
+</plist>

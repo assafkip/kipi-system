@@ -26,6 +26,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
@@ -251,7 +255,19 @@
       "timeout_s": 180
     },
     {
+      "path": "q-system/.q-system/scripts/test_client_output_evidence_gate.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_correction_outcome.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_evidence_ledger.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_handoff_provenance_lint.py",
       "runner": "python3"
     },
     {
@@ -295,6 +311,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_provenance_vocabulary.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_read_first_gate.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -303,7 +327,15 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_system_manifest.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_token_guard_observation.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_voice_lint_caps.py",
       "runner": "python3"
     },
     {
@@ -405,6 +437,11 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
+      "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
+      "spillover_id": "sp-fb332466"
     }
   ],
   "uncovered_known": [

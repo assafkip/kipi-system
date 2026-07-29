@@ -1,0 +1,1 @@
+{"session_id": "repro3-22944", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit -m 'wip (ASK-214)'"}, "tool_response": {"stdout": "[b abc123] fix\n 1 file changed", "stderr": ""}}

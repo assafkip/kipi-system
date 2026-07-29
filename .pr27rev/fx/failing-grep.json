@@ -1,0 +1,1 @@
+{"session_id": "repro1-12840", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "grep -rn \"git commit\" q-system/canonical/"}, "tool_response": {"stdout": "", "stderr": "", "error": "Exit code 1"}}

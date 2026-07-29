@@ -12,10 +12,24 @@ content), and exits 2 (block, stderr fed back) for any that appeared NOWHERE els
 -- an assertion made from nothing -- so the turn cannot end until those files are
 actually opened.
 
-HONEST BOUNDARY (stated so this is not theater): this catches "claimed about a
-file you never opened." It does NOT catch over-generalizing from a file you DID
-read (e.g. reading one worker and declaring a whole subsystem broken). That seam
-is behavioral; this gate is the enforceable floor.
+SECOND CHECK -- SUBSYSTEM COVERAGE (added 2026-07-28, RCA
+rca-conclusions-before-evidence-2026-07-28): the paragraph that used to sit here said
+this gate does NOT catch over-generalizing from a file you DID read -- "reading one
+worker and declaring a whole subsystem broken" -- and called that seam behavioral.
+It was then tested by exactly that failure: six conclusions reversed in one session,
+two of five workflows in a chain read, claims issued about the chain, one reaching a
+client email. So the seam is now coded. When the final answer NAMES a subsystem
+declared in `<instance-root>/canonical/system-manifest.json`, every member of that
+subsystem must appear in session evidence, not just one.
+
+HONEST BOUNDARY (stated so this is not theater): the executable blocker is this
+script's own exit 2, driven by `evaluate` (check one) and `evaluate_subsystems`
+(check two), both covered by `--self-test`. Check one blocks on a file that appears
+nowhere in session evidence; check two blocks on a DECLARED member of a named
+subsystem that appears nowhere. Neither can tell whether a file was read carefully,
+and neither can tell that the manifest lists every real member -- an incomplete
+manifest passes incomplete reading. With no manifest present, check two no-ops
+entirely, which is the state every instance starts in.
 
 Contract: reads {transcript_path, stop_hook_active} JSON on stdin (Claude Code
 Stop hook). exit 0 = pass, exit 2 = block. Per-answer bypass: put the literal
@@ -27,6 +41,12 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:  # an instance that predates the manifest keeps check one and skips check two
+    import system_manifest as _manifest
+except Exception:  # pragma: no cover - defensive; a missing module must not block
+    _manifest = None
 
 REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
 SKIP_MARKER = "grounding-guard-skip"
@@ -125,6 +145,26 @@ def evaluate(final_text, evidence_blob, repo=REPO):
     return sorted(set(ungrounded))
 
 
+def evaluate_subsystems(final_text, evidence_blob, repo=REPO):
+    """Subsystems the answer NAMES whose declared members were not all read.
+
+    Returns [(subsystem_id, [unread member refs])], empty when covered or when no
+    manifest exists. This is the coded form of the seam this guard used to disclaim.
+    """
+    if not final_text or SKIP_MARKER in final_text or _manifest is None:
+        return []
+    try:
+        named = _manifest.mentions(repo, final_text)
+    except Exception:
+        return []  # a malformed manifest must not block the turn; `check` reports it
+    uncovered = []
+    for sid in named:
+        missing = _manifest.missing_members(repo, sid, evidence_blob)
+        if missing:
+            uncovered.append((sid, missing))
+    return uncovered
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -136,7 +176,26 @@ def main():
     if not records:
         sys.exit(0)
     final_text = _final_assistant_text(records)
-    ungrounded = evaluate(final_text, _session_evidence_blob(records, final_text))
+    evidence = _session_evidence_blob(records, final_text)
+
+    uncovered = evaluate_subsystems(final_text, evidence)
+    if uncovered:
+        detail = "\n".join(
+            f"  {sid}: {len(refs)} declared member(s) never opened this session\n" +
+            "\n".join(f"    - {r}" for r in refs[:10])
+            for sid, refs in uncovered[:5])
+        sys.stderr.write(
+            "GROUNDING GUARD (blocked): your answer names a subsystem from "
+            "system-manifest.json, but you did not read all of it:\n" + detail + "\n\n"
+            "Open the missing members before you characterise the subsystem, then "
+            "answer again. Scar 2026-07-28: two of five workflows in a chain were "
+            "read, six conclusions about the chain were issued, all six were "
+            "reversed, and one reached a client email draft. Naming part of a path "
+            "and describing the whole path is the exact failure. Deliberate mention "
+            "with no claim attached? Add the marker '" + SKIP_MARKER + "'.\n")
+        sys.exit(2)
+
+    ungrounded = evaluate(final_text, evidence)
     if ungrounded:
         listed = "\n".join(f"  - {u}" for u in ungrounded[:20])
         sys.stderr.write(
@@ -150,6 +209,11 @@ def main():
     sys.exit(0)
 
 
+# prompt-only-enforcement-skip
+# ^ the fixtures below are ASSERTIONS UNDER TEST, not enforcement claims: each is a
+# sentence a model might say, fed to evaluate_subsystems to prove the gate fires. The
+# blocker for this file is its own exit 2, exercised by the cases in _self_test.
+# Same exception test_prompt_only_enforcement_guard.py takes on its own fixtures.
 def _self_test():
     # Hermetic: build a temp repo with one real file so the test is
     # environment-independent (does not depend on any repo-specific path).
@@ -179,6 +243,44 @@ def _self_test():
     # 6. file:line citation of an ungrounded real file -> block.
     cases.append(("file:line citation blocks when ungrounded",
                   evaluate(f"see {real}:42", "unrelated", tmp) == [real]))
+
+    # --- check two: subsystem coverage (the seam this guard used to disclaim) ---
+    # With no manifest, coverage must no-op -- that is every instance's starting state.
+    cases.append(("no manifest -> coverage no-ops",
+                  evaluate_subsystems("the ingest chain is broken", "", tmp) == []))
+
+    canon = tmp / "q-thing" / "canonical"
+    canon.mkdir(parents=True, exist_ok=True)
+    (canon / "system-manifest.json").write_text(json.dumps({
+        "version": 1,
+        "subsystems": [{
+            "id": "groupme-to-sheet",
+            "name": "GroupMe order intake",
+            "aliases": ["the ingest chain"],
+            "members": [{"ref": "Postgres Ingest"}, {"ref": "Parse LLM"},
+                        {"ref": "QA Validator"}],
+        }],
+    }), encoding="utf-8")
+
+    # 7. THE reproducer: two of three members read, a claim about the chain issued.
+    partial = evaluate_subsystems(
+        "The ingest chain loses rows on the way to the sheet.",
+        "opened Postgres Ingest and Parse LLM", tmp)
+    cases.append(("partial subsystem read blocks",
+                  partial == [("groupme-to-sheet", ["QA Validator"])]))
+    # 8. All members read -> pass.
+    cases.append(("full subsystem read passes",
+                  evaluate_subsystems(
+                      "The ingest chain looks healthy.",
+                      "Postgres Ingest / Parse LLM / QA Validator all opened",
+                      tmp) == []))
+    # 9. Naming nothing from the manifest -> pass.
+    cases.append(("unrelated answer passes coverage",
+                  evaluate_subsystems("The build is green.", "", tmp) == []))
+    # 10. Skip marker bypasses coverage too, same as check one.
+    cases.append(("skip marker bypasses coverage",
+                  evaluate_subsystems(
+                      f"the ingest chain is broken {SKIP_MARKER}", "", tmp) == []))
 
     ok = True
     for name, passed in cases:

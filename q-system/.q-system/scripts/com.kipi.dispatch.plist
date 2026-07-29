@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.kipi.dispatch</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>KIPI_REPO</key>
+		<string>__KIPI_REPO__</string>
+		<!-- Same PATH as com.kipi.openloops-heartbeat, which is the proven
+		     working `claude -p` under launchd. gh and claude both live in
+		     /opt/homebrew/bin; without it the dispatcher pages and exits. -->
+		<key>PATH</key>
+		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<!-- ONE at a time, deliberately. Each run spawns a `claude -p` agent
+		     plus a reviewer, so this is also the spend ceiling -- but the real
+		     reason is conflicts. The dispatcher picks by readiness and has NO
+		     idea which files an issue touches, so two concurrent runs can land
+		     on the same file (observed 2026-07-28: the next pick, ASK-223,
+		     edits the same linear-worker.sh region as the live ASK-222).
+		     Unattended, that yields a pile of conflicted PRs, which is worse
+		     than half the throughput. Raise this only once dispatch is
+		     file-disjointness aware (sp-see dispatch-conflict item). -->
+		<key>KIPI_DISPATCH_MAX</key>
+		<string>1</string>
+
+		<!-- THE SPEND DIAL. Founder-set 2026-07-28.
+		     How many issues may be STARTED per UTC day. One issue costs up to
+		     3 rounds x (1 agent + 1 reviewer) = 6 `claude -p` sessions, so 4
+		     issues is roughly 24 sessions/day. For scale, one interactive
+		     night on 2026-07-28 spent 89.
+		     The concurrency cap above bounds how many run AT ONCE; this bounds
+		     how many run AT ALL. Without it the heartbeat is unbounded.
+		     Raise or lower this number, then:
+		       launchctl unload ~/Library/LaunchAgents/com.kipi.dispatch.plist
+		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist -->
+		<key>KIPI_DISPATCH_DAILY_MAX</key>
+		<string>4</string>
+
+		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
+		     for safety rather than tidiness: a midnight reset hands a full
+		     budget to the loop at the exact moment the founder falls asleep,
+		     so an unattended overnight run gets the whole allowance. Refilling
+		     at 07:00 means the night can only spend what is LEFT from the day
+		     before, and the fresh budget arrives when someone is awake.
+		     A budget day runs 07:00 -> 06:59 the next morning. -->
+		<key>KIPI_DISPATCH_RESET_HOUR</key>
+		<string>7</string>
+	</dict>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__KIPI_REPO__/kipi-dispatch.sh</string>
+	</array>
+
+	<!-- Every 15 minutes. The heartbeat only TOPS UP to the concurrency cap;
+	     a converge run takes 25-60 minutes, so most ticks are a no-op skip.
+	     The interval is the rate limit, not the throughput. -->
+	<key>StartInterval</key>
+	<integer>900</integer>
+
+	<!-- false: loading this must not immediately fire an agent. The next tick
+	     is at most 15 minutes away and costs nothing to wait for. -->
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/.config/kipi/dispatch.out</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/.config/kipi/dispatch.err</string>
+</dict>
+</plist>
