@@ -28,7 +28,12 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Overridable for the same reason linear-worker.sh:57 makes it overridable: the
+# receipt writer below resolves a real worktree from this repo and commits into
+# it, so a suite that could not point it elsewhere would write into the founder's
+# live checkout and its live .prd-os/receipts.jsonl. Default is always the repo
+# this script ships in.
+SKEL="${KIPI_SKEL:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # Overridable so the suite cannot page the founder. A test that Slacks "converge
 # stalled" every run is exactly the cry-wolf failure this fleet keeps killing.
 NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
@@ -140,6 +145,185 @@ trap 'on_interrupt TERM 143' TERM
 trap 'on_interrupt INT  130' INT
 trap 'on_interrupt HUP  129' HUP
 
+# --- THE PRD-OS RECEIPT (ASK-218) -------------------------------------------
+#
+# WHY THIS LIVES HERE. PR #23 makes `pr-receipt-gate.py` a blocking step in the
+# `validate` job -- the single required context on main -- refusing any
+# `sana/ask-<n>` branch whose head no prd-os receipt covers. Nothing in the
+# autonomous path wrote one: the only writer is kipi-dsse's issue_runner, reached
+# through /issue-closeout, and linear-worker.sh:637 explicitly tells the agent NOT
+# to run it. So the gate would have refused 100% of worker PRs the day it merged.
+#
+# The alternative was to tell the agent to run closeout. An agent remembering to
+# do a thing is not enforcement (q-system/CLAUDE.md rule 3), and that exact
+# instruction already sits in the worker saying the opposite.
+#
+# THE MOMENT. This driver already knows the one instant the claim becomes true: a
+# terminal approving verdict recorded at the PR's CURRENT head (gate 10, which is
+# sha-matched since ASK-216 -- a stale approval leaves through 40, never here).
+# Writing at any earlier moment, or from any other gate, would stamp a receipt on
+# code no reviewer read, and the gate would then rubber-stamp fleet-wide through
+# `kipi update` exactly what it exists to refuse. One writer, one moment.
+#
+# WHAT IT MAY HONESTLY CLAIM. `commit_sha` is the head the verdict pinned, reused
+# from the one `gh pr view` this loop already made -- never a fresh lookup, which
+# could answer a different sha than the one that cleared the gate. `reviewed_at`
+# is the verdict record's own timestamp. Everything else a prd-os receipt can
+# carry is LEFT OUT and named on stdout rather than stamped to fill a schema:
+#   verified_at        converge reads no CI, and `validate` is the job that runs
+#                      this very gate -- gating the receipt on it deadlocks.
+#   findings_triaged_at the reviewer captures minors to spillover; this driver
+#                      never observes whether that capture landed.
+#   closed_at          converge never closes an issue, by design.
+# A receipt that lies is worse than a missing one: the gate then passes on a
+# claim nobody made.
+
+# receipt_tree <branch> -- the worktree checked out on that branch, or empty.
+# Read from git rather than rebuilt from linear-worker.sh's path convention: a
+# convention with two implementations is a convention with two meanings, and this
+# one already burned ASK-210 (the gate carrying its own copy of the branch regex).
+receipt_tree() {
+  git -C "$SKEL" worktree list --porcelain 2>/dev/null \
+    | awk -v want="branch refs/heads/$1" \
+        '/^worktree /{p=substr($0,10)} $0==want{print p; exit}'
+}
+
+# receipt_append <ledger> <issue> <sha> <verdict-record> <tree-head>
+#   0 appended   3 already receipted   4 could not write   5 tree is not at <sha>
+# One process reads the ledger AND decides, so there is no window where a second
+# reader could disagree about whether the head is already receipted.
+receipt_append() {
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, os, re, sys
+ledger, issue, sha, record, tree_head = sys.argv[1:6]
+ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+
+def records(path):
+    try:
+        handle = open(path, encoding="utf-8")
+    except OSError:
+        return
+    with handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # not a receipt; the gate agrees
+            if isinstance(rec, dict):
+                yield rec
+
+# Dedup FIRST. converge is re-run by hand and by the dispatcher, and a ledger
+# that grows a line per invocation is a ledger nobody can audit. Same predicate
+# the gate matches on: the issue id in some string field, plus the commit.
+for rec in records(ledger):
+    if rec.get("commit_sha") != sha:
+        continue
+    if any(isinstance(v, str) and v.upper() == issue.upper() for v in rec.values()):
+        print("already receipted at %s -- nothing appended" % sha[:12])
+        raise SystemExit(3)
+
+# The receipt is committed onto this tree, so the tree must BE at the sha the
+# review approved. A tree a later run repositioned would carry the line onto
+# another line of history, where the gate's ancestry check refuses it anyway.
+if tree_head != sha:
+    print("the worktree stands at %s, not the reviewed head %s -- no receipt written"
+          % ((tree_head or "nothing")[:12], sha[:12]))
+    raise SystemExit(5)
+
+reviewed_at = ""
+try:
+    with open(record, encoding="utf-8") as handle:
+        reviewed_at = json.load(handle).get("ts", "") or ""
+except (OSError, ValueError):
+    reviewed_at = ""
+
+receipt = {"commit_sha": sha, "issue_id": issue}
+unclaimed = [
+    "verified_at (converge reads no CI, and `validate` is the job that runs this gate)",
+    "findings_triaged_at (the reviewer captures minors; converge never sees whether it landed)",
+    "closed_at (converge never closes an issue)",
+]
+if ISO.match(reviewed_at):
+    receipt["reviewed_at"] = reviewed_at
+else:
+    unclaimed.insert(0, "reviewed_at (the verdict record carries no usable timestamp)")
+
+try:
+    parent = os.path.dirname(ledger)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(ledger, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt, sort_keys=True) + "\n")
+except OSError as exc:
+    print("could not append to the ledger: %s" % exc)
+    raise SystemExit(4)
+
+print("wrote %s at %s; left unclaimed: %s"
+      % (", ".join(sorted(receipt)), sha[:12], "; ".join(unclaimed)))
+PY
+}
+
+# receipt_ensure <sha> <verdict-record>
+# Best-effort by design and NEVER touches this run's exit code, exactly like the
+# worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
+# push a receipt onto, not a converge run that should report a different outcome.
+receipt_ensure() {
+  local sha="$1" record="$2" tree ledger head note rc backup had=0
+  if [ -z "$sha" ]; then
+    say "receipt: no head sha to pin one to, so no receipt was written"
+    return 0
+  fi
+  tree="$(receipt_tree "$BRANCH")"
+  if [ -z "$tree" ]; then
+    say "receipt: no worktree under $SKEL is on $BRANCH, so there is no tree to commit a receipt into. Write one by hand or PR #23's gate will refuse this PR."
+    return 0
+  fi
+  ledger="$tree/.prd-os/receipts.jsonl"
+  head="$(git -C "$tree" rev-parse HEAD 2>/dev/null)"
+
+  backup="$(mktemp)"
+  [ -f "$ledger" ] && { had=1; cp "$ledger" "$backup" 2>/dev/null || true; }
+  note="$(receipt_append "$ledger" "$ISSUE" "$sha" "$record" "$head")"; rc=$?
+  [ -n "$note" ] && say "receipt: $note"
+
+  if [ "$rc" = "0" ]; then
+    # No --no-verify: the pre-commit ledger check (receipts-ledger-check.py) is
+    # what keeps this public repo's one allowed .jsonl to a closed key allowlist.
+    # A receipt that has to bypass its own content gate is not a receipt.
+    # $ISSUE in the message is what clears the commit-msg linear-issue-ref-check.
+    if git -C "$tree" add -- .prd-os/receipts.jsonl 2>>"$LOG" \
+       && git -C "$tree" commit -q -m "chore(receipt): prd-os receipt for $ISSUE at $(printf '%.12s' "$sha")" \
+            -- .prd-os/receipts.jsonl 2>>"$LOG"; then
+      say "receipt: committed onto $BRANCH in $tree"
+    else
+      # Roll the line back. Leaving an uncommitted receipt in the tree would make
+      # every later run dedup against it and skip, so the PR would carry nothing
+      # while the ledger claimed it did.
+      git -C "$tree" reset -q -- .prd-os/receipts.jsonl 2>/dev/null || true
+      if [ "$had" = "1" ]; then cp "$backup" "$ledger" 2>/dev/null || true
+      else rm -f "$ledger" 2>/dev/null || true; fi
+      say "receipt: the commit was REFUSED in $tree (see $LOG) -- rolled the ledger line back rather than leave an uncommitted receipt. PR #23's gate will refuse this PR until one lands."
+    fi
+  fi
+  rm -f "$backup" 2>/dev/null || true
+
+  # CI reads the PUSHED head. A receipt sitting in a worktree clears nothing, so
+  # the push is part of the write, not a follow-up. Guarded on being ahead so a
+  # re-run on an already-pushed head makes no network call at all -- and so a
+  # push that failed on an earlier run is retried on the next one.
+  if [ "$(git -C "$tree" rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)" != "0" ]; then
+    if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
+      say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
+    else
+      say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so validate still refuses this PR. By hand: git -C $tree push origin $BRANCH"
+    fi
+  fi
+  return 0
+}
+
 LAST_VERDICT=""; LAST_SHA=""; ROUND=0
 while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   ROUND=$((ROUND + 1))
@@ -200,6 +384,13 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # An empty record means nothing recorded an arm for this PR -- the worker
     # declined the issue this round, or never got that far -- so this claims
     # nothing and hands over the command instead.
+    # THE RECEIPT, before the terminal report (ASK-218). Gate 10 is the only
+    # place it may be written: it is the one state where a terminal approving
+    # verdict is pinned to the sha that IS the head. It runs before the auto-merge
+    # report because auto-merge lands the PR the moment `validate` goes green, and
+    # `validate` is the job that reads this receipt.
+    receipt_ensure "$SHA" "$REVIEWS_DIR/pr-$PR.verdict.json"
+
     AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
     case "$AUTOMERGE" in
       armed)
