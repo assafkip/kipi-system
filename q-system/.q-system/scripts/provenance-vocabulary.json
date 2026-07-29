@@ -1,0 +1,46 @@
+{
+  "_version": 1,
+  "_description": "The ONE provenance vocabulary. Both memory-confidence-validator.py and handoff-provenance-lint.py load this table at runtime, so adding a value is a data change in one place rather than a code change in two. Repo pattern: allowlists load from a table at runtime.",
+  "_scar": "2026-07-28: memory-confidence-validator.py hardcoded a six-value enum; three days later handoff-provenance-lint.py shipped a different vocabulary for the same idea. Nothing collided because their file scopes differed, so the drift was invisible. See PRD prd-deterministic-reading-2026-07-28 Part C.",
+
+  "_rank_note": "Higher rank wins when a line carries more than one form. A rank is a claim about how much the marker PROVES, not how confident the writer feels; `confidence` is a separate, orthogonal number and is not ranked here.",
+
+  "claim_id": {
+    "pattern": "\\bev-[0-9a-f]{10}\\b",
+    "rank": 100,
+    "means": "points at an evidence.jsonl row carrying the command AND its output. Nothing the enum expresses is stronger than a recorded measurement."
+  },
+
+  "provenance": {
+    "validated": {
+      "rank": 60,
+      "means": "checked against a source, though no command is attached to the line"
+    },
+    "observed": {
+      "rank": 50,
+      "means": "seen directly in a tool result or artifact"
+    },
+    "explicit_statement": {
+      "rank": 40,
+      "means": "a person said it in so many words"
+    },
+    "corrected": {
+      "rank": 30,
+      "means": "revised after being wrong; the revision itself is not re-measured"
+    },
+    "imported": {
+      "rank": 20,
+      "means": "carried in from another system or session; provenance is that system's problem"
+    },
+    "inferred": {
+      "rank": 10,
+      "means": "reasoned to, not measured. The honest floor, not a failure."
+    }
+  },
+
+  "aliases": {
+    "{{UNVERIFIED}}": "inferred",
+    "{{UNVALIDATED}}": "inferred",
+    "{{NEEDS_PROOF}}": "inferred"
+  }
+}

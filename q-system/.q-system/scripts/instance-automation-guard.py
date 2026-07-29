@@ -31,6 +31,26 @@ def is_skeleton(project_dir):
     return os.path.exists(os.path.join(project_dir, "instance-registry.json"))
 
 
+def owning_repo(path, fallback):
+    """The repo root that OWNS this file, walking up for a repo marker.
+
+    WHY (scar 2026-07-28): skeleton-ness was read off CLAUDE_PROJECT_DIR while the
+    q-system/ match was read off the target path, so a session opened in an INSTANCE
+    that edited the SKELETON's own scripts got blocked -- the exact move this hook's
+    own stderr recommends ("edit skeleton scripts upstream in kipi-system"). Both
+    facts must come from the same repo: the one the edited file lives in.
+    """
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(d, "instance-registry.json")) or \
+           os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return fallback
+        d = parent
+
+
 def block(path):
     sys.stderr.write(
         "instance-automation-guard: refusing to write a script into the q-system/ subtree of an "
@@ -61,7 +81,7 @@ def main():
         sys.exit(0)
 
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    if is_skeleton(project_dir):
+    if is_skeleton(owning_repo(fp, project_dir)):
         sys.exit(0)  # skeleton: scripts belong in q-system/ and should propagate
 
     try:
