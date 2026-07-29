@@ -403,6 +403,26 @@ def _is_real_file(token):
     except OSError:
         return False
 
+# AN EXTENSIONLESS NAME NEEDS THE MARKUP THAT SAYS "THIS IS A LITERAL", ALONE.
+# Measured on the live board before shipping: accepting any real-file token
+# flipped ASK-133 and ASK-135 from shareable to run-alone, both on `kipi` -- and
+# in both DoRs it is `kipi update` / `kipi check`, a COMMAND named inside the
+# Files block, not a file either issue edits. 2 of 8 shareable issues lost to a
+# false trip is the same board-serialising over-enforcement round 3 already cost
+# this file, arriving through a smaller door.
+#
+# A dotted name carries its own evidence (`foo.sh` is a file wherever it sits).
+# A bare word does not, so it earns the real-file test only as a span of its
+# own: `kipi` yes, `kipi update` no, and bare prose `kipi` no. Multi-word spans
+# lose nothing -- any file inside one is dotted and already caught above.
+_SPAN_RE = re.compile(r"`([^`]+)`")
+_STRIP = "`*_|\"'"
+standalone_spans = set()
+for _s in _SPAN_RE.finditer(value):
+    _t = _s.group(1).strip()
+    if _t and len(_t.split()) == 1:
+        standalone_spans.add(_t.strip(_STRIP).lstrip("([{<").rstrip(")]}>").rstrip(",;:."))
+
 magnets = set()
 for _m in os.environ.get("KIPI_DISPATCH_MAGNETS", "").split():
     magnets.add(normalise(_m))
@@ -421,12 +441,13 @@ def named_files(text):
         # and a bare directory name are all rejected here, and none of them
         # would ever be an intersection hit anyway.
         #
-        # OR it is a file that actually exists in this repo. That second test is
-        # what covers the extensionless ones (`kipi`, `Makefile`, `LICENSE`),
-        # and it is a fact rather than a seventh spelling: prose words are not
-        # files on disk, so it cannot widen into the over-detection this guard
-        # has to stay clear of.
-        if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]) and not _is_real_file(w):
+        # OR it is a span of its own naming a file that actually exists in this
+        # repo. That second test is what covers the extensionless ones (`kipi`,
+        # `Makefile`, `LICENSE`), and it is a fact rather than a seventh
+        # spelling -- bounded by standalone_spans so a command mention cannot
+        # widen it into over-detection (see the measurement note above).
+        if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]) \
+                and not (w in standalone_spans and _is_real_file(w)):
             continue
         yield w
 

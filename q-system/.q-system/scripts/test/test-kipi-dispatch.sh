@@ -895,6 +895,21 @@ OUT="$(run_dispatch --burst 2 --parallel 2)"
 wait_for_ends 2
 check "28c a real DIRECTORY named in prose does not make the set unknown" "$(n_started)" "2"
 
+# ...and a COMMAND is not a file. Measured on the live board: accepting any
+# real-file token flipped ASK-133 and ASK-135 to run-alone on `kipi update` and
+# `kipi check` -- the CLI named as a command inside their Files block, not a
+# file either one edits. 2 of 8 shareable issues is the board-serialising
+# over-enforcement round 3 already cost this file. The real shape, verbatim.
+new_sandbox
+dor ASK-965 '* `q-system/.q-system/scripts/alpha965.sh`
+* `settings-template.json` (repo root; the sync check aborts `kipi update` if the hook is here but not there)'
+dor ASK-966 '* `q-system/.q-system/scripts/beta966.sh`
+* `validate-separation.py` (register it so `kipi check` runs it)'
+export KIPI_STUB_READY="ASK-965 ASK-966"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 2
+check "28d the kipi CLI named as a COMMAND still shares the board" "$(n_started)" "2"
+
 # --- 29. the pick lock must not have a state nobody can clear (r4 f2) -------
 # `lock_holder_dead` reclaimed only when the pid file parsed as a number AND
 # that pid was gone. Two states escaped with no age check anywhere, and each
