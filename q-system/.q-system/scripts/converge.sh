@@ -266,6 +266,29 @@ print("wrote %s at %s; left unclaimed: %s"
 PY
 }
 
+# receipt_only_ahead <tree> <sha>
+#   0 when everything this tree carries beyond <sha> is the receipt ledger and
+#   nothing else -- so the ONLY thing a push can add to the PR branch is a
+#   receipt. Anything else is code no reviewer read.
+#
+# WHY A SECOND GATE ON TOP OF "did the writer get somewhere" (PR #42 review
+# round 2, finding 1). receipt_append dedups on the ledger FILE (exit 3) BEFORE
+# it checks the tree head, so "a receipt for this head exists" does not mean the
+# tree stands where the reviewer stood. Gating only on the writer's exit code
+# would still hand origin a tree carrying unreviewed source whenever a receipt
+# happened to be sitting in the ledger next to it. The question that decides a
+# push is not "is there a receipt" but "what does origin GAIN", and the answer
+# has to be the ledger.
+#
+# Same shape as PR #23's own LEDGER_PREFIX allowance, deliberately: converge may
+# only ever add to a reviewed head the one file that gate lets past.
+receipt_only_ahead() {
+  local tree="$1" sha="$2" gained
+  git -C "$tree" merge-base --is-ancestor "$sha" HEAD 2>/dev/null || return 1
+  gained="$(git -C "$tree" diff --name-only "$sha" HEAD 2>/dev/null)" || return 1
+  [ -z "$gained" ] || [ "$gained" = ".prd-os/receipts.jsonl" ]
+}
+
 # WHY THE RECEIPT NEEDS A CHANNEL OUT OF THIS FUNCTION (PR #42 review, finding 1
 # -- major). Every failure path below reports through `say`, which reaches stdout
 # and the run log. The terminal report under it then paged the founder
@@ -286,7 +309,7 @@ RECEIPT_MISS=""; RECEIPT_FIX=""
 # It DOES change what the report says, which is a different thing: the exit code
 # is a contract other code reads, the page is what a human reads.
 receipt_ensure() {
-  local sha="$1" record="$2" tree ledger head note rc backup had=0 ahead
+  local sha="$1" record="$2" tree ledger head note rc backup had=0 ahead gained receipted=0
   RECEIPT_MISS=""; RECEIPT_FIX=""
   if [ -z "$sha" ]; then
     say "receipt: no head sha to pin one to, so no receipt was written"
@@ -310,10 +333,18 @@ receipt_ensure() {
   [ -n "$note" ] && say "receipt: $note"
 
   # 3 is "already receipted" -- a receipt EXISTS, so it is not a miss; the push
-  # guard below still owns whether origin carries it. 4 and 5 wrote nothing.
-  if [ "$rc" = "4" ] || [ "$rc" = "5" ]; then
+  # guard below still owns whether origin carries it. 4 and 5 wrote nothing, and
+  # they are not the same miss: 4 is a filesystem the tree cannot write, 5 is a
+  # tree parked on the wrong commit. Handing both the same fix sends the operator
+  # to `git status` on a tree whose problem is where it is standing.
+  if [ "$rc" = "3" ]; then receipted=1; fi
+  if [ "$rc" = "4" ]; then
     RECEIPT_MISS="the ledger write was refused ($note)"
     RECEIPT_FIX="git -C $tree status, then write a receipt for $ISSUE at $sha into .prd-os/receipts.jsonl and push it"
+  fi
+  if [ "$rc" = "5" ]; then
+    RECEIPT_MISS="$note, and converge pushed nothing from that tree"
+    RECEIPT_FIX="git -C $tree log --oneline -3 to see what it is standing on, put it back on $sha, then re-run: kipi converge --issue $ISSUE"
   fi
 
   if [ "$rc" = "0" ]; then
@@ -325,6 +356,7 @@ receipt_ensure() {
        && git -C "$tree" commit -q -m "chore(receipt): prd-os receipt for $ISSUE at $(printf '%.12s' "$sha")" \
             -- .prd-os/receipts.jsonl 2>>"$LOG"; then
       say "receipt: committed onto $BRANCH in $tree"
+      receipted=1
     else
       # Roll the line back. Leaving an uncommitted receipt in the tree would make
       # every later run dedup against it and skip, so the PR would carry nothing
@@ -353,18 +385,49 @@ receipt_ensure() {
   # zero: when rev-list cannot answer, PUSH and let git decide. `Everything
   # up-to-date` is a cheap no-op; a receipt that never reaches origin is a PR
   # `validate` refuses forever.
+  # THE PUSH IS GATED ON WHAT THE WRITER DECIDED (PR #42 review round 2, finding
+  # 1 -- major). It was conditioned only on `ahead`, so the writer's own refusal
+  # -- exit 5, "the tree is not at the reviewed sha, no receipt written" -- fell
+  # straight THROUGH into the push and delivered whatever that worktree was
+  # carrying to origin/$BRANCH, with auto-merge armed on the PR. Source no
+  # reviewer read, pushed by the guard that exists to stop exactly that. And the
+  # line below it announced "origin now carries it" two lines after the writer
+  # said it had written nothing (finding 2, same repro).
+  #
+  # converge's push has ONE job: put a receipt on the head CI reads. No receipt,
+  # no push -- and the line that reports a push can then only ever run on a run
+  # that has one, so it cannot lie.
+  #
+  # This buys no silence. Every path that leaves receipted=0 has already set
+  # RECEIPT_MISS above, so the page still wakes a human; what stops is the WRITE,
+  # not the report.
+  if [ "$receipted" != "1" ]; then
+    say "receipt: not pushing $BRANCH -- no receipt was written this run (see above), and converge pushes only receipts."
+    return 0
+  fi
+
   ahead="$(git -C "$tree" rev-list --count "origin/$BRANCH..HEAD" 2>>"$LOG")" || ahead=""
   if [ -z "$ahead" ]; then
     say "receipt: git could not tell whether origin/$BRANCH is behind this tree (no tracking ref for it in $tree). Pushing anyway rather than reading that as nothing to push."
   fi
-  if [ -z "$ahead" ] || [ "$ahead" != "0" ]; then
-    if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
-      say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
-    else
-      say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so validate still refuses this PR. By hand: git -C $tree push origin $BRANCH"
-      RECEIPT_MISS="the receipt is committed in $tree but the push to origin/$BRANCH FAILED (see $LOG), and CI reads the pushed head"
-      RECEIPT_FIX="git -C $tree push origin $BRANCH"
-    fi
+  [ "$ahead" = "0" ] && return 0
+
+  # ...AND ON WHAT THE PUSH WOULD ADD. See receipt_only_ahead: holding a receipt
+  # licenses pushing THE RECEIPT, never whatever else is parked in the tree.
+  if ! receipt_only_ahead "$tree" "$sha"; then
+    gained="$(git -C "$tree" diff --name-only "$sha" HEAD 2>/dev/null | tr '\n' ' ')"
+    say "receipt: NOT pushing $BRANCH. Beyond the reviewed head $sha this tree carries ${gained:-commits off that line of history}, which no review has read, and this PR can auto-merge. The receipt stays local."
+    RECEIPT_MISS="a receipt for the head sits in $tree, but beyond the reviewed head that tree also carries ${gained:-a different line of history}, so converge would not push it"
+    RECEIPT_FIX="git -C $tree log --stat $sha..HEAD to see what is in there, then push the receipt commit alone: git -C $tree push origin <receipt-sha>:refs/heads/$BRANCH"
+    return 0
+  fi
+
+  if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
+    say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
+  else
+    say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so the receipt reaches nothing. By hand: git -C $tree push origin $BRANCH"
+    RECEIPT_MISS="the receipt is committed in $tree but the push to origin/$BRANCH FAILED (see $LOG), and CI reads the pushed head"
+    RECEIPT_FIX="git -C $tree push origin $BRANCH"
   fi
   return 0
 }
@@ -455,11 +518,20 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # is a page an operator learns to skim. The other two already say a human is
     # needed and already carry the merge command, so those are extended -- both
     # facts are true at once there and dropping either loses an action.
+    #
+    # AND IT REPORTS THE STATE, NOT A VERDICT IT NEVER READ (PR #42 review round
+    # 2, finding 1, second half). This said "validate refuses it, so GitHub will
+    # NOT land it". converge cannot know that: pr-receipt-gate.py rides on PR #23
+    # and THIS change merges first, so on the day it ships the opposite happens --
+    # armed plus green means GitHub lands a head no receipt covers. A page that
+    # names the wrong failure is how an operator learns to skim the right ones.
+    # The fact converge does own is the receipt, and it is the same call to
+    # action either way.
     if [ -n "$RECEIPT_MISS" ]; then
-      MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. \`validate\` refuses it, so it does not merge until one lands. By hand: $RECEIPT_FIX"
+      MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. Nothing proves it was reviewed. By hand: $RECEIPT_FIX"
       case "$AUTOMERGE" in
-        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS) -- validate refuses it, so GitHub will NOT land it. Needs a human: $RECEIPT_FIX" ;;
-        *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so validate refuses it too: $RECEIPT_FIX" ;;
+        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Needs a human: $RECEIPT_FIX" ;;
+        *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so nothing proves it was reviewed: $RECEIPT_FIX" ;;
       esac
     fi
     say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"

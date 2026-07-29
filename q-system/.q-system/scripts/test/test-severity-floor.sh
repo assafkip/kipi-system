@@ -2704,7 +2704,25 @@ $(cat "$W2/pages.txt")"
 grep -q "sana/ask-905" "$W2/pages.txt" \
   || fail "the page names no branch, so the operator cannot act on it without reading the log --
       which is the channel this whole case exists because nobody reads: $(cat "$W2/pages.txt")"
+# AND IT MAY NOT PREDICT AN OUTCOME IT CANNOT SEE (PR #42 review round 2,
+# finding 1, the second half). The page asserted "validate refuses it, so GitHub
+# will NOT land it". converge cannot know that: pr-receipt-gate.py rides on PR
+# #23 and this change merges FIRST, so on the day this ships an armed PR with no
+# receipt merges rather than sitting red. Both outcomes are bad and both need the
+# same human, so the page names the state and the risk, never the verdict of a
+# job it never read.
+grep -qi "will NOT land it\|does not merge until one lands" "$W2/pages.txt" "$W2/conv-nowt.out" \
+  && fail "the page/log still predicts what \`validate\` does to this PR. The gate it is
+      predicting is on an UNMERGED branch (PR #23), so today the opposite happens: armed +
+      green means GitHub merges a head no receipt covers. A page that names the wrong failure
+      teaches the operator to distrust it. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "nothing proves it was reviewed" "$W2/pages.txt" \
+  || fail "the page reports the receipt miss without saying what is actually at stake -- that
+      nothing on this PR proves a review happened, whichever way validate goes:
+$(cat "$W2/pages.txt")"
 ok "a receipt the writer could not land reaches the PAGE, not just the run log"
+ok "the page names the receipt miss without predicting a gate it never read"
 
 # --- S9. a FAILED PUSH reaches the page too ----------------------------------
 # The second failure exit, and the one that looks most like success from inside:
@@ -2768,6 +2786,158 @@ grep -qi "no human merge needed" "$W2/pages.txt" \
   || fail "the receipt DID land and the page still reports a problem. A guard that pages on a
       healthy run is the cry-wolf failure: $(cat "$W2/pages.txt")"
 ok "a missing tracking ref pushes the receipt instead of silently reading the error as zero"
+
+# --- S11. A RUN THAT WROTE NO RECEIPT PUSHES NOTHING -------------------------
+# PR #42 review ROUND 2, finding 1 (major). The push block was conditioned only
+# on `ahead`, so the writer's own refusal -- exit 5, "the tree is not at the
+# reviewed sha, no receipt written" -- fell straight THROUGH it and pushed
+# whatever that worktree was carrying to origin/sana/ask-<n>, while auto-merge
+# sat armed on the PR. Source no reviewer read, delivered to the branch by the
+# guard whose entire job is to stop that.
+#
+# The blast radius is not theoretical-at-the-margin: this PR merges BEFORE #23
+# by its own account, so pr-receipt-gate.py is not in `validate` yet. Armed +
+# green = GitHub squash-merges the unread commit into main on a public repo.
+R_S11="$W2/world-receipt-nopush"; receipt_world "$R_S11" 908
+S11_TREE="$R_S11/tree"
+SHA_908="$(git -C "$S11_TREE" rev-parse HEAD)"        # the reviewed head, on origin
+S11_ORIGIN_BEFORE="$(git -C "$R_S11/origin" rev-parse sana/ask-908)"
+printf 'x = 1  # never reviewed\n' > "$S11_TREE/src.py"
+G -C "$S11_TREE" add src.py
+G -C "$S11_TREE" commit -q -m "local work nobody has read (ASK-908)"
+S11_LOCAL="$(git -C "$S11_TREE" rev-parse HEAD)"
+[ "$S11_LOCAL" != "$SHA_908" ] || fail "S11 did not move the worktree off the reviewed head"
+S_NOPUSH="$W2/state-receipt-nopush"; mkdir -p "$S_NOPUSH/pr-reviews"
+seed_record "$S_NOPUSH" 908 "APPROVE" "$SHA_908" "$RCPT_TS"
+printf 'armed\n' > "$S_NOPUSH/pr-reviews/pr-908.automerge"
+gh_says 908 CLEAN "$SHA_908"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S11" 908 "$S_NOPUSH" "$W2/conv-nopush.out"
+
+# Pin the precondition FIRST: without the writer's refusal this case proves
+# nothing about the push, it just describes a tree.
+grep -qi "no receipt written" "$W2/conv-nopush.out" \
+  || fail "S11 never reached the writer's refusal, so whatever the push did here is not the
+      behaviour this case is named for. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+[ "$(git -C "$R_S11/origin" rev-parse sana/ask-908)" = "$S11_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT: converge wrote NO receipt by its own guard and PUSHED ANYWAY.
+      origin/sana/ask-908 moved $S11_ORIGIN_BEFORE -> $(git -C "$R_S11/origin" rev-parse sana/ask-908),
+      carrying commits no reviewer read onto a PR with auto-merge ARMED. Files origin gained:
+$(git -C "$S11_TREE" diff --name-only "$SHA_908" "$(git -C "$R_S11/origin" rev-parse sana/ask-908)" 2>&1 | sed 's/^/        /')
+      converge said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+git -C "$R_S11/origin" show "sana/ask-908:src.py" >/dev/null 2>&1 \
+  && fail "origin's branch now carries src.py, which existed only in the local worktree and no
+      review ever read. Auto-merge is armed on this PR."
+# The write stopping must not make the REPORT stop: the page is the only thing
+# that reaches a phone, and rc 5 is exactly the state a human has to unstick.
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "converge refused to write a receipt AND refused to push, and still paged that no
+      human is needed: $(cat "$W2/pages.txt")"
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "the push was correctly refused and the page never mentions the receipt, so the fix
+      bought silence: $(cat "$W2/pages.txt")"
+grep -qi "not pushing" "$W2/conv-nopush.out" \
+  || fail "converge skipped the push without saying so. A push that silently does not happen is
+      the same defect class as a push that silently does. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+# ROUND-2 FINDING 2, on the same run. The success line was unconditional, so it
+# printed 'origin now carries it' one line under the writer saying it had written
+# nothing. An operator reading the log was told validate would now pass.
+grep -qi "now carries it" "$W2/conv-nopush.out" \
+  && fail "converge wrote no receipt and the log still says origin carries one. The line that
+      reports a push may only run on a run that had something to push. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+ok "a run that wrote no receipt pushes nothing, and still pages"
+ok "the push-success line cannot run on a run that wrote no receipt"
+
+# --- S12. A RECEIPT DOES NOT LICENSE PUSHING WHAT IS SITTING NEXT TO IT -------
+# The same hole one rc over. receipt_append dedups on the ledger FILE (rc 3)
+# BEFORE the tree-head guard, so "a receipt for this head exists" does not mean
+# the tree stands where the reviewer stood. Gating the push on the writer's rc
+# alone would still hand origin a tree carrying unreviewed source, as long as a
+# receipt happened to be in the ledger next to it. What origin GAINS has to be
+# the ledger and nothing else.
+R_S12="$W2/world-receipt-mixed"; receipt_world "$R_S12" 909
+S12_TREE="$R_S12/tree"
+SHA_909="$(git -C "$S12_TREE" rev-parse HEAD)"
+S12_ORIGIN_BEFORE="$(git -C "$R_S12/origin" rev-parse sana/ask-909)"
+printf '{"issue_id":"ASK-909","commit_sha":"%s","reviewed_at":"%s"}\n' "$SHA_909" "$RCPT_TS" \
+  >> "$S12_TREE/.prd-os/receipts.jsonl"
+G -C "$S12_TREE" add .prd-os/receipts.jsonl
+G -C "$S12_TREE" commit -q -m "chore(receipt): prd-os receipt for ASK-909"
+printf 'y = 2  # never reviewed\n' > "$S12_TREE/src.py"
+G -C "$S12_TREE" add src.py
+G -C "$S12_TREE" commit -q -m "local work nobody has read (ASK-909)"
+S_MIXED="$W2/state-receipt-mixed"; mkdir -p "$S_MIXED/pr-reviews"
+seed_record "$S_MIXED" 909 "APPROVE" "$SHA_909" "$RCPT_TS"
+printf 'armed\n' > "$S_MIXED/pr-reviews/pr-909.automerge"
+gh_says 909 CLEAN "$SHA_909"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S12" 909 "$S_MIXED" "$W2/conv-mixed.out"
+
+grep -qi "already receipted" "$W2/conv-mixed.out" \
+  || fail "S12 did not reach the dedup exit, so it is not exercising the rc it is named for.
+      It said:
+$(sed 's/^/        /' "$W2/conv-mixed.out")"
+git -C "$R_S12/origin" show "sana/ask-909:src.py" >/dev/null 2>&1 \
+  && fail "THE DEFECT: a receipt already sat in the ledger, so the push went ahead and took the
+      unreviewed src.py commit with it onto a branch with auto-merge ARMED. A receipt licenses
+      pushing THE RECEIPT, never whatever else is parked in the tree."
+[ "$(git -C "$R_S12/origin" rev-parse sana/ask-909)" = "$S12_ORIGIN_BEFORE" ] \
+  || fail "origin/sana/ask-909 moved $S12_ORIGIN_BEFORE -> $(git -C "$R_S12/origin" rev-parse sana/ask-909)
+      on a tree whose commits beyond the reviewed head are more than the ledger."
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "converge refused to push a receipt it holds and told nobody: the receipt never reaches
+      CI and the page says no human is needed. Silence bought by a guard:
+$(cat "$W2/pages.txt")"
+ok "a receipt in the ledger does not license pushing unreviewed commits next to it"
+
+# --- S13. NO RECEIPT MEANS NO PUSH, EVEN WHEN THE PUSH LOOKS HARMLESS --------
+# The half of round-2 finding 1 that the two cases above cannot see. In S11/S12
+# the tree carries unreviewed SOURCE, so the "what does origin gain" gate stops
+# the push even with the "did the writer get somewhere" gate removed -- the two
+# guards cover for each other there and neither is pinned alone.
+#
+# Here the tree is ledger-only ahead of the reviewed head (a receipt commit for
+# ANOTHER issue, which is exactly what a shared worktree accumulates), so that
+# gate passes and only the writer's own decision is left. Nothing was written for
+# THIS issue, so nothing may be pushed for it and nothing may claim it was: this
+# is the state where the old unconditional success line said "origin now carries
+# it" about a receipt that does not exist.
+R_S13="$W2/world-receipt-otherledger"; receipt_world "$R_S13" 910
+S13_TREE="$R_S13/tree"
+SHA_910="$(git -C "$S13_TREE" rev-parse HEAD)"
+S13_ORIGIN_BEFORE="$(git -C "$R_S13/origin" rev-parse sana/ask-910)"
+printf '{"issue_id":"ASK-777","commit_sha":"cafef00d"}\n' >> "$S13_TREE/.prd-os/receipts.jsonl"
+G -C "$S13_TREE" add .prd-os/receipts.jsonl
+G -C "$S13_TREE" commit -q -m "chore(receipt): prd-os receipt for ASK-777"
+S13_DIFF="$(git -C "$S13_TREE" diff --name-only "$SHA_910" HEAD)"
+[ "$S13_DIFF" = ".prd-os/receipts.jsonl" ] \
+  || fail "S13 wanted a ledger-ONLY tree so the what-origin-gains gate cannot be what stops the
+      push; the tree is ahead by '$S13_DIFF'"
+S_OTHER="$W2/state-receipt-otherledger"; mkdir -p "$S_OTHER/pr-reviews"
+seed_record "$S_OTHER" 910 "APPROVE" "$SHA_910" "$RCPT_TS"
+printf 'armed\n' > "$S_OTHER/pr-reviews/pr-910.automerge"
+gh_says 910 CLEAN "$SHA_910"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S13" 910 "$S_OTHER" "$W2/conv-otherledger.out"
+grep -qi "no receipt written" "$W2/conv-otherledger.out" \
+  || fail "S13 never reached the writer's refusal, so it is not testing the gate it names. It said:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+[ "$(receipts_for "$S13_TREE/.prd-os/receipts.jsonl" ASK-910 "$SHA_910")" = "0" ] \
+  || fail "S13 wrote a receipt for ASK-910 after all; the case is vacuous"
+[ "$(git -C "$R_S13/origin" rev-parse sana/ask-910)" = "$S13_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT, isolated: converge wrote NO receipt for ASK-910 and pushed the branch
+      anyway, because another issue's ledger commit happened to be sitting in the tree.
+      origin/sana/ask-910 moved $S13_ORIGIN_BEFORE -> $(git -C "$R_S13/origin" rev-parse sana/ask-910).
+      A push converge cannot name a reason for is a push it should not make. It said:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+grep -qi "now carries it" "$W2/conv-otherledger.out" \
+  && fail "no receipt for ASK-910 exists and the log claims origin now carries one:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+ok "no receipt written means no push, even when the push would carry only a ledger"
 
 # --- wiring: the writer lives in converge, at the terminal-approve branch ----
 grep -q 'receipts.jsonl' "$CONV" \
