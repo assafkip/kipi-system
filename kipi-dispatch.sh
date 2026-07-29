@@ -73,12 +73,32 @@ NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRD_SPLIT="${KIPI_DISPATCH_PRD_SPLIT:-$SELF_DIR/plugins/prd-os/scripts/prd_split.py}"
 
-# MAGNET FILE (sp-f3a2ad81). Nearly every test-adding issue appends one line to
+# MAGNET FILE (sp-f3a2ad81). Nearly every test-adding issue appends one entry to
 # capability-manifest.json, so intersecting on it would make almost every pair
 # "conflicting" and serialise the board back down to one -- the exact thing this
-# change exists to undo. It is exempt from the intersection test and relies on
-# the union-merge rule that already governs it. Stated out loud on purpose: a
-# silent exemption is how the next person reintroduces the conflict.
+# change exists to undo. It is exempt from the intersection test.
+#
+# WHAT THAT EXEMPTION ACTUALLY COSTS (PR #36 r4 finding 1). This used to say the
+# exemption "relies on the union-merge rule that already governs" the manifest.
+# No such rule exists: `.gitattributes` grants merge=union to exactly one path,
+# `.prd-os/receipts.jsonl`, and git reports `merge: unspecified` for the
+# manifest. Worse, the cited mechanism could not have worked even if it were
+# wired -- union-merge keeps BOTH sides' lines, which is correct for an
+# append-only .jsonl ledger and produces INVALID JSON for a .json object.
+#
+# So the honest statement of the trade, since a false one is how the next person
+# reintroduces the conflict: two parallel runs that both append to the manifest
+# WILL conflict there, and the second PR to land needs a hand resolve (keep both
+# entries, drop the markers). That is one hand-resolved merge against
+# serialising the entire board, and it is the reason the waiver is ANNOUNCED at
+# dispatch time (see magnet_holders below) rather than discovered in a red PR.
+#
+# MAGNET CONFLICT IS UNMITIGATED. That marker is load-bearing, not decoration:
+# case 30a reads `git check-attr merge` for the magnet and requires this line
+# when git says `unspecified` -- and requires it GONE the moment a real merge
+# strategy is wired, so the two can never drift again in either direction.
+# Wiring one (a JSON-aware merge driver, since union is wrong here) is a founder
+# decision on `.gitattributes`, outside this issue's Files list: sp-d11d902c.
 MAGNET_FILES="q-system/.q-system/capability-manifest.json"
 
 usage() {
@@ -99,17 +119,26 @@ USAGE
 BURST=0
 BURST_GIVEN=0
 PARALLEL=""
+PARALLEL_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --burst)    shift; BURST="${1:-}"; BURST_GIVEN=1 ;;
-    --parallel) shift; PARALLEL="${1:-}" ;;
+    --parallel) shift; PARALLEL="${1:-}"; PARALLEL_GIVEN=1 ;;
     -h|--help)  usage; exit 0 ;;
     *) printf 'kipi-dispatch: unknown argument %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 case "$BURST" in ''|*[!0-9]*) printf 'kipi-dispatch: --burst wants a number\n' >&2; exit 2 ;; esac
-case "$PARALLEL" in '') ;; *[!0-9]*) printf 'kipi-dispatch: --parallel wants a number\n' >&2; exit 2 ;; esac
+# EMPTY IS ONLY "USE THE DEFAULT" WHEN THE FLAG WAS NOT TYPED (PR #36 r4 f4).
+# `--parallel` with no value produced PARALLEL="" and fell through to the
+# default, so a founder who typed a burst-shaped flag got the SCHEDULER's
+# behaviour under their own name: a full production tick that launched an agent
+# and spent the daily counter. That is what happened during the r4 review. The
+# flag-given bit is what separates "not typed" from "typed with nothing".
+if [ "$PARALLEL_GIVEN" -eq 1 ]; then
+  case "$PARALLEL" in ''|*[!0-9]*) printf 'kipi-dispatch: --parallel wants a number\n' >&2; exit 2 ;; esac
+fi
 [ "${PARALLEL:-1}" = "0" ] && { printf 'kipi-dispatch: --parallel 0 would dispatch nothing\n' >&2; exit 2; }
 # `--burst 0` is not a burst of nothing, it is the internal value for "this is a
 # heartbeat tick", so it fell through EVERY `[ "$BURST" -gt 0 ]` branch below: it
@@ -349,6 +378,31 @@ for path in mod._extract_paths(value):
 _CITE_RE = re.compile(r":\d+(?:-\d+)?$")
 _FILENAME_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{1,5}$")
 
+
+def _is_real_file(token):
+    """Does this token name a file that EXISTS in the repo right now?
+
+    A dot-extension is a spelling; existing on disk is a fact. The extension
+    rule alone let the repo-root `kipi` CLI through both nets at once (PR #36
+    r4 finding 3): _extract_paths drops any token with no `/` and no `.`, and
+    the missed-token guard skipped it for the same reason, so two issues both
+    editing it dispatched in parallel and the pass reported `skipped 0`.
+
+    isFILE, not isdir, on purpose: a DoR that says "under the `q-system`
+    subtree" is discussing a directory, which is the same signal the trailing
+    slash carries in emit(). A directory is not a file two agents can collide
+    in, and counting one would serialise the board on a word.
+    """
+    p = os.path.expanduser(token)
+    if not os.path.isabs(p):
+        if not _repo:
+            return False
+        p = os.path.join(_repo, p)
+    try:
+        return os.path.isfile(p)
+    except OSError:
+        return False
+
 magnets = set()
 for _m in os.environ.get("KIPI_DISPATCH_MAGNETS", "").split():
     magnets.add(normalise(_m))
@@ -366,7 +420,13 @@ def named_files(text):
         # that merely contains a dot or a slash: `e.g`, `3.2`, `and/or`, `N/A`
         # and a bare directory name are all rejected here, and none of them
         # would ever be an intersection hit anyway.
-        if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]):
+        #
+        # OR it is a file that actually exists in this repo. That second test is
+        # what covers the extensionless ones (`kipi`, `Makefile`, `LICENSE`),
+        # and it is a fact rather than a seventh spelling: prose words are not
+        # files on disk, so it cannot widen into the over-detection this guard
+        # has to stay clear of.
+        if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]) and not _is_real_file(w):
             continue
         yield w
 
@@ -452,6 +512,12 @@ first_overlap() {  # first_overlap <fileA> <fileB>
   grep -Fx -f "$1" "$2" 2>/dev/null | strip_magnets | head -1
 }
 
+# The magnet path this pass is about to WAIVE, or nothing. The mirror of
+# first_overlap: same two sets, keeping exactly what that one throws away.
+first_magnet_overlap() {  # first_magnet_overlap <fileA> <fileB>
+  grep -Fx -f "$1" "$2" 2>/dev/null | grep -xF -f "$MAGNETS" | head -1
+}
+
 # --- LIVENESS BEACON: page when the heartbeat COMES BACK ------------------
 # Founder ask 2026-07-28: "I want to get a slack notification that the heartbeat
 # restarted when it does."
@@ -508,13 +574,39 @@ fi
 # /bin/bash 3.2 under launchd. The holder's pid goes INSIDE the directory so a
 # SIGKILLed pass does not wedge the loop forever -- a lock nobody can clear is a
 # worse outage than the race it prevents (the reclaim-on-read rule the claim
-# mutex learned in ASK-189). A directory with no readable pid is treated as
-# YOUNG, not stale: that is the microsecond between mkdir and the pid write.
+# mutex learned in ASK-189).
+#
+# THAT RULE HAD TWO STATES IT COULD NOT CLEAR (PR #36 r4 finding 2), and each
+# one turned the whole loop off permanently and silently, which is strictly
+# worse than the race:
+#
+#   no pid file   SIGKILL or power loss in the window between mkdir and the pid
+#                 write. The old code called that YOUNG rather than stale -- and
+#                 young had no expiry, so it was young forever. LOCK_GRACE gives
+#                 young an end: the real window is microseconds, so a minute is
+#                 four orders of magnitude of margin.
+#   reused pid    a reboot (or pid wraparound) hands the recorded number to an
+#                 unrelated process. `kill -0` succeeds, so the holder read as
+#                 alive indefinitely. An age fallback alone would paper over
+#                 this and stay wrong for the first hour after every reboot, so
+#                 the test is what the pid IS RUNNING, not how old the lock is.
+#
+# Nothing here steals a lock from a live pass: a pid whose command line is this
+# script is honoured no matter how old it gets, because two pickers in flight is
+# the exact failure the lock exists to prevent. An ancient one that is still
+# held is a hung pass -- real, and the only state left with no other signal, so
+# it PAGES (once a day) instead of exiting 0 into silence every 900s.
 #
 # Taken AFTER the beacon on purpose: a tick that gives up because another pass
 # holds the lock is still proof of life, and skipping the beat would make a
 # healthy loop look dead and fire a false RESUMED page later.
 LOCK_DIR="$HOME/.config/kipi/dispatch.lock"
+LOCK_GRACE="${KIPI_DISPATCH_LOCK_GRACE:-60}"        # mkdir -> pid write window
+LOCK_MAX_HOLD="${KIPI_DISPATCH_LOCK_MAX_HOLD:-3600}"  # > any legitimate hold
+# What a holder's command line has to contain. Derived from this file's own
+# name rather than hardcoded, so a rename cannot silently turn every live
+# holder into a "reused pid" and hand two passes the lock at once.
+SELF_TAG="$(basename "${BASH_SOURCE[0]}" .sh)"
 LOCK_HELD=0
 SCRATCH=""
 cleanup() {
@@ -524,10 +616,49 @@ cleanup() {
 }
 trap cleanup EXIT
 
-lock_holder_dead() {
-  HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-  case "$HOLDER" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$HOLDER" 2>/dev/null && return 1
+# Seconds since the lock was taken, or -1 if it cannot be read. Creating the pid
+# file inside the directory updates the directory's own mtime, so this is the
+# acquisition time, not merely the mkdir time. BSD then GNU, like the budget-day
+# shift above: a silent fallback to "0 seconds old" on Linux would make every
+# lock look brand new and reinstate the wedge.
+lock_age() {
+  LMTIME="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || true)"
+  case "$LMTIME" in ''|*[!0-9]*) printf '%s' '-1'; return 0 ;; esac
+  printf '%s' "$(( $(date +%s) - LMTIME ))"
+}
+
+# Sets LOCK_HOLDER / LOCK_AGE / LOCK_STATE in THIS shell. Not a function that
+# prints its verdict: the caller needs all three, and reading them back through
+# a command substitution is a subshell that discards the other two -- the same
+# trap that let the first cut of case 14a pass while the script hung.
+LOCK_HOLDER=""
+LOCK_AGE=-1
+LOCK_STATE="young"
+read_lock() {
+  LOCK_HOLDER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  LOCK_AGE="$(lock_age)"
+  case "$LOCK_HOLDER" in
+    ''|*[!0-9]*)
+      if [ "$LOCK_AGE" -ge 0 ] && [ "$LOCK_AGE" -lt "$LOCK_GRACE" ]; then
+        LOCK_STATE="young"
+      else
+        LOCK_STATE="stale"
+      fi
+      return 0 ;;
+  esac
+  if ! kill -0 "$LOCK_HOLDER" 2>/dev/null; then
+    LOCK_STATE="stale"
+    return 0
+  fi
+  # Alive. Is it US, or a number handed to something else? An EMPTY ps answer is
+  # not evidence of reuse -- it is ps failing -- so that case stays "held".
+  # Fail-safe on the side that never puts two pickers in flight.
+  HOLDER_CMD="$(ps -o args= -p "$LOCK_HOLDER" 2>/dev/null | head -1)"
+  if [ -n "$HOLDER_CMD" ] && ! printf '%s' "$HOLDER_CMD" | grep -q "$SELF_TAG"; then
+    LOCK_STATE="stale"
+    return 0
+  fi
+  LOCK_STATE="held"
   return 0
 }
 
@@ -542,8 +673,9 @@ fi
 LOCK_TRIES=0
 LOCK_RECLAIMS=0
 while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-  if [ "$LOCK_RECLAIMS" -lt 2 ] && lock_holder_dead; then
-    say "note: clearing a dispatch lock left behind by a killed pass (pid $HOLDER)"
+  read_lock
+  if [ "$LOCK_RECLAIMS" -lt 2 ] && [ "$LOCK_STATE" = "stale" ]; then
+    say "note: clearing a dispatch lock no live pass owns (pid ${LOCK_HOLDER:-none recorded}, ${LOCK_AGE}s old)"
     rm -rf "$LOCK_DIR"
     LOCK_RECLAIMS=$(( LOCK_RECLAIMS + 1 ))
     continue
@@ -551,13 +683,24 @@ while ! mkdir "$LOCK_DIR" 2>/dev/null; do
   if [ "$LOCK_TRIES" -ge "$LOCK_WAIT" ]; then
     # Not a fault and not an empty board: another pass is doing this work right
     # now. Exit 0, no page -- paging here would cry wolf on the loop WORKING.
-    say "skip: another dispatch pass is already picking (lock held by pid $(cat "$LOCK_DIR/pid" 2>/dev/null))"
+    say "skip: another dispatch pass is already picking (lock held by pid ${LOCK_HOLDER:-unknown}, ${LOCK_AGE}s old)"
+    # ...unless it has been "right now" for an hour. Then the loop is off, every
+    # tick exits 0, and the liveness beacon above still reports healthy -- the
+    # silence this whole block exists to end. Stealing it would be the race, so
+    # this pages a human instead, once per day like every other standing fault.
+    if [ "$LOCK_AGE" -ge "$LOCK_MAX_HOLD" ]; then
+      page_once "$HOME/.config/kipi/dispatch-lockheld-$TODAY.paged" \
+        "kipi dispatch: a dispatch pass (pid ${LOCK_HOLDER:-unknown}) has held the pick lock for $(( LOCK_AGE / 60 )) min, so no issue has been picked up since. The Linear loop is STOPPED. Do: \`ps -p ${LOCK_HOLDER:-?}\` in $REPO; if it is not really working, kill it, then \`rm -rf $LOCK_DIR\`."
+    fi
     exit 0
   fi
   sleep 1; LOCK_TRIES=$(( LOCK_TRIES + 1 ))
 done
-printf '%s' "$$" > "$LOCK_DIR/pid"
+# Owned from the mkdir, not from the pid write. Claiming it one line later left
+# a normal (non-SIGKILL) exit inside that window leaking a pid-less lock dir --
+# the very state above. Now only a kill -9 or a power cut can reach it.
 LOCK_HELD=1
+printf '%s' "$$" > "$LOCK_DIR/pid"
 
 LIVE="$(live_converges)"; LIVE="${LIVE:-0}"
 SLOTS="${PARALLEL:-$MAX_CONCURRENT}"
@@ -811,6 +954,17 @@ refresh_live_set() {
   done
 }
 
+# Which live runs also name <path>. Reads the sets refresh_live_set already
+# cached, so naming the other side of a waived magnet overlap costs no extra
+# Linear call. LIVE_SET is a UNION with no issue labels on it, and "it overlaps
+# a live run" without saying which one is a report nobody can act on.
+magnet_holders() {  # magnet_holders <path>
+  for LI in $( { live_issues; cat "$OURS"; } | sort -u ); do
+    [ -f "$SCRATCH/set-$LI" ] && grep -qxF "$1" "$SCRATCH/set-$LI" && printf '%s ' "$LI"
+  done
+  return 0
+}
+
 # Why this candidate may not go, or nothing at all. Called TWICE per candidate
 # -- once before the slot wait as a cheap early-out, once after it as the
 # authoritative answer -- and it is one function on purpose: two readers of "may
@@ -972,6 +1126,17 @@ for ISSUE in $CANDIDATES; do
   # paths the parser cannot take is now also unknown, and telling that operator
   # "its DoR names no files" is a false statement about a file they can read.
   [ "$SOLO" -eq 1 ] && say "  ...ALONE: $CAND_WHY. Nothing may run alongside it until it finishes."
+
+  # SAY WHAT THE WAIVER BUYS AND WHAT IT COSTS, at the moment it is spent. The
+  # magnet exemption is the one place this gate KNOWINGLY dispatches two runs
+  # into one file, and it used to do it silently on the strength of a merge rule
+  # that does not exist. Named runs and a named path, so the conflict is an
+  # expected event with its resolution attached rather than a red PR at 3am.
+  # Log/stdout only, never a page: it is the gate working as designed.
+  MAGNET_HIT="$(first_magnet_overlap "$LIVE_SET" "$CAND_SET")"
+  if [ -n "$MAGNET_HIT" ]; then
+    say "  ...WAIVED: $ISSUE and $(magnet_holders "$MAGNET_HIT")both touch $MAGNET_HIT (magnet file, exempt from the disjointness test). Expect a git CONFLICT there on the second PR to land; resolve it by keeping both entries."
+  fi
 
   nohup ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" \
     > "$HOME/.config/kipi/converge-$ISSUE.log" 2>&1 &

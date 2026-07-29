@@ -834,6 +834,184 @@ else
 fi
 check "26c the cap does not cost a dispatch" "$(n_started)" "2"
 
+# --- 27. a malformed --parallel must not run a production tick (r4 f4) ------
+# `--burst` with no value exits 2; `--parallel` with no value fell through to
+# "use the default" and ran a full heartbeat pass under the founder's own
+# command -- it dispatched a real agent during the review. The harm is not the
+# rejected flag, it is the SIDE EFFECTS a typo bought: a launched agent and a
+# spent daily counter. Assert those, not just the exit code.
+new_sandbox
+dor ASK-951 '* `q-system/.q-system/scripts/alpha951.sh`'
+export KIPI_STUB_READY="ASK-951"
+OUT="$(run_dispatch --parallel)"; RC=$?
+sleep 1
+check "27a --parallel with no value is refused, like --burst" "$RC" "2"
+check "27b a malformed --parallel dispatches nothing" "$(n_started)" "0"
+check "27c a malformed --parallel does not spend the daily counter" \
+  "$(ls "$HOME/.config/kipi" | grep -c '^dispatch-count-' || true)" "0"
+if printf '%s' "$OUT" | grep -q 'parallel wants a number'; then
+  ok "27d the refusal names the flag"
+else
+  bad "27d the refusal names the flag" "$OUT"
+fi
+new_sandbox
+dor ASK-952 '* `q-system/.q-system/scripts/alpha952.sh`'
+export KIPI_STUB_READY="ASK-952"
+OUT="$(run_dispatch --parallel 2)"
+wait_for_ends 1
+check "27e --parallel WITH a value still works" "$(n_started)" "1"
+
+# --- 28. an extensionless real file is a file (r4 f3) -----------------------
+# The PARTIAL guard required a dot-extension on the basename, so the repo-root
+# `kipi` CLI was neither extracted into the set nor flagged as missed: the guard
+# whose job is "does the block NAME a file the set does not contain" reported
+# the block fully read, and two issues both editing it dispatched with
+# `skipped 0`. A dot is a spelling; "is a real file in this repo" is the fact.
+new_sandbox
+dor ASK-961 '* `q-system/.q-system/scripts/alpha961.sh`
+* the repo-root `kipi` dispatch case'
+dor ASK-962 '* `q-system/.q-system/scripts/beta962.sh`
+* the repo-root `kipi` dispatch case'
+export KIPI_STUB_READY="ASK-961 ASK-962"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "28a two issues naming the extensionless kipi CLI do not both dispatch" "$(n_started)" "1"
+if printf '%s' "$OUT" | grep -q 'skip ASK-962'; then
+  ok "28b the held candidate is reported, not silently dropped"
+else
+  bad "28b the held candidate is reported, not silently dropped" "$OUT"
+fi
+
+# THE GUARD ON THE GUARD. Over-detection is not free: every block it mislabels
+# runs ALONE, which is the board-serialising failure round 3 already cost this
+# file. A word that is not a real file, and a DIRECTORY that is, must both stay
+# out of it.
+new_sandbox
+mkdir -p "$SANDBOX/repo/q-system/.q-system/scripts"
+dor ASK-963 '* `q-system/.q-system/scripts/alpha963.sh` -- extend in place under q-system, nothing new'
+dor ASK-964 '* `q-system/.q-system/scripts/beta964.sh` -- extend in place under q-system, nothing new'
+export KIPI_STUB_READY="ASK-963 ASK-964"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 2
+check "28c a real DIRECTORY named in prose does not make the set unknown" "$(n_started)" "2"
+
+# --- 29. the pick lock must not have a state nobody can clear (r4 f2) -------
+# `lock_holder_dead` reclaimed only when the pid file parsed as a number AND
+# that pid was gone. Two states escaped with no age check anywhere, and each
+# turned the loop off permanently and silently while the liveness beacon (taken
+# BEFORE the lock) kept reporting healthy.
+#
+# B1: a lock dir with no pid file. The code called that "YOUNG, not stale --
+# the microsecond between mkdir and the pid write", but young had no expiry, so
+# it was young forever.
+new_sandbox
+mkdir -p "$HOME/.config/kipi/dispatch.lock"
+touch -t 202001010000 "$HOME/.config/kipi/dispatch.lock"
+dor ASK-971 '* `q-system/.q-system/scripts/alpha971.sh`'
+export KIPI_STUB_READY="ASK-971"
+OUT="$(run_dispatch)"
+wait_for_ends 1
+check "29a a lock dir with no pid file, past the grace window, is reclaimed" "$(n_started)" "1"
+
+# The grace window is the point: the real mkdir -> pid-write race is
+# microseconds, and stealing a lock inside it puts two pickers in flight, which
+# is the race the lock exists to prevent.
+new_sandbox
+mkdir -p "$HOME/.config/kipi/dispatch.lock"
+dor ASK-972 '* `q-system/.q-system/scripts/alpha972.sh`'
+export KIPI_STUB_READY="ASK-972"
+OUT="$(run_dispatch)"
+sleep 1
+check "29b a JUST-created lock dir with no pid file is honoured, not stolen" "$(n_started)" "0"
+
+# B2: the recorded pid was REUSED after a reboot. `kill -0` succeeds, so the
+# holder read as alive indefinitely. Deliberately left FRESH so only the
+# command check can clear it -- an age fallback alone would pass this by
+# accident and stay wrong for the first hour after every reboot.
+new_sandbox
+mkdir -p "$HOME/.config/kipi/dispatch.lock"
+sleep 120 & REUSED_PID=$!
+printf '%s' "$REUSED_PID" > "$HOME/.config/kipi/dispatch.lock/pid"
+dor ASK-973 '* `q-system/.q-system/scripts/alpha973.sh`'
+export KIPI_STUB_READY="ASK-973"
+OUT="$(run_dispatch)"
+wait_for_ends 1
+check "29c a lock whose pid was REUSED by an unrelated process is reclaimed" "$(n_started)" "1"
+kill "$REUSED_PID" 2>/dev/null; wait "$REUSED_PID" 2>/dev/null
+
+# CONTROL: a lock held by a real, live dispatch pass is still honoured. The fix
+# must clear the two dead states without ever stealing from a working one.
+new_sandbox
+mkdir -p "$SANDBOX/fakebin"
+printf '#!/usr/bin/env bash\nsleep 120\n' > "$SANDBOX/fakebin/kipi-dispatch.sh"
+chmod +x "$SANDBOX/fakebin/kipi-dispatch.sh"
+bash "$SANDBOX/fakebin/kipi-dispatch.sh" & HOLDER_PID=$!
+mkdir -p "$HOME/.config/kipi/dispatch.lock"
+printf '%s' "$HOLDER_PID" > "$HOME/.config/kipi/dispatch.lock/pid"
+dor ASK-974 '* `q-system/.q-system/scripts/alpha974.sh`'
+export KIPI_STUB_READY="ASK-974"
+OUT="$(run_dispatch)"
+sleep 1
+check "29d a lock held by a LIVE dispatch pass is honoured, not stolen" "$(n_started)" "0"
+
+# ...and an ancient one that is STILL held is the outage that has no other
+# signal: the tick exits 0 every 900s and the beacon says healthy. Stealing it
+# would put two pickers in flight, so this pages instead -- once a day, like
+# every other recurring condition here.
+touch -t 202001010000 "$HOME/.config/kipi/dispatch.lock"
+run_dispatch >/dev/null 2>&1
+run_dispatch >/dev/null 2>&1
+check "29e an ancient but still-held lock pages once, instead of silence" "$(paged 'pick lock')" "1"
+kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null
+
+# --- 30. the magnet exemption must not cite a rule that does not exist (f1) --
+# The exemption said it "relies on the union-merge rule that already governs"
+# capability-manifest.json. `.gitattributes` grants merge=union to exactly one
+# path, and it is not this one -- so two parallel test-adding issues conflict on
+# the manifest and leave it as invalid JSON. A comment is not enforcement; this
+# case is, and it reads git's own answer rather than grepping the file.
+#
+# Deliberately NOT a banned-phrase grep. "must not say union-merge" cannot tell
+# a claim from the sentence explaining why the claim was false, so it would go
+# green the moment someone deleted the explanation. This asks the opposite, and
+# fails in BOTH directions: git is the authority on whether a merge rule exists,
+# and the script must carry the matching acknowledgement either way.
+MAGNET_PATH="q-system/.q-system/capability-manifest.json"
+MAGNET_ATTR="$(cd "$REPO_ROOT" && git check-attr merge -- "$MAGNET_PATH" 2>/dev/null | sed 's/.*: //')"
+MAGNET_ACK="$(grep -c 'MAGNET CONFLICT IS UNMITIGATED' "$DISPATCH" || true)"
+if [ "$MAGNET_ATTR" = "unspecified" ]; then
+  check "30a no merge rule exists, so the exemption says the conflict is unmitigated" "$MAGNET_ACK" "1"
+else
+  check "30a a merge rule exists ($MAGNET_ATTR), so the unmitigated marker must go" "$MAGNET_ACK" "0"
+fi
+
+# And the wrong fix is blocked too: merge=union keeps BOTH sides' lines, which
+# is right for an append-only .jsonl ledger and produces INVALID JSON for a
+# .json object. Proven by the reviewer's repro, so it is a defect either way.
+UNION_JSON="$(cd "$REPO_ROOT" && grep -E '\.json[[:space:]].*merge=union' .gitattributes 2>/dev/null | grep -vc 'jsonl' || true)"
+check "30b no .json file is given merge=union (it yields invalid JSON)" "$UNION_JSON" "0"
+
+# THE REPORT MOVES WITH THE DETECTOR. The waiver is a deliberate trade, so the
+# operator has to learn about the conflict at DISPATCH time, not from a red PR.
+new_sandbox
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-980\n' > "$LIVE_FILE"
+dor ASK-980 '* `q-system/.q-system/capability-manifest.json`, `q-system/.q-system/scripts/alpha980.sh`'
+dor ASK-981 '* `q-system/.q-system/capability-manifest.json`, `q-system/.q-system/scripts/beta981.sh`'
+export KIPI_STUB_READY="ASK-981"
+OUT="$(run_dispatch --burst 1 --parallel 2)"
+wait_for_ends 1
+check "30c a magnet-only overlap still dispatches" "$(n_started)" "1"
+if printf '%s' "$OUT" | grep -q 'capability-manifest.json' \
+   && printf '%s' "$OUT" | grep -q 'ASK-980' \
+   && printf '%s' "$OUT" | grep -qi 'conflict'; then
+  ok "30d the waived magnet overlap is announced, naming the other run and the file"
+else
+  bad "30d the waived magnet overlap is announced, naming the other run and the file" "$OUT"
+fi
+unset KIPI_DISPATCH_FAKE_LIVE_FILE
+
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
