@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # H3: kipi rollback -- safe revert of the last skeleton sync. Pairs with issue kipi-rollback-verb.
 set -euo pipefail
+
+# NEVER pipe into `grep -q` in this file. `set -o pipefail` is on (above), and
+# `grep -q` exits the instant it matches -- so the producer on the left can still
+# be writing, take SIGPIPE, exit 141, and pipefail turns that into a FAILED
+# pipeline even though the assertion actually PASSED. Use a herestring, or
+# capture to a variable first.
+#
+# Scar (sp-3fe1ab9d, 2026-07-28): this suite flaked at 3/30 under capability-gate
+# and always passed when run by hand, so it read as "green, occasionally weird".
+# It surfaced as `FAIL: pre-sync auto-commit lost`, which points at rollback
+# losing a commit -- a data-loss bug that was never happening. A nondeterministic
+# gate is worse than a red one: it teaches everyone to re-run until green, and
+# the day it means something nobody looks. After converting all 9 pipelines to
+# herestrings: 0/60.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 RB="$ROOT/kipi-rollback.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -46,12 +60,14 @@ REG="$WORK/reg1.json"; mk_registry "$REG" "inst-a::$A"
 PRE_STATE="$(cat "$A/q-system/my-project/current-state.md")"
 PRE_DEC="$(cat "$A/q-system/canonical/decisions.md")"
 OUT="$(KIPI_REGISTRY="$REG" bash "$RB" 2>&1)" || fail "happy-path rollback exited non-zero: $OUT"
-echo "$OUT" | grep -qi "ROLLED BACK" || fail "happy path did not report ROLLED BACK: $OUT"
+grep -qi "ROLLED BACK" <<<"$OUT" || fail "happy path did not report ROLLED BACK: $OUT"
 [ "$(cat "$A/q-system/CLAUDE.md")" = "orig" ] || fail "synced file not reverted to pre-sync content"
 [ "$(cat "$A/q-system/my-project/current-state.md")" = "$PRE_STATE" ] || fail "preserved my-project file changed"
 [ "$(cat "$A/q-system/canonical/decisions.md")" = "$PRE_DEC" ] || fail "preserved canonical file changed"
-G -C "$A" log --format=%s | grep -qx "chore: auto-commit before kipi update" || fail "pre-sync auto-commit lost"
-G -C "$A" log -1 --format=%s | grep -qi "^Revert" || fail "HEAD is not a Revert commit"
+log_a="$(G -C "$A" log --format=%s)"
+grep -qx "chore: auto-commit before kipi update" <<<"$log_a" || fail "pre-sync auto-commit lost"
+head_a="$(G -C "$A" log -1 --format=%s)"
+grep -qi "^Revert" <<<"$head_a" || fail "HEAD is not a Revert commit"
 
 # 2. dirty tree refuses, instance untouched
 B="$WORK/inst-b"; mk_instance "$B"
@@ -59,7 +75,7 @@ printf 'dirty\n' >> "$B/q-system/CLAUDE.md"
 REGB="$WORK/reg2.json"; mk_registry "$REGB" "inst-b::$B"
 HEAD_B="$(G -C "$B" rev-parse HEAD)"
 OUTB="$(KIPI_REGISTRY="$REGB" bash "$RB" 2>&1)" || true
-echo "$OUTB" | grep -qi "SKIP (dirty" || fail "dirty tree was not refused: $OUTB"
+grep -qi "SKIP (dirty" <<<"$OUTB" || fail "dirty tree was not refused: $OUTB"
 [ "$(G -C "$B" rev-parse HEAD)" = "$HEAD_B" ] || fail "dirty instance HEAD moved (must be untouched)"
 
 # 3. revert conflict aborts cleanly (no half-applied revert), reports FAIL, exits 1
@@ -68,7 +84,7 @@ C="$WORK/inst-c"; mk_instance "$C"
 REGC="$WORK/reg3.json"; mk_registry "$REGC" "inst-c::$C"
 HEAD_C="$(G -C "$C" rev-parse HEAD)"
 OUTC="$(KIPI_REGISTRY="$REGC" bash "$RB" 2>&1)" && rc=0 || rc=$?
-echo "$OUTC" | grep -qi "FAIL (revert" || fail "conflict not reported as FAIL: $OUTC"
+grep -qi "FAIL (revert" <<<"$OUTC" || fail "conflict not reported as FAIL: $OUTC"
 [ "${rc:-0}" -ne 0 ] || fail "script exited 0 despite a failed instance (should be 1)"
 [ ! -f "$C/.git/REVERT_HEAD" ] || fail "REVERT_HEAD left behind (half-applied revert)"
 { G -C "$C" diff --quiet && G -C "$C" diff --cached --quiet; } || fail "conflict left a dirty tree (not aborted cleanly)"
@@ -79,7 +95,7 @@ D="$WORK/inst-d"; mkdir -p "$D"
 ( cd "$D" && G init -q && mkdir -p q-system && printf 'x\n' > q-system/a.md && G add -A && G commit -qm baseline )
 REGD="$WORK/reg4.json"; mk_registry "$REGD" "inst-d::$D"
 OUTD="$(KIPI_REGISTRY="$REGD" bash "$RB" 2>&1)" || fail "no-sync-commit run exited non-zero: $OUTD"
-echo "$OUTD" | grep -qi "SKIP (no skeleton-sync" || fail "instance with no sync commit not skipped: $OUTD"
+grep -qi "SKIP (no skeleton-sync" <<<"$OUTD" || fail "instance with no sync commit not skipped: $OUTD"
 
 # 5. a content commit sits ON TOP of the sync -> rollback targets the SYNC (message-prefix),
 #    not HEAD. This is the finding-1 correctness case: a `git revert HEAD` impl would fail it.
@@ -87,7 +103,7 @@ E="$WORK/inst-e"; mk_instance "$E"
 ( cd "$E" && printf 'note\n' > q-system/notes.md && G add -A && G commit -qm "add notes (content commit on top of sync)" )
 REGE="$WORK/reg5.json"; mk_registry "$REGE" "inst-e::$E"
 OUTE="$(KIPI_REGISTRY="$REGE" bash "$RB" 2>&1)" || fail "content-on-top rollback exited non-zero: $OUTE"
-echo "$OUTE" | grep -qi "ROLLED BACK" || fail "content-on-top did not roll back: $OUTE"
+grep -qi "ROLLED BACK" <<<"$OUTE" || fail "content-on-top did not roll back: $OUTE"
 [ "$(cat "$E/q-system/CLAUDE.md")" = "orig" ] || fail "sync NOT reverted with a content commit on top (reverted HEAD instead of the sync)"
 [ "$(cat "$E/q-system/notes.md")" = "note" ] || fail "content commit on top was wrongly reverted (must stay untouched)"
 
@@ -97,13 +113,13 @@ F2="$WORK/inst-f"; mkdir -p "$F2"
 REGF="$WORK/reg6.json"
 python3 -c "import json;json.dump({'instances':[{'name':'inst-f','path':'$F2','type':'direct-clone'}]},open('$REGF','w'))"
 OUTF="$(KIPI_REGISTRY="$REGF" bash "$RB" 2>&1)" || fail "direct-clone run exited non-zero: $OUTF"
-echo "$OUTF" | grep -qi "direct-clone" || fail "direct-clone instance did not get the type-aware SKIP message: $OUTF"
+grep -qi "direct-clone" <<<"$OUTF" || fail "direct-clone instance did not get the type-aware SKIP message: $OUTF"
 
 # 7. empty/all-merged registry -> explicit 'no eligible instances', not a silent 0/0/0 success
 REGE2="$WORK/reg7.json"
 python3 -c "import json;json.dump({'instances':[{'name':'gone','path':'$WORK/none','status':'merged'}]},open('$REGE2','w'))"
 OUTE2="$(KIPI_REGISTRY="$REGE2" bash "$RB" 2>&1)" || fail "empty-registry run exited non-zero: $OUTE2"
-echo "$OUTE2" | grep -qi "No eligible instances" || fail "empty registry did not signal 'no eligible instances': $OUTE2"
+grep -qi "No eligible instances" <<<"$OUTE2" || fail "empty registry did not signal 'no eligible instances': $OUTE2"
 
 echo "PASS: rollback reverts sync by message-prefix (even with a content commit on top), preserves instance dirs + pre-sync commit, refuses dirty trees, aborts cleanly on conflict, skips no-sync + direct-clone instances with clear messages, signals an empty registry"
 
