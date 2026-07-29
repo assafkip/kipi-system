@@ -166,9 +166,20 @@ def bar_verified(receipt):
         exit_code = receipt.get("exit_code")
         if exit_code != 0:
             return False, mode, f"last run exited {exit_code}"
-        if not (receipt.get("output_head") or "").strip():
-            return False, mode, "ran but produced no output -- not proof of correct work"
-        return True, mode, receipt.get("detail", f"{mode}-verified")
+        # exit 0 alone is not proof of correct work -- a job whose script was
+        # rsync --delete'd out from under it can still exit 0 through a wrapper,
+        # which is the silent-death class this whole migration exists for. The
+        # run has to have LEFT something: output on the wire, or a changed file
+        # on the paths the plist itself declares. `com.kipi.audit-rotate` is the
+        # honest case for the second one: a log rotator that succeeds says
+        # nothing and rotates a file.
+        if (receipt.get("output_head") or "").strip():
+            return True, mode, receipt.get("detail", f"{mode}-verified")
+        effect = receipt.get("effect")
+        if effect:
+            return True, mode, f"silent exit 0, observable effect: {effect}"
+        return False, mode, ("ran, exit 0, but printed nothing and changed nothing "
+                             "it declares -- not proof of correct work")
     return False, mode, f"unrecognized receipt mode {mode!r}"
 
 
@@ -219,6 +230,38 @@ def plist_info(label: str) -> dict:
         return plistlib.loads(path.read_bytes())
     except Exception:  # noqa: BLE001
         return {}
+
+
+def declared_paths(info: dict) -> list:
+    """The paths a plist itself says the job touches. Used to tell a silent
+    success from a silent no-op -- and derived from the plist rather than guessed,
+    so this mechanism never has to know what any individual job does (ASK-151's
+    Not-doing line)."""
+    paths = []
+    for key in ("StandardOutPath", "StandardErrorPath", "WorkingDirectory"):
+        value = info.get(key)
+        if value:
+            paths.append(Path(str(value)).expanduser())
+    return paths
+
+
+def path_fingerprint(paths) -> dict:
+    """mtime+size per declared path. A missing path records as None so its
+    APPEARANCE counts as an effect too."""
+    out = {}
+    for path in paths:
+        try:
+            stat = path.stat()
+            out[str(path)] = [stat.st_mtime, stat.st_size]
+        except OSError:
+            out[str(path)] = None
+    return out
+
+
+def describe_effect(before: dict, after: dict):
+    """Which declared paths the run changed, as one short string, or None."""
+    changed = [key for key in after if before.get(key) != after[key]]
+    return ", ".join(sorted(changed)) if changed else None
 
 
 def scheduler_receipt(label: str, status_kind: str, info: dict):
@@ -309,11 +352,21 @@ def gate_result(rows, expect: int):
     breakdown = ", ".join(f"{count} {mode}" for mode, count in sorted(modes.items()))
     lines.append(f"roster {len(rows)} / expected {expect}")
     lines.append(f"verification modes: {breakdown}")
-    unrun = sum(1 for row in rows if not row["verified"])
+    # Itemized by mode on purpose. "28 not run-verified" reads as one problem; it
+    # is two very different ones -- jobs nobody may run (paused, out of ASK-151's
+    # scope) and jobs that ran and proved nothing (silent exit 0). Collapsing them
+    # into one number is the partial pass wearing a total.
+    unrun = {}
+    for row in rows:
+        if not row["verified"]:
+            unrun[row["verify_mode"]] = unrun.get(row["verify_mode"], 0) + 1
     if unrun:
+        detail = ", ".join(f"{count} {mode}" for mode, count in sorted(unrun.items()))
         lines.append(
-            f"NOT run-verified: {unrun} (tracked under bars 1-3; running them is "
-            f"un-pausing, which ASK-151 puts out of scope)")
+            f"NOT run-verified: {sum(unrun.values())} ({detail}). These clear bars "
+            f"1-3 and carry a receipt. `paused-ledger` = running it is un-pausing, "
+            f"out of ASK-151's scope. `run` here = exit 0 with no output and no "
+            f"observable effect, which is recorded, not scored as proof.")
 
     exit_code = 0
     if len(rows) != expect:
@@ -366,8 +419,24 @@ def cmd_status(args) -> int:
     return 0  # status reports; `gate` is the thing that fails
 
 
+def select(jobs, only):
+    """The jobs this pass acts on. `--only` narrows to one label so ASK-151's
+    "demonstrated on ONE job end to end ... then the remaining 31 driven by the
+    same mechanism" is a real invocation and not a story told about one."""
+    if not only:
+        return list(jobs), None
+    picked = [job for job in jobs if job["label"] == only]
+    if not picked:
+        return [], f"BLOCK: {only} is not in {ROSTER_PATH.name}"
+    return picked, None
+
+
 def cmd_migrate(args) -> int:
     roster = load_roster()
+    jobs, error = select(roster["jobs"], args.only)
+    if error:
+        print(error, file=sys.stderr)
+        return 1
     wd = watchdog()
     watched = list(wd.load_watched_prefixes())
     paused = wd.load_paused_labels()
@@ -376,7 +445,7 @@ def cmd_migrate(args) -> int:
 
     # Bar 2 first: fixing coverage changes the answer for every job in that family.
     needed = []
-    for job in roster["jobs"]:
+    for job in jobs:
         prefix = missing_prefix(job["label"], watched)
         if prefix and prefix not in needed:
             needed.append(prefix)
@@ -385,7 +454,7 @@ def cmd_migrate(args) -> int:
         if args.apply:
             watched.append(prefix)
 
-    rows = collect(roster["jobs"], tuple(watched), cron, paused, receipts)
+    rows = collect(jobs, tuple(watched), cron, paused, receipts)
 
     # Bar 4: record the receipt each job has EARNED. A loaded job gets its
     # scheduler receipt; a paused one gets a paused-ledger receipt naming why it
@@ -410,11 +479,18 @@ def cmd_migrate(args) -> int:
         written += 1
     if args.apply:
         write_receipts(receipts)
-        rows = collect(roster["jobs"], tuple(watched), cron, paused, receipts)
+        rows = collect(jobs, tuple(watched), cron, paused, receipts)
 
     verb = "wrote" if args.apply else "would write"
     print(f"{verb} {written} receipt(s) to {RECEIPTS}")
-    code, lines = gate_result(rows, roster["expected_count"])
+    # A scoped pass is scored against its OWN size, and says so. Scoring one job
+    # against expected_count 32 would print a BLOCK that means nothing, and the
+    # next reader would learn to skim past BLOCK lines.
+    if args.only:
+        print(f"scoped pass: {args.only} only. Run without --only for the roster, "
+              f"and `gate` for the 32-job assertion.")
+    code, lines = gate_result(rows, len(jobs) if args.only
+                              else roster["expected_count"])
     print("\n".join(lines))
     if not args.apply:
         print("dry run. --apply to write.")
@@ -436,6 +512,8 @@ def cmd_run(args) -> int:
         print("dry run. --apply to actually run it.")
         return 0
     started = time.time()
+    watched_paths = declared_paths(info)
+    before = path_fingerprint(watched_paths)
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
                               timeout=args.timeout,
@@ -447,16 +525,19 @@ def cmd_run(args) -> int:
     except OSError as exc:
         exit_code = 127
         output = f"could not execute: {exc}"
+    effect = describe_effect(before, path_fingerprint(watched_paths))
     receipts = load_receipts()
     receipts[args.label] = {
         "mode": "run",
         "exit_code": exit_code,
         "output_head": output[:OUTPUT_HEAD_CHARS],
+        "effect": effect,
         "detail": f"ran by job-migration.py in {int(time.time() - started)}s",
         "recorded_at": _now(),
     }
     write_receipts(receipts)
-    print(f"exit={exit_code}  {len(output)} chars of output  -> receipt written")
+    print(f"exit={exit_code}  {len(output)} chars of output  "
+          f"effect={effect or 'none'}  -> receipt written")
     print(output[:OUTPUT_HEAD_CHARS])
     return 0 if exit_code == 0 else 1
 
@@ -480,6 +561,7 @@ def main(argv=None) -> int:
 
     migrate = sub.add_parser("migrate", help="fix bar 2, write receipts")
     migrate.add_argument("--apply", action="store_true")
+    migrate.add_argument("--only", help="migrate this one roster label")
 
     run = sub.add_parser("run", help="run ONE roster job once and record a receipt")
     run.add_argument("label")

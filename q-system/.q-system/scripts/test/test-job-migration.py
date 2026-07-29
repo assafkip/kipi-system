@@ -159,8 +159,14 @@ def test_bar_verified(mod):
     ok, mode, _ = mod.bar_verified({"mode": "run", "exit_code": 3, "output_head": "x"})
     check("run receipt with nonzero exit -> fail", not ok, mode)
     ok, mode, _ = mod.bar_verified({"mode": "run", "exit_code": 0, "output_head": ""})
-    check("run receipt with no output -> fail (a run that printed nothing is not "
-          "proof it did correct work)", not ok)
+    check("run receipt with no output and no effect -> fail (exit 0 alone is what "
+          "a wrapper over a deleted script also returns)", not ok)
+    ok, mode, detail = mod.bar_verified(
+        {"mode": "run", "exit_code": 0, "output_head": "",
+         "effect": "/Users/x/.claude/audit/audit.log"})
+    check("silent exit 0 WITH an observable effect -> pass", ok, detail)
+    check("the effect is named in the detail, not just asserted",
+          "audit.log" in detail, detail)
     ok, mode, _ = mod.bar_verified(
         {"mode": "scheduler", "exit_code": 0, "output_head": "wrote report"})
     check("scheduler receipt -> pass, mode scheduler", ok and mode == "scheduler")
@@ -218,6 +224,25 @@ def test_gate(mod):
           "26" in text and "paused-ledger" in text, text)
 
 
+def test_effect_detection(mod):
+    print("effect detection reads only what the plist declares")
+    info = {"StandardOutPath": "/tmp/j.out", "StandardErrorPath": "/tmp/j.err",
+            "WorkingDirectory": "/tmp/jwd", "ProgramArguments": ["/bin/true"]}
+    paths = [str(p) for p in mod.declared_paths(info)]
+    check("all three declared keys are read",
+          paths == ["/tmp/j.out", "/tmp/j.err", "/tmp/jwd"], str(paths))
+    check("a plist declaring nothing yields no paths (never a guess)",
+          mod.declared_paths({"ProgramArguments": ["/bin/true"]}) == [])
+    before = {"/a": [1.0, 10], "/b": None}
+    check("unchanged -> no effect", mod.describe_effect(before, dict(before)) is None)
+    check("a changed mtime is an effect",
+          mod.describe_effect(before, {"/a": [2.0, 10], "/b": None}) == "/a")
+    check("a path APPEARING is an effect",
+          mod.describe_effect(before, {"/a": [1.0, 10], "/b": [3.0, 5]}) == "/b")
+    check("a path DISAPPEARING is an effect",
+          mod.describe_effect({"/a": [1.0, 10]}, {"/a": None}) == "/a")
+
+
 def test_run_is_opt_in(mod):
     print("running a job is opt-in per label, never a side effect of an audit")
     check("AUTO_RUN is off", mod.AUTO_RUN is False)
@@ -235,6 +260,7 @@ def main():
     test_bar_state(mod)
     test_bar_verified(mod)
     test_gate(mod)
+    test_effect_detection(mod)
     test_run_is_opt_in(mod)
     print()
     if FAILURES:

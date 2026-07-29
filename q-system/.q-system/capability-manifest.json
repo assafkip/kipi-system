@@ -54,6 +54,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-job-migration.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-kipi-rollback-matrix.sh",
       "runner": "bash"
     },

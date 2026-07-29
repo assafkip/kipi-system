@@ -32,6 +32,10 @@ usage() {
   echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
   echo "  kipi review <PR#> [--post]  Adversarial PR review (Netflix staff, fresh eyes, repro-or-drop)"
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
+  echo "  kipi jobs status     Score the ASK-151 job roster against the four bars (writes nothing)"
+  echo "  kipi jobs migrate [--apply] [--only <label>]  Perform the migration; --only for one job"
+  echo "  kipi jobs run <label> --apply   Run ONE roster job once and record its receipt"
+  echo "  kipi jobs gate       Assert all 32 roster jobs are still tracked (exit 1 if not)"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
@@ -86,10 +90,25 @@ case "${1:-help}" in
     bash "$KIPI_HOME/q-system/.q-system/scripts/converge.sh" "$@"
     ;;
   jobs)
-    # One tracked Linear issue per scheduled job, for the migration onto
-    # Linear-tracked execution. Idempotent on job-migration/<label>.
+    # Two scripts, one verb, because they are two halves of the same migration:
+    # linear-job-migration.py FILES the tracking issue per scheduled job, and
+    # job-migration.py PERFORMS the migration and gates it (ASK-151).
+    #
+    # Dispatch is on an explicit subcommand, and every arg the filer already
+    # accepts still reaches the filer. Repointing bare `kipi jobs --apply` at the
+    # new script would have silently changed what a documented command does, and
+    # the filer's writes are permanent Linear issues.
     shift || true
-    python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-job-migration.py" "$@"
+    case "${1:-}" in
+      status|migrate|run|gate)
+        python3 "$KIPI_HOME/q-system/.q-system/scripts/job-migration.py" "$@"
+        ;;
+      *)
+        # One tracked Linear issue per scheduled job. Idempotent on
+        # job-migration/<label>.
+        python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-job-migration.py" "$@"
+        ;;
+    esac
     ;;
   work)
     # The autonomous worker. Dry by default; --apply to actually run an issue.
