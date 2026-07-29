@@ -23,8 +23,17 @@ is unit-testable against a temp path, exactly as lessons-validator.py scopes on
 """
 import json
 import sys
+from pathlib import Path
 
-PROVENANCE = {
+# The enum lives in provenance-vocabulary.json, read at runtime, so this validator
+# and handoff-provenance-lint.py cannot drift apart. Scar 2026-07-28: this set was
+# hardcoded here, and three days later a second lint shipped a DIFFERENT vocabulary
+# for the same idea. Nothing collided, because their file scopes differ, so the
+# drift was invisible rather than absent.
+# The literal below is the fallback for an instance mid-`kipi update` that has this
+# script but not yet the table. It must stay identical to the table's keys; the
+# paired test asserts that.
+_FALLBACK_PROVENANCE = {
     "explicit_statement",
     "inferred",
     "corrected",
@@ -32,6 +41,12 @@ PROVENANCE = {
     "observed",
     "imported",
 }
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from provenance_vocabulary import PROVENANCE
+except Exception:
+    PROVENANCE = _FALLBACK_PROVENANCE
 
 
 def block(msg):

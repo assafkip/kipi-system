@@ -31,6 +31,33 @@ import sys
 # is skeleton-only by design -- without this entry the check would flag itself.
 SKELETON_ONLY = {
     "settings-template-sync-check.py",
+    # NOTHING ELSE BELONGS HERE RIGHT NOW, and that is the point.
+    #
+    # Using this set to park a gate "temporarily" is a real pattern -- it happened
+    # on 2026-07-28, when all three grounding gates were held here (ASK-229) while
+    # their false positives were fixed, then released as each became shippable
+    # (ASK-231/232/233 for two of them, ASK-235 for read-first-gate).
+    #
+    # It is also a fragile one, so if you are about to add an entry, read this
+    # first. A held-back gate is dormant ONLY because of its line here. The line
+    # looks like bookkeeping, it carries no expiry, and the natural way to silence
+    # a sync-check complaint is to delete the line that is "causing" it -- which
+    # silently ships a gate that was deliberately switched off. Nothing downstream
+    # would notice.
+    #
+    # So a hold is a temporary state that owes an exit, not a place to leave things:
+    #   1. Open a tracking issue FIRST and name it in the comment beside the entry,
+    #      with the measured reason for the hold. "It seemed risky" is not a reason;
+    #      ASK-235 held read-first-gate on a measured 100% block rate against a
+    #      subagent transcript, and released it when that dropped to 0.
+    #   2. The exit condition goes in the comment too, so the next person can tell
+    #      whether the hold is still earned or is just old.
+    #   3. Remove the entry the moment the gate ships. A stale entry does not fail
+    #      loudly; it means a gate quietly never reached 21 instances.
+    #
+    # The strongest version of this rule is the one applied on 2026-07-28: prefer
+    # fixing the gate so it can ship over parking it here. An empty held-back list
+    # has no fragile line for anyone to delete.
 }
 
 # Scripts that legitimately live ONLY in settings-template.json (fleet) and not in

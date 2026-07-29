@@ -71,7 +71,14 @@ case "${1:-}" in
     shift; ISSUE=""
     while [ $# -gt 0 ]; do case "$1" in --issue) shift; ISSUE="${1:-}" ;; esac; shift; done
     printf 'START %s\n' "$ISSUE" >> "$KIPI_STUB_LOG"
-    sleep 1
+    # A child that dies the instant it starts. The dispatcher must not report
+    # this one as dispatched: that is the silent-success shape main's PR #39
+    # fixed for the single-issue path, and this branch launches N children.
+    [ "${KIPI_STUB_CONVERGE_RC:-0}" != "0" ] && exit "$KIPI_STUB_CONVERGE_RC"
+    # Long enough to still be running when a test tears down the dispatcher's
+    # process group, which is what launchd does when the job's main process
+    # exits. END is therefore the SURVIVAL marker, not just a tidy log line.
+    sleep "${KIPI_STUB_CONVERGE_SLEEP:-1}"
     printf 'END %s\n' "$ISSUE" >> "$KIPI_STUB_LOG"
     ;;
 esac
@@ -89,6 +96,16 @@ STUB
   export KIPI_NOTIFY="$SANDBOX/notify.sh"
   export KIPI_DISPATCH_DOR_FIXTURE="$SANDBOX/dor.json"
   unset KIPI_STUB_WORK_RC KIPI_STUB_WORK_MSG KIPI_STUB_READY_COUNT
+  # A leaked 6s converge or an instant-death rc would silently change the
+  # meaning of every later case, so both seams reset per sandbox.
+  unset KIPI_STUB_CONVERGE_SLEEP KIPI_STUB_CONVERGE_RC
+  # The dispatcher watches each child for CONFIRM_SECS before calling it
+  # dispatched, and production's 10s is deliberately longer than the stub
+  # converge lives (1s) -- unpinned, every multi-candidate case reports DISPATCH
+  # DIED and the pass stops, which is what happened the first time this ran.
+  # One check at t=0 is enough here: the stub is inside its sleep by then.
+  # Cases that assert on a DEATH raise this so a second check lands after it.
+  export KIPI_DISPATCH_CONFIRM_SECS=1
   unset KIPI_DISPATCH_PRD_SPLIT KIPI_DISPATCH_SLOT_WAIT KIPI_DISPATCH_FAKE_LIVE_FILE
   # Pin the live set. The real heartbeat runs on this same machine, so reading
   # the actual process table would make every concurrency assertion depend on
@@ -1025,6 +1042,109 @@ if printf '%s' "$OUT" | grep -q 'capability-manifest.json' \
 else
   bad "30d the waived magnet overlap is announced, naming the other run and the file" "$OUT"
 fi
+unset KIPI_DISPATCH_FAKE_LIVE_FILE
+
+# --- 31. THE MERGE ITSELF IS A REGRESSION SURFACE ---------------------------
+# main's PR #39 proved that launchd reaps the job's whole process group when the
+# main process exits, so `nohup ... & disown` children die the instant the pass
+# returns -- invisibly, because the log file exists (created by the redirect),
+# `dispatched X` still prints, and the budget is already spent. It fixed that on
+# the SINGLE-issue tail. This branch rewrote that same tail into an N-candidate
+# loop, so resolving the merge in this branch's favour silently undoes the fix,
+# and all 91 cases above stayed green while it was broken.
+#
+# The launchd teardown is modelled deterministically -- kill the pass's process
+# group after it exits -- so no launchd job has to be loaded on the founder's
+# machine to see it.
+run_dispatch_own_session() {  # run_dispatch_own_session <args...>
+  local out="$SANDBOX/session.out"
+  : > "$out"
+  # start_new_session puts the pass in a process group of its own, holding
+  # nothing but the pass and its children, so the kill below cannot reach the
+  # suite. The pid of a session leader IS its process-group id.
+  DISPATCH_PGID="$(python3 - "$DISPATCH" "$out" "$@" <<'PY'
+import subprocess, sys
+disp, out, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+log = open(out, "ab", buffering=0)
+p = subprocess.Popen(["bash", disp] + argv, stdout=log, stderr=log,
+                     start_new_session=True)
+print(p.pid, flush=True)
+p.wait()
+PY
+)"
+}
+session_out() { cat "$SANDBOX/session.out" 2>/dev/null || true; }
+
+new_sandbox
+export KIPI_STUB_CONVERGE_SLEEP=6      # still running when the group is killed
+export KIPI_DISPATCH_CONFIRM_SECS=2    # keep the alive-confirmation short
+dor ASK-991 '* `q-system/.q-system/scripts/alpha991.sh`'
+export KIPI_STUB_READY="ASK-991"
+run_dispatch_own_session --burst 1 --parallel 1
+kill -TERM -"$DISPATCH_PGID" 2>/dev/null || true   # what launchd does
+sleep 8                                            # past the stub's own sleep
+check "31a a dispatched child survives the launchd teardown of the pass's process group" \
+  "$(count_lines '^END ')" "1"
+
+# THE LOG IS EVIDENCE, SO IT IS APPENDED. A re-dispatch of the same issue used
+# to truncate the previous run's output with `>`, which is the file the failure
+# page points the operator at. The run boundary is what makes an appended log
+# readable: without it they are reading the previous run's tail as this one's.
+new_sandbox
+dor ASK-992 '* `q-system/.q-system/scripts/alpha992.sh`'
+export KIPI_STUB_READY="ASK-992"
+printf 'PREVIOUS RUN OUTPUT\n' > "$HOME/.config/kipi/converge-ASK-992.log"
+run_dispatch --burst 1 --parallel 1 >/dev/null
+wait_for_ends 1
+CONV_LOG="$(cat "$HOME/.config/kipi/converge-ASK-992.log" 2>/dev/null || true)"
+if printf '%s' "$CONV_LOG" | grep -q 'PREVIOUS RUN OUTPUT' \
+   && printf '%s' "$CONV_LOG" | grep -q 'dispatch ASK-992'; then
+  ok "31b the converge log is appended with a run boundary, not truncated"
+else
+  bad "31b the converge log is appended with a run boundary, not truncated" "$CONV_LOG"
+fi
+
+# A CHILD THAT DIES INSTANTLY IS NOT A DISPATCH. The budget slot is already
+# spent at this point, so reporting success is the expensive lie: the loop looks
+# healthy, spends the subscription, and does no work.
+new_sandbox
+export KIPI_STUB_CONVERGE_RC=1
+export KIPI_DISPATCH_CONFIRM_SECS=2
+dor ASK-993 '* `q-system/.q-system/scripts/alpha993.sh`'
+export KIPI_STUB_READY="ASK-993"
+OUT="$(run_dispatch --burst 1 --parallel 1)"; RC=$?
+check "31c a child that died is not reported as a dispatch" \
+  "$(printf '%s' "$OUT" | grep -c 'confirmed running' || true)" "0"
+if printf '%s' "$OUT" | grep -q 'DISPATCH DIED'; then
+  ok "31d the death is named in the log, not inferred from silence"
+else
+  bad "31d the death is named in the log, not inferred from silence" "$OUT"
+fi
+check "31e a dead child pages the founder" "$(paged 'died')" "1"
+check "31f a pass whose child died exits non-zero" "$RC" "1"
+
+# GUARDS ON MY OWN REWRITE of the duplicate check. Both of these pass before and
+# after; they exist because the rewrite is the place a boundary bug or a
+# prefix-match would land, and that is the race the check exists to prevent.
+new_sandbox
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-15\n' > "$LIVE_FILE"
+dor ASK-15 '* `q-system/.q-system/scripts/alpha15.sh`'
+dor ASK-151 '* `q-system/.q-system/scripts/beta151.sh`'
+export KIPI_STUB_READY="ASK-151"
+run_dispatch --burst 1 --parallel 2 >/dev/null
+wait_for_ends 1
+check "31g a live ASK-15 does not make ASK-151 read as already live" "$(n_started)" "1"
+
+new_sandbox
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-151\n' > "$LIVE_FILE"
+dor ASK-151 '* `q-system/.q-system/scripts/beta151.sh`'
+export KIPI_STUB_READY="ASK-151"
+run_dispatch --burst 1 --parallel 2 >/dev/null
+check "31h an issue that IS already live is refused" "$(n_started)" "0"
 unset KIPI_DISPATCH_FAKE_LIVE_FILE
 
 echo

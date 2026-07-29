@@ -229,7 +229,31 @@ live_converges() { live_issues | grep -c . || true; }
 
 # Is a converge run for exactly this issue already up? Belt and braces against
 # the race between dispatch and the In Progress transition.
-issue_is_live() { live_issues | grep -qx "$1"; }
+#
+# NO PIPE INTO grep -q, and that is the point rather than a style preference.
+# main's PR #39 review found this same shape one layer down: `writer | grep -q`
+# under `set -o pipefail` fires only SOMETIMES -- grep -q exits the instant it
+# matches, the writer then takes SIGPIPE and dies 141, and pipefail makes 141 the
+# status of the whole pipeline, so the `if` does not run its body. Here that
+# inversion reports a LIVE issue as free and starts a second converge on it,
+# which is the one-worktree fight this check exists to prevent.
+#
+# It was masked, not absent: the `|| true` inside live_issues swallows the 141,
+# so this guard's correctness rested on an unrelated line someone could
+# reasonably delete. Measured rather than reasoned about -- the same pipeline
+# without that `|| true` returns 141 five times out of five
+# (.pr36rev7/sigpipe-probe.sh). A snapshot plus bash's own pattern match removes
+# the pipeline, so there is nothing left to SIGPIPE and nothing for pipefail to
+# poison. Exact-line containment, so a live ASK-15 does not answer for ASK-151
+# (cases 31g/31h).
+issue_is_live() {
+  local live
+  live="$(live_issues)"
+  case $'\n'"$live"$'\n' in
+    *$'\n'"$1"$'\n'*) return 0 ;;
+  esac
+  return 1
+}
 
 # --- FILE SETS FROM THE DoR -----------------------------------------------
 # Prints one repo-relative path per line, nothing at all when the set is
@@ -1027,6 +1051,10 @@ fi
 DISPATCHED=0
 SKIPPED=0
 LAUNCHED_PIDS=""
+# A child that was launched and died. Separate from DISPATCHED because the two
+# answer different questions: how much work started, and whether the launcher
+# itself is broken. The exit code comes from this one.
+DIED=0
 
 # Our own launched runs that are still alive. Counted from PIDs we hold rather
 # than from pgrep: the runs we just started also match the pgrep pattern, so
@@ -1159,9 +1187,77 @@ for ISSUE in $CANDIDATES; do
     say "  ...WAIVED: $ISSUE and $(magnet_holders "$MAGNET_HIT")both touch $MAGNET_HIT (magnet file, exempt from the disjointness test). Expect a git CONFLICT there on the second PR to land; resolve it by keeping both entries."
   fi
 
-  nohup ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" \
-    > "$HOME/.config/kipi/converge-$ISSUE.log" 2>&1 &
-  LAUNCHED_PIDS="$LAUNCHED_PIDS $!"
+  # THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE. This was
+  # `nohup ... & disown`, which is right in an interactive shell and WRONG under
+  # launchd: launchd reaps the job's whole process group when the main process
+  # exits, and nohup only blocks SIGHUP, so the converge died the instant this
+  # pass returned -- invisibly, because the redirect had already created the log
+  # file and `dispatched X` still printed. main's PR #39 proved and fixed that on
+  # the SINGLE-issue tail that this branch rewrote into the loop above, so the
+  # merge either carries it forward or silently undoes it. All 91 cases from the
+  # earlier rounds stayed green while it was undone; case 31a is the pin.
+  #
+  # macOS ships no setsid(1), so python3 is how setsid(2) gets called. A new
+  # session means a new process group with no controlling terminal, which is
+  # outside the group launchd tears down.
+  #
+  # APPENDED with a run boundary, never truncated. This log is the file the
+  # failure page sends the operator to, and `>` erased the previous run's
+  # evidence on every re-dispatch of the same issue. Case 31b.
+  CONVERGE_LOG="$HOME/.config/kipi/converge-$ISSUE.log"
+  printf '\n===== dispatch %s  %s  rounds=%s =====\n' \
+    "$ISSUE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MAX_ROUNDS" >> "$CONVERGE_LOG"
+  CHILD_PID="$(python3 - "$CONVERGE_LOG" \
+           ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" <<'PY'
+import subprocess, sys
+log_path, argv = sys.argv[1], sys.argv[2:]
+# Append, never truncate: a re-dispatch must not erase the previous run's log.
+log = open(log_path, "ab", buffering=0)
+p = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+# The pid is the whole point. The pass has to watch THE CHILD IT LAUNCHED, not
+# "some converge for this issue" -- otherwise an unrelated live run answers on a
+# dead child's behalf, which is the silent-success hole one layer up.
+print(p.pid, flush=True)
+PY
+)"; LAUNCH_RC=$?
+
+  # PROVE IT IS ALIVE BEFORE CLAIMING IT. The budget slot is spent by this line,
+  # so a death reported as a dispatch costs a slot and does no work while the
+  # loop looks healthy. Checked every second rather than once, because a child
+  # that falls over at t+4 is most of how this actually fails.
+  # KIPI_DISPATCH_CONFIRM_SECS is a test seam (cases 31c-31f), same class as
+  # KIPI_DISPATCH_SLOT_WAIT: the window is what has to be short in a test.
+  CONFIRM_SECS="${KIPI_DISPATCH_CONFIRM_SECS:-10}"
+  ALIVE=0
+  case "$CHILD_PID" in
+    ''|*[!0-9]*) ALIVE=0 ;;
+    *)
+      if [ "$LAUNCH_RC" -eq 0 ]; then
+        ALIVE=1
+        CONFIRMED=0
+        while [ "$CONFIRMED" -lt "$CONFIRM_SECS" ]; do
+          kill -0 "$CHILD_PID" 2>/dev/null || { ALIVE=0; break; }
+          sleep 1
+          CONFIRMED=$(( CONFIRMED + 1 ))
+        done
+      fi
+      ;;
+  esac
+
+  if [ "$ALIVE" -eq 0 ]; then
+    # NOT counted as dispatched and NOT added to OURS: nothing is live for this
+    # issue, so a later candidate must not be held back by a ghost. And the pass
+    # STOPS -- an instant death is systemic (launchd reaping, a broken `kipi`, a
+    # worktree already held), so launching the next candidate would spend more
+    # budget on the same fault.
+    say "DISPATCH DIED: $ISSUE was launched but no converge process is alive after ${CONFIRM_SECS}s; the budget slot is spent"
+    page_once "$HOME/.config/kipi/dispatch-died-$TODAY.paged" \
+      "kipi dispatch: $ISSUE was launched but died immediately -- the loop is spending budget and doing no work. Do: read $CONVERGE_LOG and check whether launchd is reaping the child."
+    DIED=1
+    break
+  fi
+
+  LAUNCHED_PIDS="$LAUNCHED_PIDS $CHILD_PID"
   # This run is now live for the purposes of every later candidate, including
   # the seconds before the process table shows it. refresh_live_set folds OURS
   # into the union, so this one line is what keeps candidates 2..N honest --
@@ -1169,7 +1265,7 @@ for ISSUE in $CANDIDATES; do
   printf '%s\n' "$ISSUE" >> "$OURS"
   DISPATCHED=$(( DISPATCHED + 1 ))
 
-  say "dispatched $ISSUE"
+  say "dispatched $ISSUE (confirmed running)"
 done
 
 say "done: dispatched $DISPATCHED, skipped $SKIPPED, of $N_CANDIDATES candidate(s) examined (${READY_TOTAL:-an unknown number of} ready on the board)"
@@ -1187,8 +1283,19 @@ say "done: dispatched $DISPATCHED, skipped $SKIPPED, of $N_CANDIDATES candidate(
 # candidate was held, and paging "nothing is running" about it would be a lie
 # the operator gets woken for.
 LIVE_AT_END="$(live_converges)"; LIVE_AT_END="${LIVE_AT_END:-0}"
-if [ "$BURST" -eq 0 ] && [ "$DISPATCHED" -eq 0 ] && [ "$LIVE" -eq 0 ] && [ "$LIVE_AT_END" -eq 0 ] && [ "$N_CANDIDATES" -gt 0 ]; then
+#
+# DIED is excluded because this page would then be a LIE about a real fault: a
+# child that was launched and died means the file sets were read fine, and the
+# operator would get two pages for one fault with the second one sending them to
+# look at DoR parsing. The death has its own page, naming the converge log.
+if [ "$BURST" -eq 0 ] && [ "$DISPATCHED" -eq 0 ] && [ "$DIED" -eq 0 ] && [ "$LIVE" -eq 0 ] && [ "$LIVE_AT_END" -eq 0 ] && [ "$N_CANDIDATES" -gt 0 ]; then
   page_once "$HOME/.config/kipi/dispatch-stuck-$TODAY.paged" \
     "kipi dispatch: ${READY_TOTAL:-several} issue(s) ready, nothing running, and the loop dispatched nothing -- their file sets could not be read. The Linear loop is IDLE, not busy. Do: run \`bash kipi-dispatch.sh --burst 1\` in $REPO and read the skip lines."
 fi
+
+# NON-ZERO ON A DEAD LAUNCH, and the summary above still prints first so the
+# report stays truthful about how much work started. launchd runs this on
+# StartInterval with no KeepAlive, so a non-zero exit lands in dispatch.err and
+# the next tick comes at the normal interval -- no restart storm.
+[ "$DIED" -eq 1 ] && exit 1
 exit 0
