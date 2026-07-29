@@ -874,9 +874,14 @@ fi
 new_sandbox
 dor ASK-952 '* `q-system/.q-system/scripts/alpha952.sh`'
 export KIPI_STUB_READY="ASK-952"
-OUT="$(run_dispatch --parallel 2)"
+OUT="$(run_dispatch --burst 1 --parallel 2)"
 wait_for_ends 1
-check "27e --parallel WITH a value still works" "$(n_started)" "1"
+check "27e --parallel WITH a value, on a burst, still works" "$(n_started)" "1"
+# This case USED to run `--parallel 2` with no --burst and assert that it
+# dispatched. That is r6 finding 2: the one spelling of the flag that still
+# parsed ran a full production heartbeat tick under the founder's name. The
+# control moved onto the spelling the flag is documented for; case 33 owns the
+# refusal.
 
 # --- 28. an extensionless real file is a file (r4 f3) -----------------------
 # The PARTIAL guard required a dot-extension on the basename, so the repo-root
@@ -1146,6 +1151,196 @@ export KIPI_STUB_READY="ASK-151"
 run_dispatch --burst 1 --parallel 2 >/dev/null
 check "31h an issue that IS already live is refused" "$(n_started)" "0"
 unset KIPI_DISPATCH_FAKE_LIVE_FILE
+
+# --- 32. the anti-silence page must not fire on the loop WORKING (r6 f1) ----
+# LOCK_MAX_HOLD's comment said `> any legitimate hold`. The code disagreed: the
+# lock is taken before the candidate loop and released at exit, so a burst holds
+# it for its whole life, and that life is bounded by TARGET x SLOT_WAIT -- up to
+# N x 600s. `--burst 4 --parallel 2` legitimately holds it 40-90 min against a
+# 3600s threshold, so the alert r5 added to break silence fired on the normal
+# duration of the feature this PR exists to add, telling the founder at 3am that
+# "the Linear loop is STOPPED" and handing them a kill-and-rm for in-flight work.
+#
+# The fix is a ceiling DERIVED from the holder's own bound, written by the holder
+# into its lock and read by whoever finds it -- not a bigger constant, which is
+# just the same false positive further out.
+backdate() {  # backdate <path> <seconds-ago>   BSD then GNU, like the script
+  local stamp
+  stamp="$(date -v-"$2"S +%Y%m%d%H%M.%S 2>/dev/null \
+           || date -d "-$2 seconds" +%Y%m%d%H%M.%S 2>/dev/null)"
+  touch -t "$stamp" "$1"
+}
+new_sandbox
+LOCK="$HOME/.config/kipi/dispatch.lock"
+LIVE_FILE="$SANDBOX/live.txt"
+export KIPI_DISPATCH_FAKE_LIVE_FILE="$LIVE_FILE"
+printf 'ASK-980\n' > "$LIVE_FILE"        # fills the one slot, so the burst waits
+dor ASK-980 '* `held980.sh`'
+dor ASK-981 '* `alpha981.sh`'
+dor ASK-982 '* `beta982.sh`'
+dor ASK-983 '* `gamma983.sh`'
+dor ASK-984 '* `delta984.sh`'
+export KIPI_STUB_READY="ASK-981 ASK-982 ASK-983 ASK-984"
+export KIPI_DISPATCH_SLOT_WAIT=600
+bash "$DISPATCH" --burst 4 --parallel 1 > "$SANDBOX/holder.out" 2>&1 &
+HOLDER=$!
+sleep 3                                   # the burst is inside its slot wait now
+DECL="$(cat "$LOCK/max_hold" 2>/dev/null || echo 0)"
+case "$DECL" in ''|*[!0-9]*) DECL=0 ;; esac
+# The invariant, not a magic number: whatever ceiling it declares has to cover
+# 4 candidates x (600s slot wait + the confirm window), and still be at least
+# the old constant so a heartbeat's own hang is not detected any later.
+if [ "$DECL" -ge "$(( 4 * (600 + KIPI_DISPATCH_CONFIRM_SECS) + 3600 ))" ]; then
+  ok "32a the holder declares a ceiling that covers its own worst-case hold"
+else
+  bad "32a the holder declares a ceiling that covers its own worst-case hold" \
+    "declared [$DECL]"
+fi
+
+backdate "$LOCK" 5000                     # past 3600, inside its own ceiling
+export KIPI_STUB_READY="ASK-982"
+OUT="$(run_dispatch)"
+check "32b a heartbeat tick does not page while a WORKING burst holds the lock" \
+  "$(paged 'pick lock')" "0"
+if printf '%s' "$OUT" | grep -qi 'another dispatch pass is already picking'; then
+  ok "32c the tick still says why in the log, so quiet is not silent"
+else
+  bad "32c the tick still says why in the log, so quiet is not silent" "$OUT"
+fi
+
+# ...and the anti-silence property survives: past the holder's OWN declared
+# worst case, the hold is no longer explainable by the work, so it pages.
+backdate "$LOCK" 20000
+run_dispatch >/dev/null 2>&1
+check "32d past its own declared ceiling, a held lock still pages" \
+  "$(paged 'pick lock')" "1"
+kill -9 "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+unset KIPI_DISPATCH_SLOT_WAIT KIPI_DISPATCH_FAKE_LIVE_FILE
+
+# THE THREE WAYS THE DECLARED CEILING CAN BE ABSENT OR WRONG. Every one of them
+# has to keep the alert, because a file that can silence the loop's only
+# anti-silence page is a worse defect than the false positive it fixes.
+# fake_holder [declared-ceiling] -- a live process whose command line reads as a
+# dispatch pass, holding an ancient lock.
+#
+# THE CEILING IS WRITTEN BEFORE THE BACKDATE, and that order is the fixture
+# telling the truth rather than a tidiness choice: creating a file inside the
+# lock directory updates the DIRECTORY's mtime, which is what lock_age reads. A
+# fixture that wrote max_hold after backdating would reset the lock to 0s old and
+# pass for the wrong reason -- which is exactly what the first cut of these two
+# cases did. Production writes it in the same breath as the pid, at acquisition,
+# for the same reason.
+fake_holder() {
+  mkdir -p "$SANDBOX/fakebin"
+  printf '#!/usr/bin/env bash\nsleep 120\n' > "$SANDBOX/fakebin/kipi-dispatch.sh"
+  chmod +x "$SANDBOX/fakebin/kipi-dispatch.sh"
+  bash "$SANDBOX/fakebin/kipi-dispatch.sh" & HOLDER_PID=$!
+  mkdir -p "$HOME/.config/kipi/dispatch.lock"
+  printf '%s' "$HOLDER_PID" > "$HOME/.config/kipi/dispatch.lock/pid"
+  [ $# -ge 1 ] && printf '%s' "$1" > "$HOME/.config/kipi/dispatch.lock/max_hold"
+  touch -t 202001010000 "$HOME/.config/kipi/dispatch.lock"
+}
+new_sandbox
+fake_holder                                # no max_hold: a SIGKILLed pass, or
+dor ASK-985 '* `alpha985.sh`'              # a lock written by an older build
+export KIPI_STUB_READY="ASK-985"
+run_dispatch >/dev/null 2>&1
+check "32e a lock with NO declared ceiling falls back to the constant, and pages" \
+  "$(paged 'pick lock')" "1"
+kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null
+
+new_sandbox
+fake_holder banana
+dor ASK-986 '* `alpha986.sh`'
+export KIPI_STUB_READY="ASK-986"
+run_dispatch >/dev/null 2>&1
+check "32f a garbage ceiling cannot mute the alert" "$(paged 'pick lock')" "1"
+kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null
+
+new_sandbox
+fake_holder 999999999            # ~31 years, and a 30-digit one would overflow
+dor ASK-987 '* `alpha987.sh`'
+export KIPI_STUB_READY="ASK-987"
+run_dispatch >/dev/null 2>&1
+check "32g an absurd ceiling is capped, so the alert still fires" \
+  "$(paged 'pick lock')" "1"
+kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null
+
+# --- 33. `--parallel N` alone is a burst flag with no burst (r6 f2) ---------
+# `--parallel` with no value (r5) and `--burst 0` (r4) are both refused, for the
+# stated reason that a founder who typed a burst-shaped flag got the SCHEDULER's
+# behaviour under their own name. The one spelling that still parsed did exactly
+# that: spent the daily counter, wrote the liveness beacon the beacon's own
+# comment says a burst must never write (it masks a dead launchd job and fires a
+# false RESUMED later), and paged. Assert the side effects, not the exit code.
+new_sandbox
+dor ASK-988 '* `q-system/.q-system/scripts/alpha988.sh`'
+export KIPI_STUB_READY="ASK-988"
+OUT="$(run_dispatch --parallel 2)"; RC=$?
+sleep 1
+check "33a --parallel with a value but no --burst is refused" "$RC" "2"
+check "33b it dispatches nothing" "$(n_started)" "0"
+check "33c it does not spend the daily counter" \
+  "$(ls "$HOME/.config/kipi" | grep -c '^dispatch-count-' || true)" "0"
+check "33d it does not write the liveness beacon" \
+  "$(ls "$HOME/.config/kipi" | grep -c '^dispatch-lastbeat$' || true)" "0"
+check "33e it does not page" "$(grep -c . "$PAGES" || true)" "0"
+if printf '%s' "$OUT" | grep -q -- '--burst'; then
+  ok "33f the refusal names the flag it needs"
+else
+  bad "33f the refusal names the flag it needs" "$OUT"
+fi
+
+# --- 34. the PARTIAL advice must be a fix the operator can follow (r6 f3) ----
+# The line said "backtick every path there" for every shape that trips the
+# guard. It trips on an already-backticked standalone span too, so the printed
+# fix was already done and the operator had nothing to act on. The advice is now
+# derived from the token: whatever spelling WOULD parse is the one it names.
+new_sandbox
+dor ASK-989 '* `q-system/.q-system/scripts/other989.sh` (extend)
+* q-system/.q-system/scripts/plain989.sh'
+export KIPI_STUB_READY="ASK-989"
+OUT="$(run_dispatch --burst 1 --parallel 1)"
+wait_for_ends 1
+if printf '%s' "$OUT" | grep -q 'backtick `q-system/.q-system/scripts/plain989.sh`'; then
+  ok "34a an UNbackticked path is told to be backticked, by name"
+else
+  bad "34a an UNbackticked path is told to be backticked, by name" "$OUT"
+fi
+
+# The r6 repro: the DoR bullet is verbatim `- `kipi-foo` (the new CLI
+# entrypoint)` -- every path already backticked. Backticking is not the fix;
+# giving it a path is, and `./kipi-foo` really does parse.
+new_sandbox
+: > "$SANDBOX/repo/kipi-foo"
+dor ASK-990 '* `kipi-foo` (the new CLI entrypoint)'
+export KIPI_STUB_READY="ASK-990"
+OUT="$(run_dispatch --burst 1 --parallel 1)"
+wait_for_ends 1
+if printf '%s' "$OUT" | grep -q 'backtick'; then
+  bad "34b an already-backticked span is not told to backtick itself" "$OUT"
+else
+  ok "34b an already-backticked span is not told to backtick itself"
+fi
+if printf '%s' "$OUT" | grep -q '`./kipi-foo`'; then
+  ok "34c it names the spelling that would parse"
+else
+  bad "34c it names the spelling that would parse" "$OUT"
+fi
+
+# A citation is the third shape: backticked, dotted, and rejected for the line
+# number. "Backtick it" is already done there too.
+new_sandbox
+dor ASK-991 '* `q-system/.q-system/scripts/cite991.sh:318`'
+export KIPI_STUB_READY="ASK-991"
+OUT="$(run_dispatch --burst 1 --parallel 1)"
+wait_for_ends 1
+if printf '%s' "$OUT" | grep -q 'without the' \
+   && printf '%s' "$OUT" | grep -q 'cite991.sh'; then
+  ok "34d a foo.sh:NN citation is told to drop the line number, not to backtick"
+else
+  bad "34d a foo.sh:NN citation is told to drop the line number, not to backtick" "$OUT"
+fi
 
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"

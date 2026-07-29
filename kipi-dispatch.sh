@@ -112,7 +112,8 @@ kipi-dispatch.sh [--burst N] [--parallel P]
                  heartbeat spending the subscription overnight, not to limit
                  what the founder explicitly asks for while present.
   --parallel P   at most P concurrent runs during a burst (default: the
-                 concurrency cap, KIPI_DISPATCH_MAX).
+                 concurrency cap, KIPI_DISPATCH_MAX). Only means anything
+                 WITH --burst; on its own it is refused, not treated as a tick.
 USAGE
 }
 
@@ -147,6 +148,18 @@ fi
 # scheduler's behaviour under the founder's name. Refuse it, like --parallel 0.
 [ "$BURST_GIVEN" -eq 1 ] && [ "$BURST" = "0" ] && {
   printf 'kipi-dispatch: --burst 0 would dispatch nothing (drop the flag for a heartbeat tick)\n' >&2; exit 2; }
+# `--parallel N` ALONE IS THE THIRD SPELLING OF THE SAME MISTAKE (PR #36 r6 f2).
+# `--parallel` with no value and `--burst 0` are both refused above, for the
+# stated reason that a founder who typed a burst-shaped flag must not get the
+# SCHEDULER's behaviour under their own name. `--parallel 2` with no --burst
+# parsed cleanly and did exactly that: a full production tick that spent the
+# daily counter, wrote the liveness beacon a burst must never write (it masks a
+# dead launchd job and fires a false RESUMED later), and paged. It is also
+# incoherent on its own -- it moves SLOTS while TARGET stays the heartbeat's
+# free-slot count -- so there is no behaviour here worth keeping.
+[ "$PARALLEL_GIVEN" -eq 1 ] && [ "$BURST_GIVEN" -eq 0 ] && {
+  printf 'kipi-dispatch: --parallel only means something with --burst (use `--burst N --parallel %s`, or drop the flag for a heartbeat tick)\n' "$PARALLEL" >&2
+  exit 2; }
 
 mkdir -p "$(dirname "$LOG")"
 # Also to stdout. A burst is a foreground founder command and MUST show what it
@@ -453,11 +466,44 @@ for _m in os.environ.get("KIPI_DISPATCH_MAGNETS", "").split():
     magnets.add(_m.rsplit("/", 1)[-1])
 basenames = {p.rsplit("/", 1)[-1] for p in seen}
 
+def _parses(token):
+    """Would the tokenizer take this spelling, standing alone in a block?"""
+    return token in mod._extract_paths("`%s`" % token)
+
+
+def _fix_advice(token, had_cite):
+    """The spelling that WOULD work, or an honest statement that none does.
+
+    PR #36 r6 finding 3: this line used to say "backtick every path there" for
+    every shape that trips the guard. The guard also trips on an
+    already-backticked standalone span, so the printed fix was already done and
+    the operator had nothing to act on -- a fix nobody can follow is the same as
+    no reason at all, which is the failure the PARTIAL branch exists to avoid.
+    """
+    target = token if _parses(token) else None
+    if target is None and _parses("./%s" % token):
+        target = "./%s" % token
+    if target is None:
+        return "no spelling of `%s` parses, so nothing in the DoR can let it share the board" % token
+    if had_cite:
+        return "write it as `%s` there, without the line number, to let it share the board" % target
+    if target != token:
+        return ("spell it `%s` there (a bare name with no extension is not a path "
+                "the parser can take) to let it share the board" % target)
+    return "backtick `%s` there to let it share the board" % token
+
+
 def named_files(text):
-    """Every word in the block that is shaped like a FILE, however spelled."""
+    """Every word in the block that is shaped like a FILE, however spelled.
+
+    Yields (token, had_line_number): the second half is what separates "you
+    forgot the backticks" from "drop the `:318`", and the advice is wrong
+    without it.
+    """
     for raw in text.split():
         w = raw.strip("`*_|\"'").lstrip("([{<").rstrip(")]}>").rstrip(",;:.")
-        w = _CITE_RE.sub("", w)          # `foo.sh:318` is a path plus a line no.
+        w, n_cite = _CITE_RE.subn("", w)  # `foo.sh:318` is a path plus a line no.
+        had_cite = n_cite > 0
         if not w or not mod._PATH_TOKEN_RE.fullmatch(w):
             continue
         # A trailing alphabetic extension is what separates a file from prose
@@ -473,10 +519,10 @@ def named_files(text):
         if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]) \
                 and not (w in standalone_spans and _is_real_file(w)):
             continue
-        yield w
+        yield w, had_cite
 
 missed = []
-for w in named_files(value):
+for w, had_cite in named_files(value):
     n = normalise(w)
     if n in seen or n in magnets:
         continue
@@ -486,12 +532,13 @@ for w in named_files(value):
     # DIFFERENT file is the one gap left here, and it is the status quo ante.
     if "/" not in n and n in basenames:
         continue
-    missed.append(w)
+    missed.append((w, had_cite))
 
 if missed:
     # Nothing on stdout: an incomplete set is worse than no set, because the
     # caller can act on "unknown" and cannot act on "wrong".
-    print("PARTIAL: %s" % " ".join(missed[:3]), file=sys.stderr)
+    print("PARTIAL: %s" % " ".join(w for w, _ in missed[:3]), file=sys.stderr)
+    print("PARTIAL_FIX: %s" % _fix_advice(*missed[0]), file=sys.stderr)
     raise SystemExit(0)
 
 for p in out:
@@ -529,9 +576,17 @@ fileset_known() {  # fileset_known <issue> <out-file>
   # that is already there sends them looking for something they will not find.
   # Same reason fileset_for does not swallow a Linear failure into "no Files
   # line": one wrong reason costs more than no reason.
+  #
+  # AND THE FIX IS DERIVED FROM THE TOKEN, NOT A CONSTANT SENTENCE (r6 f3). The
+  # old text said "backtick every path there" for every shape, including the
+  # already-backticked standalone span that is the guard's commonest real trip --
+  # so the printed remedy was already done and the operator had nothing to act
+  # on. The parser itself now says which spelling would have worked.
   PARTIAL="$(sed -n 's/^PARTIAL: //p' "$2.err" 2>/dev/null | head -1)"
   if [ -n "$PARTIAL" ]; then
-    printf 'its `**Files:**` block names %s but the parser could not take that spelling, so the set would be INCOMPLETE (backtick every path there to let it share the board)' "$PARTIAL"
+    PARTIAL_FIX="$(sed -n 's/^PARTIAL_FIX: //p' "$2.err" 2>/dev/null | head -1)"
+    printf 'its `**Files:**` block names %s but the parser could not take that spelling, so the set would be INCOMPLETE (%s)' \
+      "$PARTIAL" "${PARTIAL_FIX:-read the block: one of those paths is spelled in a way the parser cannot take}"
     return 1
   fi
   printf 'no usable `**Files:**` list in its DoR, so its file set is unknown (add one to let it share the board)'
@@ -647,7 +702,72 @@ fi
 # healthy loop look dead and fire a false RESUMED page later.
 LOCK_DIR="$HOME/.config/kipi/dispatch.lock"
 LOCK_GRACE="${KIPI_DISPATCH_LOCK_GRACE:-60}"        # mkdir -> pid write window
-LOCK_MAX_HOLD="${KIPI_DISPATCH_LOCK_MAX_HOLD:-3600}"  # > any legitimate hold
+
+# HOW LONG A PASS MAY HOLD THE LOCK BEFORE IT IS CALLED HUNG. Not a constant any
+# more (PR #36 r6 finding 1): the constant was BELOW a legitimate hold, so the
+# only anti-silence page this loop has fired on the loop WORKING.
+#
+# The arithmetic the old comment (`> any legitimate hold`) got wrong: the lock is
+# taken before the candidate loop and released at exit, so a pass holds it for
+# its whole life, and that life is bounded by TARGET x (SLOT_WAIT + the confirm
+# window). `--burst 4 --parallel 2` against real converges is 40-90 minutes of
+# perfectly healthy work, and 3600s told the founder at 3am that "the Linear loop
+# is STOPPED" with a kill-and-rm remediation for it. An alert that fires on the
+# normal duration of the feature it guards is the alert training the operator to
+# mute it, which costs the real outage its only signal.
+#
+# So the HOLDER declares its own worst case into the lock (max_hold, written in
+# the same breath as the pid) and whoever finds the lock reads it. Derived from
+# the same inputs the pass actually uses, never a second copy of the formula --
+# two readers of one bound with drifting arithmetic is how this defect got here.
+# LOCK_MAX_HOLD stays as the FLOOR: a hang is never detected later than before.
+LOCK_MAX_HOLD="${KIPI_DISPATCH_LOCK_MAX_HOLD:-3600}"
+# ...and the CEILING, because a file that can silence the loop's only
+# anti-silence page is a worse defect than the false positive this fixes. A
+# corrupt, absurd, or hand-edited max_hold gets clamped, never obeyed.
+LOCK_MAX_HOLD_CEIL="${KIPI_DISPATCH_LOCK_MAX_HOLD_CEIL:-86400}"
+
+# ONE DEFINITION EACH, read here (to declare the ceiling) and again in the
+# candidate loop (to do the waiting). Both were defined further down, next to
+# their use; computing them twice is the drift this file keeps paying for.
+#
+# A burst is a founder standing at the terminal who asked for N runs, so waiting
+# is the point. The heartbeat is a launchd job that re-fires every 900s, so a
+# 10-minute block there would stack overlapping ticks; it gives up fast and
+# retries on the next beat, which costs nothing.
+if [ "$BURST" -gt 0 ]; then
+  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-600}"
+else
+  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-60}"
+fi
+# The per-child liveness window (see the launch block). A test seam, same class
+# as SLOT_WAIT: the window is what has to be short in a test.
+CONFIRM_SECS="${KIPI_DISPATCH_CONFIRM_SECS:-10}"
+
+# The most candidates this pass can possibly walk. A burst asks for exactly N;
+# a tick is bounded by the concurrency cap however the budget narrows it later.
+# An OVER-estimate is the safe direction here -- it only ever delays the page.
+if [ "$BURST" -gt 0 ]; then
+  TARGET_CEILING="$BURST"
+else
+  TARGET_CEILING="$MAX_CONCURRENT"
+fi
+HOLD_LIMIT=$(( LOCK_MAX_HOLD + TARGET_CEILING * (SLOT_WAIT + CONFIRM_SECS) ))
+
+# What the pass holding the lock says its own worst case is, clamped. Falls back
+# to the constant when the file is absent (a SIGKILLed pass, or a lock written by
+# an older build), garbage, or shorter than the floor.
+holder_hold_limit() {
+  DECL="$(cat "$LOCK_DIR/max_hold" 2>/dev/null || true)"
+  case "$DECL" in ''|*[!0-9]*) printf '%s' "$LOCK_MAX_HOLD"; return 0 ;; esac
+  # Length first: bash arithmetic on a 30-digit number errors out, and an
+  # errored comparison here would read as "not expired" and mute the page.
+  [ "${#DECL}" -gt 10 ] && { printf '%s' "$LOCK_MAX_HOLD_CEIL"; return 0; }
+  [ "$DECL" -lt "$LOCK_MAX_HOLD" ] && { printf '%s' "$LOCK_MAX_HOLD"; return 0; }
+  [ "$DECL" -gt "$LOCK_MAX_HOLD_CEIL" ] && { printf '%s' "$LOCK_MAX_HOLD_CEIL"; return 0; }
+  printf '%s' "$DECL"
+  return 0
+}
 # What a holder's command line has to contain. Derived from this file's own
 # name rather than hardcoded, so a rename cannot silently turn every live
 # holder into a "reused pid" and hand two passes the lock at once.
@@ -729,13 +849,19 @@ while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     # Not a fault and not an empty board: another pass is doing this work right
     # now. Exit 0, no page -- paging here would cry wolf on the loop WORKING.
     say "skip: another dispatch pass is already picking (lock held by pid ${LOCK_HOLDER:-unknown}, ${LOCK_AGE}s old)"
-    # ...unless it has been "right now" for an hour. Then the loop is off, every
-    # tick exits 0, and the liveness beacon above still reports healthy -- the
-    # silence this whole block exists to end. Stealing it would be the race, so
-    # this pages a human instead, once per day like every other standing fault.
-    if [ "$LOCK_AGE" -ge "$LOCK_MAX_HOLD" ]; then
+    # ...unless it has been "right now" for longer than a working pass CAN hold
+    # it. Then the loop is off, every tick exits 0, and the liveness beacon above
+    # still reports healthy -- the silence this whole block exists to end.
+    # Stealing it would be the race, so this pages a human instead, once per day
+    # like every other standing fault.
+    #
+    # Against the HOLDER's declared ceiling, not a constant (r6 f1): a burst that
+    # is legitimately 90 minutes into its work is not hung, and telling the
+    # founder it is, at 3am, with a kill-and-rm, is how this alert lost its job.
+    HELD_LIMIT="$(holder_hold_limit)"
+    if [ "$LOCK_AGE" -ge "$HELD_LIMIT" ]; then
       page_once "$HOME/.config/kipi/dispatch-lockheld-$TODAY.paged" \
-        "kipi dispatch: a dispatch pass (pid ${LOCK_HOLDER:-unknown}) has held the pick lock for $(( LOCK_AGE / 60 )) min, so no issue has been picked up since. The Linear loop is STOPPED. Do: \`ps -p ${LOCK_HOLDER:-?}\` in $REPO; if it is not really working, kill it, then \`rm -rf $LOCK_DIR\`."
+        "kipi dispatch: a dispatch pass (pid ${LOCK_HOLDER:-unknown}) has held the pick lock for $(( LOCK_AGE / 60 )) min -- past the $(( HELD_LIMIT / 60 )) min a working pass can take -- so no issue has been picked up since. The Linear loop is STOPPED. Do: \`ps -p ${LOCK_HOLDER:-?}\` in $REPO; if it is not really working, kill it, then \`rm -rf $LOCK_DIR\`. Converge runs it already started have their own session and keep going."
     fi
     exit 0
   fi
@@ -746,6 +872,13 @@ done
 # the very state above. Now only a kill -9 or a power cut can reach it.
 LOCK_HELD=1
 printf '%s' "$$" > "$LOCK_DIR/pid"
+# IN THE SAME BREATH AS THE PID, and that is not tidiness. Creating a file inside
+# the lock directory updates the DIRECTORY's mtime, which is what lock_age() reads
+# as the acquisition time. Writing this later -- after `kipi work`, say, where the
+# TARGET is finally known -- would silently reset the lock's age by however long
+# the picker took, so the ceiling is computed from values available at parse time
+# instead. Same moment, one age, no second meaning for it.
+printf '%s' "$HOLD_LIMIT" > "$LOCK_DIR/max_hold"
 
 LIVE="$(live_converges)"; LIVE="${LIVE:-0}"
 SLOTS="${PARALLEL:-$MAX_CONCURRENT}"
@@ -1077,16 +1210,9 @@ external_live() {
   fi
 }
 
-# How long to sit waiting for a busy slot before giving up on this pass.
-# A burst is a founder standing at the terminal who asked for N runs, so waiting
-# is the point. The heartbeat is a launchd job that re-fires every 900s, so a
-# 10-minute block there would stack overlapping ticks; it gives up fast and
-# retries on the next beat, which costs nothing.
-if [ "$BURST" -gt 0 ]; then
-  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-600}"
-else
-  SLOT_WAIT="${KIPI_DISPATCH_SLOT_WAIT:-60}"
-fi
+# SLOT_WAIT is defined once, up in the lock block, because the lock's own
+# hold ceiling is derived from it -- a second copy here is the drift that made
+# the ceiling wrong in the first place (r6 f1).
 SLOTS_FULL=0
 
 # Every candidate we do not dispatch says why. "dispatched 3 of 10" with no
@@ -1225,9 +1351,9 @@ PY
   # so a death reported as a dispatch costs a slot and does no work while the
   # loop looks healthy. Checked every second rather than once, because a child
   # that falls over at t+4 is most of how this actually fails.
-  # KIPI_DISPATCH_CONFIRM_SECS is a test seam (cases 31c-31f), same class as
-  # KIPI_DISPATCH_SLOT_WAIT: the window is what has to be short in a test.
-  CONFIRM_SECS="${KIPI_DISPATCH_CONFIRM_SECS:-10}"
+  # CONFIRM_SECS (a test seam, cases 31c-31f) is defined once in the lock block:
+  # the lock's hold ceiling counts this window per candidate, so the two must be
+  # the same number by construction and not by coincidence.
   ALIVE=0
   case "$CHILD_PID" in
     ''|*[!0-9]*) ALIVE=0 ;;
