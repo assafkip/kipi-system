@@ -114,7 +114,22 @@ Three things shape Assaf's voice that are not stylistic choices - they're wiring
 This section captures how Assaf writes when he's NOT in "article mode" - the raw conversational style from Slack, chat, instructions, DMs. This is the baseline voice that published content should feel like it evolved from, not departed from.
 
 ### Mechanics
-- **Lowercase-default.** Rarely capitalizes unless it's a proper noun or emphasis. Sentence-initial caps are optional.
+
+> **Register boundary (corrected 2026-07-28, founder-directed).** Everything in
+> this Conversational section describes how Assaf types in REAL TIME: Slack, chat,
+> instructions to the system, quick DMs. It is NOT how he writes anything that
+> goes out to another person. Published and client-facing writing uses correct
+> capitalization: sentence-initial caps, proper nouns, capital `I`. The DNA below
+> (short sentences, no hedging, no filler, ESL directness) carries across both
+> registers. Only the casing changes.
+>
+> Scar: a client email was drafted entirely in lowercase because the line below
+> read as a global style rule. The founder caught it on read. The deterministic
+> half now lives in `voice-lint.py`'s `capitalization` rule (BLOCK class, fires on
+> every published-content path), with per-instance proper nouns in
+> `<instance>/canonical/proper-nouns.txt`.
+
+- **Lowercase-default IN CHAT ONLY.** In real-time messages he rarely capitalizes unless it's a proper noun or emphasis. Sentence-initial caps are optional there and only there. Anything sent to another human gets real capitalization.
 - **Typos stay.** Speed over polish. The thought matters more than the spelling. Does not go back to fix.
 - **Minimal punctuation.** Periods are rare in conversational messages. Questions sometimes skip the question mark. Context does the work.
 - **Short bursts.** Brief, direct messages rather than multi-paragraph instructions. When he does go long, it's a context dump (transcript, debrief, raw material).

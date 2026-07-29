@@ -77,3 +77,18 @@ with the founder (who can correct in-session).
 `confidence` = was this ever solid (trust). A `slow` + low-confidence memory is a
 stable guess; a `fast` + high-confidence memory is a verified fact with a short
 shelf life. Both markers can apply to one memory.
+
+## One vocabulary, one table (2026-07-28)
+
+The `provenance` enum is NOT defined here in prose. It lives in
+`q-system/.q-system/scripts/provenance-vocabulary.json` and is read at runtime by
+BOTH `memory-confidence-validator.py` and `handoff-provenance-lint.py`, so a value
+added there reaches both. That file also ranks the forms, so a line carrying two
+markers has a defined winner and the pair gets reported rather than silently
+resolved.
+
+Scar: this enum was hardcoded in the validator, and three days later
+`handoff-provenance-lint.py` shipped a DIFFERENT vocabulary for the same idea.
+Nothing collided, because their file scopes differ, so the drift was invisible
+rather than absent. See `.claude/rules/evidence-ledger.md` and PRD
+prd-deterministic-reading-2026-07-28 Part C.
