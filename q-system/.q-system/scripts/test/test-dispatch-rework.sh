@@ -526,6 +526,22 @@ check "A17b the cap still pages a human, from the announcement" "$(pages_for "$S
 run_worker >/dev/null
 check "A17c and once, not per heartbeat" "$(pages_for "$STUCK")" "1"
 
+# A17d. WHAT A DRY RUN WRITES (PR #43 review round 5, minor). The rework cap's
+# comment called its own page claim "the ONLY write a dry run makes"; the gate-30
+# and gate-40 caps thirty lines above read-modify-write the same ledger through
+# the same claim_page_once. The sentence was wrong, not the behaviour -- so this
+# pins the behaviour the corrected sentence describes, and the next person who
+# "fixes" the prose by deleting the write has to fail a test to do it.
+if python3 -c "
+import json,sys
+d=json.load(open('$WORK/state/linear-worker-attempts.json'))
+sys.exit(0 if d.get('$STUCK',{}).get('conflict_paged') else 1)" 2>/dev/null; then
+  ok "A17d a dry run DOES write the gate-30 page claim (three claim sites, not one)"
+else
+  bad "A17d a dry run DOES write the gate-30 page claim" \
+    "no conflict_paged in the ledger, so the cap would page every 15 minutes"
+fi
+
 # --- A18/A19. gate 40 (approved at a sha that is no longer the head) --------
 reset_worker_state
 verdict_record "APPROVE" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -603,33 +619,32 @@ exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$WORK/bin2/git"
 
-# `work --rework-dispatched` is NOT stubbed: it runs the REAL worker against the
-# same ledger Part A reads. That is deliberate -- the round-3 finding is that a
-# fix can be locally right and wrong one layer out, so the budget written by the
-# dispatcher has to be proved against the reader that consumes it, not against a
-# recorder the suite invented. Everything else about `work` stays canned, because
-# selection is what Part B is measuring.
+# THE CONVERGE BRANCH RECORDS WHAT IT INHERITED. Since PR #43 review round 5 the
+# dispatcher does not spend the rework budget itself -- it cannot, it launches
+# fire-and-forget and never learns whether a round ran -- it hands the round a
+# token and the round spends it. So the thing observable from out here is the
+# token reaching the child's environment; the spend itself is driven against the
+# real worker in test-severity-floor.sh section S. `work` stays canned, because
+# selection is what Part B measures.
 make_kipi() {  # make_kipi "<work stdout>"
   cat > "$FAKE_REPO/kipi" <<SH
 #!/usr/bin/env bash
 case "\$1" in
   work)
     shift
-    if [ "\${1:-}" = "--rework-dispatched" ]; then
-      exec env HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state" \\
-        KIPI_NOTIFY="$WORK/notify.sh" \\
-        bash "$SBOX/linear-worker.sh" --rework-dispatched "\${2:-}"
-    fi
     printf '%s' '$1'
     ;;
   converge)
     shift
+    printf '%s\\n' "\${KIPI_REWORK_DISPATCH_ID:-<none>}" >> "$WORK/tokens.txt"
     exec bash "$WORK/converge.sh" "\$@"
     ;;
 esac
 SH
   chmod +x "$FAKE_REPO/kipi"
 }
+
+tokens() { cat "$WORK/tokens.txt" 2>/dev/null; }
 
 # What the worker's ledger says about an issue's rework budget.
 rework_dispatches() {  # rework_dispatches <issue>
@@ -654,7 +669,7 @@ reset_dispatch_state() {
   rm -r -- "$WORK/dhome" 2>/dev/null
   mkdir -p "$WORK/dhome/.config/kipi"
   date -u +%s > "$WORK/dhome/.config/kipi/dispatch-lastbeat"
-  : > "$WORK/pages.txt"; : > "$WORK/fetches.txt"
+  : > "$WORK/pages.txt"; : > "$WORK/fetches.txt"; : > "$WORK/tokens.txt"
   pkill -f "$WORK/converge.sh" 2>/dev/null
 }
 
@@ -774,11 +789,12 @@ fi
 
 pkill -f "$WORK/converge.sh" 2>/dev/null
 
-# --- B8. a rework dispatch SPENDS a rework-budget slot ----------------------
-# The half of the round-3 major that MAX_ATTEMPTS structurally cannot do:
-# `bump_attempt` has one call site and it fires only when claude exits non-zero,
-# so on the path where the agent exits 0 with the PR still red the ledger file
-# was never even created. The counter has to move on a SUCCESSFUL dispatch.
+# --- B8. a dispatch does NOT pre-spend the rework budget --------------------
+# PR #43 review round 5, major. The dispatcher used to record the slot right
+# here, before the launch, so a round that then refused after the gate -- an
+# uncreatable worktree, another session's stale claim -- cost a LIFETIME slot
+# having done nothing. Two of those locked the issue out for good and paged a
+# cause that was not the cause. The launch buys a round; only the round pays.
 reset_dispatch_state
 rm -f -- "$WORK/state/linear-worker-attempts.json"
 make_kipi '0 ready issue
@@ -786,8 +802,19 @@ make_kipi '0 ready issue
 '
 run_dispatch >/dev/null
 pkill -f "$WORK/converge.sh" 2>/dev/null
-check "B8a one rework dispatch spends exactly one rework-budget slot" \
-  "$(rework_dispatches "$STUCK")" "1"
+check "B8a a dispatch alone spends no rework-budget slot (the round does)" \
+  "$(rework_dispatches "$STUCK")" "0"
+
+# AND THE ROUND IS TOLD WHICH DISPATCH IT IS. Without the token reaching the
+# child the worker cannot spend once per dispatch, and the budget is unbounded
+# again -- so this asserts the handshake where it is observable from out here:
+# the environment converge was actually launched with.
+if tokens | grep -q "^$STUCK-"; then
+  ok "B8a2 the converge child is handed this dispatch's id"
+else
+  bad "B8a2 the converge child is handed this dispatch's id" \
+    "a round cannot charge itself to a dispatch nobody named: [$(tokens | tr '\n' ' ')]"
+fi
 
 reset_dispatch_state
 make_kipi '1 ready issue
@@ -797,14 +824,22 @@ run_dispatch >/dev/null
 pkill -f "$WORK/converge.sh" 2>/dev/null
 check "B8b a FRESH dispatch spends none of it" "$(rework_dispatches "$FRESH")" "0"
 check "B8c and does not touch the rework candidate's budget either" \
-  "$(rework_dispatches "$STUCK")" "1"
+  "$(rework_dispatches "$STUCK")" "0"
+# A fresh round must not be able to charge the rework budget at all, so the token
+# is absent rather than left over from this shell's ambient environment.
+check "B8d a FRESH dispatch hands the round no rework token" "$(tokens)" "<none>"
 
-# --- B9. THE LAYER ABOVE: what dispatch writes, the picker reads ------------
-# Neither half of this fix is worth anything alone. The dispatcher can spend the
-# budget perfectly and the loop is still unbounded if the announcement never
-# reads it back. So: drive the budget to the cap through the REAL dispatcher,
-# then run the REAL picker and assert the candidate is gone from the announced
-# set. MAX_REWORK_DISPATCHES is 2 in linear-worker.sh.
+# --- B9. THE LAYER ABOVE: no-op dispatches must not take the issue dark ------
+# The round-3 version of this case drove the cap with two dispatches and asserted
+# the picker then refused. That only worked because the DISPATCHER spent the
+# budget; under the round-5 contract those two dispatches bought two rounds that
+# never ran, and the whole finding is that they cost nothing. So the assertion
+# flips: after two no-op dispatches the candidate is still a candidate, and
+# nobody has been paged that it is stuck.
+#
+# The other half -- a candidate AT the cap is refused and paged once -- is A10/A11
+# in Part A, and the proof that a real round writes exactly that ledger key is
+# section S of test-severity-floor.sh, which drives the real worker to the spend.
 reset_dispatch_state
 rm -f -- "$WORK/state/linear-worker-attempts.json"
 make_kipi '0 ready issue
@@ -812,26 +847,19 @@ make_kipi '0 ready issue
 '
 run_dispatch >/dev/null; pkill -f "$WORK/converge.sh" 2>/dev/null
 run_dispatch >/dev/null; pkill -f "$WORK/converge.sh" 2>/dev/null
-check "B9a two dispatches reach the cap" "$(rework_dispatches "$STUCK")" "2"
+check "B9a two dispatches whose rounds never ran reach no cap" \
+  "$(rework_dispatches "$STUCK")" "0"
 
-printf 'sana/%s\n' "$(echo "$STUCK" | tr 'A-Z' 'a-z')" > "$WORK/gh-open-branches"
-# The gate world has to be stated here too (round 4): this case is about the
-# BUDGET refusal, so the PR must be one the gate would otherwise send to a round.
-# Left at whatever Part A last wrote, an APPROVE record would make the picker
-# refuse for the wrong reason and B9c's page would never fire.
-printf 'CLEAN\n' > "$WORK/gh-merge-state"; printf '%s\n' "$VSHA" > "$WORK/gh-head-sha"
-verdict_record "REQUEST CHANGES"
-rm -f -- "$WORK/gh-fail" "$WORK/gh-automerge"; : > "$WORK/pages.txt"
+reset_worker_state
 fixture "$(row "$STUCK" started owner:sana 1)"
 B9="$(run_worker)"
 if printf '%s' "$B9" | grep -q "would rework $STUCK"; then
-  bad "B9b the picker refuses a candidate whose rework budget the DISPATCHER spent" \
-    "the two halves do not meet: the budget is written and never read, so the loop is still unbounded"
+  ok "B9b the picker still announces it -- an unspent budget is not a lockout"
 else
-  ok "B9b the picker refuses a candidate whose rework budget the DISPATCHER spent"
+  bad "B9b the picker still announces it -- an unspent budget is not a lockout" \
+    "the loop went dark on an issue it never worked: $(printf '%s' "$B9" | tail -2 | tr '\n' ' ')"
 fi
-check "B9c and reaching the cap pages a human once" \
-  "$(pages_for "$STUCK")" "1"
+check "B9c and nobody was paged that it is stuck" "$(pages_for "$STUCK")" "0"
 
 # --- B10/B11. END TO END: the REAL worker decides, the REAL dispatcher pays --
 # Every other B case feeds kipi-dispatch.sh a CANNED `work` line, which is right
@@ -879,7 +907,54 @@ reset_dispatch_state; reset_worker_state; make_kipi_real
 fixture "$(row "$STUCK" started owner:sana 1)"
 run_dispatch >/dev/null
 check "B11a the same harness DOES dispatch a gate-0 candidate" "$(budget)" "1"
-check "B11b spending its rework budget slot" "$(rework_dispatches "$STUCK")" "1"
+# The DAILY budget counts launches -- spent whether or not the round works, reset
+# every morning. The LIFETIME rework budget counts rounds that ran. Only the
+# second one can lock an issue out, which is why only the second one waits.
+check "B11b and the lifetime rework budget waits for the round" \
+  "$(rework_dispatches "$STUCK")" "0"
+pkill -f "$WORK/converge.sh" 2>/dev/null
+
+# --- B12. THE ROUND-5 FINDING, END TO END -----------------------------------
+# The reviewer's repro, in the suite: the REAL dispatcher launches, and the REAL
+# worker's apply round refuses AFTER the gate because its worktree cannot be
+# created. Nothing about that refusal is the issue's fault -- the worker says so
+# itself ("not counted against the issue") -- and it used to cost a lifetime
+# slot. Twice, and the issue was out of the loop for good, paged as "its PR is
+# still not green" about a PR nothing had touched.
+#
+# A FILE where the worktree goes: `git worktree add` cannot create a directory
+# over it, which is the same INFRA refusal a broken disk or a half-removed tree
+# produces.
+reset_dispatch_state; reset_worker_state; make_kipi_real
+fixture "$(row "$STUCK" started owner:sana 1)"
+cat > "$WORK/converge.sh" <<SH
+#!/usr/bin/env bash
+ISS=""
+while [ \$# -gt 0 ]; do [ "\$1" = "--issue" ] && { shift; ISS="\$1"; }; shift; done
+exec env HOME="$WORK/home" PATH="$WORK/bin:\$PATH" KIPI_SKEL="$WORK/skel" \\
+  KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="$WORK/notify.sh" \\
+  KIPI_TEST_ISSUES="$WORK/issues.json" \\
+  bash "$SBOX/linear-worker.sh" --apply --limit 1 --issue "\$ISS" >> "$WORK/round.log" 2>&1
+SH
+chmod +x "$WORK/converge.sh"
+: > "$WORK/round.log"
+mkdir -p "$WORK/state/worktrees"
+printf 'not a directory\n' > "$WORK/state/worktrees/$(echo "$STUCK" | tr 'A-Z' 'a-z')"
+run_dispatch >/dev/null
+# The launch is a detached session, so wait for the round rather than racing it.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q "not counted against the issue" "$WORK/round.log" 2>/dev/null && break
+  sleep 1
+done
+
+if grep -q "could not create worktree" "$WORK/round.log"; then
+  ok "B12a the round really did refuse after the gate (INFRA, not the issue's fault)"
+else
+  bad "B12a the round really did refuse after the gate" \
+    "B12 is not testing what it claims: $(tail -3 "$WORK/round.log" | tr '\n' ' ')"
+fi
+check "B12b a dispatch whose round did nothing spends no rework budget" \
+  "$(rework_dispatches "$STUCK")" "0"
 pkill -f "$WORK/converge.sh" 2>/dev/null
 
 # --- B7. both scripts still parse ------------------------------------------
