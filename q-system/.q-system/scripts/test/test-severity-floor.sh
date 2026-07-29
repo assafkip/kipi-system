@@ -3011,6 +3011,46 @@ grep -qi "now carries it" "$W2/conv-nopin.out" \
 $(sed 's/^/        /' "$W2/conv-nopin.out")"
 ok "a verdict record that pins no head mints no receipt, and the page says why"
 
+# --- S15. THE THIRD DOOR INTO GATE 10 ----------------------------------------
+# Enumerating rework_gate instead of trusting the PR body's framing is what round
+# 3 said was missing, so all three doors get pinned, not just the one that was
+# found open. APPROVE reaches 10 from: both shas absent, the reviewed sha absent
+# (S14), and the CURRENT head unreadable -- `gh pr view` down, which O4 exists
+# because it happens. That third one falls toward terminal by design, and the
+# writer's empty-sha guard has refused it since the first commit. Nothing proved
+# it: O4 runs in a world with no worktree on the branch, so the writer would have
+# stopped one line later anyway, and no receipt-capable world ever asked.
+#
+# A guard that is right and untested is the shape this PR has now been caught by
+# three times. Here the tree stands at the head with the ledger writable, so a
+# writer that pinned "whatever sha it could find" would succeed.
+R_S15="$W2/world-receipt-nohead"; receipt_world "$R_S15" 921
+S15_TREE="$R_S15/tree"; S15_LEDGER="$S15_TREE/.prd-os/receipts.jsonl"
+SHA_921="$(git -C "$S15_TREE" rev-parse HEAD)"
+S15_ORIGIN_BEFORE="$(git -C "$R_S15/origin" rev-parse sana/ask-921)"
+S_NOHEAD="$W2/state-receipt-nohead"; mkdir -p "$S_NOHEAD/pr-reviews"
+seed_record "$S_NOHEAD" 921 "APPROVE" "$SHA_921" "$RCPT_TS"
+printf 'armed\n' > "$S_NOHEAD/pr-reviews/pr-921.automerge"
+gh_says 921 CLEAN ""          # the record pins a sha; gh cannot say what the head IS
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S15" 921 "$S_NOHEAD" "$W2/conv-nohead.out"
+[ "$RRC" = "1" ] \
+  || fail "an unreadable head changed converge's exit code to $RRC, want 1. ASK-212's posture
+      is that a manufactured re-review round costs the whole fleet at once. It said:
+$(sed 's/^/        /' "$W2/conv-nohead.out")"
+[ "$(receipts_for "$S15_LEDGER" ASK-921 "$SHA_921")" = "0" ] \
+  || fail "converge could not read the PR's current head and pinned a receipt to the reviewed
+      sha from the record anyway. Nothing confirmed that sha is still the head, which is the
+      whole reason gate 40 exists. Ledger:
+$(sed 's/^/        /' "$S15_LEDGER")"
+[ "$(git -C "$R_S15/origin" rev-parse sana/ask-921)" = "$S15_ORIGIN_BEFORE" ] \
+  || fail "converge pushed to origin/sana/ask-921 on a run where it could not read the head"
+[ -s "$W2/pages.txt" ] || fail "an unreadable head converged and paged nobody at all"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "no receipt covers the head, the head could not even be read, and the page still says
+      nobody has to touch it: $(cat "$W2/pages.txt")"
+ok "an unreadable current head mints no receipt either, and still reaches the page"
+
 # --- wiring: the writer lives in converge, at the terminal-approve branch ----
 grep -q 'receipts.jsonl' "$CONV" \
   || fail "converge.sh does not mention the receipt ledger at all -- the producer is not here"
