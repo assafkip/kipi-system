@@ -1906,6 +1906,34 @@ printf '%s' "$CALL" | grep -q "context=$CODEX_CONTEXT" \
   || fail "the fallback filled the wrong slot: $CALL"
 ok "codex down: the Opus fallback still fills $CODEX_CONTEXT"
 
+# --- Q3B. a TRUNCATED Opus fallback must not green the required gate ----------
+# FOUND BY CODEX ON 2026-07-29 reviewing this very branch (major,
+# pr-review-agent.sh:403) while this suite was green. The codex path checked its
+# answer for a COMPLETE findings block; the FALLBACK path did not. So an Opus run
+# that exited 0 with a truncated stream left an unclosed `FINDINGS:`, which
+# verdict_from_findings reads as an EMPTY findings list, which derives APPROVE --
+# posting state=success on the REQUIRED context for a review nobody read. Filling
+# the gate with an unread approval is strictly worse than leaving it unstated:
+# unstated holds the PR, green releases it.
+Q3B="$W2/eng-down-truncated"
+mk_engine_stubs "$Q3B" "$SHA_A" fail ""
+# The fallback answers, exits 0, and is cut off mid-block. mk_engine_stubs pins the
+# claude body to $APPROVE_REVIEW, so overwrite it after the fact.
+printf '%s' '## VERDICT: APPROVE
+
+FINDINGS:
+' > "$Q3B/claude-body.txt"
+run_engine_reviewer "$Q3B" --post --engine codex
+CALL="$(status_call "$Q3B")"
+printf '%s' "$CALL" | grep -q 'state=success' \
+  && fail "THE DEFECT CODEX FOUND: the Opus fallback was cut off mid-FINDINGS and the reviewer
+      posted state=success on the REQUIRED context anyway. An unclosed block derives APPROVE, so
+      this is a green gate for a review that said nothing. Call was: $CALL"
+printf '%s' "$CALL" | grep -q 'state=failure' \
+  || fail "a truncated fallback posted neither success nor failure, so the gate state is
+      unreadable. Call was: ${CALL:-<no status posted>}"
+ok "a truncated Opus fallback posts state=failure, never a green required gate"
+
 [ -s "$Q3/claude-calls.log" ] \
   || fail "codex failed and no fallback reviewer ran at all, so the slot was filled by nothing"
 ok "codex down: the Opus fallback reviewer actually ran"

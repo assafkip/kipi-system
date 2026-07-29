@@ -660,7 +660,19 @@ def cmd_progress(args) -> int:
         # "I ran X and got Y" beats "should work" -- the repo's own bar.
         body += f"\n\n```\n{args.evidence}\n```"
 
-    graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    # CHECK THE MUTATION RESULT. Codex found this on 2026-07-29 (major,
+    # linear-sync.py:663): the return value was discarded, so a rejected
+    # commentCreate still printed "progress noted" and exited 0. That is the
+    # slack-notify.sh always-exits-0 defect again (sp-8f879dc5) on the channel the
+    # review CONVERSATION now depends on -- the reviewer would report that its
+    # findings reached the issue when no comment exists, and Sana would be told to
+    # reply to a thread that is not there.
+    result = graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    created = (result or {}).get("commentCreate") or {}
+    if not created.get("success") or not (created.get("comment") or {}).get("id"):
+        print(f"BLOCK: Linear accepted the request but did not create the comment on "
+              f"{issue['identifier']}. Nothing was posted. Raw: {created}", file=sys.stderr)
+        return EXIT_USAGE
     print(f"{issue['identifier']}: progress noted by {who} (state: {issue['state']['name']})")
     # Deliberately does NOT change state. A progress note and a state transition
     # are different claims: "here is what happened" vs "this is now done". Moving
@@ -693,10 +705,18 @@ def cmd_comments(args) -> int:
 
     nodes = (issue.get("comments") or {}).get("nodes") or []
     if args.agent:
-        # Substring, not equality: `progress` writes the author into the BODY as
-        # "**sana** · <stamp>", and the API author is the integration bot for every
-        # one of these comments, so the agent name can only be matched in the text.
-        nodes = [n for n in nodes if args.agent.lower() in (n.get("body") or "").lower()]
+        # MATCH THE ATTRIBUTION MARKER, NOT ANY MENTION. `progress` writes the
+        # author as the literal first line "**<who>** · <stamp>", so `**sana**` is
+        # the author and a bare "sana" anywhere else is just prose ABOUT Sana.
+        #
+        # Codex found the bare-substring version on 2026-07-29 (minor,
+        # linear-sync.py:699) and it was a live bug, not a hypothetical: the
+        # reviewer's own comment body contains the sentence "Sana: reply to this
+        # comment on THIS issue", so `--agent sana` returned the REVIEWER's comment
+        # as if Sana had written it. My own test passed because its fixture never
+        # put the word "sana" inside the reviewer's comment. The real prompt does.
+        marker = f"**{args.agent.lower()}**"
+        nodes = [n for n in nodes if marker in (n.get("body") or "").lower()]
     if args.last and args.last > 0:
         nodes = nodes[-args.last:]
 

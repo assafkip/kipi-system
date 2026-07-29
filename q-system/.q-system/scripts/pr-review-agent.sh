@@ -136,12 +136,20 @@ fi
 # fact, and paging per-PR would turn one outage into a page per open PR.
 DEGRADED_STATE="$OUT_DIR/codex/degraded.state"
 DEGRADED=0
-# Set when codex answered with nothing parseable. It is a SEPARATE flag from the
-# derived verdict because verdict_from_findings reads an unclosed FINDINGS block
-# as an EMPTY one and returns APPROVE -- so "the derivation produced something"
-# is not evidence that the review said anything. Caught by the truncated-stream
-# case in test-severity-floor.sh, which passed the first cut of this fix.
-CODEX_UNUSABLE=0
+# Set when THE REVIEW IN THE PRIMARY SLOT is not parseable, whichever engine
+# produced it. It is a SEPARATE flag from the derived verdict because
+# verdict_from_findings reads an unclosed FINDINGS block as an EMPTY one and
+# returns APPROVE -- so "the derivation produced something" is not evidence that
+# the review said anything. Caught by the truncated-stream case in
+# test-severity-floor.sh, which passed the first cut of this fix.
+#
+# It was CODEX_UNUSABLE and checked only on the codex path. Codex itself found the
+# hole on 2026-07-29 reviewing this branch (major, pr-review-agent.sh:403): the
+# Opus FALLBACK path had no such check, so a fallback that exited 0 with truncated
+# output would derive APPROVE and post state=success on the REQUIRED context --
+# a green gate for a review nobody read, which is the worst outcome in this script.
+# The flag is a property of the SLOT, not of the engine.
+REVIEW_UNUSABLE=0
 
 mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -383,7 +391,7 @@ elif run_engine codex "$REVIEW"; then
     # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
     # over it would invent a verdict for a review that said nothing. It falls
     # through UNSTATED, and unstated posts state=failure a few lines below.
-    CODEX_UNUSABLE=1
+    REVIEW_UNUSABLE=1
     note_degraded_transition 1 \
       "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
     echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
@@ -401,7 +409,17 @@ else
   note_degraded_transition 1 \
     "it exited $rc, so the Opus fallback filled the slot and the status is marked DEGRADED"
   if run_engine claude "$REVIEW"; then
-    echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+    # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
+    # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
+    # block, which derives APPROVE and would post state=success on the REQUIRED
+    # context. Filling the gate with an unread approval is worse than leaving it
+    # unstated, because unstated holds the PR and green releases it.
+    if review_has_complete_findings_block "$REVIEW"; then
+      echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+    else
+      REVIEW_UNUSABLE=1
+      echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+    fi
   else
     rc=$?
     echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
@@ -416,7 +434,7 @@ fi
 # setting the gate.
 STATED_VERDICT="$(extract_verdict "$REVIEW")"
 DERIVED_VERDICT="$(verdict_from_findings "$REVIEW")"
-if [ "$CODEX_UNUSABLE" = "1" ]; then
+if [ "$REVIEW_UNUSABLE" = "1" ]; then
   # UNUSABLE WINS OVER THE DERIVATION, and this ordering is the whole fix. An
   # unclosed `FINDINGS:` block parses as an EMPTY findings list, and an empty
   # list derives APPROVE -- so a stream that died one line into the block would

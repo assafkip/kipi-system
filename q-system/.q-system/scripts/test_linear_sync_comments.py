@@ -70,6 +70,21 @@ C_BOT = {"id": "c3", "createdAt": "2026-07-29T03:00:00.000Z",
          "body": "**codex-reviewer** · bot-written",
          "user": None, "botActor": {"name": "kipi-bot"}}
 
+# THE REAL REVIEWER COMMENT, not a convenient one. pr-review-agent.sh writes the
+# literal sentence "Sana: reply to this comment on THIS issue" into the body of the
+# REVIEWER's own comment. The first cut of --agent matched a bare substring, so
+# `--agent sana` returned THIS comment as if Sana had authored it. Codex caught it
+# on 2026-07-29 while the suite was green, because the old fixture never put the
+# word "sana" inside a reviewer comment. Fixtures built from the same mental model
+# as the code test nothing -- this one is copied from what the code actually emits.
+C_CODEX_MENTIONS_SANA = {
+    "id": "c4", "createdAt": "2026-07-29T04:00:00.000Z",
+    "body": ("**codex-reviewer** · 2026-07-29 04:00 UTC\n\n"
+             "Review of PR #35 complete (codex engine). Verdict: REQUEST CHANGES.\n\n"
+             "Sana: reply to this comment on THIS issue. For each finding, either "
+             "the file:line that already handles it, or what you changed."),
+    "user": {"name": "Assaf Kipnis"}, "botActor": None}
+
 
 def run_comments(mod, args, payload=None, raise_exc=None):
     """Drive cmd_comments with graphql stubbed. Returns (rc, stdout, stderr)."""
@@ -179,6 +194,53 @@ def main():
         fail(f"a Linear API error did not say BLOCK. Got stderr:\n{err}")
     else:
         ok("a Linear API error BLOCKs and exits non-zero")
+
+    # --- REGRESSION: --agent must match the AUTHOR, not a mention -------------
+    # The live bug Codex found. `--agent sana` against a thread where the REVIEWER
+    # addressed Sana by name must return Sana's comment only. Getting this wrong
+    # means Sana reads the reviewer's own comment as her prior reply, concludes she
+    # already answered, and the review round silently does nothing.
+    rc, out, _ = run_comments(mod, Args("ASK-221", agent="sana"),
+                              make_issue([C_SANA, C_CODEX_MENTIONS_SANA]))
+    if "codex-reviewer" in out:
+        fail("THE BUG CODEX FOUND: --agent sana returned the REVIEWER's comment, because "
+             "the reviewer's body contains 'Sana: reply to this comment'. --agent must "
+             f"match the '**author**' attribution marker, not any mention. Got:\n{out}")
+    elif "Picked up by the worker" not in out:
+        fail(f"--agent sana dropped Sana's own comment. Got:\n{out}")
+    else:
+        ok("--agent matches the '**author**' marker, not a mention of that agent")
+
+    # --- REGRESSION: progress must not claim success on a rejected mutation ----
+    # The other live bug: commentCreate's result was discarded, so a rejected
+    # mutation still printed "progress noted" and exited 0. The review CONVERSATION
+    # runs on this call; a silent drop means the reviewer reports that its findings
+    # reached the issue when no comment exists.
+    if not hasattr(mod, "cmd_progress"):
+        fail("linear-sync.py has no cmd_progress")
+    else:
+        class PArgs:
+            issue = "ASK-221"; note = "n"; agent = "sana"; evidence = None
+
+        def stub_reject(query, _vars):
+            if "commentCreate" in query:
+                return {"commentCreate": {"success": False, "comment": None}}
+            return {"issue": {"id": "uuid-1", "identifier": "ASK-221",
+                              "state": {"name": "In Progress"}}}
+        mod.graphql = stub_reject
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = mod.cmd_progress(PArgs())
+        if rc == 0:
+            fail("THE BUG CODEX FOUND: a REJECTED commentCreate exited 0, so a dropped "
+                 "comment is indistinguishable from a delivered one on the channel the "
+                 "review conversation depends on")
+        elif "BLOCK" not in err.getvalue():
+            fail(f"a rejected commentCreate did not say BLOCK. stderr:\n{err.getvalue()}")
+        elif "progress noted" in out.getvalue():
+            fail(f"a rejected commentCreate still printed success. stdout:\n{out.getvalue()}")
+        else:
+            ok("progress BLOCKs when Linear does not actually create the comment")
 
     # --- the verb is REGISTERED, not just defined ----------------------------
     # A cmd_ function nothing routes to is dead code: `comments` has to be reachable
