@@ -303,28 +303,42 @@ if converge_live_for "$NEXT"; then
   exit 0
 fi
 
-# RECORD THE REWORK DISPATCH BEFORE SPENDING ANYTHING (PR #43 review round 3,
-# major, second half). MAX_ATTEMPTS cannot bound this path: `bump_attempt` has a
-# single call site and it fires only when `claude` exits NON-ZERO, while the
-# rework failure mode is an agent that exits 0 and leaves the PR red. Without a
-# counter that moves on a SUCCESSFUL dispatch, the same red PR is re-announced at
-# "attempt 1/3" every heartbeat forever.
+# NAME THE DISPATCH; THE ROUND SPENDS THE BUDGET (PR #43 review round 5, major).
+# This block used to record the rework dispatch right here, before the launch --
+# and the apply loop the dispatch buys can still refuse AFTER the severity gate:
+# a worktree that cannot be created, another session's stale claim, a tree that
+# cannot be positioned onto the PR's head. Each of those cost a slot having run
+# ZERO rounds, and because MAX_REWORK_DISPATCHES is lifetime and never cleared,
+# two such heartbeats locked the issue out of the loop for good while paging "its
+# PR is still not green" about a PR nothing had touched. linear-worker.sh already
+# fixed exactly this for the conflict budget (PR #25 finding 2): plan at the gate,
+# spend where the round actually happens.
 #
-# THE DISPATCHER DOES NOT WRITE THE LEDGER, it asks the worker to. That file now
-# has five keys answering five different questions and exactly one script has
-# ever written it; a second writer out here would be two processes agreeing by
-# convention about a schema neither one owns.
+# A REFUND IS NOT AVAILABLE FROM HERE. The launch below is deliberately
+# fire-and-forget -- start_new_session, so launchd cannot reap the child along
+# with this script -- so the dispatcher never sees converge's exit code and cannot
+# know whether a round ran. It passes an ID instead, and the worker spends at most
+# one slot per id however many rounds converge runs on it.
 #
-# FAIL CLOSED, the same rule as the budget counter directly below: if the record
-# cannot be written the bound does not exist, so the dispatch does not happen.
-# The refusal then repeats in this log every tick, which is the loud direction.
+# STILL ONE WRITER: the dispatcher does not touch the ledger JSON, it only names
+# the dispatch. linear-worker.sh remains the only script that has ever written
+# that file.
+#
+# THE BOUND STILL FAILS CLOSED, one layer in: if the worker cannot record the
+# spend it refuses the round rather than running uncapped. What moved is WHERE the
+# refusal happens -- at the thing that costs money (an agent round), not at the
+# launch that may buy nothing.
 if [ "$REWORK" = "1" ]; then
-  if bash ./kipi work --rework-dispatched "$NEXT" >>"$LOG" 2>&1; then
-    printf '%s' "$((REWORK_TODAY + 1))" > "$REWORK_COUNT_FILE"
-  else
-    say "rework $NEXT: could NOT record the dispatch against its budget, so refusing to dispatch rather than run this path uncapped. Do: run \`bash $REPO/kipi work --rework-dispatched $NEXT\` by hand and read the error."
-    exit 0
-  fi
+  export KIPI_REWORK_DISPATCH_ID="$NEXT-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  # The DAILY split stays counted here, and unlike the lifetime budget it is right
+  # to: it splits DISPATCHED_TODAY, which counts LAUNCHES -- a launch is spent
+  # whether or not the round it buys does work -- and it resets at RESET_HOUR
+  # rather than locking anything out forever.
+  printf '%s' "$((REWORK_TODAY + 1))" > "$REWORK_COUNT_FILE"
+else
+  # A fresh dispatch must not inherit a rework token from this shell's ambient
+  # environment: the worker keys the spend on it.
+  unset KIPI_REWORK_DISPATCH_ID
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two

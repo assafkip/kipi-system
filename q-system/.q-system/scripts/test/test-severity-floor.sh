@@ -638,6 +638,100 @@ grep -q "rebase round 1/" "$W2/stale3.out" \
       The worker said: $(grep -iE 'skip|rebase' "$W2/stale3.out" | head -1)"
 ok "once the claim clears, the full conflict budget is still available"
 
+# --- S. THE REWORK BUDGET IS SPENT BY THE ROUND, NOT BY THE DISPATCH ---------
+# ASK-245, PR #43 review round 5 (major). `rework_dispatches` was bumped by
+# kipi-dispatch.sh BEFORE it launched converge, so every refusal on this page --
+# a worktree that cannot be created, another session's stale claim, a tree that
+# cannot be positioned -- cost a slot having run ZERO rounds. That counter is
+# LIFETIME and never cleared, so two such ticks locked the issue out of the loop
+# permanently and paged "its PR is still not green" about a PR nothing touched.
+# Section I above is the identical assertion for the conflict budget (PR #25
+# finding 2); this is the same defect rebuilt one layer up.
+#
+# WHY A DISPATCH ID AND NOT A PLAIN BUMP. The dispatcher cannot fix this by
+# refunding: it launches converge with start_new_session and never waits, so
+# there is no exit code to read. It hands the round a token instead
+# (KIPI_REWORK_DISPATCH_ID) and the round spends it at the same site the conflict
+# and drift rounds are spent. The token is what keeps the UNIT a dispatch:
+# converge runs this worker up to MAX_ROUNDS times per dispatch, so a bare bump
+# would silently redefine a 2-dispatch budget as a 2-round one.
+
+# run_worker_dispatched <skel> <state-dir> <out> <dispatch-id>
+run_worker_dispatched() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_REWORK_DISPATCH_ID="$4" \
+       bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$3" 2>&1
+  return 0
+}
+rework_spent() {  # rework_spent <state-dir>
+  "$REAL_PY" -c "
+import json
+try: d=json.load(open('$1/linear-worker-attempts.json'))
+except Exception: d={}
+print(d.get('ASK-AAA',{}).get('rework_dispatches',0))"
+}
+# ONE ROUND == ONE `start ASK-AAA` LINE. Not a count of `worked.txt`: the
+# REVIEWER shells `claude` too, so the agent stub fires twice per round and a
+# count of it would report 2 for one round.
+ran_round() { grep -q "start ASK-AAA on" "$1"; }
+
+R_RW="$W2/repo-rework"; make_repo "$R_RW"
+S_RW="$W2/state-rework"; mkdir -p "$S_RW/pr-reviews" "$S_RW/worktrees"
+printf '{"verdict":"REQUEST CHANGES","pr":791}\n' > "$S_RW/pr-reviews/pr-791.verdict.json"
+gh_says 791 CLEAN
+: > "$W2/worked.txt"; : > "$W2/pages.txt"
+run_worker_dispatched "$R_RW/skel" "$S_RW" "$W2/rw1.out" "d-1"
+
+# S1. A round that RUNS pays for itself. Without this the section proves nothing:
+# a counter that never moves would pass every zero-assertion below it.
+ran_round "$W2/rw1.out" \
+  || fail "S1 never reached the work phase, so it cannot say anything about the budget.
+      The worker said: $(tail -3 "$W2/rw1.out" | tr '\n' ' ')"
+[ "$(rework_spent "$S_RW")" = "1" ] \
+  || fail "S1 a rework round that actually ran spent $(rework_spent "$S_RW") rework dispatch(es),
+      not 1. Nothing bounds this path if the round does not pay for itself."
+ok "a rework round that actually runs spends exactly one rework dispatch"
+
+# S2. THE UNIT IS THE DISPATCH. converge calls this worker up to MAX_ROUNDS times
+# per dispatch, so a second round carrying the SAME token must cost nothing more.
+run_worker_dispatched "$R_RW/skel" "$S_RW" "$W2/rw2.out" "d-1"
+ran_round "$W2/rw2.out" \
+  || fail "S2 the second round of the same dispatch never ran, so the idempotency claim is
+      untested. The worker said: $(tail -3 "$W2/rw2.out" | tr '\n' ' ')"
+[ "$(rework_spent "$S_RW")" = "1" ] \
+  || fail "S2 two rounds of ONE dispatch spent $(rework_spent "$S_RW") slots. The budget is
+      documented per dispatch; counting per round shrinks it by MAX_ROUNDS without saying so."
+ok "a second round of the SAME dispatch spends nothing more (the unit is the dispatch)"
+
+# S3. A HUMAN'S ROUND IS NOT THE LOOP'S SPEND. `kipi work --apply --issue X` typed
+# by hand carries no token; the cap's own hand-back instructions point a human at
+# exactly that, so charging them for it would re-lock the issue they just freed.
+run_worker_in "$R_RW/skel" "$S_RW" "$W2/rw3.out"
+ran_round "$W2/rw3.out" \
+  || fail "S3 the untokened round never ran, so it proves nothing about what it spent.
+      The worker said: $(tail -3 "$W2/rw3.out" | tr '\n' ' ')"
+[ "$(rework_spent "$S_RW")" = "1" ] \
+  || fail "S3 a hand-run round spent the LOOP's rework budget ($(rework_spent "$S_RW") slots)."
+ok "a round with no dispatch token spends none of the loop's rework budget"
+
+# S4. THE FINDING ITSELF: a NEW dispatch whose round refuses AFTER the gate costs
+# nothing. Same stale-claim shape section I uses -- converge.sh's documented
+# 2026-07-27 scar, a SIGKILL or a slept laptop leaving a lock nobody reclaims.
+( cd "$S_RW/worktrees/ask-aaa" \
+  && "$REAL_PY" "$ROOT/q-system/.q-system/scripts/linear-claim.py" claim ASK-AAA \
+       --agent ghost --session ghost-dead-session ) >/dev/null 2>&1 \
+  || fail "S4 could not seed the stale claim"
+: > "$W2/pages.txt"
+run_worker_dispatched "$R_RW/skel" "$S_RW" "$W2/rw4.out" "d-2"
+grep -q "claimed by another session" "$W2/rw4.out" \
+  || fail "S4 did not hit the stale claim at all, so it is not testing a post-gate refusal.
+      The worker said: $(grep -iE 'skip|INFRA' "$W2/rw4.out" | head -1)"
+[ "$(rework_spent "$S_RW")" = "1" ] \
+  || fail "S4 a dispatch whose round did NOTHING spent a rework slot ($(rework_spent "$S_RW")
+      total). Two of those lock the issue out for good and page a cause that is not the cause."
+ok "a dispatch whose round refuses after the gate spends no rework budget"
+
 # --- J. the conflict budget is consecutive, not a lifetime total -------------
 # PR #25 review, finding 3 (minor). Nothing reset the counter, so an issue that
 # hit two conflicts across its life -- both successfully rebased -- could never

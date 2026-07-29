@@ -121,10 +121,19 @@ MAX_DRIFT_ROUNDS=2
 # not cover this path, bound it here and say so" -- and the first cut of this
 # issue did not.
 #
-# COUNTED PER DISPATCH, not per round and not per failed run: kipi-dispatch.sh
-# records one against the issue at the moment it hands the candidate to converge
-# (--rework-dispatched below). That is the unit that costs money -- one dispatch
-# is up to MAX_ROUNDS agent+reviewer pairs.
+# COUNTED PER DISPATCH, not per round and not per failed run. That is the unit
+# that costs money -- one dispatch is up to MAX_ROUNDS agent+reviewer pairs.
+#
+# SPENT BY THE ROUND, NOT BY THE DISPATCHER (PR #43 review round 5, major).
+# kipi-dispatch.sh recorded it before launching converge, so every refusal the
+# apply loop still makes AFTER the gate -- an uncreatable worktree, another
+# session's stale claim, a tree that cannot be positioned -- cost a LIFETIME slot
+# having run zero rounds, and two of those locked the issue out for good while
+# paging a cause that was not the cause. The dispatcher cannot refund it (it
+# launches with start_new_session and never waits for an exit code), so it hands
+# the round a token instead -- KIPI_REWORK_DISPATCH_ID -- and the spend happens
+# at the dispatch site in the apply loop, beside the conflict and drift rounds
+# that already work this way (PR #25 finding 2, the same defect one layer down).
 #
 # 2, matching the conflict and drift caps: two full converge runs that both
 # failed to make the PR green means the next thing it needs is a human, not a
@@ -140,14 +149,17 @@ TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
-REWORK_DISPATCHED=""
+# The dispatch this run belongs to, set by kipi-dispatch.sh (empty when a human
+# runs the worker by hand). The apply loop spends at most one rework-dispatch
+# slot per distinct value, which is what keeps the budget's unit a DISPATCH while
+# converge calls this script up to MAX_ROUNDS times per dispatch.
+REWORK_DISPATCH_ID="${KIPI_REWORK_DISPATCH_ID:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
-    --rework-dispatched) shift; REWORK_DISPATCHED="${1:-}" ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
@@ -157,39 +169,6 @@ export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { echo "$(TS) $*" | tee -a "$LOG"; }
-
-# --- the rework-dispatch ledger (ASK-245, PR #43 review round 3) -------------
-# Deliberately defined HERE and not beside its four siblings 200 lines down: the
-# --rework-dispatched short-circuit has to answer before the `git fetch` and the
-# Linear query, because recording a dispatch that already happened must not
-# depend on the network being up. Its siblings carry a pointer to this block.
-#
-# ONE WRITER. kipi-dispatch.sh is the only caller and it does not touch the JSON
-# itself -- it shells this mode. Two processes hand-editing one ledger with
-# different key conventions is the defect class this repo keeps closing, and the
-# dispatcher had no business learning this file's schema.
-rework_dispatches_for() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-print(d.get(sys.argv[1],{}).get('rework_dispatches',0))" "$1"; }
-
-bump_rework_dispatch() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); e['rework_dispatches']=e.get('rework_dispatches',0)+1
-e['last_rework_dispatch']=sys.argv[2]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
-
-if [ -n "$REWORK_DISPATCHED" ]; then
-  bump_rework_dispatch "$REWORK_DISPATCHED" || {
-    say "FATAL: could not record a rework dispatch against $REWORK_DISPATCHED in $ATTEMPTS"
-    exit 1
-  }
-  say "recorded rework dispatch $(rework_dispatches_for "$REWORK_DISPATCHED")/$MAX_REWORK_DISPATCHES for $REWORK_DISPATCHED"
-  exit 0
-fi
 
 # A distinct session token per run. The claim lock keys collisions on (agent,
 # session), so without a unique token two overlapping runs would look like the
@@ -368,10 +347,39 @@ except Exception: d={}
 e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
 json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
 
-# A FIFTH counter, `rework_dispatches`, lives with the same siblings but is
-# DEFINED FAR ABOVE (search: rework-dispatch ledger) because kipi-dispatch.sh
-# shells it via --rework-dispatched, which must answer before the fetch and the
-# Linear query.
+# --- the rework-dispatch ledger (ASK-245) -----------------------------------
+# The fifth counter, beside its four siblings. It lived 200 lines up while
+# kipi-dispatch.sh shelled a --rework-dispatched mode that had to answer before
+# the fetch; the ROUND spends it now (see MAX_REWORK_DISPATCHES above), so it
+# belongs where the other budgets are.
+#
+# STILL ONE WRITER. This script is the only one that has ever written that file.
+# The dispatcher names the dispatch and nothing more -- two processes agreeing by
+# convention about a schema neither one owns is the defect class this repo keeps
+# closing.
+rework_dispatches_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('rework_dispatches',0))" "$1"; }
+
+# WHICH dispatch last paid, so a second round of the SAME dispatch is free. Not a
+# timestamp window: rounds are minutes apart and so are heartbeats, so any window
+# wide enough to cover a slow round would also swallow the next dispatch.
+rework_dispatch_id_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('rework_dispatch_id',''))" "$1"; }
+
+bump_rework_dispatch() {  # bump_rework_dispatch <issue> <dispatch-id>
+  python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); e['rework_dispatches']=e.get('rework_dispatches',0)+1
+e['rework_dispatch_id']=sys.argv[2]; e['last_rework_dispatch']=sys.argv[3]
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$2" "$(TS)"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
@@ -852,9 +860,13 @@ if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
     RD="$(rework_dispatches_for "$RID")"
     if [ "$RD" -ge "$MAX_REWORK_DISPATCHES" ]; then
       say "[dry] skip rework $RID: $RD/$MAX_REWORK_DISPATCHES rework dispatch(es) already and PR #$RPR still reads '$PR_VERDICT'. Marked stuck; a human decides next. To hand it back to the loop: python3 -c \"import json;p='$ATTEMPTS';d=json.load(open(p));d['$RID'].pop('rework_dispatches',None);d['$RID'].pop('rework_paged',None);json.dump(d,open(p,'w'),indent=2)\""
-      # ONCE, not every 15 minutes (founder-notifications.md). Same mechanism the
-      # conflict and drift caps use. This is the ONLY write a dry run makes, and
-      # it exists so that going quiet is announced rather than merely happening:
+      # ONCE, not every 15 minutes (founder-notifications.md). Same mechanism AND
+      # the same write as the conflict and drift caps above: all three page-claim
+      # keys are read-modify-written on this dry path (PR #43 review round 5,
+      # minor -- this sentence used to call itself the only one). A page claim is
+      # the only KIND of write a dry run makes; it never touches a budget, an arm
+      # or a tree. It exists so that going quiet is announced rather than merely
+      # happening:
       # a candidate that silently stops being dispatched is the failure this
       # whole issue is named for.
       if claim_page_once "$RID" rework_paged; then
@@ -901,6 +913,7 @@ while IFS= read -r ISSUE; do
   REWORK=""
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
+  REWORK_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
     # THE SAME READER THE DRY ANNOUNCEMENT USES (PR #43 review round 4). The
     # verdict, the merge state and the two shas used to be gathered inline here
@@ -1044,6 +1057,25 @@ while IFS= read -r ISSUE; do
       # live at the dispatch site below, where the round actually happens.
       CONFLICT_ROUND=$((CR + 1))
     fi
+    # PLANNED, NOT SPENT -- the rework-dispatch budget, exactly as the two rounds
+    # above are planned here and paid for at the dispatch site (PR #43 review
+    # round 5, major; PR #25 finding 2 one layer down). Reaching this line means
+    # the gate said 0, 30 or 40 and that round's own budget survived, so a round
+    # is intended -- but the worktree, the claim and the tree position can all
+    # still decline it below.
+    #
+    # ONCE PER DISPATCH, NOT PER ROUND: converge calls this script up to
+    # MAX_ROUNDS times per dispatch, so the id is what keeps the unit the one
+    # MAX_REWORK_DISPATCHES is written against. A bare bump would silently
+    # redefine a 2-dispatch budget as a 2-round one.
+    #
+    # NO TOKEN MEANS NO DISPATCHER. A human running `kipi work --apply --issue X`
+    # by hand is the escape hatch the cap's own message points at; charging them
+    # for it would re-lock the issue they just freed.
+    if [ -n "$REWORK_DISPATCH_ID" ] \
+       && [ "$(rework_dispatch_id_for "$ISSUE")" != "$REWORK_DISPATCH_ID" ]; then
+      REWORK_ROUND=$(( $(rework_dispatches_for "$ISSUE") + 1 ))
+    fi
   fi
 
   # 1. WORKTREE FIRST, and only then the claim -- in that order, because the
@@ -1174,6 +1206,21 @@ while IFS= read -r ISSUE; do
   # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every
   # decline above this line left the budget intact (PR #25 review, finding 2),
   # so the counter and the log line below both describe rounds that really ran.
+  # The rework dispatch is paid for first, because it is the budget that decides
+  # whether this issue is ever picked up again -- and it FAILS CLOSED, the rule it
+  # inherits from the dispatcher's own counter: a bound that could not be written
+  # does not exist, and this path's failure mode is an agent that exits 0 with the
+  # PR still red, which MAX_ATTEMPTS structurally cannot see.
+  if [ -n "$REWORK_ROUND" ]; then
+    if ! bump_rework_dispatch "$ISSUE" "$REWORK_DISPATCH_ID"; then
+      say "skip $ISSUE: could not record this rework dispatch against its budget in $ATTEMPTS, so refusing the round rather than running this path uncapped. A human resolves this one: read that file."
+      # Release first: a claim held by a run that did nothing wedges the tree for
+      # every later run, the same reason the tree refusal above releases.
+      ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      continue
+    fi
+    say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' -- spending rework dispatch $REWORK_ROUND/$MAX_REWORK_DISPATCHES"
+  fi
   if [ -n "$CONFLICT_ROUND" ]; then
     bump_conflict_round "$ISSUE"
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE -- dispatching rebase round $CONFLICT_ROUND/$MAX_CONFLICT_ROUNDS"
