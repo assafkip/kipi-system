@@ -103,6 +103,10 @@ BANNED_PHRASES = [
     "excited to announce", "excited to share", "proud to say",
     "it's worth mentioning", "it is worth mentioning",
     "it's worth noting", "it is worth noting", "worth highlighting",
+    # Consultant-report tells (2026-07-28, caught in a client email draft).
+    "one flag", "one thing you should know", "here is where each one stands",
+    "here's where each one stands", "a few things to flag", "quick flag",
+    "wanted to flag", "at a high level", "net net", "net-net",
 ]
 
 NON_CONTRACTED_NEGATIONS = [
@@ -134,6 +138,28 @@ STAT_PATTERNS = [
 
 SLASH_COMMAND_RE = re.compile(r"`/q-[a-z][a-z0-9-]*`")
 EMDASH_RE = re.compile(r"—")
+
+# --- capitalization -------------------------------------------------------
+# WHY (2026-07-28): a client email shipped in all-lowercase because voice-dna.md
+# says "Lowercase-default. Rarely capitalizes." That describes the founder's
+# Slack/DM register, not published writing. Every rule above judges word choice;
+# none judged casing, so nothing caught it. Published content gets real caps.
+PROPER_NOUN_FILENAME = "proper-nouns.txt"
+
+# Leading markdown that is not part of the sentence: blockquote, heading, list
+# marker, emphasis. Stripped before the first letter is inspected.
+LINE_PREFIX_RE = re.compile(r"^[\s>]*(?:#{1,6}\s+)?(?:(?:[-*+]|\d+[.)])\s+)?[*_]{0,2}")
+URL_LINE_RE = re.compile(r"^\s*(?:https?://|www\.|!?\[)")
+LIST_OR_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)")
+TABLE_ROW_RE = re.compile(r"^\s*\|")
+# "i" alone. i.e. is excluded; inline code is already stripped upstream.
+BARE_I_RE = re.compile(r"\bi\b(?!\.e\.)")
+# A period that ends a sentence, not one inside an abbreviation or a decimal.
+SENTENCE_END_RE = re.compile(r"(?<![A-Z])(?<!\b[a-z])[.!?]['\")\]]*\s+")
+ABBREVIATIONS = {
+    "e.g", "i.e", "vs", "etc", "mr", "mrs", "ms", "dr", "prof", "st", "ave",
+    "blvd", "inc", "ltd", "co", "jr", "sr", "approx", "no", "fig", "al",
+}
 
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
@@ -481,6 +507,142 @@ def check_rule_of_three(text):
     return violations
 
 
+def load_proper_nouns(file_path):
+    """Read the nearest `canonical/proper-nouns.txt` above the linted file.
+
+    Opt-in by construction: an instance that has not written the file gets no
+    proper-noun checking at all. Same switch shape as the evidence gate, and for
+    the same reason -- blocking every unknown capitalized word in the first draft
+    an instance ever writes teaches people to reach for the bypass.
+    """
+    try:
+        current = Path(file_path).resolve().parent
+    except Exception:
+        return []
+    for directory in [current, *current.parents]:
+        candidate = directory / "canonical" / PROPER_NOUN_FILENAME
+        if candidate.is_file():
+            try:
+                lines = candidate.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                return []
+            return [
+                line.strip()
+                for line in lines
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+    return []
+
+
+def strip_code_preserving_lines(text):
+    """strip_code_for_prose_check, but every removed span keeps its newlines.
+
+    WHY: the plain stripper collapses code fences, so a violation's reported line
+    number drifts from the source file by however many fenced lines preceded it.
+    A line number that does not match the file is worse than no line number --
+    it sends the reader to the wrong place.
+    """
+    def blanked(match):
+        return "\n" * match.group().count("\n")
+
+    text = FRONTMATTER_RE.sub(blanked, text)
+    text = CODE_FENCE_RE.sub(blanked, text)
+    text = INLINE_CODE_RE.sub("__CODE__", text)
+    text = BLOCKQUOTE_RE.sub("", text)
+    return text
+
+
+def _ends_a_sentence(line):
+    """Does this line end on a real sentence terminator?"""
+    stripped = line.rstrip().rstrip("*_`)\"'")
+    if not stripped:
+        return False
+    if stripped[-1] not in ".!?":
+        return False
+    last = stripped.split()[-1].rstrip(".!?").lower()
+    return last not in ABBREVIATIONS
+
+
+def _is_sentence_break(line, index):
+    """Is the terminator at `index` a real break, or punctuation inside a quote?"""
+    if line[:index].count('"') % 2 == 1:
+        return False
+    preceding = line[:index].split()
+    if preceding and preceding[-1].rstrip(".!?").lower() in ABBREVIATIONS:
+        return False
+    return True
+
+
+def _sentence_start_offsets(text):
+    """Offsets in `text` where a sentence begins.
+
+    A line start only counts when the line opens a block (list item, heading,
+    post-blank-line paragraph) or the previous line closed a sentence. Without
+    that test every soft-wrapped continuation line reads as a new sentence, which
+    is most of the prose in this repo.
+    """
+    offsets = []
+    lines = text.split("\n")
+    cursor = 0
+    previous = ""
+    for line in lines:
+        start = cursor
+        cursor += len(line) + 1
+        if not line.strip() or URL_LINE_RE.match(line) or TABLE_ROW_RE.match(line):
+            previous = line
+            continue
+        opens_block = bool(LIST_OR_HEADING_RE.match(line)) or not previous.strip()
+        if opens_block or _ends_a_sentence(previous):
+            prefix = LINE_PREFIX_RE.match(line)
+            offsets.append(start + (prefix.end() if prefix else 0))
+        for end in SENTENCE_END_RE.finditer(line):
+            if _is_sentence_break(line, end.start()):
+                offsets.append(start + end.end())
+        previous = line
+    return offsets
+
+
+def check_capitalization(text, file_path=""):
+    """Published prose uses real capitalization. Three deterministic checks."""
+    violations = []
+    prose = strip_code_preserving_lines(text)
+
+    for offset in _sentence_start_offsets(prose):
+        rest = prose[offset:]
+        token = re.match(r"[A-Za-z][\w'-]*", rest)
+        if not token or token.group() == "__CODE__":
+            continue
+        word = token.group()
+        if word[0].isupper():
+            continue
+        violations.append({
+            "rule": "capitalization",
+            "line": find_line_number(prose, offset),
+            "detail": f"sentence starts lowercase: '{word}' (published content uses real caps)",
+        })
+
+    for match in BARE_I_RE.finditer(prose):
+        violations.append({
+            "rule": "capitalization",
+            "line": find_line_number(prose, match.start()),
+            "detail": "bare 'i' (use 'I')",
+        })
+
+    for noun in load_proper_nouns(file_path):
+        pattern = re.compile(r"\b" + re.escape(noun).replace(r"\ ", r"\s+") + r"\b", re.IGNORECASE)
+        for match in pattern.finditer(prose):
+            seen = match.group()
+            if seen == noun or seen.isupper():
+                continue
+            violations.append({
+                "rule": "capitalization",
+                "line": find_line_number(prose, match.start()),
+                "detail": f"proper noun miscased: '{seen}' should be '{noun}'",
+            })
+
+    return violations
+
+
 def check_bold_restatement(text):
     """Detect **X** followed by a sentence restating X."""
     violations = []
@@ -591,6 +753,7 @@ def lint_file(file_path):
     all_violations.extend(check_stats(text))
     all_violations.extend(check_slash_commands(text))
     all_violations.extend(check_contractions(text))
+    all_violations.extend(check_capitalization(text, file_path))
     all_violations.extend(check_rule_of_three(text))
     all_violations.extend(check_comma_triplet(text))
     all_violations.extend(check_cross_paragraph_fragments(text))
