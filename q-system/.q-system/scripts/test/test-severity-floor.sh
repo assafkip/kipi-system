@@ -2939,6 +2939,78 @@ grep -qi "now carries it" "$W2/conv-otherledger.out" \
 $(sed 's/^/        /' "$W2/conv-otherledger.out")"
 ok "no receipt written means no push, even when the push would carry only a ledger"
 
+# --- S14. A RECORD THAT PINS NOTHING MINTS NO RECEIPT ------------------------
+# PR #42 review round 3, finding 1 (major). The comment above the writer's call
+# site claimed gate 10 "is the one state where a terminal approving verdict is
+# pinned to the sha that IS the head." rework_gate returns 10 from THREE states,
+# and the second is an explicit fallback: a record with no `head_sha` (every
+# record written before ASK-216) prints "cannot tell an approval from one
+# inherited by a later push -- falling back to verdict-only" and lands on 10
+# anyway. converge printed that sentence and then minted a receipt at the current
+# head. NOTHING compared the reviewed code to that commit -- the same consequence
+# the whole change is staked on, arriving through a door nobody checked. Not a
+# constructed shape: 13 approving records on the live board carry no head_sha,
+# including PR #23's, the very PR this one blocks on.
+#
+# S5 (gate 40) could not see it: there the sha is present and DIFFERENT, so the
+# gate stops the run before the writer. Here the gate waves it through. O3 covers
+# the same record shape but in a world with no worktree on the branch, so the
+# writer exits at "no tree to commit into" before it can write -- it scores the
+# same with the defect and with the fix, which is what no coverage looks like.
+#
+# So: its own world, tree standing AT the head, auto-merge armed. Every guard
+# downstream of the pin check would let this through, which is the only way the
+# pin check itself is what this case measures.
+R_S14="$W2/world-receipt-nopin"; receipt_world "$R_S14" 920
+S14_TREE="$R_S14/tree"; S14_LEDGER="$S14_TREE/.prd-os/receipts.jsonl"
+SHA_920="$(git -C "$S14_TREE" rev-parse HEAD)"
+S14_ORIGIN_BEFORE="$(git -C "$R_S14/origin" rev-parse sana/ask-920)"
+[ "$S14_ORIGIN_BEFORE" = "$SHA_920" ] \
+  || fail "S14 wanted the tree standing exactly at the head origin carries, so that a wrong
+      write SUCCEEDS and this case can fail. Tree $SHA_920, origin $S14_ORIGIN_BEFORE"
+S_NOPIN="$W2/state-receipt-nopin"; mkdir -p "$S_NOPIN/pr-reviews"
+# 4th argument omitted: the pre-ASK-216 record shape. The 5th is a real ts, so a
+# receipt minted here would look completely well-formed -- reviewed_at and all.
+seed_record "$S_NOPIN" 920 "APPROVE WITH NITS" "" "$RCPT_TS"
+printf 'armed\n' > "$S_NOPIN/pr-reviews/pr-920.automerge"
+gh_says 920 CLEAN "$SHA_920"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S14" 920 "$S_NOPIN" "$W2/conv-nopin.out"
+[ "$RRC" = "1" ] \
+  || fail "refusing to mint an unpinned receipt changed converge's exit code to $RRC, want 1.
+      The writer is best-effort and loop-exits.md is what other code reads; only the REPORT
+      may change. It said:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+[ "$(receipts_for "$S14_LEDGER" ASK-920 "$SHA_920")" = "0" ] \
+  || fail "THE DEFECT: the verdict record names NO head_sha, so nothing ever compared the
+      reviewed code to $SHA_920 -- converge said so itself in the fallback NOTE -- and it
+      minted a prd-os receipt asserting ASK-920 was reviewed there anyway. That receipt
+      clears PR #23's gate on code no reviewer is recorded as having read. Ledger:
+$(sed 's/^/        /' "$S14_LEDGER")"
+[ "$(git -C "$R_S14/origin" rev-parse sana/ask-920)" = "$S14_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT, delivered: converge pushed the unpinned receipt to origin/sana/ask-920
+      ($S14_ORIGIN_BEFORE -> $(git -C "$R_S14/origin" rev-parse sana/ask-920)). CI reads the
+      pushed head, so the claim is now the one \`validate\` acts on. It said:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+# THE WRITE STOPPING MAY NOT BECOME THE REPORT STOPPING. Refusing to mint buys a
+# receipt miss that is now real, and a miss the operator is never told about is
+# the round-1 defect wearing a fix. The page has to carry it.
+[ -s "$W2/pages.txt" ] || fail "converge converged on an unpinned record and paged nobody at all"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "no receipt covers the head and the one line that reaches the founder still says
+      nobody has to touch it: $(cat "$W2/pages.txt")"
+grep -qi "head_sha" "$W2/pages.txt" \
+  || fail "the page reports a receipt miss without naming WHY, so it reads identically to a
+      broken worktree or a refused commit -- and the fix for those does not fix this one.
+      The operator needs a re-review, not a git command: $(cat "$W2/pages.txt")"
+grep -qi "needs a human" "$W2/pages.txt" \
+  || fail "the page names the unpinned record without saying anyone has to act on it:
+$(cat "$W2/pages.txt")"
+grep -qi "now carries it" "$W2/conv-nopin.out" \
+  && fail "no receipt for ASK-920 was written and the log claims origin now carries one:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+ok "a verdict record that pins no head mints no receipt, and the page says why"
+
 # --- wiring: the writer lives in converge, at the terminal-approve branch ----
 grep -q 'receipts.jsonl' "$CONV" \
   || fail "converge.sh does not mention the receipt ledger at all -- the producer is not here"

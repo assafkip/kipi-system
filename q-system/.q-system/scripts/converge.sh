@@ -302,19 +302,48 @@ receipt_only_ahead() {
 # RECEIPT_FIX is the command that fixes it. Both are read by the terminal page.
 RECEIPT_MISS=""; RECEIPT_FIX=""
 
-# receipt_ensure <sha> <verdict-record>
+# receipt_ensure <sha> <verdict-record> <reviewed-sha> <pr>
 # Best-effort by design and NEVER touches this run's exit code, exactly like the
 # worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
 # push a receipt onto, not a converge run that should report a different outcome.
 # It DOES change what the report says, which is a different thing: the exit code
 # is a contract other code reads, the page is what a human reads.
 receipt_ensure() {
-  local sha="$1" record="$2" tree ledger head note rc backup had=0 ahead gained receipted=0
+  local sha="$1" record="$2" reviewed="$3" pr="$4" tree ledger head note rc backup had=0 ahead gained receipted=0
   RECEIPT_MISS=""; RECEIPT_FIX=""
   if [ -z "$sha" ]; then
     say "receipt: no head sha to pin one to, so no receipt was written"
     RECEIPT_MISS="converge never read a head sha, so nothing could be pinned"
     RECEIPT_FIX="read the head with 'gh pr view <pr> --json headRefOid', then write a receipt for $ISSUE at it"
+    return 0
+  fi
+  # THE REVIEW HAS TO NAME A HEAD, OR THERE IS NOTHING TO PIN A CLAIM TO (PR #42
+  # review round 3, finding 1 -- major). The comment at the call site claimed
+  # gate 10 is "the one state where a terminal approving verdict is pinned to the
+  # sha that IS the head." rework_gate reaches 10 from three states and only one
+  # of them is that: a record with no `head_sha` -- the shape of EVERY record
+  # written before ASK-216, 13 of them approving on the live board including PR
+  # #23's -- prints an explicit "falling back to verdict-only" NOTE and lands on
+  # 10 anyway. converge printed that sentence and minted a receipt at the current
+  # head regardless, so the one door the whole change is staked on shutting (a
+  # receipt telling `validate` that unreviewed code was reviewed) stood open next
+  # to it. Gate 40 shuts the case where the shas DISAGREE; this shuts the case
+  # where there is nothing to disagree with.
+  #
+  # It is deliberately NOT a second sha comparison. rework_gate owns drift and is
+  # the only thing that may decide it; two readers of the same input with
+  # different semantics is the defect this repo keeps paying for. This asks the
+  # one question that gate structurally cannot answer for the writer: did anyone
+  # record WHICH commit they read.
+  #
+  # The fix is a re-review, not a git command, so it must not share a fix line
+  # with the tree/commit/push failures below -- sending the operator to
+  # `git status` for a missing field in a JSON record is a page that wastes the
+  # 3am it just bought.
+  if [ -z "$reviewed" ]; then
+    say "receipt: the verdict record names no head_sha, so nothing compared the review to $sha -- no receipt written"
+    RECEIPT_MISS="the verdict record names no head_sha (written before ASK-216), so nothing proves the review covered this head"
+    RECEIPT_FIX="kipi review ${pr:-<pr>} --issue $ISSUE --post to record a verdict pinned to this head, then re-run: kipi converge --issue $ISSUE"
     return 0
   fi
   tree="$(receipt_tree "$BRANCH")"
@@ -493,11 +522,18 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # declined the issue this round, or never got that far -- so this claims
     # nothing and hands over the command instead.
     # THE RECEIPT, before the terminal report (ASK-218). Gate 10 is the only
-    # place it may be written: it is the one state where a terminal approving
-    # verdict is pinned to the sha that IS the head. It runs before the auto-merge
-    # report because auto-merge lands the PR the moment `validate` goes green, and
-    # `validate` is the job that reads this receipt.
-    receipt_ensure "$SHA" "$REVIEWS_DIR/pr-$PR.verdict.json"
+    # place it may be written, but gate 10 is NOT by itself the proof: it is
+    # reached from three states and only one of them has a terminal approving
+    # verdict pinned to the sha that IS the head. This comment used to assert the
+    # one and the code trusted it (PR #42 review round 3, finding 1 -- major), so
+    # the reviewed sha is now PASSED and the writer refuses without it. The other
+    # two states -- an unreadable current head, and no head recorded at all --
+    # both reach the writer and both must leave without a receipt.
+    #
+    # It runs before the auto-merge report because auto-merge lands the PR the
+    # moment `validate` goes green, and `validate` is the job that reads this
+    # receipt.
+    receipt_ensure "$SHA" "$REVIEWS_DIR/pr-$PR.verdict.json" "$REVIEWED_SHA" "$PR"
 
     AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
     case "$AUTOMERGE" in
