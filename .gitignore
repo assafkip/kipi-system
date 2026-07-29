@@ -101,3 +101,14 @@ q-system/output/.update-check-*
 # on every run). The committed artifact is the digest the overlap pass emits.
 q-system/output/capability-maps/
 .runs/
+
+# Per-issue review scratch: red-check clones of a PR head, draft PR bodies,
+# ad-hoc probes, suite runners. The unattended auto-commit safety net has no way
+# to tell these from deliverables and pushed a 3,000-line .redcheck/ tree into
+# PR #43's diff (ASK-245). Named by convention so the next issue inherits it.
+.redcheck*/
+.redcheck*.sh
+.pr[0-9]*-*.md
+.ask[0-9]*-*.py
+.run-suites*.sh
+.msg-*.txt

@@ -792,7 +792,7 @@ if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
       # claim, and the thing that lands code on main is not a side effect a dry
       # run may have. So the line names the arm state and the command instead,
       # and kipi-dispatch.sh echoes it into dispatch.log. The missing automated
-      # arm for this population is captured, not swallowed: sp-6d2c9d63.
+      # arm for this population is captured, not swallowed: sp-fba8d194.
       RARM="$(automerge_from_record "$REVIEWS_DIR/pr-$RPR.automerge")"
       if [ "$RARM" = "armed" ]; then
         say "[dry] skip rework $RID: PR #$RPR verdict is '$PR_VERDICT' -- nothing to rework; auto-merge is armed, GitHub lands it once every required check is green."
@@ -809,7 +809,7 @@ if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
       # dispatch kind than this one and is not in this issue's scope. So the
       # announcement stops paying a converge launch to rediscover it every
       # heartbeat and prints the one command that closes it. Captured so the
-      # missing trigger is a ledger item rather than a comment: sp-1a0f0e3f.
+      # missing trigger is a ledger item rather than a comment: sp-ccdf677f.
       say "[dry] skip rework $RID: PR #$RPR has no recorded review verdict -- with no review there is no spec to rework against. Do: kipi review $RPR --issue $RID --post"
       continue
     fi

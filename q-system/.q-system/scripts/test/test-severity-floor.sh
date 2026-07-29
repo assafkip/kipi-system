@@ -2287,7 +2287,21 @@ ARM_CALLS="$(grep -c 'arm_automerge "' "$WORKER" 2>/dev/null || true)"
       that skips an approved PR (nothing left but the merge -- the population this issue is
       named for) and step 5 (a PR inside a round). One caller leaves a whole population unarmed
       while the report says otherwise."
-GATE10_SRC="$(grep -n 'GATE" = "10"' "$WORKER" | head -1 | cut -d: -f1)"
+# ANCHORED ON THE APPLY LOOP, NOT ON THE FIRST MATCH (ASK-245, PR #43 round 4).
+# There are now TWO gate-10 branches: the DRY rework announcement refuses an
+# approved candidate so no dispatch is spent on a guaranteed no-op, and the apply
+# loop skips-and-arms. `head -1` picked up the dry one -- which correctly does not
+# arm, because a dry run may not be the thing that lands code on main -- and read
+# its `continue` as the original defect. The apply loop starts at `DONE=0`, so the
+# search starts there. Pinned to exactly two sites, so a third cannot slip in
+# behind this anchor unnoticed.
+GATE10_SITES="$(grep -c 'GATE" = "10"' "$WORKER" 2>/dev/null || true)"
+[ "${GATE10_SITES:-0}" -eq 2 ] \
+  || fail "linear-worker.sh has ${GATE10_SITES:-0} gate-10 branch(es); this check knows two (the
+      dry rework announcement, which must NOT arm, and the apply loop, which must). A new one
+      needs its own assertion here rather than an anchor that quietly walks past it."
+APPLY_SRC="$(grep -n '^DONE=0' "$WORKER" | head -1 | cut -d: -f1)"
+GATE10_SRC="$(awk -v s="${APPLY_SRC:-1}" 'NR>=s && /GATE" = "10"/ {print NR; exit}' "$WORKER")"
 GATE_ARM_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /arm_automerge "/ {print NR; exit}' "$WORKER")"
 CONT_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /^ *continue$/ {print NR; exit}' "$WORKER")"
 [ -n "$GATE_ARM_SRC" ] && [ -n "$CONT_SRC" ] && [ "$GATE_ARM_SRC" -lt "$CONT_SRC" ] \
@@ -2295,6 +2309,28 @@ CONT_SRC="$(awk -v s="$GATE10_SRC" 'NR>=s && /^ *continue$/ {print NR; exit}' "$
       ${GATE_ARM_SRC:-none}). That is the original defect verbatim: the skip exits the iteration
       above the arm, so the done PRs are never touched."
 ok "worker wiring: the approved-PR gate arms BEFORE it skips the issue"
+
+# AND THE DRY ONE MUST NOT ARM (ASK-245, PR #43 round 4). The other gate-10 site
+# runs inside `kipi work` with no --apply: it is what kipi-dispatch.sh reads to
+# choose the next issue, it runs every 15 minutes against every candidate, and
+# its one documented write is a page claim. Arming auto-merge is the single
+# action in this file that puts code on main with no human in the path, so a dry
+# run reaching it would turn a read into a landing. The skip line names the
+# recorded arm state and the command instead.
+DRY10_SRC="$(awk -v s="${APPLY_SRC:-1}" 'NR<s && /GATE" = "10"/ {print NR; exit}' "$WORKER")"
+DRY10_END="$(awk -v s="${DRY10_SRC:-1}" 'NR>s && /^ *continue$/ {print NR; exit}' "$WORKER")"
+[ -n "$DRY10_SRC" ] && [ -n "$DRY10_END" ] \
+  || fail "could not locate the dry announcement's gate-10 branch (found ${DRY10_SRC:-none}..${DRY10_END:-none})"
+if sed -n "${DRY10_SRC},${DRY10_END}p" "$WORKER" | grep -q 'arm_automerge "'; then
+  fail "the DRY rework announcement arms auto-merge (lines $DRY10_SRC-$DRY10_END). \`kipi work\`
+      without --apply is a read that the dispatcher polls every 15 minutes; arming from there
+      makes a poll land code on main."
+fi
+sed -n "${DRY10_SRC},${DRY10_END}p" "$WORKER" | grep -q 'pr merge --auto --squash' \
+  || fail "the dry gate-10 skip says nothing about who merges the PR (lines $DRY10_SRC-$DRY10_END).
+      Refusing the dispatch also refuses the apply loop's arm, so an approved PR nothing armed
+      would sit green with no line anywhere naming the command that lands it."
+ok "worker wiring: the DRY gate-10 branch refuses the dispatch without arming, and names the merge command"
 
 grep -q 'automerge_from_record' "$CONV" \
   || fail "converge.sh reports on auto-merge without reading the arm state the worker recorded.
