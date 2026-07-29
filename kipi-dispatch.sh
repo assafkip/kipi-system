@@ -23,6 +23,12 @@
 #   5 no progress   an issue moves to In Progress the moment the worker takes
 #                   it, and ready() only returns backlog/unstarted -- so a
 #                   dispatched issue excludes itself from the next heartbeat.
+#                   Since ASK-245 that exclusion is CONCURRENCY-scoped, not
+#                   permanent: a started issue reappears as a REWORK candidate
+#                   (the fallback below), and the thing that still guarantees
+#                   the exit is the live-converge filter plus the worker's own
+#                   MAX_ATTEMPTS, which drops a candidate from the announced set
+#                   once it has burned its budget.
 #   7 error thresh  the worker's own MAX_ATTEMPTS marks an issue stuck and
 #                   stops picking it. This script does not second-guess that.
 #   6 human interrupt  launchctl unload. Outside the loop, as it must be.
@@ -166,10 +172,77 @@ if printf '%s' "$WORK_OUT" | grep -qi "infra_error\|authentication\|unauthorized
   exit 1
 fi
 
+# ONE snapshot of the process table, read before any candidate is chosen and
+# reused by both guards below. It was taken further down when the only question
+# was "is a converge already live for the one issue we picked"; the rework
+# fallback has to ask that of EVERY candidate before it picks one, and taking a
+# fresh `ps` per candidate would let the answer change mid-loop.
+PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
+converge_live_for() {  # converge_live_for <ASK-n>
+  [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${1}([[:space:]]|$) ]]
+}
+
 NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
+
+# --- REWORK FALLBACK (ASK-245) ---------------------------------------------
+# An issue moves to In Progress the moment a worker takes it, and ready() returns
+# backlog/unstarted only -- so every issue the loop has ever touched excluded
+# itself from every future heartbeat. Correct as the concurrency guard this file
+# documents as loop-exit 5; wrong as a permanent one. When the rounds run out or
+# the converge process dies, the issue sits In Progress with a red PR and nothing
+# picks it back up. Measured 2026-07-29: 5 PRs stranded that way.
+#
+# A FALLBACK, NEVER A PEER. Fresh work is checked first and wins outright:
+# preferring rework would starve the backlog behind a PR that keeps going red.
+#
+# THE LIVENESS FILTER IS PART OF THE CANDIDATE TEST, not a post-hoc skip. The
+# guard below refuses ONE issue and exits; applied to a fallback list that would
+# mean a single permanently-live converge hides every other stranded issue behind
+# it. Here a live candidate is simply passed over, and the loop-exit-5 invariant
+# is unweakened: an issue with a live converge is still never dispatched.
+REWORK=0
+if [ -z "$NEXT" ]; then
+  for CAND in $(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would rework ASK-[0-9]+' | grep -oE 'ASK-[0-9]+'); do
+    if converge_live_for "$CAND"; then
+      say "skip rework $CAND: a converge run for it is already live"
+      continue
+    fi
+    NEXT="$CAND"; REWORK=1
+    break
+  done
+fi
+
 if [ -z "$NEXT" ]; then
   say "nothing ready ($(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1))"
   exit 0
+fi
+
+# REFRESH ORIGIN BEFORE A REWORK RUN, and only before one.
+#
+# The second cause behind the same five stranded PRs: workers cut worktrees from
+# origin/main, and on 2026-07-29 this checkout's origin/main was 17 commits
+# behind local main -- so every one of those PRs was built on a stale base and
+# #36's conflict is the first symptom, not a one-off. A rework round that starts
+# from a stale origin/main reproduces exactly the conflict it was dispatched to
+# fix. linear-worker.sh fetches once per run (ASK-211) and converge drives it, so
+# this is belt-and-braces on the branch that has already been burned by it once;
+# a failure is not fatal, because the worker's own fetch guard pages and exits 9
+# if the environment is really down.
+#
+# IT DOES NOT REBASE THE WORKTREE, and that is deliberate rather than a shortcut.
+# The rebase belongs to whoever owns the tree, which is the worker: rewriting the
+# branch from out here leaves commits reachable from neither origin/<branch> nor
+# origin/main, and linear-worker.sh's position_tree_on_pr_head then REFUSES the
+# round ("the tree holds N commit(s) that exist nowhere else") and stalls the
+# issue for a human. Two writers on one worktree is the defect class this repo
+# keeps closing. The rebase instruction reaches the agent through the rework
+# prompt, inside the tree it can also push from.
+if [ "$REWORK" = "1" ]; then
+  if git fetch --quiet origin 2>>"$LOG"; then
+    say "rework $NEXT: refreshed origin before dispatch"
+  else
+    say "rework $NEXT: git fetch failed; the worker's own fetch guard decides whether this run proceeds"
+  fi
 fi
 
 # Belt and braces against the race between dispatch and the In Progress
@@ -193,8 +266,7 @@ fi
 # so there is nothing to SIGPIPE and nothing for pipefail to poison. It also
 # removes the need for the [c] self-match trick: with no grep process there is
 # no grep command line in the table to match.
-PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
-if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
+if converge_live_for "$NEXT"; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
 fi
@@ -203,7 +275,8 @@ fi
 # hand out a free dispatch every heartbeat -- the budget must fail closed.
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
 
-say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
+KIND="fresh"; [ "$REWORK" = "1" ] && KIND="rework"
+say "dispatching $NEXT ($KIND, live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
 
 # THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE.
 #

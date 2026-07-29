@@ -217,20 +217,54 @@ while True:
     if not p["pageInfo"]["hasNextPage"]: break
     after = p["pageInfo"]["endCursor"]
 
-def ready(i):
+# The owner and spec filters are shared by BOTH sets, so they are ONE function
+# rather than two copies. A rework candidate that skipped them would hand the
+# loop the founder's own issues (owner:assaf) and issues with no spec to work
+# against -- the two refusals `ready` has always encoded.
+def mine(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
     if "owner:sana" not in labels:   return False
-    if i["state"]["type"] not in ("backlog", "unstarted"): return False
     d = i.get("description") or ""
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
+def ready(i):
+    return mine(i) and i["state"]["type"] in ("backlog", "unstarted")
+
+# REWORK CANDIDATES (ASK-245). An issue flips to `started` the moment a worker
+# takes it, so `ready` -- backlog/unstarted only -- permanently excludes every
+# issue the loop has ever touched. That is correct as a CONCURRENCY guard
+# (kipi-dispatch.sh loop-exit 5) and wrong as a PERMANENT one: when the rounds
+# run out or the converge process dies, the issue sits In Progress with a red PR
+# and nothing picks it back up. Measured 2026-07-29: 5 PRs stranded that way.
+#
+# A SEPARATE SET, NEVER FOLDED INTO `ready`. The fresh-work path cuts a worktree
+# from origin/main (the BASE block below), which for an issue that already has a
+# PR would hand the agent a tree holding none of the PR's commits and then tell
+# it to force-push. `started` and backlog/unstarted are disjoint state types, so
+# an issue can never appear in both lists.
+#
+# LIVENESS IS NOT DECIDED HERE. "Has an open PR that is failing or unreviewed"
+# and "has no live converge" are answers only `gh` and the process table can
+# give; this block sees Linear rows and nothing else. It publishes the set that
+# is ELIGIBLE by owner, spec and state -- the caller filters the rest.
+def rework(i):
+    return mine(i) and i["state"]["type"] == "started"
+
 pool = [i for i in issues if ready(i)]
+rew  = [i for i in issues if rework(i)]
 if only:
+    # An explicitly named issue bypasses classification entirely, exactly as
+    # before: converge drives this path and has already decided. Emptying the
+    # rework list keeps that path byte-identical to its pre-ASK-245 behaviour.
     pool = [i for i in issues if i["identifier"] == only]
-print(json.dumps({"ready": [
-    {"id": i["identifier"], "title": i["title"], "project": (i.get("project") or {}).get("name")}
-    for i in pool], "total_open": len(issues)}))
+    rew = []
+def brief(i):
+    return {"id": i["identifier"], "title": i["title"],
+            "project": (i.get("project") or {}).get("name")}
+print(json.dumps({"ready": [brief(i) for i in pool],
+                  "rework": [brief(i) for i in rew],
+                  "total_open": len(issues)}))
 PY
 )"
 
@@ -243,7 +277,14 @@ fi
 READY_COUNT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["ready"]))')"
 say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf)"
 
-if [ "$READY_COUNT" = "0" ]; then
+# `.get("rework", [])` and not `["rework"]`: the test suites stub this picker's
+# stdout (test-linear-worker-fetch.sh feeds it a hand-written `{"ready":[...]}`),
+# and a hard key would turn every one of those fixtures into a traceback.
+REWORK_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin).get("rework",[])]' 2>/dev/null)"
+REWORK_COUNT="$(printf '%s' "$REWORK_IDS" | grep -c . || true)"
+say "worker: $REWORK_COUNT rework candidate(s) (owner:sana, has a DoR, already started)"
+
+if [ "$READY_COUNT" = "0" ] && [ "$REWORK_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
   exit 0
 fi
@@ -539,6 +580,35 @@ position_tree_on_pr_head() {
     return 1
   fi
 }
+
+# --- ANNOUNCE THE REWORK CANDIDATES (ASK-245) -------------------------------
+# DRY ONLY, and that is the whole design. `kipi work` in dry mode is what
+# kipi-dispatch.sh reads to choose the next issue (deliberately not a second
+# Linear query -- one source of truth, asked politely), so this line is the seam
+# that lets the heartbeat re-enter an issue it already started. The APPLY loop
+# below is untouched: it still works the fresh set only, and a rework round is
+# reached the way it always was, through `--issue ASK-n` from converge.
+#
+# THE ATTEMPTS CAP IS APPLIED HERE, NOT LEFT TO THE DISPATCH (loop-exit 7).
+# MAX_ATTEMPTS already stops the work loop from touching an issue that has burned
+# its budget -- but a candidate announced to the dispatcher has already cost a
+# daily budget slot and a converge launch by the time that refusal fires, every
+# heartbeat, forever. A permanently-red PR would eat the whole day's allowance
+# doing nothing. Filtering the announcement is what makes the existing cap
+# actually bound this path.
+if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
+  while IFS= read -r RID; do
+    [ -n "$RID" ] || continue
+    RN="$(attempts_for "$RID")"
+    if [ "$RN" -ge "$MAX_ATTEMPTS" ]; then
+      say "[dry] skip rework $RID: $RN/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
+      continue
+    fi
+    say "[dry] would rework $RID (attempt $((RN+1))/$MAX_ATTEMPTS)"
+  done <<EOF
+$REWORK_IDS
+EOF
+fi
 
 DONE=0
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
@@ -953,6 +1023,23 @@ PR #$EXISTING_PR already exists for this branch and has been reviewed by an
 adversarial senior-staff reviewer. Read the review before touching anything:
 
   gh pr view $EXISTING_PR --comments
+
+## FIRST, STAND ON CURRENT main
+
+This branch may have been cut from a stale base. Measured 2026-07-29 (ASK-245):
+origin/main was 17 commits behind local main, so five open PRs were all built on
+a base that no longer existed -- one of them already CONFLICTING, the rest with a
+red validate check for the same reason. Reworking on top of that reproduces the
+conflict instead of fixing it.
+
+  git fetch origin
+  git rebase origin/main    # or merge origin/main, whichever this repo prefers
+
+If it rebases cleanly, carry on with the findings below. If it conflicts, resolve
+the conflict FIRST and keep both intents (yours and whatever landed on main); a
+finding fixed on a base that no longer exists is not fixed. If the conflict needs
+a real decision, say so via progress and STOP:
+  bash $SKEL/kipi linear progress $ISSUE \"<the conflict and the decision it needs>\" --agent sana
 
 THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
 re-litigate the design. For EACH finding, either:
