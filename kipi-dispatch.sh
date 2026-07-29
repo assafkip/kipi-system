@@ -25,10 +25,13 @@
 #                   dispatched issue excludes itself from the next heartbeat.
 #                   Since ASK-245 that exclusion is CONCURRENCY-scoped, not
 #                   permanent: a started issue reappears as a REWORK candidate
-#                   (the fallback below). Three things still guarantee the exit:
+#                   (the fallback below). Four things still guarantee the exit:
 #                   the live-converge filter, the requirement that a candidate
 #                   have an OPEN PR (so a merged-and-never-closed issue is not a
-#                   candidate at all), and MAX_REWORK_DISPATCHES.
+#                   candidate at all), the requirement that the PR's review
+#                   verdict be one the apply loop will actually act on (round 4:
+#                   an approved or unreviewed PR is a guaranteed no-op that used
+#                   to cost a full dispatch), and MAX_REWORK_DISPATCHES.
 #   7 error thresh  MAX_ATTEMPTS marks an issue stuck after failed runs, and
 #                   MAX_REWORK_DISPATCHES caps SUCCESSFUL rework dispatches --
 #                   which is the bound this path actually needs, because its

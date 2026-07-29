@@ -104,16 +104,32 @@ def graphql(query, variables):
                        "pageInfo": {"hasNextPage": False, "endCursor": None}}}
 PY
 
-# gh ANSWERS A REAL QUESTION NOW. Since PR #43 review round 3 the dry path asks
-# it "does this branch have an OPEN PR", so a stub that exits 0 saying nothing
-# would mean "no PR" for every candidate and quietly turn Part A green by
-# announcing nothing at all. Two files drive it, so a case states its world
-# instead of the stub deciding:
+# gh ANSWERS REAL QUESTIONS NOW. Since PR #43 review round 3 the dry path asks
+# it "does this branch have an OPEN PR", and since round 4 it also asks the PR
+# its merge state and its head sha -- so a stub that exits 0 saying nothing would
+# mean "no PR, no merge state, no head" for every candidate and quietly turn Part
+# A green by announcing nothing at all. Files drive every answer, so a case
+# states its world instead of the stub deciding:
 #   $WORK/gh-open-branches  one branch per line -> that branch has an open PR
+#   $WORK/gh-merge-state    mergeStateStatus for `pr view`  (default CLEAN)
+#   $WORK/gh-head-sha       headRefOid for `pr view`        (default deadbeef)
+#   $WORK/gh-automerge      autoMergeRequest != null        (default: absent)
 #   $WORK/gh-fail           exists              -> gh itself is down (exit 1)
 cat > "$WORK/bin/gh" <<EOF
 #!/usr/bin/env bash
 [ -f "$WORK/gh-fail" ] && { echo "gh: could not connect to github.com" >&2; exit 1; }
+case "\${1:-} \${2:-}" in
+  "pr view")
+    # --json <field> puts the field in its own word, so a scan finds it.
+    for a in "\$@"; do
+      case "\$a" in
+        mergeStateStatus) cat "$WORK/gh-merge-state" 2>/dev/null; exit 0 ;;
+        headRefOid)       cat "$WORK/gh-head-sha"    2>/dev/null; exit 0 ;;
+        autoMergeRequest) cat "$WORK/gh-automerge"   2>/dev/null; exit 0 ;;
+      esac
+    done
+    exit 0 ;;
+esac
 head=""
 while [ \$# -gt 0 ]; do
   [ "\$1" = "--head" ] && { shift; head="\$1"; }
@@ -174,13 +190,31 @@ run_worker() {  # run_worker  -> dry output on stdout
       bash "$SBOX/linear-worker.sh" 2>&1 )
 }
 
+PRN=4242                     # the number the gh stub gives every open PR
+VSHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+
+# verdict_record <verdict> [head-sha]  -- what the reviewer left behind for $PRN
+verdict_record() {
+  mkdir -p "$WORK/state/pr-reviews"
+  python3 - "$1" "${2-$VSHA}" > "$WORK/state/pr-reviews/pr-$PRN.verdict.json" <<'PY'
+import json, sys
+print(json.dumps({"verdict": sys.argv[1], "head_sha": sys.argv[2]}))
+PY
+}
+
 reset_worker_state() {
   rm -r -- "$WORK/state" 2>/dev/null; mkdir -p "$WORK/state"
-  # The default world: the rework candidate HAS an open PR. Every pre-existing
-  # case assumed that implicitly (it is the only state the DoR calls a
-  # candidate); it is now written down so the cases that vary it can say so.
+  # The default world is the DoR's own candidate, stated in full. Every
+  # pre-existing case assumed it implicitly; the round-4 cases vary one axis of
+  # it at a time, so it has to be written down:
+  #   an OPEN PR on the branch          (round 3 -- else nothing to rework)
+  #   a verdict of REQUEST CHANGES      (round 4 -- rework_gate 0, a real round)
+  #   still merges, approval not stale  (round 4 -- else gate 30 or 40)
   printf 'sana/%s\n' "$(echo "$STUCK" | tr 'A-Z' 'a-z')" > "$WORK/gh-open-branches"
-  rm -f -- "$WORK/gh-fail"
+  printf 'CLEAN\n' > "$WORK/gh-merge-state"
+  printf '%s\n' "$VSHA" > "$WORK/gh-head-sha"
+  verdict_record "REQUEST CHANGES"
+  rm -f -- "$WORK/gh-fail" "$WORK/gh-automerge"
   : > "$WORK/pages.txt"
 }
 
@@ -376,6 +410,168 @@ if printf '%s' "$A12" | grep -q "0 of 1 rework candidate(s) announced"; then
 else
   bad "A12b the announced count is reported alongside the pool" "$(printf '%s' "$A12" | tail -3 | tr '\n' ' ')"
 fi
+
+# ===========================================================================
+# ROUND-4 CASES -- the announcement must apply the gate the APPLY loop applies
+# ===========================================================================
+# PR #43 review round 4, major. Eligibility was owner + DoR + started + the two
+# caps + an open PR. The apply loop the dispatch BUYS then applies rework_gate
+# thirty lines later, and exits 10 (approved) and 20 (no verdict) both `continue`
+# with no agent and no work -- so a candidate could clear the announcement and
+# still be a GUARANTEED no-op that spent a daily slot, a rework slot and a
+# converge launch. MAX_REWORK_DISPATCHES is lifetime, so two of those locked the
+# issue out for good and paged "its PR is still not green" about a PR that was,
+# in one live case, approved. Of the five PRs this issue was filed to rescue, #34
+# had no verdict record (gate 20) and #23 read APPROVE WITH NITS (gate 10).
+#
+# Gates 30 and 40 are real work, but each carries its own round budget and the
+# apply loop skips at the cap the same way -- so the announcement has to see
+# those too, or the same no-op returns two rungs down.
+
+# --- A13. gate 20: no recorded verdict -> no spec, so no dispatch -----------
+reset_worker_state
+rm -f -- "$WORK/state/pr-reviews/pr-$PRN.verdict.json"
+fixture "$(row "$STUCK" started owner:sana 1)"
+A13="$(run_worker)"
+if printf '%s' "$A13" | grep -q "would rework $STUCK"; then
+  bad "A13a a PR with no review verdict is not a rework candidate" \
+    "the apply loop refuses it at gate 20, so the dispatch buys a converge launch, a daily slot and a rework slot for zero work -- twice, and the issue is locked out for good"
+else
+  ok "A13a a PR with no review verdict is not a rework candidate"
+fi
+if printf '%s' "$A13" | grep -q "skip rework $STUCK: PR #$PRN has no recorded review verdict"; then
+  ok "A13b and it prints the review command instead of going quiet"
+else
+  bad "A13b and it prints the review command instead of going quiet" \
+    "$(printf '%s' "$A13" | tail -3 | tr '\n' ' ')"
+fi
+check "A13c a gate-20 skip pages nobody" "$(pages_for "$STUCK")" "0"
+
+# --- A14. gate 10: approved and still merging -> nothing to rework ----------
+reset_worker_state
+verdict_record "APPROVE WITH NITS"
+fixture "$(row "$STUCK" started owner:sana 1)"
+A14="$(run_worker)"
+if printf '%s' "$A14" | grep -q "would rework $STUCK"; then
+  bad "A14a an approved PR is not a rework candidate" \
+    "gate 10 makes the apply loop skip; every dispatch on it is a no-op that also re-fires converge's 'auto-merge armed' page"
+else
+  ok "A14a an approved PR is not a rework candidate"
+fi
+if printf '%s' "$A14" | grep -q "skip rework $STUCK: PR #$PRN verdict is 'APPROVE WITH NITS' -- nothing to rework"; then
+  ok "A14b and it says the PR waits on the merge, not on an agent"
+else
+  bad "A14b and it says the PR waits on the merge, not on an agent" \
+    "$(printf '%s' "$A14" | tail -3 | tr '\n' ' ')"
+fi
+# THE ARM STATE IS NAMED, because refusing the dispatch also refuses the apply
+# loop's gate-10 auto-merge arm. Quiet would mean an approved PR sits green
+# forever with nothing said about it.
+if printf '%s' "$A14" | grep -q "gh pr merge --auto --squash $PRN"; then
+  ok "A14c an approved PR nothing records as armed still names the merge command"
+else
+  bad "A14c an approved PR nothing records as armed still names the merge command" \
+    "the skip made the arm-state silent: $(printf '%s' "$A14" | tail -3 | tr '\n' ' ')"
+fi
+printf 'armed\n' > "$WORK/state/pr-reviews/pr-$PRN.automerge"
+A14d="$(run_worker)"
+if printf '%s' "$A14d" | grep -q "auto-merge is armed"; then
+  ok "A14d an armed PR is reported as armed, without a command already run"
+else
+  bad "A14d an armed PR is reported as armed, without a command already run" \
+    "$(printf '%s' "$A14d" | tail -3 | tr '\n' ' ')"
+fi
+
+# --- A15. gate 0 still announced -- the fix must not mute the whole set -----
+# A zero result has to prove it is empty rather than broken: A13/A14 only mean
+# something if the same harness still announces a genuinely reworkable PR.
+reset_worker_state
+verdict_record "BLOCK"
+fixture "$(row "$STUCK" started owner:sana 1)"
+if run_worker | grep -q "would rework $STUCK"; then
+  ok "A15 a PR the review BLOCKed is still announced (gate 0)"
+else
+  bad "A15 a PR the review BLOCKed is still announced (gate 0)" \
+    "the gate check muted the population the issue exists to rescue"
+fi
+
+# --- A16/A17. gate 30 (approved but no longer merges) and its round budget --
+reset_worker_state
+verdict_record "APPROVE"
+printf 'DIRTY\n' > "$WORK/gh-merge-state"
+fixture "$(row "$STUCK" started owner:sana 1)"
+if run_worker | grep -q "would rework $STUCK"; then
+  ok "A16 an approved-but-conflicted PR is announced (gate 30, a rebase round)"
+else
+  bad "A16 an approved-but-conflicted PR is announced (gate 30, a rebase round)" \
+    "the gate check swallowed the rebase path ASK-212 added"
+fi
+
+reset_worker_state
+verdict_record "APPROVE"
+printf 'DIRTY\n' > "$WORK/gh-merge-state"
+printf '{"%s":{"conflict_rounds":2}}' "$STUCK" > "$WORK/state/linear-worker-attempts.json"
+fixture "$(row "$STUCK" started owner:sana 1)"
+A17="$(run_worker)"
+if printf '%s' "$A17" | grep -q "would rework $STUCK"; then
+  bad "A17a a gate-30 candidate at MAX_CONFLICT_ROUNDS is not announced" \
+    "the apply loop skips at the cap, so the dispatch is spent rediscovering that every heartbeat"
+else
+  ok "A17a a gate-30 candidate at MAX_CONFLICT_ROUNDS is not announced"
+fi
+# THE PAGE SURVIVES THE FIX. The apply loop pages at this cap; refusing the
+# dispatch would take the page down with it. Same claim key, so the two paths
+# can never double-page one fact.
+check "A17b the cap still pages a human, from the announcement" "$(pages_for "$STUCK")" "1"
+run_worker >/dev/null
+check "A17c and once, not per heartbeat" "$(pages_for "$STUCK")" "1"
+
+# --- A18/A19. gate 40 (approved at a sha that is no longer the head) --------
+reset_worker_state
+verdict_record "APPROVE" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+fixture "$(row "$STUCK" started owner:sana 1)"
+if run_worker | grep -q "would rework $STUCK"; then
+  ok "A18 a PR approved at a stale sha is announced (gate 40, a re-review round)"
+else
+  bad "A18 a PR approved at a stale sha is announced (gate 40, a re-review round)" \
+    "the gate check swallowed the drift path ASK-216 added"
+fi
+
+reset_worker_state
+verdict_record "APPROVE" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+printf '{"%s":{"drift_rounds":2}}' "$STUCK" > "$WORK/state/linear-worker-attempts.json"
+fixture "$(row "$STUCK" started owner:sana 1)"
+A19="$(run_worker)"
+if printf '%s' "$A19" | grep -q "would rework $STUCK"; then
+  bad "A19a a gate-40 candidate at MAX_DRIFT_ROUNDS is not announced" \
+    "the apply loop skips at the cap, so the dispatch is spent rediscovering that every heartbeat"
+else
+  ok "A19a a gate-40 candidate at MAX_DRIFT_ROUNDS is not announced"
+fi
+check "A19b the drift cap still pages a human, from the announcement" "$(pages_for "$STUCK")" "1"
+
+# --- A20. the cap line cannot claim "not green" about a converged PR --------
+# The ORDER is the finding. Both cap lines make a claim about the PR and the
+# rework cap PAGES it, so reading them before the gate meant the operator's page
+# said the opposite of the truth the moment a human approved the PR.
+reset_worker_state
+verdict_record "APPROVE"
+printf '{"%s":{"rework_dispatches":2}}' "$STUCK" > "$WORK/state/linear-worker-attempts.json"
+fixture "$(row "$STUCK" started owner:sana 1)"
+A20="$(run_worker)"
+if printf '%s' "$A20" | grep -q "rework dispatch(es) already"; then
+  bad "A20a a capped issue whose PR is now APPROVED is not called stuck" \
+    "the line -- and the page -- claim the PR is still not green about a PR that is approved and waiting to merge"
+else
+  ok "A20a a capped issue whose PR is now APPROVED is not called stuck"
+fi
+if printf '%s' "$A20" | grep -q "nothing to rework"; then
+  ok "A20b it says what is actually true: there is nothing to rework"
+else
+  bad "A20b it says what is actually true: there is nothing to rework" \
+    "$(printf '%s' "$A20" | tail -3 | tr '\n' ' ')"
+fi
+check "A20c and it pages nobody" "$(pages_for "$STUCK")" "0"
 
 # ===========================================================================
 # PART B -- dispatch selection: does the heartbeat pick a rework candidate?
@@ -619,7 +815,13 @@ run_dispatch >/dev/null; pkill -f "$WORK/converge.sh" 2>/dev/null
 check "B9a two dispatches reach the cap" "$(rework_dispatches "$STUCK")" "2"
 
 printf 'sana/%s\n' "$(echo "$STUCK" | tr 'A-Z' 'a-z')" > "$WORK/gh-open-branches"
-rm -f -- "$WORK/gh-fail"; : > "$WORK/pages.txt"
+# The gate world has to be stated here too (round 4): this case is about the
+# BUDGET refusal, so the PR must be one the gate would otherwise send to a round.
+# Left at whatever Part A last wrote, an APPROVE record would make the picker
+# refuse for the wrong reason and B9c's page would never fire.
+printf 'CLEAN\n' > "$WORK/gh-merge-state"; printf '%s\n' "$VSHA" > "$WORK/gh-head-sha"
+verdict_record "REQUEST CHANGES"
+rm -f -- "$WORK/gh-fail" "$WORK/gh-automerge"; : > "$WORK/pages.txt"
 fixture "$(row "$STUCK" started owner:sana 1)"
 B9="$(run_worker)"
 if printf '%s' "$B9" | grep -q "would rework $STUCK"; then
@@ -630,6 +832,55 @@ else
 fi
 check "B9c and reaching the cap pages a human once" \
   "$(pages_for "$STUCK")" "1"
+
+# --- B10/B11. END TO END: the REAL worker decides, the REAL dispatcher pays --
+# Every other B case feeds kipi-dispatch.sh a CANNED `work` line, which is right
+# for measuring selection and blind to the round-4 finding: the whole defect is
+# that the worker announced something it should not have. So these two forward
+# `work` to the real worker (exactly as `kipi:98` does, `"$@"` and all) against
+# the same fake Linear rows Part A uses, and read the cost back off the
+# dispatcher's own budget file and process table.
+make_kipi_real() {
+  cat > "$FAKE_REPO/kipi" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  work)
+    shift
+    exec env HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state" \\
+      KIPI_NOTIFY="$WORK/notify.sh" KIPI_TEST_ISSUES="$WORK/issues.json" \\
+      bash "$SBOX/linear-worker.sh" "\$@"
+    ;;
+  converge) shift; exec bash "$WORK/converge.sh" "\$@" ;;
+esac
+SH
+  chmod +x "$FAKE_REPO/kipi"
+}
+
+reset_dispatch_state; reset_worker_state; make_kipi_real
+rm -f -- "$WORK/state/pr-reviews/pr-$PRN.verdict.json"   # gate 20, the live #34
+fixture "$(row "$STUCK" started owner:sana 1)"
+run_dispatch >/dev/null
+check "B10a a gate-20 candidate costs the daily budget nothing" "$(budget)" "0"
+check "B10b and no rework budget slot"  "$(rework_dispatches "$STUCK")" "0"
+if pgrep -f "$WORK/converge.sh" >/dev/null 2>&1; then
+  bad "B10c and no converge launch" "a converge round was paid for a PR the apply loop refuses at gate 20"
+else
+  ok "B10c and no converge launch"
+fi
+if dlog | grep -q "no recorded review verdict"; then
+  ok "B10d and dispatch.log says why the loop looked idle"
+else
+  bad "B10d and dispatch.log says why the loop looked idle" "$(dlog | tail -3 | tr '\n' ' ')"
+fi
+
+# THE ZERO ABOVE HAS TO PROVE IT IS EMPTY, NOT BROKEN: same harness, same issue,
+# one field different in the verdict record, and the dispatch happens.
+reset_dispatch_state; reset_worker_state; make_kipi_real
+fixture "$(row "$STUCK" started owner:sana 1)"
+run_dispatch >/dev/null
+check "B11a the same harness DOES dispatch a gate-0 candidate" "$(budget)" "1"
+check "B11b spending its rework budget slot" "$(rework_dispatches "$STUCK")" "1"
+pkill -f "$WORK/converge.sh" 2>/dev/null
 
 # --- B7. both scripts still parse ------------------------------------------
 bash -n "$WORKER"   && ok "B7a linear-worker.sh parses (bash -n)" || bad "B7a linear-worker.sh parses" ""

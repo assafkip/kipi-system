@@ -348,7 +348,7 @@ REWORK_COUNT="$(printf '%s' "$REWORK_IDS" | grep -c . || true)"
 # already MERGED is in this pool and is not a candidate. Linear rows alone cannot
 # tell those apart, so the honest line here is the pool, and the announcement
 # block below (which can ask `gh`) reports what actually survived.
-say "worker: $REWORK_COUNT started issue(s) in the rework pool (owner:sana, has a DoR). Eligibility -- an OPEN PR, budget left -- is decided at the announcement."
+say "worker: $REWORK_COUNT started issue(s) in the rework pool (owner:sana, has a DoR). Eligibility -- an OPEN PR, a review verdict the apply loop will act on, budget left -- is decided at the announcement."
 
 if [ "$READY_COUNT" = "0" ] && [ "$REWORK_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
@@ -690,32 +690,77 @@ open_pr_for() {  # open_pr_for <branch> -> prints the number, rc from gh
 }
 branch_for() { printf 'sana/%s' "$(echo "$1" | tr 'A-Z' 'a-z')"; }
 
+# --- ONE READER OF "what would the severity floor say about this PR?" -------
+# read_rework_gate <pr-number>
+#   Sets GATE, GATE_NOTE, PR_VERDICT, MERGE_STATE, REVIEWED_SHA, CURRENT_SHA.
+#   Reads only -- no ledger write, no page, no arm -- so the DRY announcement and
+#   the APPLY loop can both ask, and only the apply loop acts.
+#
+# WHY THIS EXISTS (PR #43 review round 4, major). The announcement decided
+# eligibility on owner, DoR, `started`, the two caps and an open PR. The apply
+# loop the dispatch BUYS then applies a further gate thirty lines down
+# (rework_gate): exits 10 (approved -- nothing to rework) and 20 (no recorded
+# verdict -- no spec to rework against) both `continue` with no agent and no
+# work. So a candidate could clear the announcement and still be a GUARANTEED
+# no-op, having spent a daily budget slot, a rework budget slot and a converge
+# launch. With MAX_REWORK_DISPATCHES lifetime and never cleared, two of those
+# no-ops locked the issue out of the loop permanently and paged "its PR is still
+# not green" about a PR that was, in one of the two cases, approved. Observed on
+# live state the same day: of the five PRs this issue was filed to rescue, #34
+# had no verdict record (gate 20) and #23 read APPROVE WITH NITS (gate 10).
+#
+# A SHARED READER, NOT A SECOND COPY. Two callers computing "the verdict, the
+# merge state and the two shas" from their own `gh` calls is two readers of one
+# input with drifting semantics -- the defect class pr-verdict-lib.sh exists to
+# close, and the same argument round 3 used to make open_pr_for one function.
+#
+# FAIL-TOWARD-TERMINAL IS INHERITED, NOT RE-DECIDED. pr_merge_state and
+# pr_head_sha return empty when gh cannot answer, and rework_gate documents what
+# it does with that (a missed conflict costs one human diagnosis; a manufactured
+# one costs the whole fleet). The dry path gets exactly that behaviour because it
+# is the same function -- a hard gh failure has already broken the loop at
+# open_pr_for above, which is the one place that refuses rather than degrades.
+read_rework_gate() {  # read_rework_gate <pr-number>
+  local pr="$1" latest
+  PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$pr.verdict.json")"
+  if [ -z "$PR_VERDICT" ]; then
+    # Fallback for PRs reviewed before the verdict record existed: extract from
+    # the newest review .md with the SAME extractor the reviewer uses.
+    latest="$(ls -t "$REVIEWS_DIR/pr-$pr-"*.md 2>/dev/null | head -1)"
+    [ -n "$latest" ] && PR_VERDICT="$(extract_verdict "$latest")"
+  fi
+  # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
+  # so the worker and the driver cannot drift on what "still merges" means.
+  MERGE_STATE="$(pr_merge_state "$pr")"
+  # THE VERDICT IS BOUND TO A SHA, NOT A PR NUMBER (ASK-216, armed by ASK-219).
+  # This worker reuses ONE branch and ONE PR across every rework round, so before
+  # the sha was passed, each push landing after an approval inherited that
+  # approval silently. APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2.
+  REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$pr.verdict.json")"
+  CURRENT_SHA="$(pr_head_sha "$pr")"
+  GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
+  return 0
+}
+
+# round_budget_exhausted <issue> <gate> -> rc 0 = this gate has no round left
+# The OTHER half of "would the apply loop actually do work". Gates 30 and 40
+# carry their own per-issue round budgets, and at the cap the apply loop skips
+# exactly like gates 10 and 20 do -- so an announcement blind to them buys the
+# same guaranteed no-op the review found, just two rungs further down. ONE owner
+# of each comparison, called from both paths, for the same reason
+# read_rework_gate is one function.
+round_budget_exhausted() {
+  case "$2" in
+    30) [ "$(conflict_rounds_for "$1")" -ge "$MAX_CONFLICT_ROUNDS" ] ;;
+    40) [ "$(drift_rounds_for "$1")"    -ge "$MAX_DRIFT_ROUNDS" ] ;;
+    *)  return 1 ;;   # gate 0 spends the review-round budget, capped elsewhere
+  esac
+}
+
 if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
   REWORK_ANNOUNCED=0
   while IFS= read -r RID; do
     [ -n "$RID" ] || continue
-    RN="$(attempts_for "$RID")"
-    if [ "$RN" -ge "$MAX_ATTEMPTS" ]; then
-      say "[dry] skip rework $RID: $RN/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
-      continue
-    fi
-    # LOOP-EXIT 7 FOR THIS PATH, and it is the announcement that has to apply it
-    # for the same reason MAX_ATTEMPTS is applied here: a candidate announced to
-    # the dispatcher has already cost a daily budget slot and a converge launch
-    # by the time any later refusal fires.
-    RD="$(rework_dispatches_for "$RID")"
-    if [ "$RD" -ge "$MAX_REWORK_DISPATCHES" ]; then
-      say "[dry] skip rework $RID: $RD/$MAX_REWORK_DISPATCHES rework dispatch(es) already and the PR is still not green. Marked stuck; a human decides next. To hand it back to the loop: python3 -c \"import json;p='$ATTEMPTS';d=json.load(open(p));d['$RID'].pop('rework_dispatches',None);d['$RID'].pop('rework_paged',None);json.dump(d,open(p,'w'),indent=2)\""
-      # ONCE, not every 15 minutes (founder-notifications.md). Same mechanism the
-      # conflict and drift caps use. This is the ONLY write a dry run makes, and
-      # it exists so that going quiet is announced rather than merely happening:
-      # a candidate that silently stops being dispatched is the failure this
-      # whole issue is named for.
-      if claim_page_once "$RID" rework_paged; then
-        bash "$NOTIFY" "worker: $RID has had $MAX_REWORK_DISPATCHES rework dispatch(es) and its PR is still not green - the loop has stopped picking it up, it needs a human" 2>/dev/null || true
-      fi
-      continue
-    fi
     RBRANCH="$(branch_for "$RID")"
     RPR="$(open_pr_for "$RBRANCH")"; GHRC=$?
     if [ "$GHRC" != "0" ]; then
@@ -731,7 +776,93 @@ if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
       say "[dry] skip rework $RID: no OPEN PR on $RBRANCH -- it is In Progress with nothing to rework (merged and never closed, or the PR was closed). Not fresh work either; a human moves it off In Progress."
       continue
     fi
-    say "[dry] would rework $RID (PR #$RPR, attempt $((RN+1))/$MAX_ATTEMPTS, rework dispatch $((RD+1))/$MAX_REWORK_DISPATCHES)"
+
+    # THE SEVERITY FLOOR, ASKED HERE AND NOT LEFT TO THE ROUND WE PAID FOR
+    # (PR #43 review round 4, major). See read_rework_gate above for why. A
+    # dispatch is only ever spent on a PR the apply loop will actually work.
+    read_rework_gate "$RPR"
+    if [ "$GATE" = "10" ]; then
+      # Approved, still merges, pinned to its own head: there is nothing to
+      # rework. It waits on the merge, not on an agent.
+      #
+      # WHAT GOT QUIETER, SAID OUT LOUD: the apply loop's gate-10 branch also
+      # ARMS auto-merge (PR #33's catch-up for PRs approved before that code
+      # existed), and refusing the dispatch means nothing arms this one. Arming
+      # from a DRY run is not the answer -- this block's one write is a page
+      # claim, and the thing that lands code on main is not a side effect a dry
+      # run may have. So the line names the arm state and the command instead,
+      # and kipi-dispatch.sh echoes it into dispatch.log. The missing automated
+      # arm for this population is captured, not swallowed: sp-6d2c9d63.
+      RARM="$(automerge_from_record "$REVIEWS_DIR/pr-$RPR.automerge")"
+      if [ "$RARM" = "armed" ]; then
+        say "[dry] skip rework $RID: PR #$RPR verdict is '$PR_VERDICT' -- nothing to rework; auto-merge is armed, GitHub lands it once every required check is green."
+      else
+        say "[dry] skip rework $RID: PR #$RPR verdict is '$PR_VERDICT' -- nothing to rework; it waits on the merge. Nothing here records it as armed, so if it sits green: gh pr merge --auto --squash $RPR"
+      fi
+      continue
+    fi
+    if [ "$GATE" = "20" ]; then
+      # No verdict means no spec. The DoR calls an "unreviewed" PR a candidate
+      # and the apply loop refuses one -- that disagreement is real, and the
+      # apply loop is right: a rework prompt with no review to rework against is
+      # a guess. What the issue actually needs is a REVIEW, which is a different
+      # dispatch kind than this one and is not in this issue's scope. So the
+      # announcement stops paying a converge launch to rediscover it every
+      # heartbeat and prints the one command that closes it. Captured so the
+      # missing trigger is a ledger item rather than a comment: sp-1a0f0e3f.
+      say "[dry] skip rework $RID: PR #$RPR has no recorded review verdict -- with no review there is no spec to rework against. Do: kipi review $RPR --issue $RID --post"
+      continue
+    fi
+    if round_budget_exhausted "$RID" "$GATE"; then
+      # Gates 30 and 40 are real work, but each has its own per-issue round
+      # budget and the apply loop skips at the cap exactly as it does at 10 and
+      # 20. PAGED FROM HERE, with the apply loop's OWN claim keys: refusing the
+      # dispatch would otherwise take the page down with it, which is the
+      # "silence bought by a fix" this round is about. One claim, whichever path
+      # reaches it first, so the two can never double-page one fact.
+      if [ "$GATE" = "30" ]; then
+        say "[dry] skip rework $RID: PR #$RPR is '$PR_VERDICT' but $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) -- the apply loop refuses it, so no dispatch is spent rediscovering that. A human resolves this one."
+        if claim_page_once "$RID" conflict_paged; then
+          bash "$NOTIFY" "worker: $RID PR #$RPR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+        fi
+      else
+        say "[dry] skip rework $RID: PR #$RPR is '$PR_VERDICT' at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) -- the apply loop refuses it, so no dispatch is spent rediscovering that. A human resolves this one."
+        if claim_page_once "$RID" drift_paged; then
+          bash "$NOTIFY" "worker: $RID PR #$RPR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+        fi
+      fi
+      continue
+    fi
+
+    # THE CAPS COME AFTER THE GATE, and the order is the point (round 4). Both
+    # cap lines make a claim about the PR -- "still not green", "marked stuck" --
+    # and the rework cap PAGES it. Read before the gate, they fired on a PR that
+    # had since been approved, so the operator's page said the opposite of the
+    # truth. Asking the gate first costs a few `gh` calls per capped candidate
+    # per heartbeat and buys a page that is true when it fires.
+    RN="$(attempts_for "$RID")"
+    if [ "$RN" -ge "$MAX_ATTEMPTS" ]; then
+      say "[dry] skip rework $RID: $RN/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
+      continue
+    fi
+    # LOOP-EXIT 7 FOR THIS PATH, and it is the announcement that has to apply it
+    # for the same reason MAX_ATTEMPTS is applied here: a candidate announced to
+    # the dispatcher has already cost a daily budget slot and a converge launch
+    # by the time any later refusal fires.
+    RD="$(rework_dispatches_for "$RID")"
+    if [ "$RD" -ge "$MAX_REWORK_DISPATCHES" ]; then
+      say "[dry] skip rework $RID: $RD/$MAX_REWORK_DISPATCHES rework dispatch(es) already and PR #$RPR still reads '$PR_VERDICT'. Marked stuck; a human decides next. To hand it back to the loop: python3 -c \"import json;p='$ATTEMPTS';d=json.load(open(p));d['$RID'].pop('rework_dispatches',None);d['$RID'].pop('rework_paged',None);json.dump(d,open(p,'w'),indent=2)\""
+      # ONCE, not every 15 minutes (founder-notifications.md). Same mechanism the
+      # conflict and drift caps use. This is the ONLY write a dry run makes, and
+      # it exists so that going quiet is announced rather than merely happening:
+      # a candidate that silently stops being dispatched is the failure this
+      # whole issue is named for.
+      if claim_page_once "$RID" rework_paged; then
+        bash "$NOTIFY" "worker: $RID has had $MAX_REWORK_DISPATCHES rework dispatch(es) and PR #$RPR still reads '$PR_VERDICT' - the loop has stopped picking it up, it needs a human" 2>/dev/null || true
+      fi
+      continue
+    fi
+    say "[dry] would rework $RID (PR #$RPR, gate $GATE, attempt $((RN+1))/$MAX_ATTEMPTS, rework dispatch $((RD+1))/$MAX_REWORK_DISPATCHES)"
     REWORK_ANNOUNCED=$((REWORK_ANNOUNCED + 1))
   done <<EOF
 $REWORK_IDS
@@ -771,34 +902,25 @@ while IFS= read -r ISSUE; do
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
-    PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
-    if [ -z "$PR_VERDICT" ]; then
-      # Fallback for PRs reviewed before the verdict record existed: extract
-      # from the newest review .md with the SAME extractor the reviewer uses.
-      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
-      [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
-    fi
-    # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
-    # so the worker and the driver cannot drift on what "still merges" means.
-    MERGE_STATE="$(pr_merge_state "$EXISTING_PR")"
+    # THE SAME READER THE DRY ANNOUNCEMENT USES (PR #43 review round 4). The
+    # verdict, the merge state and the two shas used to be gathered inline here
+    # and nowhere else; the announcement now has to ask the identical question,
+    # and two callers computing it from their own `gh` calls is the
+    # two-readers-of-one-input defect pr-verdict-lib.sh exists to close. Sets
+    # PR_VERDICT / MERGE_STATE / REVIEWED_SHA / CURRENT_SHA / GATE / GATE_NOTE
+    # and writes nothing -- every side effect below stayed here, on the apply
+    # path, which is the only path allowed to have them.
+    read_rework_gate "$EXISTING_PR"
     # The streak ends the moment the PR merges cleanly again -- see
     # clear_conflict_rounds. Placed before the gate so it runs on every verdict,
     # not just the approving ones: a rework round that also resolves the
     # conflict ended the streak just as much.
     [ "$MERGE_STATE" = "CLEAN" ] && clear_conflict_rounds "$ISSUE"
-    # THE VERDICT IS BOUND TO A SHA, NOT A PR NUMBER (ASK-216, armed here by
-    # ASK-219, sp-a27722e7). This worker reuses ONE branch and ONE PR across every
-    # rework round, so before this call passed a sha, each push landing after an
-    # approval inherited that approval silently. The reviewed sha is the one the
-    # reviewer pinned into the record; the current head goes through the same
-    # shared lib as the merge state so the worker and converge.sh cannot drift on
-    # what "the current head" means.
-    #
-    # APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2. Reordering it would
-    # silently stop ASK-212's rebase rounds from ever firing again.
-    REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
-    CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
-    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
+    # THE NOTE IS SAID ON THE APPLY PATH ONLY. It explains a fallback the gate
+    # took (a record with no head sha, a merge state gh would not answer) and it
+    # is worth a line on the run that acts. The dry announcement runs on every
+    # candidate every 15 minutes and its skip lines already carry the verdict and
+    # both shas, so repeating the note there is heartbeat noise, not signal.
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
     # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
     # both of them scars:
@@ -876,7 +998,11 @@ while IFS= read -r ISSUE; do
       # budget on it would leave a real conflict un-dispatchable later, and the
       # rebase prompt would tell the agent to force-push a diff nobody reviewed.
       DR="$(drift_rounds_for "$ISSUE")"
-      if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
+      # THE COMPARISON HAS ONE OWNER (round 4). The dry announcement refuses this
+      # same state so the dispatch is never spent on it; a second copy of
+      # `-ge $MAX_DRIFT_ROUNDS` here is how the two would drift apart and put the
+      # guaranteed no-op back.
+      if round_budget_exhausted "$ISSUE" 40; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
         if claim_page_once "$ISSUE" drift_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
@@ -898,7 +1024,8 @@ while IFS= read -r ISSUE; do
       # unresolvable conflict would otherwise rework forever and write a
       # permanent Linear comment on every round.
       CR="$(conflict_rounds_for "$ISSUE")"
-      if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
+      # ONE OWNER OF THE COMPARISON, same reason as the drift cap above.
+      if round_budget_exhausted "$ISSUE" 30; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
         if claim_page_once "$ISSUE" conflict_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
