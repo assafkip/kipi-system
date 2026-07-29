@@ -199,7 +199,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 420
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
