@@ -25,12 +25,16 @@
 #                   dispatched issue excludes itself from the next heartbeat.
 #                   Since ASK-245 that exclusion is CONCURRENCY-scoped, not
 #                   permanent: a started issue reappears as a REWORK candidate
-#                   (the fallback below), and the thing that still guarantees
-#                   the exit is the live-converge filter plus the worker's own
-#                   MAX_ATTEMPTS, which drops a candidate from the announced set
-#                   once it has burned its budget.
-#   7 error thresh  the worker's own MAX_ATTEMPTS marks an issue stuck and
-#                   stops picking it. This script does not second-guess that.
+#                   (the fallback below). Three things still guarantee the exit:
+#                   the live-converge filter, the requirement that a candidate
+#                   have an OPEN PR (so a merged-and-never-closed issue is not a
+#                   candidate at all), and MAX_REWORK_DISPATCHES.
+#   7 error thresh  MAX_ATTEMPTS marks an issue stuck after failed runs, and
+#                   MAX_REWORK_DISPATCHES caps SUCCESSFUL rework dispatches --
+#                   which is the bound this path actually needs, because its
+#                   failure mode is an agent that exits 0 with the PR still red
+#                   and MAX_ATTEMPTS only moves on a non-zero exit. Both live in
+#                   the worker; this script records the dispatch and obeys.
 #   6 human interrupt  launchctl unload. Outside the loop, as it must be.
 #
 # WHAT PICKS THE WORK
@@ -140,13 +144,23 @@ fi
 COUNT_FILE="$HOME/.config/kipi/dispatch-count-$BUDGET_DAY"
 DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
 case "$DISPATCHED_TODAY" in ''|*[!0-9]*) DISPATCHED_TODAY=0 ;; esac
+# WHAT THE DAY WAS SPENT ON, not just how much (PR #43 review round 3, minor).
+# Rework and fresh work share one allowance, so "hit the daily cap" alone reads
+# identically whether the loop shipped four new issues or re-ran four red PRs --
+# and those two days want different things from the operator. A sibling file, NOT
+# a second field in COUNT_FILE: that file is parsed as a bare integer in three
+# places, and NOT `$COUNT_FILE.rework` either, because the suite reads the budget
+# back through a `dispatch-count-*` glob.
+REWORK_COUNT_FILE="$HOME/.config/kipi/dispatch-rework-$BUDGET_DAY"
+REWORK_TODAY="$(cat "$REWORK_COUNT_FILE" 2>/dev/null || echo 0)"
+case "$REWORK_TODAY" in ''|*[!0-9]*) REWORK_TODAY=0 ;; esac
 
 if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   # Say it once per day, not every 15 minutes -- a budget ceiling repeated 96
   # times is the cry-wolf failure, and this is not an error state anyway.
   if [ ! -f "$COUNT_FILE.paged" ]; then
-    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY, stopping until ${RESET_HOUR}:00 local"
-    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
+    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY ($((DISPATCHED_TODAY - REWORK_TODAY)) fresh, $REWORK_TODAY rework), stopping until ${RESET_HOUR}:00 local"
+    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions) -- $((DISPATCHED_TODAY - REWORK_TODAY)) fresh, $REWORK_TODAY rework. Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
     : > "$COUNT_FILE.paged"
   fi
   exit 0
@@ -284,6 +298,30 @@ fi
 if converge_live_for "$NEXT"; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
+fi
+
+# RECORD THE REWORK DISPATCH BEFORE SPENDING ANYTHING (PR #43 review round 3,
+# major, second half). MAX_ATTEMPTS cannot bound this path: `bump_attempt` has a
+# single call site and it fires only when `claude` exits NON-ZERO, while the
+# rework failure mode is an agent that exits 0 and leaves the PR red. Without a
+# counter that moves on a SUCCESSFUL dispatch, the same red PR is re-announced at
+# "attempt 1/3" every heartbeat forever.
+#
+# THE DISPATCHER DOES NOT WRITE THE LEDGER, it asks the worker to. That file now
+# has five keys answering five different questions and exactly one script has
+# ever written it; a second writer out here would be two processes agreeing by
+# convention about a schema neither one owns.
+#
+# FAIL CLOSED, the same rule as the budget counter directly below: if the record
+# cannot be written the bound does not exist, so the dispatch does not happen.
+# The refusal then repeats in this log every tick, which is the loud direction.
+if [ "$REWORK" = "1" ]; then
+  if bash ./kipi work --rework-dispatched "$NEXT" >>"$LOG" 2>&1; then
+    printf '%s' "$((REWORK_TODAY + 1))" > "$REWORK_COUNT_FILE"
+  else
+    say "rework $NEXT: could NOT record the dispatch against its budget, so refusing to dispatch rather than run this path uncapped. Do: run \`bash $REPO/kipi work --rework-dispatched $NEXT\` by hand and read the error."
+    exit 0
+  fi
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two
