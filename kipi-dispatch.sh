@@ -192,8 +192,16 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # the converge process dies, the issue sits In Progress with a red PR and nothing
 # picks it back up. Measured 2026-07-29: 5 PRs stranded that way.
 #
-# A FALLBACK, NEVER A PEER. Fresh work is checked first and wins outright:
-# preferring rework would starve the backlog behind a PR that keeps going red.
+# A FALLBACK WITHIN A TICK, and that is the honest scope of the claim (PR #43
+# review round 3, minor). Fresh work is checked first and wins outright, so no
+# single heartbeat ever chooses rework over a ready backlog issue. ACROSS A
+# BUDGET DAY it is not a strict priority: rework spends the same
+# KIPI_DISPATCH_DAILY_MAX allowance, so a morning of rework can exhaust the day
+# before a backlog issue is drafted. That is the intended trade (the DoR's "Not
+# doing: raising the daily cap"), stated rather than implied -- and it is bounded
+# on the other side by MAX_REWORK_DISPATCHES, so the day can be spent on rework
+# but never on the SAME red PR forever. The cap line below names the split so a
+# capped day is legible instead of just quiet.
 #
 # THE LIVENESS FILTER IS PART OF THE CANDIDATE TEST, not a post-hoc skip. The
 # guard below refuses ONE issue and exits; applied to a fallback list that would
@@ -210,6 +218,13 @@ if [ -z "$NEXT" ]; then
     NEXT="$CAND"; REWORK=1
     break
   done
+  # THE WORKER'S REFUSALS ARE REPORTED, NOT SWALLOWED. `kipi work` decides
+  # eligibility (open PR, budget) and its reasons land in linear-worker.log,
+  # which is not the file anyone opens when the loop looks idle. Echoing the two
+  # that mean "the loop went quieter than the pool suggests" into dispatch.log
+  # keeps this log a true account of the tick.
+  printf '%s' "$WORK_OUT" | grep -E '^[^ ]+ \[dry\] (rework: gh could not|skip rework )' | \
+    while IFS= read -r WHY; do say "worker said: ${WHY#* }"; done
 fi
 
 if [ -z "$NEXT" ]; then

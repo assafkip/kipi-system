@@ -111,16 +111,43 @@ MAX_CONFLICT_ROUNDS=2
 # one means the reviewer is down or the head keeps moving under it. Neither is
 # fixed by a third round; both need a human.
 MAX_DRIFT_ROUNDS=2
+# A FIFTH key (ASK-245, PR #43 review round 3), and the reason is the one the
+# four above keep restating in different words: MAX_ATTEMPTS counts runs where
+# `claude` exits NON-ZERO, and the rework path's normal failure is an agent that
+# exits 0 having left the PR just as red as it found it. `bump_attempt` has one
+# call site and it is on the non-zero branch, so on that path the ledger file is
+# never even created and the same issue is re-announced at "attempt 1/3" every
+# heartbeat, forever. The DoR anticipated exactly this -- "if MAX_ATTEMPTS does
+# not cover this path, bound it here and say so" -- and the first cut of this
+# issue did not.
+#
+# COUNTED PER DISPATCH, not per round and not per failed run: kipi-dispatch.sh
+# records one against the issue at the moment it hands the candidate to converge
+# (--rework-dispatched below). That is the unit that costs money -- one dispatch
+# is up to MAX_ROUNDS agent+reviewer pairs.
+#
+# 2, matching the conflict and drift caps: two full converge runs that both
+# failed to make the PR green means the next thing it needs is a human, not a
+# third run. At MAX_ROUNDS=3 that is already up to 12 model sessions spent on one
+# PR. LIFETIME, not consecutive -- unlike conflict/drift there is no state a
+# reader could trust as "the streak ended": the rework dispatch itself moves the
+# head, so a head-change clear would reset the budget on every single dispatch
+# and cap nothing. So it stops, pages ONCE, and prints the one command that
+# hands it back to the loop. Same contract MAX_ATTEMPTS already has: marked
+# stuck, a human decides next.
+MAX_REWORK_DISPATCHES=2
 TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
+REWORK_DISPATCHED=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
+    --rework-dispatched) shift; REWORK_DISPATCHED="${1:-}" ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
@@ -130,6 +157,39 @@ export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { echo "$(TS) $*" | tee -a "$LOG"; }
+
+# --- the rework-dispatch ledger (ASK-245, PR #43 review round 3) -------------
+# Deliberately defined HERE and not beside its four siblings 200 lines down: the
+# --rework-dispatched short-circuit has to answer before the `git fetch` and the
+# Linear query, because recording a dispatch that already happened must not
+# depend on the network being up. Its siblings carry a pointer to this block.
+#
+# ONE WRITER. kipi-dispatch.sh is the only caller and it does not touch the JSON
+# itself -- it shells this mode. Two processes hand-editing one ledger with
+# different key conventions is the defect class this repo keeps closing, and the
+# dispatcher had no business learning this file's schema.
+rework_dispatches_for() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+print(d.get(sys.argv[1],{}).get('rework_dispatches',0))" "$1"; }
+
+bump_rework_dispatch() { python3 -c "
+import json,sys
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault(sys.argv[1],{}); e['rework_dispatches']=e.get('rework_dispatches',0)+1
+e['last_rework_dispatch']=sys.argv[2]
+json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+
+if [ -n "$REWORK_DISPATCHED" ]; then
+  bump_rework_dispatch "$REWORK_DISPATCHED" || {
+    say "FATAL: could not record a rework dispatch against $REWORK_DISPATCHED in $ATTEMPTS"
+    exit 1
+  }
+  say "recorded rework dispatch $(rework_dispatches_for "$REWORK_DISPATCHED")/$MAX_REWORK_DISPATCHES for $REWORK_DISPATCHED"
+  exit 0
+fi
 
 # A distinct session token per run. The claim lock keys collisions on (agent,
 # session), so without a unique token two overlapping runs would look like the
@@ -282,7 +342,13 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # and a hard key would turn every one of those fixtures into a traceback.
 REWORK_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin).get("rework",[])]' 2>/dev/null)"
 REWORK_COUNT="$(printf '%s' "$REWORK_IDS" | grep -c . || true)"
-say "worker: $REWORK_COUNT rework candidate(s) (owner:sana, has a DoR, already started)"
+# A POOL, NOT THE ANSWER (PR #43 review round 3, major). This count used to read
+# "N rework candidate(s)", which is what the operator sees at 3am -- and it was
+# wrong by exactly the population the review found: a started issue whose PR has
+# already MERGED is in this pool and is not a candidate. Linear rows alone cannot
+# tell those apart, so the honest line here is the pool, and the announcement
+# block below (which can ask `gh`) reports what actually survived.
+say "worker: $REWORK_COUNT started issue(s) in the rework pool (owner:sana, has a DoR). Eligibility -- an OPEN PR, budget left -- is decided at the announcement."
 
 if [ "$READY_COUNT" = "0" ] && [ "$REWORK_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
@@ -301,6 +367,11 @@ try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
 e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
 json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
+
+# A FIFTH counter, `rework_dispatches`, lives with the same siblings but is
+# DEFINED FAR ABOVE (search: rework-dispatch ledger) because kipi-dispatch.sh
+# shells it via --rework-dispatched, which must answer before the fetch and the
+# Linear query.
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
@@ -596,7 +667,31 @@ position_tree_on_pr_head() {
 # heartbeat, forever. A permanently-red PR would eat the whole day's allowance
 # doing nothing. Filtering the announcement is what makes the existing cap
 # actually bound this path.
+#
+# AND THE CANDIDATE MUST HAVE AN OPEN PR (PR #43 review round 3, major -- and
+# the DoR said so from the start: "has an open PR that is failing checks or
+# unreviewed"). The first cut of this block asked Linear only. NOTHING in this
+# repo moves an issue out of `started` when its PR merges -- the only stateId
+# call sites are fleet-health-daily.py, linear-triage.py and
+# linear-dor-drafter.py, none of them on the merge path -- so every issue the
+# loop has ever FINISHED stays In Progress and was landing in this set forever.
+# Worse than merely useless: with no open PR the apply loop's own
+# `gh pr list --head` also comes back empty, so the whole severity-floor gate is
+# skipped, BASE stays origin/main, and the agent is handed the FRESH-WORK prompt
+# for work that is already on main. Observed live 2026-07-29: ASK-150, started,
+# owner:sana, DoR, PR merged, no open PR -- one of 7 pool members that day.
+#
+# ONE READER OF "does this branch have an open PR": open_pr_for below is the same
+# call the apply loop makes, shared rather than copied, because two readers of
+# that question with drifting semantics is the exact thing the picker comment
+# above refuses to do to `ready`.
+open_pr_for() {  # open_pr_for <branch> -> prints the number, rc from gh
+  gh pr list --head "$1" --state open --json number -q '.[0].number' 2>/dev/null
+}
+branch_for() { printf 'sana/%s' "$(echo "$1" | tr 'A-Z' 'a-z')"; }
+
 if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
+  REWORK_ANNOUNCED=0
   while IFS= read -r RID; do
     [ -n "$RID" ] || continue
     RN="$(attempts_for "$RID")"
@@ -604,10 +699,44 @@ if [ "$APPLY" = "0" ] && [ -n "$REWORK_IDS" ]; then
       say "[dry] skip rework $RID: $RN/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
       continue
     fi
-    say "[dry] would rework $RID (attempt $((RN+1))/$MAX_ATTEMPTS)"
+    # LOOP-EXIT 7 FOR THIS PATH, and it is the announcement that has to apply it
+    # for the same reason MAX_ATTEMPTS is applied here: a candidate announced to
+    # the dispatcher has already cost a daily budget slot and a converge launch
+    # by the time any later refusal fires.
+    RD="$(rework_dispatches_for "$RID")"
+    if [ "$RD" -ge "$MAX_REWORK_DISPATCHES" ]; then
+      say "[dry] skip rework $RID: $RD/$MAX_REWORK_DISPATCHES rework dispatch(es) already and the PR is still not green. Marked stuck; a human decides next. To hand it back to the loop: python3 -c \"import json;p='$ATTEMPTS';d=json.load(open(p));d['$RID'].pop('rework_dispatches',None);d['$RID'].pop('rework_paged',None);json.dump(d,open(p,'w'),indent=2)\""
+      # ONCE, not every 15 minutes (founder-notifications.md). Same mechanism the
+      # conflict and drift caps use. This is the ONLY write a dry run makes, and
+      # it exists so that going quiet is announced rather than merely happening:
+      # a candidate that silently stops being dispatched is the failure this
+      # whole issue is named for.
+      if claim_page_once "$RID" rework_paged; then
+        bash "$NOTIFY" "worker: $RID has had $MAX_REWORK_DISPATCHES rework dispatch(es) and its PR is still not green - the loop has stopped picking it up, it needs a human" 2>/dev/null || true
+      fi
+      continue
+    fi
+    RBRANCH="$(branch_for "$RID")"
+    RPR="$(open_pr_for "$RBRANCH")"; GHRC=$?
+    if [ "$GHRC" != "0" ]; then
+      # NOT the same statement as "there is no PR". Falling through on a gh
+      # failure would announce the whole pool -- merged issues included -- on
+      # exactly the run where nothing can be verified. Refuse the path and SAY
+      # so; kipi-dispatch.sh echoes this line into its own log so the quiet is
+      # visible where the operator actually looks.
+      say "[dry] rework: gh could not be asked which PRs are open, so NO rework candidate is announced this run (fresh work is unaffected)"
+      break
+    fi
+    if [ -z "$RPR" ]; then
+      say "[dry] skip rework $RID: no OPEN PR on $RBRANCH -- it is In Progress with nothing to rework (merged and never closed, or the PR was closed). Not fresh work either; a human moves it off In Progress."
+      continue
+    fi
+    say "[dry] would rework $RID (PR #$RPR, attempt $((RN+1))/$MAX_ATTEMPTS, rework dispatch $((RD+1))/$MAX_REWORK_DISPATCHES)"
+    REWORK_ANNOUNCED=$((REWORK_ANNOUNCED + 1))
   done <<EOF
 $REWORK_IDS
 EOF
+  say "worker: $REWORK_ANNOUNCED of $REWORK_COUNT rework candidate(s) announced"
 fi
 
 DONE=0
@@ -626,7 +755,7 @@ while IFS= read -r ISSUE; do
     DONE=$((DONE+1)); continue
   fi
 
-  BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
+  BRANCH="$(branch_for "$ISSUE")"
 
   # SEVERITY FLOOR GATE (deterministic, before any side effect). Only REQUEST
   # CHANGES or BLOCK starts another rework round: an approved PR waits on the
@@ -634,7 +763,10 @@ while IFS= read -r ISSUE; do
   # BEFORE the claim and the Linear progress note on purpose -- a "Picked up"
   # note on a permanent Linear object followed by an immediate skip is a false
   # alarm, and false alarms train the reader to ignore the real notes.
-  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  # SHARED with the rework announcement (open_pr_for), not a second copy of the
+  # same `gh` call. Behaviour is unchanged: `gh pr list` already defaulted to
+  # --state open, the flag is now just written down.
+  EXISTING_PR="$(open_pr_for "$BRANCH")"
   REWORK=""
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
