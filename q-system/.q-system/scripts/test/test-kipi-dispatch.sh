@@ -251,6 +251,13 @@ check "4a manifest-only overlap still dispatches both" "$(n_started)" "2"
 
 # --- 5. --burst 5 --parallel 3: 5 total, never more than 3 at once ----------
 new_sandbox
+# A LONGER STUB CONVERGE, because this is the only case that measures OVERLAP.
+# With the default 1s stub against a 1s confirm window, child N is at the edge of
+# death when child N+1 launches, so on a loaded box the replayed peak drops to 1
+# and the case fails for machine load rather than for a concurrency defect --
+# observed once here while the fleet gate was running beside it. 4s makes the
+# overlap outlast the launch sequence, so the assertion measures the cap again.
+export KIPI_STUB_CONVERGE_SLEEP=4
 for n in 1 2 3 4 5; do dor "ASK-91$n" "* \`file$n.sh\`"; done
 export KIPI_STUB_READY="ASK-911 ASK-912 ASK-913 ASK-914 ASK-915"
 OUT="$(run_dispatch --burst 5 --parallel 3)"
@@ -1341,6 +1348,34 @@ if printf '%s' "$OUT" | grep -q 'without the' \
 else
   bad "34d a foo.sh:NN citation is told to drop the line number, not to backtick" "$OUT"
 fi
+
+# --- 35. `./foo` and `foo` are ONE file (found by fixing 34c) ----------------
+# Self-found while fixing r6 finding 3, and it is that fix that makes it matter:
+# 34c now ADVISES operators to spell an extensionless file `./kipi-foo`, because
+# that is the spelling the tokenizer takes. normalise() only collapsed
+# absolute-vs-relative, so `./shared.sh` and the same file named absolutely were
+# two different strings to an exact-match intersection -- and the advice was
+# about to make the `./` spelling common. A fix that widens the hole it is
+# adjacent to is worth one more case.
+new_sandbox
+mkdir -p "$SANDBOX/repo/q-system/.q-system/scripts"
+dor ASK-995 '* `./q-system/.q-system/scripts/shared995.sh`'
+dor ASK-996 "* \`$SANDBOX/repo/q-system/.q-system/scripts/shared995.sh\`"
+export KIPI_STUB_READY="ASK-995 ASK-996"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "35a a ./-prefixed path and the same file named absolutely intersect" \
+  "$(n_started)" "1"
+
+# The control, because collapsing spellings is exactly where over-enforcement
+# lands: two genuinely different files still share the board.
+new_sandbox
+dor ASK-997 '* `./q-system/.q-system/scripts/alpha997.sh`'
+dor ASK-998 '* `./q-system/.q-system/scripts/beta998.sh`'
+export KIPI_STUB_READY="ASK-997 ASK-998"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 2
+check "35b two different ./-prefixed files still both dispatch" "$(n_started)" "2"
 
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"

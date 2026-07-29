@@ -365,7 +365,12 @@ def normalise(path):
         if real.startswith(_repo + os.sep):
             return real[len(_repo) + 1:]
         return real
-    return path
+    # `./foo` IS `foo`, and the r6-f3 advice is what makes that matter: it now
+    # tells operators to spell an extensionless file `./kipi-foo`, because that is
+    # the spelling the tokenizer takes. Without this the advised spelling and the
+    # same file named absolutely were two different strings to an exact-match
+    # intersection -- one spelling per file, or the whole gate is decorative.
+    return os.path.normpath(path)
 
 def emit(path):
     # A trailing slash means the DoR was talking ABOUT a directory, not naming a

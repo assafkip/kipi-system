@@ -84,6 +84,19 @@ sleep 30
 SH
 chmod +x "$ROOT/converge.sh"
 
+# THE DoR SEAM (ASK-225). kipi-dispatch.sh now reads each candidate's
+# `**Files:**` block to decide whether two runs can share the board, and a set it
+# cannot READ skips the candidate outright. In a sandbox with no Linear key that
+# read fails, so without this fixture the dispatcher never reaches the launch
+# path these cases are about: 9 of the 18 went red on `its file set could not be
+# read`. That is the dispatcher being right and the fixture being stale -- the
+# same fixture-mismatch trap this file's own header warns about, arriving from a
+# change one layer up. KIPI_DISPATCH_DOR_FIXTURE stubs ONLY the network; the
+# parsing still runs for real.
+DOR="$ROOT/dor.json"
+printf '{"%s": "## Definition of Ready\\n\\n**Outcome:** the dispatch survives.\\n\\n**Files:**\\n\\n* `%s`\\n\\n**Check:** `bash %s`\\n\\n**Not doing:** nothing\\n"}' \
+  "$ISS" "q-system/.q-system/scripts/liveness-$$.sh" "q-system/.q-system/scripts/liveness-$$.sh" > "$DOR"
+
 make_kipi() {  # make_kipi <alive|dead>
   cat > "$FAKE_REPO/kipi" <<SH
 #!/usr/bin/env bash
@@ -111,6 +124,7 @@ run_dispatch() {
   ( cd "$FAKE_REPO" && HOME="$ROOT/home" PATH="$ROOT/bin:$PATH" \
       KIPI_REPO="$FAKE_REPO" KIPI_NOTIFY="$ROOT/notify.sh" \
       KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
+      KIPI_DISPATCH_DOR_FIXTURE="$DOR" \
       bash "$DISPATCH" 2>&1 )
 }
 
@@ -289,10 +303,18 @@ else
   ok "5a the duplicate guard does not use the \\b that BSD pgrep ignores"
 fi
 
-if grep -c 'ps -Ao args=' "$DISPATCH" | grep -q '[1-9]'; then
+# THE PROPERTY, NOT ONE SPELLING OF IT (ASK-225). This used to require the string
+# `ps -Ao args=`. That pipeline was removed on purpose: `writer | grep -q` under
+# pipefail inverts (grep -q leaves at the first match, the writer dies 141, the
+# `if` body never runs), which reported a LIVE issue as free and started a second
+# converge on one worktree. `pgrep -fl` reads the same full command lines with no
+# pipeline to poison. Asserting the command instead of the property made the
+# safer implementation look like a regression.
+if grep -qE 'ps -Ao args=|pgrep -fl' "$DISPATCH"; then
   ok "5b the guard matches on full command lines, portably"
 else
-  bad "5b the guard matches on full command lines, portably" "ps -Ao args= is gone from kipi-dispatch.sh"
+  bad "5b the guard matches on full command lines, portably" \
+    "neither ps -Ao args= nor pgrep -fl is in kipi-dispatch.sh"
 fi
 
 # --- 6. the duplicate guard actually fires, driven for real -----------------

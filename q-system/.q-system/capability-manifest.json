@@ -147,7 +147,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-kipi-dispatch.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 540
     },
     {
       "path": "q-system/.q-system/scripts/test/test-linear-wiring.sh",
