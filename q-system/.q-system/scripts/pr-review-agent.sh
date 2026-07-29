@@ -3,7 +3,7 @@
 #
 # WHO IT IS
 # ---------
-# A senior staff engineer from Netflix who has never seen this codebase. That
+# A senior staff engineer from Meta who has never seen this codebase. That
 # persona is chosen for two specific properties, not for flavour:
 #
 #   FRESH EYES. It has no memory of why anything here is the way it is, so it
@@ -14,7 +14,7 @@
 #   emits, so a mutex's remote half never fired while its suite stayed green. Only
 #   an outsider checking the real payload caught it.
 #
-#   OPERATIONAL BAR. Netflix staff review is about what happens at 3am: blast
+#   OPERATIONAL BAR. Meta staff review is about what happens at 3am: blast
 #   radius, failure modes, what pages a human, what cannot be rolled back. This
 #   fleet runs unattended agents against permanent Linear objects and a public
 #   repo. That is exactly the bar it needs.
@@ -34,13 +34,22 @@
 # either stamp `codex-adversarial` (a false record) or skip the stamp and never
 # approve. In a repo whose thesis is receipts, the honest token had to exist first.
 #
-# TWO ENGINES, ONE SCRIPT (ASK-221)
-# ---------------------------------
-# The default reviewer is `claude -p` and the PR author is also Claude. Different
-# process, no shared memory, genuinely useful -- but the same lab and the same
-# model family, so the blind spots stay CORRELATED. Fresh context is not an
-# independent mind. `--engine codex` runs a different lab's model through this
-# same script and posts a separate commit status, which is real decorrelation.
+# TWO ENGINES, ONE SCRIPT -- CODEX IS THE ONE THAT GATES (ASK-221)
+# ----------------------------------------------------------------
+# Sana (the PR author) is Claude. A Claude reviewer is a different process with no
+# shared memory, genuinely useful -- but the same lab and the same model family, so
+# the blind spots stay CORRELATED. Fresh context is not an independent mind.
+#
+# So codex is THE reviewer, not a second opinion appended to a Claude one:
+# founder directive 2026-07-29, "codex with gpt-5.6 as a sr. staff swe at Meta is
+# the agent that checks sana's work". It owns `kipi/reviewer-approved` and writes
+# the ONE verdict record converge.sh and linear-worker.sh gate on. Claude keeps
+# the same script but posts an ADVISORY `kipi/claude-approved` and writes its
+# record out of the gate's way.
+#
+# The Opus fallback below is what makes this safe: when codex is down, Claude
+# fills the PRIMARY slot and the status says DEGRADED out loud, so an outage
+# degrades the gate's independence instead of wedging every open PR.
 #
 # It is a FLAG, not a second script, on purpose: sha capture (ASK-216), verdict
 # derivation from labelled severities, the commit-status post (ASK-217) and
@@ -75,7 +84,10 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # semantics -- the defect class review round 2 flagged on this very PR line.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
-PR=""; ISSUE=""; POST=0; ENGINE="claude"
+# CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
+# config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
+# gates every PR in the repo.
+PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-codex}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
@@ -88,21 +100,38 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
 
-# THE THREE THINGS THE ENGINE CHANGES. Everything else below this block is
-# shared, which is the whole reason this is a flag and not a second script.
+# WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
+# the whole reason this is a flag and not a second script.
 #
-# SEPARATE DIRECTORIES matter more than they look. review_round() globs
-# `pr-<N>-*.md`, and the verdict record is written next to the review, so a codex
-# review dropped into the claude directory would (a) advance the claude
-# reviewer's round counter and arm the anti-re-litigation rule a round early, and
-# (b) overwrite pr-<N>.verdict.json -- the file converge.sh and linear-worker.sh
-# gate the entire loop on. That would make codex the loop's verdict writer by
-# accident, which no gate expects. One directory per engine, one writer each.
+# TWO SEPARATE DIRECTORY QUESTIONS, deliberately decoupled -- conflating them is
+# what made codex non-gating before the founder directive, and naively swapping
+# the pair would have introduced a fresh defect in the other direction:
+#
+#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs `pr-<N>-*.md`, so
+#   an engine reading another engine's review files counts their rounds as its own
+#   and arms the anti-re-litigation rule early. Each engine therefore KEEPS its
+#   historical directory across this change -- claude's rounds stay in $OUT_DIR,
+#   codex's in $OUT_DIR/codex. Nothing about the counters moves.
+#
+#   VERDICT_DIR (the ONE record the loop gates on). converge.sh:36 and
+#   linear-worker.sh:76 both read `$STATE_DIR/pr-reviews/pr-<N>.verdict.json` --
+#   the ROOT, not a subdir. So "codex is the gate" means codex writes THAT path,
+#   and claude's record moves down into $OUT_DIR/claude to get out of its way.
+#   Exactly one engine writes the gating record: single writer, preserved.
+PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-codex}"
 case "$ENGINE" in
-  claude) ENGINE_DIR="$OUT_DIR";         STATUS_CONTEXT="kipi/reviewer-approved"; MINOR_TAG="" ;;
-  codex)  ENGINE_DIR="$OUT_DIR/codex";   STATUS_CONTEXT="kipi/codex-approved";    MINOR_TAG="codex " ;;
+  claude) ENGINE_DIR="$OUT_DIR" ;;
+  codex)  ENGINE_DIR="$OUT_DIR/codex" ;;
   *) echo "unknown engine: '$ENGINE' (expected claude|codex)" >&2; exit 1 ;;
 esac
+# The gate belongs to the PRIMARY engine; the other engine is advisory. Naming the
+# advisory context per-engine (never `kipi/reviewer-approved`) is what stops two
+# writers from ever answering for the same slot.
+if [ "$ENGINE" = "$PRIMARY_ENGINE" ]; then
+  VERDICT_DIR="$OUT_DIR";              STATUS_CONTEXT="kipi/reviewer-approved"; MINOR_TAG=""
+else
+  VERDICT_DIR="$OUT_DIR/$ENGINE";      STATUS_CONTEXT="kipi/$ENGINE-approved";  MINOR_TAG="$ENGINE "
+fi
 # Degraded is a property of the ENGINE, not of a PR: codex being down is one
 # fact, and paging per-PR would turn one outage into a page per open PR.
 DEGRADED_STATE="$OUT_DIR/codex/degraded.state"
@@ -114,7 +143,7 @@ DEGRADED=0
 # case in test-severity-floor.sh, which passed the first cut of this fix.
 CODEX_UNUSABLE=0
 
-mkdir -p "$ENGINE_DIR"
+mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 REVIEW="$ENGINE_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
 
@@ -181,7 +210,7 @@ Then apply this rule, which is binding:
   a finding about the review process, and it is worth more than another nit."
 fi
 
-PROMPT="You are a SENIOR STAFF ENGINEER at Netflix. You have NEVER seen this codebase before.
+PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
 You were asked to review pull request #$PR in $SKEL, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.$ROUND_RULE
 
@@ -210,7 +239,7 @@ Be specifically suspicious of:
 - **Error paths, retries, partial failure.** What is left behind when this dies
   halfway? What does the operator see?
 
-## The operational bar (this is the Netflix part)
+## The operational bar (this is the Meta staff part)
 
 This fleet runs UNATTENDED agents on a schedule, against Linear objects that CANNOT
 BE DELETED, in a PUBLIC repo. So judge it that way:
@@ -419,13 +448,19 @@ echo "  verdict: ${VERDICT:-unstated}"
 # the approval. The key is ALWAYS written -- empty when `gh` could not answer --
 # because rework_gate reads empty as "unknown, fall back and say so", and a
 # key that sometimes vanishes is a shape the reader would have to guess at.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" <<'PY'
+#
+# The record lands in $VERDICT_DIR, NOT next to the review. Those are the same
+# directory only for a non-primary engine; for the gating engine the reviews live
+# in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
+# where converge.sh and linear-worker.sh actually read it.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha = sys.argv[1:10]
-out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine = sys.argv[1:12]
+out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
+           "engine": engine,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
@@ -516,7 +551,7 @@ if [ "$POST" = "1" ]; then
   fi
   if [ -n "$ISSUE" ]; then
     python3 "$SYNC" progress "$ISSUE" \
-      "Adversarial review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
+      "Adversarial review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
       --agent "reviewer" >/dev/null 2>&1 \
       && echo "  progress noted on $ISSUE" || true
   fi

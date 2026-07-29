@@ -1098,21 +1098,20 @@ except Exception: d={}
 e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
 json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
-    $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
-      || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
-    # THE INDEPENDENT SECOND OPINION (ASK-221). The reviewer above is Claude and
-    # so is the PR author -- different process, no shared memory, but the same
-    # lab and model family, so the blind spots stay correlated. This run is a
-    # different lab's model through the same script, posting kipi/codex-approved.
+    # CODEX REVIEWS SANA'S WORK (ASK-221, founder directive 2026-07-29). Sana is
+    # Claude, so a Claude reviewer shares her lab and model family and re-derives
+    # her blind spots -- fresh context is not an independent mind. `--engine codex`
+    # is stated EXPLICITLY here rather than inherited from the reviewer's default,
+    # because which model checks this fleet's work is the kind of fact that must be
+    # readable at the call site, not two files away.
     #
-    # It runs AFTER, never instead: it writes into pr-reviews/codex/ and touches
-    # neither pr-<N>.verdict.json nor the pr-<N>-*.md glob, so every gate below
-    # (FINAL_VERDICT, the drift check, converge) still reads exactly one writer.
-    # Its own failure mode is handled inside the reviewer (Opus fallback + a page
-    # on the transition), so a codex outage cannot take this loop down: the worst
-    # case here is one WARN line and a review nobody blocked on.
+    # ONE call, not two. Before this it was claude-then-codex, with codex advisory;
+    # codex now owns kipi/reviewer-approved and writes the one verdict record every
+    # gate below reads, so a second Claude pass would only burn spend and post an
+    # advisory status nobody gates on. A codex outage cannot wedge the loop: the
+    # reviewer's own Opus fallback fills the primary slot and marks it DEGRADED.
     $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine codex >>"$LOG" 2>&1 \
-      || say "WARN: codex second-opinion review failed on PR #$PR_NUM (the Claude review above stands)"
+      || say "WARN: codex reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
