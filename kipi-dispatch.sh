@@ -219,6 +219,7 @@ issue_is_live() { live_issues | grep -qx "$1"; }
 # serialised with a skip line pointing at the wrong thing.
 fileset_for() {  # fileset_for <issue> <out-file> ; prints the failure reason
   ISSUE="$1" PRD_SPLIT="$PRD_SPLIT" KIPI_DISPATCH_REPO="$REPO" \
+  KIPI_DISPATCH_MAGNETS="$MAGNET_FILES" \
   python3 - > "$2" 2>"$2.err" <<'PY'
 import importlib.util, json, os, pathlib, re, sys
 
@@ -279,19 +280,11 @@ if not value:
 if not value or mod._UNKNOWN_RE.search(value):
     raise SystemExit(0)
 seen = set()
+out = []
 _repo = os.environ.get("KIPI_DISPATCH_REPO", "")
 _repo = os.path.realpath(_repo) if _repo else ""
 
-def emit(path):
-    # A trailing slash means the DoR was talking ABOUT a directory, not naming a
-    # file to edit -- ASK-225's own Files bullet contains the prose "must NOT go
-    # under the synced `q-system/` subtree". Left in, that token appears in many
-    # DoRs and makes unrelated issues collide on a word. The intersection is
-    # exact-match on file paths, so only file paths belong in it. Checked BEFORE
-    # normalising, because realpath() strips the trailing slash that carries the
-    # signal.
-    if path.endswith("/"):
-        return
+def normalise(path):
     # ONE SPELLING PER FILE. The intersection is exact string match, so
     # `/Users/me/projects/kipi-system/foo.sh` and `foo.sh` were two different
     # files to it and two issues editing one file both dispatched. 6 real DoRs
@@ -304,13 +297,25 @@ def emit(path):
     if _repo and os.path.isabs(path):
         real = os.path.realpath(path)
         if real.startswith(_repo + os.sep):
-            path = real[len(_repo) + 1:]
-        else:
-            path = real
+            return real[len(_repo) + 1:]
+        return real
+    return path
+
+def emit(path):
+    # A trailing slash means the DoR was talking ABOUT a directory, not naming a
+    # file to edit -- ASK-225's own Files bullet contains the prose "must NOT go
+    # under the synced `q-system/` subtree". Left in, that token appears in many
+    # DoRs and makes unrelated issues collide on a word. The intersection is
+    # exact-match on file paths, so only file paths belong in it. Checked BEFORE
+    # normalising, because realpath() strips the trailing slash that carries the
+    # signal.
+    if path.endswith("/"):
+        return
+    path = normalise(path)
     if path in seen:
         return
     seen.add(path)
-    print(path)
+    out.append(path)
 
 for m in _ANCHORED_RE.finditer(value):
     tail = m.group(2).rstrip(".,;:")
@@ -318,6 +323,74 @@ for m in _ANCHORED_RE.finditer(value):
         emit(m.group(1) + tail)
 for path in mod._extract_paths(value):
     emit(path)
+
+# PARTIAL CONSUMPTION IS "UNKNOWN", NOT A NARROWER SET (PR #36 r5 finding 1).
+#
+# prd_split._split_candidates returns the BACKTICKED spans whenever the block
+# has any, so a plain path sitting beside a backticked one is discarded whole.
+# For prd_split's own job -- allowed_files for ONE issue -- a narrower set is
+# merely a tighter scope. As a set-membership oracle ACROSS issues it inverts:
+# a missing token reads as "safe to run in parallel", so the gate certifies two
+# agents into one file and reports `skipped 0`.
+#
+# Three rounds of this review each found the next spelling that escapes
+# (`~/`-anchored, absolute-vs-relative, plain-beside-backticked). Enumerating
+# spellings loses that race by construction. So this does not rescue a fourth
+# one: it asks whether the block NAMES a file the set does not contain, and if
+# so declares the set unknown. Unknown already has a meaning here -- run alone,
+# never in parallel -- so this fails closed on the intersection without
+# refusing the issue, which is the regression the same finding cost this file
+# in round 3.
+#
+# Deliberately conservative in one direction only: a citation (`foo.sh:318`), a
+# prose mention, or an unparseable path all trip it, and the cost of each false
+# trip is one issue running alone with a named reason. The cost of a miss is a
+# conflicted PR from two agents in one file.
+_CITE_RE = re.compile(r":\d+(?:-\d+)?$")
+_FILENAME_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{1,5}$")
+
+magnets = set()
+for _m in os.environ.get("KIPI_DISPATCH_MAGNETS", "").split():
+    magnets.add(normalise(_m))
+    magnets.add(_m.rsplit("/", 1)[-1])
+basenames = {p.rsplit("/", 1)[-1] for p in seen}
+
+def named_files(text):
+    """Every word in the block that is shaped like a FILE, however spelled."""
+    for raw in text.split():
+        w = raw.strip("`*_|\"'").lstrip("([{<").rstrip(")]}>").rstrip(",;:.")
+        w = _CITE_RE.sub("", w)          # `foo.sh:318` is a path plus a line no.
+        if not w or not mod._PATH_TOKEN_RE.fullmatch(w):
+            continue
+        # A trailing alphabetic extension is what separates a file from prose
+        # that merely contains a dot or a slash: `e.g`, `3.2`, `and/or`, `N/A`
+        # and a bare directory name are all rejected here, and none of them
+        # would ever be an intersection hit anyway.
+        if not _FILENAME_RE.search(w.rsplit("/", 1)[-1]):
+            continue
+        yield w
+
+missed = []
+for w in named_files(value):
+    n = normalise(w)
+    if n in seen or n in magnets:
+        continue
+    # A bare basename beside a full path is the same file mentioned twice
+    # ("extend `a/b/test-x.sh`; test-x.sh already covers the mutex"), which is
+    # a real DoR shape and carries no new file. A basename that is genuinely a
+    # DIFFERENT file is the one gap left here, and it is the status quo ante.
+    if "/" not in n and n in basenames:
+        continue
+    missed.append(w)
+
+if missed:
+    # Nothing on stdout: an incomplete set is worse than no set, because the
+    # caller can act on "unknown" and cannot act on "wrong".
+    print("PARTIAL: %s" % " ".join(missed[:3]), file=sys.stderr)
+    raise SystemExit(0)
+
+for p in out:
+    print(p)
 PY
   RC=$?
   [ "$RC" -eq 0 ] && return 0
@@ -345,7 +418,18 @@ fileset_known() {  # fileset_known <issue> <out-file>
     return 2
   fi
   [ -s "$2" ] && return 0
-  printf 'no usable `**Files:**` list in its DoR, so its file set is unknown'
+  # TWO WAYS TO BE UNKNOWN, AND THEY NEED DIFFERENT FIXES. "No Files list" is
+  # answered by writing one. "The block names a path the parser could not take"
+  # is answered by backticking it -- and telling that operator to add a list
+  # that is already there sends them looking for something they will not find.
+  # Same reason fileset_for does not swallow a Linear failure into "no Files
+  # line": one wrong reason costs more than no reason.
+  PARTIAL="$(sed -n 's/^PARTIAL: //p' "$2.err" 2>/dev/null | head -1)"
+  if [ -n "$PARTIAL" ]; then
+    printf 'its `**Files:**` block names %s but the parser could not take that spelling, so the set would be INCOMPLETE (backtick every path there to let it share the board)' "$PARTIAL"
+    return 1
+  fi
+  printf 'no usable `**Files:**` list in its DoR, so its file set is unknown (add one to let it share the board)'
   return 1
 }
 
@@ -639,6 +723,19 @@ fi
 [ -n "$WORK_INFRA" ] && say "note: kipi work reported an infra problem but still returned candidates, continuing: $WORK_INFRA"
 N_CANDIDATES="$(printf '%s\n' "$CANDIDATES" | grep -c .)"
 
+# A TARGET above the candidate count is not a plan, it is a wrong number in the
+# one place it costs something (PR #36 r5 finding 2). The loop dispatches at
+# most one run per candidate, so `--burst 10` on a 2-issue board could never
+# start more than 2 -- yet it printed "estimated cost up to 60 sessions"
+# against a true ceiling of 12, at the exact moment that number exists to let
+# the founder say no. Clamping here also makes the per-dispatch counter honest
+# ("burst 1/2", not "burst 1/10").
+#
+# Clamped HERE and not before LOOKAHEAD: that window is deliberately TARGET*3+2
+# because disjointness REJECTS candidates, and asking 1-for-1 would end the
+# pass with slots free. The window is what we ask for; TARGET is what can land.
+[ "$TARGET" -gt "$N_CANDIDATES" ] && TARGET="$N_CANDIDATES"
+
 SCRATCH="$(mktemp -d)"      # freed by cleanup(), together with the lock
 LIVE_SET="$SCRATCH/live-set"
 : > "$LIVE_SET"
@@ -707,7 +804,7 @@ refresh_live_set() {
     case "$SET_RC" in
       0) cat "$SET_FILE" >> "$LIVE_SET" ;;
       1) PASS_UNKNOWN="$LI"
-         note_once "$LI" "note: the live run $LI has an unknown file set; nothing may run alongside it" ;;
+         note_once "$LI" "note: the live run $LI has an unknown file set ($SET_WHY); nothing may run alongside it" ;;
       *) UNREADABLE_LIVE=1
          note_once "$LI" "note: the file set for the live run $LI is UNREADABLE; holding every candidate" ;;
     esac
@@ -734,7 +831,10 @@ candidate_blocked() {  # candidate_blocked <issue> <set-rc> <why> <set-file>
     # intersects everything, and everything is EMPTY when nothing is live. So it
     # runs, alone. Refusing it outright is what made this gate reject 51 of 55
     # real ready issues and dispatch zero, forever.
-    [ "$LIVE_NOW" -gt 0 ] && printf '%s, so it can only run ALONE and something is already running (live=%s). Add the paths to its DoR to let it run in parallel.' "$3" "$LIVE_NOW"
+    # The reason carries its own fix (add a list / backtick the paths), so this
+    # line must not staple a second one on: the two unknown cases need
+    # different edits and a generic "add the paths" is wrong for one of them.
+    [ "$LIVE_NOW" -gt 0 ] && printf '%s -- so it can only run ALONE, and something is already running (live=%s); still ready for the next pass' "$3" "$LIVE_NOW"
     return 0
   fi
   OVERLAP="$(first_overlap "$LIVE_SET" "$4")"
@@ -868,7 +968,10 @@ for ISSUE in $CANDIDATES; do
   else
     say "dispatching $ISSUE (burst $((DISPATCHED + 1))/$TARGET, at most $SLOTS at once, rounds=$MAX_ROUNDS)"
   fi
-  [ "$SOLO" -eq 1 ] && say "  ...ALONE: its DoR names no files, so nothing may run alongside it until it finishes. Add a \`**Files:**\` list to let it share the board."
+  # Quote the REASON rather than restating one of them. A block that names
+  # paths the parser cannot take is now also unknown, and telling that operator
+  # "its DoR names no files" is a false statement about a file they can read.
+  [ "$SOLO" -eq 1 ] && say "  ...ALONE: $CAND_WHY. Nothing may run alongside it until it finishes."
 
   nohup ./kipi converge --issue "$ISSUE" --max-rounds "$MAX_ROUNDS" \
     > "$HOME/.config/kipi/converge-$ISSUE.log" 2>&1 &

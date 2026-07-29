@@ -730,6 +730,110 @@ else
 fi
 unset KIPI_DISPATCH_DAILY_MAX
 
+# --- 25. a Files block the tokenizer only PARTLY reads (r5 finding 1) -------
+# THE DEFECT CLASS, not one more spelling. prd_split._split_candidates:513
+# returns the backticked spans WHEN THERE ARE ANY, so a plain path sitting
+# beside a backticked one is discarded -- the set looks complete, is not, and
+# the gate certifies two agents into one file with `skipped 0`.
+#
+# The fix is NOT a third rescue regex (that is how rounds 3, 4 and 5 each found
+# the next spelling). It is: when the block names a file the set does not
+# contain, the set is UNKNOWN. Unknown already has a meaning here -- run alone,
+# never in parallel -- so this fails closed on the intersection while keeping
+# the throughput floor.
+#
+# UNKNOWN AND NOT UNREADABLE, deliberately. rc=2 skips the candidate outright
+# (dispatch loop, CAND_RC -eq 2), which would make a mixed-markup DoR
+# permanently undispatchable -- the same refuse-the-whole-board regression
+# finding 1 of round 3 cost this file, arriving by a different door.
+new_sandbox
+dor ASK-931 '* `q-system/.q-system/scripts/shared931.sh`'
+dor ASK-932 '* `q-system/.q-system/scripts/other932.sh` (extend)
+* q-system/.q-system/scripts/shared931.sh'
+export KIPI_STUB_READY="ASK-931 ASK-932"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "25a a Files block that is only PARTLY read does not dispatch in parallel" "$(n_started)" "1"
+if printf '%s' "$OUT" | grep -q 'skip ASK-932' && printf '%s' "$OUT" | grep -q 'shared931.sh'; then
+  ok "25b the skip names the path that was dropped"
+else
+  bad "25b the skip names the path that was dropped" "$OUT"
+fi
+
+# The control, and the reason 25a is about the SET and not about the
+# intersection: the same two issues, uniform markup, already behaved.
+new_sandbox
+dor ASK-933 '* `q-system/.q-system/scripts/shared933.sh`'
+dor ASK-934 '* `q-system/.q-system/scripts/other934.sh` (extend)
+* `q-system/.q-system/scripts/shared933.sh`'
+export KIPI_STUB_READY="ASK-933 ASK-934"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "25c control: uniform markup already intersected" "$(n_started)" "1"
+
+# A file named with a line-number citation (`foo.sh:318`) is a path the
+# tokenizer cannot take -- the colon fails _PATH_TOKEN_RE -- so the block is
+# partly read and the same rule applies.
+new_sandbox
+dor ASK-935 '* `q-system/.q-system/scripts/shared935.sh`'
+dor ASK-936 '* `q-system/.q-system/scripts/other936.sh`, plus q-system/.q-system/scripts/shared935.sh:318'
+export KIPI_STUB_READY="ASK-935 ASK-936"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 1
+check "25d a path written as a foo.sh:NN citation is not silently dropped" "$(n_started)" "1"
+
+# THE GUARD ON THE FIX ITSELF. Over-detection is not free: every issue it
+# mislabels unknown runs ALONE, which is the board-serialising regression this
+# gate already made once. A fully-read block with ordinary prose beside it --
+# including a NEGATED mention of the magnet file, which is the real shape of
+# ASK-224 and ASK-218 -- still counts as known and still shares the board.
+new_sandbox
+dor ASK-937 '* `q-system/.q-system/scripts/alpha937.sh` (extend in place, no new test file, so no capability-manifest.json edit and no conflict on the magnet file)'
+dor ASK-938 '* `q-system/.q-system/scripts/beta938.sh` -- extend in place; the mutex note covers it'
+export KIPI_STUB_READY="ASK-937 ASK-938"
+OUT="$(run_dispatch --burst 2 --parallel 2)"
+wait_for_ends 2
+check "25e a fully-read block with prose still runs in PARALLEL" "$(n_started)" "2"
+
+# WHAT THE OPERATOR READS AT 3AM. A partly-read block runs alone, and the line
+# saying so must not tell them to add a `**Files:**` list that is already there.
+new_sandbox
+dor ASK-939 '* `q-system/.q-system/scripts/other939.sh` (extend)
+* q-system/.q-system/scripts/plain939.sh'
+export KIPI_STUB_READY="ASK-939"
+OUT="$(run_dispatch --burst 1 --parallel 2)"
+wait_for_ends 1
+check "25f a partly-read block still dispatches, alone" "$(n_started)" "1"
+if printf '%s' "$OUT" | grep -q 'ALONE' && ! printf '%s' "$OUT" | grep -q 'names no files'; then
+  ok "25g the ALONE line says the block was partly read, not that it names no files"
+else
+  bad "25g the ALONE line says the block was partly read, not that it names no files" "$OUT"
+fi
+
+# --- 26. the burst estimate quotes what can run, not what was typed (r5 f2) --
+# The line's whole job is to let the founder say no BEFORE spending, so a 5x
+# overstatement at that moment is the number failing at the one thing it is for.
+# The pass can never dispatch more issues than it has candidates.
+new_sandbox
+dor ASK-941 '* `q-system/.q-system/scripts/alpha941.sh`'
+dor ASK-942 '* `q-system/.q-system/scripts/beta942.sh`'
+export KIPI_STUB_READY="ASK-941 ASK-942"
+OUT="$(run_dispatch --burst 10 --parallel 2)"
+wait_for_ends 2
+if printf '%s' "$OUT" | grep -q 'estimated cost up to 12 '; then
+  ok "26a the estimate is capped by the candidate count (2 x 3 x 2 = 12)"
+else
+  bad "26a the estimate is capped by the candidate count (2 x 3 x 2 = 12)" \
+    "$(printf '%s' "$OUT" | grep 'estimated cost' || echo '<no estimate line>')"
+fi
+if printf '%s' "$OUT" | grep -q 'burst: up to 2 issue(s)'; then
+  ok "26b the 'up to N' line is capped too"
+else
+  bad "26b the 'up to N' line is capped too" \
+    "$(printf '%s' "$OUT" | grep 'burst: up to' || echo '<no line>')"
+fi
+check "26c the cap does not cost a dispatch" "$(n_started)" "2"
+
 echo
 printf '== %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
