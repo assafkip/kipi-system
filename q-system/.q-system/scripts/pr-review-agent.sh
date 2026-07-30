@@ -622,9 +622,35 @@ post_reviewer_status() {
 
 if [ "$POST" = "1" ]; then
   COMMENT_URL=""
-  COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW" 2>/dev/null)" \
-    && echo "  posted to PR #$PR" \
-    || { COMMENT_URL=""; echo "  WARN: could not comment on PR" >&2; }
+  # POST THE RENDERED REVIEW, NEVER THE RAW FILE (sp-48688b24). `--body-file
+  # "$REVIEW"` sent the codex agent's entire stdout. Measured on disk 2026-07-30,
+  # four real rounds: 435,280 / 519,377 / 278,439 / 197,279 bytes. Three were
+  # rejected; only the 197,279-byte round landed (as a 197,208-character comment
+  # on PR #46). So the old failure was SIZE-DEPENDENT, not universal -- worth
+  # stating because the first two write-ups of this defect, mine included, both
+  # claimed it failed every time and were wrong.
+  #
+  # THE CAP IS DELIBERATELY CONSERVATIVE, NOT TUNED. The observed ceiling sits
+  # somewhere between 197,279 and 278,439 bytes, while a reproduced rejection
+  # reported `Body is too long (maximum is 65536 characters) (addComment)`. Those
+  # two facts do not agree, so the limit is path-dependent and I do not know which
+  # path a future gh version takes. 60,000 is under BOTH, which makes the comment
+  # succeed regardless of which limit applies. Tuning it upward would trade a
+  # guaranteed delivery for a longer transcript nobody reads.
+  REVIEW_BODY="$(mktemp -t pr-review-comment)"
+  review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
+  # Keep the reason. A bare "could not comment" sent the maintainer to guess
+  # between a size rejection, an auth failure and a closed PR -- the same
+  # discard-the-reason defect PR #46 fixed one call lower down.
+  COMMENT_ERR="$(mktemp -t pr-review-comment-err)"
+  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW_BODY" 2>"$COMMENT_ERR")"; then
+    echo "  posted to PR #$PR ($(wc -c <"$REVIEW_BODY" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
+  else
+    COMMENT_URL=""
+    echo "  WARN: could not comment on PR #$PR: $(tr '\n' ' ' <"$COMMENT_ERR" | cut -c1-300)" >&2
+    echo "  WARN: the review is on disk at $REVIEW but NO human-readable copy reached the PR" >&2
+  fi
+  rm -f "$REVIEW_BODY" "$COMMENT_ERR"
   # No sha, no status. A status on a guessed commit is worse than none because
   # it looks authoritative -- the same reason ASK-216 captured the sha before
   # dispatch instead of looking it up afterwards.
