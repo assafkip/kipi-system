@@ -86,7 +86,17 @@ git -C "$REPO" cat-file -e "${ABSENT}^{commit}" 2>/dev/null \
   && fail "premise broken: the fabricated sha exists in the object store"
 ok "premises: orphan ${ORPHAN:0:12} is a real object and not an ancestor; ${ABSENT:0:12} is absent"
 
-printf '#!/usr/bin/env bash\nexit 0\n' > "$W/notify.sh"; chmod +x "$W/notify.sh"
+# The notify stub RECORDS, because "did it page?" must be answered by a side
+# effect. Case 5 asserts a page fired for a review that never reached the issue.
+# $W is expanded HERE (unquoted heredoc) so the stub writes to the sandbox; "$*" is
+# escaped so it stays a reference the stub evaluates at call time. Getting this
+# backwards writes to /notify.log and the page assertion fails for the wrong reason.
+cat > "$W/notify.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$W/notify.log"
+exit 0
+EOF
+chmod +x "$W/notify.sh"
 cat > "$W/review-body.txt" <<'EOF'
 ## VERDICT: APPROVE
 
@@ -256,5 +266,45 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["he
   || fail "the verdict record does not pin the worktree head it actually reviewed:
       $(cat "$(record "$CASE_DIR")")"
 ok "the verdict record pins the worktree's head sha"
+
+
+# --- case 5: a review that cannot reach the issue must not vanish (sp-583dc1a0) --
+# codex round 2 of PR #34, minor. The Linear post ended in `>/dev/null 2>&1 || true`:
+# every OTHER failure on the post path announces itself (the PR comment warns, a
+# failed commit status warns that NO gate moved), but a failed Linear post printed
+# nothing, threw the reason away, and the run still exited 0 and printed `done`.
+# Linear is the one surface Sana reads. A silently lost review means the gate is set
+# from findings she was never shown and the rework conversation never starts, while
+# every log line says the run was fine.
+#
+# The harness has no linear-sync.py, so `python3 "$SYNC"` cannot succeed here. That
+# is the whole fixture: the failure is real, not simulated with a flag.
+run_case postloss "$REAL_HEAD" --post --issue ASK-901
+
+[ "$RC" -eq 0 ]   || fail "the run exited $RC because the ISSUE post failed. The gate above it was already set
+      from a review that really ran, so failing here makes the worker log \`codex reviewer failed\`
+      for a review that succeeded. Loud, not fatal. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "a failed issue post does not fail the run (the gate it already set is legitimate)"
+
+grep -q 'could not post the review to ASK-901' "$CASE_DIR/err.txt"   || fail "THE DEFECT: the review never reached ASK-901 and NOTHING said so. The run printed
+      \`done\` and exited 0. Sana cannot answer findings she was never shown, and no log line
+      reveals that the conversation never started. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "a failed issue post is announced on stderr, naming the issue"
+
+grep -q 'no findings to answer\|cannot start\|Reason:' "$CASE_DIR/err.txt"   || fail "it warned, but without the CONSEQUENCE or the reason. An operator seeing this needs to
+      know the gate moved without the findings landing, and why the post failed. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "the warning carries the consequence and the underlying reason"
+
+grep -q 'did NOT reach ASK-901' "$W/notify.log" 2>/dev/null   || fail "no page fired. This happens in UNATTENDED runs, where stderr goes to a log nobody is
+      watching -- that is exactly the case founder-notifications exists for. notify.log was:
+$(sed 's/^/        /' "$W/notify.log" 2>/dev/null || echo '        (absent)')"
+ok "a page fires, so an unattended loss is not invisible"
+
+grep -q 'review posted to ASK-901' "$CASE_DIR/out.txt"   && fail "it claimed the review was posted to ASK-901 while the post actually failed. A false
+      success line is worse than silence."
+ok "it does not claim success for a post that failed"
 
 echo "PASS: $PASS/$PASS tree-guard checks"
