@@ -196,6 +196,40 @@ else
 fi
 
 echo
+echo "== 13. a LARGE findings block cannot overrun the limit (codex round 5, minor) =="
+# The header reservation was a flat 5,000 bytes while the findings block inside
+# it is unbounded, so a review with many findings blew past the cap this function
+# exists to guarantee. Build a block bigger than the old reservation and assert
+# the body still fits AND still carries every finding.
+BIGF="$WORK/big-findings.md"
+{
+  echo "## VERDICT"; echo "REQUEST CHANGES"
+  # The padding must push the review PAST the byte budget, or the renderer takes
+  # the "small review, pass it through whole" branch and the reservation is never
+  # exercised. My first fixture was ~30KB, so case 13 passed against the OLD flat
+  # reservation too -- it proved nothing until the negative self-test said so.
+  for _ in $(seq 1 3000); do echo "narrative padding line to give the tail something to eat and push this review well past the sixty-thousand-byte budget"; done
+  echo "FINDINGS:"
+  for i in $(seq 1 90); do
+    printf 'major|finding %s with a deliberately long claim string so the block alone exceeds the old flat five-thousand-byte header reservation|q-system/.q-system/scripts/some-file-%s.sh:%s\n' "$i" "$i" "$i"
+  done
+  echo "END FINDINGS"
+} >"$BIGF"
+BLOCK_BYTES="$(findings_block "$BIGF" | wc -c | tr -d ' ')"
+review_comment_body "$BIGF" "REQUEST CHANGES" "codex" 0 >"$WORK/bigf-body.md" 2>/dev/null
+BB="$(wc -c <"$WORK/bigf-body.md" | tr -d ' ')"
+[ "${BLOCK_BYTES:-0}" -gt 5000 ] \
+  && ok "fixture reproduces the case: findings block alone is $BLOCK_BYTES bytes > the old 5000 reservation" \
+  || bad "fixture too small ($BLOCK_BYTES bytes); case 13 proves nothing"
+[ "$BB" -le "$GH_LIMIT" ] \
+  && ok "body with a $BLOCK_BYTES-byte findings block still fits ($BB <= $GH_LIMIT)" \
+  || bad "THE DEFECT: body is $BB bytes, over the $GH_LIMIT limit the renderer guarantees"
+RENDERED_N="$(awk '/^FINDINGS:/{f=1} f&&/^major\|/{n++} /^END FINDINGS/{if(f){print n; exit}}' "$WORK/bigf-body.md")"
+[ "${RENDERED_N:-0}" -eq 90 ] \
+  && ok "all 90 findings survive (narrative is sacrificed first, never a finding)" \
+  || bad "only ${RENDERED_N:-0} of 90 findings rendered -- truncation ate a finding"
+
+echo
 echo "== 12. no BSD-only mktemp form (portability, caught by CI not by me) =="
 # `mktemp -t name` appends a random suffix on BSD (macOS) and is REJECTED by GNU
 # mktemp (the Linux runner) unless the template carries three or more X's. My

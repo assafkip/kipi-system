@@ -359,9 +359,22 @@ review_comment_body() {
   # open mid-line and, worse, mid-UTF-8-sequence: these reviews contain typographic
   # quotes, so a blind byte cut can emit an invalid sequence. Dropping the first
   # partial line costs nothing and keeps the body valid text.
-  head_bytes="$(review_comment_body_header_size)"
+  # MEASURE THE HEADER, DO NOT ASSUME IT (codex round 5 on PR #47, minor). The
+  # reservation used to be a flat 5,000 bytes, but the findings block inside the
+  # header is UNBOUNDED -- a review with many findings, or one long claim string,
+  # blows past it and the rendered body exceeds the very limit this function
+  # exists to guarantee. A cap that a large input can overrun is not a cap.
+  #
+  # The block is already in hand ($block), so its size is a fact, not an estimate.
+  # The fixed number stays only as the allowance for the surrounding prose.
+  head_bytes=$(( $(review_comment_body_header_size) + ${#block} ))
   local room=$(( limit - head_bytes ))
-  [ "$room" -gt 1024 ] || room=1024
+  # A findings block alone can now exceed the limit. Truncating findings would
+  # drop the one thing a human must act on, so the narrative goes to zero first
+  # and the block is still printed whole -- deliberately overrunning rather than
+  # silently losing a finding. The caller's failure branch then reports it, which
+  # is a loud failure instead of a quiet omission.
+  [ "$room" -gt 512 ] || room=0
   if [ "${bytes:-0}" -gt "$room" ]; then
     printf -- '--- reviewer output, last %s bytes of %s (full review at the path above) ---\n\n' \
       "$room" "$bytes"

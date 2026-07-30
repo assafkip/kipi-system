@@ -72,6 +72,10 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
+# THE one writer of that ledger. Six functions here used to each do their own
+# unsynchronised read-modify-write on it (sp-53b02cc4); codex round 5 caught that
+# my round-4 lock covered only one of the six.
+LEDGER="$SCRIPT_DIR/attempts-ledger.py"
 LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
@@ -280,46 +284,16 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # whole point is that attempts are counted, and a dropped bump is the defect. It
 # takes the lock by force after the timeout, on the reasoning that a stale lock
 # from a killed worker is far likelier than a live worker holding it for 10s.
-bump_attempt() { python3 -c "
-import json,os,sys,tempfile,time
-path=sys.argv[4]; lock=path+'.lock'
-for _ in range(100):
-    try:
-        os.mkdir(lock); break
-    except FileExistsError:
-        time.sleep(0.1)
-else:
-    pass  # stale lock: proceed rather than drop the count
-try:
-    try: d=json.load(open(path))
-    except Exception: d={}
-    e=d.setdefault(sys.argv[1],{'count':0}); e['count']=e.get('count',0)+1
-    e['last']=sys.argv[2]; e['why']=sys.argv[3]
-    fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or '.')
-    with os.fdopen(fd,'w') as fh: json.dump(d,fh,indent=2)
-    os.replace(tmp,path)
-finally:
-    try: os.rmdir(lock)
-    except Exception: pass" "$1" "$(TS)" "$2" "$ATTEMPTS"; }
+bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
 # and NOT `rounds` (review rounds). Three different budgets answering three
 # different questions; sharing one would let a rebase attempt spend a review
 # round, which is the thing the separate cap exists to prevent.
-conflict_rounds_for() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-print(d.get(sys.argv[1],{}).get('conflict_rounds',0))" "$1"; }
+conflict_rounds_for() { python3 "$LEDGER" "$ATTEMPTS" get "$1" conflict_rounds 0; }
 
-bump_conflict_round() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); e['conflict_rounds']=e.get('conflict_rounds',0)+1
-e['last_conflict']=sys.argv[2]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+bump_conflict_round() { python3 "$LEDGER" "$ATTEMPTS" bump-conflict "$1"; }
 
 # CONSECUTIVE, NOT LIFETIME (PR #25 review, finding 3). Nothing used to clear
 # these keys, so the cap counted every conflict the issue ever had -- including
@@ -333,33 +307,16 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
 # how an unresolvable conflict gets infinite rounds. Clearing conflict_paged
 # alongside is deliberate: a NEW conflict streak after the PR was healthy is new
 # information, not a repeat of the page the founder already got.
-clear_conflict_rounds() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('conflict_rounds') or e.get('conflict_paged')): raise SystemExit(0)
-for k in ('conflict_rounds','conflict_paged','last_conflict'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_conflict_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-conflict "$1"; }
 
 # --- drift-round ledger (ASK-219, PR #30 review round 2) ---------------------
 # A FOURTH key, deliberately not `count`, not `rounds`, not `conflict_rounds`.
 # Four budgets, four questions. A drift round that spent the conflict budget
 # would leave a real conflict un-dispatchable later; one that spent `count`
 # would mark good work STUCK after three rounds that all ran fine.
-drift_rounds_for() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-print(d.get(sys.argv[1],{}).get('drift_rounds',0))" "$1"; }
+drift_rounds_for() { python3 "$LEDGER" "$ATTEMPTS" get "$1" drift_rounds 0; }
 
-bump_drift_round() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); e['drift_rounds']=e.get('drift_rounds',0)+1
-e['last_drift']=sys.argv[2]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+bump_drift_round() { python3 "$LEDGER" "$ATTEMPTS" bump-drift "$1"; }
 
 # CONSECUTIVE, NOT LIFETIME -- the same scar clear_conflict_rounds carries (PR
 # #25 finding 3). Without this the cap would count every drift in the issue's
@@ -372,14 +329,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
 # repinned the record to the head, or the verdict is no longer approving, or the
 # record is gone. Re-deriving that comparison in this file is exactly the
 # two-readers-of-one-input defect pr-verdict-lib.sh exists to close.
-clear_drift_rounds() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('drift_rounds') or e.get('drift_paged')): raise SystemExit(0)
-for k in ('drift_rounds','drift_paged','last_drift'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_drift_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-drift "$1"; }
 
 # Returns 0 the FIRST time <flag> is claimed for this issue and 1 every time
 # after, so a page fires exactly once instead of once per scheduled run. A
@@ -388,15 +338,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
 # same write that reports it, so two runs cannot both read "not paged yet".
 # Takes the flag NAME so every once-only page in this script shares one
 # mechanism instead of each stuck-state inventing its own convention.
-claim_page_once() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{})
-first = not e.get(sys.argv[2])
-e[sys.argv[2]]=True
-json.dump(d,open('$ATTEMPTS','w'),indent=2)
-raise SystemExit(0 if first else 1)" "$1" "$2"; }
+claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 
 # Pops the two auto-merge page flags the moment the PR is SEEN armed. Same scar
 # clear_conflict_rounds and clear_drift_rounds both carry (PR #25 finding 3): a
