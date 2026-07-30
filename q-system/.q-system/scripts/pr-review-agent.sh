@@ -236,7 +236,70 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
 # still must never be reviewed.
 REVIEW_ROOT="$SKEL"
-if [ -n "$HEAD_SHA" ]; then
+
+# REVIEW IN A DEDICATED DETACHED WORKTREE, NEVER IN A CHECKOUT SOMEONE IS USING
+# (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
+# but when the live checkout happens to sit at that sha, "a tree that holds it"
+# IS the founder's working directory, and that is where the review ran. Both
+# PR #47 rounds recorded `workdir: /Users/assafkipnis/projects/kipi-system` with
+# `sandbox: workspace-write`.
+#
+# Two failures at once, and the second is the worse one:
+#   READ  -- an edit during a 7-13 minute review means the reviewer judged a tree
+#            state that never existed as a commit, while the verdict is stamped on
+#            a head_sha whose content it did not read. The provenance is false in
+#            exactly the way the tree guard exists to prevent.
+#   WRITE -- workspace-write lets the reviewer modify the founder's live checkout.
+#
+# The workaround was "everyone holds still for 13 minutes", which is not a control.
+# A detached worktree pinned to the exact sha is: it cannot drift while the review
+# runs, nobody else is editing it, and the tree/PR match becomes true by
+# construction rather than by search.
+#
+# One tree per PR, reused across rounds by re-detaching rather than removing --
+# removal is a destructive op on a path this script does not own, and re-checkout
+# reaches the same state.
+review_worktree() {  # review_worktree <sha> -> prints path, or nothing
+  local sha="$1" wt="$HOME/.config/kipi/review-trees/pr-$PR"
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
+    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
+  else
+    git -C "$SKEL" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+  fi
+  # Prove it landed where we asked. A worktree silently sitting at the wrong sha
+  # is the same false-provenance bug in a new costume.
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+  printf '%s' "$wt"
+}
+
+if [ -n "$HEAD_SHA" ] && git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+  ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
+  if [ -n "$ISOLATED" ]; then
+    REVIEW_ROOT="$ISOLATED"
+    echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
+    HEAD_SHA_ISOLATED=1
+  else
+    # Say it out loud rather than quietly reviewing the live tree. A degraded run
+    # that nobody knows is degraded is how the original defect stayed invisible.
+    echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2
+    HEAD_SHA_ISOLATED=0
+  fi
+elif [ -n "$HEAD_SHA" ]; then
+  # OBJECT ABSENT -> fall through to the ORIGINAL tier-1 path (warn, proceed).
+  # I briefly made this refuse, on the reasoning that no tree can be built at a
+  # missing object so the provenance must be false. The tree-guard suite refused
+  # the change and was right: a stale or partial clone cannot prove ancestry
+  # EITHER WAY, so refusing wedges the loop on a fetch problem, and every reviewer
+  # case in test-severity-floor.sh reports a fabricated sha and takes exactly this
+  # branch. Isolation raises the floor for the case that actually occurs (the
+  # object is present); it does not get to redefine the case it cannot serve.
+  HEAD_SHA_ISOLATED=0
+else
+  HEAD_SHA_ISOLATED=0
+fi
+
+if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
   if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
   elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then

@@ -254,7 +254,40 @@ if [ -z "$BUDGET_DAY" ]; then
   page "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
   exit 1
 fi
-COUNT_FILE="$HOME/.config/kipi/dispatch-count-$BUDGET_DAY"
+# --- TWO LANES: production and verification -------------------------------
+# Founder directive 2026-07-30: "refill the budget for this test -- the budget
+# should never stop testing."
+#
+# The principle, and why a counter reset was the WRONG answer. The cap protects
+# production dispatch: sessions, blast radius, an unattended loop that merges its
+# own PRs. It was never meant to stop us PROVING the loop works. On 2026-07-30 it
+# did exactly that: the day's three slots went to runs that opened no PR, so the
+# dispatcher-driven proof could not be attempted at all until 07:00 the next day.
+# A gate that blocks verification is not protecting anything.
+#
+# Resetting the counter would have conflated a test run with a production run and
+# put the same wall back tomorrow. So verification gets its OWN budget: its own
+# counter file, its own cap, and a visible label in every line it writes. The
+# production budget is untouched and still 3 -- the reasoning above the DAILY_MAX
+# assignment is unchanged and still holds.
+#
+# A SEPARATE CAP, NOT NO CAP. "Never stop testing" is not "never bounded": an
+# unbounded test lane is the same runaway loop wearing a different label, and the
+# codex spend is just as real. Two slots, resetting on the same budget day, is
+# enough to run a proof and retry it once.
+DISPATCH_LANE="${KIPI_DISPATCH_LANE:-production}"
+case "$DISPATCH_LANE" in
+  production) COUNT_SUFFIX=""      ; LANE_MAX="$DAILY_MAX" ; LANE_TAG="" ;;
+  test)       COUNT_SUFFIX="-test" ; LANE_MAX="${KIPI_DISPATCH_TEST_MAX:-2}" ; LANE_TAG="[test] " ;;
+  *) say "FATAL: unknown KIPI_DISPATCH_LANE '$DISPATCH_LANE' (expected production|test)"; exit 1 ;;
+esac
+# The lane is named in the log on every non-production run, so a test dispatch can
+# never be mistaken for the unattended proof later. The proof is a verdict record
+# carrying invoker=worker; a lane label in the log is how a human tells which run
+# produced it.
+[ "$DISPATCH_LANE" = "production" ] || say "${LANE_TAG}lane=$DISPATCH_LANE cap=$LANE_MAX (production budget untouched)"
+DAILY_MAX="$LANE_MAX"
+COUNT_FILE="$HOME/.config/kipi/dispatch-count$COUNT_SUFFIX-$BUDGET_DAY"
 DISPATCHED_TODAY="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
 case "$DISPATCHED_TODAY" in ''|*[!0-9]*) DISPATCHED_TODAY=0 ;; esac
 
@@ -262,7 +295,7 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   # Say it once per day, not every 15 minutes -- a budget ceiling repeated 96
   # times is the cry-wolf failure, and this is not an error state anyway.
   if [ ! -f "$COUNT_FILE.paged" ]; then
-    say "DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY, stopping until ${RESET_HOUR}:00 local"
+    say "${LANE_TAG}DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY (lane=$DISPATCH_LANE), stopping until ${RESET_HOUR}:00 local"
     page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
     : > "$COUNT_FILE.paged"
   fi
@@ -326,7 +359,7 @@ fi
 # hand out a free dispatch every heartbeat -- the budget must fail closed.
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
 
-say "dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX)"
+say "${LANE_TAG}dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX lane=$DISPATCH_LANE)"
 
 # THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE.
 #
