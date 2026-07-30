@@ -10,6 +10,12 @@
 #
 # Fixing each defect stops that defect. This stops the seventh.
 #
+# IT PAID FOR ITSELF BEFORE IT WAS FINISHED, and the number is the argument:
+# it found in SECONDS what a full CI round could only report as `rc=1` after
+# EIGHT MINUTES -- and in one case it overturned a fix that had already survived
+# a CI round, because `rc=1` does not tell you WHICH assertion failed or why.
+# Build the check at the level of the class, not the instance.
+#
 # WHAT CI HAS THAT A DEV MACHINE DOES NOT: a clean $HOME with no accumulated
 # state, no `~/.config/kipi`, no KIPI_* environment, and a fresh checkout. Those
 # are the differences a local `bash test-foo.sh` cannot see, because the machine
@@ -39,6 +45,23 @@ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/ci-shaped.XXXXXX")"
 cleanup() { [ -n "${SANDBOX:-}" ] && [ -d "$SANDBOX" ] && /bin/rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
+# HONOUR THE DECLARED RUNNER. The manifest carries `runner` per test (bash or
+# python3) and the first cut of this script ran `bash` on everything -- so every
+# .py test came back rc=2 ("cannot execute"), which reads as a failing test rather
+# than a broken harness. A runner that misreports the thing it is checking is
+# worse than no runner. Caught by its own first full sweep.
+runner_for() {  # runner_for <abs-path> -> bash|python3
+  local rel="${1#$REPO/}" r
+  r="$(python3 -c "
+import json,sys
+try: m=json.load(open('$MANIFEST'))
+except Exception: sys.exit()
+for e in m.get('expected_tests',[]):
+    if e.get('path')==sys.argv[1]: print(e.get('runner','')); break" "$rel" 2>/dev/null)"
+  [ -n "$r" ] || case "$1" in *.py) r=python3 ;; *) r=bash ;; esac
+  printf '%s' "$r"
+}
+
 run_ci_shaped() {  # run_ci_shaped <test-path> -> rc
   local t="$1" home="$SANDBOX/home-$(basename "$t" | tr -c 'a-zA-Z0-9' '_')"
   mkdir -p "$home"
@@ -49,12 +72,12 @@ run_ci_shaped() {  # run_ci_shaped <test-path> -> rc
   local unsets=()
   while IFS= read -r v; do [ -n "$v" ] && unsets+=("$v"); done < <(env | grep -oE '^KIPI_[A-Z_]+' || true)
   ( cd "$REPO" && env "${unsets[@]/#/--unset=}" HOME="$home" \
-      bash "$t" ) >"$SANDBOX/$(basename "$t").out" 2>&1
+      "$(runner_for "$t")" "$t" ) >"$SANDBOX/$(basename "$t").out" 2>&1
   return $?
 }
 
 run_normal() {  # run_normal <test-path> -> rc
-  ( cd "$REPO" && bash "$t" ) >"$SANDBOX/$(basename "$1").normal.out" 2>&1
+  ( cd "$REPO" && "$(runner_for "$1")" "$1" ) >"$SANDBOX/$(basename "$1").normal.out" 2>&1
   return $?
 }
 
