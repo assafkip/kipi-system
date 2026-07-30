@@ -85,6 +85,18 @@ C_CODEX_MENTIONS_SANA = {
              "the file:line that already handles it, or what you changed."),
     "user": {"name": "Assaf Kipnis"}, "botActor": None}
 
+# THE SHAPE CODEX FOUND, 2026-07-30. The case above covers the bare text "Sana:".
+# It does NOT cover the attribution MARKER appearing in prose, so anchoring the
+# filter on `**sana**` anywhere in the body still passed it while misattributing
+# this comment. A reviewer discussing attribution writes the marker verbatim, and
+# so does any comment quoting `progress` output -- several in this very thread do.
+# Fixture copied from Codex's executed reproducer, not invented.
+C_CODEX_QUOTES_MARKER = {
+    "id": "c5", "createdAt": "2026-07-29T05:00:00.000Z",
+    "body": ("**codex-reviewer** · 2026-07-29 05:00 UTC\n\n"
+             "The fix preserves **sana** attribution on the first line."),
+    "user": {"name": "Assaf Kipnis"}, "botActor": None}
+
 
 def run_comments(mod, args, payload=None, raise_exc=None):
     """Drive cmd_comments with graphql stubbed. Returns (rc, stdout, stderr)."""
@@ -216,6 +228,21 @@ def main():
         fail(f"--agent sana dropped Sana's own comment. Got:\n{out}")
     else:
         ok("--agent matches the '**author**' marker, not a mention of that agent")
+
+    # --- REGRESSION: the marker must anchor to the FIRST LINE ------------------
+    # Codex's finding, 2026-07-30. Anchoring on `**sana**` anywhere in the body is
+    # not enough: a reviewer comment whose PROSE contains that marker is still
+    # misattributed. Only the first line is the attribution.
+    rc, out, _ = run_comments(mod, Args("ASK-221", agent="sana"),
+                              make_issue([C_CODEX_QUOTES_MARKER, C_SANA]))
+    if "codex-reviewer" in out:
+        fail("THE BUG CODEX FOUND ON THE FIX ITSELF: --agent sana returned a comment "
+             "AUTHORED by codex-reviewer because its prose contains the marker "
+             f"'**sana**'. Only the first line is the attribution. Got:\n{out}")
+    elif "Picked up by the worker" not in out:
+        fail(f"--agent sana dropped Sana's own comment. Got:\n{out}")
+    else:
+        ok("--agent anchors the marker to the first line, not anywhere in the prose")
 
     # --- REGRESSION: progress must not claim success on a rejected mutation ----
     # The other live bug: commentCreate's result was discarded, so a rejected

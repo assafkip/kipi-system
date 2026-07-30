@@ -726,8 +726,19 @@ def cmd_comments(args) -> int:
         # comment on THIS issue", so `--agent sana` returned the REVIEWER's comment
         # as if Sana had written it. My own test passed because its fixture never
         # put the word "sana" inside the reviewer's comment. The real prompt does.
+        # ANCHOR TO THE FIRST LINE, not anywhere in the body. `progress` writes the
+        # author as the literal first line "**<who>** · <stamp>", so that line IS the
+        # attribution and everything after it is prose.
+        #
+        # Codex found the whole-body version on 2026-07-30 (minor, reproducer with
+        # real output): a comment authored by codex-reviewer whose prose contains the
+        # markdown `**sana**` was attributed to Sana. Third time in one session that
+        # my fixture missed the shape that breaks it -- the earlier regression case
+        # covered the bare text "Sana:" and not the marker token itself, so the suite
+        # stayed green over a live bug. See feedback-fixtures-from-producers.
         marker = f"**{args.agent.lower()}**"
-        nodes = [n for n in nodes if marker in (n.get("body") or "").lower()]
+        nodes = [n for n in nodes
+                 if (n.get("body") or "").lstrip().split("\n", 1)[0].lower().startswith(marker)]
     if args.last and args.last > 0:
         nodes = nodes[-args.last:]
 
