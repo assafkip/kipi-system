@@ -44,6 +44,12 @@ NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
 page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
+# Same notifier, but REPORTS whether it went out. page() ends in `|| true` on
+# purpose -- a notifier must never take its caller down -- which makes it useless
+# to a caller that has to know. Kept as a sibling rather than changing page()'s
+# contract for the dozen sites that correctly do not care. Used by stale_check,
+# which must not write a dedupe marker for a page that never arrived.
+page_ok() { bash "$NOTIFY" "$1" >/dev/null 2>&1; }
 
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
@@ -123,8 +129,21 @@ stale_check() {
   # definition of "the state dir" rather than a second literal path.
   local paged_mark="$(dirname "$LOG")/stale-paged-$remote_head"
   if [ ! -f "$paged_mark" ]; then
-    page "kipi dispatch: refused to run -- origin/main has $base commit(s) this checkout lacks, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"
-    : > "$paged_mark" 2>/dev/null || true
+    # MARK ONLY WHAT WAS ACTUALLY DELIVERED (codex round 4, major 2). The first cut
+    # wrote the marker unconditionally, so a page that FAILED -- webhook down, no
+    # network, slack-notify missing -- still suppressed every later notification for
+    # that sha. The founder would then be permanently silent about a refusing loop,
+    # which is strictly worse than the 96-a-day storm this dedupe was added to stop:
+    # a storm is annoying, silence is invisible.
+    #
+    # page() ends in `|| true` so it cannot report, deliberately (a notifier must
+    # never take the caller down). So call the notifier directly here and read its
+    # status, rather than changing page()'s contract for every other caller.
+    if page_ok "kipi dispatch: refused to run -- origin/main has $base commit(s) this checkout lacks, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"; then
+      : > "$paged_mark" 2>/dev/null || true
+    else
+      say "stale-check: the page did NOT go out; leaving the dedupe marker unset so the next heartbeat retries it"
+    fi
   fi
   return 1
 }

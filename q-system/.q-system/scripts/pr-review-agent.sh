@@ -643,14 +643,31 @@ if [ "$POST" = "1" ]; then
   # BSD form, passed 14/14 locally, and turned `validate` red on the PR -- the
   # body file was never created, so --body-file got an empty path. Nothing on
   # this machine could have caught it; the runner is the other OS.
-  REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX")" || REVIEW_BODY="$REVIEW"
-  review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
+  # NEVER FALL BACK TO $REVIEW ITSELF (codex round 4, minor). My first fallback was
+  # `|| REVIEW_BODY="$REVIEW"`, which then ran
+  # `review_comment_body "$REVIEW" > "$REVIEW_BODY"` -- the same path as input and
+  # output. The `>` truncates the review before the renderer reads it, so a mktemp
+  # failure would DESTROY the only copy of a review that cost 8-13 minutes of codex
+  # time, and post a self-copy of the wreckage. A degraded path may post something
+  # worse; it may never eat the artifact.
+  REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX" 2>/dev/null)" || REVIEW_BODY=""
+  # POST_FILE is what gh sends; REVIEW_BODY is only ever a file WE created. Keeping
+  # them separate is what makes the degraded path safe: with no temp file we post
+  # the raw review unchanged and write nothing, instead of redirecting into the
+  # artifact we are trying to read.
+  if [ -n "$REVIEW_BODY" ]; then
+    review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
+    POST_FILE="$REVIEW_BODY"
+  else
+    POST_FILE="$REVIEW"
+    echo "  WARN: could not create a temp file; posting the RAW review, which GitHub may reject on size" >&2
+  fi
   # Keep the reason. A bare "could not comment" sent the maintainer to guess
   # between a size rejection, an auth failure and a closed PR -- the same
   # discard-the-reason defect PR #46 fixed one call lower down.
-  COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX")" || COMMENT_ERR=/dev/null
-  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW_BODY" 2>"$COMMENT_ERR")"; then
-    echo "  posted to PR #$PR ($(wc -c <"$REVIEW_BODY" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
+  COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
+  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+    echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
   else
     COMMENT_URL=""
     echo "  WARN: could not comment on PR #$PR: $(tr '\n' ' ' <"$COMMENT_ERR" | cut -c1-300)" >&2

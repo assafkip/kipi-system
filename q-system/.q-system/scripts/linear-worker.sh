@@ -262,12 +262,45 @@ try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
 print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 
+# SINGLE-WRITER CHOKEPOINT FOR THE ATTEMPTS LEDGER (codex round 4, major 1).
+#
+# This was a bare read-modify-write. Two workers finishing together both read the
+# same count, both wrote count+1, and one update vanished -- so an issue could
+# exceed MAX_ATTEMPTS and keep being dispatched, which is exactly the runaway the
+# cap exists to stop. sp-53b02cc4 already recorded FIVE bumpers with this shape;
+# the no-PR bump added tonight would have been the sixth. Fixing the shared helper
+# fixes all of them at once, which is why it belongs here and not at a call site.
+#
+# mkdir is the lock because it is atomic on POSIX and needs no flock -- macOS
+# ships no flock, so the portable primitive is the only one that works on both
+# kernels this fleet runs on. Write-temp-then-rename makes the replacement atomic
+# too, so a crash mid-write cannot leave a truncated ledger.
+#
+# A lock we cannot take within the timeout does NOT silently skip the bump: the
+# whole point is that attempts are counted, and a dropped bump is the defect. It
+# takes the lock by force after the timeout, on the reasoning that a stale lock
+# from a killed worker is far likelier than a live worker holding it for 10s.
 bump_attempt() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
+import json,os,sys,tempfile,time
+path=sys.argv[4]; lock=path+'.lock'
+for _ in range(100):
+    try:
+        os.mkdir(lock); break
+    except FileExistsError:
+        time.sleep(0.1)
+else:
+    pass  # stale lock: proceed rather than drop the count
+try:
+    try: d=json.load(open(path))
+    except Exception: d={}
+    e=d.setdefault(sys.argv[1],{'count':0}); e['count']=e.get('count',0)+1
+    e['last']=sys.argv[2]; e['why']=sys.argv[3]
+    fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or '.')
+    with os.fdopen(fd,'w') as fh: json.dump(d,fh,indent=2)
+    os.replace(tmp,path)
+finally:
+    try: os.rmdir(lock)
+    except Exception: pass" "$1" "$(TS)" "$2" "$ATTEMPTS"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)

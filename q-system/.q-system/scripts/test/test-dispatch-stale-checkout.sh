@@ -45,6 +45,11 @@ HARNESS="$WORK/stale_check.sh"
   echo 'REPO="$PWD"'
   echo 'say()  { printf "SAY %s\n"  "$*"; }'
   echo 'page() { printf "PAGE %s\n" "$*"; }'
+  # page_ok reports delivery, and its exit code is the thing under test in case 7:
+  # KIPI_TEST_PAGE_FAILS=1 makes the notifier fail so the dedupe marker must NOT
+  # be written. Without a failure knob the "failed page still dedupes" defect
+  # cannot be reproduced at all.
+  echo 'page_ok() { printf "PAGE %s\n" "$*"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
   awk '/^stale_check\(\) \{/,/^\}/' "$DISPATCH"
   echo 'stale_check && echo "VERDICT=RUN" || echo "VERDICT=REFUSE"'
 } > "$HARNESS"
@@ -155,6 +160,31 @@ fi
 echo "$(run_dedupe "$DIV")" | grep -q 'SAY REFUSING' \
   && ok "the refusal is logged on every heartbeat even when the page is deduped" \
   || bad "a deduped page also silenced the log line, so the refusal is invisible"
+
+echo
+echo "== 7. a FAILED page must not create the dedupe marker (codex round 4, major 2) =="
+# Writing the marker for a page that never went out permanently silences the
+# founder about a refusing loop. A storm is annoying; silence is invisible, and
+# strictly worse than the bug the dedupe was added to fix.
+STATE2="$WORK/pagefail"; mkdir -p "$STATE2"
+run_failing() { ( cd "$1" && KIPI_TEST_PAGE_FAILS=1 LOG="$STATE2/dispatch.log" bash "$HARNESS" 2>&1 ); }
+run_ok2()     { ( cd "$1" && LOG="$STATE2/dispatch.log" bash "$HARNESS" 2>&1 ); }
+F1="$(run_failing "$DIV" | grep -c '^PAGE ' || true)"
+# Now let the notifier succeed. If the failed attempt wrote a marker, this is muted.
+F2="$(run_ok2 "$DIV" | grep -c '^PAGE ' || true)"
+if [ "${F1:-0}" -ge 1 ] && [ "${F2:-0}" -ge 1 ]; then
+  ok "a failed page leaves the marker unset, so the next heartbeat retries it ($F1 then $F2)"
+else
+  bad "THE DEFECT: failed page still deduped -- founder goes permanently silent ($F1 then $F2)"
+fi
+# FRESH state dir. The successful page above wrote a marker, so re-running against
+# the same dir skips the whole block and emits nothing -- which is correct
+# behaviour and a broken assertion. Caught by this case failing on its first run.
+STATE3="$WORK/pagefail-log"; mkdir -p "$STATE3"
+LOGLINE="$( cd "$DIV" && KIPI_TEST_PAGE_FAILS=1 LOG="$STATE3/dispatch.log" bash "$HARNESS" 2>&1 )"
+echo "$LOGLINE" | grep -q 'did NOT go out' \
+  && ok "the undelivered page is logged" \
+  || bad "an undelivered page is not logged, so the silence has no trace"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
