@@ -1,0 +1,20 @@
+  PASS delegate, agent-verdict and the verdict deriver all exist
+  FAIL THE sp-c0a9dac3 DEFECT: findings-shaped text inside the REVIEWED DIFF contributed to the real verdict. The reviewer's own block (last) holds only a minor, so this must be APPROVE WITH NITS; got 'REQUEST CHANGES' from [('major', 'the fallback fills the slot without marking it degraded|q-system/x.sh:40'), ('minor', 'only a nit survived|x.py:1')]
+  PASS the severity allowlist rejects the prompt template's placeholder line
+  PASS blocker/major/minor-nit/empty map to BLOCK/REQUEST CHANGES/NITS/APPROVE
+  PASS an unclosed FINDINGS block derives no verdict (truncation is not consent)
+  PASS a complete session derives the verdict and exits 0
+  PASS the newest session is selected, not an older errored one
+  PASS status=error is UNSTATED and exits non-zero
+  PASS no agent session is UNSTATED and exits non-zero
+  PASS a complete session with no response activity is UNSTATED
+  PASS a response with no FINDINGS block is UNSTATED
+  PASS delegate resolves the agent and confirms the read-back
+  PASS an unknown agent name BLOCKs and exits non-zero
+  PASS success=false BLOCKs and exits non-zero
+  PASS a read-back naming the wrong delegate BLOCKs
+  PASS --clear removes the delegation
+  PASS --clear BLOCKs if the delegate survives
+  PASS both verbs are registered on the CLI
+
+== 17 passed, 1 failed

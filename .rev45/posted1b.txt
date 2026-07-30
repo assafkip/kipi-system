@@ -1,0 +1,1 @@
+WOULD POST: gh api -X POST repos/{owner}/{repo}/statuses/403bc0b802f736ed1f3b0aaedbee0c46515c66ca -f state=success -f context=kipi/codex-approved -f description=codex (gpt-5.6-sol, Linear agent): APPROVE
