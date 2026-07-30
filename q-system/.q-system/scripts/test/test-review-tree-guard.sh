@@ -86,7 +86,17 @@ git -C "$REPO" cat-file -e "${ABSENT}^{commit}" 2>/dev/null \
   && fail "premise broken: the fabricated sha exists in the object store"
 ok "premises: orphan ${ORPHAN:0:12} is a real object and not an ancestor; ${ABSENT:0:12} is absent"
 
-printf '#!/usr/bin/env bash\nexit 0\n' > "$W/notify.sh"; chmod +x "$W/notify.sh"
+# The notify stub RECORDS, because "did it page?" must be answered by a side
+# effect. Case 5 asserts a page fired for a review that never reached the issue.
+# $W is expanded HERE (unquoted heredoc) so the stub writes to the sandbox; "$*" is
+# escaped so it stays a reference the stub evaluates at call time. Getting this
+# backwards writes to /notify.log and the page assertion fails for the wrong reason.
+cat > "$W/notify.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$W/notify.log"
+exit 0
+EOF
+chmod +x "$W/notify.sh"
 cat > "$W/review-body.txt" <<'EOF'
 ## VERDICT: APPROVE
 
@@ -124,6 +134,7 @@ cat "$W/review-body.txt"
 EOF
   chmod +x "$d/bin/gh" "$d/bin/codex" "$d/bin/claude"
   ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$W/notify.sh" \
+      SYNC_CALL_LOG="${SYNC_CALL_LOG:-$d/sync-calls-unused.log}" \
       bash "$REVIEWER" 901 "$@" ) >"$d/out.txt" 2>"$d/err.txt"
   RC=$?
   CASE_DIR="$d"
@@ -256,5 +267,95 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["he
   || fail "the verdict record does not pin the worktree head it actually reviewed:
       $(cat "$(record "$CASE_DIR")")"
 ok "the verdict record pins the worktree's head sha"
+
+
+# --- case 5: a review that cannot reach the issue must not vanish (sp-583dc1a0) --
+# codex round 2 of PR #34, minor. The Linear post ended in `>/dev/null 2>&1 || true`:
+# every OTHER failure on the post path announces itself (the PR comment warns, a
+# failed commit status warns that NO gate moved), but a failed Linear post printed
+# nothing, threw the reason away, and the run still exited 0 and printed `done`.
+# Linear is the one surface Sana reads. A silently lost review means the gate is set
+# from findings she was never shown and the rework conversation never starts, while
+# every log line says the run was fine.
+#
+# The harness has no linear-sync.py, so `python3 "$SYNC"` cannot succeed here. That
+# is the whole fixture: the failure is real, not simulated with a flag.
+run_case postloss "$REAL_HEAD" --post --issue ASK-901
+
+[ "$RC" -eq 0 ]   || fail "the run exited $RC because the ISSUE post failed. The gate above it was already set
+      from a review that really ran, so failing here makes the worker log \`codex reviewer failed\`
+      for a review that succeeded. Loud, not fatal. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "a failed issue post does not fail the run (the gate it already set is legitimate)"
+
+grep -q 'could not post the review to ASK-901' "$CASE_DIR/err.txt"   || fail "THE DEFECT: the review never reached ASK-901 and NOTHING said so. The run printed
+      \`done\` and exited 0. Sana cannot answer findings she was never shown, and no log line
+      reveals that the conversation never started. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "a failed issue post is announced on stderr, naming the issue"
+
+grep -q 'no findings to answer\|cannot start\|Reason:' "$CASE_DIR/err.txt"   || fail "it warned, but without the CONSEQUENCE or the reason. An operator seeing this needs to
+      know the gate moved without the findings landing, and why the post failed. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "the warning carries the consequence and the underlying reason"
+
+grep -q 'did NOT reach ASK-901' "$W/notify.log" 2>/dev/null   || fail "no page fired. This happens in UNATTENDED runs, where stderr goes to a log nobody is
+      watching -- that is exactly the case founder-notifications exists for. notify.log was:
+$(sed 's/^/        /' "$W/notify.log" 2>/dev/null || echo '        (absent)')"
+ok "a page fires, so an unattended loss is not invisible"
+
+grep -q 'review posted to ASK-901' "$CASE_DIR/out.txt"   && fail "it claimed the review was posted to ASK-901 while the post actually failed. A false
+      success line is worse than silence."
+ok "it does not claim success for a post that failed"
+
+
+# --- case 6: the success path posts to the issue EXACTLY ONCE (PR #46 round 1) ---
+# codex round 1 of PR #46, major 1. Making the failure path loud (case 5) was done by
+# editing the tail of the existing `python3 "$SYNC" progress` call. The opening lines
+# were left behind, and their trailing `\` continued into the new comment block -- so
+# the original call still ran, but stripped of `--agent` and `--evidence`. The success
+# path posted TWICE: once misattributed to the default agent with no findings, then
+# once correctly. Both are PERMANENT Linear comments. It shipped to ASK-221 before
+# codex caught it, and case 5 could not see it because case 5 only exercises FAILURE.
+#
+# ORDER MATTERS: this runs AFTER case 5 on purpose. Case 5's failure has to be a real
+# missing linear-sync.py rather than a stub told to fail, so the stub cannot exist
+# until case 5 is done.
+cat > "$S/linear-sync.py" <<'PYEOF'
+import sys, os
+with open(os.environ["SYNC_CALL_LOG"], "a") as fh:
+    # ONE LINE PER CALL: the review body is multi-line, so joining raw argv makes a
+    # single call span several lines and `grep -c .` counts lines, not calls. That
+    # miscount read 3 for a correct single call.
+    fh.write("\x1f".join(a.replace("\n", "\\n") for a in sys.argv[1:]) + "\n")
+print("ASK-901: progress noted (stub)")
+PYEOF
+
+SYNC_LOG="$W/sync-calls.log"; : > "$SYNC_LOG"
+SYNC_CALL_LOG="$SYNC_LOG" run_case postone "$REAL_HEAD" --post --issue ASK-901
+
+CALLS="$(grep -c . "$SYNC_LOG" 2>/dev/null || echo 0)"
+[ "$CALLS" -eq 1 ] \
+  || fail "THE DEFECT: the success path made $CALLS calls to linear-sync.py, not 1. Each one is a
+      PERMANENT comment on the issue. Calls were:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG" 2>/dev/null)"
+ok "the success path posts to the issue exactly once"
+
+grep -q 'codex-reviewer' "$SYNC_LOG" \
+  || fail "the single call did not carry --agent codex-reviewer, so the issue thread cannot tell
+      WHICH engine spoke -- the one fact the engine flip exists to convey. Call was:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG")"
+ok "the call is attributed to the engine, not the default agent"
+
+grep -q 'evidence' "$SYNC_LOG" \
+  || fail "the single call carried no --evidence, so the findings never reach the issue and Sana
+      has nothing to reply to. Call was:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG")"
+ok "the call carries the findings as evidence"
+
+grep -q 'review posted to ASK-901' "$CASE_DIR/out.txt" \
+  || fail "the post succeeded but the run never said so. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "a successful post is reported once"
 
 echo "PASS: $PASS/$PASS tree-guard checks"

@@ -653,12 +653,44 @@ if [ "$POST" = "1" ]; then
     # that never set the gate, on a review whose gate came from findings she never saw.
     REVIEW_FINDINGS="$(findings_block "$REVIEW")"
     [ -n "$REVIEW_FINDINGS" ] || REVIEW_FINDINGS="(no findings block parsed from this review)"
-    python3 "$SYNC" progress "$ISSUE" \
+    # `|| true` HERE WAS A SILENT DROP (codex round 2 of PR #34, minor;
+    # sp-583dc1a0). Every other failure on this path says so out loud -- the PR
+    # comment warns, and a failed commit status warns that NO gate moved -- but a
+    # failed Linear post printed nothing, discarded the reason down /dev/null, and
+    # the run still exited 0 and printed `done`. Linear is the ONE surface Sana
+    # reads, so losing it silently means she never answers findings she was never
+    # shown, and the loop looks healthy while the conversation never happens. Not
+    # hypothetical: the round-2 run on 2026-07-30 lost its PR comment
+    # (`WARN: could not comment on PR`) and only the loud branch revealed it.
+    #
+    # STILL EXIT 0, deliberately. The gate above is already correctly set from a
+    # review that really ran; making the run fail here would make the worker log
+    # `codex reviewer failed` for a review that succeeded, which trades a silent
+    # drop for a false alarm. Loud plus a page is the fix, not a non-zero exit.
+    SYNC_ERR="$(python3 "$SYNC" progress "$ISSUE" \
       "Review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.
 
 Sana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below." \
-      --agent "$ENGINE-reviewer" --evidence "$REVIEW_FINDINGS" >/dev/null 2>&1 \
-      && echo "  review posted to $ISSUE as $ENGINE-reviewer (findings included)" || true
+      --agent "$ENGINE-reviewer" --evidence "$REVIEW_FINDINGS" 2>&1 >/dev/null)"
+    if [ $? -eq 0 ]; then
+      echo "  review posted to $ISSUE as $ENGINE-reviewer (findings included)"
+    else
+      echo "  WARN: could not post the review to $ISSUE as $ENGINE-reviewer. The gate is set from a review nobody on the issue can see, so Sana has no findings to answer. Reason: ${SYNC_ERR:-(no output)}" >&2
+      # THE PAGE IS BEST-EFFORT AND SAYS SO (codex round 1 of PR #46, major 2).
+      # slack-notify.sh no-ops silently when no webhook is configured -- that is
+      # deliberate per founder-notifications.md, so callers never break -- which
+      # means a zero exit here does NOT prove delivery. Claiming "paged" would be
+      # the same overclaim this commit is removing one layer down. So: attempt it,
+      # record what came back, and leave the stderr WARN above as the one record
+      # that is always written.
+      NOTIFY_OUT="$(bash "$NOTIFY" "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." 2>&1)"
+      NOTIFY_RC=$?
+      if [ "$NOTIFY_RC" -ne 0 ]; then
+        echo "  WARN: the page about that loss ALSO failed (rc=$NOTIFY_RC${NOTIFY_OUT:+: $NOTIFY_OUT}). This loss is recorded ONLY in this log." >&2
+      else
+        echo "  page attempted for the lost review (delivery not confirmable: the notifier no-ops silently when unconfigured)" >&2
+      fi
+    fi
   fi
 fi
 
