@@ -98,6 +98,23 @@ C_CODEX_QUOTES_MARKER = {
     "user": {"name": "Assaf Kipnis"}, "botActor": None}
 
 
+# CODEX'S SECOND REPRO ON THE SAME BUG, 2026-07-30. First-line anchoring on the
+# bold marker alone still reads prose that OPENS with a bold mention as authorship.
+# `progress` always emits the delimiter, so the delimiter is the contract.
+C_PROSE_OPENS_WITH_MARKER = {
+    "id": "c6", "createdAt": "2026-07-29T06:00:00.000Z",
+    "body": ("**sana** please review this note\n\n"
+             "Not emitted by progress and not authored by Sana."),
+    "user": {"name": "Codex"}, "botActor": None}
+
+# Guards the prefix-collision case codex explicitly tried and found SOUND, so a
+# future "simplification" that drops the closing delimiter cannot pass unnoticed.
+C_SIMILAR_AGENT = {
+    "id": "c7", "createdAt": "2026-07-29T07:00:00.000Z",
+    "body": "**sana-ops** · 2026-07-29 07:00 UTC\n\nDifferent agent entirely.",
+    "user": {"name": "Assaf Kipnis"}, "botActor": None}
+
+
 def run_comments(mod, args, payload=None, raise_exc=None):
     """Drive cmd_comments with graphql stubbed. Returns (rc, stdout, stderr)."""
     def stub(_query, _vars):
@@ -243,6 +260,30 @@ def main():
         fail(f"--agent sana dropped Sana's own comment. Got:\n{out}")
     else:
         ok("--agent anchors the marker to the first line, not anywhere in the prose")
+
+    # --- REGRESSION: prose OPENING with the marker is not authorship ------------
+    # Codex's second reproducer on this same bug. Anchoring to the first line is not
+    # enough; the producer's delimiter is what distinguishes attribution from a bold
+    # mention at the start of a sentence.
+    rc, out, _ = run_comments(mod, Args("ASK-221", agent="sana"),
+                              make_issue([C_PROSE_OPENS_WITH_MARKER, C_SANA]))
+    if "please review this note" in out:
+        fail("THE BUG CODEX FOUND TWICE: --agent sana returned a comment whose first line "
+             "merely OPENS with '**sana**' as prose. progress always emits '**sana** · ', so "
+             f"the delimiter is the contract. Got:\n{out}")
+    elif "Picked up by the worker" not in out:
+        fail(f"--agent sana dropped Sana's real progress comment. Got:\n{out}")
+    else:
+        ok("--agent requires the full '**author** · ' attribution prefix, not a bold opener")
+
+    # --- a similarly-named agent must not collide (codex tried this, found sound) --
+    rc, out, _ = run_comments(mod, Args("ASK-221", agent="sana"),
+                              make_issue([C_SIMILAR_AGENT, C_SANA]))
+    if "Different agent entirely" in out:
+        fail(f"--agent sana matched '**sana-ops** · '. The closing '**' must prevent the "
+             f"prefix collision. Got:\n{out}")
+    else:
+        ok("--agent sana does not match **sana-ops** (closing delimiter blocks collision)")
 
     # --- REGRESSION: progress must not claim success on a rejected mutation ----
     # The other live bug: commentCreate's result was discarded, so a rejected

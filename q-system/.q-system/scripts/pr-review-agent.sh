@@ -183,6 +183,35 @@ echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# THE TREE MUST ACTUALLY CONTAIN THE PR (sp-a72a9567). $SKEL comes from this
+# script's own location, and the diff comes from `gh pr diff <N>` -- two
+# independent sources that nothing was checking against each other. Run from
+# worktree A against a PR on branch B and the reviewer reads A's files off disk
+# while B's diff scrolls past, then writes a verdict record and a commit status
+# attributing its findings to B's head sha.
+#
+# Not hypothetical. 2026-07-29, run from the ask-221 worktree against PR #35: it
+# returned three findings in linear-sync.py, a file PR #35's diff does not touch at
+# all. The findings were real bugs in ask-221; the PROVENANCE was false. That is
+# worse than a wrong verdict, because the record looks authoritative.
+#
+# TWO TIERS, because a flat equality check would be wrong twice over. The PR's head
+# may legitimately be BEHIND local HEAD (a push landing after the `gh pr view`
+# above), so equality would refuse healthy runs -- ancestry is the real question.
+# And an UNKNOWN object is not evidence of a mismatch: a stale or partial clone
+# cannot prove ancestry either way, and inventing a refusal there would wedge the
+# loop on a fetch problem. Unknown warns; known-but-unrelated refuses.
+if [ -n "$HEAD_SHA" ]; then
+  if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+    echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
+  elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+    echo "REFUSING: PR #$PR is at $HEAD_SHA, which is NOT in the history of $SKEL (HEAD $(git -C "$SKEL" rev-parse --short HEAD 2>/dev/null))." >&2
+    echo "  The reviewer reads FILES from this tree and the DIFF from the PR. They are different branches, so every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
+    echo "  Run it from the PR's own worktree. No review was dispatched and NO status was posted -- absent is not approved." >&2
+    exit 1
+  fi
+fi
+
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)

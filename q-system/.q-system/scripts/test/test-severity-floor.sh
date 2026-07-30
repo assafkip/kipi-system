@@ -2077,6 +2077,50 @@ printf '%s' "$CALL_DEFAULT" | grep -qi 'degraded' \
   && fail "the default engine's status is marked degraded even though codex answered: $CALL_DEFAULT"
 ok "the default engine is codex and still posts $STATUS_CONTEXT=success (branch protection intact)"
 
+# --- Q7E. a PR whose head is NOT in this tree is REFUSED (sp-a72a9567) --------
+# $SKEL comes from the script's location; the diff comes from `gh pr diff`. Nothing
+# checked them against each other, so running from worktree A against a PR on
+# branch B made the reviewer read A's files while B's diff went past -- then stamp
+# its findings with B's head sha. Observed 2026-07-29 against PR #35: three
+# findings in a file that PR's diff does not touch. Real bugs, false provenance.
+#
+# The fixture is a PARENTLESS commit made with `commit-tree`: guaranteed to EXIST
+# in the object store (so this exercises the refuse path, not the unknown-object
+# warn path) and guaranteed NOT to be an ancestor of HEAD, on any machine and in
+# CI. Picking some other branch's tip would be environment-dependent.
+SHA_ORPHAN="$(git -C "$ROOT" commit-tree "$(git -C "$ROOT" rev-parse HEAD^{tree})" \
+                -m "orphan fixture for Q7E" </dev/null 2>/dev/null)"
+if [ -z "$SHA_ORPHAN" ]; then
+  fail "could not create the orphan-commit fixture, so the tree/PR guard is untested"
+else
+  Q7E="$W2/eng-wrong-tree"
+  mk_engine_stubs "$Q7E" "$SHA_ORPHAN" ok "$CODEX_NOISY_APPROVE"
+  run_engine_reviewer "$Q7E" --post
+  [ "$RC" -ne 0 ] \
+    || fail "THE DEFECT: the reviewer accepted a PR whose head ($SHA_ORPHAN) is not in this
+      tree's history and exited 0. Every finding would cite code absent from that PR's diff."
+  [ -z "$(status_call "$Q7E")" ] \
+    || fail "the reviewer posted a commit status for a PR it could not have read correctly:
+      $(status_call "$Q7E")"
+  [ -z "$(ls "$Q7E/codex-calls.log" 2>/dev/null)" ] || [ ! -s "$Q7E/codex-calls.log" ] \
+    || fail "the reviewer burned a real codex call before refusing. The guard must run BEFORE
+      dispatch: codex costs tokens per PR and this run could never have been valid."
+  grep -qi "REFUS" "$Q7E/err.txt" \
+    || fail "the refusal was silent. An operator seeing no review and no status needs the reason:
+$(sed 's/^/        /' "$Q7E/err.txt")"
+  ok "a PR whose head is not in this tree is refused before any engine is dispatched"
+fi
+
+# An UNKNOWN sha must WARN and proceed, never refuse: a stale or partial clone
+# cannot prove ancestry either way, and refusing there would wedge the loop on a
+# fetch problem. Every other engine case above uses a fake sha, so they all take
+# this path -- their continued passing IS this assertion, and this makes it explicit.
+grep -qi "cannot be proven\|WARN" "$Q7D/err.txt" \
+  || fail "a PR sha absent from the object store did not produce the cannot-prove WARN, so the
+      guard is either silent or refusing on unknown objects. stderr was:
+$(sed 's/^/        /' "$Q7D/err.txt")"
+ok "an unknown PR sha warns and proceeds (a partial clone does not wedge the loop)"
+
 # The two engines must not share a review directory: review_round globs
 # pr-<N>-*.md, so a codex review dropped beside a claude one silently advances
 # the claude round counter and arms the anti-re-litigation rule a round early.

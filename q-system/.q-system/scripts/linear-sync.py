@@ -736,9 +736,20 @@ def cmd_comments(args) -> int:
         # my fixture missed the shape that breaks it -- the earlier regression case
         # covered the bare text "Sana:" and not the marker token itself, so the suite
         # stayed green over a live bug. See feedback-fixtures-from-producers.
-        marker = f"**{args.agent.lower()}**"
+        # MATCH THE COMPLETE PRODUCER-OWNED PREFIX, delimiter included. `progress`
+        # emits exactly "**<who>** · <stamp>", so the attribution is the marker AND
+        # the " · " that follows it. Without the delimiter, prose that merely OPENS
+        # with a bold mention -- "**sana** please review this note" -- is read as
+        # authorship.
+        #
+        # THIRD NARROWING OF THE SAME BUG, all three found by codex, each time
+        # because I removed the case in front of me instead of the ambiguity:
+        # bare substring -> marker anywhere in body -> marker at start of line ->
+        # (now) the full attribution prefix. The delimiter is what makes this a
+        # producer contract rather than a guess about prose.
+        prefix = f"**{args.agent.lower()}** · "
         nodes = [n for n in nodes
-                 if (n.get("body") or "").lstrip().split("\n", 1)[0].lower().startswith(marker)]
+                 if (n.get("body") or "").lstrip().split("\n", 1)[0].lower().startswith(prefix)]
     if args.last and args.last > 0:
         nodes = nodes[-args.last:]
 
