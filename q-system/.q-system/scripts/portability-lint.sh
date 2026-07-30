@@ -83,6 +83,20 @@ scan "sed[[:space:]]+-i[[:space:]]+''" \
      'BSD-ONLY sed -i '"''"' (GNU sed reads the next arg as the script)' \
      "write to a temp file and mv, which needs no -i at all"
 
+# macOS-ONLY BINARIES. Not a flag difference -- these do not exist on Linux at all,
+# so the failure is command-not-found rather than wrong output. Added after this
+# lint MISSED the fourth instance of its own class: a new test invoked
+# verify-codex-review-live.sh, which reads a launchd plist via `plutil` and
+# `launchctl`, and turned `validate` red on the Linux runner. The lint I had just
+# built to catch "green locally, wrong where it runs" did not catch it, because I
+# had only taught it flag divergences.
+#
+# A test or script that needs these is not portable -- it must either guard with
+# `command -v` and skip LOUDLY, or be declared macOS-only.
+scan '(^|[^[:alnum:]_./-])(plutil|launchctl|osascript|sw_vers|diskutil|scutil|pmset)[[:space:]]' \
+     'macOS-ONLY binary (does not exist on Linux; command-not-found in CI)' \
+     'guard with `command -v <cmd>` and skip loudly, or declare the script macOS-only'
+
 # BSD stat uses -f, GNU uses -c.
 scan 'stat[[:space:]]+-f[[:space:]]' \
      'BSD-ONLY stat -f (GNU stat uses -c)' \

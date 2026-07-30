@@ -65,6 +65,27 @@ case "$DEFAULT" in
     ok "the default invoker is '$DEFAULT', so an unlabelled run cannot pass as dispatcher-driven" ;;
 esac
 
+
+# --- cases 1-3 are static and run anywhere. 4-6 drive the VERIFIER, which reads a
+# launchd plist with `plutil` and `launchctl` -- both macOS-only. On the Linux CI
+# runner those do not exist, so the verifier cannot answer and the assertions below
+# would fail for a reason that has nothing to do with the invoker field. That is the
+# same caller's-environment class as the mktemp defect, one level up: the test itself
+# was only ever runnable on the machine it was written on.
+#
+# SKIPPED LOUDLY, never silently. A quiet skip is how a suite reports green about
+# checks it did not run, which is the defect this repo keeps finding. The skip prints,
+# and it does NOT count as a pass.
+if ! command -v plutil >/dev/null 2>&1 || ! command -v launchctl >/dev/null 2>&1; then
+  echo
+  echo "== 4-6 SKIPPED: this host has no plutil/launchctl, so the verifier cannot run =="
+  echo "   (cases 1-3 above are static and DID run; the invoker wiring is still asserted)"
+  echo
+  echo "-------- $PASS passed, $FAIL failed, 3 case(s) skipped --------"
+  [ "$FAIL" -eq 0 ] || exit 1
+  echo "PASS (partial): invoker wiring asserted; verifier-dependent cases need macOS"
+  exit 0
+fi
 echo
 echo "== 4. a record with NO invoker key reads as not-dispatcher =="
 # Every record written before this change lacks the key entirely. Those must not
