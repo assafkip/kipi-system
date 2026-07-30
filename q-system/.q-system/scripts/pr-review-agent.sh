@@ -193,6 +193,29 @@ PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .ti
   || { echo "no PR #$PR" >&2; exit 1; }
 HEAD_SHA="${PR_META%%$'\t'*}"
 PR_TITLE="${PR_META#*$'\t'}"
+
+# CONFIRM THE HEAD HAS SETTLED (sp-f8edcdeb). The comment above reasons that
+# pinning an OLDER sha is the safe direction because it reads as drift and routes
+# to a re-review. That is true of the GATE, and it was still wrong in practice:
+# on 2026-07-30 a push and a review ran in the same command, `gh pr view` returned
+# the PRE-PUSH sha, and the run posted kipi/reviewer-approved=SUCCESS on it. The
+# newest commits went unreviewed while a green required check sat on the branch.
+# Drift catches it on the next worker pass; a human reading the PR in between sees
+# a green codex check that does not cover the top commits.
+#
+# A second read a few seconds later is enough, because the failure is propagation
+# delay, not a persistent disagreement. Refuse rather than adopt the newer value:
+# if the head is moving RIGHT NOW, whatever we pick may be stale again by the time
+# the model finishes, and a review nobody ran is cheaper than a green check on the
+# wrong code. Also catches a concurrent push by anyone, which the caller cannot.
+sleep 3
+HEAD_SHA_CONFIRM="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
+  echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
+  echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
+  echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
