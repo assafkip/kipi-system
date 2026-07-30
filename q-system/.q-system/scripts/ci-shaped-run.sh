@@ -21,6 +21,14 @@
 # a day, a lint whose findings were mostly its own prose, and this. A signal that
 # cries wolf destroys the signal. Correctness of the harness outranks its speed.
 #
+# DO NOT LAUNCH A TARGETED RUN ALONGSIDE `--all`. The sweep CONTAINS the targeted
+# run, so launching both is not redundancy, it is contention -- three copies of a
+# 4-minute suite competing for CPU. I did exactly that, then read the resulting
+# slowness as "the suites are slow" rather than "I oversubscribed the machine."
+# Elapsed time stood in for job difficulty, which is the same index-for-the-thing
+# error as trusting a grep for an inventory. Check what a job DOES, not what it is
+# called, before starting another.
+#
 # IT PAID FOR ITSELF BEFORE IT WAS FINISHED, and the number is the argument:
 # it found in SECONDS what a full CI round could only report as `rc=1` after
 # EIGHT MINUTES -- and in one case it overturned a fix that had already survived
