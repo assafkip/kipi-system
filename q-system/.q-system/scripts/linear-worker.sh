@@ -222,7 +222,34 @@ fi
 #
 # KIPI_LINEAR_PROJECT is the override for the instance where those two names
 # legitimately differ. It is also the test seam.
-REPO_PROJECT="${KIPI_LINEAR_PROJECT:-$(basename "$SKEL")}"
+# basename is the LAST resort, not the first. instance-registry.json maps every
+# instance path to its name, and that name IS the Linear project name -- while the
+# directory very often is not:
+#   KTLYST_strategy    -> .../cole-gtm/projects/strategy   (basename: strategy)
+#   ktlyst             -> .../ktlyst-saas/projects/product (basename: product)
+#   ASK_AI_consultant  -> .../consulting                   (basename: consulting)
+# Three of the first three checked. Shipping basename alone would have made this
+# filter reject every issue on those instances -- caught loud by the MISCONFIG
+# guard below rather than as a silently empty queue, but still wrong.
+#
+# Order: explicit env override, then the registry, then basename.
+REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
+if [ -z "$REPO_PROJECT" ]; then
+  REPO_PROJECT="$(SKEL_PATH="$SKEL" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
+import json, os
+skel = os.path.realpath(os.environ["SKEL_PATH"])
+try:
+    reg = json.load(open(os.environ["REG"]))
+except Exception:
+    reg = []
+entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+for e in entries if isinstance(entries, list) else []:
+    if isinstance(e, dict) and e.get("path") and os.path.realpath(e["path"]) == skel:
+        print(e.get("name", "")); break
+PY
+)"
+fi
+[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$SKEL")"
 export REPO_PROJECT
 
 # --- pick ready issues ------------------------------------------------------

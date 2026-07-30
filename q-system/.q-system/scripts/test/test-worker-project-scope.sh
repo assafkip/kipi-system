@@ -223,6 +223,34 @@ case "$PICKED_OTHER" in
   *)          bad "repo identity derives from the checkout" "from accountant/ picked: [$PICKED_OTHER] -- expected [ASK-901 ]" ;;
 esac
 
+# --- case 4b: the registry BEATS basename -----------------------------------
+# instance-registry.json maps instance path -> name, and that name is the Linear
+# project name while the directory usually is NOT: KTLYST_strategy lives at
+# .../projects/strategy, ktlyst at .../projects/product, ASK_AI_consultant at
+# .../consulting. Shipping basename alone would reject every issue on those
+# instances. The directory here is deliberately named something that is NOT a
+# project, so a pass can only come from the registry being read.
+SKEL_REG="$(setup_skel not-a-project-name)"
+cat > "$SKEL_REG/instance-registry.json" <<JSON
+[{"name": "accountant", "path": "$SKEL_REG", "type": "subtree"}]
+JSON
+OUT_REG="$(run_worker "$SKEL_REG")"
+PICKED_REG="$(printf '%s\n' "$OUT_REG" | grep -o 'would work ASK-[0-9]*' | sed 's/would work //' | sort | tr '\n' ' ')"
+case "$PICKED_REG" in
+  "ASK-901 ") ok "instance-registry.json name beats the directory basename" ;;
+  *)          bad "instance-registry.json name beats the directory basename" \
+                  "picked: [$PICKED_REG] -- expected [ASK-901 ]; basename would have MISCONFIGed" ;;
+esac
+
+# And the env override still outranks the registry, or an instance whose registry
+# entry is wrong has no way out.
+OUT_OVR="$(run_worker "$SKEL_REG" KIPI_LINEAR_PROJECT="kipi-system")"
+PICKED_OVR="$(printf '%s\n' "$OUT_OVR" | grep -o 'would work ASK-[0-9]*' | sed 's/would work //' | sort | tr '\n' ' ')"
+case "$PICKED_OVR" in
+  "ASK-900 ") ok "KIPI_LINEAR_PROJECT still outranks the registry" ;;
+  *)          bad "KIPI_LINEAR_PROJECT still outranks the registry" "picked: [$PICKED_OVR] -- expected [ASK-900 ]" ;;
+esac
+
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------
 # Proves this suite can go red. Without it, every assertion above is compatible
 # with a picker that emits nothing at all, or a grep that never matches.
