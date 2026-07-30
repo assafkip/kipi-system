@@ -10,6 +10,17 @@
 #
 # Fixing each defect stops that defect. This stops the seventh.
 #
+# DO NOT SKIP THE MANIFEST LOOKUP FOR SPEED. The first full sweep reported two
+# .py tests as FAIL rc=2 because this script ran `bash` on everything and ignored
+# the declared `runner`. rc=2 is "cannot execute" -- a harness bug wearing a test
+# failure's clothes.
+#
+# That is worse than a wasted round: a checker that manufactures failures teaches
+# you to distrust its output, and then a REAL failure reads as another harness
+# bug. Three separate components hit this in one session -- a page firing 96 times
+# a day, a lint whose findings were mostly its own prose, and this. A signal that
+# cries wolf destroys the signal. Correctness of the harness outranks its speed.
+#
 # IT PAID FOR ITSELF BEFORE IT WAS FINISHED, and the number is the argument:
 # it found in SECONDS what a full CI round could only report as `rc=1` after
 # EIGHT MINUTES -- and in one case it overturned a fix that had already survived
