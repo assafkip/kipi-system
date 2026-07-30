@@ -1139,7 +1139,18 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       CODEX_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       if ! printf '%s\n' "$CODEX_NOW" > "$CODEX_MARK" 2>/dev/null; then
         say "WARN: $ISSUE: could not write $CODEX_MARK, so codex was NOT delegated. Refusing to start a paid session the once-per-sha bound cannot record."
-      elif python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
+      elif python3 "$SYNC" delegate "$ISSUE" --clear >>"$LOG" 2>&1 \
+           && python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
+        # CLEAR THEN SET, because DELEGATION ONLY FIRES ON A CHANGE. Measured on
+        # ASK-253 2026-07-30: the issue was already delegated to Codex, a second
+        # `delegate --agent Codex` returned success, and NO new agent session was
+        # created -- so a rework round would have re-read nothing while the PR waited
+        # forever. Setting the same value is a no-op to Linear, and a no-op is not a
+        # trigger. The clear is what makes the set a transition.
+        #
+        # This is only visible because --since refuses the stale session instead of
+        # quietly reusing it; the previous code would have posted the old verdict on
+        # the new head and looked like it worked.
         say "$ISSUE: delegated PR #$PR_NUM (${CODEX_SHA:0:7}) to codex for review at $CODEX_NOW"
       else
         # Delegation failed, so release the marker: the bound exists to stop paying

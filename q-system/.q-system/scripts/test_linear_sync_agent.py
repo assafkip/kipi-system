@@ -164,6 +164,39 @@ def main():
     else:
         ok("only the LAST closed block counts, even when an earlier block is valid syntax")
 
+    # THE MAJOR THE CLAUDE REVIEWER FOUND ON PR #45. Every review request in this repo
+    # ENDS with the FINDINGS template, whose one line the allowlist rejects, leaving an
+    # empty trailing block. A flat blocks[-1] read that block, found nothing, and
+    # derived APPROVE -- discarding a real blocker and posting codex-approved=success.
+    # This is the highest-consequence case in the file: it converts a refusal into an
+    # approval, which is the one direction that must never happen silently.
+    BLOCKER_THEN_TEMPLATE = """FINDINGS:
+blocker|publishes a credential to a permanent Linear object|a.py:1
+END FINDINGS
+
+For reference, the format I asked for was:
+
+FINDINGS:
+severity|one-sentence claim|file:line
+END FINDINGS
+"""
+    v, f = m.verdict_from_findings_text(BLOCKER_THEN_TEMPLATE)
+    if v != "BLOCK":
+        fail(f"THE MAJOR: a trailing template block discarded a real BLOCKER and derived "
+             f"{v!r}. Every review request here ends with that template, so an agent that "
+             f"echoes it back turns a refusal into an approval. Findings seen: {f}")
+    else:
+        ok("a trailing template block does not discard an earlier real blocker")
+
+    # ...and a reviewer that genuinely closed an EMPTY block still means APPROVE, so
+    # the fix must not turn "nothing survived reproduction" into UNSTATED.
+    v, _ = m.verdict_from_findings_text("Nothing survived.\n\nFINDINGS:\nEND FINDINGS\n")
+    if v != "APPROVE":
+        fail(f"a genuinely empty closed block stopped deriving APPROVE (got {v!r}); every "
+             f"clean review would now wedge")
+    else:
+        ok("a genuinely empty closed block still derives APPROVE")
+
     if any(s == "severity" for s, _ in m.verdict_from_findings_text(TEMPLATE_ECHO)[1]):
         fail("the literal word 'severity' was accepted as a severity label")
     else:

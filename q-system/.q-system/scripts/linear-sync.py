@@ -680,11 +680,39 @@ def verdict_from_findings_text(text: str) -> tuple:
             cur.append(line)
     if not blocks:                      # no CLOSED block: unstated, never APPROVE
         return "", []
+
+    def parse(block):
+        out = []
+        for line in block:
+            parts = line.split("|")
+            if len(parts) >= 2 and parts[0].strip().lower() in SEVERITY_RANK:
+                out.append((parts[0].strip().lower(), "|".join(parts[1:]).strip()))
+        return out
+
+    # THE LAST block THAT ACTUALLY CARRIES A SEVERITY, not simply the last block.
+    # The Claude reviewer found this on PR #45 (major): with a flat blocks[-1], a
+    # TRAILING closed block holding no parseable severity resets the verdict to
+    # APPROVE and discards a real blocker sitting in an earlier block -- and the
+    # worker then posts kipi/codex-approved=success for it.
+    #
+    # Not hypothetical, and the trigger is this repo's own prompt: every review
+    # request ends with the template
+    #     FINDINGS:
+    #     severity|one-sentence claim|file:line
+    #     END FINDINGS
+    # whose single line the allowlist correctly rejects, leaving an EMPTY last block.
+    # An agent that echoes the instructions back after its findings therefore turned
+    # a blocker into an approval. Reproduced: blocker-then-template derived APPROVE.
+    #
+    # Falling back to the last closed block when NO block carries a severity keeps the
+    # genuine "nothing survived reproduction" case deriving APPROVE, which is the only
+    # reading of a reviewer that closed an empty block on purpose.
     findings = []
-    for line in blocks[-1]:
-        parts = line.split("|")
-        if len(parts) >= 2 and parts[0].strip().lower() in SEVERITY_RANK:
-            findings.append((parts[0].strip().lower(), "|".join(parts[1:]).strip()))
+    for block in reversed(blocks):
+        got = parse(block)
+        if got:
+            findings = got
+            break
     worst = max((SEVERITY_RANK[s] for s, _ in findings), default=-1)
     if worst == 3:
         return "BLOCK", findings

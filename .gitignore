@@ -101,3 +101,9 @@ q-system/output/.update-check-*
 # on every run). The committed artifact is the digest the overlap pass emits.
 q-system/output/capability-maps/
 .runs/
+
+# Review scratch written by pr-review-agent runs. auto-commit.py swept .rev45/
+# (30 files, six broken copies of linear-sync.py) onto sana/ask-253, and the
+# Claude reviewer flagged it on PR #45: a public repo must not carry mutant
+# copies of its own scripts.
+.rev*/
