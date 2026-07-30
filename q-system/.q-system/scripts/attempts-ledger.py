@@ -139,6 +139,17 @@ def main(argv):
     if op == "clear-conflict":            # clear-conflict <issue>
         _mutate(path, lambda d: op_clear(d, rest[0], ("conflict_rounds", "conflict_paged", "last_conflict")))
         return 0
+    if op == "clear-automerge":           # clear-automerge <issue>
+        # The op my previous edit claimed to add and did not. The shell side was
+        # rewritten to call it, the direct-write count went to 0, and I reported
+        # "routed" -- but nothing here answered the call, so clear_automerge_pages
+        # became a no-op exiting 2. Consequence: the once-only auto-merge page
+        # could never be cleared, so a PR that was armed, unarmed, then armed again
+        # went PERMANENTLY SILENT. Caught by test-severity-floor, not by me: I had
+        # verified the caller and the write count, never the round trip.
+        _mutate(path, lambda d: op_clear(
+            d, rest[0], ("automerge_unarmed_paged", "automerge_unknown_paged")))
+        return 0
     if op == "clear-drift":               # clear-drift <issue>
         _mutate(path, lambda d: op_clear(d, rest[0], ("drift_rounds", "drift_paged", "last_drift")))
         return 0

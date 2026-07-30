@@ -76,9 +76,17 @@ esac
 # SKIPPED LOUDLY, never silently. A quiet skip is how a suite reports green about
 # checks it did not run, which is the defect this repo keeps finding. The skip prints,
 # and it does NOT count as a pass.
-if ! command -v plutil >/dev/null 2>&1 || ! command -v launchctl >/dev/null 2>&1; then
+# GUARD ON THE REAL PRECONDITION, not on the binaries. My first guard checked
+# `command -v plutil/launchctl`, which is true on any Mac -- including a CI-shaped
+# run with a sandbox $HOME. But the verifier reads
+# $HOME/Library/LaunchAgents/com.kipi.dispatch.plist, so what it actually needs is
+# THAT FILE, and a clean $HOME does not have it. The binary check passed and the
+# cases still failed. Found by ci-shaped-run.sh in seconds, having survived a full
+# CI round that only reported rc=1.
+if ! command -v plutil >/dev/null 2>&1 || ! command -v launchctl >/dev/null 2>&1 \
+   || [ ! -f "$HOME/Library/LaunchAgents/com.kipi.dispatch.plist" ]; then
   echo
-  echo "== 4-6 SKIPPED: this host has no plutil/launchctl, so the verifier cannot run =="
+  echo "== 4-6 SKIPPED: no launchd plist at \$HOME/Library/LaunchAgents/com.kipi.dispatch.plist, so the verifier cannot run =="
   echo "   (cases 1-3 above are static and DID run; the invoker wiring is still asserted)"
   echo
   echo "-------- $PASS passed, $FAIL failed, 3 case(s) skipped --------"

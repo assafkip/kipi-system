@@ -21,6 +21,18 @@
 # The individual fixes are each one line. This check is worth more than all three
 # because it is the only one that generalises.
 #
+# THE CLASS IS "ANYTHING THAT DIFFERS ACROSS THE TWO KERNELS", NOT "THE LIST
+# BELOW". This started as flag divergences only, because those were the failures I
+# had personally hit, and it then MISSED a macOS-only binary -- the fourth instance
+# of the very class it was built for. Building the tool from the examples in hand
+# rather than from the class is the same defect one level up. When you find a new
+# way the two kernels disagree, add it here rather than fixing the one site.
+#
+# What this cannot see, by construction: state. A suite that passes because
+# ~/.config/kipi exists is invisible to a grep. That half belongs to
+# ci-shaped-run.sh, which runs a test with a clean $HOME. Neither tool alone
+# covers the set.
+#
 # Exit 0 = clean. Exit 1 = findings (advisory by default; the caller decides
 # whether to block, per the exit-code contract in skill-hook-pairing.md).
 set -uo pipefail
