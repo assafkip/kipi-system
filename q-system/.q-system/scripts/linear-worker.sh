@@ -206,6 +206,25 @@ if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
   exit 9
 fi
 
+# --- repo identity, for the project-scope filter -----------------------------
+# The worker cuts EVERY worktree from $SKEL (line 57). An issue filed against
+# another repo can therefore never reach a terminal state here: the agent lands
+# in kipi-system, cannot find the files the DoR names, and exits 0 with no diff.
+# Measured against the live board 2026-07-30: of 29 ready issues, 11 were the
+# kipi-system project and 18 were for repos this checkout cannot check out --
+# under two thirds of the worker's own queue was undispatchable by construction.
+# The GraphQL query below has selected project{name} the whole time; nothing read it.
+#
+# DERIVED, never hardcoded: this same script runs from other skeletons, and a
+# literal "kipi-system" would empty every other instance's queue while silently
+# disabling the filter here. basename of the checkout is the convention the
+# fleet already uses (instance dir name == Linear project name).
+#
+# KIPI_LINEAR_PROJECT is the override for the instance where those two names
+# legitimately differ. It is also the test seam.
+REPO_PROJECT="${KIPI_LINEAR_PROJECT:-$(basename "$SKEL")}"
+export REPO_PROJECT
+
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
 import importlib.util, json, os, sys, pathlib
@@ -229,20 +248,78 @@ while True:
     if not p["pageInfo"]["hasNextPage"]: break
     after = p["pageInfo"]["endCursor"]
 
+repo_project = os.environ["REPO_PROJECT"]
+
+def project_of(i):
+    return (i.get("project") or {}).get("name")
+
+def in_this_repo(i):
+    # Unset project is NOT this repo. "Target unknown" and "target is here" are
+    # different claims, and treating the first as the second is how 18 foreign
+    # issues got into this queue in the first place.
+    return project_of(i) == repo_project
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
     if "owner:sana" not in labels:   return False
+    # A REJECTION BY SANA, MADE MACHINE-READABLE (ASK-275).
+    # NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( )
+    # command substitution, and bash tracks quote state through a quoted
+    # heredoc there -- one apostrophe in a PYTHON COMMENT swallowed the rest of
+    # the substitution and the whole script died at "unexpected EOF".
+    # Before this label the only way to get a correctly-refused issue out of the
+    # queue was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how
+    # ASK-149 got there on 2026-07-30. Routing an engineering re-scope to the
+    # founder is the thing this loop exists to avoid, so the refusal needed a
+    # label of its own that means "re-scope this", not "the founder decides".
+    if "needs-scope" in labels:      return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
+    if not in_this_repo(i):          return False
     d = i.get("description") or ""
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
+# Everything the project filter is ABOUT to drop, counted before it drops it, so
+# the run can report the shrink. A queue that silently falls from 29 to 11 is
+# indistinguishable from a broken query, and "it got quiet" is the failure mode
+# this filter could most easily cause.
+def ready_ignoring_project(i):
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    return ("owner:assaf" not in labels and "owner:sana" in labels
+            and "needs-scope" not in labels
+            and i["state"]["type"] in ("backlog", "unstarted")
+            and "Definition of Ready" in (i.get("description") or ""))
+
+dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
+deferred = [i for i in issues
+            if "needs-scope" in {l["name"] for l in i["labels"]["nodes"]}
+            and in_this_repo(i)]
+
 pool = [i for i in issues if ready(i)]
+# An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
+# converge.sh and an explicit kipi-work invocation both name an issue the picker
+# already chose, and a rework round must be able to return to it. The job of the
+# filter is choosing, not vetoing a choice already made.
+# NOTE: no backticks either. Inside a $( ) a backtick opens a nested command
+# substitution even here, which is the second way this heredoc has been broken.
 if only:
     pool = [i for i in issues if i["identifier"] == only]
-print(json.dumps({"ready": [
-    {"id": i["identifier"], "title": i["title"], "project": (i.get("project") or {}).get("name")}
-    for i in pool], "total_open": len(issues)}))
+
+print(json.dumps({
+    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i)}
+              for i in pool],
+    "total_open": len(issues),
+    "dropped_out_of_repo": len(dropped),
+    "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
+    "deferred_needs_scope": len(deferred),
+    # Does the derived repo identity name a project that EXISTS on the board?
+    # If not, every issue fails in_this_repo() and the queue reads a healthy
+    # empty -- a permanently silent loop reporting success. That is strictly
+    # worse than the bug being fixed here, so it is called out as MISCONFIG
+    # rather than allowed to look like a finished board.
+    "project_known": any(project_of(i) == repo_project for i in issues),
+    "repo_project": repo_project,
+}))
 PY
 )"
 
@@ -253,7 +330,32 @@ if [ -n "$INFRA" ]; then
 fi
 
 READY_COUNT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["ready"]))')"
-say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf)"
+
+# MISCONFIG BEFORE ANY COUNT IS BELIEVED (ASK-275). Checked ahead of the ready
+# line because if the derived project matches nothing on the board, that count
+# is 0 for a reason that has nothing to do with the board being empty. Reporting
+# "nothing ready" there would be a loop that stopped working while claiming to
+# be finished -- the one outcome worse than the queue it replaced. It PAGES and
+# exits non-zero for the same reason the git-fetch guard at line 203 does: a log
+# line is not surfacing, and this is environmental, not an issue's fault.
+PROJECT_KNOWN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("project_known"))' 2>/dev/null)"
+if [ "$PROJECT_KNOWN" = "False" ]; then
+  say "MISCONFIG: repo identity '$REPO_PROJECT' (from $SKEL) matches NO Linear project on team ASK."
+  say "MISCONFIG: every issue would be filtered out, so this run picked nothing for a config reason, not an empty board."
+  say "MISCONFIG: fix by renaming the Linear project to match the checkout, or set KIPI_LINEAR_PROJECT."
+  bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
+  exit 9
+fi
+
+DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dropped_out_of_repo",0))' 2>/dev/null)"
+DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("dropped_projects",[])))' 2>/dev/null)"
+DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
+
+say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
+# Accounted for, never silently dropped. These two lines are what let an operator
+# tell a working filter from a broken query without re-querying Linear by hand.
+[ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+[ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
 
 if [ "$READY_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
