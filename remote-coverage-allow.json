@@ -23,12 +23,6 @@
       "review": "A single line in the carrier file is the blocker. Move it to a gitignored private-notes.md and this repo becomes pushable private."
     },
     {
-      "path": "~/projects/personal/projects/story-podcast",
-      "reason": "Physically unpushable to GitHub: two tracked files exceed the 100MB hard limit (.venv-chatterbox torch libtorch_cpu.dylib 178MB, llvmlite 123MB). The venv is committed. Fixing it requires a history rewrite, which is a separate deliberate decision, not a side effect of this gate.",
-      "declared": "2026-07-29",
-      "review": "Needs the committed .venv-chatterbox purged from history before any push can succeed. Tracked as spillover."
-    },
-    {
       "path": "~/projects/personal",
       "reason": "Persona container holding 2 tracked files (.gitignore + README.md). projects/ is gitignored so it captures no work. A GitHub repo for two config files is noise, not backup.",
       "declared": "2026-07-29",
