@@ -79,9 +79,17 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
-# MAX_ATTEMPTS only counts runs where `claude` exits non-zero, and the cited
-# failure mode is an agent that exits 0 having done the wrong thing -- so it
-# would never bound a rebase that cannot succeed.
+# MAX_ATTEMPTS counts two things, and it used to count only the first:
+#   1. runs where `claude` exits non-zero
+#   2. runs that exit 0 and open NO PR (added 2026-07-30, ASK-221)
+# Case 2 was the gap. An agent exiting 0 with nothing written was invisible to
+# the counter, so the issue stayed at `attempt 1/3` forever and was immediately
+# re-dispatchable -- it could never become stuck, so it never stopped costing
+# budget. Budget day 2026-07-30 was spent entirely on that: ASK-149 twice and
+# ASK-148 once, all `ok`, all zero commits, all converge STOP exit-7.
+# The cited rebase failure mode (an agent that exits 0 having done the WRONG
+# thing, as opposed to nothing) is still not counted here, which is why conflict
+# rounds keep their own separate counter below.
 # 2: a rebase either works on the first honest attempt or the conflict needs a
 # human. Round 3 has never been the one that lands it here.
 #
@@ -1203,6 +1211,28 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     fi
   else
     say "no PR found for $BRANCH; nothing to review"
+    # A RUN THAT PRODUCED NOTHING IS A FAILED ATTEMPT (ASK-221, 2026-07-30).
+    #
+    # MAX_ATTEMPTS used to count only runs where `claude` exited non-zero (the
+    # note at the top of this file said so deliberately). But the agent can exit
+    # 0 having written nothing at all, and that outcome was invisible to the
+    # counter: no bump, ledger stays {}, the issue reads `attempt 1/3` forever
+    # and is immediately re-dispatchable. It never becomes stuck, so it never
+    # stops costing budget.
+    #
+    # Measured on the founder's machine for budget day 2026-07-30: the loop spent
+    # its ENTIRE 3-issue budget on this. 14:15 ASK-149, 14:30 ASK-149 again
+    # (third dispatch of that issue overall), 14:45 ASK-148 -- every one exiting
+    # `ok` with zero commits, zero dirty files and no remote branch, then
+    # converge STOP exit-7. Three unattended dispatches, no PR, and therefore no
+    # review and no verdict record on a day the loop ran to its cap.
+    #
+    # Bumping here reuses the mechanism that already exists rather than adding a
+    # new one: three no-output runs mark the issue stuck and a human decides,
+    # which is the correct terminal state for "the agent cannot make progress on
+    # this spec". The cost of getting it wrong is bounded and visible -- a stuck
+    # issue is reported, whereas the current behaviour is silent budget burn.
+    bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
   fi
 
   # 6. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
