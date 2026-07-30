@@ -274,6 +274,10 @@ def ready(i):
     # founder is the thing this loop exists to avoid, so the refusal needed a
     # label of its own that means "re-scope this", not "the founder decides".
     if "needs-scope" in labels:      return False
+    # blocked:capability is the OTHER terminal refusal: the spec is fine, the
+    # runner lacks something it cannot grant itself (a harness permission, a
+    # missing tool). Excluded for the same reason, routed somewhere different.
+    if "blocked:capability" in labels: return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -286,14 +290,19 @@ def ready(i):
 def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
-            and "needs-scope" not in labels
+            and "needs-scope" not in labels and "blocked:capability" not in labels
             and i["state"]["type"] in ("backlog", "unstarted")
             and "Definition of Ready" in (i.get("description") or ""))
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
-deferred = [i for i in issues
-            if "needs-scope" in {l["name"] for l in i["labels"]["nodes"]}
-            and in_this_repo(i)]
+def held_with(label):
+    return [i for i in issues
+            if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
+deferred = held_with("needs-scope")
+# Counted SEPARATELY from needs-scope. A rising blocked:capability count is a
+# claim about the ENVIRONMENT, and averaging it into "held" would hide the one
+# number that says the loop is starving for a capability nobody has granted.
+blocked_cap = held_with("blocked:capability")
 
 pool = [i for i in issues if ready(i)]
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
@@ -312,6 +321,8 @@ print(json.dumps({
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
     "deferred_needs_scope": len(deferred),
+    "blocked_capability": len(blocked_cap),
+    "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
     # Does the derived repo identity name a project that EXISTS on the board?
     # If not, every issue fails in_this_repo() and the queue reads a healthy
     # empty -- a permanently silent loop reporting success. That is strictly
@@ -356,6 +367,17 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+
+BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
+BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("blocked_capability_ids",[])))' 2>/dev/null)"
+# ONE consolidated line per run, never one per issue. Six issues blocked on the
+# same missing permission is ONE fact about the environment, and six pages of it
+# is the cry-wolf failure founder-notifications.md names. The count is the signal:
+# a queue starving on a capability nobody has granted looks identical to a quiet
+# queue unless someone says the number out loud.
+if [ "${BLOCKED_CAP:-0}" != "0" ]; then
+  say "worker: $BLOCKED_CAP issue(s) held at blocked:capability -- the specs are sound, the runner is missing something it cannot grant itself ($BLOCKED_IDS)"
+fi
 
 if [ "$READY_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
@@ -1157,9 +1179,27 @@ Work here. Never `cd` to $SKEL and never switch this branch -- the founder may b
    OPEN IT BEFORE YOUR TURN ENDS. Never finish on \"I'll open the PR once X finishes\" -- your turn
    ends there and the PR never exists, so the review never runs and the work is stranded (observed
    on ASK-184). If a check is still running, open the PR FIRST and post the result as a comment.
-7. If the DoR turns out to be wrong or impossible, REFUSE IT IN A FILE, not only in prose:
-     printf '%s' \"<why it cannot be executed as written, and what a workable DoR would scope>\" > $TREE/.sana-needs-scope
-   then post the same reasoning via progress and STOP. Do not improvise a different task.
+7. If you cannot finish, REFUSE IN A FILE, not only in prose. TWO different files, and
+   picking the right one decides who acts next, so do not guess:
+
+   a) THE SPEC IS WRONG (unbounded, contradictory, names files that do not exist,
+      no achievable outcome). The environment is fine; the issue is not workable as written:
+        printf '%s' \"<why it cannot be executed as written, and what a workable DoR would scope>\" > $TREE/.sana-needs-scope
+      This routes to linear-dor-drafter.py to be re-scoped.
+
+   b) THE SPEC IS FINE, THE RUNNER IS NOT EQUIPPED (a refused harness permission, a
+      missing binary, an expired credential, a tool this session does not have):
+        printf '%s' \"<the exact capability missing, what refused it, and what it unblocks>\" > $TREE/.sana-blocked-capability
+      This does NOT go to the drafter. Re-scoping a correct spec burns a pass and
+      returns the same blocked issue. It routes to whoever owns the config.
+
+   Choosing (a) when it is really (b) is the costly mistake: it throws away a good
+   spec and hides the real constraint. Ask yourself: would a perfectly written DoR
+   still fail here? If yes, it is (b).
+
+   Then post the same reasoning via progress and STOP. Do not improvise a different task.
+   NEVER route around a refused permission by another route (writing the file through
+   Bash, disabling the gate). A gate that is inconvenient is a gate doing its job.
    The file is what makes the refusal stick: the worker reads it, labels the issue needs-scope so the
    picker stops handing it back, and routes it to the DoR drafter for re-scoping. A refusal written
    ONLY as a comment is invisible to the loop -- the issue returns as the top pick on the next run and
@@ -1204,8 +1244,35 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # produce, and a reasoned refusal produced the correct answer. Counting it would
   # spend a real budget on being right, and after three would mark the issue STUCK
   # and page a human -- routing to the founder by the back door.
-  if [ -f "$TREE/.sana-needs-scope" ]; then
-    SCOPE_WHY="$(head -c 1500 "$TREE/.sana-needs-scope" 2>/dev/null)"
+  # TWO CLASSES, NOT ONE (ASK-275, corrected 2026-07-30 after first live contact).
+  #
+  # The first build of this had a single sentinel. On its first real run Sana used
+  # it to escape ASK-140 and wrote, in her own words, "blocked on a harness
+  # permission, NOT on scope" -- and the worker labelled it needs-scope anyway,
+  # which routes the issue to linear-dor-drafter.py to be RE-SCOPED. The spec was
+  # already correct. Re-scoping it would rewrite a good DoR and hand the loop the
+  # same blocked issue again, having burned a drafter pass to learn nothing.
+  #
+  # self-healing-retry.md rule 5 already draws this line: environmental-trigger is
+  # not latent-defect, and retrying logic cannot fix an environment. One channel
+  # for both was my error, and the loop surfaced it in one run.
+  #
+  #   .sana-needs-scope        the SPEC is wrong    -> needs-scope        -> DoR drafter
+  #   .sana-blocked-capability the RUNNER lacks a   -> blocked:capability -> capability grant
+  #                            capability; spec ok
+  #
+  # Both leave the ready pool. They differ in who acts next and what they do, and
+  # collapsing them loses exactly the information that decides which.
+  SENTINEL=""; REFUSE_LABEL=""; REFUSE_KIND=""
+  if [ -f "$TREE/.sana-blocked-capability" ]; then
+    SENTINEL="$TREE/.sana-blocked-capability"; REFUSE_LABEL="blocked:capability"; REFUSE_KIND="capability"
+  elif [ -f "$TREE/.sana-needs-scope" ]; then
+    SENTINEL="$TREE/.sana-needs-scope"; REFUSE_LABEL="needs-scope"; REFUSE_KIND="scope"
+  fi
+  # Capability is checked FIRST: a run that wrote both is telling us the spec is
+  # fine and the environment is not, and the environment is the blocking fact.
+  if [ -n "$SENTINEL" ]; then
+    SCOPE_WHY="$(head -c 1500 "$SENTINEL" 2>/dev/null)"
     [ -n "$SCOPE_WHY" ] || SCOPE_WHY="the run refused the DoR but recorded no reason"
     # CONSUMED, NOT KEPT. Two failures if it survives the run, and the worktree
     # is reused across runs so both are certain rather than theoretical:
@@ -1214,23 +1281,38 @@ Anything real you find and are not fixing: capture it, never just mention it:
     #   2. an untracked file makes the tree dirty, and the position guard above
     #      refuses to reposition a dirty tree, wedging this issue permanently.
     # The durable record is the label plus the Linear comment, not this file.
-    rm -f "$TREE/.sana-needs-scope"
-    say "$ISSUE REFUSED as unexecutable: $SCOPE_WHY"
-    if python3 "$SYNC" label "$ISSUE" needs-scope >>"$LOG" 2>&1; then
-      say "$ISSUE labelled needs-scope -- the picker will stop offering it"
+    rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
+    if [ "$REFUSE_KIND" = "capability" ]; then
+      say "$ISSUE BLOCKED on a missing capability (the spec is fine, the runner is not): $SCOPE_WHY"
+    else
+      say "$ISSUE REFUSED as unexecutable: $SCOPE_WHY"
+    fi
+    if python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
+      say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
       # The label is the ONLY thing that makes this stick. If it did not land, the
       # issue returns as the top pick next run, so say so rather than reporting a
       # clean refusal: a silent failure here is an infinite redispatch loop.
-      say "$ISSUE REFUSED but the needs-scope label did NOT apply (see $LOG) -- it will be offered again"
+      say "$ISSUE REFUSED but the $REFUSE_LABEL label did NOT apply (see $LOG) -- it will be offered again"
     fi
-    python3 "$SYNC" progress "$ISSUE" \
-      "**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
+    # Different next action per class. A capability block that says "re-scope this"
+    # sends the drafter to rewrite a spec that was already right.
+    if [ "$REFUSE_KIND" = "capability" ]; then
+      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
 
 $SCOPE_WHY
 
-**Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder." \
-      --agent "$AGENT" >/dev/null 2>&1 || true
+**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
+
+**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up."
+    else
+      REFUSE_NOTE="**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
+
+$SCOPE_WHY
+
+**Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
+    fi
+    python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
     ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
     # `continue` WITHOUT DONE++ is the whole of part B: a rejection costs a TURN
     # inside this run, not the run itself. When the worker holds the pool (no

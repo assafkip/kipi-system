@@ -75,8 +75,13 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-
 STUB="$WORK/stub"; mkdir -p "$STUB"
 cat > "$STUB/claude" <<'SH'
 #!/usr/bin/env bash
+# ASK-801 refuses on SCOPE, ASK-802 refuses on CAPABILITY. Two classes, so the
+# suite can prove they are routed differently rather than merely both excluded.
 if printf '%s' "$*" | grep -q 'ASK-801'; then
   printf '%s' "the DoR asks for 304 spillover triages, which is not one bounded change" > .sana-needs-scope
+fi
+if printf '%s' "$*" | grep -q 'ASK-802'; then
+  printf '%s' "Edit(.claude/rules/**) refused by the harness sensitive-path guard" > .sana-blocked-capability
 fi
 exit 0
 SH
@@ -181,6 +186,33 @@ if printf '%s\n' "$OUT" | grep -q "ASK-802"; then
 else
   bad "continues to the next ready issue in the same run" \
       "ASK-802 was never reached: $(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-400)"
+fi
+
+# --- 3b. the two refusal classes are routed DIFFERENTLY ----------------------
+# The defect this suite gained on 2026-07-30 after one live run: a single channel
+# labelled a PERMISSION block as needs-scope, which sends linear-dor-drafter.py to
+# rewrite a spec that was already correct. Both classes leaving the queue is not
+# enough -- they must leave it toward different people.
+if grep -q "ASK-802 BLOCKED on a missing capability" <<<"$ALL_WRITTEN"; then
+  ok "a capability block is reported as a capability block, not as a bad spec"
+else
+  bad "a capability block is reported as a capability block" \
+      "expected 'ASK-802 BLOCKED on a missing capability'"
+fi
+
+if grep -q "label ASK-802 blocked:capability\|ASK-802 labelled blocked:capability\|ASK-802 REFUSED but the blocked:capability" <<<"$ALL_WRITTEN"; then
+  ok "a capability block routes to blocked:capability, not needs-scope"
+else
+  bad "a capability block routes to blocked:capability" "no blocked:capability label op for ASK-802"
+fi
+
+# The two must not be swapped: ASK-801 is the scope case and must NOT be labelled
+# blocked:capability. Without this, a worker that labelled everything
+# blocked:capability would satisfy both assertions above.
+if grep "ASK-801" <<<"$ALL_WRITTEN" | grep -q "blocked:capability"; then
+  bad "the classes are not swapped" "ASK-801 (a scope refusal) was labelled blocked:capability"
+else
+  ok "the classes are not swapped (ASK-801 stays needs-scope)"
 fi
 
 # --- 4. a refusal is not a failed attempt -----------------------------------
