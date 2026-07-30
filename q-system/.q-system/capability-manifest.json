@@ -437,6 +437,11 @@
       "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
       "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
       "spillover_id": "sp-fb332466"
+    },
+    {
+      "path": "q-system/.q-system/scripts/verify-codex-review-live.sh",
+      "reason": "operator verification tool: it reads the LIVE launchd plist and queries Linear, so it cannot run inside CI. Its job is to answer 'is codex wired into the next scheduled run' against the running system, which is exactly what a CI sandbox cannot see.",
+      "spillover_id": "sp-6bf71e3b"
     }
   ],
   "uncovered_known": [

@@ -1100,6 +1100,62 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
     $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
       || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+
+    # CODEX REVIEWS SANA'S WORK, NATIVELY (ASK-253, founder directive 2026-07-29).
+    # Sana is Claude and so is the reviewer above, same lab and model family, so
+    # their blind spots stay correlated -- fresh context is not an independent mind.
+    # Codex is a first-class Linear agent in this workspace, so the review happens
+    # by DELEGATION and the conversation lands on the issue where the founder and
+    # Sana both read it. Proven by hand on ASK-221 2026-07-29: delegate, 7-second
+    # ack, and a real review that found a major the Claude reviewer never did.
+    #
+    # ONCE PER HEAD SHA, and this bound is not optional: a delegation starts a PAID
+    # Codex Cloud session, this worker runs every 900s, and a re-delegation on
+    # unchanged code buys nothing while billing again. The marker is keyed by
+    # pr+sha so a real push re-opens the door and a re-run does not.
+    #
+    # ADVISORY ON PURPOSE, for now. It posts kipi/codex-approved, which is NOT in
+    # required_status_checks, so a codex outage cannot wedge a single PR. Adding it
+    # to the required contexts is a deliberate founder step AFTER it is seen
+    # emitting on live PRs -- a required context with no producer blocks every PR in
+    # the repo forever, which is ASK-221's own binding not-doing and still holds.
+    CODEX_SHA="$(pr_head_sha "$PR_NUM")"
+    CODEX_MARK="$STATE_DIR/codex-delegated-$PR_NUM-${CODEX_SHA:-nosha}"
+    if [ -z "$CODEX_SHA" ]; then
+      say "$ISSUE: no head sha for PR #$PR_NUM, so codex was NOT delegated (a review pinned to a guessed sha is worse than none)"
+    elif [ -f "$CODEX_MARK" ]; then
+      say "$ISSUE: codex already reviewed PR #$PR_NUM at ${CODEX_SHA:0:7}; not re-delegating (a paid session on unchanged code buys nothing)"
+    elif python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
+      : > "$CODEX_MARK"
+      say "$ISSUE: delegated PR #$PR_NUM (${CODEX_SHA:0:7}) to codex for review"
+    else
+      say "WARN: $ISSUE: could not delegate to codex (the Claude review above stands, nothing is blocked)"
+    fi
+
+    # READ CODEX'S VERDICT BACK, TYPED. agent-verdict exits 0 only for a COMPLETE
+    # session carrying a closed FINDINGS block; an errored session, a session with
+    # no response, and a truncated block all exit non-zero and stay UNSTATED. That
+    # distinction is the whole reason this reads a session instead of scraping a
+    # comment: "codex crashed" and "codex approved" must not look alike.
+    CODEX_VERDICT="$(python3 "$SYNC" agent-verdict "$ISSUE" --agent Codex 2>/dev/null \
+                     | sed -n 's/^verdict=//p' | head -1)"
+    if [ -n "$CODEX_VERDICT" ]; then
+      say "$ISSUE: codex verdict on PR #$PR_NUM: $CODEX_VERDICT"
+      CODEX_STATE="failure"
+      case "$CODEX_VERDICT" in "APPROVE"|"APPROVE WITH NITS") CODEX_STATE="success" ;; esac
+      # Posted on the sha codex's session is about, never a re-read of the live head:
+      # a status on a newer commit claims a review of code nobody read (ASK-216).
+      if gh api -X POST "repos/{owner}/{repo}/statuses/$CODEX_SHA" \
+           -f "state=$CODEX_STATE" -f "context=kipi/codex-approved" \
+           -f "description=$(printf '%.140s' "codex (gpt-5.6-sol, Linear agent): $CODEX_VERDICT")" \
+           >/dev/null 2>&1; then
+        say "$ISSUE: kipi/codex-approved=$CODEX_STATE posted on ${CODEX_SHA:0:7}"
+      else
+        say "WARN: $ISSUE: codex verdict read but the commit status did not post; no gate moved"
+      fi
+    else
+      say "$ISSUE: codex verdict UNSTATED on PR #$PR_NUM (no complete session yet, or it errored). Nothing posted -- absent is not approved."
+    fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
