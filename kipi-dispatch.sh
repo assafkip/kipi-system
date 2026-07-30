@@ -51,6 +51,63 @@ cd "$REPO" 2>/dev/null || {
   exit 1
 }
 
+# --- STALE-CHECKOUT REFUSAL (sp-c775b116) --------------------------------
+# The loop runs the founder's WORKING TREE, and nothing kept it in sync with
+# main. There is no `git pull` anywhere in this script. Observed 2026-07-30:
+# merging PR #34 left this checkout at 1597eaf, so the loop would have gone on
+# running the old Claude-only reviewer indefinitely while main carried the codex
+# gate. It was fixed by hand twice in one session, which means every future merge
+# silently depended on someone remembering.
+#
+# A DETECTOR, NOT A PULL. Pulling under the founder mid-session is its own
+# hazard -- it can yank a working tree out from under an interactive session
+# (the parallel-session scar). So this refuses and pages instead, and the page
+# carries the exact command.
+#
+# REFUSE, not warn. This loop MERGES ITS OWN PRs and has no accepted-change
+# signal, so building on superseded code and auto-merging the result is worse
+# than resting until someone fast-forwards. Same posture as the reviewer's
+# commit status: absent is not approved, and unstated HOLDS.
+#
+# A FAILED LOOKUP MUST NOT WEDGE THE LOOP. Refusal needs a POSITIVE answer that
+# we are behind; a network blip, an auth prompt or a missing remote logs and
+# proceeds. Two different safe directions, deliberately: fail closed on
+# staleness, fail open on not knowing.
+stale_check() {
+  local local_head remote_head base
+  # Bounded by hand: macOS ships no `timeout`, and an unbounded fetch inside a
+  # 15-minute launchd job is how a heartbeat becomes a stuck process.
+  ( git fetch --quiet origin main 2>/dev/null ) &
+  local fetch_pid=$! waited=0
+  while kill -0 "$fetch_pid" 2>/dev/null && [ "$waited" -lt 60 ]; do
+    sleep 1; waited=$((waited + 1))
+  done
+  if kill -0 "$fetch_pid" 2>/dev/null; then
+    kill "$fetch_pid" 2>/dev/null || true
+    say "stale-check: fetch exceeded 60s, proceeding without a freshness answer"
+    return 0
+  fi
+  wait "$fetch_pid" 2>/dev/null || {
+    say "stale-check: git fetch failed, proceeding (cannot distinguish stale from offline)"
+    return 0
+  }
+  local_head="$(git rev-parse HEAD 2>/dev/null)" || return 0
+  remote_head="$(git rev-parse origin/main 2>/dev/null)" || return 0
+  [ -n "$local_head" ] && [ -n "$remote_head" ] || return 0
+  [ "$local_head" != "$remote_head" ] || return 0
+  # BEHIND means origin/main holds commits this tree does not. Being AHEAD is
+  # normal and must not refuse: an agent session commits locally before it opens
+  # a PR, and refusing there would wedge the loop on its own unpushed work.
+  if git merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
+    base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo '?')"
+    say "REFUSING: this checkout is $base commit(s) BEHIND origin/main (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded code and auto-merge the result."
+    page "kipi dispatch: refused to run -- the checkout is $base commit(s) behind origin/main, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"
+    return 1
+  fi
+  return 0
+}
+stale_check || exit 0
+
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
 live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }

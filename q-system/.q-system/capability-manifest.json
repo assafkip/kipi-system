@@ -198,6 +198,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
