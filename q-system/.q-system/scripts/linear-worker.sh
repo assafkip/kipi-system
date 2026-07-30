@@ -346,15 +346,7 @@ claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 # the second time the state is real it is silent -- and silent is the failure
 # this whole issue exists to kill. Only ever called on a STATED "armed": clearing
 # off a state nobody could read would refill the budget from a guess.
-clear_automerge_pages() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('automerge_unarmed_paged') or e.get('automerge_unknown_paged')):
-    raise SystemExit(0)
-for k in ('automerge_unarmed_paged','automerge_unknown_paged'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_automerge_pages() { python3 "$LEDGER" "$ATTEMPTS" clear-automerge "$1"; }
 
 # --- arm auto-merge (ASK-222) ------------------------------------------------
 # arm_automerge <pr-number> <dir>: make GitHub own the merge, and publish what

@@ -338,7 +338,7 @@ extract_minor_findings() {
 review_comment_body() {
   local f="$1" verdict="${2:-}" engine="${3:-}" degraded="${4:-0}"
   local limit="${KIPI_REVIEW_COMMENT_LIMIT:-60000}"
-  local bytes head_bytes block
+  local bytes head_bytes block block_bytes
   bytes="$(wc -c <"$f" 2>/dev/null | tr -d ' ')"; bytes="${bytes:-0}"
   block="$(findings_block "$f")"
   [ -n "$block" ] || block="(no complete findings block parsed from this review)"
@@ -367,7 +367,15 @@ review_comment_body() {
   #
   # The block is already in hand ($block), so its size is a fact, not an estimate.
   # The fixed number stays only as the allowance for the surrounding prose.
-  head_bytes=$(( $(review_comment_body_header_size) + ${#block} ))
+  # BYTES, NOT CHARACTERS (codex round 7, minor). `${#block}` counts CHARACTERS,
+  # and these reviews are full of typographic quotes and dashes that are 2-3 bytes
+  # each in UTF-8. So the budget under-counted the block by exactly the amount that
+  # matters, and a findings block of multi-byte text could push the body past both
+  # the configured cap and GitHub's. The whole point of measuring the block instead
+  # of reserving a flat 5,000 was to stop guessing; measuring it in the wrong unit
+  # is still guessing.
+  block_bytes="$(printf '%s' "$block" | wc -c | tr -d ' ')"
+  head_bytes=$(( $(review_comment_body_header_size) + ${block_bytes:-0} ))
   local room=$(( limit - head_bytes ))
   # A findings block alone can now exceed the limit. Truncating findings would
   # drop the one thing a human must act on, so the narrative goes to zero first

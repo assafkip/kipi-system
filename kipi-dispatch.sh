@@ -296,7 +296,7 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   # times is the cry-wolf failure, and this is not an error state anyway.
   if [ ! -f "$COUNT_FILE.paged" ]; then
     say "${LANE_TAG}DAILY CAP: $DISPATCHED_TODAY/$DAILY_MAX issues dispatched for budget day $BUDGET_DAY (lane=$DISPATCH_LANE), stopping until ${RESET_HOUR}:00 local"
-    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * 6)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
+    page "kipi dispatch: hit the daily cap of $DAILY_MAX issues (~$((DAILY_MAX * MAX_ROUNDS * 2)) agent sessions). Not an error -- the loop is resting until ${RESET_HOUR}am, then it picks up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in com.kipi.dispatch.plist to go faster."
     : > "$COUNT_FILE.paged"
   fi
   exit 0
