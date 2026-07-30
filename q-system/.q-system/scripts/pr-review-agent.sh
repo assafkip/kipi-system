@@ -201,14 +201,50 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # And an UNKNOWN object is not evidence of a mismatch: a stale or partial clone
 # cannot prove ancestry either way, and inventing a refusal there would wedge the
 # loop on a fetch problem. Unknown warns; known-but-unrelated refuses.
+#
+# WHY THIS RESOLVES INSTEAD OF REFUSING (codex review round 1 of PR #34, major).
+# The first cut of this guard compared $HEAD_SHA against $SKEL's HEAD and exited 1
+# on a mismatch. That reads correctly and is still wrong, because $SKEL is derived
+# from BASH_SOURCE -- the script's own location -- and the autonomous caller is
+# `linear-worker.sh:1133`, which runs `bash $SCRIPT_DIR/pr-review-agent.sh` out of
+# the MAIN checkout while the PR's commits live in a worktree it cut at
+# $STATE_DIR/worktrees/<issue>. cwd is irrelevant; BASH_SOURCE wins. So the PR head
+# is never an ancestor of main's HEAD, the guard refuses EVERY autonomous review,
+# and the worker's call site swallows it as `|| say WARN ... (the PR stands,
+# unreviewed)`. A guard whose success case is "the loop silently reviews nothing"
+# is worse than the hole it closed.
+#
+# The question the scar actually asks is not "is SKEL right?" but "which tree on
+# this machine holds the code this PR's diff describes?" Worktrees share one object
+# database, so the answer is discoverable: ask each worktree. Refusal is kept for
+# the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
+# still must never be reviewed.
+REVIEW_ROOT="$SKEL"
 if [ -n "$HEAD_SHA" ]; then
   if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
   elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
-    echo "REFUSING: PR #$PR is at $HEAD_SHA, which is NOT in the history of $SKEL (HEAD $(git -C "$SKEL" rev-parse --short HEAD 2>/dev/null))." >&2
-    echo "  The reviewer reads FILES from this tree and the DIFF from the PR. They are different branches, so every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
-    echo "  Run it from the PR's own worktree. No review was dispatched and NO status was posted -- absent is not approved." >&2
-    exit 1
+    # SKEL does not contain the PR. Find a worktree that does. `worktree list
+    # --porcelain` emits a `worktree <path>` line per tree, SKEL included; testing
+    # SKEL again is harmless and keeps the loop free of a special case.
+    FOUND_ROOT=""
+    while IFS= read -r wt; do
+      [ -n "$wt" ] || continue
+      [ -d "$wt" ] || continue
+      if git -C "$wt" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+        FOUND_ROOT="$wt"; break
+      fi
+    done < <(git -C "$SKEL" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+
+    if [ -n "$FOUND_ROOT" ]; then
+      REVIEW_ROOT="$FOUND_ROOT"
+      echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL)"
+    else
+      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $SKEL (HEAD $(git -C "$SKEL" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
+      echo "  The reviewer reads FILES from a tree and the DIFF from the PR. With no tree holding this commit, every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
+      echo "  Fetch the PR's head, or run it from a tree that has it. No review was dispatched and NO status was posted -- absent is not approved." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -248,7 +284,7 @@ Then apply this rule, which is binding:
 fi
 
 PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
-You were asked to review pull request #$PR in $SKEL, and you are ADVERSARIAL by default:
+You were asked to review pull request #$PR in $REVIEW_ROOT, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.$ROUND_RULE
 
 ## Read the change
@@ -362,9 +398,9 @@ END FINDINGS"
 run_engine() {   # run_engine <claude|codex> <destination-file>
   case "$1" in
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$SKEL' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$SKEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 

@@ -199,4 +199,62 @@ $(sed 's/^/        /' "$CASE_DIR/err.txt")"
 [ -f "$CASE_DIR/codex-ran" ] || fail "the unknown-object case did not reach codex"
 ok "an absent object warns out loud and proceeds (tier 1, not a refusal)"
 
+
+# --- case 4: THE AUTONOMOUS CALL SHAPE (codex round 1 of PR #34, major) ---------
+# Cases 1-3 all run the reviewer out of the same checkout whose HEAD they ask about,
+# so they never exercised the shape the LIVE loop actually uses. linear-worker.sh
+# runs `bash $SCRIPT_DIR/pr-review-agent.sh` from the MAIN checkout while the PR's
+# commits sit in a worktree it cut under $STATE_DIR/worktrees/<issue>. $SKEL follows
+# BASH_SOURCE, not cwd, so the reviewer asked main's HEAD about a branch commit,
+# refused, and the worker logged `|| say WARN ... (the PR stands, unreviewed)`. The
+# gate's success case was "the loop reviews nothing", silently.
+#
+# The commit here is a REAL object that is NOT an ancestor of $REPO's HEAD -- the
+# same premise as case 1. What separates them is only whether some worktree holds
+# it. Case 1 stays as this case's negative self-test: if the resolver ever devolved
+# into "always proceed", case 1 goes red.
+git -C "$REPO" worktree add -q -b feature "$W/wt" HEAD 2>/dev/null \
+  || fail "could not add a linked worktree to the sandbox repo"
+printf 'branch work\n' > "$W/wt/marker.txt"
+git -C "$W/wt" add -A >/dev/null 2>&1
+git -C "$W/wt" -c user.name=guardtest -c user.email=guard@test \
+  commit -q -m "work on the branch" --no-verify >/dev/null 2>&1 \
+  || fail "could not commit inside the linked worktree"
+WT_HEAD="$(git -C "$W/wt" rev-parse HEAD)"
+
+git -C "$REPO" merge-base --is-ancestor "$WT_HEAD" HEAD 2>/dev/null \
+  && fail "premise broken: the worktree commit IS an ancestor of the main checkout's HEAD, so this
+      case would pass even with no resolver at all"
+git -C "$REPO" cat-file -e "${WT_HEAD}^{commit}" 2>/dev/null \
+  || fail "premise broken: worktrees are supposed to share the object store, but the main checkout
+      cannot see $WT_HEAD"
+ok "premises: ${WT_HEAD:0:12} is visible from the main checkout and is NOT in its history"
+
+run_case worktree "$WT_HEAD"
+grep -q 'REFUSING' "$CASE_DIR/err.txt" \
+  && fail "THE DEFECT: the reviewer REFUSED the autonomous call shape. The script lives in the main
+      checkout and the PR head lives in a linked worktree, which is how linear-worker.sh:1133 calls
+      it on every run. The worker swallows this as a WARN, so the real-world symptom is a loop that
+      reviews nothing and says almost nothing. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "a PR head held by a linked worktree is not refused"
+
+[ -f "$CASE_DIR/codex-ran" ] \
+  || fail "the reviewer did not refuse, but codex was never dispatched either, so the autonomous
+      path still produces no review. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "codex is dispatched for the worktree-held head"
+
+grep -q "$W/wt" "$CASE_DIR/out.txt" \
+  || fail "codex ran but the reviewer never named the tree it resolved to. Without that line there
+      is no way to tell from a log whether it read the PR's files or main's. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "the resolved tree is named on stdout (provenance is auditable in the worker log)"
+
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["head_sha"]==sys.argv[2] else 1)' \
+  "$(record "$CASE_DIR")" "$WT_HEAD" \
+  || fail "the verdict record does not pin the worktree head it actually reviewed:
+      $(cat "$(record "$CASE_DIR")")"
+ok "the verdict record pins the worktree's head sha"
+
 echo "PASS: $PASS/$PASS tree-guard checks"
