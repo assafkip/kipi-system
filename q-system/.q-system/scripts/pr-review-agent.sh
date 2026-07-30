@@ -610,7 +610,11 @@ if [ "$POST" = "1" ]; then
     # the flip is that the checker is not Claude, so a thread that cannot tell you
     # WHICH engine spoke loses the only fact that matters. It also gives Sana a
     # string to filter on (`linear-sync.py comments --agent codex-reviewer`).
-    REVIEW_FINDINGS="$(sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$REVIEW" 2>/dev/null)"
+    # Through the ONE reader (sp-c0a9dac3). Its own sed range here was the third
+    # copy of that extraction, so the Linear comment could carry a DIFFERENT set of
+    # findings than the verdict was derived from -- Sana would be answering findings
+    # that never set the gate, on a review whose gate came from findings she never saw.
+    REVIEW_FINDINGS="$(findings_block "$REVIEW")"
     [ -n "$REVIEW_FINDINGS" ] || REVIEW_FINDINGS="(no findings block parsed from this review)"
     python3 "$SYNC" progress "$ISSUE" \
       "Review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.
