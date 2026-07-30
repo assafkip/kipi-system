@@ -70,8 +70,21 @@ extract_verdict() {
 # a duplicated final line makes the last one the complete one. Taking the first
 # would pick the echoed template.
 #
-# awk, not sed, because the rule is stateful: opening a new block DISCARDS an
-# unclosed one, and only a block that reached its closing line is eligible.
+# A BLOCK STILL OPEN AT EOF VOIDS THE WHOLE REVIEW, earlier complete blocks
+# included. This is the case the first cut of this function got wrong, caught by
+# its own reproducer: "last COMPLETE block" quietly falls back to a QUOTED
+# prior-round block when the real trailing block is cut off mid-write, so a
+# truncated review would derive a verdict from findings it had already withdrawn --
+# and the completeness predicate built on it would call that review usable. An open
+# block at EOF is evidence of truncation, so nothing in the stream is trustworthy.
+#
+# The cost of that strictness is a review whose PROSE happens to end with a line
+# starting `FINDINGS:` reads as unstated. That is the safe direction and the same
+# posture the rest of this file takes: unstated HOLDS a PR, green RELEASES it.
+#
+# awk, not sed, because the rule is stateful in two ways a range expression cannot
+# express: opening a new block discards an unclosed one, and the end-of-input state
+# decides whether any of it counts.
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
@@ -79,8 +92,23 @@ findings_block() {
     /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }
     open && /^END FINDINGS/ { last = buf $0 "\n"; open = 0; next }
     open                    { buf = buf $0 "\n" }
-    END                     { printf "%s", last }
+    END                     { if (open) exit 0; printf "%s", last }
   ' "$f" 2>/dev/null
+}
+
+# has_complete_findings_block <review-file>
+# True when the review carries a usable block. DEFINED IN TERMS OF findings_block
+# so the predicate and the extractor cannot answer differently -- it lives here,
+# next to the reader, for exactly that reason.
+#
+# It used to be `grep -q '^FINDINGS:' && grep -q '^END FINDINGS'` inside
+# pr-review-agent.sh: two markers, anywhere, in any order. That passes a review
+# whose only COMPLETE block is a quoted prior round while its real trailing block
+# is truncated -- so the unusable flag stays off, the gate goes green, and the
+# verdict is derived from findings the review had already withdrawn. Two
+# definitions of "complete" in one script is the drift this file exists to stop.
+has_complete_findings_block() {
+  [ -n "$(findings_block "${1:-}")" ]
 }
 
 # verdict_from_findings <review-file>

@@ -145,6 +145,43 @@ printf 'FINDINGS:\nblocker|abandoned mid-write|a:1\nFINDINGS:\nminor|the real on
       '$(verdict_from_findings "$W/reopened.md")'; opening a new block must DISCARD the unclosed one"
 ok "an abandoned block is discarded when a later block completes"
 
+# --- 4b. the COMPLETENESS PREDICATE agrees with the reader --------------------
+# The reviewer's REVIEW_UNUSABLE flag is what stops a truncated review from posting
+# state=success on the required context. It used to ask its own question -- both
+# markers, anywhere, in any order -- so this exact shape passed it: a complete
+# QUOTED block from round 1, then the real trailing block cut off mid-write. The
+# flag stayed off and the verdict came from findings the review had withdrawn.
+if ! command -v has_complete_findings_block >/dev/null 2>&1 \
+   && ! declare -F has_complete_findings_block >/dev/null 2>&1; then
+  fail "the lib has no has_complete_findings_block, so pr-review-agent.sh is still asking its
+      own question about what 'complete' means. Two definitions of complete in one flow is the
+      drift this lib exists to stop."
+fi
+cat > "$W/quoted-then-truncated.md" <<'EOF'
+Round 1 raised:
+
+FINDINGS:
+minor|withdrawn on re-run|q-system/x.sh:1
+END FINDINGS
+
+It did not reproduce. My own findings:
+
+FINDINGS:
+EOF
+has_complete_findings_block "$W/quoted-then-truncated.md" \
+  && fail "THE DRIFT: a review whose REAL findings block is TRUNCATED was called complete because
+      a QUOTED prior-round block earlier in the body closed properly. The unusable flag stays off,
+      so the required gate goes green on a review that was cut off, with a verdict derived from a
+      finding the same review withdrew."
+ok "a truncated real block is not laundered by a complete quoted one"
+
+has_complete_findings_block "$W/normal.md" \
+  || fail "the predicate rejects an ORDINARY complete review, which would mark every good review
+      unusable and post state=failure on every PR in the repo"
+has_complete_findings_block "$W/truncated.md" \
+  && fail "the predicate accepted a review truncated one line into the block"
+ok "the predicate accepts a complete review and rejects a truncated one"
+
 # --- 5. no block at all stays empty, so the caller falls back to prose --------
 printf '## VERDICT: APPROVE\n\nFreeform prose, no machine-readable block.\n' > "$W/prose.md"
 [ -z "$(verdict_from_findings "$W/prose.md")" ] \

@@ -369,16 +369,17 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
 }
 
 # A codex answer is usable only if it carries a COMPLETE machine-readable block.
-# The closing line is what makes this a real check: verdict_from_findings uses
-# `sed -n '/^FINDINGS:/,/^END FINDINGS/p'`, which prints to EOF when the range
-# never closes -- so a stream that died right after opening the block yields an
-# EMPTY findings list, and an empty list derives APPROVE. A truncated review that
-# green-lights a PR nobody read is the worst outcome available in this script.
+# A truncated review that green-lights a PR nobody read is the worst outcome
+# available in this script.
+#
+# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
+# "complete": both markers, anywhere, in any order. That passes a review whose
+# only complete block is a quoted prior round while the real trailing block is
+# truncated -- unusable stays off, the gate goes green, and the verdict comes from
+# findings the review itself withdrew. One definition, one reader.
 review_has_complete_findings_block() {
-  local f="$1"
-  [ -s "$f" ] || return 1
-  grep -q '^FINDINGS:'    "$f" 2>/dev/null || return 1
-  grep -q '^END FINDINGS' "$f" 2>/dev/null || return 1
+  has_complete_findings_block "$1"
 }
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
