@@ -158,18 +158,61 @@ for t in test-review-tree-guard.sh test-findings-block-reader.sh; do
 done
 
 # --- 8. when does it next get a chance, and has it ever actually run? --------
-# The receipt, as opposed to the wiring. A codex verdict line in the dispatch log is
-# the only thing here that proves a review HAPPENED.
+# The receipt, as opposed to the wiring.
+#
+# THE RECEIPT IS THE RECORD, NOT A LOG LINE (sp-1d1ad606). This block used to
+# grep dispatch.log for `engine: codex`. That string is real -- pr-review-agent.sh
+# prints `round: N (engine: codex)` -- but it goes to the reviewer's STDOUT, which
+# linear-worker.sh redirects into $STATE_DIR/linear-worker.log. dispatch.log is
+# written by kipi-dispatch.sh and carries cadence lines only, so the receipt string
+# could never appear there. Check 8 printed NO RECEIPT YET unconditionally, forever,
+# including after a real dispatcher-driven codex review -- and that was the one line
+# in this verifier the founder was reading as proof.
+#
+# So read the VERDICT RECORD, which is the artifact the reviewer actually writes and
+# already carries `engine`, `head_sha` and `ts`. This is also what the rest of the
+# loop does (`verdict_from_record`, "ONE reader of the verdict, never re-grep the
+# prose") -- the old grep was the only place that reasoned about a review from a log.
 INTERVAL="$(plutil -extract StartInterval raw -o - "$PLIST" 2>/dev/null || echo '?')"
 info "StartInterval: ${INTERVAL}s"
-LOG="$HOME/.config/kipi/dispatch.log"
+
+# Honour KIPI_STATE_DIR. The old hardcoded $HOME path meant a run against a test
+# state dir silently reported on the founder's real one -- a verifier reading a
+# different installation than the one under test is worse than no verifier.
+STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
+RECEIPT="$(python3 - "$STATE_DIR/pr-reviews" <<'PY' 2>/dev/null
+import glob, json, os, sys
+newest = None
+# Both layouts: the PRIMARY engine writes pr-<N>.verdict.json to the parent dir,
+# a secondary engine to <dir>/<engine>/. Globbing only one would miss the receipt
+# the moment KIPI_REVIEW_PRIMARY_ENGINE changes.
+for p in glob.glob(os.path.join(sys.argv[1], "*.verdict.json")) + \
+         glob.glob(os.path.join(sys.argv[1], "*", "*.verdict.json")):
+    try:
+        r = json.load(open(p))
+    except Exception:
+        continue          # a corrupt record is not a receipt
+    if r.get("engine") != "codex":
+        continue
+    if newest is None or str(r.get("ts", "")) > str(newest.get("ts", "")):
+        newest = r
+if newest:
+    print("PR #%s %s verdict=%s head=%.12s at %s" % (
+        newest.get("pr"), newest.get("issue", "?"), newest.get("verdict"),
+        str(newest.get("head_sha", "")), newest.get("ts")))
+PY
+)"
+if [ -n "$RECEIPT" ]; then
+  info "RECEIPT FOUND: a codex-engine review really ran -- $RECEIPT"
+else
+  info "NO RECEIPT YET: no pr-*.verdict.json under $STATE_DIR/pr-reviews carries engine=codex. Wiring is green; a real run has not been observed."
+fi
+
+LOG="$STATE_DIR/dispatch.log"
 if [ -f "$LOG" ]; then
+  # Cadence only. This log answers "when does it next get a chance", never
+  # "did a review happen" -- that is the record above.
   info "last dispatch line: $(tail -1 "$LOG")"
-  if grep -q 'engine: codex' "$LOG" 2>/dev/null; then
-    info "RECEIPT FOUND: the log records at least one codex-engine review run"
-  else
-    info "NO RECEIPT YET: the log has no codex-engine review line. Wiring is green; a real run has not been observed."
-  fi
   if tail -5 "$LOG" | grep -q "DAILY CAP"; then
     info "daily cap is spent; the next real dispatch is after the 07:00 local reset"
   fi
