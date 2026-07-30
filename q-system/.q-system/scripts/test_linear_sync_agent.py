@@ -99,8 +99,9 @@ class DArgs:
 
 
 class VArgs:
-    def __init__(self, issue="ASK-221", agent="Codex", body=False):
+    def __init__(self, issue="ASK-221", agent="Codex", body=False, since=None, session=None):
         self.issue, self.agent, self.body = issue, agent, body
+        self.since, self.session = since, session
 
 
 def run(mod, fn, args, router):
@@ -239,6 +240,59 @@ def main():
         fail("a response with no FINDINGS block exited 0")
     else:
         ok("a response with no FINDINGS block is UNSTATED")
+
+    # ================= --since binds the verdict to the request =================
+    # THE MAJOR CODEX FOUND reviewing its own intake path, 2026-07-30. Without a
+    # binding, a read straight after delegating returns the newest COMPLETE session,
+    # which is a PRIOR review of an OLDER head, and the caller posts it on the
+    # CURRENT sha. Stale approval on unread code -- the ASK-216 class.
+    #
+    # The fixture is the real ASK-221 shape: an older session that COMPLETED, and no
+    # session at all since the delegation. The pre-fix code returns the old verdict.
+    STALE_ONLY = {"issue": {"identifier": "ASK-221", "agentSessions": {"nodes": [
+        {"id": "s-stale", "status": "complete", "createdAt": "2026-07-30T00:10:00Z",
+         "appUser": {"name": "Codex"}}]}}}
+
+    rc, out, err = run(m, m.cmd_agent_verdict,
+                       VArgs(since="2026-07-30T01:00:00Z"),
+                       verdict_router(sessions=STALE_ONLY))
+    if rc == 0:
+        fail("THE MAJOR CODEX FOUND: a session that COMPLETED BEFORE the delegation "
+             f"still produced a verdict. --since must refuse it, or the caller posts a "
+             f"stale approval on a sha nobody reviewed. Out: {out}")
+    elif "UNSTATED" not in (out + err):
+        fail(f"a pre-delegation session was refused without saying UNSTATED. err={err}")
+    else:
+        ok("--since refuses a session older than the delegation that asked for it")
+
+    # ...and it still WORKS when a session did arrive after the request, otherwise the
+    # fix would just wedge every review permanently.
+    rc, out, _ = run(m, m.cmd_agent_verdict,
+                     VArgs(since="2026-07-30T00:20:00Z"),
+                     verdict_router())
+    if rc != 0 or "verdict=REQUEST CHANGES" not in out:
+        fail(f"--since refused a session created AFTER it, so no verdict would ever be "
+             f"read and every PR waits forever. rc={rc} out={out}")
+    else:
+        ok("--since accepts a session created at or after the delegation")
+
+    # boundary: a session created EXACTLY at the delegation timestamp counts. The
+    # worker stamps the marker and delegates in the same second, so an exclusive
+    # comparison would drop the real session.
+    rc, out, _ = run(m, m.cmd_agent_verdict,
+                     VArgs(since="2026-07-30T00:27:59Z"),
+                     verdict_router())
+    if rc != 0:
+        fail("--since is EXCLUSIVE at the boundary; the worker stamps the marker and "
+             "delegates within the same second, so the real session gets dropped")
+    else:
+        ok("--since is inclusive at the boundary second")
+
+    rc, out, err = run(m, m.cmd_agent_verdict, VArgs(session="s-nope"), verdict_router())
+    if rc == 0:
+        fail("--session accepted a verdict from a session id that does not exist")
+    else:
+        ok("--session refuses an unknown session id")
 
     # ================= cmd_delegate =================
     def del_router(success=True, name="Codex", users=(("u-codex", "Codex"),)):

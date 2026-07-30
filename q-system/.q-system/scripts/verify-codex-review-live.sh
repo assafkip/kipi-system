@@ -74,10 +74,36 @@ else
   else
     fail "the live worker posts no codex commit status, so the verdict is invisible to GitHub"
   fi
-  if grep -q 'CODEX_MARK' "$LIVE_WORKER"; then
-    pass "the delegation is bounded (once per PR head sha)"
+  # THE BOUND IS CHECKED BY STRUCTURE, NOT BY THE WORD BEING PRESENT. The first cut
+  # of this script grepped for `CODEX_MARK`, and codex found (major, 2026-07-30) that
+  # a worker carrying only a COMMENT mentioning it passed as fully bounded. A
+  # verifier that certifies a bound which may not exist is worse than no verifier.
+  #
+  # These are SOURCE-ORDER assertions and this script says so plainly: the behavioral
+  # coverage lives in test_linear_sync_agent.py, which check 4b below runs against the
+  # LIVE copy. What is checked here is the property codex's finding was about --
+  # delegating BEFORE recording means an unwritable state dir re-delegates, and every
+  # delegation is a paid session.
+  MARK_LINE="$(grep -n '> *"\$CODEX_MARK"' "$LIVE_WORKER" | head -1 | cut -d: -f1)"
+  DELEG_LINE="$(grep -n 'delegate "\$ISSUE" --agent Codex' "$LIVE_WORKER" | head -1 | cut -d: -f1)"
+  if [ -z "$MARK_LINE" ]; then
+    fail "the live worker never WRITES a once-per-sha marker, so each 900s pass starts another PAID codex session on unchanged code"
+  elif [ -z "$DELEG_LINE" ]; then
+    fail "no delegate call found to order the marker against"
+  elif [ "$MARK_LINE" -lt "$DELEG_LINE" ]; then
+    pass "the marker is written BEFORE delegating (line $MARK_LINE < $DELEG_LINE), so an unwritable state dir refuses to spend"
   else
-    fail "NO once-per-sha bound in the live worker. It runs every 900s and each delegation starts a PAID codex session, so this is a runaway bill, not a cosmetic gap."
+    fail "the marker is written AFTER delegating (line $MARK_LINE > $DELEG_LINE): the bound FAILS OPEN. An unwritable \$STATE_DIR re-delegates every 900s and bills every time."
+  fi
+  if grep -q '\[ -f "\$CODEX_MARK" \]' "$LIVE_WORKER"; then
+    pass "the delegate path is guarded by the marker's existence"
+  else
+    fail "nothing tests for an existing marker, so the bound is never consulted"
+  fi
+  if grep -q 'agent-verdict "\$ISSUE" --agent Codex .*--since\|--since "\$CODEX_SINCE"' "$LIVE_WORKER"; then
+    pass "the verdict read is bound to the delegation (--since)"
+  else
+    fail "the verdict read passes NO --since, so it can return a session that COMPLETED BEFORE this delegation -- a stale approval posted on a sha nobody reviewed"
   fi
   bash -n "$LIVE_WORKER" 2>/dev/null && pass "the live worker parses" \
     || fail "the live worker does NOT parse; the whole run dies"
@@ -94,6 +120,24 @@ else
       fail "live linear-sync.py has NO '$verb' verb, so the worker's call fails at runtime"
     fi
   done
+  # The worker passes --since; a live copy without that option fails at runtime with
+  # an argparse error, which would read as "codex never answered".
+  if python3 "$LIVE_SYNC" agent-verdict --help 2>/dev/null | grep -q -- "--since"; then
+    pass "live agent-verdict accepts --since"
+  else
+    fail "live agent-verdict has no --since, so the worker's bound call errors out every run"
+  fi
+  # 4b. BEHAVIOR, not shape: run the hermetic contract suite against the LIVE copy.
+  # This is where the once-per-sha and stale-session properties are actually proven;
+  # the checks above only pin the structure the properties depend on.
+  LIVE_TEST="$LIVE_ROOT/q-system/.q-system/scripts/test_linear_sync_agent.py"
+  if [ ! -f "$LIVE_TEST" ]; then
+    fail "no contract suite at $LIVE_TEST, so nothing proves the live verbs behave"
+  elif python3 "$LIVE_TEST" >/dev/null 2>&1; then
+    pass "the LIVE copy passes its own contract suite (stale-session, allowlist, last-block)"
+  else
+    fail "the LIVE copy FAILS its contract suite; run: python3 $LIVE_TEST"
+  fi
 fi
 
 # --- 5. the agent actually resolves in Linear (live, one cheap query) --------

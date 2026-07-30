@@ -767,8 +767,37 @@ def cmd_agent_verdict(args) -> int:
     sessions = [s for s in (issue.get("agentSessions") or {}).get("nodes") or []
                 if not args.agent
                 or (s.get("appUser") or {}).get("name", "").lower() == args.agent.lower()]
+
+    # BIND THE SESSION TO THE REQUEST THAT ASKED FOR IT (--since / --session).
+    # Codex found this reviewing its own intake path on 2026-07-30 (major): without
+    # a binding, this returns the newest COMPLETED session, which right after a
+    # delegation is a PRIOR review of an OLDER head. The caller then posts that
+    # verdict on the CURRENT sha -- a stale approval stamped on code nobody read.
+    # Same defect class as ASK-216, which is why the reviewer captures its sha
+    # BEFORE dispatch rather than after.
+    #
+    # --since is a hard filter, not a preference: a session that predates the
+    # delegation cannot be a review of what the delegation asked about.
+    if args.session:
+        sessions = [s for s in sessions if s["id"] == args.session]
+        if not sessions:
+            print(f"UNSTATED: no session {args.session} on {issue['identifier']}",
+                  file=sys.stderr)
+            return EXIT_USAGE
+    elif args.since:
+        fresh = [s for s in sessions if (s.get("createdAt") or "") >= args.since]
+        if not fresh:
+            newest = max((s.get("createdAt") or "" for s in sessions), default="none")
+            print(f"UNSTATED: no {args.agent or 'agent'} session on "
+                  f"{issue['identifier']} at or after {args.since} (newest is {newest}). "
+                  f"A session older than the request is not a review of it.",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        sessions = fresh
+
     if not sessions:
-        print(f"UNSTATED: no {args.agent or 'agent'} session on {issue['identifier']}")
+        print(f"UNSTATED: no {args.agent or 'agent'} session on {issue['identifier']}",
+              file=sys.stderr)
         return EXIT_USAGE
     sessions.sort(key=lambda s: s.get("createdAt") or "")
     latest = sessions[-1]
@@ -1166,6 +1195,9 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
     p.add_argument("--agent", default="Codex", help="only sessions from this agent")
     p.add_argument("--body", action="store_true", help="also print the response body")
+    p.add_argument("--since", help="ISO8601: refuse sessions created before this. "
+                                  "Bind the verdict to the delegation that asked for it.")
+    p.add_argument("--session", help="only this exact session id")
     p.set_defaults(func=cmd_agent_verdict)
 
     p = sub.add_parser("progress", help="post a progress note onto an issue")

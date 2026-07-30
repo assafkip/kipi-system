@@ -1124,37 +1124,69 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     if [ -z "$CODEX_SHA" ]; then
       say "$ISSUE: no head sha for PR #$PR_NUM, so codex was NOT delegated (a review pinned to a guessed sha is worse than none)"
     elif [ -f "$CODEX_MARK" ]; then
-      say "$ISSUE: codex already reviewed PR #$PR_NUM at ${CODEX_SHA:0:7}; not re-delegating (a paid session on unchanged code buys nothing)"
-    elif python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
-      : > "$CODEX_MARK"
-      say "$ISSUE: delegated PR #$PR_NUM (${CODEX_SHA:0:7}) to codex for review"
+      # ALREADY ASKED at this sha. The verdict read below is what runs now.
+      :
     else
-      say "WARN: $ISSUE: could not delegate to codex (the Claude review above stands, nothing is blocked)"
+      # MARKER FIRST, THEN DELEGATE. Codex found the reverse order fails OPEN
+      # (major, 2026-07-30): delegating before the marker write means an unwritable
+      # $STATE_DIR re-delegates every 900s, and every delegation starts a PAID Codex
+      # Cloud session. The write is also the permission check -- if it fails, this
+      # refuses to spend rather than spending unboundedly.
+      #
+      # The marker CONTENT is the delegation timestamp, which the verdict read below
+      # uses as --since. That is what binds a verdict to the request that asked for
+      # it instead of to whatever session happens to be newest.
+      CODEX_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      if ! printf '%s\n' "$CODEX_NOW" > "$CODEX_MARK" 2>/dev/null; then
+        say "WARN: $ISSUE: could not write $CODEX_MARK, so codex was NOT delegated. Refusing to start a paid session the once-per-sha bound cannot record."
+      elif python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
+        say "$ISSUE: delegated PR #$PR_NUM (${CODEX_SHA:0:7}) to codex for review at $CODEX_NOW"
+      else
+        # Delegation failed, so release the marker: the bound exists to stop paying
+        # twice for the same code, not to stop asking once.
+        rm -f "$CODEX_MARK" 2>/dev/null || true
+        say "WARN: $ISSUE: could not delegate to codex (the Claude review above stands, nothing is blocked)"
+      fi
     fi
 
-    # READ CODEX'S VERDICT BACK, TYPED. agent-verdict exits 0 only for a COMPLETE
-    # session carrying a closed FINDINGS block; an errored session, a session with
-    # no response, and a truncated block all exit non-zero and stay UNSTATED. That
-    # distinction is the whole reason this reads a session instead of scraping a
-    # comment: "codex crashed" and "codex approved" must not look alike.
-    CODEX_VERDICT="$(python3 "$SYNC" agent-verdict "$ISSUE" --agent Codex 2>/dev/null \
-                     | sed -n 's/^verdict=//p' | head -1)"
-    if [ -n "$CODEX_VERDICT" ]; then
-      say "$ISSUE: codex verdict on PR #$PR_NUM: $CODEX_VERDICT"
-      CODEX_STATE="failure"
-      case "$CODEX_VERDICT" in "APPROVE"|"APPROVE WITH NITS") CODEX_STATE="success" ;; esac
-      # Posted on the sha codex's session is about, never a re-read of the live head:
-      # a status on a newer commit claims a review of code nobody read (ASK-216).
-      if gh api -X POST "repos/{owner}/{repo}/statuses/$CODEX_SHA" \
-           -f "state=$CODEX_STATE" -f "context=kipi/codex-approved" \
-           -f "description=$(printf '%.140s' "codex (gpt-5.6-sol, Linear agent): $CODEX_VERDICT")" \
-           >/dev/null 2>&1; then
-        say "$ISSUE: kipi/codex-approved=$CODEX_STATE posted on ${CODEX_SHA:0:7}"
-      else
-        say "WARN: $ISSUE: codex verdict read but the commit status did not post; no gate moved"
-      fi
+    # READ CODEX'S VERDICT BACK, TYPED AND BOUND TO THE DELEGATION.
+    #
+    # NEVER IN THE SAME PASS THAT DELEGATED. A Codex Cloud session takes minutes; a
+    # read straight after delegating returns the newest COMPLETE session, which is a
+    # PRIOR review of an OLDER head, and posting that on the current sha is a stale
+    # approval for code nobody read (codex's own finding, major, 2026-07-30 -- the
+    # ASK-216 class). --since is the delegation timestamp out of the marker, so a
+    # session older than the request is refused rather than reused. The verdict
+    # therefore lands on a LATER 900s pass, which is exactly the right latency: the
+    # PR is not going anywhere and auto-merge is held by required checks.
+    #
+    # agent-verdict exits 0 only for a COMPLETE session carrying a CLOSED findings
+    # block. An errored session, one with no response, and a truncated block all stay
+    # UNSTATED, so "codex crashed" can never look like "codex approved".
+    CODEX_SINCE="$(head -1 "$CODEX_MARK" 2>/dev/null | tr -dc '0-9TZ:-')"
+    if [ -z "$CODEX_SHA" ] || [ -z "$CODEX_SINCE" ]; then
+      say "$ISSUE: no codex delegation recorded for PR #$PR_NUM at this head; no verdict is read (absent is not approved)"
     else
-      say "$ISSUE: codex verdict UNSTATED on PR #$PR_NUM (no complete session yet, or it errored). Nothing posted -- absent is not approved."
+      CODEX_VERDICT="$(python3 "$SYNC" agent-verdict "$ISSUE" --agent Codex \
+                         --since "$CODEX_SINCE" 2>/dev/null \
+                       | sed -n 's/^verdict=//p' | head -1)"
+      if [ -n "$CODEX_VERDICT" ]; then
+        say "$ISSUE: codex verdict on PR #$PR_NUM (${CODEX_SHA:0:7}, session at/after $CODEX_SINCE): $CODEX_VERDICT"
+        CODEX_STATE="failure"
+        case "$CODEX_VERDICT" in "APPROVE"|"APPROVE WITH NITS") CODEX_STATE="success" ;; esac
+        # Posted on the sha the delegation was about, never a re-read of the live
+        # head: a status on a newer commit claims a review of code nobody read.
+        if gh api -X POST "repos/{owner}/{repo}/statuses/$CODEX_SHA" \
+             -f "state=$CODEX_STATE" -f "context=kipi/codex-approved" \
+             -f "description=$(printf '%.140s' "codex (gpt-5.6-sol, Linear agent): $CODEX_VERDICT")" \
+             >/dev/null 2>&1; then
+          say "$ISSUE: kipi/codex-approved=$CODEX_STATE posted on ${CODEX_SHA:0:7}"
+        else
+          say "WARN: $ISSUE: codex verdict read but the commit status did not post; no gate moved"
+        fi
+      else
+        say "$ISSUE: codex verdict UNSTATED on PR #$PR_NUM (its session has not completed since $CODEX_SINCE, or it errored). Nothing posted -- absent is not approved."
+      fi
     fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
