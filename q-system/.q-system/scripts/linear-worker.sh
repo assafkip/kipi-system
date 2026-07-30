@@ -530,7 +530,51 @@ while IFS= read -r ISSUE; do
 
   N="$(attempts_for "$ISSUE")"
   if [ "$N" -ge "$MAX_ATTEMPTS" ]; then
-    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
+    # NOTHING IS TERMINAL WITHOUT A NAMED HUMAN ACTION (sp-58f0ec83).
+    #
+    # This branch said "a human decides next" to a LOG FILE and continued, every
+    # heartbeat, forever. No Linear comment, no page, no statement of what the
+    # human was supposed to decide. So "stuck" was indistinguishable from
+    # "nobody has looked yet", and an issue could sit there indefinitely while
+    # the log repeated a sentence nobody reads.
+    #
+    # Every other gate in this repo distinguishes REFUSED from PASSED. This one
+    # did not, which is the same defect that let a correct BLOCKED diagnosis on
+    # ASK-149 read as success (the agent had done the right thing and the worker
+    # could not tell). The fix is not "add a BLOCKED state" -- it is that a
+    # terminal state must carry the ONE action that ends it. If the loop cannot
+    # name that action, it has not finished diagnosing and must say SO rather
+    # than parking the issue quietly.
+    #
+    # Paged ONCE via the shared claim_page_once flag, not per heartbeat: a
+    # repeated "still stuck" every 15 minutes is the cry-wolf failure that trains
+    # the reader to mute the channel (founder-notifications.md).
+    STUCK_WHY="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" why "" 2>/dev/null)"
+    if [ -z "$STUCK_WHY" ]; then
+      # The honest degraded case. An unexplained cap is itself the finding: the
+      # loop burned its whole budget and cannot say what a human should do.
+      STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
+    fi
+    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
+    if claim_page_once "$ISSUE" stuck_paged; then
+      python3 "$SYNC" progress "$ISSUE" \
+        "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
+
+Last recorded reason: $STUCK_WHY
+
+**Human action needed:** review the reason above and do ONE of:
+- fix the blocker, then clear the attempt count so the loop retries, or
+- rewrite the Definition of Ready so it is achievable from a non-interactive session, or
+- close the issue if it should not be built.
+
+A DoR that cannot be met from the environment the worker actually runs in is a defective spec, not a founder decision. Rewriting it is engineering work." \
+        --agent sana >/dev/null 2>&1 || true
+      # `bash "$NOTIFY"`, the shape used at five other sites in this file. There is
+      # no page() helper here -- calling one would have been a silent no-op under
+      # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
+      # pages nobody, which is the exact defect this block fixes.
+      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
+    fi
     continue
   fi
 
