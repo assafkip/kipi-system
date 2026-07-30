@@ -609,6 +609,206 @@ query($id: String!) { issue(id: $id) { id identifier title state { name type } }
 """
 
 
+# DELEGATION IS THE NATIVE TRIGGER (ASK-253). Per Linear's agent docs, an agent is
+# given work by being delegated an issue; Linear then opens an AgentSession and
+# sends the app a `created` webhook. The human assignee stays the owner. Verified
+# live on ASK-221 2026-07-29: delegate -> Codex acknowledged in 7 seconds.
+ISSUE_DELEGATE = """
+mutation($id: String!, $delegateId: String) {
+  issueUpdate(id: $id, input: {delegateId: $delegateId}) {
+    success
+    issue { id identifier delegate { id name } }
+  }
+}
+"""
+
+USER_BY_NAME = """
+query($q: String!) { users(filter: { name: { eqIgnoreCase: $q } }) { nodes { id name } } }
+"""
+
+# THE TYPED READ-BACK. This is why the gate reads a session instead of a comment:
+# `status` is an enum Linear maintains (pending/active/error/awaitingInput/complete/
+# stale) and the activity `content` is a tagged union, so "the agent failed" and
+# "the agent said nothing" are DIFFERENT observable states. The shell reviewer had
+# to have that distinction engineered in after an empty review derived APPROVE.
+ISSUE_AGENT_SESSIONS = """
+query($id: String!) {
+  issue(id: $id) {
+    identifier
+    agentSessions { nodes { id status createdAt appUser { name } } }
+  }
+}
+"""
+
+AGENT_SESSION_ACTIVITIES = """
+query($id: String!) {
+  agentSession(id: $id) {
+    id status
+    activities { nodes { id createdAt
+      content { ... on AgentActivityResponseContent { type body }
+                ... on AgentActivityErrorContent { type body } } } }
+  }
+}
+"""
+
+# Severity vocabulary, kept identical to pr-verdict-lib.sh's grep allowlist. Any
+# line whose first field is not exactly one of these is NOT a finding -- that is
+# what stops a prompt's echoed `severity|one-sentence claim|file:line` template
+# from being read as a real severity.
+SEVERITY_RANK = {"blocker": 3, "major": 2, "minor": 1, "nit": 0}
+
+
+def verdict_from_findings_text(text: str) -> tuple:
+    """Derive (verdict, findings) from review prose. Returns ("", []) if no block.
+
+    PARSES THE LAST COMPLETE BLOCK, not every block concatenated. sp-c0a9dac3 is
+    exactly that defect on the bash side: a reviewed diff containing findings-shaped
+    text contributes severities to the real verdict. Observed live -- one 313KB
+    review carried five blocks, two of them fixtures out of the diff under review.
+    The reviewer's own block is the last one, because it is written last.
+    """
+    blocks, cur, inside = [], [], False
+    for line in (text or "").splitlines():
+        if line.strip() == "FINDINGS:":
+            inside, cur = True, []
+            continue
+        if inside and line.strip() == "END FINDINGS":
+            blocks.append(cur)
+            inside = False
+            continue
+        if inside:
+            cur.append(line)
+    if not blocks:                      # no CLOSED block: unstated, never APPROVE
+        return "", []
+    findings = []
+    for line in blocks[-1]:
+        parts = line.split("|")
+        if len(parts) >= 2 and parts[0].strip().lower() in SEVERITY_RANK:
+            findings.append((parts[0].strip().lower(), "|".join(parts[1:]).strip()))
+    worst = max((SEVERITY_RANK[s] for s, _ in findings), default=-1)
+    if worst == 3:
+        return "BLOCK", findings
+    if worst == 2:
+        return "REQUEST CHANGES", findings
+    if worst >= 0:
+        return "APPROVE WITH NITS", findings
+    return "APPROVE", findings
+
+
+def _resolve_agent_id(name: str):
+    users = graphql(USER_BY_NAME, {"q": name}).get("users", {}).get("nodes") or []
+    return users[0]["id"] if users else None
+
+
+def cmd_delegate(args) -> int:
+    """Delegate an issue to a Linear agent, or clear the delegation.
+
+    Refuses on an unknown agent name rather than leaving the issue undelegated: a
+    silent no-op here means the loop believes a review was requested and waits for
+    a verdict that nobody is producing.
+    """
+    delegate_id = None
+    if not args.clear:
+        delegate_id = _resolve_agent_id(args.agent)
+        if not delegate_id:
+            print(f"BLOCK: no Linear user or agent named {args.agent!r}. Nothing was "
+                  f"delegated. Check the exact displayName in the workspace.",
+                  file=sys.stderr)
+            return EXIT_USAGE
+    try:
+        res = graphql(ISSUE_DELEGATE, {"id": args.issue, "delegateId": delegate_id})
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    upd = (res or {}).get("issueUpdate") or {}
+    if not upd.get("success"):
+        print(f"BLOCK: Linear did not apply the delegation to {args.issue}. Raw: {upd}",
+              file=sys.stderr)
+        return EXIT_USAGE
+    issue = upd.get("issue") or {}
+    got = (issue.get("delegate") or {}).get("name")
+    if args.clear:
+        if got:
+            print(f"BLOCK: delegate still set to {got!r} after a clear", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"{issue.get('identifier', args.issue)}: delegation cleared")
+        return EXIT_OK
+    # VERIFY THE READ-BACK, do not trust `success` alone. This is the
+    # commentCreate defect codex found on 2026-07-29 in this same file: a mutation
+    # reporting success while the object was not actually changed.
+    if (got or "").lower() != args.agent.lower():
+        print(f"BLOCK: asked for {args.agent!r}, issue reports {got!r}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue.get('identifier', args.issue)}: delegated to {got} ({delegate_id})")
+    return EXIT_OK
+
+
+def cmd_agent_verdict(args) -> int:
+    """Read the newest agent session for an issue and derive a verdict from it.
+
+    EXIT CODES ARE THE CONTRACT, because a shell caller gates on them:
+      0  a complete session with a derivable verdict (printed as `verdict=<V>`)
+      1  no session, an errored session, or a complete session with no closed
+         FINDINGS block -- i.e. UNSTATED. Absent evidence is not consent.
+
+    Deliberately does NOT fall back to reading the session body for a loose
+    "APPROVE" token. `status: error` and a truncated response both mean nobody
+    reviewed this, and the safe direction is refusing to produce a verdict.
+    """
+    try:
+        issue = graphql(ISSUE_AGENT_SESSIONS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    sessions = [s for s in (issue.get("agentSessions") or {}).get("nodes") or []
+                if not args.agent
+                or (s.get("appUser") or {}).get("name", "").lower() == args.agent.lower()]
+    if not sessions:
+        print(f"UNSTATED: no {args.agent or 'agent'} session on {issue['identifier']}")
+        return EXIT_USAGE
+    sessions.sort(key=lambda s: s.get("createdAt") or "")
+    latest = sessions[-1]
+
+    print(f"session={latest['id']} status={latest['status']} "
+          f"agent={(latest.get('appUser') or {}).get('name')} created={latest['createdAt']}")
+    if latest["status"] != "complete":
+        print(f"UNSTATED: session status is {latest['status']!r}, not 'complete'. The agent "
+              f"did not finish a review, so there is no verdict to gate on.", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        acts = (graphql(AGENT_SESSION_ACTIVITIES, {"id": latest["id"]})
+                .get("agentSession") or {}).get("activities", {}).get("nodes") or []
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    responses = [a for a in acts if ((a.get("content") or {}).get("type")) == "response"]
+    if not responses:
+        print("UNSTATED: the session completed with no `response` activity.", file=sys.stderr)
+        return EXIT_USAGE
+    responses.sort(key=lambda a: a.get("createdAt") or "")
+    body = (responses[-1].get("content") or {}).get("body") or ""
+
+    verdict, findings = verdict_from_findings_text(body)
+    if not verdict:
+        print("UNSTATED: the response carries no closed FINDINGS block. An unclosed or "
+              "absent block is not an empty finding list, so it never derives APPROVE.",
+              file=sys.stderr)
+        return EXIT_USAGE
+    print(f"verdict={verdict}")
+    print(f"findings={len(findings)}")
+    for sev, claim in findings:
+        print(f"  {sev}|{claim}")
+    if args.body:
+        print("---BODY---")
+        print(body)
+    return EXIT_OK
+
+
 def cmd_progress(args) -> int:
     """Post a progress note onto an issue, and optionally move its state.
 
@@ -955,6 +1155,18 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--capability", required=True)
     p.set_defaults(func=cmd_key)
+
+    p = sub.add_parser("delegate", help="delegate an issue to a Linear agent")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-221")
+    p.add_argument("--agent", default="Codex", help="agent displayName (default Codex)")
+    p.add_argument("--clear", action="store_true", help="remove the delegation instead")
+    p.set_defaults(func=cmd_delegate)
+
+    p = sub.add_parser("agent-verdict", help="derive a verdict from an agent session")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-221")
+    p.add_argument("--agent", default="Codex", help="only sessions from this agent")
+    p.add_argument("--body", action="store_true", help="also print the response body")
+    p.set_defaults(func=cmd_agent_verdict)
 
     p = sub.add_parser("progress", help="post a progress note onto an issue")
     p.add_argument("issue", help="issue identifier, e.g. ASK-113")
