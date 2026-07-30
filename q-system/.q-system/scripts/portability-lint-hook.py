@@ -32,6 +32,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LINT = os.path.join(HERE, "portability-lint.sh")
+HELPER_LINT = os.path.join(HERE, "undefined-helper-lint.sh")
 
 
 def main():
@@ -49,7 +50,7 @@ def main():
         return 0
     # The lint self-excludes by basename; do the same here so editing the lint
     # cannot block on its own vocabulary.
-    if os.path.basename(path) == "portability-lint.sh":
+    if os.path.basename(path) in ("portability-lint.sh", "undefined-helper-lint.sh"):
         return 0
 
     # Lint the single file by pointing the scanner at a directory containing only
@@ -71,26 +72,38 @@ def main():
             shutil.copyfile(path, link)
         except OSError:
             return 0
-        try:
-            out = subprocess.run(
-                ["bash", LINT, td], capture_output=True, text=True, timeout=30
-            )
-        except Exception:
-            return 0
+        # TWO LINTS, ONE HOOK. Both answer "is this file silently wrong somewhere
+        # other than the machine you are typing on" -- one across kernels, one
+        # across a helper that does not exist. A second PostToolUse entry would
+        # mean a second place to forget to wire, and an unwired lint is an inert
+        # engine (sp-72b60bff), which is the thing this repo keeps finding.
+        body_parts = []
+        for script in (LINT, HELPER_LINT):
+            if not os.path.isfile(script):
+                continue
+            try:
+                out = subprocess.run(
+                    ["bash", script, td], capture_output=True, text=True, timeout=30
+                )
+            except Exception:
+                continue
+            if out.returncode != 0 and out.stdout.strip():
+                body_parts.append(out.stdout.strip())
 
-    if out.returncode == 0:
+    if not body_parts:
         return 0
-
-    body = out.stdout.strip()
-    if not body:
-        return 0
+    body = "\n\n".join(body_parts)
+    # The header must not name a class the finding may not belong to. It said
+    # "only works on one of the two kernels" for EVERY finding, so an undefined
+    # helper was reported as a portability bug -- a message that misdescribes its
+    # own finding sends the reader to fix the wrong thing.
     sys.stderr.write(
-        "portability-lint: this file uses a construct that only works on one of "
-        "the two kernels this repo runs on (macOS/BSD locally, Linux/GNU in CI).\n\n"
+        "shell lint: this file is silently wrong somewhere other than the machine "
+        "you are typing on.\n\n"
         + body
         + "\n\nThis is a ratchet: only the file you just edited is checked, so the "
-        "count only goes down. If the line is a deliberate platform-specific "
-        "branch, mark it with `# portability-lint-skip`.\n"
+        "count only goes down. A deliberate platform-specific line can be marked "
+        "`# portability-lint-skip`.\n"
     )
     return 2
 
