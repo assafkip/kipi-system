@@ -196,6 +196,38 @@ else
 fi
 
 echo
+echo "== 12. no BSD-only mktemp form (portability, caught by CI not by me) =="
+# `mktemp -t name` appends a random suffix on BSD (macOS) and is REJECTED by GNU
+# mktemp (the Linux runner) unless the template carries three or more X's. My
+# first cut used the BSD form: 14/14 here, `validate` red on the PR, because the
+# body file was never created and --body-file got an empty path.
+#
+# A grep, deliberately. The behavioural test cannot see this -- it passes on the
+# developer's OS by construction, and the only machine that disagrees is the one
+# nobody runs the suite on by hand.
+if [ -f "$AGENT" ]; then
+  # Per LINE, not per line-ending. The first cut anchored the template with `$`,
+  # which never matched because the real line continues with `)" || ...` -- so the
+  # guard passed with the BSD form reintroduced. Caught by running the negative
+  # self-test, which is the entire reason for running it: a check that cannot
+  # fail is not a check, and this one could not.
+  BAD="$(grep -n 'mktemp' "$AGENT" | grep -E 'mktemp[^|;)]*-t[[:space:]]' | grep -v 'XXX' || true)"
+  if [ -z "$BAD" ]; then
+    ok "no BSD-only 'mktemp -t' form in the reviewer"
+  else
+    bad "THE DEFECT: BSD-only mktemp form, fails on the GNU/Linux runner: $BAD"
+  fi
+  # And the positive: every mktemp here must carry an explicit template.
+  MKT="$(grep -c 'mktemp' "$AGENT" || true)"
+  MKX="$(grep -c 'mktemp.*XXXXXX' "$AGENT" || true)"
+  if [ "${MKT:-0}" -eq 0 ] || [ "${MKX:-0}" -ge 1 ]; then
+    ok "mktemp calls carry an explicit XXXXXX template ($MKX of $MKT)"
+  else
+    bad "mktemp used without an XXXXXX template ($MKX of $MKT)"
+  fi
+fi
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: review_comment_body keeps a codex review inside a GitHub comment, and the reviewer uses it"
