@@ -111,6 +111,52 @@ echo "$OUT" | grep -q 'SAY stale-check' \
   || bad "the check failed with no log line, so the blind spot is invisible"
 
 echo
+echo "== 5. DIVERGED must REFUSE (codex round 2, major 1) =="
+# The case the first cut got wrong, and the one a merge of this very branch
+# produces: origin/main gains a commit while this tree keeps local commits of its
+# own. --is-ancestor is FALSE here, so an ancestry test runs on a checkout missing
+# origin/main's newest control code. This is the LIKELY divergence, not an edge.
+DIV="$WORK/diverged"
+git clone -q "$ORIGIN" "$DIV" >/dev/null 2>&1
+( cd "$DIV"; git config user.email t@e.com; git config user.name t
+  echo local-only >> f.txt; git commit -qam "local only" ) >/dev/null 2>&1
+( cd "$WORK/seed"; echo remote-only >> f.txt; git commit -qam "remote only"; git push -q origin main ) >/dev/null 2>&1
+OUT="$(run_check "$DIV")"
+if echo "$OUT" | grep -q 'VERDICT=REFUSE'; then
+  ok "a DIVERGED checkout refuses (origin/main holds commits it lacks)"
+else
+  bad "THE DEFECT: a diverged checkout dispatched, so superseded control code runs after a concurrent merge"
+fi
+
+echo
+echo "== 6. the page is deduped per remote sha (codex round 2, major 2) =="
+# At a 900s interval an unrepaired checkout paged 96 times a day with the
+# identical message, which trains the founder to ignore the channel.
+STATE="$WORK/pagestate"; mkdir -p "$STATE"
+# Point the function's state dir at a scratch dir by overriding $LOG, which is
+# what the marker path is derived from.
+run_dedupe() { ( cd "$1" && LOG="$STATE/dispatch.log" bash "$HARNESS" 2>&1 ); }
+P1="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
+P2="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
+if [ "${P1:-0}" -ge 1 ] && [ "${P2:-0}" -eq 0 ]; then
+  ok "pages once for a given origin/main sha, silent on the repeat ($P1 then $P2)"
+else
+  bad "THE DEFECT: paged $P1 then $P2 for the same remote sha -- 96 identical pages a day"
+fi
+# A NEW divergence must page again, or a second, different staleness goes unreported.
+( cd "$WORK/seed"; echo remote-two >> f.txt; git commit -qam "remote two"; git push -q origin main ) >/dev/null 2>&1
+P3="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
+if [ "${P3:-0}" -ge 1 ]; then
+  ok "a NEW origin/main sha pages again (dedupe is per-sha, not permanent)"
+else
+  bad "dedupe is permanent: a second, different divergence would never be reported"
+fi
+# The refusal itself must still be logged every time, even when the page is muted.
+echo "$(run_dedupe "$DIV")" | grep -q 'SAY REFUSING' \
+  && ok "the refusal is logged on every heartbeat even when the page is deduped" \
+  || bad "a deduped page also silenced the log line, so the refusal is invisible"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: stale_check refuses only when genuinely behind"
+echo "PASS: stale_check refuses whenever origin/main holds commits this tree lacks, and pages once per sha"

@@ -95,16 +95,38 @@ stale_check() {
   remote_head="$(git rev-parse origin/main 2>/dev/null)" || return 0
   [ -n "$local_head" ] && [ -n "$remote_head" ] || return 0
   [ "$local_head" != "$remote_head" ] || return 0
-  # BEHIND means origin/main holds commits this tree does not. Being AHEAD is
-  # normal and must not refuse: an agent session commits locally before it opens
-  # a PR, and refusing there would wedge the loop on its own unpushed work.
-  if git merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
-    base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo '?')"
-    say "REFUSING: this checkout is $base commit(s) BEHIND origin/main (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded code and auto-merge the result."
-    page "kipi dispatch: refused to run -- the checkout is $base commit(s) behind origin/main, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"
-    return 1
+  # THE PREDICATE IS "does origin/main hold commits this tree lacks", NOT "is HEAD
+  # an ancestor of origin/main". Codex round 2 on PR #47 called the ancestor form a
+  # major, and it was right: --is-ancestor is FALSE for a DIVERGED tree, so the
+  # first version ran happily on a checkout missing origin/main's newest control
+  # code. I had captured that as a deliberate trade (sp-18cd7843) on the grounds
+  # that refusing would wedge a session holding local commits. That reasoning was
+  # backwards. The commonest way to diverge is a merge of this very branch: after
+  # PR #47 lands, origin/main gains a merge commit while this tree keeps the
+  # unmerged parent -- diverged AND substantively behind. So the dangerous case was
+  # the LIKELY case, not an edge.
+  #
+  # rev-list HEAD..origin/main counts exactly what is missing here, and it is 0 for
+  # both "equal" and "ahead-only". Ahead still runs: an agent commits locally
+  # before it opens a PR, and refusing there would wedge the loop on its own work.
+  base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo 0)"
+  case "$base" in ''|*[!0-9]*) return 0 ;; esac   # unparseable count = no answer = run
+  [ "$base" -gt 0 ] || return 0
+  say "REFUSING: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded control code and auto-merge the result."
+  # PAGE ONCE PER REMOTE SHA, not once per heartbeat. Second major from the same
+  # review: at a 900s interval an unrepaired checkout sent the identical Slack
+  # message 96 times a day, which trains the founder to ignore the channel and
+  # buries the one line that matters. Same fix the daily cap already uses (a
+  # `.paged` marker), keyed on the remote sha so a NEW divergence pages again.
+  # Beside the dispatch log and the daily-cap counters, which is where this
+  # script's other state already lives. Derived from $LOG so there is one
+  # definition of "the state dir" rather than a second literal path.
+  local paged_mark="$(dirname "$LOG")/stale-paged-$remote_head"
+  if [ ! -f "$paged_mark" ]; then
+    page "kipi dispatch: refused to run -- origin/main has $base commit(s) this checkout lacks, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"
+    : > "$paged_mark" 2>/dev/null || true
   fi
-  return 0
+  return 1
 }
 stale_check || exit 0
 
