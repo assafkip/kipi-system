@@ -637,12 +637,18 @@ if [ "$POST" = "1" ]; then
   # path a future gh version takes. 60,000 is under BOTH, which makes the comment
   # succeed regardless of which limit applies. Tuning it upward would trade a
   # guaranteed delivery for a longer transcript nobody reads.
-  REVIEW_BODY="$(mktemp -t pr-review-comment)"
+  # EXPLICIT XXXXXX TEMPLATE, because `mktemp -t name` is not portable. BSD
+  # mktemp (macOS) appends the random suffix itself; GNU mktemp (the Linux CI
+  # runner) rejects a template with fewer than three X's. My first cut used the
+  # BSD form, passed 14/14 locally, and turned `validate` red on the PR -- the
+  # body file was never created, so --body-file got an empty path. Nothing on
+  # this machine could have caught it; the runner is the other OS.
+  REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX")" || REVIEW_BODY="$REVIEW"
   review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
   # Keep the reason. A bare "could not comment" sent the maintainer to guess
   # between a size rejection, an auth failure and a closed PR -- the same
   # discard-the-reason defect PR #46 fixed one call lower down.
-  COMMENT_ERR="$(mktemp -t pr-review-comment-err)"
+  COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX")" || COMMENT_ERR=/dev/null
   if COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW_BODY" 2>"$COMMENT_ERR")"; then
     echo "  posted to PR #$PR ($(wc -c <"$REVIEW_BODY" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
   else
