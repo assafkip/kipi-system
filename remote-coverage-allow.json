@@ -6,14 +6,19 @@
     {
       "path": "~/projects/personal/projects/AUDHD_KIDS",
       "reason": "Tracked files carry health + education records about a specific minor, re-identifying against the owner's public identity. Class: family-medical. Not pushable, private included, until that content moves to a gitignored path.",
-      "carriers": ["decks/SESSION-*.md", "giver-project-*"],
+      "carriers": [
+        "decks/SESSION-*.md",
+        "giver-project-*"
+      ],
       "declared": "2026-07-29",
       "review": "Re-decide once the carrier paths are gitignored. The canonical/ research corpus is general literature and would be pushable on its own."
     },
     {
       "path": "~/projects/personal/projects/travel-agent",
       "reason": "One tracked file carries health attributes, ages, and home city for minors. Class: family-medical. No names, and no card/passport/loyalty numbers (those are gitignored and verified never committed in full history), but the remaining combination is re-identifying.",
-      "carriers": ["q-travel/family/profile.md"],
+      "carriers": [
+        "q-travel/family/profile.md"
+      ],
       "declared": "2026-07-29",
       "review": "A single line in the carrier file is the blocker. Move it to a gitignored private-notes.md and this repo becomes pushable private."
     },
@@ -44,6 +49,30 @@
       "path": "~/projects/consulting/projects/Alice/q-investigate/tools/osint-infra-mcp",
       "reason": "4-file vendored third-party MCP tool, single seed commit, no local authorship.",
       "declared": "2026-07-29"
+    },
+    {
+      "path": "~/projects/dev-tools",
+      "reason": "Persona container holding only CLAUDE.md + .gitignore. Its projects/ children are each their own repo with their own remote, so all real work under dev-tools is already covered. A GitHub repo for two config files is noise, not backup.",
+      "declared": "2026-07-29",
+      "review": "Push if dev-tools/ ever holds real content outside projects/."
+    },
+    {
+      "path": "~/projects/intel",
+      "reason": "Persona container holding only CLAUDE.md + .gitignore. Its projects/ children are each their own repo with their own remote, so all real work under intel is already covered. A GitHub repo for two config files is noise, not backup.",
+      "declared": "2026-07-29",
+      "review": "Push if intel/ ever holds real content outside projects/."
+    },
+    {
+      "path": "~/projects/ktlyst-saas",
+      "reason": "Persona container holding only CLAUDE.md + .gitignore. Its projects/ children are each their own repo with their own remote, so all real work under ktlyst-saas is already covered. A GitHub repo for two config files is noise, not backup.",
+      "declared": "2026-07-29",
+      "review": "Push if ktlyst-saas/ ever holds real content outside projects/."
+    },
+    {
+      "path": "~/projects/micro-saas",
+      "reason": "Persona container holding only CLAUDE.md + .gitignore. Its projects/ children are each their own repo with their own remote, so all real work under micro-saas is already covered. A GitHub repo for two config files is noise, not backup.",
+      "declared": "2026-07-29",
+      "review": "Push if micro-saas/ ever holds real content outside projects/."
     }
   ]
 }

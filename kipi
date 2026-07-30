@@ -10,6 +10,8 @@ usage() {
   echo "  kipi update --dry    Show what would happen without changing anything"
   echo "  kipi rollback [name]  Revert the last skeleton sync (all instances, or one by name)"
   echo "  kipi new <path> <name>   Create a new project with the skeleton"
+  echo "                           (creates + pushes a PRIVATE GitHub repo by default;"
+  echo "                            KIPI_LOCAL_ONLY=1 KIPI_LOCAL_ONLY_REASON='...' to opt out)"
   echo "  kipi push            Push generic improvements back to skeleton (run from a project)"
   echo "  kipi dev             Launch Claude Code with all kipi plugins loaded"
   echo "  kipi check [phase]   Run validation harness (default: all phases)"
