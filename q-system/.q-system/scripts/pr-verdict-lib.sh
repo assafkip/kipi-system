@@ -42,6 +42,75 @@ extract_verdict() {
   printf '%s' "$v"
 }
 
+# findings_block <review-file>
+# THE ONE READER of the machine-readable findings block. Prints the LAST COMPLETE
+# block, or nothing. Every consumer of findings -- the verdict derivation, the
+# minor capture, the reviewer's Linear comment -- goes through here.
+#
+# WHY IT EXISTS (sp-c0a9dac3). Three call sites each ran their own
+# `sed -n '/^FINDINGS:/,/^END FINDINGS/p'`, which is wrong in two ways at once,
+# and the fix had landed in only one of the three languages involved:
+#
+#   MULTIPLE BLOCKS CONCATENATE. sed RESTARTS the range after every `END
+#   FINDINGS`, so a review containing two blocks yields both, glued together, and
+#   a severity from a block that is not the verdict block sets the gate. Not
+#   hypothetical: codex stdout is known to carry harness noise and A REPEATED
+#   FINAL LINE (recorded on ASK-221 -- `hook: Stop`, `tokens used`, the last line
+#   again), the reviewer prompt itself contains a literal `FINDINGS:` /
+#   `END FINDINGS` template the model can echo, and from round 2 the prompt hands
+#   the model the PREVIOUS round's findings to re-prove.
+#
+#   AN UNCLOSED BLOCK RUNS TO EOF. A stream that died one line into the block
+#   printed a range with no severity lines, and no severities derives APPROVE --
+#   a green gate for a review nobody read. pr-review-agent.sh defends that with
+#   its own REVIEW_UNUSABLE flag, but the LIB still handed APPROVE to anyone else
+#   who asked, so the safety lived in one caller instead of in the reader.
+#
+# LAST, NOT FIRST. The prompt says "Last, a machine-readable findings block", and
+# a duplicated final line makes the last one the complete one. Taking the first
+# would pick the echoed template.
+#
+# A BLOCK STILL OPEN AT EOF VOIDS THE WHOLE REVIEW, earlier complete blocks
+# included. This is the case the first cut of this function got wrong, caught by
+# its own reproducer: "last COMPLETE block" quietly falls back to a QUOTED
+# prior-round block when the real trailing block is cut off mid-write, so a
+# truncated review would derive a verdict from findings it had already withdrawn --
+# and the completeness predicate built on it would call that review usable. An open
+# block at EOF is evidence of truncation, so nothing in the stream is trustworthy.
+#
+# The cost of that strictness is a review whose PROSE happens to end with a line
+# starting `FINDINGS:` reads as unstated. That is the safe direction and the same
+# posture the rest of this file takes: unstated HOLDS a PR, green RELEASES it.
+#
+# awk, not sed, because the rule is stateful in two ways a range expression cannot
+# express: opening a new block discards an unclosed one, and the end-of-input state
+# decides whether any of it counts.
+findings_block() {
+  local f="$1"
+  [ -s "$f" ] || return 0
+  awk '
+    /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }
+    open && /^END FINDINGS/ { last = buf $0 "\n"; open = 0; next }
+    open                    { buf = buf $0 "\n" }
+    END                     { if (open) exit 0; printf "%s", last }
+  ' "$f" 2>/dev/null
+}
+
+# has_complete_findings_block <review-file>
+# True when the review carries a usable block. DEFINED IN TERMS OF findings_block
+# so the predicate and the extractor cannot answer differently -- it lives here,
+# next to the reader, for exactly that reason.
+#
+# It used to be `grep -q '^FINDINGS:' && grep -q '^END FINDINGS'` inside
+# pr-review-agent.sh: two markers, anywhere, in any order. That passes a review
+# whose only COMPLETE block is a quoted prior round while its real trailing block
+# is truncated -- so the unusable flag stays off, the gate goes green, and the
+# verdict is derived from findings the review had already withdrawn. Two
+# definitions of "complete" in one script is the drift this file exists to stop.
+has_complete_findings_block() {
+  [ -n "$(findings_block "${1:-}")" ]
+}
+
 # verdict_from_findings <review-file>
 # Derive the verdict MECHANICALLY from the FINDINGS block severities. This is
 # the enforcement half of the severity floor: a prompt telling the reviewer how
@@ -53,11 +122,13 @@ extract_verdict() {
 #   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
 #   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
 #   none        -> APPROVE
-# Empty when there is no FINDINGS block, so the caller falls back to prose.
+# Empty when there is no COMPLETE FINDINGS block, so the caller falls back to
+# prose. An unclosed block is now "no block" rather than "an empty block": empty
+# reads as unstated, which holds a PR, where APPROVE released it.
 verdict_from_findings() {
   local f="$1" block
   [ -s "$f" ] || return 0
-  block="$(sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$f" 2>/dev/null)"
+  block="$(findings_block "$f")"
   printf '%s' "$block" | grep -q '^FINDINGS:' || return 0
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
   elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
@@ -233,7 +304,7 @@ rework_gate() {
 extract_minor_findings() {
   local f="$1"
   [ -s "$f" ] || return 0
-  sed -n '/^FINDINGS:/,/^END FINDINGS/p' "$f" 2>/dev/null | grep -E '^minor\|' || true
+  findings_block "$f" | grep -E '^minor\|' || true
 }
 
 # review_round <reviews-dir> <pr-number>
