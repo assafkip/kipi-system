@@ -14,15 +14,44 @@ NO LIVE LINEAR. `graphql` is monkeypatched on the loaded module, so nothing here
 touches the network or the founder's permanent Linear objects. That is a hard rule
 for this repo's tests, not a nicety: a test that writes to a Linear object cannot
 be undone, and one that READS a live issue fails whenever that issue changes.
+
+THE NEGATIVE SELF-TEST IS BUILT IN. Every `--agent` case below was added AFTER the
+bug it names was already fixed, which is the shape that produces a suite full of
+assertions nobody has ever seen fail. `KIPI_TEST_LINEAR_SYNC_REF=<git-ref>` loads
+the module from that ref instead of the working tree, so the claim "this case
+catches that bug" stays checkable instead of being a comment:
+
+  KIPI_TEST_LINEAR_SYNC_REF=63f81de -> the first-line anchor case must FAIL
+  KIPI_TEST_LINEAR_SYNC_REF=de2a9c3 -> the delimiter case must FAIL, anchor passes
+  (unset)                           -> everything passes
 """
 import importlib.util
 import io
+import os
 import pathlib
+import subprocess
 import sys
+import tempfile
 import contextlib
 
 HERE = pathlib.Path(__file__).resolve().parent
-TARGET = HERE / "linear-sync.py"
+_REF = os.environ.get("KIPI_TEST_LINEAR_SYNC_REF", "").strip()
+if _REF:
+    # Read-only: `git show` to a temp file. The repo working tree is never touched,
+    # so this cannot disturb a session running in the same checkout.
+    _repo = HERE.parents[2]
+    _blob = subprocess.run(
+        ["git", "-C", str(_repo), "show", f"{_REF}:q-system/.q-system/scripts/linear-sync.py"],
+        capture_output=True, text=True)
+    if _blob.returncode != 0:
+        print(f"FAIL: cannot read linear-sync.py at ref {_REF}: {_blob.stderr.strip()}")
+        sys.exit(1)
+    _tmp = pathlib.Path(tempfile.mkdtemp()) / "linear-sync.py"
+    _tmp.write_text(_blob.stdout)
+    TARGET = _tmp
+    print(f"module under test: ref {_REF} ({len(_blob.stdout.splitlines())} lines)")
+else:
+    TARGET = HERE / "linear-sync.py"
 
 FAILURES = []
 PASSES = []
