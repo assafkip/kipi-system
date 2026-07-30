@@ -103,8 +103,33 @@ fi
 # runs. An unbounded heartbeat is a runaway-bill loop, which is exactly the
 # thing loop-exits.md says an autonomous loop must not be.
 #
-# One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) = 6 sessions.
-# So DAILY_MAX is roughly "sessions per day / 6".
+# One issue costs up to MAX_ROUNDS x (1 agent + 1 reviewer) sessions. Do NOT read
+# that as a fixed 6: the code default is 3 rounds, but the LOADED plist sets
+# KIPI_DISPATCH_ROUNDS=4, so the live cost is up to 8 sessions per issue. The
+# older comment here hardcoded 6 and quietly understated the running job by a
+# third. Compute it from MAX_ROUNDS, never from a remembered number.
+#
+# THIS IS NOT A MONEY DIAL (founder correction, 2026-07-29). It caps SESSIONS and
+# BLAST RADIUS, not dollars: how many issues per day may enter a loop that merges
+# its own PRs. Two ceilings now sit behind it, not one -- since ASK-221 each review
+# round is a real codex run, so an issue also spends up to MAX_ROUNDS of a
+# separate external quota that did not exist when this number was chosen.
+#
+# HELD AT 3 on 2026-07-30 (sana's call, the founder does not set this). Reasons,
+# in order of weight:
+#   1. Per-issue cost went UP since 3 was picked -- 4 rounds instead of 3, plus a
+#      codex run per round -- while the number stayed put. Raising it now would
+#      compound a cost increase that was never accounted for.
+#   2. The loop self-merges and has NO accepted-change instrumentation. That is
+#      loop-exits.md's own named blind spot. Raising throughput on a loop that
+#      cannot measure whether its output is good buys more blast radius blind.
+#   3. The loop is not clean on the first pass, and tonight is the evidence: codex
+#      found two majors in PR #46, which was itself the fix for a codex minor. The
+#      review rounds are load-bearing, so throughput is not the binding constraint.
+#   4. What actually blocked progress was evidence, not rate: the review never
+#      reached the PR (sp-48688b24) and the receipt was unreadable (sp-1d1ad606).
+#      Raising the cap before those landed would only have produced more
+#      invisible reviews. Revisit AFTER an accepted-change signal exists.
 DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
 # The budget day starts at RESET_HOUR LOCAL, not at midnight and not at UTC.
 # Founder-set 2026-07-28, and the reasoning is safety, not tidiness:
