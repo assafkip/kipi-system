@@ -1,18 +1,21 @@
 {
   "_doc": "Repos that are DELIBERATELY local-only. remote-coverage-check.py fails on any remote-less repo NOT listed here. An entry is a recorded decision, not a mute button: it needs a reason someone can argue with, and 'unblock' means either pushing the repo or changing the reason. Never delete a repo to clear the gate.",
-  "_scar": "2026-07-29 audit: 12 remote-less repos found, oldest 219 commits. Two of them must never get a GitHub remote (a minor's medical/education record). An always-on auto-push would have published them, which is why creation is opt-in and this file exists.",
+  "_scar": "2026-07-29 audit: 12 remote-less repos found, oldest 219 commits. Some hold personal-sensitive data and must never get a hosted remote. An always-on auto-push would have published them, which is why creation is opt-in and this file exists.",
+  "_reason_discipline": "THIS FILE IS COMMITTED TO A PUBLIC REPO. State the CLASS of sensitive content and the path that carries it, never the content itself. A reason that quotes the private data defeats the gate it documents. Detail belongs in the local-only repo, not here.",
   "local_only": [
     {
       "path": "~/projects/personal/projects/AUDHD_KIDS",
-      "reason": "Contains a specific minor's medical + education record: decks/SESSION-2026-04-16.md names a 12-year-old daughter's ADHD+ASD diagnosis, sensory profile, regulation difficulties, and her actual 6th-grade ELA class materials. Re-identifying against the founder's public identity. Not pushable even privately until that content moves to a gitignored path.",
+      "reason": "Tracked files carry health + education records about a specific minor, re-identifying against the owner's public identity. Class: family-medical. Not pushable, private included, until that content moves to a gitignored path.",
+      "carriers": ["decks/SESSION-*.md", "giver-project-*"],
       "declared": "2026-07-29",
-      "review": "Re-decide if decks/SESSION-*.md and giver-project-* move out of tracked files. The canonical/ research corpus alone would be pushable."
+      "review": "Re-decide once the carrier paths are gitignored. The canonical/ research corpus is general literature and would be pushable on its own."
     },
     {
       "path": "~/projects/personal/projects/travel-agent",
-      "reason": "q-travel/family/profile.md documents neurodevelopmental status of two specific minor children ('one kid AUDHD, one ADHD'), their ages (12/10/7), and home city. No names and no card/passport/loyalty numbers (those are gitignored and verified never committed), but the combination is re-identifying family-medical data about minors.",
+      "reason": "One tracked file carries health attributes, ages, and home city for minors. Class: family-medical. No names, and no card/passport/loyalty numbers (those are gitignored and verified never committed in full history), but the remaining combination is re-identifying.",
+      "carriers": ["q-travel/family/profile.md"],
       "declared": "2026-07-29",
-      "review": "One line (q-travel/family/profile.md:62) is the blocker. If it moves to the gitignored cards-loyalty.md or a new gitignored private-notes.md, this repo becomes pushable private."
+      "review": "A single line in the carrier file is the blocker. Move it to a gitignored private-notes.md and this repo becomes pushable private."
     },
     {
       "path": "~/projects/personal/projects/story-podcast",
