@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Reproducer for the tree-vs-PR-head guard in pr-review-agent.sh (ASK-221,
+# sp-a72a9567). Pairs with the guard at pr-review-agent.sh:204-213.
+#
+# THE DEFECT IT PINS. $SKEL comes from the script's own location; the diff comes
+# from `gh pr diff <N>`. Nothing compared them. Run from worktree A against a PR
+# on branch B and codex reads A's files, then the verdict record and the commit
+# status attribute A's findings to B's head sha. Observed live 2026-07-29: a run
+# from the ask-221 worktree against PR #35 returned `codex_ran=yes` and
+# `verdict: APPROVE` with three findings in a file PR #35 does not touch.
+#
+# WHY THIS FILE AND NOT A SECTION IN test-severity-floor.sh. That suite's whole
+# reviewer harness reports `SHA_A=a1b2c3d4...`, a FABRICATED sha. `git cat-file -e`
+# misses it, so every one of those cases takes the guard's tier-1 WARN branch and
+# the REFUSAL branch is never executed. Reaching the refusal needs a sha that is a
+# REAL object and NOT an ancestor -- which needs its own sandbox repo, because you
+# cannot manufacture one inside a tree whose history the suite also asserts on.
+#
+# HOW THE NON-ANCESTOR IS MADE. `git commit-tree` on HEAD's tree with no parent:
+# a real object in the store, reachable by cat-file, and not in HEAD's history.
+# Deterministic and self-contained -- it does not depend on which remote branches
+# happen to be fetched, which is what makes a "pick another branch's sha" version
+# of this test pass or fail by accident on a fresh clone.
+#
+# NEGATIVE SELF-TEST (case 2). A guard that refuses everything would pass case 1
+# while breaking every real review. Case 2 drives the SAME harness with the
+# sandbox repo's actual HEAD and asserts codex DID run and a verdict WAS derived.
+# Case 1 without case 2 is not evidence.
+#
+# Point it at an older copy to watch it fail:
+#   KIPI_TEST_REVIEWER_REF=de2a9c3 bash test-review-tree-guard.sh
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_SCRIPTS="$SCRIPT_DIR/.."
+ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+REF="${KIPI_TEST_REVIEWER_REF:-}"
+
+PASS=0
+ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+command -v git >/dev/null 2>&1 || fail "git not on PATH"
+command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH (the record writer is a real python3 heredoc)"
+
+W="$(mktemp -d)"
+trap 'rm -rf "$W"' EXIT
+REPO="$W/repo"
+S="$REPO/q-system/.q-system/scripts"
+mkdir -p "$S/test" "$W/bin" "$W/home"
+
+# The two scripts under test, from the working tree or from a ref. Both come from
+# the SAME source: the reviewer sources the lib, and mixing an old reviewer with a
+# new lib would test a combination that never shipped.
+for f in pr-review-agent.sh pr-verdict-lib.sh; do
+  if [ -n "$REF" ]; then
+    git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" \
+      || fail "cannot read $f at ref $REF"
+  else
+    cp "$SRC_SCRIPTS/$f" "$S/$f" || fail "cannot copy $f from the working tree"
+  fi
+done
+REVIEWER="$S/pr-review-agent.sh"
+echo "reviewer under test: ${REF:-working tree} ($(wc -l < "$REVIEWER" | tr -d ' ') lines)"
+
+# A sandbox git repo, so the guard has a real history to reason about and the
+# founder's object store is never written to.
+git -C "$REPO" init -q 2>/dev/null || fail "git init failed"
+printf 'sandbox\n' > "$REPO/marker.txt"
+git -C "$REPO" add -A >/dev/null 2>&1
+git -C "$REPO" -c user.name=guardtest -c user.email=guard@test \
+  commit -q -m "sandbox base" --no-verify >/dev/null 2>&1 \
+  || fail "sandbox commit failed"
+REAL_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+ORPHAN="$(git -C "$REPO" -c user.name=guardtest -c user.email=guard@test \
+  commit-tree "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" -m "non-ancestor" 2>/dev/null)"
+[ -n "$ORPHAN" ] || fail "could not build a parentless commit with commit-tree"
+ABSENT="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+# The premises the whole test rests on, asserted rather than assumed.
+git -C "$REPO" cat-file -e "${ORPHAN}^{commit}" 2>/dev/null \
+  || fail "premise broken: the orphan commit is not in the sandbox object store"
+git -C "$REPO" merge-base --is-ancestor "$ORPHAN" HEAD 2>/dev/null \
+  && fail "premise broken: the orphan commit IS an ancestor of HEAD"
+git -C "$REPO" cat-file -e "${ABSENT}^{commit}" 2>/dev/null \
+  && fail "premise broken: the fabricated sha exists in the object store"
+ok "premises: orphan ${ORPHAN:0:12} is a real object and not an ancestor; ${ABSENT:0:12} is absent"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "$W/notify.sh"; chmod +x "$W/notify.sh"
+cat > "$W/review-body.txt" <<'EOF'
+## VERDICT: APPROVE
+
+Nothing survived reproduction.
+
+FINDINGS:
+END FINDINGS
+EOF
+
+# $1 = the sha `gh pr view` reports. The codex stub TOUCHES A MARKER: "did the
+# reviewer dispatch?" has to be answered by a side effect, not by stdout prose --
+# the live symptom was `codex_ran=yes` printed next to a bogus verdict, so prose
+# is not admissible evidence here.
+run_case() {
+  local name="$1" oid="$2"; shift 2
+  local d="$W/$name"; mkdir -p "$d/bin" "$d/home"
+  cat > "$d/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$d/gh-calls.log"
+case "\$1 \$2" in
+  "pr view") printf '$oid\ttree guard case $name\n' ;;
+  "pr diff") printf 'diff --git a/marker.txt b/marker.txt\n' ;;
+esac
+exit 0
+EOF
+  cat > "$d/bin/codex" <<EOF
+#!/usr/bin/env bash
+: > "$d/codex-ran"
+cat "$W/review-body.txt"
+EOF
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+: > "$d/claude-ran"
+cat "$W/review-body.txt"
+EOF
+  chmod +x "$d/bin/gh" "$d/bin/codex" "$d/bin/claude"
+  ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$W/notify.sh" \
+      bash "$REVIEWER" 901 "$@" ) >"$d/out.txt" 2>"$d/err.txt"
+  RC=$?
+  CASE_DIR="$d"
+}
+
+record() { echo "$1/home/.config/kipi/pr-reviews/pr-901.verdict.json"; }
+
+# --- case 1: the defect. A real object that is not in this tree's history. -----
+run_case refuse "$ORPHAN"
+[ "$RC" -ne 0 ] || fail "THE DEFECT: the reviewer exited 0 on PR #901 whose head $ORPHAN is NOT in
+      this tree's history. Every finding it produced would cite code absent from that PR's diff,
+      stamped with that PR's sha. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "a PR head that is not an ancestor of the tree exits non-zero"
+
+grep -q 'REFUSING' "$CASE_DIR/err.txt" \
+  || fail "it failed but never said why. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "the refusal names itself on stderr"
+
+[ ! -f "$CASE_DIR/codex-ran" ] \
+  || fail "THE EXPENSIVE HALF OF THE DEFECT: codex was DISPATCHED against the wrong tree before
+      anything refused. The live 2026-07-29 run reported codex_ran=yes and verdict APPROVE this
+      way. Refusing after the model has already spoken is not a guard."
+ok "codex is never dispatched (the guard refuses BEFORE the model runs)"
+
+[ ! -f "$CASE_DIR/claude-ran" ] \
+  || fail "the Opus fallback ran on a refused tree, which would fill the required status slot with
+      a review of the wrong code."
+ok "the Opus fallback is not reached either"
+
+[ ! -f "$(record "$CASE_DIR")" ] \
+  || fail "a verdict record was written for a review that must not have happened:
+      $(cat "$(record "$CASE_DIR")")"
+ok "no verdict record is written"
+
+grep -q 'statuses/' "$CASE_DIR/gh-calls.log" 2>/dev/null \
+  && fail "a commit status was posted on a refused review. gh calls were:
+$(sed 's/^/        /' "$CASE_DIR/gh-calls.log")"
+ok "no commit status is posted (absent is not approved)"
+
+# --- case 2: the negative self-test. The guard must let a real head through. ---
+run_case allow "$REAL_HEAD"
+[ -f "$CASE_DIR/codex-ran" ] \
+  || fail "THE GUARD REFUSES EVERYTHING. Its own tree's HEAD ($REAL_HEAD) did not reach codex, so
+      case 1 proves nothing -- a check that cannot pass is not a check. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+ok "the tree's own HEAD reaches codex (the guard can pass, so case 1 is meaningful)"
+
+grep -q 'REFUSING' "$CASE_DIR/err.txt" && fail "it refused its own HEAD"
+[ -f "$(record "$CASE_DIR")" ] \
+  || fail "no verdict record for the healthy case; the harness itself is broken above the guard.
+      stdout:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["verdict"]; sys.exit(0 if v=="APPROVE" else 1)' \
+  "$(record "$CASE_DIR")" \
+  || fail "the healthy case did not derive APPROVE from the stubbed review:
+      $(cat "$(record "$CASE_DIR")")"
+ok "the healthy case derives APPROVE and writes the verdict record"
+
+# --- case 3: tier 1. An UNKNOWN object warns and proceeds, it does not refuse. --
+# A stale or partial clone cannot prove ancestry either way. Inventing a refusal
+# there would wedge the loop on a fetch problem -- and it is the branch every
+# existing test-severity-floor.sh reviewer case actually takes.
+run_case unknown "$ABSENT"
+grep -q 'REFUSING' "$CASE_DIR/err.txt" \
+  && fail "a sha that is merely ABSENT from the object store was treated as a mismatch. That wedges
+      the whole loop on a stale clone, and it breaks every reviewer case in test-severity-floor.sh,
+      all of which report a fabricated sha."
+grep -q 'WARN' "$CASE_DIR/err.txt" \
+  || fail "an unprovable tree/PR match proceeded SILENTLY. stderr was:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+[ -f "$CASE_DIR/codex-ran" ] || fail "the unknown-object case did not reach codex"
+ok "an absent object warns out loud and proceeds (tier 1, not a refusal)"
+
+echo "PASS: $PASS/$PASS tree-guard checks"
