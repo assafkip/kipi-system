@@ -239,6 +239,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-voice-lint-topups.sh",
       "runner": "bash"
     },
