@@ -165,6 +165,37 @@ else
 fi
 
 echo
+echo "== 11. THE CALL SITE actually uses the renderer =="
+# Codex round 1 on PR #47, minor 2: every case above tests the LIBRARY. Mutate
+# pr-review-agent.sh back to `gh pr comment --body-file "$REVIEW"` and all ten
+# still pass, because none of them ever asks what the reviewer posts. A renderer
+# nothing calls is the same dead code as a hook nothing wires -- this repo's
+# load-path lesson, applied to its own test.
+#
+# Structural, not behavioural: driving the real --post path would need a live PR
+# and a real gh. So assert the two things a revert would break, on the file the
+# scripts dir actually holds.
+AGENT="$SCRIPTS/pr-review-agent.sh"
+if [ ! -f "$AGENT" ]; then
+  bad "no pr-review-agent.sh next to the lib, so the call site cannot be checked"
+else
+  POST_BLOCK="$WORK/post-block.txt"
+  # From the `--post` guard to the end: the only region that comments on a PR.
+  awk '/^if \[ "\$POST" = "1" \]; then/,0' "$AGENT" > "$POST_BLOCK"
+  if grep -q 'review_comment_body' "$POST_BLOCK"; then
+    ok "the --post path calls review_comment_body"
+  else
+    bad "THE DEFECT: the --post path does not call review_comment_body, so the raw review is still what gets posted"
+  fi
+  # The mutation this case exists to catch: --body-file pointed straight at $REVIEW.
+  if grep -qE '(gh|GH) pr comment[^|]*--body-file[[:space:]]*"?\$REVIEW"?([[:space:]]|$)' "$POST_BLOCK"; then
+    bad "THE DEFECT: gh pr comment still posts --body-file \$REVIEW (the raw transcript)"
+  else
+    ok "gh pr comment does not post the raw \$REVIEW file"
+  fi
+fi
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: review_comment_body keeps a codex review inside a GitHub comment"
+echo "PASS: review_comment_body keeps a codex review inside a GitHub comment, and the reviewer uses it"

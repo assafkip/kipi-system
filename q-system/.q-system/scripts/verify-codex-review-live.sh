@@ -19,8 +19,14 @@
 # scheduler will execute -- never a repo-relative path, never this branch's copy.
 #
 # WHAT IT CANNOT TELL YOU: that a review RAN. Wiring is a precondition, not a
-# receipt. The receipt is a dispatch-log line showing a codex verdict on a real PR.
-# Check 8 reads that log rather than asserting from the wiring.
+# receipt. The receipt is a VERDICT RECORD (pr-<N>.verdict.json carrying
+# engine=codex), which is the artifact the reviewer actually writes. Check 8 reads
+# those records rather than asserting from the wiring.
+#
+# This header used to say the receipt was a dispatch-log line, and said it for a
+# while after check 8 stopped reading one -- codex round 1 on PR #47 flagged the
+# drift. Worth the note: the wrong doc was more convincing than the code, because
+# a header is what a reader trusts when they are deciding whether to look further.
 #
 # Exit 0 = codex is wired into the next run. Non-zero = it is not, with the reason.
 set -uo pipefail
