@@ -19,8 +19,14 @@
 # scheduler will execute -- never a repo-relative path, never this branch's copy.
 #
 # WHAT IT CANNOT TELL YOU: that a review RAN. Wiring is a precondition, not a
-# receipt. The receipt is a dispatch-log line showing a codex verdict on a real PR.
-# Check 8 reads that log rather than asserting from the wiring.
+# receipt. The receipt is a VERDICT RECORD (pr-<N>.verdict.json carrying
+# engine=codex), which is the artifact the reviewer actually writes. Check 8 reads
+# those records rather than asserting from the wiring.
+#
+# This header used to say the receipt was a dispatch-log line, and said it for a
+# while after check 8 stopped reading one -- codex round 1 on PR #47 flagged the
+# drift. Worth the note: the wrong doc was more convincing than the code, because
+# a header is what a reader trusts when they are deciding whether to look further.
 #
 # Exit 0 = codex is wired into the next run. Non-zero = it is not, with the reason.
 set -uo pipefail
@@ -158,18 +164,91 @@ for t in test-review-tree-guard.sh test-findings-block-reader.sh; do
 done
 
 # --- 8. when does it next get a chance, and has it ever actually run? --------
-# The receipt, as opposed to the wiring. A codex verdict line in the dispatch log is
-# the only thing here that proves a review HAPPENED.
+# The receipt, as opposed to the wiring.
+#
+# THE RECEIPT IS THE RECORD, NOT A LOG LINE (sp-1d1ad606). This block used to
+# grep dispatch.log for `engine: codex`. That string is real -- pr-review-agent.sh
+# prints `round: N (engine: codex)` -- but it goes to the reviewer's STDOUT, which
+# linear-worker.sh redirects into $STATE_DIR/linear-worker.log. dispatch.log is
+# written by kipi-dispatch.sh and carries cadence lines only, so the receipt string
+# could never appear there. Check 8 printed NO RECEIPT YET unconditionally, forever,
+# including after a real dispatcher-driven codex review -- and that was the one line
+# in this verifier the founder was reading as proof.
+#
+# So read the VERDICT RECORD, which is the artifact the reviewer actually writes and
+# already carries `engine`, `head_sha` and `ts`. This is also what the rest of the
+# loop does (`verdict_from_record`, "ONE reader of the verdict, never re-grep the
+# prose") -- the old grep was the only place that reasoned about a review from a log.
 INTERVAL="$(plutil -extract StartInterval raw -o - "$PLIST" 2>/dev/null || echo '?')"
 info "StartInterval: ${INTERVAL}s"
-LOG="$HOME/.config/kipi/dispatch.log"
+
+# Honour KIPI_STATE_DIR. The old hardcoded $HOME path meant a run against a test
+# state dir silently reported on the founder's real one -- a verifier reading a
+# different installation than the one under test is worse than no verifier.
+STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
+RECEIPT="$(python3 - "$STATE_DIR/pr-reviews" <<'PY' 2>/dev/null
+import glob, json, os, sys
+newest = None
+# Initialised beside `newest`, because the first cut did NOT initialise it: the loop
+# raised NameError, the `2>/dev/null` on the command substitution swallowed it, and
+# the verifier silently reported NO receipt at all. A test greping for
+# 'dispatcher-driven receipt' then PASSED against the failure message. Same
+# swallowed-exception shape as the ledger-root fix earlier tonight.
+worker = None
+# Both layouts: the PRIMARY engine writes pr-<N>.verdict.json to the parent dir,
+# a secondary engine to <dir>/<engine>/. Globbing only one would miss the receipt
+# the moment KIPI_REVIEW_PRIMARY_ENGINE changes.
+for p in glob.glob(os.path.join(sys.argv[1], "*.verdict.json")) + \
+         glob.glob(os.path.join(sys.argv[1], "*", "*.verdict.json")):
+    try:
+        r = json.load(open(p))
+    except Exception:
+        continue          # a corrupt record is not a receipt
+    if r.get("engine") != "codex":
+        continue
+    if newest is None or str(r.get("ts", "")) > str(newest.get("ts", "")):
+        newest = r
+    # THE DISPATCHER-DRIVEN RECEIPT IS TRACKED SEPARATELY, not as "the newest one
+    # that happens to be a worker run" (sp-53aad86f). A later HAND review must not
+    # hide it: "has the dispatcher ever done this unattended" is not a question
+    # about recency. A MISSING invoker key counts as manual -- every record written
+    # before the field existed lacks it, and treating those as proof would
+    # manufacture exactly the evidence this check exists to supply.
+    if r.get("invoker") == "worker":
+        if worker is None or str(r.get("ts", "")) > str(worker.get("ts", "")):
+            worker = r
+def line(r):
+    return "PR #%s %s verdict=%s head=%.12s at %s (invoker=%s)" % (
+        r.get("pr"), r.get("issue", "?"), r.get("verdict"),
+        str(r.get("head_sha", "")), r.get("ts"), r.get("invoker", "<absent>"))
+if newest:
+    print("ANY|" + line(newest))
+if worker:
+    print("WORKER|" + line(worker))
+PY
+)"
+ANY_RECEIPT="$(printf '%s\n' "$RECEIPT" | sed -n 's/^ANY|//p')"
+WORKER_RECEIPT="$(printf '%s\n' "$RECEIPT" | sed -n 's/^WORKER|//p')"
+if [ -n "$ANY_RECEIPT" ]; then
+  info "RECEIPT FOUND: a codex-engine review really ran -- $ANY_RECEIPT"
+else
+  info "NO RECEIPT YET: no pr-*.verdict.json under $STATE_DIR/pr-reviews carries engine=codex. Wiring is green; a real run has not been observed."
+fi
+# THE PROOF THE FOUNDER IS ACTUALLY WAITING ON. Reported as its own line because
+# "a codex review ran" and "the dispatcher ran one unattended" are different
+# claims, and only the second closes the loop. Conflating them is what let every
+# earlier proof carry a hole.
+if [ -n "$WORKER_RECEIPT" ]; then
+  info "DISPATCHER-DRIVEN RECEIPT FOUND: the scheduled loop reviewed a PR unattended -- $WORKER_RECEIPT"
+else
+  info "NO DISPATCHER-DRIVEN RECEIPT YET: no codex record carries invoker=worker. A hand-run review does not count, and a record with no invoker key reads as manual."
+fi
+
+LOG="$STATE_DIR/dispatch.log"
 if [ -f "$LOG" ]; then
+  # Cadence only. This log answers "when does it next get a chance", never
+  # "did a review happen" -- that is the record above.
   info "last dispatch line: $(tail -1 "$LOG")"
-  if grep -q 'engine: codex' "$LOG" 2>/dev/null; then
-    info "RECEIPT FOUND: the log records at least one codex-engine review run"
-  else
-    info "NO RECEIPT YET: the log has no codex-engine review line. Wiring is green; a real run has not been observed."
-  fi
   if tail -5 "$LOG" | grep -q "DAILY CAP"; then
     info "daily cap is spent; the next real dispatch is after the 07:00 local reset"
   fi

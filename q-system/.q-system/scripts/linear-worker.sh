@@ -1130,7 +1130,11 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # gate below reads, so a second Claude pass would only burn spend and post an
     # advisory status nobody gates on. A codex outage cannot wedge the loop: the
     # reviewer's own Opus fallback fills the primary slot and marks it DEGRADED.
-    $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine codex >>"$LOG" 2>&1 \
+    # LABEL THE INVOKER HERE, at the one place the scheduled path runs the reviewer
+    # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
+    # from a hand run in the verdict record. It is set on the call rather than
+    # exported once, so it cannot leak into an unrelated reviewer invocation.
+    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine codex >>"$LOG" 2>&1 \
       || say "WARN: codex reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself

@@ -119,6 +119,23 @@ done
 #   and claude's record moves down into $OUT_DIR/claude to get out of its way.
 #   Exactly one engine writes the gating record: single writer, preserved.
 PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-codex}"
+
+# WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
+# REVIEW RAN; it could not prove THE DISPATCHER RAN ONE UNATTENDED, which is the
+# only thing that actually closes the loop. A hand-run review and a scheduled one
+# wrote byte-identical evidence, so no number of green checks answered the
+# question -- every proof shown to the founder had this hole in it.
+#
+# DEFAULT IS `manual`, AND THAT IS THE WHOLE SAFETY PROPERTY. An unlabelled run
+# must never pass as dispatcher-driven, or the field manufactures exactly the
+# evidence it exists to supply. Same posture as the commit status: absent is not
+# approved. Records written before this field existed carry no key at all, and the
+# verifier treats a missing key as not-dispatcher for the same reason.
+#
+# Set by linear-worker.sh at its single reviewer call site, so the label follows
+# the real invocation path rather than being something a human remembers to pass.
+INVOKER="${KIPI_REVIEW_INVOKER:-manual}"
+
 case "$ENGINE" in
   claude) ENGINE_DIR="$OUT_DIR" ;;
   codex)  ENGINE_DIR="$OUT_DIR/codex" ;;
@@ -537,14 +554,15 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine = sys.argv[1:12]
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
+           "invoker": invoker,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
