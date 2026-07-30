@@ -1,0 +1,46 @@
+{
+  "_doc": "Repos that are DELIBERATELY local-only. remote-coverage-check.py fails on any remote-less repo NOT listed here. An entry is a recorded decision, not a mute button: it needs a reason someone can argue with, and 'unblock' means either pushing the repo or changing the reason. Never delete a repo to clear the gate.",
+  "_scar": "2026-07-29 audit: 12 remote-less repos found, oldest 219 commits. Two of them must never get a GitHub remote (a minor's medical/education record). An always-on auto-push would have published them, which is why creation is opt-in and this file exists.",
+  "local_only": [
+    {
+      "path": "~/projects/personal/projects/AUDHD_KIDS",
+      "reason": "Contains a specific minor's medical + education record: decks/SESSION-2026-04-16.md names a 12-year-old daughter's ADHD+ASD diagnosis, sensory profile, regulation difficulties, and her actual 6th-grade ELA class materials. Re-identifying against the founder's public identity. Not pushable even privately until that content moves to a gitignored path.",
+      "declared": "2026-07-29",
+      "review": "Re-decide if decks/SESSION-*.md and giver-project-* move out of tracked files. The canonical/ research corpus alone would be pushable."
+    },
+    {
+      "path": "~/projects/personal/projects/travel-agent",
+      "reason": "q-travel/family/profile.md documents neurodevelopmental status of two specific minor children ('one kid AUDHD, one ADHD'), their ages (12/10/7), and home city. No names and no card/passport/loyalty numbers (those are gitignored and verified never committed), but the combination is re-identifying family-medical data about minors.",
+      "declared": "2026-07-29",
+      "review": "One line (q-travel/family/profile.md:62) is the blocker. If it moves to the gitignored cards-loyalty.md or a new gitignored private-notes.md, this repo becomes pushable private."
+    },
+    {
+      "path": "~/projects/personal/projects/story-podcast",
+      "reason": "Physically unpushable to GitHub: two tracked files exceed the 100MB hard limit (.venv-chatterbox torch libtorch_cpu.dylib 178MB, llvmlite 123MB). The venv is committed. Fixing it requires a history rewrite, which is a separate deliberate decision, not a side effect of this gate.",
+      "declared": "2026-07-29",
+      "review": "Needs the committed .venv-chatterbox purged from history before any push can succeed. Tracked as spillover."
+    },
+    {
+      "path": "~/projects/personal",
+      "reason": "Persona container holding 2 tracked files (.gitignore + README.md). projects/ is gitignored so it captures no work. A GitHub repo for two config files is noise, not backup.",
+      "declared": "2026-07-29",
+      "review": "Push if this container ever holds real content."
+    },
+    {
+      "path": "~/projects/dev-tools/projects/kipi-rca",
+      "reason": "11-file duplicate of ~/projects/cole-gtm/products/kipi-rca, which IS pushed to gh:assafkip/kipi-rca.git. The work is already off-disk under the other path.",
+      "declared": "2026-07-29",
+      "review": "Delete-or-merge candidate; not a backup gap."
+    },
+    {
+      "path": "~/projects/consulting/projects/4_points_consulting/q-investigate/tools/osint-infra-mcp",
+      "reason": "4-file vendored third-party MCP tool, single seed commit, no local authorship.",
+      "declared": "2026-07-29"
+    },
+    {
+      "path": "~/projects/consulting/projects/Alice/q-investigate/tools/osint-infra-mcp",
+      "reason": "4-file vendored third-party MCP tool, single seed commit, no local authorship.",
+      "declared": "2026-07-29"
+    }
+  ]
+}

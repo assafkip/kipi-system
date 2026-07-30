@@ -74,6 +74,31 @@ if [ ! -d .git ]; then
   echo "  Initialized git repo"
 fi
 
+# Remote creation is OPT-IN, never automatic.
+#
+# Scar 2026-07-29: this script created git repos and never a remote, so an
+# instance's only copy was the laptop. The audit found 12 remote-less repos,
+# oldest 219 commits, several of them client engagements.
+#
+# The fix is NOT an unconditional `gh repo create`: two of those repos must
+# stay local forever (a minor's medical/education record, family travel data).
+# Auto-publishing would have leaked them. So the operator opts in per instance,
+# and `remote-coverage-check.py` (wired into `kipi check`) makes any repo left
+# without a remote a LOUD, declared decision instead of a silent one.
+KIPI_REMOTE_NAME="${KIPI_REMOTE:-}"
+if [ -n "$KIPI_REMOTE_NAME" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    echo "  Creating PRIVATE remote assafkip/$KIPI_REMOTE_NAME ..."
+    # --private is not a default to be overridden: a new instance carries the
+    # skeleton's whole enforcement layer plus whatever the operator seeds next.
+    gh repo create "assafkip/$KIPI_REMOTE_NAME" --private --source="$INST_PATH" \
+      && echo "  Remote added (push with: git -C $INST_PATH push -u origin HEAD)" \
+      || echo "  WARNING: remote creation failed; instance is LOCAL-ONLY" >&2
+  else
+    echo "  WARNING: gh not installed; instance is LOCAL-ONLY" >&2
+  fi
+fi
+
 # Ensure at least one commit exists
 if ! git rev-parse HEAD >/dev/null 2>&1; then
   git commit --allow-empty -m "Initial commit"
@@ -216,3 +241,13 @@ echo ""
 echo "=== Done ==="
 echo "Instance created at $INST_PATH"
 echo "Next: edit CLAUDE.md to add your project details, then run the setup wizard."
+
+# A remote-less instance must never end the run silently -- that silence is the
+# whole 2026-07-29 scar. Say it out loud and name both legitimate exits.
+if [ -z "$(git -C "$INST_PATH" remote 2>/dev/null)" ]; then
+  echo ""
+  echo "NOTE: this instance has NO git remote. Its only copy is this disk."
+  echo "  push it:    gh repo create assafkip/<name> --private --source=$INST_PATH --push"
+  echo "  or declare it local-only in $SCRIPT_DIR/remote-coverage-allow.json"
+  echo "  \`kipi check\` stays RED until you do one of those."
+fi

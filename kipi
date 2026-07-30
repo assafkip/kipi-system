@@ -187,6 +187,16 @@ PY
     ;;
   check)
     shift || true
+    # Fleet remote-coverage gate. Runs FIRST and fleet-wide (not per-instance)
+    # because the failure it catches is a repo whose only copy is this laptop --
+    # a property of the fleet, not of whichever tree you happen to stand in.
+    # Scar 2026-07-29: `kipi new` never created a remote, so 12 repos (oldest
+    # 219 commits, several client engagements) existed on one disk for months.
+    # Inflow was automated, outflow was manual, and nothing reported the gap.
+    # Declared-local repos live in remote-coverage-allow.json; exit 2 = undeclared.
+    if [ -f "$KIPI_HOME/remote-coverage-check.py" ]; then
+      python3 "$KIPI_HOME/remote-coverage-check.py" || exit 1
+    fi
     # Capability gate runs against the repo you are STANDING in, so an
     # instance gets ITS tree gated. Without this, `kipi check` cd'd to
     # KIPI_HOME and only ever validated the skeleton — an instance-side
