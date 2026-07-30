@@ -208,8 +208,15 @@ PR_TITLE="${PR_META#*$'\t'}"
 # if the head is moving RIGHT NOW, whatever we pick may be stale again by the time
 # the model finishes, and a review nobody ran is cheaper than a green check on the
 # wrong code. Also catches a concurrent push by anyone, which the caller cannot.
+#
+# The confirm read uses the IDENTICAL query and the IDENTICAL extraction as the
+# first one. A differently-shaped second query is a second reader of one fact:
+# my first cut asked for `--json headRefOid -q .headRefOid` while the first read
+# asked for the sha+title tuple, so the two strings never matched and the check
+# refused every review. Caught by test-review-tree-guard going 1/23.
 sleep 3
-HEAD_SHA_CONFIRM="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+PR_META_CONFIRM="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null || true)"
+HEAD_SHA_CONFIRM="${PR_META_CONFIRM%%$'\t'*}"
 if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
   echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
