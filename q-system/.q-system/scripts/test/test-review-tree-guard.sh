@@ -134,6 +134,7 @@ cat "$W/review-body.txt"
 EOF
   chmod +x "$d/bin/gh" "$d/bin/codex" "$d/bin/claude"
   ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$W/notify.sh" \
+      SYNC_CALL_LOG="${SYNC_CALL_LOG:-$d/sync-calls-unused.log}" \
       bash "$REVIEWER" 901 "$@" ) >"$d/out.txt" 2>"$d/err.txt"
   RC=$?
   CASE_DIR="$d"
@@ -306,5 +307,55 @@ ok "a page fires, so an unattended loss is not invisible"
 grep -q 'review posted to ASK-901' "$CASE_DIR/out.txt"   && fail "it claimed the review was posted to ASK-901 while the post actually failed. A false
       success line is worse than silence."
 ok "it does not claim success for a post that failed"
+
+
+# --- case 6: the success path posts to the issue EXACTLY ONCE (PR #46 round 1) ---
+# codex round 1 of PR #46, major 1. Making the failure path loud (case 5) was done by
+# editing the tail of the existing `python3 "$SYNC" progress` call. The opening lines
+# were left behind, and their trailing `\` continued into the new comment block -- so
+# the original call still ran, but stripped of `--agent` and `--evidence`. The success
+# path posted TWICE: once misattributed to the default agent with no findings, then
+# once correctly. Both are PERMANENT Linear comments. It shipped to ASK-221 before
+# codex caught it, and case 5 could not see it because case 5 only exercises FAILURE.
+#
+# ORDER MATTERS: this runs AFTER case 5 on purpose. Case 5's failure has to be a real
+# missing linear-sync.py rather than a stub told to fail, so the stub cannot exist
+# until case 5 is done.
+cat > "$S/linear-sync.py" <<'PYEOF'
+import sys, os
+with open(os.environ["SYNC_CALL_LOG"], "a") as fh:
+    # ONE LINE PER CALL: the review body is multi-line, so joining raw argv makes a
+    # single call span several lines and `grep -c .` counts lines, not calls. That
+    # miscount read 3 for a correct single call.
+    fh.write("\x1f".join(a.replace("\n", "\\n") for a in sys.argv[1:]) + "\n")
+print("ASK-901: progress noted (stub)")
+PYEOF
+
+SYNC_LOG="$W/sync-calls.log"; : > "$SYNC_LOG"
+SYNC_CALL_LOG="$SYNC_LOG" run_case postone "$REAL_HEAD" --post --issue ASK-901
+
+CALLS="$(grep -c . "$SYNC_LOG" 2>/dev/null || echo 0)"
+[ "$CALLS" -eq 1 ] \
+  || fail "THE DEFECT: the success path made $CALLS calls to linear-sync.py, not 1. Each one is a
+      PERMANENT comment on the issue. Calls were:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG" 2>/dev/null)"
+ok "the success path posts to the issue exactly once"
+
+grep -q 'codex-reviewer' "$SYNC_LOG" \
+  || fail "the single call did not carry --agent codex-reviewer, so the issue thread cannot tell
+      WHICH engine spoke -- the one fact the engine flip exists to convey. Call was:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG")"
+ok "the call is attributed to the engine, not the default agent"
+
+grep -q 'evidence' "$SYNC_LOG" \
+  || fail "the single call carried no --evidence, so the findings never reach the issue and Sana
+      has nothing to reply to. Call was:
+$(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG")"
+ok "the call carries the findings as evidence"
+
+grep -q 'review posted to ASK-901' "$CASE_DIR/out.txt" \
+  || fail "the post succeeded but the run never said so. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "a successful post is reported once"
 
 echo "PASS: $PASS/$PASS tree-guard checks"
