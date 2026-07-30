@@ -553,14 +553,15 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine = sys.argv[1:12]
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
+           "invoker": invoker,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY

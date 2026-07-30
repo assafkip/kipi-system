@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Reproducer for sp-53aad86f: the verdict record could not distinguish a
+# DISPATCHER-driven review from a hand-run one.
+#
+# Pairs with: the invoker field written by pr-review-agent.sh, set by
+# linear-worker.sh, and reported by verify-codex-review-live.sh check 8.
+#
+# WHY THIS IS THE PROOF THAT MATTERS. Every green check so far proves "a codex
+# review ran". The founder asked for something stricter: that the DISPATCHER ran
+# one, unattended, on a PR nobody reviewed by hand. Without provenance in the
+# record, a hand-run review and an unattended one are byte-identical evidence, so
+# no amount of green proves the thing he asked about.
+#
+# THE FAIL-SAFE DIRECTION IS THE WHOLE DESIGN. An unlabelled review must read as
+# hand-run, never as dispatcher-driven. Absent is not approved -- the same posture
+# the reviewer's commit status takes. Case 3 is that assertion, and it is the one
+# a careless default would break.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS="$(cd "$HERE/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS+1)); echo "  PASS: $1"; }
+bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+
+AGENT="$SCRIPTS/pr-review-agent.sh"
+WORKER="$SCRIPTS/linear-worker.sh"
+VERIFIER="$SCRIPTS/verify-codex-review-live.sh"
+
+echo "== 1. the reviewer records an invoker at all =="
+if grep -q 'KIPI_REVIEW_INVOKER' "$AGENT"; then
+  ok "pr-review-agent.sh reads KIPI_REVIEW_INVOKER"
+else
+  bad "THE DEFECT: pr-review-agent.sh has no invoker concept, so no record can name its caller"
+fi
+if grep -qE '"invoker"' "$AGENT"; then
+  ok "the verdict record carries an invoker field"
+else
+  bad "THE DEFECT: the verdict record has no invoker field"
+fi
+
+echo
+echo "== 2. the WORKER labels itself, so a dispatcher run is identifiable =="
+# The label has to be on the worker's call, not merely available as an env var
+# nobody sets -- an unset knob is the same as no feature.
+if grep -nE 'KIPI_REVIEW_INVOKER=(worker|dispatcher)' "$WORKER" >/dev/null 2>&1; then
+  ok "linear-worker.sh labels its reviewer invocation"
+else
+  bad "THE DEFECT: linear-worker.sh does not set KIPI_REVIEW_INVOKER, so its runs are indistinguishable from hand runs"
+fi
+
+echo
+echo "== 3. THE FAIL-SAFE: an unlabelled run must NOT read as dispatcher-driven =="
+# Drive the default straight out of the script rather than trusting a comment.
+DEFAULT="$(bash -c 'unset KIPI_REVIEW_INVOKER; grep -oE "KIPI_REVIEW_INVOKER:-[a-z]+" '"'$AGENT'"' | head -1 | cut -d- -f2')"
+case "$DEFAULT" in
+  worker|dispatcher)
+    bad "THE DEFECT: the default invoker is '$DEFAULT', so every hand-run review would count as dispatcher proof" ;;
+  "")
+    bad "could not read the default invoker out of $AGENT" ;;
+  *)
+    ok "the default invoker is '$DEFAULT', so an unlabelled run cannot pass as dispatcher-driven" ;;
+esac
+
+echo
+echo "== 4. a record with NO invoker key reads as not-dispatcher =="
+# Every record written before this change lacks the key entirely. Those must not
+# be counted either -- a missing field is the same unknown as a manual label.
+STATE="$WORK/state"; mkdir -p "$STATE/pr-reviews"
+cat > "$STATE/pr-reviews/pr-900.verdict.json" <<'JSON'
+{"pr":900,"issue":"ASK-900","verdict":"APPROVE","engine":"codex",
+ "round":1,"head_sha":"deadbeefdeadbeef","ts":"2026-07-30T00:00:00Z"}
+JSON
+OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -E 'RECEIPT|dispatcher' || true)"
+if echo "$OUT" | grep -qi 'dispatcher-driven'; then
+  # It may legitimately report "no dispatcher-driven receipt"; only a positive claim is wrong.
+  if echo "$OUT" | grep -qiE 'no dispatcher-driven|not dispatcher-driven|hand-run'; then
+    ok "a legacy record without an invoker is not claimed as dispatcher-driven"
+  else
+    bad "THE DEFECT: a legacy record with no invoker was reported as dispatcher-driven proof"
+  fi
+else
+  ok "the verifier makes no dispatcher claim for a record without an invoker"
+fi
+
+echo
+echo "== 5. a worker-labelled record IS reported as dispatcher-driven =="
+cat > "$STATE/pr-reviews/pr-901.verdict.json" <<'JSON'
+{"pr":901,"issue":"ASK-901","verdict":"APPROVE","engine":"codex","invoker":"worker",
+ "round":1,"head_sha":"cafebabecafebabe","ts":"2026-07-30T01:00:00Z"}
+JSON
+OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -E 'RECEIPT|dispatcher' || true)"
+# Require the PR NUMBER, not just the phrase. The phrase also appears in the
+# NO-receipt message, so the loose form passed against a crashed verifier.
+if echo "$OUT" | grep -qi 'DISPATCHER-DRIVEN RECEIPT FOUND' && echo "$OUT" | grep -q '901'; then
+  ok "a worker-labelled record is reported as the dispatcher-driven receipt"
+else
+  bad "a worker-labelled record was NOT reported as dispatcher-driven, so the proof stays invisible"
+fi
+
+echo
+echo "== 6. the newest worker record wins, not the newest record overall =="
+# A later HAND run must not displace the dispatcher receipt in the report: the
+# question "has the dispatcher ever done this" is not answered by recency.
+cat > "$STATE/pr-reviews/pr-902.verdict.json" <<'JSON'
+{"pr":902,"issue":"ASK-902","verdict":"APPROVE","engine":"codex","invoker":"manual",
+ "round":1,"head_sha":"0123456789abcdef","ts":"2026-07-30T02:00:00Z"}
+JSON
+OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -iE 'dispatcher-driven' || true)"
+if echo "$OUT" | grep -q '901'; then
+  ok "a newer hand run does not hide the dispatcher receipt (PR #901 still named)"
+else
+  bad "a newer manual review displaced the dispatcher receipt in the report"
+fi
+
+echo
+echo "-------- $PASS passed, $FAIL failed --------"
+[ "$FAIL" -eq 0 ] || exit 1
+echo "PASS: the record distinguishes a dispatcher-driven review from a hand run"

@@ -189,6 +189,12 @@ STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 RECEIPT="$(python3 - "$STATE_DIR/pr-reviews" <<'PY' 2>/dev/null
 import glob, json, os, sys
 newest = None
+# Initialised beside `newest`, because the first cut did NOT initialise it: the loop
+# raised NameError, the `2>/dev/null` on the command substitution swallowed it, and
+# the verifier silently reported NO receipt at all. A test greping for
+# 'dispatcher-driven receipt' then PASSED against the failure message. Same
+# swallowed-exception shape as the ledger-root fix earlier tonight.
+worker = None
 # Both layouts: the PRIMARY engine writes pr-<N>.verdict.json to the parent dir,
 # a secondary engine to <dir>/<engine>/. Globbing only one would miss the receipt
 # the moment KIPI_REVIEW_PRIMARY_ENGINE changes.
@@ -202,16 +208,40 @@ for p in glob.glob(os.path.join(sys.argv[1], "*.verdict.json")) + \
         continue
     if newest is None or str(r.get("ts", "")) > str(newest.get("ts", "")):
         newest = r
+    # THE DISPATCHER-DRIVEN RECEIPT IS TRACKED SEPARATELY, not as "the newest one
+    # that happens to be a worker run" (sp-53aad86f). A later HAND review must not
+    # hide it: "has the dispatcher ever done this unattended" is not a question
+    # about recency. A MISSING invoker key counts as manual -- every record written
+    # before the field existed lacks it, and treating those as proof would
+    # manufacture exactly the evidence this check exists to supply.
+    if r.get("invoker") == "worker":
+        if worker is None or str(r.get("ts", "")) > str(worker.get("ts", "")):
+            worker = r
+def line(r):
+    return "PR #%s %s verdict=%s head=%.12s at %s (invoker=%s)" % (
+        r.get("pr"), r.get("issue", "?"), r.get("verdict"),
+        str(r.get("head_sha", "")), r.get("ts"), r.get("invoker", "<absent>"))
 if newest:
-    print("PR #%s %s verdict=%s head=%.12s at %s" % (
-        newest.get("pr"), newest.get("issue", "?"), newest.get("verdict"),
-        str(newest.get("head_sha", "")), newest.get("ts")))
+    print("ANY|" + line(newest))
+if worker:
+    print("WORKER|" + line(worker))
 PY
 )"
-if [ -n "$RECEIPT" ]; then
-  info "RECEIPT FOUND: a codex-engine review really ran -- $RECEIPT"
+ANY_RECEIPT="$(printf '%s\n' "$RECEIPT" | sed -n 's/^ANY|//p')"
+WORKER_RECEIPT="$(printf '%s\n' "$RECEIPT" | sed -n 's/^WORKER|//p')"
+if [ -n "$ANY_RECEIPT" ]; then
+  info "RECEIPT FOUND: a codex-engine review really ran -- $ANY_RECEIPT"
 else
   info "NO RECEIPT YET: no pr-*.verdict.json under $STATE_DIR/pr-reviews carries engine=codex. Wiring is green; a real run has not been observed."
+fi
+# THE PROOF THE FOUNDER IS ACTUALLY WAITING ON. Reported as its own line because
+# "a codex review ran" and "the dispatcher ran one unattended" are different
+# claims, and only the second closes the loop. Conflating them is what let every
+# earlier proof carry a hole.
+if [ -n "$WORKER_RECEIPT" ]; then
+  info "DISPATCHER-DRIVEN RECEIPT FOUND: the scheduled loop reviewed a PR unattended -- $WORKER_RECEIPT"
+else
+  info "NO DISPATCHER-DRIVEN RECEIPT YET: no codex record carries invoker=worker. A hand-run review does not count, and a record with no invoker key reads as manual."
 fi
 
 LOG="$STATE_DIR/dispatch.log"

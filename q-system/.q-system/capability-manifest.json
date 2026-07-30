@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
       "runner": "python3"
     },
@@ -27,6 +31,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
       "runner": "bash"
     },
     {
@@ -198,20 +206,16 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
       "runner": "bash"
-    },
-    {
-      "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
-      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
