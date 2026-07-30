@@ -40,6 +40,14 @@ scan() {  # scan <regex> <class> <fix> [inverse-regex-that-makes-it-ok]
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     case "$hit" in *portability-lint-skip*) continue ;; esac
+    # FILE-LEVEL EXEMPTION for scripts that are inherently platform-specific.
+    # install-plist.sh installs launchd plists; verify-codex-review-live.sh reads
+    # one. Flagging those is the lint failing CORRECT code, which is how a lint
+    # gets ignored -- the same trap as reporting its own prose. The marker must be
+    # in the file, so the exemption is a decision someone wrote down, not a
+    # hardcoded allowlist here that drifts out of sight.
+    _hf="${hit%%:*}"
+    if head -20 "$_hf" 2>/dev/null | grep -q 'portability-lint-skip-file'; then continue; fi
     if [ -n "$ok" ] && printf '%s' "$hit" | grep -qE "$ok"; then continue; fi
     local loc="${hit%%:*}" rest="${hit#*:}"
     local body="${rest#*:}"

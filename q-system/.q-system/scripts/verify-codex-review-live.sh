@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# portability-lint-skip-file: this script is macOS-only BY DESIGN (launchd/plutil).
 # Will codex actually review Sana's work on the next scheduled run? (ASK-221)
 #
 # WHY THIS EXISTS: on 2026-07-29 a guard was written, tested green, and reported as
