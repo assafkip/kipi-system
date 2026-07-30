@@ -1139,19 +1139,25 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       CODEX_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       if ! printf '%s\n' "$CODEX_NOW" > "$CODEX_MARK" 2>/dev/null; then
         say "WARN: $ISSUE: could not write $CODEX_MARK, so codex was NOT delegated. Refusing to start a paid session the once-per-sha bound cannot record."
-      elif python3 "$SYNC" delegate "$ISSUE" --clear >>"$LOG" 2>&1 \
-           && python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1; then
-        # CLEAR THEN SET, because DELEGATION ONLY FIRES ON A CHANGE. Measured on
-        # ASK-253 2026-07-30: the issue was already delegated to Codex, a second
-        # `delegate --agent Codex` returned success, and NO new agent session was
-        # created -- so a rework round would have re-read nothing while the PR waited
-        # forever. Setting the same value is a no-op to Linear, and a no-op is not a
-        # trigger. The clear is what makes the set a transition.
+      elif python3 "$SYNC" request-review "$ISSUE" --agent Codex \
+             --pr "$PR_NUM" --sha "$CODEX_SHA" >>"$LOG" 2>&1; then
+        # THE @MENTION IS THE TRIGGER, not the delegate field. All three alternatives
+        # were measured against the live agent on 2026-07-30, not assumed:
+        #   delegate null -> Codex    fired ONCE, on the transition
+        #   delegate Codex -> Codex   fired NOTHING (a no-op is not a trigger)
+        #   delegate --clear then set fired NOTHING
+        #   @codex in a comment       fired every time; session 02:33:56.868 for a
+        #                             comment at 02:33:56.774, active -> complete
+        # So relying on delegation would have asked NOBODY on every round after the
+        # first, and the PR would wait forever while looking correctly wired.
         #
-        # This is only visible because --since refuses the stale session instead of
-        # quietly reusing it; the previous code would have posted the old verdict on
-        # the new head and looked like it worked.
-        say "$ISSUE: delegated PR #$PR_NUM (${CODEX_SHA:0:7}) to codex for review at $CODEX_NOW"
+        # Only visible because --since refuses the stale session rather than reusing
+        # it: the earlier code would have posted round 1's verdict on round 2's head
+        # and read as working. One fix exposing the next is the point of the loop.
+        #
+        # Delegation is still set once below for ownership display in Linear's UI.
+        python3 "$SYNC" delegate "$ISSUE" --agent Codex >>"$LOG" 2>&1 || true
+        say "$ISSUE: requested codex review of PR #$PR_NUM (${CODEX_SHA:0:7}) at $CODEX_NOW"
       else
         # Delegation failed, so release the marker: the bound exists to stop paying
         # twice for the same code, not to stop asking once.

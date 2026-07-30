@@ -59,10 +59,16 @@ info "live HEAD:      $(git -C "$LIVE_ROOT" rev-parse --short HEAD 2>/dev/null |
 if [ ! -f "$LIVE_WORKER" ]; then
   fail "no worker at $LIVE_WORKER"
 else
-  if grep -q 'delegate "\$ISSUE" --agent Codex' "$LIVE_WORKER"; then
-    pass "the live worker delegates to Codex"
+  # CHECK FOR THE MENTION, NOT THE DELEGATION. Measured 2026-07-30: setting a
+  # delegate that is already set creates NO agent session, and clear-then-set creates
+  # none either. Only an @mention comment fires reliably. The worker still calls
+  # `delegate` for ownership display, so grepping for THAT would pass on a worker
+  # whose trigger never fires -- which is the same "verifier certifies a thing that
+  # does not work" defect codex already found once in this file.
+  if grep -q 'request-review "\$ISSUE" --agent Codex' "$LIVE_WORKER"; then
+    pass "the live worker @mentions Codex via request-review (the measured trigger)"
   else
-    fail "the live worker does NOT delegate to Codex. Tomorrow's run reviews with Claude only. If the wiring is on a branch, it has to reach $(git -C "$LIVE_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)."
+    fail "the live worker does NOT @mention Codex (request-review). Tomorrow's run reviews with Claude only. If the wiring is on a branch, it has to reach $(git -C "$LIVE_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)."
   fi
   if grep -q 'agent-verdict "\$ISSUE"' "$LIVE_WORKER"; then
     pass "the live worker reads codex's verdict back"
@@ -85,11 +91,11 @@ else
   # delegating BEFORE recording means an unwritable state dir re-delegates, and every
   # delegation is a paid session.
   MARK_LINE="$(grep -n '> *"\$CODEX_MARK"' "$LIVE_WORKER" | head -1 | cut -d: -f1)"
-  DELEG_LINE="$(grep -n 'delegate "\$ISSUE" --agent Codex' "$LIVE_WORKER" | head -1 | cut -d: -f1)"
+  DELEG_LINE="$(grep -n 'request-review "\$ISSUE" --agent Codex' "$LIVE_WORKER" | head -1 | cut -d: -f1)"
   if [ -z "$MARK_LINE" ]; then
     fail "the live worker never WRITES a once-per-sha marker, so each 900s pass starts another PAID codex session on unchanged code"
   elif [ -z "$DELEG_LINE" ]; then
-    fail "no delegate call found to order the marker against"
+    fail "no request-review call found to order the marker against"
   elif [ "$MARK_LINE" -lt "$DELEG_LINE" ]; then
     pass "the marker is written BEFORE delegating (line $MARK_LINE < $DELEG_LINE), so an unwritable state dir refuses to spend"
   else
@@ -113,7 +119,7 @@ fi
 if [ ! -f "$LIVE_SYNC" ]; then
   fail "no linear-sync.py at $LIVE_SYNC"
 else
-  for verb in delegate agent-verdict; do
+  for verb in delegate request-review agent-verdict; do
     if python3 "$LIVE_SYNC" "$verb" --help >/dev/null 2>&1; then
       pass "live linear-sync.py implements '$verb'"
     else

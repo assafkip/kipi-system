@@ -771,6 +771,86 @@ def cmd_delegate(args) -> int:
     return EXIT_OK
 
 
+def cmd_request_review(args) -> int:
+    """Ask an agent to review a PR by @mentioning it in a comment. THE TRIGGER.
+
+    MEASURED, not assumed (ASK-253, 2026-07-30). Three trigger mechanisms were tried
+    against the live Codex agent:
+
+      delegate null -> Codex   created a session ONCE, on the transition
+      delegate Codex -> Codex  created NOTHING (setting a value it already has is a
+                               no-op to Linear, and a no-op is not a trigger)
+      delegate --clear + set   created NOTHING
+      @codex in a comment      created a session every time it worked, confirmed by
+                               a session at 02:33:56.868 for a comment at
+                               02:33:56.774 that went active -> complete and replied
+
+    So the worker cannot rely on the delegate field to re-request a review after a
+    push: the second round would silently ask nobody while the PR waited forever.
+    The mention is the trigger; delegation is for ownership display.
+
+    The mention must lead the body. Linear resolves @displayName, and every comment
+    that fired had the mention as its first characters, so this does not bury it
+    under an attribution prefix the way `progress` would.
+    """
+    try:
+        issue = graphql(ISSUE_BY_ID, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    # THE STANDING BAR TRAVELS WITH THE REQUEST. Linear's workspace Agent Guidance is
+    # the right long-term home, but it is a founder-managed setting this script cannot
+    # read or verify, so the request carries the bar rather than assuming it.
+    #
+    # NOTE the deliberate ABSENCE of a trailing FINDINGS template here. Every earlier
+    # request ended with one, whose placeholder line the severity allowlist rejects,
+    # leaving an empty last block -- and a reviewer echoing it back turned a blocker
+    # into an APPROVE (the major the Claude reviewer found on PR #45). The parser now
+    # takes the last block carrying a severity, but not emitting the trap at all is
+    # the belt to that braces.
+    body = (
+        f"@{args.agent.lower()} review pull request #{args.pr} in "
+        f"`{args.repo}`, head `{args.sha}`.\n\n"
+        "Review only: change nothing, push nothing, open no PR.\n\n"
+        f"There is no `origin` remote in your checkout, so fetch by URL:\n\n"
+        f"```\ngit clone --filter=blob:none https://github.com/{args.repo}.git /tmp/r\n"
+        f"cd /tmp/r && git fetch origin refs/pull/{args.pr}/head && "
+        f"git diff origin/main...FETCH_HEAD\n```\n\n"
+        "The author is Sana, an agent built on Claude. You are a different lab's "
+        "model, so the value is what she structurally could not see.\n\n"
+        "The bar:\n\n"
+        "- Every finding ships a reproducer you actually ran, with its real output. "
+        "No repro, no finding. If you cannot make it fail, drop it and say you tried "
+        "-- dropping an unreproducible finding is a success of this process.\n"
+        "- Severity is blast radius and recoverability, not cleverness. blocker = "
+        "permanent or unrecoverable if merged. major = wrong behavior unattended that "
+        "a human must clean up. minor = real, reproducible, bounded. nit = style.\n"
+        "- Name what is SOUND: attacks you tried that the code survived. A review "
+        "that only lists faults is not calibrated and cannot be trusted on the faults.\n"
+        "- Be specifically suspicious of tests that could not fail, and of fixtures "
+        "whose shape does not match what the real producer emits.\n\n"
+        "End with a machine-readable block, one line per finding as "
+        "`severity|claim|file:line`, opened by a FINDINGS: line and closed by an "
+        "END FINDINGS line, and put your findings in the LAST such block."
+    )
+    if args.note:
+        body += f"\n\n{args.note}"
+
+    result = graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    created = (result or {}).get("commentCreate") or {}
+    if not created.get("success") or not (created.get("comment") or {}).get("id"):
+        print(f"BLOCK: Linear did not create the review request on "
+              f"{issue['identifier']}; nobody was asked. Raw: {created}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue['identifier']}: review of PR #{args.pr} ({args.sha[:7]}) requested "
+          f"from @{args.agent.lower()}")
+    return EXIT_OK
+
+
 def cmd_agent_verdict(args) -> int:
     """Read the newest agent session for an issue and derive a verdict from it.
 
@@ -1218,6 +1298,15 @@ def main() -> int:
     p.add_argument("--agent", default="Codex", help="agent displayName (default Codex)")
     p.add_argument("--clear", action="store_true", help="remove the delegation instead")
     p.set_defaults(func=cmd_delegate)
+
+    p = sub.add_parser("request-review", help="@mention an agent to review a PR (THE trigger)")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-253")
+    p.add_argument("--agent", default="Codex", help="agent displayName (default Codex)")
+    p.add_argument("--pr", required=True, help="pull request number")
+    p.add_argument("--sha", required=True, help="head sha the review is about")
+    p.add_argument("--repo", default="assafkip/kipi-system", help="owner/name")
+    p.add_argument("--note", help="extra context appended after the standing bar")
+    p.set_defaults(func=cmd_request_review)
 
     p = sub.add_parser("agent-verdict", help="derive a verdict from an agent session")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
