@@ -597,7 +597,12 @@ position_tree_on_pr_head() {
   # work made every inherited tree unrepositionable -- turning a destructive
   # round into a permanently stalled issue plus a page. It is this worker's own
   # lock, never a human's work.
-  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v '\.linear-claims\.json$')"
+  # .sana-needs-scope joins the ignore list for the same reason .linear-claims.json
+  # is on it: both are the loop talking to itself, never a human's work. It is
+  # normally consumed in the same run that writes it, but a run killed between the
+  # write and the read would otherwise leave a file that makes this tree
+  # permanently unrepositionable -- a refusal that wedges the issue it refused.
+  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v -e '\.linear-claims\.json$' -e '\.sana-needs-scope$')"
   if [ -n "$dirty" ]; then
     POSITION_REFUSAL="the tree has uncommitted changes"
     return 1
@@ -1152,7 +1157,15 @@ Work here. Never `cd` to $SKEL and never switch this branch -- the founder may b
    OPEN IT BEFORE YOUR TURN ENDS. Never finish on \"I'll open the PR once X finishes\" -- your turn
    ends there and the PR never exists, so the review never runs and the work is stranded (observed
    on ASK-184). If a check is still running, open the PR FIRST and post the result as a comment.
-7. If the DoR turns out to be wrong or impossible, say so on the issue via progress and STOP. Do not improvise a different task.
+7. If the DoR turns out to be wrong or impossible, REFUSE IT IN A FILE, not only in prose:
+     printf '%s' \"<why it cannot be executed as written, and what a workable DoR would scope>\" > $TREE/.sana-needs-scope
+   then post the same reasoning via progress and STOP. Do not improvise a different task.
+   The file is what makes the refusal stick: the worker reads it, labels the issue needs-scope so the
+   picker stops handing it back, and routes it to the DoR drafter for re-scoping. A refusal written
+   ONLY as a comment is invisible to the loop -- the issue returns as the top pick on the next run and
+   burns the budget again (observed on ASK-148 and ASK-149, three dispatches, zero diffs).
+   Refusing is a correct outcome and is not counted as a failed attempt. Refuse when the DoR is
+   genuinely unexecutable, not when it is merely hard.
 
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
@@ -1172,6 +1185,59 @@ Anything real you find and are not fixing: capture it, never just mention it:
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
     fi
+  fi
+
+  # 4b. A REFUSAL IS A DECISION, NOT A FAILURE (ASK-275).
+  #
+  # Sana already had the judgment and used it correctly on ASK-148 and ASK-149.
+  # What she had no way to do was ACT on it. The only lever available was
+  # relabelling to owner:assaf -- the founder queue -- so a spec that needed
+  # re-scoping became a founder decision. The founder does not do implementation,
+  # so that lever was the wrong one and the issue simply came back.
+  #
+  # A FILE, not a grep of the run log. The agent writes one path; this reads it.
+  # Parsing prose out of stdout for the word BLOCKED would make the loop depend on
+  # the model phrasing its refusal a particular way, which is exactly the
+  # prompt-only enforcement this repo bans. Presence of a file is deterministic.
+  #
+  # It does NOT bump_attempt: the attempt counter measures runs that failed to
+  # produce, and a reasoned refusal produced the correct answer. Counting it would
+  # spend a real budget on being right, and after three would mark the issue STUCK
+  # and page a human -- routing to the founder by the back door.
+  if [ -f "$TREE/.sana-needs-scope" ]; then
+    SCOPE_WHY="$(head -c 1500 "$TREE/.sana-needs-scope" 2>/dev/null)"
+    [ -n "$SCOPE_WHY" ] || SCOPE_WHY="the run refused the DoR but recorded no reason"
+    # CONSUMED, NOT KEPT. Two failures if it survives the run, and the worktree
+    # is reused across runs so both are certain rather than theoretical:
+    #   1. after the DoR is re-scoped, the next run reads the STALE file and
+    #      refuses again -- an issue that can never be un-refused.
+    #   2. an untracked file makes the tree dirty, and the position guard above
+    #      refuses to reposition a dirty tree, wedging this issue permanently.
+    # The durable record is the label plus the Linear comment, not this file.
+    rm -f "$TREE/.sana-needs-scope"
+    say "$ISSUE REFUSED as unexecutable: $SCOPE_WHY"
+    if python3 "$SYNC" label "$ISSUE" needs-scope >>"$LOG" 2>&1; then
+      say "$ISSUE labelled needs-scope -- the picker will stop offering it"
+    else
+      # The label is the ONLY thing that makes this stick. If it did not land, the
+      # issue returns as the top pick next run, so say so rather than reporting a
+      # clean refusal: a silent failure here is an infinite redispatch loop.
+      say "$ISSUE REFUSED but the needs-scope label did NOT apply (see $LOG) -- it will be offered again"
+    fi
+    python3 "$SYNC" progress "$ISSUE" \
+      "**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
+
+$SCOPE_WHY
+
+**Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder." \
+      --agent "$AGENT" >/dev/null 2>&1 || true
+    ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+    # `continue` WITHOUT DONE++ is the whole of part B: a rejection costs a TURN
+    # inside this run, not the run itself. When the worker holds the pool (no
+    # --issue), the loop moves straight to the next ready issue and spends its
+    # budget on one that can actually yield a diff. Same shape the MAX_ATTEMPTS
+    # skip above already uses.
+    continue
   fi
 
   # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
