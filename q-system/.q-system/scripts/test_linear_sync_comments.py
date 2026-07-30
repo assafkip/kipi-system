@@ -112,7 +112,13 @@ def main():
     ok("linear-sync.py exposes cmd_comments")
 
     # --- the whole thread comes back, both speakers, in order ------------------
-    rc, out, _ = run_comments(mod, Args("ASK-221"), make_issue([C_SANA, C_CODEX]))
+    # FIXTURE ORDER IS DESCENDING ON PURPOSE, because that is what Linear actually
+    # returns (verified live on ASK-221, 2026-07-29). The first cut of this test fed
+    # an ascending fixture, matching the author's assumption rather than the
+    # producer, so it passed while `--last N` returned the OLDEST N and hid a Codex
+    # reply for two turns. Every case below now feeds newest-first, so the sort in
+    # cmd_comments is what the assertions actually exercise.
+    rc, out, _ = run_comments(mod, Args("ASK-221"), make_issue([C_CODEX, C_SANA]))
     if rc != 0:
         fail(f"reading a good issue exited {rc}, expected 0")
     elif "sana" not in out or "codex-reviewer" not in out:
@@ -134,7 +140,7 @@ def main():
     # every agent-written comment, so filtering on the API author cannot separate
     # Sana from the reviewer. The agent name only exists in the body.
     rc, out, _ = run_comments(mod, Args("ASK-221", agent="codex-reviewer"),
-                              make_issue([C_SANA, C_CODEX]))
+                              make_issue([C_CODEX, C_SANA]))
     if "sana" in out.replace("codex-reviewer", ""):
         fail(f"--agent codex-reviewer returned Sana's comment too. Got:\n{out}")
     elif "APPROVE WITH NITS" not in out:
@@ -144,7 +150,7 @@ def main():
 
     # --- a speaker who has not spoken yet says so, and does not error ----------
     rc, out, _ = run_comments(mod, Args("ASK-221", agent="nobody-here"),
-                              make_issue([C_SANA, C_CODEX]))
+                              make_issue([C_CODEX, C_SANA]))
     if rc != 0:
         fail(f"an empty filter result exited {rc}; a reviewer who has not commented "
              "yet is a normal state, not a failure")
@@ -155,7 +161,7 @@ def main():
 
     # --- --last N keeps the MOST RECENT, not the oldest ------------------------
     rc, out, _ = run_comments(mod, Args("ASK-221", last=1),
-                              make_issue([C_SANA, C_CODEX]))
+                              make_issue([C_CODEX, C_SANA]))
     if "APPROVE WITH NITS" not in out:
         fail(f"--last 1 returned the OLDEST comment. Reading the last N is how an "
              f"agent finds the newest review; returning the oldest means it answers "
@@ -201,7 +207,7 @@ def main():
     # means Sana reads the reviewer's own comment as her prior reply, concludes she
     # already answered, and the review round silently does nothing.
     rc, out, _ = run_comments(mod, Args("ASK-221", agent="sana"),
-                              make_issue([C_SANA, C_CODEX_MENTIONS_SANA]))
+                              make_issue([C_CODEX_MENTIONS_SANA, C_SANA]))
     if "codex-reviewer" in out:
         fail("THE BUG CODEX FOUND: --agent sana returned the REVIEWER's comment, because "
              "the reviewer's body contains 'Sana: reply to this comment'. --agent must "

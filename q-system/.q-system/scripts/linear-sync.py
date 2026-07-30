@@ -704,6 +704,17 @@ def cmd_comments(args) -> int:
         return EXIT_USAGE
 
     nodes = (issue.get("comments") or {}).get("nodes") or []
+    # SORT EXPLICITLY. Do not trust the API's order. Verified live on ASK-221
+    # 2026-07-29: Linear returns this connection NEWEST-FIRST, and the first cut of
+    # this verb documented and assumed oldest-first -- so `--last N` sliced the tail
+    # of a descending list and returned the OLDEST N. It hid the Codex reply that
+    # arrived 4 seconds after the request, through two turns of looking straight at
+    # it. My own test passed because its fixture was hand-written ascending: the
+    # exact defect Codex flagged in this same session (a fixture built from the
+    # author's mental model rather than from what the producer emits), committed
+    # twice in one day. Sorting here makes the order a property of this function
+    # instead of an assumption about a remote API.
+    nodes.sort(key=lambda n: n.get("createdAt") or "")
     if args.agent:
         # MATCH THE ATTRIBUTION MARKER, NOT ANY MENTION. `progress` writes the
         # author as the literal first line "**<who>** · <stamp>", so `**sana**` is
