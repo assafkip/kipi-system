@@ -11,7 +11,9 @@ Run: python3 plugins/kipi-design/hooks/test_dogfood_gate.py
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dogfood_gate import scan_html, load_fingerprint, EMBEDDED_FALLBACK  # noqa: E402
+from dogfood_gate import (  # noqa: E402
+    scan_html, load_fingerprint, EMBEDDED_FALLBACK, is_public_facing_page,
+)
 
 # the RCA case: tasteful slop. No Inter, no gradient text, no emoji, no "Powered by AI".
 WARM_CREAM = """<!doctype html><html><head><style>
@@ -108,6 +110,46 @@ for label, page in (("rgb", OVERFLOW_RGB), ("hsl", OVERFLOW_HSL)):
         ok("[guard] overflowing %s color does not crash scan_html (no fail-open)" % label, isinstance(result, list))
     except Exception:
         ok("[guard] overflowing %s color does not crash scan_html (no fail-open)" % label, False)
+
+# ── ASK-134: the public-vs-internal path classifier is the DETERMINISTIC half of
+# .claude/rules/design-auto-invoke.md ("will someone other than the founder see this?").
+# It used to live inline in main() where nothing could test it, so the rule claimed
+# ENFORCED while naming no executable. These cases are that rule's reproducer: an
+# internal path must be SKIPPED (no design skill, no scan) and a public one SCANNED.
+INTERNAL_PATHS = [
+    "/repo/q-system/output/daily-schedule-2026-07-31.html",
+    "/repo/q-system/marketing/templates/post.html",
+    "/repo/sites/eyeball/tests/fixture-page.html",
+    "/repo/node_modules/pkg/demo.html",
+    "/repo/sites/_harvest/sample.html",
+    "/repo/build/index.html",
+    "/repo/dist/index.html",
+    "/repo/sites/eyeball/debug.html",
+    "/repo/q-system/output/morning-log-view.html",
+]
+PUBLIC_PATHS = [
+    "/repo/sites/eyeball/index.html",
+    "/repo/sites/index.html",
+    "/repo/sites/prd-os/landing.html",
+]
+NON_HTML = [
+    "/repo/sites/eyeball/style.css",
+    "/repo/sites/eyeball/app.tsx",
+    "/repo/README.md",
+    "",
+]
+
+for p in INTERNAL_PATHS:
+    ok("[scope] internal path is NOT public-facing: %s" % p, is_public_facing_page(p) is False)
+for p in PUBLIC_PATHS:
+    ok("[scope] public page IS public-facing: %s" % p, is_public_facing_page(p) is True)
+for p in NON_HTML:
+    ok("[scope] non-.html is out of this gate's scope: %r" % p, is_public_facing_page(p) is False)
+# case-insensitive, same as the original main() which lowercased before matching
+ok("[scope] uppercase internal path still skipped",
+   is_public_facing_page("/repo/Q-System/Output/Schedule.HTML") is False)
+ok("[scope] uppercase public page still scanned",
+   is_public_facing_page("/repo/sites/eyeball/INDEX.HTML") is True)
 
 if failures:
     print("test_dogfood_gate FAILED:")

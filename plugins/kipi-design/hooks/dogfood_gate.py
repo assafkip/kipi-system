@@ -273,6 +273,33 @@ def scan_html(content, fp):
     return findings
 
 
+# Paths that are HTML but nobody outside the founder ever sees: dashboards, schedules,
+# logs, templates, test fixtures, build output, internal harvest tooling.
+INTERNAL_PATH_MARKERS = (
+    "/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
+    "fixture", "dashboard", "schedule", "morning", "-log", "/logs/", "/output/",
+    "/build/", "/dist/", "debug", "/.git/", "storybook",
+    "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
+
+
+def is_public_facing_page(path):
+    """True when `path` is an HTML page an audience outside the founder will see.
+
+    This is the deterministic half of the question .claude/rules/design-auto-invoke.md
+    asks ("will someone other than the founder see this?"). It lived inline in main()
+    where no test could reach it, so that rule named no executable and was prompt-only
+    (ASK-134). One chokepoint now: this hook's main() and test_dogfood_gate.py both
+    read the same answer, so the scoping decision cannot drift between them.
+
+    Non-HTML paths are False — out of this gate's scope, not a judgement that a .css
+    or .tsx file is internal.
+    """
+    if not path or not path.lower().endswith(".html"):
+        return False
+    low = path.lower()
+    return not any(marker in low for marker in INTERNAL_PATH_MARKERS)
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -281,15 +308,7 @@ def main():
 
     ti = data.get("tool_input", {}) or {}
     path = ti.get("file_path") or ti.get("path") or ""
-    if not path or not path.lower().endswith(".html"):
-        sys.exit(0)
-
-    low = path.lower()
-    SKIP = ("/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
-            "fixture", "dashboard", "schedule", "morning", "-log", "/logs/", "/output/",
-            "/build/", "/dist/", "debug", "/.git/", "storybook",
-            "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
-    if any(s in low for s in SKIP):
+    if not is_public_facing_page(path):
         sys.exit(0)
 
     content = ""
