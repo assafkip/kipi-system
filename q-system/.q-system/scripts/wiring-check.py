@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """
 Post-tool wiring checker for AUDHD coding rules.
-Runs as PostToolUse hook on Edit/Write for code files.
-Detects orphaned code, debug leftovers, and structural violations.
+
+Pairs with `.claude/rules/coding-audhd.md` -- this is the executable behind that
+rule's ENFORCED label. It covers only the file-inspectable half: max nesting,
+max function length, debug leftovers, bare except, unused imports, orphaned
+function defs, hardcoded URLs/ports. The rule's Presentation, Error
+Communication, Session Structure and banned-language sections are model
+behaviour, not file-inspectable, and stay interpretive by design.
+
+Runs as PostToolUse hook on Edit/Write for code files
+(`.claude/settings.json`, `settings-template.json`).
+Pinned by `test_wiring_check.py`.
 
 Exit codes:
   0 = pass (stdout warnings go to Claude as feedback)
-  Non-zero exits are reserved for future hard blocks.
+  ALWAYS 0 today: this is advisory, never a block. It is wired fleet-wide via
+  settings-template.json, so flipping to exit 2 would turn every code Edit/Write
+  in 24 instances into a hard block. That is a founder decision, not a silent
+  one (ASK-132).
 
 Zero context window cost. Pure deterministic check.
 """
@@ -94,9 +106,12 @@ def check_python_structure(file_path, content):
                         f"  Line {node.lineno}: function `{node.name}()` is {length} lines (max {MAX_FUNC_LINES}). Consider splitting."
                     )
 
-        # Check nesting depth
+        # Check nesting depth. The node itself is level 1, so add it to the
+        # levels counted below it -- without the +1, `for > if > while` scored 2
+        # and slipped past MAX_NESTING = 2 while breaking "max nesting: 2 levels"
+        # (ASK-132). Only the outermost block of a too-deep stack warns.
         if isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
-            depth = _nesting_depth(node)
+            depth = 1 + _nesting_depth(node)
             if depth > MAX_NESTING:
                 warnings.append(
                     f"  Line {node.lineno}: nesting depth {depth} (max {MAX_NESTING}). Extract inner block."
