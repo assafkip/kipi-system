@@ -24,6 +24,23 @@ The issue description is the founder's own words. This adds a `## Definition of
 Ready` section beneath it and touches nothing else. An LLM rewriting a human's
 issue text is not a trade worth making, and Linear issues cannot be deleted here.
 
+THE ONE EXCEPTION: REDRAFT (needs-scope-redrive, 2026-08-01)
+
+There is a second selection mode. `linear-worker.sh` refuses an issue whose DoR
+is unexecutable, labels it `needs-scope`, and tells the operator in writing that
+"linear-dor-drafter.py re-scopes this ... no action is needed from the founder."
+That was FALSE for as long as it had been printed: needs_dor() returned False on
+any description containing "Definition of Ready", and a needs-scope issue HAS a
+DoR -- having a bad one is exactly why it was refused. So every refusal was
+parked permanently behind a message promising the opposite (ASK-148).
+
+A redraft therefore DOES overwrite, but only the `## Definition of Ready` section
+and never a byte above it: that section is this job's own prior output, not the
+founder's words, so the append-only rule is not in tension with rewriting it.
+The bounded-loop rules apply (REDRAFT_CAP, TERMINAL_NOTE) because a redraft loop
+that keeps producing unexecutable specs would cycle an issue between the worker
+and this job forever.
+
 AUDHD: every drafted DoR carries an Energy mode and a Time Est, per
 `.claude/rules/audhd-interaction.md` — an issue the founder cannot pick up by
 energy level is not actually ready for a human either.
@@ -150,6 +167,46 @@ CLAUDE_FALLBACKS = (
 # onto one would be pure noise on a permanent object.
 DRAFTABLE_STATE_TYPES = ("backlog", "unstarted")
 
+# The worker's refusal label. This is the redrive input: the issue is selected
+# BECAUSE it carries this, not excluded because it already has a DoR.
+NEEDS_SCOPE_LABEL = "needs-scope"
+
+# How many times this job may rewrite one issue's DoR before it stops.
+# Three, matching self-healing-retry.md's attempt cap: the same reasoning applies
+# (a fourth identical-quality attempt is not new information, it is a slot spent).
+REDRAFT_CAP = 3
+
+# The redraft counter lives in the ISSUE DESCRIPTION, not in the state file and
+# not in attempts-ledger.py.
+#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a
+#     read-then-write from a second process is the race that file exists to stop.
+#   - not ~/.config/kipi/linear-dor-state.json: that is one machine's scratch. A
+#     cap whose count evaporates on a new laptop is not a cap, and the terminal
+#     rationale has to be READABLE on the issue by whoever opens it anyway. If
+#     the rationale must live on the issue, so must the number behind it.
+# Single writer: this job is the only thing that writes this marker, and it
+# writes it only inside the one issueUpdate call in apply_redraft/apply_terminal.
+REDRAFT_MARKER_RE = re.compile(r"<!--\s*kipi-dor:\s*redrafts=(\d+)(\s+terminal)?\s*-->")
+
+# What goes on the issue when the cap is spent. Deliberately NOT a new escalation
+# tier -- the PRD rejects manufactured tiers (codex finding 5). It is an honest
+# terminal: a written statement that the machine is out of moves, kept reversible
+# by naming the one edit that puts the issue back in the loop.
+TERMINAL_NOTE = f"""> **Redraft cap reached ({REDRAFT_CAP} of {REDRAFT_CAP}). This is an honest terminal, not a queue.**
+>
+> `linear-dor-drafter.py` rewrote this Definition of Ready {REDRAFT_CAP} times and the
+> autonomous worker refused it as unexecutable each time. There is no further machine
+> move here: a {REDRAFT_CAP + 1}th rewrite would produce a spec of the same quality and
+> spend another night's slot. The `needs-scope` label stays ON deliberately, so the
+> picker keeps this out of the loop instead of cycling it.
+>
+> What is missing is a scope decision: what bounded outcome this issue is actually
+> asking for. That is a real dead end for this job, recorded here rather than left
+> looking like pending work.
+>
+> To put it back in the loop: delete the `<!-- kipi-dor: ... -->` line above. The
+> counter resets and the next nightly run redrafts it again."""
+
 PROMPT = """You are writing a Definition of Ready for one Linear issue in a software fleet.
 
 Repo/project: {project}
@@ -180,6 +237,47 @@ what is missing instead of guessing. Never invent a file path or a command that 
 cannot see evidence for."""
 
 
+REDRAFT_PROMPT = """You are REWRITING a Definition of Ready that an autonomous coding agent
+already refused as unexecutable. Attempt {attempt} of {cap}.
+
+Repo/project: {project}
+Title: {title}
+
+The Definition of Ready it refused:
+---
+{old_dor}
+---
+
+Why it refused it:
+---
+{reason}
+---
+
+Rewrite the DoR so THAT refusal no longer applies. The usual cause is scope: the
+spec asked for an unbounded amount of work, or asked for a judgment call the agent
+cannot make from a non-interactive session. Cut it down to ONE bounded change that
+a single agent session can finish and prove. Narrowing the outcome is correct and
+expected; do not preserve ambition you cannot bound.
+
+Write ONLY the body of the section. No preamble, no heading, no code fences. Use
+exactly these five bullets, in this order:
+
+- **Outcome:** one sentence, what is true when this is done, in plain terms.
+- **Files:** the explicit paths you'd expect to touch. If genuinely unknown, say
+  "unknown - needs a recon pass" rather than inventing paths.
+- **Check:** the command that proves it works, or that currently fails. Runnable.
+  If none exists, say what would have to be written.
+- **Blast radius:** does this propagate to other repos via `kipi update`? Is it
+  skeleton-only or fleet-wide? Does it touch always-on rules or settings?
+- **Not doing:** the adjacent thing this issue explicitly does not cover. Name here
+  whatever you cut out of the old scope.
+
+Then one final line exactly like:
+**Energy:** <Quick Win|Deep Focus|People|Admin> · **Time Est:** <e.g. 30 min, 2 h, half day>
+
+Be concrete and short. Never invent a file path or a command you cannot see evidence for."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -191,9 +289,22 @@ def _linear():
     return mod
 
 
+# `labels` is new (needs-scope-redrive). Before it this query selected no labels
+# at all, so a label-driven selection was not merely unimplemented, it had no data
+# to run on. The IDs come with the names because dropping the label is an
+# issueUpdate with the FULL replacement labelIds set -- Linear has no remove-one
+# mutation, so the survivors have to be known at write time.
 ISSUES_Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
-  nodes{id identifier title description project{name} state{name type}}
+  nodes{id identifier title description project{name} state{name type}
+        labels{nodes{id name}}}
   pageInfo{hasNextPage endCursor}}}"""
+
+# The worker writes WHY it refused as a comment, not into the description. A
+# redraft that cannot see that reason is a coin flip that spends one of three
+# capped attempts, so it is fetched per candidate rather than skipped. Bounded by
+# --limit (8 a night), which is why this is a per-issue query and not another
+# field on the 250-issue page.
+ISSUE_COMMENTS_Q = """query($id:String!){issue(id:$id){comments(last:15){nodes{body}}}}"""
 
 UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
   issueUpdate(id:$id,input:$input){success issue{identifier}}}"""
