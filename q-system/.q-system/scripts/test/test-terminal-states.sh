@@ -194,13 +194,18 @@ def check_liveness(lc, errors, row_id):
         return
 
     lcbin = os.environ.get("TERMINAL_STATES_LAUNCHCTL", "launchctl")
-    # Skip LOUDLY rather than silently, and only after the plist check above has
-    # already returned on a host that never had the job. Reaching here without a
-    # launchd control binary means a plist exists but nothing can read its state,
-    # which is a gap in the evidence, not a pass.
+    # A plist EXISTS at this point, so this host DOES own the job; only the
+    # ability to read its state is missing. That is a gap in the evidence, not a
+    # pass. For one round this comment said exactly that while the code below
+    # printed a note and returned clean, so pointing TERMINAL_STATES_LAUNCHCTL at
+    # a nonexistent binary certified every consumer with zero evidence and the
+    # suite still reported 12 passed (codex-adversarial finding-4). The
+    # host-never-had-the-job case already returned at the plist check above, so
+    # failing closed here costs the fleet nothing.
     if not (os.path.isfile(lcbin) or shutil.which(lcbin)):
-        print(f"    note: {row_id}: {lcbin} not available on this platform; "
-              f"{label} liveness NOT asserted")
+        errors.append(f"{row_id}: {label} has a plist at {plist} but {lcbin} is not "
+                      "available to read its state -- liveness cannot be asserted, "
+                      "and an unverifiable consumer is not a proven live one")
         return
     try:
         rc = subprocess.run([lcbin, "list", label],
@@ -279,7 +284,15 @@ def main():
             errors.append(f"{rid}: declare EITHER a consumer + liveness_check OR "
                           "terminal:true with a rationale, not both and not neither")
         if has_consumer:
-            if HUMAN_ACTOR.search(row["consumer"]):
+            # Type-guard BEFORE the regex. HUMAN_ACTOR.search on a non-string
+            # raises an uncaught TypeError that kills the run before a single
+            # RED: line prints, so one malformed row silently suppressed every
+            # other row's findings -- a gate that reports nothing looks exactly
+            # like a gate that found nothing (codex-adversarial finding-5).
+            if not isinstance(row["consumer"], str):
+                errors.append(f"{rid}: consumer must be a string, got "
+                              f"{type(row['consumer']).__name__}")
+            elif HUMAN_ACTOR.search(row["consumer"]):
                 errors.append(
                     f"{rid}: consumer names a HUMAN ({row['consumer'][:60]!r}). The "
                     "founder does not read or work on code, so a state whose only "
@@ -546,6 +559,34 @@ mkfixture "$FIX/unregtest.json" '
 '
 expect_red "a consumer_test absent from capability-manifest.json is refused" \
   "$FIX/unregtest.json" "not in\s*$\|expected_tests"
+
+# --- 11. plist present but launchctl unreadable (codex-adversarial finding-4) -
+# The second fail-open, and the one the code's own comment already argued
+# against while returning clean anyway. The plist EXISTS, so this host owns the
+# job; only the reader is missing. Before the fix this fixture returned exit 0
+# and the suite printed 12 passed while asserting nothing about any consumer.
+mkfixture "$FIX/nolaunchctl.json" '
+row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
+row.pop("consumer_test", None)
+row["liveness_check"] = {"kind": "launchd", "label": "com.kipi.fixture-job",
+                         "run_evidence": "'"$FIX"'/ran", "max_age_s": 86400}
+'
+expect_red "a plist present with an unreadable launchd control binary fails closed" \
+  "$FIX/nolaunchctl.json" "available to read its state" \
+  "TERMINAL_STATES_LAUNCHD_DIR=$FIX/agents" \
+  "TERMINAL_STATES_LAUNCHCTL=$FIX/no-such-launchctl-binary"
+
+# --- 12. a non-string consumer must be named, not crash (finding-5) ----------
+# Guards the REPORTING path, not just this row: the uncaught TypeError aborted
+# before any RED: line, so this fixture must go red AND still name the row.
+mkfixture "$FIX/badconsumer.json" '
+row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
+row["consumer"] = {"not": "a string"}
+'
+expect_red "a non-string consumer is named, not an uncaught TypeError" \
+  "$FIX/badconsumer.json" "consumer must be a string" \
+  "TERMINAL_STATES_LAUNCHD_DIR=$FIX/agents" \
+  "TERMINAL_STATES_LAUNCHCTL=$FIX/launchctl-loaded"
 
 echo
 echo "== $PASS passed, $FAIL failed =="
