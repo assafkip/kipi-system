@@ -147,6 +147,7 @@ picker_stub '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":
 # cwd is the skeleton, which is where launchd runs this from.
 ( cd "$WORK/skel" \
   && HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$WORK/run.out" 2>&1
 RC=$?
 
@@ -186,6 +187,7 @@ picker_stub '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"},{"id":"ASK-BBB
 
 ( cd "$WORK/skel" \
   && PATH="$CSTUB:$PATH" HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state2" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --limit 2 ) >"$WORK/run2.out" 2>&1
 
 # `grep -c` exits 1 on a zero count, so the old `|| echo 0` idiom printed "0\n0"

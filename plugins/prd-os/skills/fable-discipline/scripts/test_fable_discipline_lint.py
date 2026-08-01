@@ -6,12 +6,24 @@ Dogfoods the fable-discipline skill: every fixture is written under a TemporaryD
 (isolation), never a real path. Run from this directory:
     python3 test_fable_discipline_lint.py
 """
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-LINT = str(Path(__file__).resolve().parent / "fable-discipline-lint.py")
+# REF HATCH: point the suite at a DIFFERENT copy of the lint, so the pre-feature
+# lint can be checked out from a git ref and watched to FAIL. A regression case
+# added after its own fix has never been observed red, and an unobserved-red case
+# is an assertion about nothing. This suite used to pass unchanged against the
+# lint from a5ac9c1 -- deleting the whole outbound-channel detector left its own
+# regression suite green.
+#
+#   git show <pre-feature-ref>:plugins/prd-os/skills/fable-discipline/scripts/\
+#     fable-discipline-lint.py > /tmp/old-lint.py
+#   FABLE_LINT_UNDER_TEST=/tmp/old-lint.py python3 test_fable_discipline_lint.py
+LINT = (os.environ.get("FABLE_LINT_UNDER_TEST")
+        or str(Path(__file__).resolve().parent / "fable-discipline-lint.py"))
 
 # (filename, content, expected_exit)
 CASES = [
@@ -64,6 +76,83 @@ CASES = [
 ]
 
 
+# --- outbound-channel cases -------------------------------------------------
+# These are TREE-SHAPED on purpose. The detector resolves a runner NEXT TO the
+# test (../<name> or ./<name>), so a flat tempdir makes every runner
+# unresolvable and the whole detector reports green on a leaking fixture. The
+# first version of this suite had no channel cases at all: it passed unchanged
+# against the pre-feature lint, which means deleting the detector outright left
+# its own regression suite green. A self-test that cannot detect its own
+# removal is decoration.
+
+# Reaches the pager on a LIVE line -> notify-capable.
+PAGER_RUNNER = (
+    '#!/usr/bin/env bash\n'
+    'NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"\n'
+    'bash "$NOTIFY" "a human needs to look at this"\n'
+)
+# Names the notifier only in PROSE -> not notify-capable, must not be flagged.
+QUIET_RUNNER = (
+    '#!/usr/bin/env bash\n'
+    '# historical note: this used to call slack-notify.sh, it no longer does\n'
+    'echo ok\n'
+)
+
+_HEAD = 'RUNNER="$SCRIPT_DIR/../pager-runner.sh"\n'
+
+# (case name, test-file body, target: "test"|"runner", expected exit)
+CHANNEL_CASES = [
+    ("unstubbed invocation",
+     _HEAD + 'bash "$RUNNER" --go\n', "test", 2),
+    ("per-command stub on the same line",
+     _HEAD + 'KIPI_NOTIFY=/usr/bin/true bash "$RUNNER" --go\n', "test", 0),
+    ("stub carried across a backslash continuation",
+     _HEAD + 'env FOO=1 \\\n    KIPI_NOTIFY=/usr/bin/true \\\n'
+             '    bash "$RUNNER" --go\n', "test", 0),
+    # THE regression for the file-wide-stub defect. One stubbed site used to
+    # suppress detection for every other site in the file; the real
+    # test-severity-floor.sh had 5 stubbed and 2 unstubbed and passed.
+    ("PARTIAL stub: one site covered, one not",
+     _HEAD + 'KIPI_NOTIFY=/usr/bin/true bash "$RUNNER" --first\n'
+             'bash "$RUNNER" --second\n', "test", 2),
+    ("exported stub covers the whole file",
+     'export KIPI_NOTIFY=/usr/bin/true\n' + _HEAD + 'bash "$RUNNER" --go\n',
+     "test", 0),
+    ("writing your own notifier into a sandbox skeleton",
+     _HEAD + 'printf "exit 0\\n" > "$WORK/skel/scripts/slack-notify.sh"\n'
+             'bash "$RUNNER" --go\n', "test", 0),
+    ("grep-only reference is not an invocation",
+     _HEAD + 'grep -q needle "$RUNNER"\n', "test", 0),
+    ("bash -n is a parse, not a run",
+     _HEAD + 'bash -n "$RUNNER"\n', "test", 0),
+    ("bash -c handing the runner to grep is not an invocation",
+     _HEAD + 'OUT="$(bash -c \'grep -c x \'"\'$RUNNER\'")"\n', "test", 0),
+    ("runner that only NAMES the notifier in a comment",
+     'RUNNER="$SCRIPT_DIR/../quiet-runner.sh"\nbash "$RUNNER" --go\n', "test", 0),
+    ("skip marker bypasses",
+     '# fable-discipline-lint-skip\n' + _HEAD + 'bash "$RUNNER" --go\n',
+     "test", 0),
+    # Editing the RUNNER must re-check the tests that drive it. The edited file
+    # alone can never show this: the leak lives in files the edit did not touch.
+    ("editing the runner sees its unstubbed test",
+     _HEAD + 'bash "$RUNNER" --go\n', "runner", 2),
+    ("editing the runner is clean when its test is stubbed",
+     _HEAD + 'KIPI_NOTIFY=/usr/bin/true bash "$RUNNER" --go\n', "runner", 0),
+]
+
+
+def run_channel_case(base, name, body, target):
+    """Build <base>/scripts/{pager,quiet}-runner.sh + scripts/test/test-x.sh."""
+    scripts = base / "scripts"
+    tdir = scripts / "test"
+    tdir.mkdir(parents=True, exist_ok=True)
+    (scripts / "pager-runner.sh").write_text(PAGER_RUNNER)
+    (scripts / "quiet-runner.sh").write_text(QUIET_RUNNER)
+    test_file = tdir / "test-channel-case.sh"
+    test_file.write_text(body)
+    return run(test_file if target == "test" else scripts / "pager-runner.sh")
+
+
 def run(path):
     return subprocess.run([sys.executable, LINT, str(path)],
                           capture_output=True, text=True).returncode
@@ -81,10 +170,23 @@ def main():
             print(f"  [{'PASS' if ok else 'FAIL'}] {name}: exit {got} (want {want})")
             if not ok:
                 failures += 1
+
+    for name, body, target, want in CHANNEL_CASES:
+        # Each case gets its OWN tree; a shared one lets a previous fixture's
+        # stub file satisfy the next case and every assertion goes soft.
+        with tempfile.TemporaryDirectory() as d:
+            got = run_channel_case(Path(d), name, body, target)
+        ok = got == want
+        print(f"  [{'PASS' if ok else 'FAIL'}] channel/{target}: {name}: "
+              f"exit {got} (want {want})")
+        if not ok:
+            failures += 1
+
+    total = len(CASES) + len(CHANNEL_CASES)
     if failures:
         print(f"fable-discipline-lint self-test: {failures} FAILED")
         sys.exit(1)
-    print(f"fable-discipline-lint self-test: all {len(CASES)} cases passed")
+    print(f"fable-discipline-lint self-test: all {total} cases passed")
     sys.exit(0)
 
 

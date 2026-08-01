@@ -65,13 +65,22 @@ Outbound-channel detector coverage (third detector, same enumeration rule):
              branch, reached the real slack-notify.sh, and paged the founder's
              phone twice on 2026-08-01 while reporting 14/14 green. A live
              channel is a live resource.
-    CATCHES  a file under a test directory that (a) names a runner script which
-             resolves on disk and itself reaches slack-notify.sh, and (b) hands
-             that runner to an interpreter, with (c) no notifier stub anywhere
-             in its non-comment lines. The notify-capable set is DERIVED by
-             reading the referenced runner, never hardcoded, so a new
-             pager-capable script is covered the day it is written and there is
-             no list to remember to update.
+    CATCHES  (test side) a file under a test directory that (a) names a runner
+             script which resolves on disk and itself reaches slack-notify.sh on
+             a LIVE line, and (b) hands that runner to an interpreter, with (c)
+             no notifier stub in THAT COMMAND. Isolation is judged per
+             invocation, joined across backslash continuations, because a stub
+             three commands earlier protects nothing: the real
+             test-severity-floor.sh stubbed 5 reviewer call sites and left 2
+             unstubbed, and a file-wide check called it clean.
+             (runner side) editing a pager-capable runner re-checks every test
+             in its sibling test/ directory and blocks if any drives it
+             unstubbed. Adding a page to a runner turns those tests into leaks,
+             and the edit touches none of them, so the edited file alone can
+             never reveal it.
+             The notify-capable set is DERIVED by reading the referenced runner,
+             never hardcoded, so a new pager-capable script is covered the day it
+             is written and there is no list to remember to update.
     SKIPS    a test that only greps/parses the runner (no interpreter line), and
              any test that stubs the notifier one of the three ways the fleet
              actually uses: KIPI_NOTIFY=... (the env seam), a NOTIFY_SCRIPT
@@ -79,16 +88,21 @@ Outbound-channel detector coverage (third detector, same enumeration rule):
              sandbox skeleton (the seam for runners like lessons-daily.sh that
              hardcode $SKEL/.../slack-notify.sh and expose no env override).
              `bash -n` parses without executing and is not an invocation.
-    MISSES   (documented deferrals): a stub named only in a COMMENT does not
-             count, but a bare mention on a live line does, so an unused
-             KIPI_NOTIFY assignment reads as isolation; a runner reached only
-             through a PATH-shadowed binary, or one whose filename the test
-             never spells out; a runner imported as a Python MODULE instead of
-             executed (no interpreter line to see); a runner living somewhere
-             other than the test's own directory or its parent; and outbound
-             channels other than slack-notify.sh (a raw curl to a webhook,
-             sendmail, gh) -- this detector is scoped to the one channel that
-             actually wakes a human.
+    MISSES   (documented deferrals): ENV INHERITANCE to a grandchild -- a test
+             that sets KIPI_NOTIFY on a parent command whose CHILD execs the
+             runner reads as unstubbed, because the invocation line cannot name
+             the parent. test-dispatch-liveness.sh hit this; the fix there was
+             to `export` the stub, which is both correct for that topology and
+             what the global carve-out recognises. Also: a stub named only in a
+             COMMENT does not count, but a bare mention on the command does, so
+             an unused KIPI_NOTIFY assignment reads as isolation; a runner
+             reached only through a PATH-shadowed binary, or one whose filename
+             the test never spells out; a runner imported as a Python MODULE
+             instead of executed (no interpreter line to see); a runner living
+             somewhere other than the test's own directory or its parent; and
+             outbound channels other than slack-notify.sh (a raw curl to a
+             webhook, sendmail, gh) -- this detector is scoped to the one
+             channel that actually wakes a human.
 
 Scope (fast-exit otherwise, token discipline):
     Three detectors, three scopes, evaluated in this order:
@@ -241,8 +255,29 @@ _SYNTAX_ONLY = re.compile(r"\b(?:bash|sh|zsh)\s+-n\b")
 # ${FOO:-default} forms alike, because the name only has to appear on the line.
 _ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
 
-# The three stub shapes the fleet actually uses.
-_NOTIFY_STUB = re.compile(r"KIPI_NOTIFY|NOTIFY_SCRIPT|slack-notify\.sh")
+# A stub that genuinely covers EVERY later invocation in the file. Only these
+# three shapes do: an exported shell var, a module-level rebind of the Python
+# seam, and writing your own notifier into the sandbox skeleton a runner
+# resolves. Anything else is per-command and protects only its own command.
+_GLOBAL_STUB = re.compile(
+    r"^\s*export\s+KIPI_NOTIFY=|"
+    r"NOTIFY_SCRIPT\s*=|"
+    r"os\.environ\[[\"']KIPI_NOTIFY[\"']\]\s*=|"
+    r"setenv\(\s*[\"']KIPI_NOTIFY[\"']|"
+    r">\s*[\"']?[^\s\"']*slack-notify\.sh"
+)
+
+# A stub attached to one command. Must appear in the SAME logical line as the
+# invocation it protects.
+_PER_CALL_STUB = re.compile(r"KIPI_NOTIFY|NOTIFY_SCRIPT")
+
+# Resolution is disk I/O and the runner-change scan re-checks every sibling test,
+# so memoise per (test dir, runner name).
+_REACH_CACHE = {}
+
+# A runaway bracket count (an unbalanced brace inside a string) must not swallow
+# the rest of the file into one logical line and hide every later invocation.
+_MAX_JOIN = 30
 
 
 _ENV_ASSIGN_TOK = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -306,6 +341,10 @@ def _notifier_reachable(test_path, name):
     if name == NOTIFIER_BASENAME:
         return False
     d = Path(str(test_path)).resolve().parent
+    key = (str(d), name)
+    if key in _REACH_CACHE:
+        return _REACH_CACHE[key]
+    result = False
     for cand in (d.parent / name, d / name):
         try:
             if cand.is_file():
@@ -313,21 +352,54 @@ def _notifier_reachable(test_path, name):
                 # a comment about an unrelated defect and never invokes it; a
                 # whole-text match made two innocent suites look like leaks.
                 body = cand.read_text(encoding="utf-8", errors="replace")
-                return any(NOTIFIER_BASENAME in line
-                           for _, line in _live_lines(body))
+                result = any(NOTIFIER_BASENAME in line
+                             for _, line in _live_lines(body))
+                break
         except Exception:
-            return False
-    return False
+            result = False
+            break
+    _REACH_CACHE[key] = result
+    return result
+
+
+def _logical_lines(text, python=False):
+    """[(first_line_no, joined_command)] -- the isolation UNIT.
+
+    `KIPI_NOTIFY=... \\` + `bash "$RUNNER"` is ONE command, so the stub has to be
+    joined to the invocation it protects. Checking the file instead certified the
+    real test-severity-floor.sh clean: it stubbed 5 reviewer call sites and left 2
+    unstubbed, and one file-wide match suppressed detection for all 7.
+    """
+    out, buf, start, depth = [], [], None, 0
+    for i, raw in enumerate(text.splitlines(), 1):
+        if raw.lstrip().startswith("#"):
+            continue
+        if start is None:
+            start = i
+        buf.append(raw)
+        cont = raw.rstrip().endswith("\\")
+        if python:
+            depth += raw.count("(") + raw.count("[") + raw.count("{")
+            depth -= raw.count(")") + raw.count("]") + raw.count("}")
+            depth = max(depth, 0)
+        if (cont or (python and depth > 0)) and len(buf) < _MAX_JOIN:
+            continue
+        out.append((start, " ".join(b.rstrip().rstrip("\\") for b in buf)))
+        buf, start, depth = [], None, 0
+    if buf:
+        out.append((start, " ".join(b.rstrip().rstrip("\\") for b in buf)))
+    return out
 
 
 def find_notify_leaks(file_path, text):
     """[(line_no, runner_name)] per notify-capable runner this test EXECUTES
     while stubbing nothing."""
     live = _live_lines(text)
-    if any(_NOTIFY_STUB.search(line) for _, line in live):
-        return []                      # isolated by one of the three seams
+    if any(_GLOBAL_STUB.search(line) for _, line in live):
+        return []                      # one stub genuinely covers the whole file
 
     self_name = Path(str(file_path)).name
+    is_py = Path(str(file_path)).suffix == ".py"
     reachable = {}                     # runner name -> bool, resolved once
     var_to_runner = {}                 # shell var -> runner name assigned to it
 
@@ -345,21 +417,80 @@ def find_notify_leaks(file_path, text):
 
     hits = []
     seen = set()
-    for ln, line in live:
-        if _SYNTAX_ONLY.search(line):
+    for ln, cmd in _logical_lines(text, python=is_py):
+        if _SYNTAX_ONLY.search(cmd):
             continue
-        for tok in _interpreter_args(line):
+        here = []
+        for tok in _interpreter_args(cmd):
             for name in _SCRIPT_NAME.findall(tok):
-                if name != self_name and reachable.get(name) and name not in seen:
-                    seen.add(name)
-                    hits.append((ln, name))
+                if name != self_name and reachable.get(name):
+                    here.append(name)
             for var, name in var_to_runner.items():
-                if name in seen:
-                    continue
                 if re.search(r"\$\{?" + re.escape(var) + r"\b", tok):
-                    seen.add(name)
-                    hits.append((ln, name))
+                    here.append(name)
+        if not here:
+            continue
+        # The stub must ride along with THIS command, not merely exist somewhere
+        # above it in the file.
+        if _PER_CALL_STUB.search(cmd):
+            continue
+        for name in here:
+            if (ln, name) not in seen:
+                seen.add((ln, name))
+                hits.append((ln, name))
     return hits
+
+
+def find_runner_change_leaks(runner_path):
+    """[(test_path, line, runner)] -- tests that drive THIS runner unstubbed.
+
+    A PostToolUse hook that only ever reads the edited file cannot see the other
+    half of the contract. Adding a page to a runner turns every unstubbed test
+    that executes it into a leak, and the edit touched none of those files, so
+    editing the runner used to exit 0 while editing any of its tests exited 2.
+    """
+    p = Path(str(runner_path)).resolve()
+    if p.suffix not in _TEST_SUFFIXES or is_test_dir_file(str(p)):
+        return []
+    try:
+        body = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    if not any(NOTIFIER_BASENAME in line for _, line in _live_lines(body)):
+        return []
+    hits = []
+    for d in (p.parent / "test", p.parent / "tests"):
+        if not d.is_dir():
+            continue
+        for t in sorted(d.iterdir()):
+            if t.suffix not in _TEST_SUFFIXES:
+                continue
+            if not t.name.startswith(("test-", "test_")):
+                continue
+            try:
+                ttext = t.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if SKIP_MARKER in ttext:
+                continue
+            for ln, name in find_notify_leaks(str(t), ttext):
+                if name == p.name:
+                    hits.append((str(t), ln, name))
+    return hits
+
+
+def format_runner_report(runner_path, hits):
+    lines = [f"fable-discipline-lint: {runner_path} reaches {NOTIFIER_BASENAME}, "
+             f"and {len(hits)} test invocation(s) drive it unstubbed:"]
+    for tp, ln, _ in hits:
+        lines.append(f"  {tp}:{ln}")
+    lines.append(
+        "Editing a pager-capable runner makes every unstubbed test that executes "
+        "it a live-channel leak. Stub the notifier at those call sites "
+        "(KIPI_NOTIFY=/usr/bin/true), or add  # " + SKIP_MARKER + "  to a test to "
+        "bypass it."
+    )
+    return "\n".join(lines)
 
 
 def format_notify_report(file_path, hits):
@@ -420,6 +551,12 @@ def hook_mode():
         if deferrals:
             print(format_deferral_report(file_path, deferrals), file=sys.stderr)
             sys.exit(2)
+    # Runner side of the contract: editing a pager-capable runner re-checks the
+    # tests that execute it, which the edited file alone can never reveal.
+    runner_hits = find_runner_change_leaks(file_path)
+    if runner_hits:
+        print(format_runner_report(file_path, runner_hits), file=sys.stderr)
+        sys.exit(2)
     # Outbound-channel isolation: any test-dir file that can reach the pager.
     if is_test_dir_file(file_path):
         try:
@@ -451,6 +588,10 @@ def cli_mode(file_path):
         if deferrals:
             print(format_deferral_report(file_path, deferrals))
             sys.exit(2)
+    runner_hits = find_runner_change_leaks(file_path)
+    if runner_hits:
+        print(format_runner_report(file_path, runner_hits))
+        sys.exit(2)
     if is_test_dir_file(file_path):
         try:
             text = Path(file_path).read_text(encoding="utf-8")
