@@ -455,14 +455,27 @@ expect_red "a present plist whose job is UNLOADED fails (path existence would pa
   "TERMINAL_STATES_LAUNCHD_DIR=$FIX/agents" \
   "TERMINAL_STATES_LAUNCHCTL=$FIX/launchctl-unloaded"
 
-# --- 5. MUTATION: delete a row -> its exits must go unregistered -------------
-# If this stays green the enumeration is decorative: the registry would be a
-# document rather than a gate.
+# --- 5. MUTATION: delete a row -> the check must go red ----------------------
+# If either of these stays green the enumeration is decorative: the registry
+# would be a document rather than a gate.
+#
+# TWO CASES, because a deleted row fails in two different ways and asserting
+# only the first would have let the second regress silently. When the orphaned
+# site has no other marker above it, it is UNREGISTERED. When a neighbouring
+# row's marker is within lookback, the site is ADOPTED by that neighbour and the
+# only thing that catches it is that neighbour's `sites` count -- which is the
+# whole reason the count field exists.
 mkfixture "$FIX/dropped.json" '
+d["states"] = [r for r in d["states"] if r["id"] != "attempts-cap-stuck"]
+'
+expect_red "mutation: deleting a row whose site stands alone -> UNREGISTERED" \
+  "$FIX/dropped.json" "UNREGISTERED EXIT"
+
+mkfixture "$FIX/dropped2.json" '
 d["states"] = [r for r in d["states"] if r["id"] != "claim-contended"]
 '
-expect_red "mutation: deleting a registry row leaves its exit UNREGISTERED" \
-  "$FIX/dropped.json" "UNREGISTERED EXIT"
+expect_red "mutation: deleting a row whose site is adopted by a neighbour -> count mismatch" \
+  "$FIX/dropped2.json" "covers 2 exit site"
 
 # --- 6. MUTATION: a tenth dead end added to the source -----------------------
 # Two variants, because they fail for different reasons and only the second one
