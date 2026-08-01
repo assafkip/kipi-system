@@ -106,14 +106,33 @@ except Exception as e:
     print("UNREADABLE:%s" % e)
     sys.exit(0)
 # An event present but wired to nothing is the same hole as an absent event.
-live = {k for k, v in repo.items() if v}
-print(",".join(sorted(set(skel) - live)))
+# EVENT NAMES ARE NOT PARITY (codex finding-3). A target that keeps a nonempty
+# hook under every event while dropping a blocking guard still had every event
+# name present, so the first version of this passed it. What is being claimed is
+# that the guards the skeleton runs also run there, so compare the SCRIPTS.
+import re
+def scripts(h):
+    out = set()
+    for arr in h.values():
+        for matcher in arr or []:
+            for hk in matcher.get("hooks", []) or []:
+                for m in re.findall(r"[\w.-]+\.(?:py|sh)", hk.get("command", "") or ""):
+                    out.add(m)
+    return out
+missing_events = sorted(set(skel) - {k for k, v in repo.items() if v})
+missing_scripts = sorted(scripts(skel) - scripts(repo))
+parts = []
+if missing_events:
+    parts.append("events=" + "/".join(missing_events))
+if missing_scripts:
+    parts.append("guards=" + "/".join(missing_scripts[:6]) + ("..." if len(missing_scripts) > 6 else ""))
+print(";".join(parts))
 PY
 )"
   case "$MISSING" in
     UNREADABLE:*) refuse "hooks" "settings.json could not be parsed (${MISSING#UNREADABLE:})" ;;
     "")           : ;;
-    *)            refuse "hooks" "no hooks wired for event(s): $MISSING" ;;
+    *)            refuse "hooks" "hook parity with the skeleton is incomplete: $MISSING" ;;
   esac
 fi
 
@@ -194,8 +213,41 @@ else
   DEFAULT_BRANCH="$(gh api "repos/$SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
   if [ -z "$DEFAULT_BRANCH" ]; then
     refuse "branch-protection" "could not read the default branch for $SLUG"
-  elif ! gh api "repos/$SLUG/branches/$DEFAULT_BRANCH/protection" >/dev/null 2>&1; then
-    refuse "branch-protection" "$SLUG@$DEFAULT_BRANCH reports no branch protection; auto-merge would land unreviewed code"
+  else
+    PROT_JSON="$(gh api "repos/$SLUG/branches/$DEFAULT_BRANCH/protection" 2>/dev/null)"
+    if [ -z "$PROT_JSON" ]; then
+      refuse "branch-protection" "$SLUG@$DEFAULT_BRANCH reports no branch protection; auto-merge would land unreviewed code"
+    else
+      # PRESENCE OF PROTECTION IS NOT A REVIEW GATE. The first cut accepted any
+      # successful response, so a branch protected only against force-pushes
+      # passed -- while the worker arms auto-merge and lands code immediately.
+      # "Protected" is not the property being relied on; "a human or a check has
+      # to pass before this merges" is. Parse for that specifically.
+      PROT_GATES="$(printf '%s' "$PROT_JSON" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('UNPARSEABLE'); raise SystemExit(0)
+g = []
+# PRESENCE, not truthiness. GitHub OMITS this key entirely when reviews are not
+# required, and returns an object when they are -- so `in` is the real signal.
+# Testing truthiness rejected a correctly review-gated branch whose object was
+# empty, which turned this check into a blanket refusal.
+if 'required_pull_request_reviews' in d:
+    g.append('reviews')
+rsc = d.get('required_status_checks') or {}
+if rsc.get('contexts') or rsc.get('checks'):
+    g.append('checks')
+print(','.join(g))
+" 2>/dev/null)"
+      case "$PROT_GATES" in
+        UNPARSEABLE)
+          refuse "branch-protection" "the protection response for $SLUG@$DEFAULT_BRANCH could not be parsed" ;;
+        "")
+          refuse "branch-protection" "$SLUG@$DEFAULT_BRANCH is protected but requires NO review and NO status check; auto-merge would still land code with nothing in its way" ;;
+      esac
+    fi
   fi
 fi
 

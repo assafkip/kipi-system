@@ -177,6 +177,34 @@ live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || tru
 # registry field can move a repo into the ungated class. It is the only branch
 # around the preflight and it cannot be reached by configuration.
 
+# THE WHOLE TURN, UNDER ONE LOCK (codex finding-4). cursor_set's own lock only
+# serialises the WRITE, so two overlapping heartbeats could both read the same
+# cursor, both select the same next repo, and both then write the identical value
+# -- a lock that made the race invisible instead of preventing it. Read, select
+# and advance have to be one transaction, so the turn is what gets locked.
+#
+# STALE LOCKS ARE REAPED, not waited on. A dispatcher killed mid-turn (launchd
+# reaping the group, a reboot) would otherwise wedge the whole fleet forever,
+# which is a worse failure than the duplicate turn this prevents.
+turn_lock() {
+  local LOCK="${KIPI_DISPATCH_TURNLOCK:-$HOME/.config/kipi/dispatch-turn.lock}"
+  mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+  if [ -d "$LOCK" ]; then
+    local now mtime age
+    now="$(date -u +%s)"
+    mtime="$(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || echo "$now")"
+    age=$(( now - mtime ))
+    if [ "$age" -gt 3600 ]; then
+      say "turn-lock: reaping a stale lock (${age}s old)"
+      rmdir "$LOCK" 2>/dev/null || true
+    fi
+  fi
+  mkdir "$LOCK" 2>/dev/null || return 1
+  TURN_LOCK_DIR="$LOCK"
+  trap 'rmdir "$TURN_LOCK_DIR" 2>/dev/null || true' EXIT
+  return 0
+}
+
 # The cursor's ONLY writer. Finding-12 rejected storing this in attempts-ledger.py
 # and the reason generalises: a plain read-then-write from two overlapping
 # heartbeats loses an update, which is the exact race attempts-ledger.py exists to
@@ -448,6 +476,12 @@ fi
 # pick_list() has already refused every candidate that failed its preflight, so
 # nothing below has to re-check safety -- and nothing below is allowed to add a
 # candidate back.
+# Hold the turn across read-select-advance. A dispatcher that cannot get the lock
+# is not an error: another one is mid-selection and will advance the cursor.
+if ! turn_lock; then
+  say "skip: another dispatcher holds the selection turn"
+  exit 0
+fi
 PICKS="$(pick_list)"
 
 # A dry pick list, for proving the gate from outside. It prints what selection

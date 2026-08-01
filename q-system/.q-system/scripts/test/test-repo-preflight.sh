@@ -86,7 +86,7 @@ esac
 case "${*}" in
   *"/protection"*)
     [ "${STUB_GH_PROTECTION:-ok}" = "ok" ] || { echo "Branch not protected" >&2; exit 1; }
-    echo '{"required_pull_request_reviews":{}}'; exit 0 ;;
+    echo '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"strict":true,"contexts":["ci"]}}'; exit 0 ;;
   "repo view"*)
     [ "${STUB_GH_REPOVIEW:-ok}" = "ok" ] || { echo "could not resolve to a Repository" >&2; exit 1; }
     echo "assafkip/fixture"; exit 0 ;;
@@ -515,6 +515,88 @@ grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
 grep -qE 'REG="\$SKEL/instance-registry.json"' "$WORKER" \
   && ok "identity is resolved from the SKELETON's registry, keyed on the target path" \
   || bad "the registry is read from the target repo, which does not carry one"
+
+echo
+echo "== 13. branch protection must carry a REVIEW or CHECK gate (codex finding-2) =="
+# The exact shape codex called: protection that exists but only blocks force
+# pushes. The endpoint returns 200, so the first version accepted it -- while the
+# worker arms auto-merge and lands code with nothing in its way. This fixture
+# passes the OLD check and must fail the new one.
+WEAK="$WORK/weakprot"; mkdir -p "$WEAK"
+cat > "$WEAK/gh" <<'WEAKSTUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "auth status") echo ok; exit 0 ;;
+esac
+case "${*}" in
+  *"/protection"*) echo '{"allow_force_pushes":{"enabled":false},"required_linear_history":{"enabled":true}}'; exit 0 ;;
+  "repo view"*)    echo seen; exit 0 ;;
+  "api repos/"*)   echo main; exit 0 ;;
+esac
+exit 0
+WEAKSTUB
+chmod +x "$WEAK/gh"
+WOUT2="$(PATH="$WEAK:$PATH" bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" 2>&1)"
+WRC2=$(PATH="$WEAK:$PATH" bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" >/dev/null 2>&1; echo $?)
+{ [ "$WRC2" != "0" ] && printf '%s' "$WOUT2" | grep -q 'branch-protection'; } \
+  && ok "protection with no required review and no required check is REFUSED" \
+  || bad "THE DEFECT (finding-2): force-push-only protection passed as a review gate: $WOUT2"
+# Control: a branch that DOES require reviews must still pass, or the check has
+# just become "always refuse", which is safe and useless.
+[ "$(pf_rc "$GOOD")" = "0" ] \
+  && ok "protection WITH required reviews still passes (not a blanket refusal)" \
+  || bad "the review-gated control was refused, so this check now refuses everything"
+
+echo
+echo "== 14. hook parity compares GUARD SCRIPTS, not event names (codex finding-3) =="
+# The bypass codex found: keep one hook under every event, drop the blocking
+# guards. Event names all still present, so the old check passed.
+HK2="$(make_good_repo hookshallow)"
+python3 - "$HK2/.claude/settings.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+# Keep EVERY event name, with one harmless hook each. This is the shape that
+# defeated the event-name comparison.
+d["hooks"] = {ev: [{"hooks": [{"command": "true"}]}] for ev in d.get("hooks", {})}
+json.dump(d, open(p, "w"), indent=2)
+PY
+( cd "$HK2" && git commit -qam shallow ) >/dev/null 2>&1
+HOUT="$(run_preflight "$HK2")"
+{ [ "$(pf_rc "$HK2")" != "0" ] && printf '%s' "$HOUT" | grep -q 'hooks'; } \
+  && ok "every event present but the guards stripped is REFUSED" \
+  || bad "THE DEFECT (finding-3): guard-stripped hooks passed on event names alone: $HOUT"
+printf '%s' "$HOUT" | grep -q 'guards=' \
+  && ok "the refusal names the missing guard scripts, not just the events" \
+  || bad "the refusal does not say which guards are missing: $HOUT"
+
+echo
+echo "== 15. the whole selection turn is under one lock (codex finding-4) =="
+grep -q '^turn_lock() {' "$DISPATCH" \
+  && ok "a turn lock exists" \
+  || bad "no turn_lock: read-select-advance is still three unsynchronised steps"
+# It must be taken BEFORE the pick list is computed, or it locks nothing that matters.
+LOCK_LINE="$(grep -n 'turn_lock' "$DISPATCH" | grep -v '^.*turn_lock() {' | head -1 | cut -d: -f1)"
+PICK_LINE="$(grep -n 'PICKS="\$(pick_list)"' "$DISPATCH" | head -1 | cut -d: -f1)"
+{ [ -n "$LOCK_LINE" ] && [ -n "$PICK_LINE" ] && [ "$LOCK_LINE" -lt "$PICK_LINE" ]; } \
+  && ok "the turn lock is acquired before the pick list is computed" \
+  || bad "the lock is taken after selection, so two dispatchers still select together"
+# Behavioural: a second acquirer must actually be refused while the first holds it.
+TL="$WORK/turnlock.d"
+LOCKH="$WORK/lock.sh"
+{ echo 'set -uo pipefail'; echo 'say() { :; }'
+  awk '/^turn_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'turn_lock && echo GOT || echo DENIED'; } > "$LOCKH"
+mkdir -p "$(dirname "$TL")"
+A="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+# The first shell exited, and its EXIT trap released the lock -- so hold it by
+# hand to model a dispatcher that is still mid-turn.
+mkdir -p "$TL"
+B="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+rmdir "$TL" 2>/dev/null || true
+{ [ "$A" = "GOT" ] && [ "$B" = "DENIED" ]; } \
+  && ok "a second dispatcher is DENIED while the turn is held ($A then $B)" \
+  || bad "the turn lock is not exclusive ($A then $B)"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
