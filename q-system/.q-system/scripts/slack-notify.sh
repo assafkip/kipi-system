@@ -23,6 +23,55 @@ if [ -z "$LABEL" ]; then
 fi
 MSG="[$LABEL] $MSG"
 
+# --- fixture-run guard: a test must never be able to page a human -------------
+# SCAR 2026-08-01. Three tests were found paging the founder's real Slack and
+# were fixed by stubbing KIPI_NOTIFY per test (PR #54). While that PR sat open
+# and unmerged, an agent ran test-worker-project-scope.sh from a worktree cut
+# off main -- which carries no stub -- and the founder was paged again, live.
+# Per-test stubbing has three structural holes: it only protects branches that
+# carry it, only tests someone remembered to fix, and its paired lint only fires
+# at write-time on the edited file. A test written tomorrow still pages.
+# This is the one chokepoint that needs none of those things to be remembered.
+#
+# THE SIGNAL. Every test in this repo points the worker at a fixture Linear on
+# loopback (KIPI_LINEAR_API_URL=http://127.0.0.1:$PORT/graphql); production
+# always points at the real Linear API. That asymmetry is total in both
+# directions, which is what makes it safe to key a refusal on. This script is
+# invoked as `bash "$NOTIFY" "msg"` from the worker, so it INHERITS the
+# variable -- verified 2026-08-01 by running the same `env VAR=... bash parent`
+# shape the tests use and reading the variable from the grandchild.
+#
+# DELIBERATELY NOT A SIGNAL: KIPI_STATE_DIR under a temp dir. A production job
+# may legitimately keep state in a temp path (macOS $TMPDIR is exactly that), so
+# keying on it would suppress real pages. A guard that swallows a genuine alert
+# is worse than the bug it fixes, so the guard keys only on the one signal that
+# cannot be true in production.
+#
+# The refused text goes to stderr rather than being dropped: a silently
+# swallowed alert is the precise failure mode founder-notifications.md exists
+# to prevent, and a fixture run still needs its diagnostic to be readable.
+_kipi_loopback_host() {
+  case "$1" in
+    localhost|*.localhost|::1|0.0.0.0|0|127.*) return 0 ;;
+  esac
+  return 1
+}
+
+if [ -n "${KIPI_LINEAR_API_URL:-}" ]; then
+  _KHOST="${KIPI_LINEAR_API_URL#*://}"   # drop scheme
+  _KHOST="${_KHOST%%/*}"                 # drop path
+  _KHOST="${_KHOST##*@}"                 # drop userinfo
+  case "$_KHOST" in
+    \[*\]*) _KHOST="${_KHOST#\[}"; _KHOST="${_KHOST%%\]*}" ;;  # [::1]:8080 -> ::1
+    *)      _KHOST="${_KHOST%%:*}" ;;                          # host:port  -> host
+  esac
+  if _kipi_loopback_host "$_KHOST"; then
+    printf 'slack-notify: REFUSED to page a human -- fixture run (KIPI_LINEAR_API_URL host "%s" is loopback). Message NOT sent: %s\n' \
+           "$_KHOST" "$MSG" >&2
+    exit 0
+  fi
+fi
+
 HOOK="${KIPI_SLACK_WEBHOOK:-}"
 if [ -z "$HOOK" ] && [ -f "$HOME/.config/kipi/slack-webhook" ]; then
   HOOK="$(tr -d '\n\r' < "$HOME/.config/kipi/slack-webhook")"
