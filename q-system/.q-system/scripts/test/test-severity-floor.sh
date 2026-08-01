@@ -857,7 +857,13 @@ printf '## VERDICT: APPROVE\n\nNothing survived reproduction.\n\nFINDINGS:\nEND 
 EOF
 chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
 
-( PATH="$SW:$PATH" HOME="$W2/home-writer" bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
+# KIPI_NOTIFY is isolation, not decoration: $REVIEWER pages the founder on a
+# degraded-review verdict. The sandboxed HOME below only HIDES that -- it makes
+# slack-notify.sh find no webhook file -- so the moment KIPI_SLACK_WEBHOOK is set
+# in the environment this suite rings a real phone. Measured 2026-08-01: it sent
+# "codex is not producing an independent review (PR #901)" to a capture endpoint.
+( PATH="$SW:$PATH" HOME="$W2/home-writer" KIPI_NOTIFY="/usr/bin/true" \
+  bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
 REC="$W2/home-writer/.config/kipi/pr-reviews/pr-901.verdict.json"
 [ -s "$REC" ] \
   || fail "the reviewer wrote no verdict record at all. It said:
@@ -950,7 +956,9 @@ EOF
 RC=0
 run_status_reviewer() {
   local d="$1"; shift
-  ( PATH="$d/bin:$PATH" HOME="$d/home" bash "$REVIEWER" 901 "$@" ) \
+  # Same reason as the writer case above: stub the pager, do not rely on $HOME.
+  ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="/usr/bin/true" \
+    bash "$REVIEWER" 901 "$@" ) \
     >"$d/out.txt" 2>"$d/err.txt"
   RC=$?
 }
