@@ -307,6 +307,100 @@ extract_minor_findings() {
   findings_block "$f" | grep -E '^minor\|' || true
 }
 
+# review_comment_body <review-file> <verdict> <engine> <degraded>
+# Renders the review as something a GitHub comment can actually hold.
+#
+# WHY IT EXISTS (sp-b418be32). `--post` piped the raw review file straight into
+# `gh pr comment --body-file`. A codex review is not a review-shaped document: it
+# is the agent's whole stdout. Measured on PR #34: 435,280 and 519,377 bytes,
+# against GitHub's 65,536-byte comment limit. So EVERY post failed, the caller
+# logged `WARN: could not comment on PR` and carried on, and the commit status it
+# then wrote had no target_url. A human opening the PR saw a bare green check with
+# nothing behind it -- the reviewer ran, cost real spend, and left no readable trace.
+#
+# NOT A NOISE PROBLEM, so trimming is not the fix. The harness header is 14 lines
+# of 10,130. The bulk is the codex agent's own transcript, INCLUDING the diff it
+# read -- which is why that file carries 11 `FINDINGS:` markers instead of one.
+# The reviewer's actual message is the last ~250 lines. A 500KB transcript is a
+# debugging artifact; GitHub is not an artifact store, and splitting it across
+# eight comments would put eight comments of transcript on the PR.
+#
+# THE VERDICT AND FINDINGS DO NOT COME FROM THE TRUNCATED TEXT. They are taken
+# from the caller's already-derived verdict and from `findings_block` (THE ONE
+# READER), then printed ABOVE the tail. That ordering is the whole safety
+# property: truncation can drop narrative, never the two facts a human needs to
+# act. Deriving them from a tail we just cut would be a second reader with its
+# own semantics, the defect class this file exists to stop.
+#
+# The engine is named in the body, not just the status description, for the same
+# reason post_reviewer_status names it: a review whose reader is unknown is worth
+# little, and the point of this loop is that the checker is not Claude.
+review_comment_body() {
+  local f="$1" verdict="${2:-}" engine="${3:-}" degraded="${4:-0}"
+  local limit="${KIPI_REVIEW_COMMENT_LIMIT:-60000}"
+  local bytes head_bytes block block_bytes
+  bytes="$(wc -c <"$f" 2>/dev/null | tr -d ' ')"; bytes="${bytes:-0}"
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || block="(no complete findings block parsed from this review)"
+
+  printf '## Verdict: %s\n\n' "${verdict:-unstated}"
+  [ "$degraded" = "1" ] \
+    && printf '**DEGRADED**: codex was down, this is the Opus fallback. Not an independent second opinion.\n\n'
+  printf 'Reviewer engine: `%s`. Full review on disk: `%s` (%s bytes).\n\n' \
+    "${engine:-unknown}" "$f" "$bytes"
+  # `$(...)` strips the trailing newline off the block, so the closing fence needs
+  # its own \n. Without it the fence glues onto `END FINDINGS`, which both breaks
+  # the code block on GitHub and makes the rendered block differ from
+  # findings_block's output -- caught by case 4, which is exactly what that
+  # byte-identity assertion is for.
+  printf '```\n%s\n```\n\n' "$block"
+
+  # Byte-bounded, then snapped FORWARD to a line boundary. `tail -c` alone can
+  # open mid-line and, worse, mid-UTF-8-sequence: these reviews contain typographic
+  # quotes, so a blind byte cut can emit an invalid sequence. Dropping the first
+  # partial line costs nothing and keeps the body valid text.
+  # MEASURE THE HEADER, DO NOT ASSUME IT (codex round 5 on PR #47, minor). The
+  # reservation used to be a flat 5,000 bytes, but the findings block inside the
+  # header is UNBOUNDED -- a review with many findings, or one long claim string,
+  # blows past it and the rendered body exceeds the very limit this function
+  # exists to guarantee. A cap that a large input can overrun is not a cap.
+  #
+  # The block is already in hand ($block), so its size is a fact, not an estimate.
+  # The fixed number stays only as the allowance for the surrounding prose.
+  # BYTES, NOT CHARACTERS (codex round 7, minor). `${#block}` counts CHARACTERS,
+  # and these reviews are full of typographic quotes and dashes that are 2-3 bytes
+  # each in UTF-8. So the budget under-counted the block by exactly the amount that
+  # matters, and a findings block of multi-byte text could push the body past both
+  # the configured cap and GitHub's. The whole point of measuring the block instead
+  # of reserving a flat 5,000 was to stop guessing; measuring it in the wrong unit
+  # is still guessing.
+  block_bytes="$(printf '%s' "$block" | wc -c | tr -d ' ')"
+  head_bytes=$(( $(review_comment_body_header_size) + ${block_bytes:-0} ))
+  local room=$(( limit - head_bytes ))
+  # A findings block alone can now exceed the limit. Truncating findings would
+  # drop the one thing a human must act on, so the narrative goes to zero first
+  # and the block is still printed whole -- deliberately overrunning rather than
+  # silently losing a finding. The caller's failure branch then reports it, which
+  # is a loud failure instead of a quiet omission.
+  [ "$room" -gt 512 ] || room=0
+  if [ "${bytes:-0}" -gt "$room" ]; then
+    printf -- '--- reviewer output, last %s bytes of %s (full review at the path above) ---\n\n' \
+      "$room" "$bytes"
+    tail -c "$room" "$f" 2>/dev/null | tail -n +2
+  else
+    printf -- '--- reviewer output ---\n\n'
+    cat "$f"
+  fi
+}
+
+# review_comment_body_header_size
+# Byte budget reserved for everything review_comment_body prints ABOVE the tail.
+# A fixed reservation, not a measurement: measuring would mean rendering the
+# header twice and the two copies could disagree. Generous on purpose -- a
+# findings block runs to a few KB at most, and over-reserving only shortens the
+# narrative, while under-reserving overruns the limit and loses the whole comment.
+review_comment_body_header_size() { printf '%s' 5000; }
+
 # review_round <reviews-dir> <pr-number>
 # Which round the NEXT review of this PR will be: existing review files + 1.
 # Derived from disk, not from the worker's attempts json, because the reviewer

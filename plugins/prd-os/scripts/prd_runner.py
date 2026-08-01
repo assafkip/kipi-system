@@ -990,8 +990,65 @@ def gate_register(
 # CLOSED issue (or an explicitly recorded void), never a hand flip.
 
 
+_SPILLOVER_ROOT_CACHE: dict = {}
+
+
+def _ledger_root(repo_root):
+    """The ONE directory the spillover ledger lives under, shared by every worktree.
+
+    WHY THIS IS NOT JUST repo_root (sp-bc42f1d3, scale in sp-10ea7b66).
+    `.gitignore` excludes `*.jsonl`, so the ledger is never committed and never
+    shared through git. Resolving it from the per-worktree root therefore gave
+    EVERY worktree its own private ledger. Measured 2026-07-30: 26 worktree
+    ledgers held 71 open findings that did not exist in the main checkout's copy,
+    so `gates run` from main was green about work it structurally could not see.
+    That is the no-orphan-findings enforcement of last resort failing silently,
+    which is worse than not having it -- it reported safety it could not provide.
+
+    `--git-common-dir` is the shared `.git` for the whole worktree set, so its
+    parent is the main checkout no matter which worktree we are called from. One
+    ledger, one writer, one thing the gate reads. Same load-path lesson as the
+    marketplace-clone scar: the file you wrote must be the file the runtime reads.
+
+    Falls back to repo_root when git cannot answer (not a repo, git missing, a
+    bare or otherwise odd layout). A capture must never be lost to a failed
+    lookup -- writing to the local root is degraded but recoverable, while
+    raising here would turn a git hiccup into a dropped finding.
+    """
+    key = str(repo_root)
+    if key in _SPILLOVER_ROOT_CACHE:
+        return _SPILLOVER_ROOT_CACHE[key]
+    # Local import and `Path`, matching this file's existing convention (see the
+    # `import subprocess as _subprocess` call sites). Written as bare
+    # `subprocess.run` / `pathlib.Path` the first time, which are NameErrors that
+    # the except-clause below would have SWALLOWED -- the function would have
+    # returned repo_root every time and the fix would have looked correct while
+    # changing nothing. Caught by the worktree case in test_spillover_ledger_root.py.
+    import subprocess as _subprocess
+    root = repo_root
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            common = Path(out.stdout.strip())
+            if not common.is_absolute():
+                common = Path(repo_root) / common
+            parent = common.resolve().parent
+            # Only trust it if it really looks like a checkout root. A bare repo's
+            # parent is an arbitrary directory, and silently relocating the ledger
+            # there would be a new invisible-ledger bug wearing the fix's clothes.
+            if (parent / ".git").exists():
+                root = parent
+    except Exception:
+        pass
+    _SPILLOVER_ROOT_CACHE[key] = root
+    return root
+
+
 def _spillover_path(cfg: Config):
-    return cfg.repo_root / ".prd-os" / "spillover.jsonl"
+    return _ledger_root(cfg.repo_root) / ".prd-os" / "spillover.jsonl"
 
 
 def _read_spillover(cfg: Config) -> dict:
