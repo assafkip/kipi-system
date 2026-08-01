@@ -81,7 +81,12 @@ class H(BaseHTTPRequestHandler):
         if "issueUpdate" in query:
             with open(os.path.join(WORK, "updates.jsonl"), "a") as fh:
                 fh.write(json.dumps(variables) + "\n")
-            data = {"issueUpdate": {"success": True, "issue": {"identifier": "fixture"}}}
+            # A refused write is a REAL Linear answer (HTTP 200, success:false),
+            # not an exception. The first fixture only ever said True, which is
+            # how the ignored-success hole stayed invisible.
+            refused = os.path.exists(os.path.join(WORK, "update-fails"))
+            data = {"issueUpdate": {"success": not refused,
+                                    "issue": {"identifier": "fixture"}}}
         elif "comments(" in query:
             data = {"issue": {"comments": {"nodes": load("comments.json", [])}}}
         elif "teams(" in query:
@@ -192,14 +197,20 @@ else
       "no query body mentioned labels; selection cannot be label-driven"
 fi
 
-echo "== case 3: redraft replaces the DoR, keeps the founder text, drops the label =="
+echo "== case 3: redraft rewrites ONLY the DoR section, and drops only that label =="
 reset
-python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+# TRAILING_SECTION is the part the first cut of rebuild_description deleted: it
+# took everything from the heading to the end as replaceable, so a human note
+# written BELOW the DoR vanished on every redraft (codex-review finding-1).
+TRAILING_SECTION='## Notes
+
+Chris asked for this before the Friday call. Do not drop that.'
+python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" "$TRAILING_SECTION" <<'PY'
 import json, sys
-path, founder, dor = sys.argv[1:4]
+path, founder, dor, trailing = sys.argv[1:5]
 json.dump([{
     "id": "u-902", "identifier": "ASK-902", "title": "ASK-902",
-    "description": founder + "\n\n" + dor,
+    "description": founder + "\n\n" + dor + "\n\n" + trailing,
     "project": {"name": "kipi-system"},
     "state": {"name": "Todo", "type": "unstarted"},
     "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"},
@@ -218,23 +229,37 @@ inp = ups[-1]["input"]
 desc = inp["description"]
 print("update")
 print("prefix-kept" if founder in desc else "prefix-LOST")
+print("trailing-kept" if "Chris asked for this" in desc else "trailing-DELETED")
 print("one-dor" if desc.count("## Definition of Ready") == 1 else
       "dor-count-%d" % desc.count("## Definition of Ready"))
 print("rewritten" if "304 spillover" not in desc else "stale-dor-still-there")
-ids = inp.get("labelIds")
-if ids is None:
-    print("no-labelIds")
+print("counter-1" if "redrafts=1" in desc else "counter-wrong")
+# Removal must be expressed as removedLabelIds. A full labelIds replacement is
+# built from labels read before a 300s model call and deletes anything added in
+# that window (codex-review finding-2).
+if inp.get("labelIds") is not None:
+    print("full-replacement-used")
+removed = inp.get("removedLabelIds")
+if removed is None:
+    print("no-removedLabelIds")
 else:
-    print("label-dropped" if "L-needs" not in ids else "label-KEPT")
-    print("others-kept" if "L-sana" in ids else "others-LOST")
+    print("label-dropped" if "L-needs" in removed else "label-KEPT")
+    print("others-untouched" if "L-sana" not in removed else "others-REMOVED")
 PY
 V="$(cat "$WORK/verdict.txt")"
 check3() { if printf '%s' "$V" | grep -qx "$1"; then ok "$2"; else bad "$2" "verdict was: $(printf '%s' "$V" | tr '\n' ' ')"; fi; }
-check3 prefix-kept   "redraft preserves the founder text above the DoR"
-check3 one-dor       "redraft leaves exactly ONE Definition of Ready section"
-check3 rewritten     "the refused DoR body is gone, not appended to"
-check3 label-dropped "the needs-scope label is removed on success"
-check3 others-kept   "other labels survive the removal"
+check3 prefix-kept      "redraft preserves the founder text above the DoR"
+check3 trailing-kept    "redraft preserves the human section BELOW the DoR"
+check3 one-dor          "redraft leaves exactly ONE Definition of Ready section"
+check3 rewritten        "the refused DoR body is gone, not appended to"
+check3 counter-1        "the first redraft records redrafts=1, not the cap"
+check3 label-dropped    "the needs-scope label is removed on success"
+check3 others-untouched "removal is scoped to that label, not a full set replacement"
+if printf '%s' "$V" | grep -qx full-replacement-used; then
+  bad "removal does not send a full labelIds replacement" "labelIds was sent"
+else
+  ok "removal does not send a full labelIds replacement"
+fi
 
 echo "== case 4: the redraft cap is an honest terminal, then stops costing a slot =="
 reset
@@ -355,6 +380,119 @@ if grep -q 'ASK-928' "$WORK/out.txt"; then
 else
   bad "the redraft is in the batch despite sorting last on the board" \
       "batch was: $(tr '\n' '|' < "$WORK/out.txt" | cut -c1-200)"
+fi
+
+echo "== case 7: the cap COUNTS UP 1,2,3 then terminates -- it does not jump =="
+# The cap assertions above both used a fabricated marker, so an implementation
+# that wrote redrafts=3 on the FIRST rewrite passed every one of them while
+# capping after a single refusal (codex-adversarial finding-5). This drives the
+# real cycle: redraft, worker refuses again (label back on), redraft, ... and
+# reads the counter the drafter itself wrote each round.
+reset
+python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+path, founder, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-950", "identifier": "ASK-950", "title": "ASK-950",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+PROGRESSION=""
+for round in 1 2 3 4; do
+  : > "$WORK/updates.jsonl"
+  run_drafter --limit 5 --apply
+  # Feed the drafter's own write back onto the board, with needs-scope reapplied
+  # the way the worker reapplies it after refusing the rewrite again.
+  MARK="$(python3 - "$WORK/updates.jsonl" "$WORK/board.json" <<'PY'
+import json, re, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+ups = [r for r in rows if "description" in (r.get("input") or {})]
+if not ups:
+    print("no-write"); raise SystemExit
+desc = ups[-1]["input"]["description"]
+board = json.load(open(sys.argv[2]))
+board[0]["description"] = desc
+board[0]["labels"] = {"nodes": [{"id": "L-needs", "name": "needs-scope"}]}
+json.dump(board, open(sys.argv[2], "w"))
+m = re.search(r"redrafts=(\d+)( terminal)?", desc)
+print(("%s%s" % (m.group(1), "T" if m.group(2) else "")) if m else "no-marker")
+PY
+)"
+  PROGRESSION="$PROGRESSION $MARK"
+done
+if [ "$PROGRESSION" = " 1 2 3 3T" ]; then
+  ok "the counter walks 1,2,3 and only then writes the terminal"
+else
+  bad "the counter walks 1,2,3 and only then writes the terminal" \
+      "progression was:$PROGRESSION (want ' 1 2 3 3T')"
+fi
+# A 5th night must cost nothing at all: already terminal, so not selected.
+: > "$WORK/updates.jsonl"; : > "$WORK/calls.log"
+run_drafter --limit 5 --apply
+if [ -s "$WORK/updates.jsonl" ] || [ -s "$WORK/calls.log" ]; then
+  bad "past the cap the issue stops costing anything" \
+      "still wrote or called: $(tr '\n' ' ' < "$WORK/calls.log")"
+else
+  ok "past the cap the issue stops costing anything"
+fi
+
+echo "== case 8: a write Linear REFUSES is not counted as a redraft =="
+reset
+touch "$WORK/update-fails"
+python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+path, founder, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-960", "identifier": "ASK-960", "title": "ASK-960",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+run_drafter --limit 5 --apply
+rm "$WORK/update-fails"
+if grep -qE 'drafted 0, 1 failed' "$WORK/out.txt"; then
+  ok "success=false is reported as a failure, not a redraft"
+else
+  bad "success=false is reported as a failure, not a redraft" \
+      "run said: $(grep '^dor-drafter:' "$WORK/out.txt" | tr '\n' '|')"
+fi
+if grep -q 'redrafted ASK-960' "$WORK/out.txt"; then
+  bad "a refused write does not print a redraft that did not happen" "it printed one"
+else
+  ok "a refused write does not print a redraft that did not happen"
+fi
+
+echo "== case 9: founder text cannot forge the counter =="
+# The marker is only read from the drafter's own slot, the line directly above
+# the heading. Scanning the whole description let a pasted example set the count:
+# `redrafts=3` capped the first real attempt, and `terminal` removed the issue
+# from selection forever (codex-adversarial finding-4).
+reset
+python3 - "$WORK/board.json" "$BAD_DOR" <<'PY'
+import json, sys
+path, dor = sys.argv[1:3]
+founder = ("Here is how the drafter records its attempts, for reference:\n\n"
+           "<!-- kipi-dor: redrafts=3 terminal -->\n\n"
+           "Anyway. The DoR below is too big, please cut it down.")
+json.dump([{
+    "id": "u-970", "identifier": "ASK-970", "title": "ASK-970",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+run_drafter --limit 5 --apply
+if grep -q 'redrafted ASK-970 (attempt 1/' "$WORK/out.txt"; then
+  ok "a marker in founder prose does not forge the counter"
+else
+  bad "a marker in founder prose does not forge the counter" \
+      "run said: $(grep -E '^  (redrafted|marked)' "$WORK/out.txt" | tr '\n' '|')"
 fi
 
 echo

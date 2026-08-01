@@ -327,9 +327,42 @@ def label_names(issue: dict) -> set:
     return {(lab.get("name") or "") for lab in issue_labels(issue)}
 
 
+def split_dor_section(desc: str) -> tuple:
+    """(before, section, after) around the DoR section this job owns.
+
+    The owned span runs from `## Definition of Ready` to the next top-level `##`
+    heading, or to the end when there is none. `after` is somebody else's text --
+    a `## Notes`, an operator record, a later human edit -- and the first cut of
+    this function took everything from the heading onward as replaceable, which
+    silently deleted all of it on every redraft (codex-review finding-1). Nothing
+    outside the middle element is ever rewritten.
+    """
+    desc = desc or ""
+    start = desc.find(DOR_HEADING)
+    if start < 0:
+        return desc, "", ""
+    rest = desc[start + len(DOR_HEADING):]
+    nxt = re.search(r"(?m)^##\s+", rest)
+    if not nxt:
+        return desc[:start], rest, ""
+    return desc[:start], rest[:nxt.start()], rest[nxt.start():]
+
+
 def redraft_state(desc: str) -> tuple:
-    """(redrafts_done, already_terminal) read off the marker. (0, False) if absent."""
-    match = REDRAFT_MARKER_RE.search(desc or "")
+    """(redrafts_done, already_terminal) off the marker. (0, False) if absent.
+
+    Read ONLY from the line directly above the DoR heading, which is the slot
+    this job writes and owns. Scanning the whole description let founder text
+    forge the counter: a pasted `<!-- kipi-dor: redrafts=3 -->` example made the
+    first real redraft terminal, and a pasted `terminal` removed the issue from
+    selection permanently (codex-adversarial finding-4).
+
+    HONEST BOUNDARY: text a human puts in that exact slot is still indistinguishable
+    from this job's own. The slot is narrow and machine-shaped, not immune.
+    """
+    before = split_dor_section(desc)[0]
+    lines = before.rstrip().splitlines()
+    match = REDRAFT_MARKER_RE.search(lines[-1]) if lines else None
     if not match:
         return 0, False
     return int(match.group(1)), bool(match.group(2))
@@ -553,38 +586,62 @@ def refusal_reason(ls, issue: dict) -> str:
 
 def existing_dor(desc: str) -> str:
     """The DoR section as it stands, for the redraft prompt to argue with."""
-    if DOR_HEADING not in desc:
-        return "(the section could not be located by its heading)"
-    return desc.split(DOR_HEADING, 1)[1].strip()[:3000]
+    section = split_dor_section(desc)[1].strip()
+    return section[:3000] or "(the section could not be located by its heading)"
 
 
 def rebuild_description(desc: str, body: str, count: int,
                         terminal: bool = False) -> str:
-    """Founder text + counter marker + a freshly written DoR section.
+    """Founder text + counter marker + a fresh DoR section + whatever followed it.
 
-    Everything above `## Definition of Ready` is carried through byte for byte.
-    Only this job's own prior output below that heading is replaced -- that is
-    what keeps the append-only promise true for the words a human wrote.
+    Only the DoR section itself is replaced. Text above it AND text below it are
+    carried through byte for byte, which is what keeps the append-only promise
+    true for the words a human wrote.
 
     When the heading is absent (a differently-worded DoR on a generated capability
     issue), the whole description is treated as prefix and the section is APPENDED.
     Guessing at the boundary of a section we did not write would risk deleting a
     human's text, and a duplicate section is a recoverable mistake where that is not.
     """
-    prefix = desc.split(DOR_HEADING, 1)[0] if DOR_HEADING in desc else desc
-    prefix = REDRAFT_MARKER_RE.sub("", prefix).rstrip()
+    before, _old, after = split_dor_section(desc)
+    prefix = REDRAFT_MARKER_RE.sub("", before).rstrip()
     marker = f"<!-- kipi-dor: redrafts={count}{' terminal' if terminal else ''} -->"
     out = f"{prefix}\n\n{marker}\n{DOR_HEADING}\n\n{body.strip()}\n"
     if terminal:
         out += f"\n{TERMINAL_NOTE}\n"
+    if after.strip():
+        out += f"\n{after.lstrip()}"
     return out
 
 
-def surviving_label_ids(issue: dict) -> list:
-    """Every label id except needs-scope. Linear replaces the whole set on write,
-    so 'remove one label' is only expressible as 'send back the others'."""
+def needs_scope_label_ids(issue: dict) -> list:
+    """The needs-scope label id(s) to remove.
+
+    Sent as `removedLabelIds`, NOT as a full `labelIds` replacement. The first cut
+    replaced the whole set from labels read before the `claude` call, which can be
+    300s earlier, so any label added in that window was deleted (codex-review
+    finding-2). The claim in that version -- that Linear can only express removal
+    as a full replacement -- was false: IssueUpdateInput carries addedLabelIds and
+    removedLabelIds, confirmed by schema introspection against the live API on
+    2026-08-01. removedLabelIds touches one label and cannot clobber a concurrent one.
+    """
     return [lab["id"] for lab in issue_labels(issue)
-            if lab.get("name") != NEEDS_SCOPE_LABEL and lab.get("id")]
+            if lab.get("name") == NEEDS_SCOPE_LABEL and lab.get("id")]
+
+
+def update_issue(ls, issue: dict, payload: dict) -> None:
+    """The single write chokepoint. Raises when Linear reports success=false.
+
+    Both write paths ignored the response before this (codex-review finding-3): a
+    `{"success": false}` was counted as drafted and printed as "redrafted,
+    needs-scope dropped" while neither the label removal nor the cap marker had
+    landed -- a silent divergence between what the run reported and what the board
+    holds. One chokepoint, so the check cannot exist on one path and not the other.
+    """
+    res = ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": payload})
+    if not (((res or {}).get("issueUpdate") or {}).get("success")):
+        raise RuntimeError("Linear returned issueUpdate.success=false "
+                           "(nothing was written)")
 
 
 def apply_terminal(ls, issue: dict) -> None:
@@ -595,9 +652,9 @@ def apply_terminal(ls, issue: dict) -> None:
     already refused it REDRAFT_CAP times.
     """
     desc = issue.get("description") or ""
-    ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": {
+    update_issue(ls, issue, {
         "description": rebuild_description(desc, existing_dor(desc),
-                                           REDRAFT_CAP, terminal=True)}})
+                                           REDRAFT_CAP, terminal=True)})
 
 
 def _is_missing_issue(exc: Exception) -> bool:
@@ -810,17 +867,17 @@ def main() -> int:
             continue
 
         if mode == "redraft":
-            payload = {"description": rebuild_description(desc, body, attempt)}
             # Description and label drop go in ONE mutation on purpose. As two
             # calls, a failure between them leaves a rewritten DoR still wearing
             # needs-scope: the picker keeps ignoring it and the next night spends
             # another capped attempt rewriting work already done.
-            payload["labelIds"] = surviving_label_ids(issue)
+            payload = {"description": rebuild_description(desc, body, attempt),
+                       "removedLabelIds": needs_scope_label_ids(issue)}
         else:
             payload = {"description": desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
 
         try:
-            ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": payload})
+            update_issue(ls, issue, payload)
         except Exception as exc:  # noqa: BLE001
             print(f"  {issue['identifier']}: update failed: {str(exc)[:120]}", file=sys.stderr)
             failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
