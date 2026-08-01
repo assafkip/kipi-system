@@ -1,7 +1,7 @@
 ---
 id: terminal-states-validator
 title: Piece B: a validator that enumerates exits from source and proves each consumer is live, not merely present
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-terminal-state-redrive-2026-08-01
 allowed_files:
@@ -31,4 +31,4 @@ Exits are enumerated FROM q-system/.q-system/scripts/linear-worker.sh at runtime
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Piece B: a validator that enumerates exits from source and proves each consumer is live, not merely present
+- [x] Piece B: a validator that enumerates exits from source and proves each consumer is live, not merely present
