@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+# Reproducer for finding-8 (BLOCKER) and finding-9 of
+# prd-terminal-state-redrive-2026-08-01.
+#
+# Pairs with: repo-preflight.sh, and fleet_candidates/rotation/pick_list/cursor_set
+# in kipi-dispatch.sh.
+#
+# WHAT IS BEING PREVENTED
+# -----------------------
+# Exactly one dispatch job exists fleet-wide and it is bound to the kipi-system
+# checkout, so 18 ready owner:sana issues across 14 projects are skipped as
+# out-of-repo every cycle. The obvious fix -- let the dispatcher iterate the
+# registry -- points an unattended loop that RUNS AGENTS, PUSHES BRANCHES AND ARMS
+# AUTO-MERGE at Alice, Prodigy_Gold and Pure_spectrum_Q. Codex called opt-in plus a
+# project filter inadequate for that, and it was right: opt-in says which repos a
+# human MEANT to enter, it says nothing about whether entering one is SAFE right
+# now. The preflight is the part that answers "safe right now".
+#
+# TWO PROPERTIES, AND BOTH ARE LOAD-BEARING
+#   1. A repo failing ANY preflight item is ABSENT from the pick list (finding-8).
+#   2. Selection is round-robin from a recorded cursor, so a repo that sorts LAST
+#      is eventually picked even while an earlier repo always has work (finding-9).
+#      "Lists ready issues from two repos" is explicitly NOT sufficient and is not
+#      what this file asserts.
+#
+# WHY THE STUB IS A PATH STUB AND NOT AN ENV OVERRIDE. The preflight shells `gh`
+# for branch protection and credentials. Giving it a KIPI_GH variable would have
+# been convenient and would ALSO have been a documented way to defeat two checks
+# by pointing them at /bin/true. There is no such variable; the test prepends a
+# stub dir to PATH instead. Same for the preflight script path: the dispatcher
+# hardcodes it off $REPO, so no variable can aim it at a script that always passes.
+#
+# NEVER A LIVE DATA PATH. Every repo here is a git repo built under mktemp, and the
+# registry the dispatcher reads is a fixture. A test that enumerated the real
+# instance-registry.json would be one bug away from entering a client repo, which
+# is the exact thing under test.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Derive the repo from the SCRIPT, never from $PWD -- a test that asks the checkout
+# it happens to run in proves nothing about the caller (test-dispatch-stale-checkout
+# learned this first).
+REPO="$(cd "$HERE" && git rev-parse --show-toplevel)"
+DISPATCH="$REPO/kipi-dispatch.sh"
+PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS+1)); echo "  PASS: $1"; }
+bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+
+[ -f "$DISPATCH" ] || { echo "no kipi-dispatch.sh at $DISPATCH"; exit 1; }
+
+# --- STAGE 0: the defect, stated as a check that can fail --------------------
+if [ ! -f "$PREFLIGHT" ]; then
+  echo "  FAIL: THE DEFECT: no repo-preflight.sh exists, so a dispatcher that iterates"
+  echo "        the registry would enter Alice / Prodigy_Gold / Pure_spectrum_Q with no"
+  echo "        check on control-code version, hooks, remote, branch protection,"
+  echo "        credentials, dirty state or a kill switch."
+  echo "-------- 0 passed, 1 failed --------"
+  exit 1
+fi
+for fn in fleet_candidates rotation pick_list cursor_set cursor_get; do
+  grep -q "^${fn}() {" "$DISPATCH" || {
+    echo "  FAIL: THE DEFECT: kipi-dispatch.sh has no ${fn}() -- selection is still"
+    echo "        single-repo and registry-order, so later client repos starve."
+    echo "-------- 0 passed, 1 failed --------"
+    exit 1
+  }
+done
+
+# --- a stub gh on PATH -------------------------------------------------------
+# Two knobs, both defaulting to the HEALTHY answer, so a fixture that fails a
+# preflight item fails it because the test asked for that and not because the
+# sandbox has no gh. A stub whose default is "broken" would make every case green
+# for the wrong reason -- the accidental-shield failure.
+STUBBIN="$WORK/stubbin"; mkdir -p "$STUBBIN"
+cat > "$STUBBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "auth status")
+    [ "${STUB_GH_AUTH:-ok}" = "ok" ] || { echo "not logged in" >&2; exit 1; }
+    echo "Logged in to github.com"; exit 0 ;;
+esac
+case "${*}" in
+  *"/protection"*)
+    [ "${STUB_GH_PROTECTION:-ok}" = "ok" ] || { echo "Branch not protected" >&2; exit 1; }
+    echo '{"required_pull_request_reviews":{}}'; exit 0 ;;
+  "repo view"*)
+    [ "${STUB_GH_REPOVIEW:-ok}" = "ok" ] || { echo "could not resolve to a Repository" >&2; exit 1; }
+    echo "assafkip/fixture"; exit 0 ;;
+  "api repos/"*)
+    [ "${STUB_GH_REPOVIEW:-ok}" = "ok" ] || { echo "Not Found" >&2; exit 1; }
+    echo "main"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$STUBBIN/gh"
+export PATH="$STUBBIN:$PATH"
+
+# --- fixture builder ---------------------------------------------------------
+# A repo that passes ALL SEVEN items. Every failing fixture below is this one with
+# exactly one thing broken, so a failure names one cause and not a pile.
+SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
+SKEL_SETTINGS="$REPO/.claude/settings.json"
+
+make_good_repo() {
+  # TWO `local` LINES, NOT ONE. `local name="$1" dir="$WORK/$name"` expands every
+  # word before it assigns any of them, so $name is still unbound when $dir is
+  # built -- under `set -u` the function aborts and returns an EMPTY path. Every
+  # fixture then pointed at "", the registry rows were dropped as pathless, and the
+  # round-robin and mutation cases passed while testing nothing at all.
+  local name="$1"
+  local dir="$WORK/$name"
+  mkdir -p "$dir/q-system/.q-system/scripts" "$dir/.claude"
+  cp "$SKEL_WORKER" "$dir/q-system/.q-system/scripts/linear-worker.sh"
+  cp "$SKEL_SETTINGS" "$dir/.claude/settings.json"
+  git init -q -b main "$dir"
+  ( cd "$dir"
+    git config user.email t@e.com; git config user.name t
+    git add -A; git commit -qm init
+    git remote add origin "https://github.com/assafkip/$name.git" ) >/dev/null 2>&1
+  printf '%s' "$dir"
+}
+
+# Exit 0 = the repo may be entered. Any non-zero = refuse.
+run_preflight() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" 2>&1; }
+pf_rc() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" >/dev/null 2>&1; echo $?; }
+
+echo "== 1. the control: a repo that passes all seven items is ACCEPTED =="
+# THIS CASE IS THE POINT OF THE WHOLE STUB DESIGN. If it fails, every "refused"
+# assertion below is green for the wrong reason and proves nothing.
+GOOD="$(make_good_repo good)"
+OUT="$(run_preflight "$GOOD")"
+if [ "$(pf_rc "$GOOD")" = "0" ]; then
+  ok "an all-green repo passes preflight (so the refusals below mean something)"
+else
+  bad "the all-green control was REFUSED, so every refusal below is unproven: $OUT"
+fi
+
+echo
+echo "== 2. each of the seven items refuses ON ITS OWN, and names itself =="
+# One fixture per item. The assertion is not just "refused" but "refused NAMING
+# this check" -- a preflight that refuses everything with one generic message is
+# useless to whoever has to fix the repo.
+
+# 2a. kill switch
+KS="$(make_good_repo killswitch)"; : > "$KS/.kipi-no-dispatch"
+OUT="$(run_preflight "$KS")"
+{ [ "$(pf_rc "$KS")" != "0" ] && echo "$OUT" | grep -q 'kill-switch'; } \
+  && ok "kill-switch: a .kipi-no-dispatch file refuses the repo by name" \
+  || bad "kill-switch did not refuse or did not name itself: $OUT"
+
+# 2b. control-code version: the repo's worker copy has drifted from the skeleton's.
+# kipi update is manual, so an instance can be months behind -- running THAT copy
+# is running control code nobody reviewed, on a loop that merges its own PRs.
+CC="$(make_good_repo controlcode)"
+echo '# drifted' >> "$CC/q-system/.q-system/scripts/linear-worker.sh"
+( cd "$CC" && git commit -qam drift ) >/dev/null 2>&1
+OUT="$(run_preflight "$CC")"
+{ [ "$(pf_rc "$CC")" != "0" ] && echo "$OUT" | grep -q 'control-code'; } \
+  && ok "control-code: a worker copy that drifted from the skeleton refuses by name" \
+  || bad "control-code drift did not refuse or did not name itself: $OUT"
+
+# 2c. hook presence
+HK="$(make_good_repo hooks)"
+echo '{}' > "$HK/.claude/settings.json"
+( cd "$HK" && git commit -qam strip ) >/dev/null 2>&1
+OUT="$(run_preflight "$HK")"
+{ [ "$(pf_rc "$HK")" != "0" ] && echo "$OUT" | grep -q 'hooks'; } \
+  && ok "hooks: a repo missing the skeleton's hook events refuses by name" \
+  || bad "missing hooks did not refuse or did not name itself: $OUT"
+
+# 2d. remote identity: origin is not the remote the registry pinned. This is the
+# check that stops a mis-typed or re-pointed registry row pushing an agent's branch
+# to somebody else's GitHub repo.
+RM="$(make_good_repo remote)"
+( cd "$RM" && git remote set-url origin https://github.com/someone-else/other.git ) >/dev/null 2>&1
+OUT="$(run_preflight "$RM")"
+{ [ "$(pf_rc "$RM")" != "0" ] && echo "$OUT" | grep -q 'remote'; } \
+  && ok "remote: an origin that differs from the pinned remote refuses by name" \
+  || bad "remote mismatch did not refuse or did not name itself: $OUT"
+
+# 2e. remote identity with NO pin at all. An undeclared remote must refuse, not
+# default to trusting whatever origin happens to say.
+OUT="$(bash "$PREFLIGHT" "$GOOD" "" 2>&1)"
+RC=$(bash "$PREFLIGHT" "$GOOD" "" >/dev/null 2>&1; echo $?)
+{ [ "$RC" != "0" ] && echo "$OUT" | grep -q 'remote'; } \
+  && ok "remote: a registry row with no pinned remote refuses (absence is not consent)" \
+  || bad "an unpinned remote was accepted, so any origin would be trusted: $OUT"
+
+# 2f. branch protection
+OUT="$(STUB_GH_PROTECTION=broken run_preflight "$GOOD")"
+RC=$(STUB_GH_PROTECTION=broken bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" >/dev/null 2>&1; echo $?)
+{ [ "$RC" != "0" ] && echo "$OUT" | grep -q 'branch-protection'; } \
+  && ok "branch-protection: an unprotected default branch refuses by name" \
+  || bad "an unprotected branch was accepted -- auto-merge would land unreviewed code: $OUT"
+
+# 2g. credentials
+OUT="$(STUB_GH_AUTH=broken run_preflight "$GOOD")"
+RC=$(STUB_GH_AUTH=broken bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" >/dev/null 2>&1; echo $?)
+{ [ "$RC" != "0" ] && echo "$OUT" | grep -q 'credentials'; } \
+  && ok "credentials: a broken gh auth refuses by name" \
+  || bad "broken credentials were accepted: $OUT"
+
+# 2h. dirty working tree: uncommitted work in a CLIENT repo belongs to a human, and
+# an agent that branches and commits there captures it into its own PR.
+DT="$(make_good_repo dirty)"; echo "someones work in progress" > "$DT/notes.txt"
+OUT="$(run_preflight "$DT")"
+{ [ "$(pf_rc "$DT")" != "0" ] && echo "$OUT" | grep -q 'dirty'; } \
+  && ok "dirty: an uncommitted working tree refuses by name" \
+  || bad "a dirty tree was accepted, so a human's WIP can be swept into an agent PR: $OUT"
+
+echo
+echo "== 3. the preflight FAILS CLOSED, which is the opposite of stale_check =="
+# stale_check deliberately fails OPEN (a network blip must not wedge the loop).
+# This one must fail CLOSED: it guards a client repo, and "I could not tell whether
+# the branch is protected" is not permission to push to it. Both postures are
+# correct for their own job and the difference is the thing to keep straight.
+NOGH="$WORK/nogh"; mkdir -p "$NOGH"
+cat > "$NOGH/gh" <<'NOGHSTUB'
+#!/usr/bin/env bash
+echo "gh: command failed" >&2; exit 127
+NOGHSTUB
+chmod +x "$NOGH/gh"
+RC=$(PATH="$NOGH:$PATH" bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" >/dev/null 2>&1; echo $?)
+[ "$RC" != "0" ] \
+  && ok "an unanswerable preflight REFUSES (fail closed), unlike stale_check" \
+  || bad "THE DEFECT: could not reach gh and entered the repo anyway"
+
+# A missing preflight SCRIPT must also refuse, not silently allow. This is the
+# hole an operator creates by moving the file.
+echo
+
+echo "== 4. finding-8: a repo failing ONE item is ABSENT from the pick list =="
+# This is the issue's bypass_check, end to end through the dispatcher rather than
+# through the preflight in isolation.
+mk_registry() {
+  # $1 = output path, then name:path:enabled triples
+  local out="$1"; shift
+  python3 - "$out" "$@" <<'PY'
+import json, sys
+out, rows = sys.argv[1], sys.argv[2:]
+inst = []
+for r in rows:
+    name, path, enabled = r.split("|")
+    e = {"name": name, "path": path, "has_git": True}
+    if enabled != "absent":
+        e["dispatch"] = {"enabled": enabled == "true",
+                         "expected_remote": "https://github.com/assafkip/%s.git" % name}
+    inst.append(e)
+json.dump({"skeleton": {"path": "/nonexistent"}, "instances": inst}, open(out, "w"), indent=2)
+PY
+}
+
+# Drive the dispatcher's selection functions directly. Running the whole script
+# would reach Linear and could dispatch REAL work.
+HARNESS="$WORK/select.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  echo "REPO=\"$REPO\""
+  echo "PREFLIGHT=\"$PREFLIGHT\""
+  awk '/^cursor_get\(\) \{/,/^\}/'       "$DISPATCH"
+  awk '/^cursor_set\(\) \{/,/^\}/'       "$DISPATCH"
+  awk '/^fleet_candidates\(\) \{/,/^\}/' "$DISPATCH"
+  awk '/^rotation\(\) \{/,/^\}/'         "$DISPATCH"
+  awk '/^pick_list\(\) \{/,/^\}/'        "$DISPATCH"
+  echo 'pick_list'
+} > "$HARNESS"
+
+BAD_ONE="$(make_good_repo badone)"; : > "$BAD_ONE/.kipi-no-dispatch"
+OKREPO="$(make_good_repo okrepo)"
+REG1="$WORK/reg1.json"
+mk_registry "$REG1" "badone|$BAD_ONE|true" "okrepo|$OKREPO|true"
+
+CURS="$WORK/cursor1"
+PICKS="$(KIPI_DISPATCH_REGISTRY="$REG1" KIPI_DISPATCH_CURSOR="$CURS" bash "$HARNESS" 2>/dev/null)"
+if echo "$PICKS" | grep -q 'okrepo'; then
+  ok "a repo passing preflight IS in the pick list"
+else
+  bad "the healthy repo never reached the pick list, so the absence below is meaningless"
+fi
+if echo "$PICKS" | grep -q 'badone'; then
+  bad "THE DEFECT (finding-8): a repo failing a preflight item is in the pick list"
+else
+  ok "a repo failing ONE preflight item is ABSENT from the dry-run pick list"
+fi
+
+echo
+echo "== 5. opt-in is DEFAULT OFF =="
+OFFREPO="$(make_good_repo offrepo)"
+ABSREPO="$(make_good_repo absrepo)"
+REG2="$WORK/reg2.json"
+mk_registry "$REG2" "offrepo|$OFFREPO|false" "absrepo|$ABSREPO|absent" "okrepo|$OKREPO|true"
+PICKS2="$(KIPI_DISPATCH_REGISTRY="$REG2" KIPI_DISPATCH_CURSOR="$WORK/cursor2" bash "$HARNESS" 2>/dev/null)"
+echo "$PICKS2" | grep -q 'offrepo' \
+  && bad "a repo with dispatch.enabled=false was entered" \
+  || ok "dispatch.enabled=false is never entered"
+echo "$PICKS2" | grep -q 'absrepo' \
+  && bad "THE DEFECT: a repo with NO dispatch key was entered -- default is not off" \
+  || ok "a registry entry with no dispatch key is never entered (default OFF)"
+
+echo
+echo "== 6. finding-9: the repo that sorts LAST is eventually picked =="
+# The starvation shape, concretely: home always has work. Under registry-order
+# scanning the head of the list is home on every single cycle and zzz-last is never
+# reached -- not "reached late", NEVER. So the assertion is that zzz-last becomes
+# the HEAD of the pick list within one full rotation.
+A="$(make_good_repo aaa-first)"; M="$(make_good_repo mmm-middle)"; Z="$(make_good_repo zzz-last)"
+REG3="$WORK/reg3.json"
+mk_registry "$REG3" "aaa-first|$A|true" "mmm-middle|$M|true" "zzz-last|$Z|true"
+CURS3="$WORK/cursor3"
+
+# One cycle = read the pick list, take the head, record it as picked.
+cycle() {
+  local head
+  head="$(KIPI_DISPATCH_REGISTRY="$REG3" KIPI_DISPATCH_CURSOR="$CURS3" bash "$HARNESS" 2>/dev/null | head -1 | cut -f1)"
+  [ -n "$head" ] || return 1
+  ( set -uo pipefail
+    say() { :; }
+    REPO="$REPO"
+    # shellcheck disable=SC1090
+    source /dev/stdin <<CS
+$(awk '/^cursor_set\(\) \{/,/^\}/' "$DISPATCH")
+CS
+    KIPI_DISPATCH_CURSOR="$CURS3" cursor_set "$head" )
+  printf '%s' "$head"
+}
+SEQ=""
+for _ in 1 2 3 4 5; do SEQ="$SEQ $(cycle)"; done
+echo "  cycles picked:$SEQ"
+case "$SEQ" in
+  *zzz-last*) ok "the LAST-sorting repo is picked within a rotation (round-robin holds)" ;;
+  *) bad "THE DEFECT (finding-9): zzz-last never became the head -- later repos starve:$SEQ" ;;
+esac
+# Fairness, not just eventual reachability: no repo may be picked twice before
+# every other has been picked once.
+UNIQ="$(printf '%s\n' $SEQ | sort -u | grep -c .)"
+[ "$UNIQ" -ge 4 ] \
+  && ok "a full rotation offers every candidate a turn ($UNIQ distinct in 5 cycles)" \
+  || bad "only $UNIQ distinct repos in 5 cycles -- the cursor is not rotating"
+
+echo
+echo "== 7. a repo that FAILS preflight is skipped by the rotation, not blocking it =="
+# A refused repo must not consume the turn and stall the rotation behind it.
+BLK="$(make_good_repo blocked-repo)"; : > "$BLK/.kipi-no-dispatch"
+# A REPO OF ITS OWN, named to match its pinned remote. Reusing zzz-last here under
+# the name "zzz-after" would have failed the REMOTE check, so the rotation would
+# have looked stalled for the wrong reason and this case would have accused the
+# cursor of a bug the preflight actually caused.
+AFT="$(make_good_repo zzz-after)"
+REG4="$WORK/reg4.json"
+mk_registry "$REG4" "blocked-repo|$BLK|true" "zzz-after|$AFT|true"
+PICKS4="$(KIPI_DISPATCH_REGISTRY="$REG4" KIPI_DISPATCH_CURSOR="$WORK/cursor4" bash "$HARNESS" 2>/dev/null)"
+echo "$PICKS4" | grep -q 'zzz-after' \
+  && ok "a refused repo is skipped over, not a wall the rotation stops at" \
+  || bad "the rotation stalled behind a refused repo: $PICKS4"
+
+echo
+echo "== 8. NO flag, env var, or registry field skips the preflight =="
+# Structural, not a phrase hunt. The dispatcher must call the preflight from exactly
+# one place, and that call must not sit behind a conditional that any input can make
+# false. A skippable safety gate on a client repo is worse than none, because it
+# reads as protection.
+CALLS="$(grep -c 'bash "\$PREFLIGHT"' "$DISPATCH" || true)"
+[ "${CALLS:-0}" -eq 1 ] \
+  && ok "the preflight is invoked from exactly one call-site ($CALLS)" \
+  || bad "the preflight has $CALLS call-sites -- one of them can drift from the others"
+# The preflight path is hardcoded off $REPO. A variable here would let an operator
+# aim the gate at /bin/true and keep every log line looking identical.
+grep -qE '^PREFLIGHT="\$REPO/' "$DISPATCH" \
+  && ok "the preflight path is hardcoded off \$REPO, not overridable" \
+  || bad "the preflight path is env-overridable, which is a documented bypass"
+grep -nE 'KIPI_(SKIP|NO)_PREFLIGHT|skip_preflight|--no-preflight|force_dispatch' "$DISPATCH" \
+  && bad "a preflight skip switch exists in the dispatcher" \
+  || ok "no skip switch exists in the dispatcher"
+# A registry row must not be able to declare itself exempt.
+python3 - "$DISPATCH" <<'PY' && ok "no registry field is read as a preflight exemption" || bad "a registry field can exempt a repo from preflight"
+import re, sys
+src = open(sys.argv[1]).read()
+sys.exit(1 if re.search(r'(exempt|trusted|skip_preflight|no_preflight)', src, re.I) else 0)
+PY
+
+echo
+echo "== 9. the cursor has ONE writer (finding-12: no read-then-write race) =="
+# attempts-ledger.py exists because a read-then-write from two processes loses an
+# update. The cursor must not recreate that: every mutation goes through cursor_set,
+# and cursor_set takes an atomic lock and renames into place.
+# A line that MAKES the cursor's content: a redirect straight into it, or the
+# rename that swaps a temp file into place. The temp write itself is deliberately
+# not counted -- writing "$CURSOR_FILE.tmp.$$" is not publishing a cursor value,
+# and counting it would let a 0-vs-0 comparison pass this case with no chokepoint
+# at all. (Caught here: the first version of this assertion did exactly that.)
+WRITE_PAT='(> *"\$CURSOR_FILE"|mv .*"\$CURSOR_FILE")'
+awk '/^cursor_set\(\) \{/,/^\}/' "$DISPATCH" > "$WORK/cs.txt"
+OUTSIDE="$(grep -cE "$WRITE_PAT" "$DISPATCH" || true)"
+INSIDE_N="$(grep -cE "$WRITE_PAT" "$WORK/cs.txt" || true)"
+[ "${INSIDE_N:-0}" -ge 1 ] \
+  && ok "cursor_set is the writer chokepoint ($INSIDE_N publishing write)" \
+  || bad "cursor_set never publishes the cursor -- the chokepoint is somewhere else"
+[ "${OUTSIDE:-0}" -eq "${INSIDE_N:-0}" ] \
+  && ok "every write to the cursor file is inside cursor_set ($OUTSIDE total)" \
+  || bad "THE DEFECT (finding-12): $OUTSIDE writes to the cursor, only $INSIDE_N inside cursor_set"
+grep -q 'mkdir' "$WORK/cs.txt" \
+  && ok "cursor_set serialises with an atomic mkdir lock" \
+  || bad "cursor_set has no lock, so two heartbeats can lose an update"
+grep -qE 'mv .*"\$CURSOR_FILE"' "$WORK/cs.txt" \
+  && ok "cursor_set publishes by rename, so no reader sees a half-written name" \
+  || bad "cursor_set truncates in place; a concurrent read can see a partial value"
+
+echo
+echo "== 10. MUTATION: delete the preflight call and case 4 must go RED =="
+# A green test that stays green with the safety code removed is decorative. This
+# proves the pick-list assertion is actually driven by the preflight and not by
+# some incidental property of the fixtures.
+MUT="$WORK/mutant-dispatch.sh"
+sed 's|bash "$PREFLIGHT"|true "$PREFLIGHT"|' "$DISPATCH" > "$MUT"
+if cmp -s "$MUT" "$DISPATCH"; then
+  bad "the mutation changed nothing -- the mutant is not a mutant, so this proves nothing"
+else
+  MUTH="$WORK/select-mutant.sh"
+  {
+    echo 'set -uo pipefail'
+    echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+    echo "REPO=\"$REPO\""
+    echo "PREFLIGHT=\"$PREFLIGHT\""
+    awk '/^cursor_get\(\) \{/,/^\}/'       "$MUT"
+    awk '/^cursor_set\(\) \{/,/^\}/'       "$MUT"
+    awk '/^fleet_candidates\(\) \{/,/^\}/' "$MUT"
+    awk '/^rotation\(\) \{/,/^\}/'         "$MUT"
+    awk '/^pick_list\(\) \{/,/^\}/'        "$MUT"
+    echo 'pick_list'
+  } > "$MUTH"
+  MPICKS="$(KIPI_DISPATCH_REGISTRY="$REG1" KIPI_DISPATCH_CURSOR="$WORK/cursorM" bash "$MUTH" 2>/dev/null)"
+  if echo "$MPICKS" | grep -q 'badone'; then
+    ok "with the preflight call removed the refused repo REAPPEARS -- the gate is load-bearing"
+  else
+    bad "the mutant still excluded the bad repo, so case 4 is not driven by the preflight"
+  fi
+fi
+
+echo
+echo "-------- $PASS passed, $FAIL failed --------"
+[ "$FAIL" -eq 0 ] || exit 1
+echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"

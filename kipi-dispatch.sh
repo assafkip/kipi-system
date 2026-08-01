@@ -36,6 +36,12 @@
 set -uo pipefail
 
 REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
+# HARDCODED OFF $REPO, DELIBERATELY NOT AN ENV VAR. Every other path in this file
+# takes a KIPI_* override for testability; this one must not. A variable here would
+# be a documented way to aim the client-repo safety gate at /bin/true while every
+# log line still read normally. The tests drive the real script and stub `gh` by
+# prepending to PATH instead, which adds no knob to the shipped code.
+PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
 LOG="$HOME/.config/kipi/dispatch.log"
 MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-2}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
@@ -155,6 +161,131 @@ stale_check || exit 0
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
 live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
+
+# --- FLEET SELECTION (finding-8 and finding-9) ----------------------------
+# 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,
+# because exactly one dispatch job exists fleet-wide and it is bound to this
+# checkout. Letting this script iterate the registry closes that gap and, done
+# naively, aims an unattended self-merging loop at Alice, Prodigy_Gold and
+# Pure_spectrum_Q -- CLIENT repos. So selection is two things that must both hold:
+# a preflight every candidate has to pass, and a rotation so no repo starves.
+#
+# THE HOME REPO IS A STRUCTURAL CLASS, NOT A SETTING. Below, a candidate is
+# preflighted unless its path equals $REPO -- the checkout this script is running
+# out of, which is not "entered" at all and is already gated by stale_check() a few
+# dozen lines up. That distinction is a path equality, so no env var, flag or
+# registry field can move a repo into the ungated class. It is the only branch
+# around the preflight and it cannot be reached by configuration.
+
+# The cursor's ONLY writer. Finding-12 rejected storing this in attempts-ledger.py
+# and the reason generalises: a plain read-then-write from two overlapping
+# heartbeats loses an update, which is the exact race attempts-ledger.py exists to
+# prevent. So the file gets one writer, an atomic mkdir lock (mkdir is the portable
+# test-and-set; macOS ships no flock(1)), and a rename rather than a truncating
+# write so no reader ever sees a half-written name.
+cursor_set() {
+  local name="$1"
+  local CURSOR_FILE="${KIPI_DISPATCH_CURSOR:-$HOME/.config/kipi/dispatch-cursor}"
+  local lock="$CURSOR_FILE.lock" waited=0
+  mkdir -p "$(dirname "$CURSOR_FILE")" 2>/dev/null || true
+  while ! mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge 50 ]; then
+      # A stuck lock must not wedge the heartbeat. Losing one cursor advance costs
+      # a repeated turn; blocking forever costs the whole loop.
+      say "cursor: lock busy after 5s, skipping this advance"
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf '%s' "$name" > "$CURSOR_FILE.tmp.$$"
+  mv -f "$CURSOR_FILE.tmp.$$" "$CURSOR_FILE"
+  rmdir "$lock" 2>/dev/null || true
+}
+
+cursor_get() {
+  local CURSOR_FILE="${KIPI_DISPATCH_CURSOR:-$HOME/.config/kipi/dispatch-cursor}"
+  cat "$CURSOR_FILE" 2>/dev/null || true
+}
+
+# Emits `name<TAB>path<TAB>expected_remote`, home first.
+#
+# OPT-IN IS DEFAULT OFF, AND STRICTLY SO: a row joins the fleet only when it
+# carries dispatch.enabled === true (JSON boolean). A missing dispatch key, false,
+# the string "true", or 1 all mean NO. Every one of the 23 rows in the shipped
+# registry is therefore off, which is the correct state to ship the dangerous piece
+# in -- the fleet stays exactly as it is today until a human opts a repo in by hand.
+fleet_candidates() {
+  local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
+  printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
+  [ -f "$registry" ] || { say "fleet: no registry at $registry, home repo only"; return 0; }
+  python3 - "$registry" "$REPO" <<'PY'
+import json, sys
+reg, home = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(reg))
+except Exception:
+    sys.exit(0)          # an unreadable registry means home only, never "everything"
+for e in data.get("instances", []):
+    d = e.get("dispatch")
+    if not isinstance(d, dict) or d.get("enabled") is not True:
+        continue
+    p = e.get("path", "")
+    if not p or p == home:
+        continue
+    print("%s\t%s\t%s" % (e.get("name", ""), p, d.get("expected_remote", "")))
+PY
+}
+
+# Registry order, rotated to start just after the last repo that took a turn.
+#
+# WHY NOT REGISTRY ORDER (finding-9). Under a plain registry-order scan the head of
+# the list is whichever repo has work, and this checkout nearly always does. A
+# later client repo is then not merely served late, it is NEVER reached. The cursor
+# records who last consumed a turn so the next cycle starts after them, which
+# bounds the wait for any repo at one full rotation.
+rotation() {
+  local cur; cur="$(cursor_get)"
+  local -a rows=(); local line
+  while IFS= read -r line; do [ -n "$line" ] && rows+=("$line"); done < <(fleet_candidates)
+  local n=${#rows[@]}
+  [ "$n" -gt 0 ] || return 0
+  local start=0 i rowname
+  if [ -n "$cur" ]; then
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      rowname="${rows[$i]%%	*}"
+      if [ "$rowname" = "$cur" ]; then start=$(( (i + 1) % n )); break; fi
+      i=$((i + 1))
+    done
+  fi
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '%s\n' "${rows[$(( (start + i) % n ))]}"
+    i=$((i + 1))
+  done
+}
+
+# The rotation with every refused repo removed. Emits `name<TAB>path`.
+#
+# A REFUSED REPO IS SKIPPED, NOT A WALL. It drops out of the list and the rotation
+# carries on past it; a repo that is permanently unsafe must not stall the repos
+# behind it forever.
+pick_list() {
+  local name path remote
+  while IFS=$'\t' read -r name path remote; do
+    [ -n "$name" ] || continue
+    if [ "$path" = "$REPO" ]; then
+      printf '%s\t%s\n' "$name" "$path"
+      continue
+    fi
+    if bash "$PREFLIGHT" "$path" "$remote" >/dev/null 2>&1; then
+      printf '%s\t%s\n' "$name" "$path"
+    else
+      say "preflight REFUSED $name ($path); not entering it"
+    fi
+  done < <(rotation)
+}
 
 # --- LIVENESS BEACON: page when the heartbeat COMES BACK ------------------
 # Founder ask 2026-07-28: "I want to get a slack notification that the heartbeat
@@ -312,6 +443,49 @@ if ! command -v gh >/dev/null 2>&1; then
   page "kipi dispatch: gh CLI not on PATH under launchd, so no PR can be opened. The Linear loop is stalled. Do: fix PATH in com.kipi.dispatch.plist."
   exit 1
 fi
+
+# --- WHICH REPO GETS THIS TURN -------------------------------------------
+# pick_list() has already refused every candidate that failed its preflight, so
+# nothing below has to re-check safety -- and nothing below is allowed to add a
+# candidate back.
+PICKS="$(pick_list)"
+
+# A dry pick list, for proving the gate from outside. It prints what selection
+# WOULD choose and exits before any work is claimed or any agent starts. It runs
+# AFTER the preflight filter on purpose: a dry run that listed the raw rotation
+# would show a repo that the real path refuses, which is a report that lies in the
+# safe-looking direction.
+if [ "${KIPI_DISPATCH_PICK_DRY:-0}" = "1" ]; then
+  printf '%s\n' "$PICKS"
+  exit 0
+fi
+
+TARGET_NAME=""
+while IFS=$'\t' read -r PNAME PPATH; do
+  [ -n "$PNAME" ] || continue
+  if [ "$PPATH" != "$REPO" ]; then
+    # This repo cleared the preflight, and it still cannot be worked yet: the
+    # worker takes no target-repo argument, and linear-worker.sh is off limits here
+    # (ASK-281 is live on it). Saying so and rotating past is the honest state.
+    # Unreachable in production today -- no registry row is opted in.
+    say "skip $PNAME: cleared preflight, but the worker cannot target another repo yet (sp-09c61b20)"
+    cursor_set "$PNAME"
+    continue
+  fi
+  TARGET_NAME="$PNAME"
+  break
+done <<PICKEOF
+$PICKS
+PICKEOF
+
+if [ -z "$TARGET_NAME" ]; then
+  say "no dispatchable repo this cycle"
+  exit 0
+fi
+# Consume the turn HERE, not after a successful dispatch. A repo that took its turn
+# and had nothing ready must still hand the next turn on, or an idle home repo
+# pins the rotation and the fleet starves exactly as it does today.
+cursor_set "$TARGET_NAME"
 
 WORK_OUT="$(bash ./kipi work 2>&1)"
 WORK_RC=$?
