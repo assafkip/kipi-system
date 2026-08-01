@@ -50,10 +50,32 @@ MSG="[$LABEL] $MSG"
 # The refused text goes to stderr rather than being dropped: a silently
 # swallowed alert is the precise failure mode founder-notifications.md exists
 # to prevent, and a fixture run still needs its diagnostic to be readable.
+# Two review findings on PR #58 shaped this function, and they point in OPPOSITE
+# directions -- which is why both halves are asserted in the paired suite:
+#
+#   1. A `127.*` shell pattern also matches non-loopback HOSTNAMES beginning
+#      "127.", so `127.example.com` would have been read as a fixture and its
+#      alert SILENTLY SUPPRESSED. That is the same failure class this guard
+#      rejects KIPI_STATE_DIR-under-temp for. The real invariant is the
+#      127.0.0.0/8 block -- four NUMERIC octets in range -- not a string prefix.
+#   2. The comparison was case-sensitive, so `LOCALHOST` reached the webhook
+#      from a fixture run. DNS hostnames are case-insensitive, so that was a
+#      genuine bypass, not a theoretical one.
+#
+# Lowercasing uses tr, not ${var,,}: /bin/bash on macOS is 3.2, where ${var,,}
+# is a syntax error. `[[ =~ ]]` + BASH_REMATCH do exist in 3.2, and the regex
+# must stay in an UNQUOTED variable -- quoting it makes 3.2 match it literally.
 _kipi_loopback_host() {
-  case "$1" in
-    localhost|*.localhost|::1|0.0.0.0|0|127.*) return 0 ;;
+  local h re
+  h="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$h" in
+    localhost|*.localhost|::1|0.0.0.0|0) return 0 ;;
   esac
+  re='^127\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$'
+  if [[ "$h" =~ $re ]]; then
+    [ "${BASH_REMATCH[1]}" -le 255 ] && [ "${BASH_REMATCH[2]}" -le 255 ] \
+      && [ "${BASH_REMATCH[3]}" -le 255 ] && return 0
+  fi
   return 1
 }
 

@@ -109,11 +109,18 @@ send() {
 # Every form a loopback fixture server can take. test-worker-project-scope.sh
 # and friends bind 127.0.0.1; the others are here so a future fixture that binds
 # localhost or ::1 is covered before someone writes it.
+#
+# The UPPERCASE forms are a PR #58 review finding, not decoration: the host
+# comparison used to be case-sensitive, so a fixture at LOCALHOST sent a real
+# page. DNS hostnames are case-insensitive, so that was a live bypass.
 for url in "http://127.0.0.1:54321/graphql" \
            "http://localhost:8080/graphql" \
+           "http://LOCALHOST:8080/graphql" \
+           "http://LocalHost:8080/graphql" \
            "http://[::1]:8080/graphql" \
            "http://0.0.0.0:9/graphql" \
-           "http://127.0.0.53/graphql"; do
+           "http://127.0.0.53/graphql" \
+           "http://127.255.255.255/graphql"; do
   R="$(send "KIPI_LINEAR_API_URL=$url")"
   N="${R%%|*}"; ERR="${R#*|}"
   if [ "$N" = "0" ]; then
@@ -132,9 +139,17 @@ done
 # --- direction 2: production API -> STILL SENDS -----------------------------
 # The half that keeps this guard from becoming an outage. If these go red, the
 # fleet has lost founder alerting entirely and nobody would be told.
+#
+# 127.example.com is a PR #58 review finding. The old `127.*` shell pattern
+# classified it as a fixture and SILENTLY SUPPRESSED its alert -- a real page
+# swallowed, the failure mode this guard exists to avoid becoming. Only four
+# numeric octets in range are the 127.0.0.0/8 block; a string prefix is not.
 for url in "https://api.linear.app/graphql" \
+           "https://127.example.com/graphql" \
+           "https://127.EXAMPLE.COM/graphql" \
            "https://localhost.evil.example.com/graphql" \
-           "https://1270.0.0.1/graphql"; do
+           "https://1270.0.0.1/graphql" \
+           "https://127.0.0.999/graphql"; do
   R="$(send "KIPI_LINEAR_API_URL=$url")"
   N="${R%%|*}"
   if [ "$N" = "1" ]; then
