@@ -225,9 +225,9 @@ fi
 # basename is the LAST resort, not the first. instance-registry.json maps every
 # instance path to its name, and that name IS the Linear project name -- while the
 # directory very often is not:
-#   KTLYST_strategy    -> .../cole-gtm/projects/strategy   (basename: strategy)
-#   ktlyst             -> .../ktlyst-saas/projects/product (basename: product)
-#   ASK_AI_consultant  -> .../consulting                   (basename: consulting)
+#   <Persona>_strategy   -> .../<persona>/projects/strategy (basename: strategy)
+#   <Persona>_product    -> .../<persona>/projects/product  (basename: product)
+#   <Persona>_consultant -> .../consulting                  (basename: consulting)
 # Three of the first three checked. Shipping basename alone would have made this
 # filter reject every issue on those instances -- caught loud by the MISCONFIG
 # guard below rather than as a silently empty queue, but still wrong.
