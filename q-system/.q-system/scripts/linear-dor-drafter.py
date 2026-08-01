@@ -318,20 +318,60 @@ REOPEN_M = """mutation($id:String!,$s:String!){
   issueUpdate(id:$id,input:{stateId:$s}){success}}"""
 
 
-def needs_dor(issue: dict) -> bool:
+def issue_labels(issue: dict) -> list:
+    """[{id, name}] for one issue. [] when the caller's fixture omits labels."""
+    return ((issue.get("labels") or {}).get("nodes")) or []
+
+
+def label_names(issue: dict) -> set:
+    return {(lab.get("name") or "") for lab in issue_labels(issue)}
+
+
+def redraft_state(desc: str) -> tuple:
+    """(redrafts_done, already_terminal) read off the marker. (0, False) if absent."""
+    match = REDRAFT_MARKER_RE.search(desc or "")
+    if not match:
+        return 0, False
+    return int(match.group(1)), bool(match.group(2))
+
+
+def selection_mode(issue: dict) -> str | None:
+    """"redraft" | "terminal" | "draft" | None -- THE selection predicate.
+
+    ORDER IS THE WHOLE FIX. The needs-scope branch sits ABOVE the has-a-DoR
+    exclusions, because a refused issue always has a DoR and the old code read
+    that as "nothing to do here". Moving the label check below them would restore
+    the exact bug while looking like it had been fixed, which is why the paired
+    test asserts on an issue carrying BOTH the heading and the label.
+    """
     if (issue.get("state") or {}).get("type") not in DRAFTABLE_STATE_TYPES:
-        return False
+        return None
     desc = issue.get("description") or ""
     # This job's own failure record. Drafting onto it burns a bounded nightly
     # slot to write prose onto a machine-written log. See FAILURE_MARKER.
     if FAILURE_MARKER in desc:
-        return False
+        return None
+
+    if NEEDS_SCOPE_LABEL in label_names(issue):
+        done, terminal = redraft_state(desc)
+        if terminal:
+            return None       # already declared a dead end; costs nothing further
+        if done >= REDRAFT_CAP:
+            return "terminal"  # exhausted -- record the rationale, once
+        return "redraft"
+
     if DOR_HEADING in desc:
-        return False
+        return None
     # The generated capability issues already carry a DoR under their own wording.
     if "Definition of Ready" in desc:
-        return False
-    return True
+        return None
+    return "draft"
+
+
+def needs_dor(issue: dict) -> bool:
+    """Kept as the boolean face of selection_mode: this job's other test file
+    (test-linear-dor-failure-reporting.py) asserts on it directly."""
+    return selection_mode(issue) is not None
 
 
 def notify(message: str) -> bool:
@@ -398,8 +438,12 @@ def claude_binary() -> str | None:
     return None
 
 
-def draft_one(issue: dict, timeout: int) -> tuple:
+def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
     """One `claude -p` call. Returns (dor_body, "") or (None, reason).
+
+    `prompt` overrides the first-draft prompt (the redraft path passes
+    REDRAFT_PROMPT). Optional rather than positional so the existing callers and
+    the failure-reporting test keep working unchanged.
 
     The reason travels with the failure: it is the line report_failures puts on
     the Linear issue. Collapsing every cause into one string told the operator a
@@ -413,11 +457,12 @@ def draft_one(issue: dict, timeout: int) -> tuple:
                   f"not in {len(CLAUDE_FALLBACKS)} known install locations)")
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
-    prompt = PROMPT.format(
-        project=(issue.get("project") or {}).get("name") or "unassigned",
-        title=issue.get("title") or "",
-        description=(issue.get("description") or "(empty)")[:4000],
-    )
+    if prompt is None:
+        prompt = PROMPT.format(
+            project=(issue.get("project") or {}).get("name") or "unassigned",
+            title=issue.get("title") or "",
+            description=(issue.get("description") or "(empty)")[:4000],
+        )
     try:
         res = subprocess.run(
             [binary, "-p", prompt, "--permission-mode", "acceptEdits"],
@@ -450,7 +495,7 @@ def draft_one(issue: dict, timeout: int) -> tuple:
 
 
 def fetch_draftable(ls, team_id: str) -> list:
-    """Every issue on the team that still lacks a Definition of Ready."""
+    """Every issue on the team this job has something to do to."""
     issues, after = [], None
     while True:
         page = ls.graphql(ISSUES_Q, {"t": team_id, "a": after})["issues"]
@@ -459,6 +504,100 @@ def fetch_draftable(ls, team_id: str) -> list:
             break
         after = page["pageInfo"]["endCursor"]
     return [i for i in issues if needs_dor(i)]
+
+
+# Redrafts and terminals sort ahead of first drafts. NOT cosmetic ordering: the
+# batch is todo[:limit] with no cursor and no rotation, and on 2026-08-01 the live
+# board held 93 issues lacking a DoR against a --limit of 8. A redraft appended to
+# the tail of that list would be selected in name and never reached in practice,
+# so the redrive would be as dead as the promise it replaces. Terminals go first
+# of all because they cost no `claude` call at all -- they must not be crowded out
+# by work that does.
+MODE_RANK = {"terminal": 0, "redraft": 1, "draft": 2}
+VERBS = {"terminal": "mark terminal", "redraft": "redraft", "draft": "draft"}
+
+
+def prioritise(issues: list) -> list:
+    """[(mode, issue)] with the redrive ahead of the backlog. Stable within a
+    mode, so the API's own order still decides among equals.
+
+    Classifies but does NOT re-filter: fetch_draftable already holds the
+    selection authority, and a second filter here would silently drop issues
+    handed in by a caller that replaced it (the failure-reporting test does
+    exactly that). Anything unclassifiable is a first draft, the behaviour every
+    issue in the batch had before modes existed.
+    """
+    paired = [(selection_mode(i) or "draft", i) for i in issues]
+    return sorted(paired, key=lambda pair: MODE_RANK.get(pair[0], 9))
+
+
+def refusal_reason(ls, issue: dict) -> str:
+    """The worker's most recent written refusal, or a stated absence.
+
+    Never raises: a redraft without the reason is worse than one with it, but far
+    better than a night that dies reading a comment thread.
+    """
+    try:
+        nodes = ((((ls.graphql(ISSUE_COMMENTS_Q, {"id": issue["identifier"]}) or {})
+                   .get("issue") or {}).get("comments") or {}).get("nodes")) or []
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"  {issue['identifier']}: could not read comments: {str(exc)[:100]}",
+              file=sys.stderr)
+        return "(the refusal comment could not be read)"
+    for node in reversed(nodes):
+        body = node.get("body") or ""
+        if "Refused as unexecutable" in body:
+            return body[:2000]
+    return "(no refusal comment found on the issue)"
+
+
+def existing_dor(desc: str) -> str:
+    """The DoR section as it stands, for the redraft prompt to argue with."""
+    if DOR_HEADING not in desc:
+        return "(the section could not be located by its heading)"
+    return desc.split(DOR_HEADING, 1)[1].strip()[:3000]
+
+
+def rebuild_description(desc: str, body: str, count: int,
+                        terminal: bool = False) -> str:
+    """Founder text + counter marker + a freshly written DoR section.
+
+    Everything above `## Definition of Ready` is carried through byte for byte.
+    Only this job's own prior output below that heading is replaced -- that is
+    what keeps the append-only promise true for the words a human wrote.
+
+    When the heading is absent (a differently-worded DoR on a generated capability
+    issue), the whole description is treated as prefix and the section is APPENDED.
+    Guessing at the boundary of a section we did not write would risk deleting a
+    human's text, and a duplicate section is a recoverable mistake where that is not.
+    """
+    prefix = desc.split(DOR_HEADING, 1)[0] if DOR_HEADING in desc else desc
+    prefix = REDRAFT_MARKER_RE.sub("", prefix).rstrip()
+    marker = f"<!-- kipi-dor: redrafts={count}{' terminal' if terminal else ''} -->"
+    out = f"{prefix}\n\n{marker}\n{DOR_HEADING}\n\n{body.strip()}\n"
+    if terminal:
+        out += f"\n{TERMINAL_NOTE}\n"
+    return out
+
+
+def surviving_label_ids(issue: dict) -> list:
+    """Every label id except needs-scope. Linear replaces the whole set on write,
+    so 'remove one label' is only expressible as 'send back the others'."""
+    return [lab["id"] for lab in issue_labels(issue)
+            if lab.get("name") != NEEDS_SCOPE_LABEL and lab.get("id")]
+
+
+def apply_terminal(ls, issue: dict) -> None:
+    """Record the exhausted cap on the issue. One write, no `claude` call.
+
+    The needs-scope label is deliberately NOT removed: the issue really is
+    unscoped, and dropping the label would feed it back to a picker that has
+    already refused it REDRAFT_CAP times.
+    """
+    desc = issue.get("description") or ""
+    ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": {
+        "description": rebuild_description(desc, existing_dor(desc),
+                                           REDRAFT_CAP, terminal=True)}})
 
 
 def _is_missing_issue(exc: Exception) -> bool:
@@ -621,32 +760,77 @@ def main() -> int:
         todo = [i for i in todo
                 if ((i.get("project") or {}).get("name") or "") == args.project]
 
-    print(f"dor-drafter {_now()}: {len(todo)} issue(s) lack a Definition of Ready")
-    batch = todo[: args.limit]
+    plan = prioritise(todo)
+    redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
+    print(f"dor-drafter {_now()}: {len(todo)} issue(s) need a Definition of Ready "
+          f"({redrives} of them {NEEDS_SCOPE_LABEL} redrive)")
+    batch = plan[: args.limit]
     if not args.apply:
-        for i in batch:
-            print(f"  would draft {i['identifier']}  {i['title'][:66]}")
+        for mode, i in batch:
+            print(f"  would {VERBS[mode]} {i['identifier']}  {i['title'][:66]}")
         print(f"dry run. {len(todo)} remaining; --apply to write {len(batch)}.")
         return 0
 
     # Collected, not just printed, and each one carries its own cause. draft_one()
     # still writes the reason to stderr; this list is what leaves the machine.
     drafted, failed = 0, []
-    for issue in batch:
-        body, reason = draft_one(issue, args.timeout)
+    for mode, issue in batch:
+        desc = issue.get("description") or ""
+
+        # The cap is spent. One write, no model call, and the label stays on.
+        if mode == "terminal":
+            try:
+                apply_terminal(ls, issue)
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{issue['identifier']}: terminal write failed: {str(exc)[:120]}")
+                continue
+            drafted += 1
+            print(f"  marked terminal {issue['identifier']}  redraft cap "
+                  f"{REDRAFT_CAP}/{REDRAFT_CAP} spent")
+            continue
+
+        # Two call shapes, not one with a None default. draft_one is a monkeypatch
+        # seam for test-linear-dor-failure-reporting.py, which replaces it with a
+        # TWO-argument lambda; passing a third positional on the first-draft path
+        # breaks that suite with a TypeError. The first-draft call stays exactly
+        # the arity it has always been.
+        if mode == "redraft":
+            attempt = redraft_state(desc)[0] + 1
+            body, reason = draft_one(issue, args.timeout, REDRAFT_PROMPT.format(
+                attempt=attempt, cap=REDRAFT_CAP,
+                project=(issue.get("project") or {}).get("name") or "unassigned",
+                title=issue.get("title") or "",
+                old_dor=existing_dor(desc),
+                reason=refusal_reason(ls, issue),
+            ))
+        else:
+            body, reason = draft_one(issue, args.timeout)
         if not body:
             failed.append(f"{issue['identifier']}: {reason}")
             continue
-        new_desc = (issue.get("description") or "").rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"
+
+        if mode == "redraft":
+            payload = {"description": rebuild_description(desc, body, attempt)}
+            # Description and label drop go in ONE mutation on purpose. As two
+            # calls, a failure between them leaves a rewritten DoR still wearing
+            # needs-scope: the picker keeps ignoring it and the next night spends
+            # another capped attempt rewriting work already done.
+            payload["labelIds"] = surviving_label_ids(issue)
+        else:
+            payload = {"description": desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
+
         try:
-            ls.graphql(UPDATE_M, {"id": issue["identifier"],
-                                  "input": {"description": new_desc}})
+            ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": payload})
         except Exception as exc:  # noqa: BLE001
             print(f"  {issue['identifier']}: update failed: {str(exc)[:120]}", file=sys.stderr)
             failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
             continue
         drafted += 1
-        print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
+        if mode == "redraft":
+            print(f"  redrafted {issue['identifier']} (attempt {attempt}/{REDRAFT_CAP}, "
+                  f"{NEEDS_SCOPE_LABEL} dropped)  {issue['title'][:44]}")
+        else:
+            print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
 
     # Anything an earlier night could not file rides along with tonight's, so a
     # clean night still flushes the backlog. `held` was read at the top of the

@@ -281,7 +281,6 @@ check4 label-held        "the label is NOT dropped at the cap (it really is unsc
 
 # ...and once marked, it must stop being selected at all.
 reset
-TERMINAL_DESC="$(cat "$WORK/terminal-desc.txt" 2>/dev/null)"
 python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
 import json, sys
 path, founder, dor = sys.argv[1:4]
