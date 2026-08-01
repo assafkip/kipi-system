@@ -97,7 +97,7 @@ SETTINGS_REL=".claude/settings.json"
 if [ ! -f "$REPO_PATH/$SETTINGS_REL" ]; then
   refuse "hooks" "$REPO_PATH/$SETTINGS_REL is missing, so no hook fires in this repo"
 else
-  MISSING="$(python3 - "$SKELETON/$SETTINGS_REL" "$REPO_PATH/$SETTINGS_REL" <<'PY' 2>/dev/null
+  MISSING="$(python3 - "$SKELETON/$SETTINGS_REL" "$REPO_PATH/$SETTINGS_REL" "$SKELETON" "$REPO_PATH" <<'PY' 2>/dev/null
 import json, sys
 try:
     skel = json.load(open(sys.argv[1])).get("hooks", {})
@@ -121,11 +121,30 @@ def scripts(h):
     return out
 missing_events = sorted(set(skel) - {k for k, v in repo.items() if v})
 missing_scripts = sorted(scripts(skel) - scripts(repo))
+# A NAME IS NOT AN EXECUTABLE. Comparing basenames pulled out of settings.json
+# passed a repo that copied settings.json and none of the guard files -- the
+# green fixture in this test suite was itself that shape. Resolve each guard the
+# skeleton wires and require the file to actually be present in the target.
+import os
+skel_root, repo_root = sys.argv[3], sys.argv[4]
+absent = []
+for rel in sorted(scripts(skel)):
+    hits = []
+    for base, _dirs, files in os.walk(skel_root):
+        if '/.git' in base:
+            continue
+        if rel in files:
+            hits.append(os.path.relpath(os.path.join(base, rel), skel_root))
+    for h in hits[:1]:
+        if not os.path.isfile(os.path.join(repo_root, h)):
+            absent.append(h)
 parts = []
 if missing_events:
     parts.append("events=" + "/".join(missing_events))
 if missing_scripts:
     parts.append("guards=" + "/".join(missing_scripts[:6]) + ("..." if len(missing_scripts) > 6 else ""))
+if absent:
+    parts.append("absent=" + "/".join(os.path.basename(a) for a in absent[:6]) + ("..." if len(absent) > 6 else ""))
 print(";".join(parts))
 PY
 )"
@@ -223,24 +242,31 @@ else
       # passed -- while the worker arms auto-merge and lands code immediately.
       # "Protected" is not the property being relied on; "a human or a check has
       # to pass before this merges" is. Parse for that specifically.
-      PROT_GATES="$(printf '%s' "$PROT_JSON" | python3 -c "
-import json, sys
+      # QUOTED HEREDOC + ENV, NOT python3 -c "...". The inline -c form sat inside
+      # $( ) and broke bash parsing at RUNTIME ONLY -- syntax checks passed and the
+      # failure showed up as "bad substitution" the first time a fixture reached
+      # this branch. The heredoc is quoted so nothing expands, and the payload
+      # travels in the environment instead of through another layer of quotes.
+      PROT_GATES="$(PROT_JSON="$PROT_JSON" python3 - <<'PY' 2>/dev/null
+import json, os
+raw = os.environ.get("PROT_JSON") or ""
 try:
-    d = json.load(sys.stdin)
+    d = json.loads(raw)
 except Exception:
-    print('UNPARSEABLE'); raise SystemExit(0)
+    print("UNPARSEABLE"); raise SystemExit(0)
 g = []
-# PRESENCE, not truthiness. GitHub OMITS this key entirely when reviews are not
-# required, and returns an object when they are -- so `in` is the real signal.
-# Testing truthiness rejected a correctly review-gated branch whose object was
-# empty, which turned this check into a blanket refusal.
-if 'required_pull_request_reviews' in d:
-    g.append('reviews')
-rsc = d.get('required_status_checks') or {}
-if rsc.get('contexts') or rsc.get('checks'):
-    g.append('checks')
-print(','.join(g))
-" 2>/dev/null)"
+# Not a presence test and not truthiness. GitHub returns this key with NULL when
+# review requirements are disabled, so a presence test reads "reviews are off" as
+# a review gate. Truthiness was the earlier cut and it wrongly rejected a real
+# gate whose object was empty. Only an explicit is-not-None test gets both right.
+if d.get("required_pull_request_reviews") is not None:
+    g.append("reviews")
+rsc = d.get("required_status_checks") or {}
+if rsc.get("contexts") or rsc.get("checks"):
+    g.append("checks")
+print(",".join(g))
+PY
+)"
       case "$PROT_GATES" in
         UNPARSEABLE)
           refuse "branch-protection" "the protection response for $SLUG@$DEFAULT_BRANCH could not be parsed" ;;

@@ -125,6 +125,34 @@ fixture_git() {
   git -C "$d" "$@"
 }
 
+# Copy every hook script the skeleton actually wires into a fixture. THE FIXTURE
+# WAS THE BUG: it used to copy settings.json alone, so the "all-green" repo named
+# guards it did not have -- and codex used that fixture as the proof that basename
+# comparison was hollow. A control repo has to be genuinely compliant, or every
+# refusal measured against it is measuring the wrong thing.
+copy_guards() {
+  python3 - "$SKEL_SETTINGS" "$REPO" "$1" <<'GPY'
+import json, os, re, shutil, sys
+settings, skel, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+hooks = json.load(open(settings)).get("hooks", {})
+names = set()
+for arr in hooks.values():
+    for m in arr or []:
+        for hk in m.get("hooks", []) or []:
+            names |= set(re.findall(r"[\w.-]+\.(?:py|sh)", hk.get("command", "") or ""))
+for rel in sorted(names):
+    for base, _dirs, files in os.walk(skel):
+        if "/.git" in base:
+            continue
+        if rel in files:
+            r = os.path.relpath(os.path.join(base, rel), skel)
+            t = os.path.join(dst, r)
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            shutil.copy2(os.path.join(base, rel), t)
+            break
+GPY
+}
+
 make_good_repo() {
   # TWO `local` LINES, NOT ONE. `local name="$1" dir="$WORK/$name"` expands every
   # word before it assigns any of them, so $name is still unbound when $dir is
@@ -137,6 +165,8 @@ make_good_repo() {
   mkdir -p "$dir/q-system/.q-system/scripts" "$dir/.claude"
   cp "$SKEL_WORKER" "$dir/q-system/.q-system/scripts/linear-worker.sh"
   cp "$SKEL_SETTINGS" "$dir/.claude/settings.json"
+  # $2 = "noguards" builds the deliberately non-compliant shape for case 17.
+  [ "${2:-}" = "noguards" ] || copy_guards "$dir"
   git init -q -b main "$dir"
   ( git -C "$dir" config user.email t@e.com
     git -C "$dir" config user.name t
@@ -425,9 +455,12 @@ INSIDE_N="$(grep -cE "$WRITE_PAT" "$WORK/cs.txt" || true)"
 [ "${OUTSIDE:-0}" -eq "${INSIDE_N:-0}" ] \
   && ok "every write to the cursor file is inside cursor_set ($OUTSIDE total)" \
   || bad "THE DEFECT (finding-12): $OUTSIDE writes to the cursor, only $INSIDE_N inside cursor_set"
-grep -q 'mkdir' "$WORK/cs.txt" \
-  && ok "cursor_set serialises with an atomic mkdir lock" \
-  || bad "cursor_set has no lock, so two heartbeats can lose an update"
+# cursor_set deliberately holds NO lock of its own now: turn_lock covers the whole
+# read-select-advance, and the old inner lock could be orphaned by a killed
+# dispatcher and then wedge rotation forever with nothing to reap it.
+grep -q 'mkdir "$lock"' "$WORK/cs.txt" \
+  && bad "cursor_set took its own lock again -- an orphaned one wedges rotation forever" \
+  || ok "cursor_set holds no redundant inner lock (the turn lock is the transaction)"
 grep -qE 'mv .*"\$CURSOR_FILE"' "$WORK/cs.txt" \
   && ok "cursor_set publishes by rename, so no reader sees a half-written name" \
   || bad "cursor_set truncates in place; a concurrent read can see a partial value"
@@ -619,6 +652,57 @@ rmdir "$TL" 2>/dev/null || true
 { [ "$A" = "GOT" ] && [ "$B" = "DENIED" ]; } \
   && ok "a second dispatcher is DENIED while the turn is held ($A then $B)" \
   || bad "the turn lock is not exclusive ($A then $B)"
+
+echo
+echo "== 16. null review protection is NOT a review gate (codex r2) =="
+# GitHub returns required_pull_request_reviews with a value of NULL when review
+# requirements are disabled. A presence test reads that as "reviews required".
+NULLP="$WORK/nullprot"; mkdir -p "$NULLP"
+cat > "$NULLP/gh" <<'NULLSTUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "auth status") echo ok; exit 0 ;;
+esac
+case "${*}" in
+  *"/protection"*) echo '{"required_pull_request_reviews":null,"required_status_checks":null}'; exit 0 ;;
+  "repo view"*)    echo seen; exit 0 ;;
+  "api repos/"*)   echo main; exit 0 ;;
+esac
+exit 0
+NULLSTUB
+chmod +x "$NULLP/gh"
+NOUT="$(PATH="$NULLP:$PATH" bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" 2>&1)"
+NRC=$(PATH="$NULLP:$PATH" bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/good.git" >/dev/null 2>&1; echo $?)
+{ [ "$NRC" != "0" ] && printf '%s' "$NOUT" | grep -q 'branch-protection'; } \
+  && ok "required_pull_request_reviews:null is REFUSED, not read as a gate" \
+  || bad "THE DEFECT: null review protection accepted as a review gate: $NOUT"
+
+echo
+echo "== 17. named guard scripts must EXIST in the target (codex r2 / adversarial) =="
+# The green fixture copies settings.json and none of the hook files, which is
+# exactly the shape that passed a basename comparison. Give one repo the real
+# guard files and prove the difference is what decides it.
+NOGUARD="$(make_good_repo noguard noguards)"
+GOUT="$(run_preflight "$NOGUARD")"
+{ [ "$(pf_rc "$NOGUARD")" != "0" ] && printf '%s' "$GOUT" | grep -q 'hooks'; } \
+  && ok "a repo naming guards it does not actually have is REFUSED" \
+  || bad "THE DEFECT: guard scripts named but absent still passed: $GOUT"
+printf '%s' "$GOUT" | grep -q 'absent=' \
+  && ok "the refusal names the guard files that are missing from disk" \
+  || bad "the refusal does not distinguish absent files from unwired ones: $GOUT"
+
+echo
+echo "== 18. a non-home repo is NOT entered while gh scoping is unfinished =="
+# The rotation still offers it a turn, and the dispatcher still refuses to run an
+# agent in it. Selection being correct is not the same as execution being safe.
+grep -q 'sp-9421b9b7' "$DISPATCH" \
+  && ok "cross-repo entry is held against a captured spillover item" \
+  || bad "cross-repo entry has no captured blocker reference"
+HOLD_LINE="$(grep -n 'HOLD \$TARGET_NAME' "$DISPATCH" | head -1 | cut -d: -f1)"
+WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
+{ [ -n "$HOLD_LINE" ] && [ -n "$WORKLINE" ] && [ "$HOLD_LINE" -lt "$WORKLINE" ]; } \
+  && ok "the hold is reached BEFORE any worker is invoked" \
+  || bad "the hold does not precede the worker call, so an agent could still start"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

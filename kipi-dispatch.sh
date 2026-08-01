@@ -214,21 +214,16 @@ turn_lock() {
 cursor_set() {
   local name="$1"
   local CURSOR_FILE="${KIPI_DISPATCH_CURSOR:-$HOME/.config/kipi/dispatch-cursor}"
-  local lock="$CURSOR_FILE.lock" waited=0
   mkdir -p "$(dirname "$CURSOR_FILE")" 2>/dev/null || true
-  while ! mkdir "$lock" 2>/dev/null; do
-    waited=$((waited + 1))
-    if [ "$waited" -ge 50 ]; then
-      # A stuck lock must not wedge the heartbeat. Losing one cursor advance costs
-      # a repeated turn; blocking forever costs the whole loop.
-      say "cursor: lock busy after 5s, skipping this advance"
-      return 1
-    fi
-    sleep 0.1
-  done
-  printf '%s' "$name" > "$CURSOR_FILE.tmp.$$"
-  mv -f "$CURSOR_FILE.tmp.$$" "$CURSOR_FILE"
-  rmdir "$lock" 2>/dev/null || true
+  # NO SECOND LOCK HERE. This used to take its own mkdir lock, which was both
+  # redundant and dangerous: turn_lock already serialises the entire
+  # read-select-advance, and a dispatcher killed between creating this inner lock
+  # and removing it left a directory nothing ever reaped. Every later heartbeat
+  # then waited 5s, failed to advance, and re-picked the same repo forever --
+  # starving exactly the repos round-robin exists to protect. One lock, held by
+  # the turn, is the whole transaction.
+  printf '%s' "$name" > "$CURSOR_FILE.tmp.$$" || return 1
+  mv -f "$CURSOR_FILE.tmp.$$" "$CURSOR_FILE" || return 1
 }
 
 cursor_get() {
@@ -520,9 +515,28 @@ fi
 # which forwards only its own arguments to the worker.
 WORK_ARGS=""
 if [ "$TARGET_PATH" != "$REPO" ]; then
-  WORK_ARGS="--repo $TARGET_PATH"
-  export KIPI_TARGET_REPO="$TARGET_PATH"
-  say "entering $TARGET_NAME ($TARGET_PATH) -- cleared preflight"
+  # HELD: cleared preflight, and STILL not entered (sp-9421b9b7).
+  #
+  # The worker's --repo argument redirects `git -C`, and that part is built and
+  # tested. It does NOT redirect `gh`, and codex found three paths that silently
+  # bind to the home checkout anyway:
+  #   1. the worker's existing-PR lookup, merge-state/head queries and reviewer
+  #      invocation are unqualified `gh` calls;
+  #   2. converge.sh runs pr_for_branch / pr_head_sha from the home checkout, so
+  #      after the worker opens a PR in the target it finds none and stops;
+  #   3. pr-review-agent.sh derives its repo from its own location, so an external
+  #      PR number resolves against the HOME repo -- and if that number exists,
+  #      the wrong code is reviewed and gets the verdict.
+  # Review artifacts are also keyed pr-<number>.* in one shared state dir, so two
+  # repos with PR #42 consume each other's records.
+  #
+  # Any one of those is enough to act on the wrong repository, and two of the
+  # three files are outside this issue's contract. A gate that lets an agent into
+  # a client repo on that footing is worse than the gap it closes, so entry stays
+  # shut until the gh-scoping issue lands. The rotation still OFFERS the turn and
+  # advances past it, so nothing starves behind this.
+  say "HOLD $TARGET_NAME: cleared preflight, but cross-repo gh scoping is unfinished (sp-9421b9b7); not entering"
+  exit 0
 fi
 # Consume the turn HERE, not after a successful dispatch. A repo that took its turn
 # and had nothing ready must still hand the next turn on, or an idle home repo
