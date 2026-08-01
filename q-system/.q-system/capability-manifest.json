@@ -170,6 +170,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
       "runner": "bash"
     },
