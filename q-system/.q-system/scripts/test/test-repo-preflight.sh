@@ -105,6 +105,26 @@ export PATH="$STUBBIN:$PATH"
 SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
 SKEL_SETTINGS="$REPO/.claude/settings.json"
 
+# EVERY fixture git mutation goes through here. THE SCAR, and it is this file's
+# own: before make_good_repo's `local` bug was fixed it returned an EMPTY path,
+# and `cd ""` SUCCEEDS in bash -- it is a no-op, not an error. So
+# `( cd "$RM" && git remote set-url origin ... )` ran against the LIVE CHECKOUT
+# and rewrote this repo's origin to a fixture URL. Worktrees share .git/config,
+# so it broke the main checkout too, and it surfaced as a confusing "Repository
+# not found" on push long after the test had gone green.
+#
+# A test must never touch a live data path. One chokepoint that refuses an empty
+# path or the real repo is how that becomes impossible rather than remembered.
+fixture_git() {
+  local d="$1"; shift
+  case "$d" in
+    ""|"$REPO"|"$REPO"/*)
+      echo "FATAL: fixture_git refused a live or empty path: '$d'" >&2; exit 1 ;;
+  esac
+  [ -d "$d/.git" ] || { echo "FATAL: fixture_git: '$d' is not a fixture repo" >&2; exit 1; }
+  git -C "$d" "$@"
+}
+
 make_good_repo() {
   # TWO `local` LINES, NOT ONE. `local name="$1" dir="$WORK/$name"` expands every
   # word before it assigns any of them, so $name is still unbound when $dir is
@@ -113,14 +133,16 @@ make_good_repo() {
   # round-robin and mutation cases passed while testing nothing at all.
   local name="$1"
   local dir="$WORK/$name"
+  [ -n "$name" ] && [ -n "$WORK" ] || { echo "FATAL: make_good_repo got an empty name/WORK" >&2; exit 1; }
   mkdir -p "$dir/q-system/.q-system/scripts" "$dir/.claude"
   cp "$SKEL_WORKER" "$dir/q-system/.q-system/scripts/linear-worker.sh"
   cp "$SKEL_SETTINGS" "$dir/.claude/settings.json"
   git init -q -b main "$dir"
-  ( cd "$dir"
-    git config user.email t@e.com; git config user.name t
-    git add -A; git commit -qm init
-    git remote add origin "https://github.com/assafkip/$name.git" ) >/dev/null 2>&1
+  ( git -C "$dir" config user.email t@e.com
+    git -C "$dir" config user.name t
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm init
+    git -C "$dir" remote add origin "https://github.com/assafkip/$name.git" ) >/dev/null 2>&1
   printf '%s' "$dir"
 }
 
@@ -157,7 +179,7 @@ OUT="$(run_preflight "$KS")"
 # is running control code nobody reviewed, on a loop that merges its own PRs.
 CC="$(make_good_repo controlcode)"
 echo '# drifted' >> "$CC/q-system/.q-system/scripts/linear-worker.sh"
-( cd "$CC" && git commit -qam drift ) >/dev/null 2>&1
+fixture_git "$CC" commit -qam drift >/dev/null 2>&1
 OUT="$(run_preflight "$CC")"
 { [ "$(pf_rc "$CC")" != "0" ] && echo "$OUT" | grep -q 'control-code'; } \
   && ok "control-code: a worker copy that drifted from the skeleton refuses by name" \
@@ -166,7 +188,7 @@ OUT="$(run_preflight "$CC")"
 # 2c. hook presence
 HK="$(make_good_repo hooks)"
 echo '{}' > "$HK/.claude/settings.json"
-( cd "$HK" && git commit -qam strip ) >/dev/null 2>&1
+fixture_git "$HK" commit -qam strip >/dev/null 2>&1
 OUT="$(run_preflight "$HK")"
 { [ "$(pf_rc "$HK")" != "0" ] && echo "$OUT" | grep -q 'hooks'; } \
   && ok "hooks: a repo missing the skeleton's hook events refuses by name" \
@@ -176,7 +198,7 @@ OUT="$(run_preflight "$HK")"
 # check that stops a mis-typed or re-pointed registry row pushing an agent's branch
 # to somebody else's GitHub repo.
 RM="$(make_good_repo remote)"
-( cd "$RM" && git remote set-url origin https://github.com/someone-else/other.git ) >/dev/null 2>&1
+fixture_git "$RM" remote set-url origin https://github.com/someone-else/other.git >/dev/null 2>&1
 OUT="$(run_preflight "$RM")"
 { [ "$(pf_rc "$RM")" != "0" ] && echo "$OUT" | grep -q 'remote'; } \
   && ok "remote: an origin that differs from the pinned remote refuses by name" \
@@ -464,7 +486,7 @@ chmod +x "$NOTIFY_STUB"
 # leaked real Slack pages to the founder on 2026-08-01 and PR #54 exists to close
 # that class; this is not adding a fourth, and it is not writing the live log.
 TGT="$(make_good_repo targetrepo)"
-( cd "$TGT" && git remote set-url origin "$WORK/definitely-not-here.git" ) >/dev/null 2>&1
+fixture_git "$TGT" remote set-url origin "$WORK/definitely-not-here.git" >/dev/null 2>&1
 run_worker() {
   KIPI_NOTIFY="$NOTIFY_STUB" KIPI_STATE_DIR="$WORK/wstate" \
     bash "$WORKER" "$@" 2>&1
@@ -561,7 +583,7 @@ d = json.load(open(p))
 d["hooks"] = {ev: [{"hooks": [{"command": "true"}]}] for ev in d.get("hooks", {})}
 json.dump(d, open(p, "w"), indent=2)
 PY
-( cd "$HK2" && git commit -qam shallow ) >/dev/null 2>&1
+fixture_git "$HK2" commit -qam shallow >/dev/null 2>&1
 HOUT="$(run_preflight "$HK2")"
 { [ "$(pf_rc "$HK2")" != "0" ] && printf '%s' "$HOUT" | grep -q 'hooks'; } \
   && ok "every event present but the guards stripped is REFUSED" \
