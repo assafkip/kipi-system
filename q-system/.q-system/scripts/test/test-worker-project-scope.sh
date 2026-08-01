@@ -136,12 +136,22 @@ setup_skel() {
 # been filtered were simply never reached. The budget was doing the filter's job
 # and the assertion could not tell the two apart. Assert on the pool, then, not
 # on the truncated tail of it: `ready_count` below reads the picker's own number.
+#
+# KIPI_NOTIFY is part of the isolation, not a nicety. Case 3 deliberately drives
+# the worker into MISCONFIG, and MISCONFIG pages the founder (linear-worker.sh:384).
+# Without this line the suite reaches the real slack-notify.sh and rings the
+# founder's actual phone on every run -- which it did, twice on 2026-08-01, during
+# ASK-281 verification and again under `kipi check`. A test that fires a real
+# outbound channel is not isolated no matter how good its assertions are.
+# The assertion is unaffected: case 3 greps the worker's own stdout for MISCONFIG,
+# and that line is written by $LOG, not by $NOTIFY.
 run_worker() {  # run_worker <skel-dir> [extra env assignments...]
   local skel="$1"; shift
   env KIPI_SKEL="$skel" \
       KIPI_STATE_DIR="$WORK/state" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+      KIPI_NOTIFY="/usr/bin/true" \
       "$@" bash "$WORKER" --limit 99 2>&1
 }
 
