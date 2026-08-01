@@ -271,7 +271,7 @@ REVIEW_ROOT="$SKEL"
 # (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
 # but when the live checkout happens to sit at that sha, "a tree that holds it"
 # IS the founder's working directory, and that is where the review ran. Both
-# PR #47 rounds recorded `workdir: /Users/assafkipnis/projects/kipi-system` with
+# PR #47 rounds recorded `workdir: <the founder's live checkout>` with
 # `sandbox: workspace-write`.
 #
 # Two failures at once, and the second is the worse one:
