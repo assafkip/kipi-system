@@ -1552,12 +1552,44 @@ $SCOPE_WHY
   # Only fires when there is something to open a PR FOR: commits ahead of
   # origin/main. A branch with no commits still yields no PR, which is a real
   # failure the driver should still see.
+  AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+
+  # PUSH BEFORE THE REVIEW, ON BOTH PATHS -- not only when this worker opens the
+  # PR. The push used to live inside the `[ -z "$PR_NUM" ]` branch below, so it
+  # ran only when there was no PR yet. Every commit made AFTER a PR already
+  # existed stayed local, and the Codex handoff (step 4b) is exactly that case:
+  # a capability block is usually PARTIAL, so Sana ships a half and opens a PR,
+  # and only then does the second runner commit. The reviewer was handed that
+  # PR, read a remote head that was still Sana's half, and the run reported the
+  # issue CONTINUED -- an approval for a diff the continuation is absent from.
+  # That is worse than skipping the review: the label is cleared, the issue
+  # leaves the parked pool, and the only copy of the work is a worktree on one
+  # machine that the next round's position guard will refuse to move.
+  #
+  # Guarded on the two conditions that make a push meaningful, so a run that
+  # produced nothing does not fire a no-op: there are commits past origin/main,
+  # and the local tip differs from what the remote already has. A MISSING
+  # origin/$BRANCH reads as "differs", which is correct -- nothing is there yet.
+  #
+  # A failed push is SAID, not swallowed. The review still runs (a stale review
+  # beats none), but the operator has to be able to tell an approval of the real
+  # head from an approval of an old one, and silence cannot carry that.
+  if [ "${AHEAD:-0}" -gt 0 ]; then
+    LOCAL_TIP="$(cd "$TREE" && git rev-parse HEAD 2>/dev/null || true)"
+    REMOTE_TIP="$(cd "$TREE" && git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
+    if [ "$LOCAL_TIP" != "$REMOTE_TIP" ]; then
+      if (cd "$TREE" && git push -u origin "$BRANCH" >/dev/null 2>&1); then
+        say "$ISSUE: pushed $BRANCH to origin ($LOCAL_TIP) -- the reviewer reads the remote, not the worktree"
+      else
+        say "WARN: $ISSUE could not push $BRANCH; any review below reads the remote's older head"
+      fi
+    fi
+  fi
+
   if [ -z "$PR_NUM" ]; then
-    AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
     if [ "${AHEAD:-0}" -gt 0 ]; then
       say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
-      (cd "$TREE" && git push -u origin "$BRANCH" >/dev/null 2>&1
-       gh pr create --head "$BRANCH" --base main \
+      (cd "$TREE" && gh pr create --head "$BRANCH" --base main \
          --title "$(git log -1 --pretty=%s)" \
          --body "Autonomous worker (Sana) on $ISSUE. Opened by the worker because the run ended without opening it.
 

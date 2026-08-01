@@ -113,7 +113,7 @@ if printf '%s' "$*" | grep -q 'ASK-803'; then
   # The marker is what flips the gh stub from "no PR" to "PR #803". Written
   # AFTER the commit so the ordering matches life: the PR exists only once the
   # agent has pushed something to open it for.
-  : > "${TEST_PR_MARKER:-/dev/null}"
+  : > "${TEST_PR_MARKER:-/dev/null}-803"
 fi
 # ASK-804 is the CONTINUATION case (ASK-281): Sana is blocked, Codex is not.
 # Same sentinel as 802/803 -- the difference is entirely in what the OTHER
@@ -121,6 +121,16 @@ fi
 # automatically a capability the fleet lacks.
 if printf '%s' "$*" | grep -q 'ASK-804'; then
   printf '%s' "Edit(.claude/rules/**) refused by the Claude Code sensitive-path guard" > .sana-blocked-capability
+  # SHE SHIPS A HALF AND OPENS THE PR BEFORE SHE BLOCKS. That ordering is the
+  # whole of case 12: a capability block is usually partial, so by the time the
+  # handoff runs there is already a PR, and the worker's only push lived INSIDE
+  # the "no PR yet" branch. The push is real (origin is a real bare repo here),
+  # because the assertion is about what the remote holds, not about intent.
+  : > sana-half-804.txt
+  git add sana-half-804.txt >/dev/null 2>&1
+  git commit --quiet -m "ASK-804 the half Sana could ship" >/dev/null 2>&1
+  git push --quiet -u origin HEAD >/dev/null 2>&1
+  : > "${TEST_PR_MARKER:-/dev/null}-804"
 fi
 # ASK-805 blocks identically to 804. The difference is entirely in what Codex
 # leaves behind (an EMPTY commit), which is the point of the case: the worker
@@ -147,17 +157,22 @@ cat > "$STUB/gh" <<'SH'
 # that answered #803 to both would make the gate skip ASK-803 at GATE=20 (no
 # verdict on an existing PR) and the agent would never run at all.
 ARGV="$*"
-if [ -n "${TEST_PR_MARKER:-}" ] && [ -f "$TEST_PR_MARKER" ] && printf '%s' "$ARGV" | grep -q 'ask-803'; then
-  case "$ARGV" in
-    *"pr list"*) echo 803 ;;
-  esac
-  exit 0
-fi
+# ONE MARKER PER ISSUE. A single shared marker file can only ever describe one
+# issue's PR, and two issues now open one (ASK-803 and ASK-804). With the old
+# shared file, ASK-804's `pr list` answered "PR #803" the moment ASK-803's stub
+# ran -- so ASK-804 looked like it already had a PR before its own agent ever
+# started, and the severity-floor gate skipped it.
+# The issue number is read off the argv because it appears in both shapes the
+# worker uses: `--head sana/ask-804` and the bare `804` that arm_automerge
+# passes. Every fixture issue is ASK-80x, so `80[0-9]` is exact here.
+NUM="$(printf '%s' "$ARGV" | grep -o '80[0-9]' | head -1)"
+MARK="${TEST_PR_MARKER:-/dev/null}-${NUM:-none}"
 case "$ARGV" in
+  *"pr list"*)        [ -f "$MARK" ] && echo "$NUM" ;;
   # arm_automerge probes this first; "true" means already armed, which is the
   # silent healthy branch and keeps the arm out of this test's assertions.
-  *autoMergeRequest*) [ -f "${TEST_PR_MARKER:-/dev/null}" ] && echo true ;;
-  *headRefOid*)       [ -f "${TEST_PR_MARKER:-/dev/null}" ] && echo 0000000000000000000000000000000000000803 ;;
+  *autoMergeRequest*) [ -f "$MARK" ] && echo true ;;
+  *headRefOid*)       [ -f "$MARK" ] && echo "000000000000000000000000000000000000$NUM" ;;
 esac
 exit 0
 SH
@@ -556,6 +571,49 @@ if grep -q "ASK-806 Codex CONTINUED" <<<"$ALL_WRITTEN"; then
 else
   bad "negative self-test: ASK-806 really continued" \
       "no 'ASK-806 Codex CONTINUED' line -- the ASK-807 absence above passed vacuously"
+fi
+
+# --- 12. a continuation reaches the REMOTE the reviewer reads ---------------
+# THE DEFECT: the worker's only `git push` lived inside the "no PR yet" branch,
+# so it ran only when the worker opened the PR itself. A capability block is
+# usually PARTIAL -- Sana ships a half and opens a PR, then blocks -- and the
+# Codex handoff commits AFTER that. So on the exact path this issue built, the
+# continuation stayed local: the reviewer was handed a PR whose remote head was
+# still Sana's half, it reviewed a diff the continuation is absent from, and the
+# run reported the issue CONTINUED. An approval for work nobody can see is worse
+# than no review: the label is cleared, the issue leaves the parked pool, and the
+# only copy of the work is a worktree on one machine.
+#
+# Asserted against the REMOTE, not against a log line. "The worker said it
+# pushed" is the claim under test; what refs/heads/sana/ask-804 actually holds
+# is the answer.
+ORIGIN_FILES="$(git -C "$WORK/origin.git" ls-tree -r --name-only refs/heads/sana/ask-804 2>/dev/null)"
+if grep -qx 'codex-continued.txt' <<<"$ORIGIN_FILES"; then
+  ok "a Codex continuation is pushed to the remote before the review (the PR carries the work)"
+else
+  bad "a Codex continuation is pushed to the remote before the review" \
+      "origin/sana/ask-804 does not hold codex-continued.txt -- the continuation never left the worktree, so the reviewed PR is missing it. Remote holds: '${ORIGIN_FILES:-<nothing>}'"
+fi
+
+# 12b. NEGATIVE SELF-TEST for case 12. The check above fails identically whether
+# the push is broken or the fixture never pushed anything at all -- and those
+# send a reader to opposite places. Pin that Sana's half IS on the remote, so a
+# RED above is specifically the continuation missing from a live branch.
+if grep -qx 'sana-half-804.txt' <<<"$ORIGIN_FILES"; then
+  ok "negative self-test: Sana's half really is on the remote (the branch is live, not absent)"
+else
+  bad "negative self-test: Sana's half really is on the remote" \
+      "origin/sana/ask-804 does not hold sana-half-804.txt -- case 12 above is failing on a dead branch, not on the push"
+fi
+
+# ...and the review really ran against that PR. Without this, case 12 would be
+# asserting the remote state of a branch nobody reviewed, which is not the
+# defect: the cost is that the REVIEWER read a stale head.
+if grep -q -- '--issue ASK-804' <<<"$REVIEWED"; then
+  ok "the continued issue's PR is the one handed to the reviewer (the stale head had a reader)"
+else
+  bad "the continued issue's PR is handed to the reviewer" \
+      "no reviewer call for ASK-804. Log: '${REVIEWED:-<empty>}'"
 fi
 
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
