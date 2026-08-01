@@ -10,6 +10,7 @@ allowed_files:
   - q-system/.q-system/scripts/repo-preflight.sh
   - q-system/.q-system/scripts/test/test-repo-preflight.sh
   - q-system/.q-system/capability-manifest.json
+  - q-system/.q-system/scripts/linear-worker.sh
 disallowed_files: []
 required_checks:
   - bash q-system/.q-system/scripts/test/test-repo-preflight.sh

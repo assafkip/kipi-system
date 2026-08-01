@@ -461,18 +461,11 @@ if [ "${KIPI_DISPATCH_PICK_DRY:-0}" = "1" ]; then
 fi
 
 TARGET_NAME=""
+TARGET_PATH=""
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
-  if [ "$PPATH" != "$REPO" ]; then
-    # This repo cleared the preflight, and it still cannot be worked yet: the
-    # worker takes no target-repo argument, and linear-worker.sh is off limits here
-    # (ASK-281 is live on it). Saying so and rotating past is the honest state.
-    # Unreachable in production today -- no registry row is opted in.
-    say "skip $PNAME: cleared preflight, but the worker cannot target another repo yet (sp-09c61b20)"
-    cursor_set "$PNAME"
-    continue
-  fi
   TARGET_NAME="$PNAME"
+  TARGET_PATH="$PPATH"
   break
 done <<PICKEOF
 $PICKS
@@ -482,12 +475,27 @@ if [ -z "$TARGET_NAME" ]; then
   say "no dispatchable repo this cycle"
   exit 0
 fi
+
+# Aim the worker AND the converge run at the repo whose turn this is. The worker
+# resolves its own project identity from this path, so asking it what is ready
+# without passing it would return the HOME repo's queue and then dispatch that
+# answer against another repo -- work for one project landing in another.
+#
+# Two carriers for one fact, because they cross different boundaries: --repo is
+# the explicit argument, and KIPI_TARGET_REPO is inherited through converge.sh,
+# which forwards only its own arguments to the worker.
+WORK_ARGS=""
+if [ "$TARGET_PATH" != "$REPO" ]; then
+  WORK_ARGS="--repo $TARGET_PATH"
+  export KIPI_TARGET_REPO="$TARGET_PATH"
+  say "entering $TARGET_NAME ($TARGET_PATH) -- cleared preflight"
+fi
 # Consume the turn HERE, not after a successful dispatch. A repo that took its turn
 # and had nothing ready must still hand the next turn on, or an idle home repo
 # pins the rotation and the fleet starves exactly as it does today.
 cursor_set "$TARGET_NAME"
 
-WORK_OUT="$(bash ./kipi work 2>&1)"
+WORK_OUT="$(bash ./kipi work $WORK_ARGS 2>&1)"
 WORK_RC=$?
 
 # An infra error (Linear down, auth expired) is environmental: it will not

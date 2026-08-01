@@ -127,16 +127,47 @@ TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
+TARGET_REPO_ARG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
+    --repo) shift; TARGET_REPO_ARG="${1:-}" ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
 done
+
+# --- WHICH REPO THIS RUN WORKS IN ----------------------------------------
+# $SKEL used to mean two things at once, and separating them is the whole point
+# of this argument:
+#
+#   TARGET_REPO  the repo the work happens in -- fetch, worktree, auto-merge, and
+#                the project-identity lookup that decides which issues are ours.
+#   SKEL         where the CONTROL CODE lives: $SKEL/kipi and $SKEL/plugins/prd-os,
+#                which the agent prompt tells the agent to run.
+#
+# THEY ARE NOT INTERCHANGEABLE, and assuming they were is the trap here. Measured
+# 2026-08-01: every registered instance carries a synced copy of this worker but
+# NO ./kipi entrypoint and no plugins/prd-os. Repointing $SKEL at an instance would
+# hand the agent `bash <instance>/kipi linear progress ...` and
+# `python3 <instance>/plugins/prd-os/...`, neither of which exists there -- so the
+# agent could do the work and then be unable to report or capture any of it.
+#
+# Defaults to $SKEL, so every existing caller behaves exactly as before.
+#
+# KIPI_TARGET_REPO is the env form, and it exists for one concrete reason:
+# converge.sh drives this script through $WORKER_CMD and forwards only its own
+# arguments. The env crosses that boundary by inheritance, so a dispatched
+# converge run reaches the right repo without converge.sh needing to change.
+TARGET_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
+if [ ! -d "$TARGET_REPO" ]; then
+  echo "--repo: no such directory: $TARGET_REPO" >&2; exit 1
+fi
+TARGET_REPO="$(cd "$TARGET_REPO" && pwd)"
+export TARGET_REPO
 
 export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
@@ -200,14 +231,14 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 #
 # 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
 # environment that is down from a worker that was invoked wrong.
-if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
-  say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
-  bash "$NOTIFY" "worker: git fetch failed in $SKEL -- the run did NO work. Check credentials/network." 2>/dev/null || true
+if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
+  say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
+  bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
 fi
 
 # --- repo identity, for the project-scope filter -----------------------------
-# The worker cuts EVERY worktree from $SKEL (line 57). An issue filed against
+# The worker cuts EVERY worktree from $TARGET_REPO (which defaults to $SKEL). An issue filed against
 # another repo can therefore never reach a terminal state here: the agent lands
 # in kipi-system, cannot find the files the DoR names, and exits 0 with no diff.
 # Measured against the live board 2026-07-30: of 29 ready issues, 11 were the
@@ -235,7 +266,11 @@ fi
 # Order: explicit env override, then the registry, then basename.
 REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
 if [ -z "$REPO_PROJECT" ]; then
-  REPO_PROJECT="$(SKEL_PATH="$SKEL" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
+  # The path being looked UP is the target; the registry doing the looking up is
+  # always the skeleton's. An instance carries no instance-registry.json, so
+  # reading it from the target would fall through to basename for every repo and
+  # quietly re-break the filter for exactly the three instances named below.
+  REPO_PROJECT="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
 import json, os
 skel = os.path.realpath(os.environ["SKEL_PATH"])
 try:
@@ -249,7 +284,7 @@ for e in entries if isinstance(entries, list) else []:
 PY
 )"
 fi
-[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$SKEL")"
+[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
@@ -378,7 +413,7 @@ READY_COUNT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(len(jso
 # line is not surfacing, and this is environmental, not an issue's fault.
 PROJECT_KNOWN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("project_known"))' 2>/dev/null)"
 if [ "$PROJECT_KNOWN" = "False" ]; then
-  say "MISCONFIG: repo identity '$REPO_PROJECT' (from $SKEL) matches NO Linear project on team ASK."
+  say "MISCONFIG: repo identity '$REPO_PROJECT' (from $TARGET_REPO) matches NO Linear project on team ASK."
   say "MISCONFIG: every issue would be filtered out, so this run picked nothing for a config reason, not an empty board."
   say "MISCONFIG: fix by renaming the Linear project to match the checkout, or set KIPI_LINEAR_PROJECT."
   bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
@@ -814,7 +849,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # merge needed" across exactly this state. Arming here does not turn a done
       # PR into a round: no agent, no reviewer, no Linear comment. The skip stays
       # a skip; only the arm is new.
-      arm_automerge "$EXISTING_PR" "$SKEL"
+      arm_automerge "$EXISTING_PR" "$TARGET_REPO"
       # AND THE LINE SAYS WHO MERGES IT (round 3, finding 2 -- minor). Round 2
       # fixed this sentence at the closing line and at converge's and left this
       # third site saying "waiting on founder merge". For a PR armed a round ago,
@@ -914,7 +949,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # only defensible start point.
   BASE="origin/main"
   if [ -n "$EXISTING_PR" ]; then
-    if git -C "$SKEL" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
+    if git -C "$TARGET_REPO" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
       BASE="origin/$BRANCH"
     else
       # gh named a PR whose head branch is not on the remote (deleted after a
@@ -929,7 +964,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   fi
   if [ ! -d "$TREE" ]; then
     mkdir -p "$(dirname "$TREE")"
-    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
+    if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
       # test above and this line. That is the collision the claim below exists to
       # adjudicate, not an infra failure -- so fall through and let it, rather
@@ -1194,7 +1229,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
-Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.
+Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.

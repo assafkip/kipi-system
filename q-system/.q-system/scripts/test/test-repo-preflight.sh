@@ -442,6 +442,81 @@ else
 fi
 
 echo
+echo "== 11. the worker accepts --repo and AIMS AT IT (codex finding-1) =="
+# A rotation that reaches an opted-in repo and then skips it does not make the 18
+# out-of-repo issues pickable, which is this issue's stated outcome. Codex called
+# it as a blocker: no external repo was ever dispatched.
+#
+# DRIVEN, NOT GREPPED. The worker stops with exit 9 the moment `git fetch` fails
+# against its target, BEFORE it reaches Linear or cuts a worktree. Pointing a
+# fixture at a nonexistent origin therefore proves which path --repo actually
+# aimed the run at, using the worker's own control flow, with no network and no
+# live data path touched.
+WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
+NOTIFY_STUB="$WORK/notify.sh"
+cat > "$NOTIFY_STUB" <<NOTIFYEOF
+#!/usr/bin/env bash
+printf 'NOTIFY-STUB: %s\n' "\$*" >> "$WORK/notify.log"
+NOTIFYEOF
+chmod +x "$NOTIFY_STUB"
+# KIPI_NOTIFY AND KIPI_STATE_DIR ARE BOTH MANDATORY HERE. The worker pages on the
+# INFRA stop and appends to $HOME/.config/kipi/linear-worker.log. Three tests
+# leaked real Slack pages to the founder on 2026-08-01 and PR #54 exists to close
+# that class; this is not adding a fourth, and it is not writing the live log.
+TGT="$(make_good_repo targetrepo)"
+( cd "$TGT" && git remote set-url origin "$WORK/definitely-not-here.git" ) >/dev/null 2>&1
+run_worker() {
+  KIPI_NOTIFY="$NOTIFY_STUB" KIPI_STATE_DIR="$WORK/wstate" \
+    bash "$WORKER" "$@" 2>&1
+}
+WOUT="$(run_worker --repo "$TGT")"; WRC=$?
+if printf '%s' "$WOUT" | grep -q 'unknown arg: --repo'; then
+  bad "THE DEFECT (finding-1): the worker rejects --repo, so no opted-in repo can be entered"
+else
+  ok "the worker accepts a --repo argument"
+fi
+if [ "$WRC" -eq 9 ] && printf '%s' "$WOUT" | grep -qF "$TGT"; then
+  ok "--repo aims the run at the TARGET repo (stopped at its fetch, naming it)"
+else
+  bad "--repo did not aim the run at $TGT (rc=$WRC): $(printf '%s' "$WOUT" | tail -2 | tr '\n' ' ')"
+fi
+# The run must NOT have aimed at the skeleton. Without this, a worker that ignored
+# --repo entirely and failed for its own reasons could still satisfy the case above.
+printf '%s' "$WOUT" | grep -q "git fetch failed in $REPO\b" \
+  && bad "the run aimed at the SKELETON despite --repo, so work would land in the wrong repo" \
+  || ok "the run did not fall back to the skeleton checkout"
+# No real Slack. Assert the stub is what absorbed the page.
+if [ -f "$WORK/notify.log" ]; then
+  grep -q 'NOTIFY-STUB' "$WORK/notify.log" \
+    && ok "the INFRA page went to the stub, not to real Slack" \
+    || bad "notify.log exists but carries no stub marker"
+else
+  ok "no page emitted on this path (and none could reach real Slack: KIPI_NOTIFY is stubbed)"
+fi
+
+echo
+echo "== 12. control code stays on the SKELETON while work follows the target =="
+# $SKEL means two different things and conflating them breaks the agent. Registered
+# instances carry a worker copy but NO ./kipi entrypoint and no plugins/prd-os, so a
+# --repo that repointed everything would hand the agent "bash <instance>/kipi linear
+# progress ..." and "python3 <instance>/plugins/prd-os/..." -- both nonexistent.
+# Work (fetch, worktree, auto-merge, project identity) follows the target; tooling
+# references stay on the skeleton that is actually running.
+grep -qE 'TARGET_REPO' "$WORKER" \
+  && ok "the worker has a TARGET_REPO identity distinct from SKEL" \
+  || bad "no TARGET_REPO in the worker: work and control code are still the same variable"
+grep -qE 'git -C "\$TARGET_REPO" (fetch|worktree|rev-parse)' "$WORKER" \
+  && ok "git work (fetch/worktree) follows TARGET_REPO" \
+  || bad "git work still runs against SKEL, so an opted-in repo would never be checked out"
+grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
+  && ok "control-code references still point at the skeleton" \
+  || bad "the agent's kipi/prd-os references were repointed at a repo that has neither"
+# The registry itself lives in the skeleton; only the path being looked UP is the target.
+grep -qE 'REG="\$SKEL/instance-registry.json"' "$WORKER" \
+  && ok "identity is resolved from the SKELETON's registry, keyed on the target path" \
+  || bad "the registry is read from the target repo, which does not carry one"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"
