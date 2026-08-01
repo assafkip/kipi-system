@@ -426,7 +426,7 @@ fi
 # issue per run.
 # No `|| echo 0` fallback: grep -c already PRINTS 0 when it matches nothing and
 # then exits 1, so the fallback appended a second line and `[` got "0\n0".
-N804="$(grep -c 'ASK-804' <<<"$CODEX_CALLS" 2>/dev/null)" || true
+N804="$(grep -c '^INVOKE ASK-804$' <<<"$CODEX_CALLS" 2>/dev/null)" || true
 if [ "${N804:-0}" -eq 1 ]; then
   ok "the handoff is ONE Codex attempt per issue per run, not a retry loop"
 else
