@@ -14,6 +14,17 @@
 #    stale file, and the reusable worktree is not left dirty
 # 5. it NEVER writes owner:assaf. That label is the founder queue, and routing a
 #    re-scope there is the exact defect this path replaces (ASK-149, 2026-07-30).
+# 6. a refusal that LEFT A PR still gets that PR reviewed (ASK-275, 2026-08-01).
+#    A capability block is frequently PARTIAL -- the executable half ships, the
+#    blocked half does not -- so the run ends with real code pushed and a PR
+#    open. The first build of this path `continue`d straight past step 5, so
+#    that PR got no reviewer, no verdict record, and no kipi/reviewer-approved.
+#    Observed live: PRs #49 (ASK-134), #50 (ASK-133), #51 (ASK-132) all opened
+#    by the loop on 2026-07-31, all three still unreviewed, all three orphaned
+#    permanently -- the blocked:capability label removes the issue from the
+#    picker, so no later run ever comes back for them. The loop had just been
+#    taught to review everything it opens and then built a new way to abandon
+#    a PR unreviewed.
 #
 # The agent is a stub that writes the sentinel. That is the honest seam: whether
 # Sana DECIDES to refuse is a model judgment this suite cannot and should not
@@ -45,7 +56,7 @@ def issue(ident):
             "project": {"name": "kipi-system"},
             "labels": {"nodes": [{"name": "owner:sana"}]}}
 
-BOARD = [issue("ASK-801"), issue("ASK-802")]
+BOARD = [issue("ASK-801"), issue("ASK-802"), issue("ASK-803")]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -83,11 +94,52 @@ fi
 if printf '%s' "$*" | grep -q 'ASK-802'; then
   printf '%s' "Edit(.claude/rules/**) refused by the harness sensitive-path guard" > .sana-blocked-capability
 fi
+# ASK-803 is the PARTIAL capability block, the shape all three live PRs had:
+# the executable half is committed and pushed, the blocked half is not, so the
+# run ends refusing WITH a PR open. Nothing here is a second refusal class --
+# it is the same blocked:capability sentinel, plus the state the live runs
+# actually left behind.
+if printf '%s' "$*" | grep -q 'ASK-803'; then
+  printf '%s' "PARTIAL: 3 of 4 files shipped; Edit(.claude/rules/**) refused for the 4th" > .sana-blocked-capability
+  : > shipped-half.txt
+  git add shipped-half.txt >/dev/null 2>&1
+  git commit --quiet -m "ASK-803 the half that shipped" >/dev/null 2>&1
+  # The marker is what flips the gh stub from "no PR" to "PR #803". Written
+  # AFTER the commit so the ordering matches life: the PR exists only once the
+  # agent has pushed something to open it for.
+  : > "${TEST_PR_MARKER:-/dev/null}"
+fi
 exit 0
 SH
 cat > "$STUB/gh" <<'SH'
 #!/usr/bin/env bash
-# no PRs exist in this world; every query answers empty
+# No PRs exist in this world EXCEPT the one the ASK-803 stub opens mid-run.
+# Stateful on purpose: the worker asks `gh pr list` twice per issue -- once at
+# the severity-floor gate BEFORE the agent runs, once at step 5 AFTER. A stub
+# that answered #803 to both would make the gate skip ASK-803 at GATE=20 (no
+# verdict on an existing PR) and the agent would never run at all.
+ARGV="$*"
+if [ -n "${TEST_PR_MARKER:-}" ] && [ -f "$TEST_PR_MARKER" ] && printf '%s' "$ARGV" | grep -q 'ask-803'; then
+  case "$ARGV" in
+    *"pr list"*) echo 803 ;;
+  esac
+  exit 0
+fi
+case "$ARGV" in
+  # arm_automerge probes this first; "true" means already armed, which is the
+  # silent healthy branch and keeps the arm out of this test's assertions.
+  *autoMergeRequest*) [ -f "${TEST_PR_MARKER:-/dev/null}" ] && echo true ;;
+  *headRefOid*)       [ -f "${TEST_PR_MARKER:-/dev/null}" ] && echo 0000000000000000000000000000000000000803 ;;
+esac
+exit 0
+SH
+# The reviewer is RECORDED, not stubbed away: whether step 5 ran at all on the
+# refusal path is the whole question, and the only deterministic answer is
+# whether the reviewer was invoked with the PR number.
+REVIEWER_LOG="$WORK/reviewer-calls.log"
+cat > "$WORK/fake-reviewer.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$REVIEWER_LOG"
 exit 0
 SH
 # The label + progress calls are the thing under test, so they are RECORDED
@@ -124,8 +176,9 @@ PATH="$STUB:$PATH" \
    KIPI_SKEL="$SKEL" KIPI_STATE_DIR="$STATE" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
-   KIPI_PR_REVIEWER="/usr/bin/true" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
    KIPI_NOTIFY="/usr/bin/true" \
+   TEST_PR_MARKER="$WORK/pr-803-open" \
    bash "$WORKER" --apply --limit 2 > "$RUN_OUT" 2>&1
 OUT="$(cat "$RUN_OUT")"
 
@@ -234,7 +287,60 @@ else
   ok "consumes the sentinel (a re-scoped issue can be picked up again)"
 fi
 
-# --- 6. NEGATIVE SELF-TEST --------------------------------------------------
+# --- 6. a refusal that left a PR still gets that PR REVIEWED -----------------
+# THE REGRESSION THIS CASE EXISTS FOR (ASK-275, 2026-08-01). A capability block
+# is usually partial: the executable half ships. The refusal branch used to
+# `continue` before step 5, so the PR that half opened was never handed to the
+# reviewer -- no verdict record, no kipi/reviewer-approved, and the
+# blocked:capability label then removes the issue from the picker, so nothing
+# ever comes back for it. Live evidence: PRs #49/#50/#51, opened 2026-07-31,
+# still unreviewed. "Every PR this worker opens gets the adversarial reviewer"
+# was true on one path and false on the other.
+REVIEWED="$(cat "$REVIEWER_LOG" 2>/dev/null)"
+if grep -q '803' <<<"$REVIEWED" && grep -q -- '--issue ASK-803' <<<"$REVIEWED"; then
+  ok "a capability block that left a PR still sends that PR to the reviewer"
+else
+  bad "a capability block that left a PR still sends that PR to the reviewer" \
+      "reviewer was never invoked for PR #803 -- the refusal abandoned an open PR unreviewed. Log: '${REVIEWED:-<empty>}'"
+fi
+
+# The refusal semantics must SURVIVE the fall-through. Reviewing the PR is the
+# only thing that changes: the issue is still blocked, still labelled, and still
+# not a failed attempt. Without these three, the fix would trade one defect for
+# a refusal that no longer refuses.
+if grep -q "ASK-803 BLOCKED on a missing capability" <<<"$ALL_WRITTEN"; then
+  ok "a partial capability block is still reported as blocked (reviewing it did not un-block it)"
+else
+  bad "a partial capability block is still reported as blocked" "no BLOCKED line for ASK-803"
+fi
+
+if grep -q "label ASK-803 blocked:capability\|ASK-803 labelled blocked:capability\|ASK-803 REFUSED but the blocked:capability" <<<"$ALL_WRITTEN"; then
+  ok "a partial capability block still leaves the ready pool via blocked:capability"
+else
+  bad "a partial capability block still leaves the ready pool" "no blocked:capability label op for ASK-803"
+fi
+
+if [ -f "$ATT" ] && python3 -c "
+import json,sys
+d=json.load(open('$ATT'))
+sys.exit(0 if d.get('ASK-803',{}).get('count',0)>0 else 1)" 2>/dev/null; then
+  bad "a partial refusal does not burn an attempt" "ASK-803 has a nonzero attempt count: $(cat "$ATT")"
+else
+  ok "a partial refusal does not burn an attempt (it produced a diff AND a correct refusal)"
+fi
+
+# --- 6b. NEGATIVE SELF-TEST for case 6 --------------------------------------
+# Case 6 greps a file that may not exist. Prove the assertion can fail: an empty
+# reviewer log must not satisfy it. Without this, a run where the reviewer was
+# never wired at all would read as a pass on the one case this suite was
+# extended to catch.
+if grep -q '803' <<<"" 2>/dev/null; then
+  bad "negative self-test (reviewer log)" "an empty reviewer log satisfied the review assertion -- the check is inert"
+else
+  ok "negative self-test: the review assertion rejects an empty reviewer log"
+fi
+
+# --- 7. NEGATIVE SELF-TEST --------------------------------------------------
 # Every assertion above greps a combined output blob. Prove the greps can miss:
 # a worker that refuses NOTHING must fail assertion 1. Without this, an empty
 # $OUT would satisfy assertions 4, 5 and 6 and read as three passes.

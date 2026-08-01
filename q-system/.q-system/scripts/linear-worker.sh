@@ -1290,7 +1290,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
   #
   # Both leave the ready pool. They differ in who acts next and what they do, and
   # collapsing them loses exactly the information that decides which.
-  SENTINEL=""; REFUSE_LABEL=""; REFUSE_KIND=""
+  # RESET PER ISSUE. $REFUSED gates two decisions further down (the no-PR attempt
+  # bump and the budget spend), and this loop reuses every variable across
+  # iterations -- a value that survived would make the issue AFTER a refusal
+  # inherit its exemptions.
+  SENTINEL=""; REFUSE_LABEL=""; REFUSE_KIND=""; REFUSED=""
   if [ -f "$TREE/.sana-blocked-capability" ]; then
     SENTINEL="$TREE/.sana-blocked-capability"; REFUSE_LABEL="blocked:capability"; REFUSE_KIND="capability"
   elif [ -f "$TREE/.sana-needs-scope" ]; then
@@ -1340,13 +1344,39 @@ $SCOPE_WHY
 **Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
     fi
     python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
-    ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
-    # `continue` WITHOUT DONE++ is the whole of part B: a rejection costs a TURN
-    # inside this run, not the run itself. When the worker holds the pool (no
-    # --issue), the loop moves straight to the next ready issue and spends its
-    # budget on one that can actually yield a diff. Same shape the MAX_ATTEMPTS
-    # skip above already uses.
-    continue
+    # A REFUSAL DOES NOT SKIP THE REVIEW (ASK-275, 2026-08-01).
+    #
+    # This was `release` + `continue` -- jumping the whole of step 5. The
+    # reasoning was that a refusal produces no diff, so there is nothing to
+    # review. That is false for the capability class, and it is false in the
+    # common case: a capability block is usually PARTIAL. Sana ships the half
+    # she can, pushes it, opens the PR, and refuses the rest. The `continue`
+    # then abandoned that PR: no reviewer, no verdict record, no
+    # kipi/reviewer-approved -- and because the blocked:capability label pulls
+    # the issue out of the picker, no later run ever comes back for it.
+    #
+    # Observed on the first three live partial blocks, all on 2026-07-31:
+    # PR #49 (ASK-134), #50 (ASK-133), #51 (ASK-132). Each has a real commit,
+    # each is still open, none has a verdict. converge.sh reported them
+    # correctly ("STOP exit-7: PR #49 has no verdict after round 1 -- the review
+    # died or timed out") and its diagnosis was wrong in the only way that
+    # mattered: the review did not die, it was never invoked. The loop had just
+    # been taught to review every PR it opens, and the refusal path was a second
+    # way to open one it would not review.
+    #
+    # So: FALL THROUGH to step 5 instead of continuing. Step 5 is the single
+    # chokepoint where a PR gets armed and reviewed, and a PR that came out of a
+    # blocked run is not a different kind of PR -- it is committed code sitting
+    # on a branch, which is exactly what the reviewer is for. A second review
+    # call in this branch would be a second copy of that chokepoint with its own
+    # drift; there is one.
+    #
+    # $REFUSED carries the refusal past step 5 so the two things a refusal must
+    # NOT do still hold: it does not bump the attempt counter, and it does not
+    # spend the work budget. Both are enforced below at their own sites. The
+    # claim release moves to step 6, which already owns it -- releasing here and
+    # then falling through would release the same claim twice from two places.
+    REFUSED="$REFUSE_KIND"
   fi
 
   # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
@@ -1524,7 +1554,19 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # which is the correct terminal state for "the agent cannot make progress on
     # this spec". The cost of getting it wrong is bounded and visible -- a stuck
     # issue is reported, whereas the current behaviour is silent budget burn.
-    bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
+    #
+    # EXCEPT WHEN THE RUN REFUSED. A refusal with no diff is the correct answer,
+    # not a failed attempt -- the same reasoning stated at the sentinel above,
+    # enforced here because the refusal path now REACHES this line instead of
+    # `continue`-ing past it. Without this guard the fall-through would silently
+    # start counting every refusal as a failure and mark a correctly-refused
+    # issue STUCK after three, which is the founder-queue routing the whole of
+    # ASK-275 removed.
+    if [ -n "$REFUSED" ]; then
+      say "$ISSUE: refused ($REFUSED) and left no PR -- nothing to review, and a refusal is not a failed attempt"
+    else
+      bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
+    fi
   fi
 
   # 6. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
@@ -1534,7 +1576,21 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   # worktree forever, wedging that issue permanently. Asserted by case 3 of
   # test-linear-worker-parallel.sh, which reads the lock files back after the run.
   ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
-  DONE=$((DONE+1))
+  # THE CLOSING LINE MUST NOT SAY "converged" ABOUT A BLOCKED ISSUE. The verdict
+  # report above speaks for the PR and is correct about it -- an APPROVE on a
+  # partial diff is a real approval of the code that is there. It is not a
+  # statement about the ISSUE, which is still held at $REFUSE_LABEL and is not
+  # done. The closing line is the one an operator scans, so it says which.
+  if [ -n "$REFUSED" ]; then
+    say "$ISSUE is NOT done: held at $REFUSE_LABEL. Any PR above carries only the half that shipped before the block, and the verdict on it is a verdict on that half."
+  fi
+  # A REFUSAL COSTS A TURN, NOT A DISPATCH. This was a `continue` before the
+  # DONE++ at the sentinel above; the fall-through moved the skip here so the
+  # budget semantics are unchanged while the review is no longer skipped with
+  # them. When the worker holds the pool (no --issue), the loop moves straight to
+  # the next ready issue and spends its budget on one that can actually yield a
+  # diff.
+  [ -n "$REFUSED" ] || DONE=$((DONE+1))
 done
 
 say "worker: run complete"
