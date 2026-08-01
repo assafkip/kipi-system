@@ -225,8 +225,9 @@ esac
 
 # --- case 4b: the registry BEATS basename -----------------------------------
 # instance-registry.json maps instance path -> name, and that name is the Linear
-# project name while the directory usually is NOT: KTLYST_strategy lives at
-# .../projects/strategy, ktlyst at .../projects/product, ASK_AI_consultant at
+# project, while the directory usually is NOT: a registered instance named
+# <Persona>_strategy lives at .../projects/strategy, one named for its product
+# lives at .../projects/product, one named <Persona>_consultant lives at
 # .../consulting. Shipping basename alone would reject every issue on those
 # instances. The directory here is deliberately named something that is NOT a
 # project, so a pass can only come from the registry being read.
