@@ -88,12 +88,14 @@ Outbound-channel detector coverage (third detector, same enumeration rule):
              sandbox skeleton (the seam for runners like lessons-daily.sh that
              hardcode $SKEL/.../slack-notify.sh and expose no env override).
              `bash -n` parses without executing and is not an invocation.
-    MISSES   (documented deferrals): ENV INHERITANCE to a grandchild -- a test
-             that sets KIPI_NOTIFY on a parent command whose CHILD execs the
-             runner reads as unstubbed, because the invocation line cannot name
-             the parent. test-dispatch-liveness.sh hit this; the fix there was
-             to `export` the stub, which is both correct for that topology and
-             what the global carve-out recognises. Also: a stub named only in a
+    MISSES   (deliberate, because this is DEFENCE IN DEPTH): an executed path
+             that cannot be placed in this checkout is NOT flagged -- see
+             _classify_path. PR #58 made slack-notify.sh refuse to send when the
+             Linear API host is loopback, so a miss here is caught downstream while a false
+             positive is caught by nobody and gets the lint switched off.
+             Also missed: ENV INHERITANCE to a grandchild, where a test sets
+             KIPI_NOTIFY on a parent command whose CHILD execs the runner; the
+             invocation line cannot name the parent. Also: a stub named only in a
              COMMENT does not count, but a bare mention on the command does, so
              an unused KIPI_NOTIFY assignment reads as isolation; a runner
              reached only through a PATH-shadowed binary, or one whose filename
@@ -271,6 +273,22 @@ _GLOBAL_STUB = re.compile(
 # invocation it protects.
 _PER_CALL_STUB = re.compile(r"KIPI_NOTIFY|NOTIFY_SCRIPT")
 
+# Any assignment, so an executed path can be traced back through the variables
+# that built it. Basename alone is not identity: test-dispatch-liveness.sh runs
+# "$ROOT/converge.sh" where ROOT is a mktemp dir, i.e. a sandbox stub that cannot
+# page anyone, and matching on "converge.sh" called it a production leak.
+_ANY_ASSIGN = re.compile(r"^\s*(?:export\s+|local\s+)?([A-Za-z_]\w*)=(.*)$")
+
+# Positive proof the path is a throwaway copy.
+_SANDBOX_EVIDENCE = re.compile(
+    r"\bmktemp\b|\$\{?TMPDIR\b|(?:^|[\s\"'=:])/tmp/|/private/tmp/")
+
+# Positive proof the path is anchored at THIS checkout: the shell idioms that
+# mean "next to this file" or "where we are".
+_HERE_ANCHOR = re.compile(r"BASH_SOURCE|\bdirname\b|\$\{?PWD\b|(?:^|[\"'\s])\./")
+
+_MAX_EXPAND = 6
+
 # Resolution is disk I/O and the runner-change scan re-checks every sibling test,
 # so memoise per (test dir, runner name).
 _REACH_CACHE = {}
@@ -362,6 +380,56 @@ def _notifier_reachable(test_path, name):
     return result
 
 
+def _collect_assignments(live):
+    out = {}
+    for _, line in live:
+        m = _ANY_ASSIGN.match(line)
+        if m and m.group(1) not in out:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def _expand(tok, assigns, depth=0):
+    """Substitute the file's own variables into an executed path token."""
+    if depth > _MAX_EXPAND:
+        return tok
+    s = tok.strip("\"'")
+    # ${VAR:-default} keeps the DEFAULT: that is the ref-hatch shape
+    # (`${KIPI_WORKER_UNDER_TEST:-$REPO_SCRIPTS/linear-worker.sh}`), where the
+    # default is the production path the suite normally drives.
+    s = re.sub(r"\$\{[A-Za-z_]\w*:-([^}]*)\}", r"\1", s)
+
+    def sub(m):
+        name = m.group(1)
+        if name in assigns:
+            return _expand(assigns[name], assigns, depth + 1)
+        return m.group(0)
+
+    return re.sub(r"\$\{?([A-Za-z_]\w*)\}?", sub, s)
+
+
+def _classify_path(tok, assigns):
+    """'sandbox' | 'production' | 'unknown' for an executed path token.
+
+    PRECISION FIRST, deliberately. This lint is defence in depth: PR #58 made
+    slack-notify.sh refuse to send when the Linear API host is loopback, which
+    is a chokepoint covering every test on every branch, including the
+    grandchild-process case this detector documents as a structural miss.
+    So a MISS here is caught downstream, while a FALSE POSITIVE is caught by
+    nobody and gets the whole lint switched off by the next person it blocks.
+    'unknown' therefore does NOT flag: when the executed path cannot be placed
+    in this checkout with evidence, stay quiet.
+    """
+    full = _expand(tok, assigns)
+    if _SANDBOX_EVIDENCE.search(full):
+        return "sandbox"
+    if _HERE_ANCHOR.search(full):
+        return "production"
+    if full.startswith("/"):
+        return "production"
+    return "unknown"
+
+
 def _logical_lines(text, python=False):
     """[(first_line_no, joined_command)] -- the isolation UNIT.
 
@@ -395,9 +463,18 @@ def find_notify_leaks(file_path, text):
     """[(line_no, runner_name)] per notify-capable runner this test EXECUTES
     while stubbing nothing."""
     live = _live_lines(text)
-    if any(_GLOBAL_STUB.search(line) for _, line in live):
-        return []                      # one stub genuinely covers the whole file
+    # An exemption cannot apply BACKWARDS in time. An `export KIPI_NOTIFY` on
+    # line 500 says nothing about an invocation on line 100, which ran with the
+    # real notifier. Same shape as the file-wide bug this detector already fixed,
+    # one level up. Record WHERE the global stub starts and exempt only what
+    # follows it.
+    gstub = None
+    for ln, line in live:
+        if _GLOBAL_STUB.search(line):
+            gstub = ln
+            break
 
+    assigns = _collect_assignments(live)
     self_name = Path(str(file_path)).name
     is_py = Path(str(file_path)).suffix == ".py"
     reachable = {}                     # runner name -> bool, resolved once
@@ -420,8 +497,13 @@ def find_notify_leaks(file_path, text):
     for ln, cmd in _logical_lines(text, python=is_py):
         if _SYNTAX_ONLY.search(cmd):
             continue
+        if gstub is not None and ln >= gstub:
+            continue                   # covered by a global stub set EARLIER
         here = []
         for tok in _interpreter_args(cmd):
+            # Identity is the resolved PATH, not the basename.
+            if _classify_path(tok, assigns) != "production":
+                continue
             for name in _SCRIPT_NAME.findall(tok):
                 if name != self_name and reachable.get(name):
                     here.append(name)

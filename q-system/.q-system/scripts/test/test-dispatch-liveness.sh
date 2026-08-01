@@ -59,13 +59,6 @@ DISPATCH="$REPO_ROOT/kipi-dispatch.sh"
 ISS="ASK-9$$"
 
 ROOT="$(mktemp -d)"
-
-# EXPORTED, not per-command. This suite runs converge.sh from inside generated
-# stub scripts, so the pager is reached by a grandchild the invocation line
-# cannot name. An exported default covers every descendant; the per-command
-# KIPI_NOTIFY="$ROOT/notify.sh" further down still wins where a case needs to
-# RECORD what was paged.
-export KIPI_NOTIFY="/usr/bin/true"
 trap 'pkill -f "$ROOT/converge.sh" 2>/dev/null; rm -r -- "$ROOT" 2>/dev/null' EXIT
 
 # --- the sandbox ------------------------------------------------------------

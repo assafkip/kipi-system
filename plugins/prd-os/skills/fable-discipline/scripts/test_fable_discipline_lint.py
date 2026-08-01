@@ -98,7 +98,11 @@ QUIET_RUNNER = (
     'echo ok\n'
 )
 
-_HEAD = 'RUNNER="$SCRIPT_DIR/../pager-runner.sh"\n'
+# Real suites anchor themselves with BASH_SOURCE; the fixtures must too, or
+# the detector cannot place the executed path in this checkout and (correctly)
+# stays quiet, which would make every positive case below vacuously green.
+_ANCHOR = 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+_HEAD = _ANCHOR + 'RUNNER="$SCRIPT_DIR/../pager-runner.sh"\n'
 
 # (case name, test-file body, target: "test"|"runner", expected exit)
 CHANNEL_CASES = [
@@ -134,6 +138,23 @@ CHANNEL_CASES = [
      "test", 0),
     # Editing the RUNNER must re-check the tests that drive it. The edited file
     # alone can never show this: the leak lives in files the edit did not touch.
+    # Identity is the resolved PATH. A sandbox copy of a pager-capable runner
+    # cannot page anyone, and flagging it is the false positive that gets a lint
+    # switched off. test-dispatch-liveness.sh runs "$ROOT/converge.sh" from a
+    # mktemp dir and was wrongly blocked.
+    ("sandbox copy of the runner is not the production runner",
+     _ANCHOR + 'SB="$(mktemp -d)"\nRUNNER="$SB/pager-runner.sh"\n'
+               'bash "$RUNNER" --go\n', "test", 0),
+    # Precision first: this lint is defence in depth behind the slack-notify.sh
+    # loopback refusal, so an unplaceable path stays quiet rather than crying wolf.
+    ("unplaceable path is not flagged",
+     'RUNNER="$MYSTERY_DIR/pager-runner.sh"\nbash "$RUNNER" --go\n', "test", 0),
+    # An exemption cannot reach backwards: the early call already ran with the
+    # real notifier.
+    ("a LATER export does not exempt an EARLIER invocation",
+     _HEAD + 'bash "$RUNNER" --early\n'
+             'export KIPI_NOTIFY=/usr/bin/true\n'
+             'bash "$RUNNER" --late\n', "test", 2),
     ("editing the runner sees its unstubbed test",
      _HEAD + 'bash "$RUNNER" --go\n', "runner", 2),
     ("editing the runner is clean when its test is stubbed",
