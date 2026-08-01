@@ -56,7 +56,13 @@ def issue(ident):
             "project": {"name": "kipi-system"},
             "labels": {"nodes": [{"name": "owner:sana"}]}}
 
-BOARD = [issue("ASK-801"), issue("ASK-802"), issue("ASK-803"), issue("ASK-804")]
+# ORDER IS LOAD-BEARING for the budget assertion (cases 11-12). The worker breaks
+# at the top of the loop once DONE reaches --limit (2 here), so the board is laid
+# out so the ONLY way to reach ASK-807 is for the two continuations before it to
+# have spent no budget. 805 sits between them and must NOT spend one: it is the
+# empty-commit case, which parks.
+BOARD = [issue("ASK-801"), issue("ASK-802"), issue("ASK-803"), issue("ASK-804"),
+         issue("ASK-805"), issue("ASK-806"), issue("ASK-807")]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -116,6 +122,21 @@ fi
 if printf '%s' "$*" | grep -q 'ASK-804'; then
   printf '%s' "Edit(.claude/rules/**) refused by the Claude Code sensitive-path guard" > .sana-blocked-capability
 fi
+# ASK-805 blocks identically to 804. The difference is entirely in what Codex
+# leaves behind (an EMPTY commit), which is the point of the case: the worker
+# must judge the WORK, not the fact that HEAD moved.
+if printf '%s' "$*" | grep -q 'ASK-805'; then
+  printf '%s' "Edit(.claude/rules/**) refused by the Claude Code sensitive-path guard" > .sana-blocked-capability
+fi
+# ASK-806 is the SECOND continuation. Two are needed, not one: --limit is 2, so a
+# single continuation can never take DONE to the cap and the budget assertion
+# would pass on a worker that spends nothing.
+if printf '%s' "$*" | grep -q 'ASK-806'; then
+  printf '%s' "Edit(.claude/rules/**) refused by the Claude Code sensitive-path guard" > .sana-blocked-capability
+fi
+# ASK-807 has no stub behaviour at all. It is the MARKER: it exists only so that
+# "the budget was spent" has an observable consequence. Reaching it means the two
+# continuations above cost nothing.
 exit 0
 SH
 cat > "$STUB/gh" <<'SH'
@@ -171,6 +192,24 @@ if printf '%s' "\$*" | grep -q 'ASK-804'; then
   : > codex-continued.txt
   git add codex-continued.txt >/dev/null 2>&1
   git commit --quiet -m "ASK-804 Codex continued what Sana could not" >/dev/null 2>&1
+  exit 0
+fi
+# ASK-806: the same real continuation as 804. Present so the two of them together
+# reach --limit 2 and the budget spend has an observable edge (ASK-807 unreached).
+if printf '%s' "\$*" | grep -q 'ASK-806'; then
+  : > codex-continued-806.txt
+  git add codex-continued-806.txt >/dev/null 2>&1
+  git commit --quiet -m "ASK-806 Codex continued what Sana could not" >/dev/null 2>&1
+  exit 0
+fi
+# ASK-805: HEAD MOVES BUT NOTHING CHANGED. An empty commit is what a runner
+# produces when it exits believing it worked and did not -- the ASK-221 shape one
+# layer deeper. \`git commit --allow-empty\` is not exotic: \`--amend\`, a rebase
+# that drops the only hunk, and a commit of an already-committed tree all land
+# here. If a moved HEAD alone counts as proof, this un-parks an issue nobody
+# worked, which is precisely what the commit bar exists to prevent.
+if printf '%s' "\$*" | grep -q 'ASK-805'; then
+  git commit --quiet --allow-empty -m "ASK-805 Codex committed nothing at all" >/dev/null 2>&1
   exit 0
 fi
 # Every other blocked issue: Codex is refused too, so the park still happens.
@@ -453,6 +492,70 @@ if grep -q "ASK-804 BLOCKED on a missing capability" <<<"$ALL_WRITTEN"; then
 else
   bad "negative self-test: ASK-804 really entered the capability-refusal path" \
       "no BLOCKED line for ASK-804 -- the 'not labelled' assertion above passed vacuously"
+fi
+
+# --- 9. a continuation is not still carried as a refusal ---------------------
+# The bug this replaces: the handoff cleared $REFUSE_LABEL but still set
+# $REFUSED, so every downstream consumer of $REFUSED read a completed issue as a
+# park. The most visible consequence is the closing line an operator scans, which
+# reported the issue "held at" a label that had just been deliberately emptied.
+if grep "ASK-804" <<<"$ALL_WRITTEN" | grep -q "is NOT done: held at"; then
+  bad "a continued issue is not reported as held" \
+      "ASK-804 was continued but the closing line still reports it held: $(grep "ASK-804" <<<"$ALL_WRITTEN" | grep "is NOT done: held at" | head -1)"
+else
+  ok "a continued issue is NOT reported as held at a label (the closing line matches reality)"
+fi
+
+# --- 10. an EMPTY commit is not proof of work -------------------------------
+# ASK-805's Codex exits 0 with a moved HEAD and an unchanged tree. Moving HEAD is
+# not the same as doing the work, and the whole point of the commit bar is that
+# "exited 0 having done nothing" must not un-park an issue.
+if grep "ASK-805" <<<"$ALL_WRITTEN" | grep -q "blocked:capability"; then
+  ok "an empty Codex commit does NOT count as a continuation (ASK-805 still parks)"
+else
+  bad "an empty Codex commit does not count as a continuation" \
+      "ASK-805 was never labelled blocked:capability -- an empty commit un-parked it"
+fi
+
+# The same fact from the other side: it must not be announced as a continuation.
+if grep -q "ASK-805 Codex CONTINUED" <<<"$ALL_WRITTEN"; then
+  bad "an empty commit is not announced as a continuation" \
+      "ASK-805 was reported CONTINUED on an empty commit"
+else
+  ok "an empty commit is not announced as a continuation"
+fi
+
+# 10b. NEGATIVE SELF-TEST for case 10. Both assertions above pass for free if
+# ASK-805 never reached the handoff at all, so pin that Codex really ran on it.
+if grep -q '^INVOKE ASK-805$' <<<"$CODEX_CALLS"; then
+  ok "negative self-test: Codex really ran on ASK-805 (the empty-commit assertions are not vacuous)"
+else
+  bad "negative self-test: Codex really ran on ASK-805" \
+      "codex was never invoked for ASK-805. Log: '${CODEX_CALLS:-<empty>}'"
+fi
+
+# --- 11. a continuation SPENDS a budget slot --------------------------------
+# A refusal costs a turn, not a dispatch -- that is case 3 and it stays. But a
+# continuation is not a refusal: a second runner really did work the issue, and
+# an unattended run that treats real work as free processes issues past its own
+# --limit. The board is ordered so this has one observable edge: with --limit 2,
+# the two continuations (804, 806) are the entire budget, and ASK-807 sits behind
+# them. Reaching ASK-807 means both continuations were counted as free.
+if grep -q "ASK-807" <<<"$ALL_WRITTEN"; then
+  bad "a Codex continuation spends a budget slot" \
+      "ASK-807 was processed, so the two continuations before it cost no budget and the run overran --limit 2"
+else
+  ok "a Codex continuation spends a budget slot (--limit 2 stopped the run before ASK-807)"
+fi
+
+# 11b. NEGATIVE SELF-TEST for case 11. The assertion is an ABSENCE, and it passes
+# for free if the run died before ASK-806 for an unrelated reason. Pin that the
+# SECOND continuation actually happened -- that is what took DONE to the cap.
+if grep -q "ASK-806 Codex CONTINUED" <<<"$ALL_WRITTEN"; then
+  ok "negative self-test: ASK-806 really continued (the budget cap was reached, not stumbled into)"
+else
+  bad "negative self-test: ASK-806 really continued" \
+      "no 'ASK-806 Codex CONTINUED' line -- the ASK-807 absence above passed vacuously"
 fi
 
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------

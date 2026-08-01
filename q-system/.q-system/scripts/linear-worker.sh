@@ -1404,8 +1404,23 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # exact shape that stayed invisible to the attempt counter until ASK-221,
       # and here it would be worse: it would un-park an issue nobody worked, with
       # the label gone and nothing on the branch to show for it.
-      if [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] \
-         && [ -n "$CODEX_HEAD_AFTER" ] && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
+      #
+      # AND THE COMMIT MUST HAVE CHANGED FILES. A moved HEAD is not work: an empty
+      # commit, an `--amend` that re-points at the same tree, or a rebase that
+      # dropped its only hunk all move HEAD while leaving the branch byte-identical.
+      # That is the ASK-221 shape one layer deeper -- a runner that believes it
+      # worked and did not -- so the tree, not the pointer, is what gets compared.
+      #
+      # FAIL CLOSED: any git failure here yields an empty diff list and the issue
+      # parks. Parking work that WAS done is recoverable (the label names the
+      # capability and a human clears it); un-parking work that was NOT done is
+      # not, because the label is gone and the picker never offers the issue again.
+      CODEX_CHANGED_FILES=""
+      if [ -n "$CODEX_HEAD_BEFORE" ] && [ -n "$CODEX_HEAD_AFTER" ] \
+         && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
+        CODEX_CHANGED_FILES="$(git -C "$TREE" diff --name-only "$CODEX_HEAD_BEFORE" "$CODEX_HEAD_AFTER" 2>/dev/null || true)"
+      fi
+      if [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
         say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
@@ -1415,8 +1430,16 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       elif [ -n "$CODEX_WHY" ]; then
         say "$ISSUE Codex is ALSO not equipped: $CODEX_WHY -- parking with both refusals recorded"
       else
-        CODEX_WHY="the Codex run produced no commit (rc=$crc) and left no reason"
-        say "$ISSUE Codex left no commit (rc=$crc) -- parking"
+        # Named precisely, because "no commit" and "a commit that changed nothing"
+        # send a reader to different places: the first says Codex never got that
+        # far, the second says it committed and the branch is unchanged anyway.
+        if [ -n "$CODEX_HEAD_AFTER" ] && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
+          CODEX_WHY="the Codex run committed but changed no files (rc=$crc) and left no reason"
+          say "$ISSUE Codex committed but changed no files (rc=$crc) -- parking"
+        else
+          CODEX_WHY="the Codex run produced no commit (rc=$crc) and left no reason"
+          say "$ISSUE Codex left no commit (rc=$crc) -- parking"
+        fi
       fi
     fi
     if [ -z "$REFUSE_LABEL" ]; then
@@ -1492,7 +1515,23 @@ $SCOPE_WHY
     # spend the work budget. Both are enforced below at their own sites. The
     # claim release moves to step 6, which already owns it -- releasing here and
     # then falling through would release the same claim twice from two places.
-    REFUSED="$REFUSE_KIND"
+    #
+    # EXCEPT WHEN CODEX CONTINUED IT. $REFUSED is read at three sites below and
+    # every one of them is wrong for a continuation, because the issue did not
+    # refuse -- a second runner worked it and committed:
+    #   - the budget (`[ -n "$REFUSED" ] || DONE=$((DONE+1))`): a continuation is
+    #     real work by a real runner, so it spends a dispatch. Carried as a
+    #     refusal it costs nothing and an unattended run overruns its own --limit,
+    #     which is exactly the silent budget burn ASK-221 was about.
+    #   - the closing line: it reports the issue "held at $REFUSE_LABEL", and the
+    #     handoff has just deliberately EMPTIED that variable -- so a completed
+    #     issue was announced as held at nothing at all.
+    #   - the no-PR branch: "a refusal is not a failed attempt" is true of a
+    #     refusal. A run that produced commits and left no PR is the ASK-221 shape
+    #     and does belong to the counter, whichever runner produced them.
+    # The label was already cleared above; this is the same fact reaching the rest
+    # of the loop instead of stopping at the label.
+    [ -n "$CODEX_CONTINUED" ] || REFUSED="$REFUSE_KIND"
   fi
 
   # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
