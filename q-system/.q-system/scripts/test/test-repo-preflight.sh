@@ -653,6 +653,47 @@ rmdir "$TL" 2>/dev/null || true
   && ok "a second dispatcher is DENIED while the turn is held ($A then $B)" \
   || bad "the turn lock is not exclusive ($A then $B)"
 
+# THE SAME CASE UNDER GNU stat. This is the CI failure, reproduced on purpose.
+# The BSD form `stat -f %m` is valid on macOS and means --file-system on GNU,
+# where %m is read as a FILE operand: stat errors on it, still prints a block for
+# the real path, and exits 1 -- so the || fallback ALSO runs and its output is
+# appended. mtime became multi-line junk, the arithmetic died with
+# "File: unbound variable", and `set -u` makes that FATAL, so turn_lock killed
+# its caller instead of returning 1. Output was empty, which the assertion above
+# reported as "(GOT then )" -- a crash wearing the costume of a lock failure.
+#
+# Without this fixture the suite is green on a mac and red in CI forever.
+GNUSTAT="$WORK/gnustat"; mkdir -p "$GNUSTAT"
+cat > "$GNUSTAT/stat" <<'GNUSTUB'
+#!/usr/bin/env bash
+if [ "$1" = "-f" ]; then
+  shift; rc=0
+  for op in "$@"; do
+    if [ "$op" = "%m" ]; then echo "stat: cannot read file system information for '%m'" >&2; rc=1
+    else printf '  File: "%s"
+    ID: 1234abcd Namelen: 255 Type: ext4
+' "$op"; fi
+  done
+  exit $rc
+fi
+if [ "$1" = "-c" ]; then shift; fmt="$1"; shift
+  [ "$fmt" = "%Y" ] && { command stat -f %m "$1" 2>/dev/null || echo 1; exit 0; }
+fi
+exit 1
+GNUSTUB
+chmod +x "$GNUSTAT/stat"
+TL2="$WORK/turnlock2.d"
+G1="$(PATH="$GNUSTAT:$PATH" KIPI_DISPATCH_TURNLOCK="$TL2" bash "$LOCKH" 2>/dev/null)"
+mkdir -p "$TL2"
+G2="$(PATH="$GNUSTAT:$PATH" KIPI_DISPATCH_TURNLOCK="$TL2" bash "$LOCKH" 2>/dev/null)"
+rmdir "$TL2" 2>/dev/null || true
+[ -n "$G2" ] \
+  && ok "under GNU stat the second acquirer still RETURNS (no fatal set -u crash)" \
+  || bad "THE CI DEFECT: turn_lock produced NO output under GNU stat -- it killed its caller"
+{ [ "$G1" = "GOT" ] && [ "$G2" = "DENIED" ]; } \
+  && ok "the turn lock is exclusive under GNU stat too ($G1 then $G2)" \
+  || bad "turn lock wrong under GNU stat ($G1 then $G2)"
+
 echo
 echo "== 16. null review protection is NOT a review gate (codex r2) =="
 # GitHub returns required_pull_request_reviews with a value of NULL when review

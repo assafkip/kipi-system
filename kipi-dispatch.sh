@@ -190,13 +190,35 @@ turn_lock() {
   local LOCK="${KIPI_DISPATCH_TURNLOCK:-$HOME/.config/kipi/dispatch-turn.lock}"
   mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
   if [ -d "$LOCK" ]; then
-    local now mtime age
+    local now mtime age probe
     now="$(date -u +%s)"
-    mtime="$(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || echo "$now")"
-    age=$(( now - mtime ))
-    if [ "$age" -gt 3600 ]; then
-      say "turn-lock: reaping a stale lock (${age}s old)"
-      rmdir "$LOCK" 2>/dev/null || true
+    # PORTABILITY, AND IT IS NOT COSMETIC. The first cut was
+    #   mtime="$(stat -f %m "$LOCK" || stat -c %Y "$LOCK" || echo "$now")"
+    # which is correct on BSD/macOS and CRASHES THE CALLER on GNU/Linux. GNU -f
+    # is --file-system and takes no format argument, so %m is read as a FILE
+    # operand: stat errors on %m, still prints a filesystem block for $LOCK on
+    # stdout, and exits 1. The nonzero exit then runs the || fallback whose output
+    # is APPENDED, so mtime became multi-line junk and `$(( now - mtime ))` died
+    # with "File: unbound variable" -- and under `set -u` that is FATAL for a
+    # non-interactive shell. turn_lock therefore killed the whole dispatcher
+    # instead of returning 1, every time the lock directory already existed.
+    # It passed on macOS and failed only in CI, which is exactly the shape a
+    # portability bug takes.
+    #
+    # GNU form FIRST, each candidate validated as digits before it is used, and
+    # an unreadable mtime means DO NOT REAP -- keeping a lock we cannot age is
+    # safe (one skipped turn), reaping one we guessed at is not.
+    mtime=""
+    probe="$(stat -c %Y "$LOCK" 2>/dev/null)"
+    case "$probe" in ''|*[!0-9]*) probe="" ;; esac
+    [ -n "$probe" ] || { probe="$(stat -f %m "$LOCK" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; }
+    mtime="$probe"
+    if [ -n "$mtime" ]; then
+      age=$(( now - mtime ))
+      if [ "$age" -gt 3600 ]; then
+        say "turn-lock: reaping a stale lock (${age}s old)"
+        rmdir "$LOCK" 2>/dev/null || true
+      fi
     fi
   fi
   mkdir "$LOCK" 2>/dev/null || return 1
