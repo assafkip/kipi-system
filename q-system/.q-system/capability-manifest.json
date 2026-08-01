@@ -138,6 +138,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-dor-failure-reporting.py",
       "runner": "python3"
     },
