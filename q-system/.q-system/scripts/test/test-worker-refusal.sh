@@ -56,7 +56,7 @@ def issue(ident):
             "project": {"name": "kipi-system"},
             "labels": {"nodes": [{"name": "owner:sana"}]}}
 
-BOARD = [issue("ASK-801"), issue("ASK-802"), issue("ASK-803")]
+BOARD = [issue("ASK-801"), issue("ASK-802"), issue("ASK-803"), issue("ASK-804")]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -109,6 +109,13 @@ if printf '%s' "$*" | grep -q 'ASK-803'; then
   # agent has pushed something to open it for.
   : > "${TEST_PR_MARKER:-/dev/null}"
 fi
+# ASK-804 is the CONTINUATION case (ASK-281): Sana is blocked, Codex is not.
+# Same sentinel as 802/803 -- the difference is entirely in what the OTHER
+# runner does with it, which is the point: a capability Sana lacks is not
+# automatically a capability the fleet lacks.
+if printf '%s' "$*" | grep -q 'ASK-804'; then
+  printf '%s' "Edit(.claude/rules/**) refused by the Claude Code sensitive-path guard" > .sana-blocked-capability
+fi
 exit 0
 SH
 cat > "$STUB/gh" <<'SH'
@@ -140,6 +147,35 @@ REVIEWER_LOG="$WORK/reviewer-calls.log"
 cat > "$WORK/fake-reviewer.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$REVIEWER_LOG"
+exit 0
+SH
+# The Codex handoff runner is INJECTED for the same reason the reviewer is: the
+# question "what does the worker do when the second runner also refuses" is a
+# real 3am state, and asserting it against the real `codex` binary would bill a
+# model run per case -- so the branch would stay untested, which is how the
+# single-runner assumption shipped in the first place (ASK-281).
+CODEX_LOG="$WORK/codex-calls.log"
+cat > "$WORK/fake-codex.sh" <<SH
+#!/usr/bin/env bash
+# ONE LINE PER INVOCATION, not the whole prompt. The handoff prompt names the
+# issue several times and spans many lines, so logging it verbatim made
+# \`grep -c\` count matching LINES and report 2 invocations for a single call --
+# a cap assertion that fails on a correct worker is worse than none.
+printf 'INVOKE %s\n' "\$(printf '%s' "\$*" | grep -o 'ASK-[0-9]*' | head -1)" >> "$CODEX_LOG"
+printf '%s\n' "\$*" >> "$WORK/codex-prompts.log"
+# ASK-804: Codex CAN do what Sana could not, and proves it with a commit.
+# A commit is the bar on purpose -- "exited 0 having done nothing" is the exact
+# shape that made ASK-221 invisible to the attempt counter, and treating it as a
+# success here would silently un-park an issue nobody worked.
+if printf '%s' "\$*" | grep -q 'ASK-804'; then
+  : > codex-continued.txt
+  git add codex-continued.txt >/dev/null 2>&1
+  git commit --quiet -m "ASK-804 Codex continued what Sana could not" >/dev/null 2>&1
+  exit 0
+fi
+# Every other blocked issue: Codex is refused too, so the park still happens.
+# This is what keeps cases 3b and 6 honest -- they now pass THROUGH the handoff.
+printf '%s' "codex has no credential for the target host either" > .codex-blocked-capability
 exit 0
 SH
 # The label + progress calls are the thing under test, so they are RECORDED
@@ -177,6 +213,7 @@ PATH="$STUB:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
    KIPI_NOTIFY="/usr/bin/true" \
    TEST_PR_MARKER="$WORK/pr-803-open" \
    bash "$WORKER" --apply --limit 2 > "$RUN_OUT" 2>&1
@@ -338,6 +375,84 @@ if grep -q '803' <<<"" 2>/dev/null; then
   bad "negative self-test (reviewer log)" "an empty reviewer log satisfied the review assertion -- the check is inert"
 else
   ok "negative self-test: the review assertion rejects an empty reviewer log"
+fi
+
+# --- 8. blocked:capability HAS A CONTINUATION (ASK-281) ---------------------
+# THE DEFECT: `blocked:capability` was terminal. The Linear comment named exactly
+# one actor who could clear it -- whoever owns the config, i.e. the founder -- and
+# the founder's answer on 2026-08-01 was "I'm not going to unblock it, Sana or
+# Codex need to do that." Ten issues (ASK-116, 132-140) sat at that label while
+# the loop logged `nothing ready (0 ready issue)` every 15 minutes. The queue was
+# not empty, it was parked.
+#
+# The unstated assumption was that "not Sana" means "the founder". It skipped the
+# third runner. Sana runs inside Claude Code, whose sensitive-path guard refuses
+# Edit/Write under `.claude/**` and is not liftable by `permissions.allow`. Codex
+# is a different binary and does not inherit that guard -- probed live on
+# 2026-08-01: `codex exec -s workspace-write` created `.claude/rules/probe.md`
+# from nothing, verified on disk, 14,332 tokens billed.
+#
+# So: a capability SANA lacks is not automatically a capability the FLEET lacks,
+# and the worker must ask the other runner before parking.
+CODEX_CALLS="$(cat "$CODEX_LOG" 2>/dev/null)"
+
+if grep -q 'ASK-804' <<<"$CODEX_CALLS"; then
+  ok "a capability block is handed to the Codex runner before it is parked"
+else
+  bad "a capability block is handed to the Codex runner before it is parked" \
+      "codex was never invoked for ASK-804. Log: '${CODEX_CALLS:-<empty>}'"
+fi
+
+# The assertion the whole issue exists for: Codex succeeded, so the label that
+# removes the issue from the picker must NOT be applied.
+if grep "ASK-804" <<<"$ALL_WRITTEN" | grep -q "blocked:capability"; then
+  bad "a Codex continuation does not park the issue" \
+      "ASK-804 was labelled blocked:capability even though Codex continued it: $(grep "ASK-804" <<<"$ALL_WRITTEN" | grep "blocked:capability" | head -1)"
+else
+  ok "a Codex continuation does NOT apply blocked:capability (the state is no longer terminal)"
+fi
+
+# ...and it is reported as a continuation, not silently swallowed. An issue that
+# quietly stops being blocked with nothing in the log is worse than one that
+# parks: the 3am operator has no way to know a second runner touched the branch.
+if grep -q "ASK-804 Codex CONTINUED" <<<"$ALL_WRITTEN"; then
+  ok "the continuation is reported, so the 3am operator can see a second runner ran"
+else
+  bad "the continuation is reported" "no 'ASK-804 Codex CONTINUED' line"
+fi
+
+# ONE attempt, never a loop (loop-exits.md exit 7). A dead Codex at 3am must not
+# become unbounded model spend, so the handoff is capped at a single call per
+# issue per run.
+# No `|| echo 0` fallback: grep -c already PRINTS 0 when it matches nothing and
+# then exits 1, so the fallback appended a second line and `[` got "0\n0".
+N804="$(grep -c 'ASK-804' <<<"$CODEX_CALLS" 2>/dev/null)" || true
+if [ "${N804:-0}" -eq 1 ]; then
+  ok "the handoff is ONE Codex attempt per issue per run, not a retry loop"
+else
+  bad "the handoff is ONE Codex attempt per issue per run" \
+      "codex was invoked $N804 times for ASK-804"
+fi
+
+# When BOTH runners refuse, the park still happens AND the comment records both.
+# Recording only Sana's refusal would send the reader back to the founder, which
+# is the state this whole change removes.
+if grep -q "codex has no credential for the target host either" <<<"$ALL_WRITTEN"; then
+  ok "when Codex also refuses, its reason is recorded alongside Sana's"
+else
+  bad "when Codex also refuses, its reason is recorded alongside Sana's" \
+      "the Codex refusal text never reached the log or the Linear note"
+fi
+
+# --- 8b. NEGATIVE SELF-TEST for case 8 --------------------------------------
+# Case 8's central assertion is an ABSENCE (no blocked:capability for ASK-804),
+# and an absence passes for free when the issue was never processed at all.
+# Pin that ASK-804 really went down the refusal path in this run.
+if grep -q "ASK-804 BLOCKED on a missing capability" <<<"$ALL_WRITTEN"; then
+  ok "negative self-test: ASK-804 really entered the capability-refusal path"
+else
+  bad "negative self-test: ASK-804 really entered the capability-refusal path" \
+      "no BLOCKED line for ASK-804 -- the 'not labelled' assertion above passed vacuously"
 fi
 
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
