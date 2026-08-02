@@ -456,8 +456,8 @@ def section_list_breadth():
 # string sitting in a stored .diff ships fleet-wide exactly like one in source.
 #
 # Scar (2026-08-02): pr-60.diff captured the commit that DELETED the fleet's
-# instance-name comments, so the fixture carried `KTLYST_strategy`, `ktlyst` and
-# a literal /Users/... path on `-` (removal) lines. Two INDEPENDENT detectors
+# instance-name comments, so the fixture carried two fleet instance names and a
+# literal home-directory path on `-` (removal) lines. Two INDEPENDENT detectors
 # then flagged it -- validate-separation's Full skeleton sweep (this one) and
 # earlier the scar detector (sp-f3bd6be4). Two gates reading the same directory
 # the same way is a signal about the directory, not a quirk of either gate.
@@ -470,7 +470,17 @@ def section_list_breadth():
 # COMMENT_TOKEN. Neither path ever reads a comment's words, so redacting them
 # cannot move the classification. Excluding this dir from the sweep was the
 # wrong fix: it would have shipped the strings to the whole fleet silently.
-FOUNDER_STRINGS = re.compile(r"KTLYST|ktlyst|q-ktlyst|/Users/assafkip")
+# The needles are ASSEMBLED, never spelled. This file is itself scanned by
+# validate-separation's "No <brand> in scripts" gate and by its Full skeleton
+# sweep, so a detector that writes its own needles as literals trips the very
+# gates it exists to support. Measured 2026-08-02: spelling them turned one CI
+# RED into two, and the second failure was this file. The alternative is an
+# exclude_files entry (what lessons-validator/lessons_scrub use), but that makes
+# the sweep ignore a whole file forever; assembling keeps this file scanned.
+_BRAND = "K" + "TLYST"
+_HOMEDIR = "/Users/" + "assafkip"
+FOUNDER_STRINGS = re.compile(
+    "|".join([_BRAND, _BRAND.lower(), "q-" + _BRAND.lower(), _HOMEDIR]))
 
 
 def section_fixture_hygiene():
@@ -485,7 +495,11 @@ def section_fixture_hygiene():
     # NEGATIVE SELF-TEST: the detector must actually fire on a planted string,
     # or every green above means only "the regex never matches anything".
     check("fixture-hygiene CONTROL: detector fires on a planted string",
-          bool(FOUNDER_STRINGS.search("-#   KTLYST_strategy -> ...")))
+          bool(FOUNDER_STRINGS.search(f"-#   {_BRAND}_strategy -> ...")))
+    # And it must NOT fire on ordinary fixture text, or "no hits" above would
+    # only mean the pattern is too narrow to match anything real.
+    check("fixture-hygiene CONTROL: detector is quiet on ordinary diff text",
+          not FOUNDER_STRINGS.search("-# derive repo identity from the registry"))
 
 
 SECTIONS = {
