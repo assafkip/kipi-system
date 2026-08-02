@@ -13,6 +13,9 @@ Sections, selectable with --only:
   self       the four self-sufficient categories actually return SELF
   errors     unparseable input fails CLOSED, never to SELF
   mutation   invert one trigger at a time and prove its case goes red
+  list-breadth which LOOP_CRITICAL entries actually change the tier (only the
+             .py ones do; the shell entries cannot reach the comment-only class
+             at all, so narrowing the list would not have spared PR #60)
 
 The mutation section is the negative self-test. A check that has never been seen
 to fail is a rubber stamp, so each trigger is disabled at the source and the case
@@ -381,10 +384,73 @@ def section_mutation():
                       f"mutated={code_mut} expected={mutated_exit} {out_mut[:200]}")
 
 
+# --- list-breadth --------------------------------------------------------------
+# Asked 2026-08-02: PR #60 (3 comment lines) escalated because those comments sat
+# in linear-worker.sh + pr-review-agent.sh, so the proposed lever was "narrow
+# LOOP_CRITICAL". This section pins the MEASURED answer: narrowing cannot reach
+# PR #60. Shell files have no COMMENT_TOKEN (heredocs make comment-only
+# unprovable from a diff), so they fall to "matches no self-review category"
+# whether or not the list names them -- the list changes the reason string, not
+# the tier. Pinned as a test and not just a comment because the day someone adds
+# shell to COMMENT_TOKEN these flip, and that is exactly when they need to learn
+# that the list stopped being decorative.
+LOOP_NEEDLE = "LOOP_CRITICAL = {"
+LOOP_EMPTIED = "LOOP_CRITICAL = set() and {"
+
+SHELL_LOOP_CRITICAL = [
+    "q-system/.q-system/scripts/linear-worker.sh",
+    "q-system/.q-system/scripts/converge.sh",
+    "kipi-dispatch.sh",
+    "q-system/.q-system/scripts/pr-review-agent.sh",
+    "q-system/.q-system/scripts/slack-notify.sh",
+]
+
+
+def section_list_breadth():
+    src = TIER.read_text()
+    check("list-breadth: LOOP_CRITICAL needle is unique in source",
+          src.count(LOOP_NEEDLE) == 1, f"count={src.count(LOOP_NEEDLE)}")
+    if src.count(LOOP_NEEDLE) != 1:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        mutant = pathlib.Path(tmp) / "review-tier-no-list.py"
+        mutant.write_text(src.replace(LOOP_NEEDLE, LOOP_EMPTIED, 1))
+        root = make_sandbox(pathlib.Path(tmp) / "repo")
+
+        # CONTROL FIRST. A .py loop-critical entry MUST flip to SELF once the
+        # list is gone. Without this the shell assertions below could every one
+        # be green because the mutation silently failed to apply -- the same
+        # false-green shape the `and`/`or` note on the LOOP_CRITICAL mutant
+        # records. This control is what makes the rest of the section mean
+        # anything.
+        code, out = run_tier_script_subject(
+            mutant, diff_loop_critical_comment_only(root), root, "")
+        check("list-breadth CONTROL: a .py entry DOES flip to SELF when the list "
+              "is emptied (proves the mutation applied)",
+              code == EXIT_SELF, f"code={code} {out[:200]}")
+
+        f = FIXTURES / "pr-60.diff"
+        if f.is_file():
+            code, out = run_tier_script_subject(mutant, f.read_text(), root, "")
+            check("list-breadth: PR #60 STILL escalates with LOOP_CRITICAL "
+                  "emptied -- narrowing the list is not the lever",
+                  code == EXIT_ESCALATE, f"code={code} {out[:200]}")
+
+        for rel in SHELL_LOOP_CRITICAL:
+            diff = produce_diff(root, rel,
+                                "# old note\necho 1\n",
+                                "# new note, still only a comment\necho 1\n")
+            code, out = run_tier_script_subject(mutant, diff, root, "")
+            check(f"list-breadth: {pathlib.Path(rel).name} escalates even without "
+                  f"the list (shell has no comment token)",
+                  code == EXIT_ESCALATE, f"code={code} {out[:200]}")
+
+
 SECTIONS = {
     "real": section_real, "precedence": section_precedence,
     "unknown": section_unknown, "self": section_self,
     "errors": section_errors, "mutation": section_mutation,
+    "list-breadth": section_list_breadth,
 }
 
 

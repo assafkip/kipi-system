@@ -51,6 +51,37 @@ EXIT_ERROR = 2
 # --- escalate: scripts the autonomous loop executes ---------------------------
 # Founder-named, 2026-08-01. These run unattended: a defect here is not caught by
 # a human noticing odd output, because no human is watching when they run.
+#
+# ASKED 2026-08-02 (real cost question: PR #60, a 3-line comment-only change, was
+# escalated because the comments sat in linear-worker.sh + pr-review-agent.sh):
+# is this list too broad -- are some entries here by association?
+#
+# MEASURED, both halves:
+#   (a) Invoker for every entry, traced from the unattended chain. All 8 real.
+#       com.kipi.dispatch.plist -> kipi-dispatch.sh -> converge.sh /
+#       linear-worker.sh -> pr-review-agent.sh, linear-dor-drafter.py,
+#       attempts-ledger.py; slack-notify.sh from dispatch + fleet-health-daily;
+#       token-guard.py from .claude/settings.json + .codex/hooks.json.
+#       ZERO entries are on the list by association.
+#   (b) Does membership change the TIER? Emptied LOOP_CRITICAL and re-classified
+#       a synthetic comment-only diff per file. Only TWO entries are load-bearing
+#       -- linear-dor-drafter.py and attempts-ledger.py. The five .sh entries are
+#       non-binding because shell has no COMMENT_TOKEN (see that block: heredocs
+#       make "comment-only" unprovable from a diff), so they can never reach the
+#       comment-only class anyway; token-guard.py is already covered by the
+#       settings-wired trigger.
+#
+# SO NARROWING THIS LIST CANNOT FIX PR #60, and that is the point worth keeping:
+# with LOOP_CRITICAL emptied ENTIRELY, PR #60 still ESCALATES ("matches no
+# self-review category"). The list only changes the REASON string there, not the
+# decision. The binding constraint is the shell comment-token exclusion.
+# Trimming the six non-binding entries would buy zero review cost, lose the
+# specific reason string, and silently open a hole the day shell gains a comment
+# token. Kept deliberately, as defence in depth that currently costs nothing.
+#
+# The lever that WOULD move it: give the classifier the file at the PR head
+# instead of only the diff, so heredoc state is resolvable and shell comment-only
+# becomes provable. That is a build, not a list edit. Not done here.
 LOOP_CRITICAL = {
     "linear-worker.sh", "converge.sh", "kipi-dispatch.sh", "pr-review-agent.sh",
     "linear-dor-drafter.py", "slack-notify.sh", "token-guard.py",
