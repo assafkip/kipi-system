@@ -2741,8 +2741,17 @@ ok "the once-only page clears when the PR is seen armed, so a NEW unarmed state 
 # --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
 grep -q 'pr merge --auto --squash' "$WORKER" \
   || fail "linear-worker.sh never arms auto-merge"
-ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | head -1 | cut -d: -f1)"
-REV_SRC="$(grep -n 'REVIEWER_CMD' "$WORKER" | grep -v '^.*REVIEWER_CMD=' | head -1 | cut -d: -f1)"
+# Both greps must find a CALL SITE, not prose. The first `pr merge --auto
+# --squash` in the file is a comment explaining the cwd trap, and the first
+# bare `REVIEWER_CMD` is a comment saying "for the same reason REVIEWER_CMD
+# is" -- which the old `grep -v 'REVIEWER_CMD='` exclusion did not drop,
+# because it only ever excluded the assignment. That made this assertion
+# compare comment line 590 against comment line 85 and report the arm as
+# out of order while the real call sites (604, 1685) were correctly ordered.
+# So: drop comment lines, and match the reviewer on its EXPANSION ($REVIEWER_CMD),
+# which the assignment and the prose both lack.
+ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1)"
+REV_SRC="$(grep -n '\$REVIEWER_CMD' "$WORKER" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1)"
 [ -n "$ARM_SRC" ] && [ -n "$REV_SRC" ] && [ "$ARM_SRC" -lt "$REV_SRC" ] \
   || fail "the arm does not sit before the reviewer call in linear-worker.sh (arm at
       ${ARM_SRC:-none}, reviewer at ${REV_SRC:-none})"
