@@ -14,11 +14,19 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-apply-claude-changes.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-auto-update-nudge.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-claude-write-path.sh",
       "runner": "bash"
     },
     {
@@ -142,6 +150,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-dor-failure-reporting.py",
       "runner": "python3"
     },
@@ -252,6 +264,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-styles-csv-width.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-terminal-states.sh",
       "runner": "bash"
     },
     {
@@ -376,6 +392,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_token_guard_commit_forms.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_token_guard_observation.py",
       "runner": "python3"
     },
@@ -459,6 +483,11 @@
       "spillover_id": "sp-cc33bdb0"
     },
     {
+      "path": "q-system/.q-system/scripts/review-tier.py",
+      "reason": "deterministic review-tier classifier: built, tested (55 checks incl. a mutation layer), and DELIBERATELY unwired. Not a hook, so .claude/settings.json is the wrong surface -- its contract is `review-tier.py ... || run_independent_review`, making the call site pr-review-agent.sh or linear-worker.sh. Picking between them changes behaviour (one saves a Codex call, the other a whole worker run) and is its own design decision. Held back on purpose: this classifier decides WHO GETS REVIEWED, so it must not arm itself in the same PR that has not yet been reviewed",
+      "spillover_id": "sp-f0f0fc7e"
+    },
+    {
       "path": "q-system/.q-system/scripts/session_recall.py",
       "reason": "auto-capture referee merged but gated OFF fleet-wide",
       "spillover_id": "sp-cac8540c"
@@ -470,7 +499,7 @@
     },
     {
       "path": "q-system/.q-system/scripts/stat-verify.py",
-      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance \u2014 wiring it is a founder product decision",
+      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance — wiring it is a founder product decision",
       "spillover_id": "sp-72b60bff"
     },
     {
@@ -490,8 +519,8 @@
     }
   ],
   "uncovered_known": [
-    "plugins/*/tests \u2014 prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
+    "plugins/*/tests — prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
     "repo-root *.sh utilities are wiring surfaces, not test artifacts",
-    "stat-registry.json: NOT expressible as required_data in v1 \u2014 the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
+    "stat-registry.json: NOT expressible as required_data in v1 — the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
   ]
 }

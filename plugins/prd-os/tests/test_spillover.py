@@ -269,3 +269,75 @@ def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-204") == 0
     assert run(repo, "spillover", "check").returncode == 0
+
+
+# --- ASK-148: reading a 350-item ledger by producer instead of one at a time ---
+#
+# The ledger accretes ~50 items/day from a handful of producers, so `list --open`
+# prints 350 undifferentiated lines and nobody can see which SOURCE is worth
+# opening an issue against. `triage` is the read-only lens: same rows, grouped
+# and counted. It resolves nothing and voids nothing -- the only two exits from
+# the ledger stay exactly where they were.
+
+
+def _add(repo: Path, sid: str, source: str, severity: str) -> None:
+    run(repo, "spillover", "add", "--source", source, "--desc", f"finding {sid}",
+        "--id", sid, "--severity", severity)
+
+
+def test_triage_reports_no_open_items_on_an_empty_ledger(repo):
+    r = run(repo, "spillover", "triage")
+    assert r.returncode == 0, r.stderr
+    assert "no open spillover items" in r.stdout
+
+
+def test_triage_groups_by_severity_with_counts(repo):
+    _add(repo, "sp1", "ASK-113", "minor")
+    _add(repo, "sp2", "ASK-113", "minor")
+    _add(repo, "sp3", "ASK-221", "blocker")
+
+    r = run(repo, "spillover", "triage")
+    assert r.returncode == 0, r.stderr
+    assert "3 open spillover item(s)" in r.stdout
+    assert "minor" in r.stdout and "blocker" in r.stdout
+    sev = r.stdout.split("by severity")[1].split("by source")[0]
+    assert "minor" in sev.split("blocker")[0], f"severity groups not count-ordered:\n{sev}"
+
+
+def test_triage_groups_by_source_with_counts(repo):
+    _add(repo, "sp1", "ASK-113", "minor")
+    _add(repo, "sp2", "ASK-113", "minor")
+    _add(repo, "sp3", "ASK-221", "minor")
+
+    r = run(repo, "spillover", "triage")
+    src = r.stdout.split("by source")[1]
+    assert "ASK-113" in src and "ASK-221" in src
+    assert src.index("ASK-113") < src.index("ASK-221"), f"sources not count-ordered:\n{src}"
+
+
+def test_triage_counts_only_open_items(repo):
+    _add(repo, "sp1", "ASK-113", "minor")
+    _add(repo, "sp2", "ASK-113", "minor")
+    run(repo, "spillover", "resolve", "sp2", "--void", "not a real item")
+
+    r = run(repo, "spillover", "triage")
+    assert "1 open spillover item(s)" in r.stdout
+    assert "sp2" not in r.stdout
+
+
+def test_triage_never_writes_to_the_ledger(repo):
+    _add(repo, "sp1", "ASK-113", "minor")
+    before = _ledger(repo).read_bytes()
+
+    assert run(repo, "spillover", "triage").returncode == 0
+    assert _ledger(repo).read_bytes() == before, "triage mutated the ledger"
+
+
+def test_triage_leaves_the_gate_red(repo):
+    # The lens does not clear anything: `check` and `gates run` are unchanged by
+    # having looked. A read that could turn a gate green would be a bulk-clear.
+    _add(repo, "sp1", "ASK-113", "blocker")
+    run(repo, "spillover", "triage")
+
+    assert run(repo, "spillover", "check").returncode == 1
+    assert run(repo, "gates", "run").returncode != 0

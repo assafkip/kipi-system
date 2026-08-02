@@ -439,52 +439,186 @@ def warn(message):
     sys.exit(0)
 
 
+# The subcommands that make a checkpoint possible, for the volume-ceiling
+# exemption only. `add` is here because a blocked `git add` makes the commit
+# impossible regardless — staging is part of the checkpoint, not a separate
+# errand. It is deliberately NOT in the reset/grace readers below: `git add`
+# ships nothing, so it must never reset the ceiling or mint a grace budget.
+GIT_CHECKPOINT_SUBCOMMANDS = ("commit", "add")
+
+
 def _is_commit_command(tool_name, tool_input):
-    """A `git commit` invocation, judged from the command alone (PreToolUse has no
-    response yet). Used to EXEMPT a commit from the volume ceiling — a commit is the
-    checkpoint the ceiling is asking for, so blocking it deadlocks the run (the
-    PostToolUse commit-reset can never fire if PreToolUse blocks the commit first)."""
+    """A `git commit`/`git add` invocation, judged from the command alone
+    (PreToolUse has no response yet). Used to EXEMPT the checkpoint from the
+    volume ceiling — a commit is the checkpoint the ceiling is asking for, so
+    blocking it deadlocks the run (the PostToolUse commit-reset can never fire
+    if PreToolUse blocks the commit first).
+
+    Scar (sp-91a19d16, observed live 2026-08-01): this was `"git commit" in cmd`,
+    a raw substring test, and it was wrong in BOTH directions at once. Too tight:
+    `git -C <worktree> commit -m ...` contains no "git commit" substring, and
+    `git add` was never matched at all — so an agent working in a worktree (the
+    standard dispatch pattern here) could never clear the ceiling. One finished
+    cross-repo GH_REPO scoping with a passing 26-case suite, could not commit any
+    of it, correctly refused to route around the gate, and stopped. Too loose:
+    `echo "git commit"` and `grep -r "git commit" .` carried the substring and
+    cleared the ceiling while shipping nothing. Match the INVOCATION, not the
+    substring; the tokeniser below already knew how."""
     if tool_name != "Bash":
         return False
     cmd = (tool_input or {}).get("command", "") or ""
-    return "git commit" in cmd and "--dry-run" not in cmd
+    return _invokes_git_subcommand(cmd, GIT_CHECKPOINT_SUBCOMMANDS)
 
 
-def _invokes_git_commit(command):
-    """True only when the command actually RUNS `git commit`.
+def _invokes_git_subcommand(command, subcommands):
+    """True only when the command actually RUNS `git <subcommand>`, for any
+    subcommand in `subcommands`.
 
     A substring test on the command text is not that: `grep -rn "git commit"
     canonical/` carries the string and ships nothing, and a failing one was read
     as a refused checkpoint (PR #27 review, finding 2). Tokenising drops the
-    quoted mention while keeping `cd x && git commit -m y`.
+    quoted mention (shlex collapses "git commit" into ONE token, which is not
+    `git`) while keeping `cd x && git add -A && git commit -m y`, `git -C x
+    commit`, and the newline/`;`-separated forms — the scan walks every token,
+    so the position of the verb in the command does not matter.
 
-    Deliberately NOT used by _is_commit_command above. There the error costs run
-    the other way: a false negative blocks the checkpoint the ceiling is asking
-    for and deadlocks the run, while a false positive only exempts one harmless
-    call from the ceiling. Here — and in _is_successful_commit — a false positive
-    is the expensive one: it mints a grace budget, or resets the ceiling, for a
-    command that committed nothing. Two readers, two error budgets, on purpose."""
-    if not command or "--dry-run" in command:
+    Two callers, two subcommand sets, on purpose. The ceiling exemption passes
+    GIT_CHECKPOINT_SUBCOMMANDS, where a false negative is the expensive error: it
+    blocks the checkpoint the ceiling is asking for and deadlocks the run, while
+    a false positive costs one exempted call that still cannot reset anything.
+    _invokes_git_commit passes commit-only, because there a false positive is the
+    expensive one: it mints a grace budget, or resets the ceiling, for a command
+    that committed nothing."""
+    if not command:
         return False
-    try:
-        tokens = shlex.split(command, comments=True)
-    except ValueError:
-        tokens = command.split()
+    segments = _command_segments(command)
+    for position, (operator, tokens) in enumerate(segments):
+        if position and not _segment_is_reachable(
+                operator, segments[position - 1][1]):
+            continue
+        if _segment_invokes(tokens, subcommands):
+            return True
+    return False
+
+
+# Shell operators that end one command and begin the next.
+_CMD_SEPARATORS = frozenset(("&&", "||", ";", "|", "&"))
+
+# git's global options that swallow the following token as their value.
+_GIT_GLOBAL_TWO_WORD = frozenset(
+    ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"))
+
+# Commands whose exit status is knowable from the text alone. Everything else is
+# runtime-valued, so `foo && git commit` stays reachable.
+_ALWAYS_FALSE = frozenset(("false", "/bin/false", "/usr/bin/false"))
+_ALWAYS_TRUE = frozenset(("true", "/bin/true", "/usr/bin/true", ":"))
+
+# The flag meaning "this invocation ships nothing", per subcommand. `-n` is add's
+# short --dry-run, but commit's -n is --no-verify: a REAL commit. Reading them
+# the same way would refuse a --no-verify checkpoint, which is exactly the
+# strands-finished-work failure this exemption exists to prevent.
+_DRY_RUN_FLAGS = {
+    "commit": frozenset(("--dry-run",)),
+    "add": frozenset(("--dry-run", "-n")),
+}
+
+
+def _command_segments(command):
+    """Every independently-executable command in the string, as
+    (preceding_operator, tokens).
+
+    Newlines are real command separators in shell but plain WHITESPACE to shlex,
+    so lines are split first and `&&`/`||`/`;`/`|`/`&` split what remains. Doing
+    it in that order is what keeps _is_dry_run's argument region from running off
+    the end of one command into the next."""
+    segments = []
+    for line in command.splitlines():
+        if not line.strip():
+            continue
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            tokens = line.split()
+        operator, current = None, []
+        for token in tokens:
+            if token in _CMD_SEPARATORS:
+                segments.append((operator, current))
+                operator, current = token, []
+            else:
+                current.append(token)
+        segments.append((operator, current))
+    return segments
+
+
+def _segment_is_reachable(operator, previous_tokens):
+    """False only for the two cases decidable from the text alone: a command
+    guarded by `false &&`, or by `true ||`.
+
+    Deliberately NOT general reachability. That needs a real shell parser, and
+    even with one, `foo && git commit` depends on foo's runtime exit status, so
+    it is undecidable here. The error budget forces the narrowness: calling a
+    REACHABLE commit unreachable refuses a real checkpoint and strands finished
+    work, the expensive failure. So only the always-false/always-true builtins,
+    only as a whole command, and only against the IMMEDIATELY preceding segment
+    (`false && a && git commit` leaves the commit reachable — conservative in the
+    safe direction). (Round-1 review, MINOR.)"""
+    guard = previous_tokens[0] if len(previous_tokens) == 1 else None
+    if operator == "&&" and guard in _ALWAYS_FALSE:
+        return False
+    if operator == "||" and guard in _ALWAYS_TRUE:
+        return False
+    return True
+
+
+def _segment_invokes(tokens, subcommands):
+    """Scan one command for `git [global-opts] <subcommand>` that is not a dry
+    run. The scan walks every token rather than assuming position 0, so wrapper
+    prefixes (`env FOO=bar git commit ...`) still match."""
     index = 0
     while index < len(tokens):
         if tokens[index] == "git" or tokens[index].endswith("/git"):
             cursor = index + 1
             while cursor < len(tokens) and tokens[cursor].startswith("-"):
-                # git's global options; the two-word forms swallow their value.
-                if tokens[cursor] in ("-c", "-C", "--git-dir", "--work-tree",
-                                      "--namespace", "--exec-path"):
+                if tokens[cursor] in _GIT_GLOBAL_TWO_WORD:
                     cursor += 2
                 else:
                     cursor += 1
-            if cursor < len(tokens) and tokens[cursor] == "commit":
+            if (cursor < len(tokens) and tokens[cursor] in subcommands
+                    and not _is_dry_run(tokens, cursor)):
                 return True
+            index = cursor
         index += 1
     return False
+
+
+def _is_dry_run(tokens, subcommand_index):
+    """True when THIS invocation carries its subcommand's dry-run flag.
+
+    Scoped to the one invocation and matched on WHOLE tokens, never on the
+    command string. Scar (sp-9ca7e393, round-1 review MAJOR): this was
+    `"--dry-run" in command`, so `git commit -m "fix: honor --dry-run flag"` was
+    read as a dry run and blocked at the volume ceiling — a real commit refused,
+    leaving unattended work uncommitted until a human resumed it, the same shape
+    as the worktree strand this file's other scar records. It also masked a real
+    commit that followed a dry-run probe (`git commit --dry-run && git -C x
+    commit -m y`). shlex collapses a quoted message into ONE token, so exact
+    matching inside the invocation's own argument region cannot be fooled by
+    message text."""
+    flags = _DRY_RUN_FLAGS.get(tokens[subcommand_index], frozenset())
+    for token in tokens[subcommand_index + 1:]:
+        # A new `git ...` begins the next invocation; its flags are not ours.
+        if token == "git" or token.endswith("/git"):
+            break
+        if token in flags:
+            return True
+    return False
+
+
+def _invokes_git_commit(command):
+    """True only when the command actually RUNS `git commit`. Feeds the
+    volume-counter reset and the gate-grace budget, so it stays commit-only:
+    `git add` ships nothing and must not look like progress."""
+    return _invokes_git_subcommand(command, ("commit",))
 
 
 def _is_successful_commit(command, tool_response):
