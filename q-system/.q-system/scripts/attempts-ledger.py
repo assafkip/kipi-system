@@ -17,57 +17,94 @@ bump_attempt is one of six, and the other five kept racing on the same file.
 Codex caught the claim. Hence ONE writer, here, rather than six copies of a lock
 -- six copies of a lock is just the original defect with more places to drift.
 
-CONCURRENCY. No flock: macOS ships none and this fleet runs on both kernels, so
-the mutex is a file whose creation is O_EXCL. The write is temp-then-os.replace
-so a crash mid-write cannot leave a truncated ledger, which would read as `{}`
-and silently reset every budget in the file.
+THE LOCK WAS WORSE THAN NO LOCK (ASK-286, sp-626e9452). It used to PROCEED on
+timeout -- break out of the retry loop and enter the transaction holding nothing
+-- and its release removed the lock BY PATH. Together: a run that times out
+believes it is serialized, walks in, and on the way out deletes the live lock of
+the run that actually holds it. Both runs are then inside one read-decide-write,
+which is precisely what this file exists to stop. It also propagated: on
+2026-08-02 an agent was told to reuse an in-repo lock rather than invent a
+fourth, copied THIS one including both defects, and cited the source as
+justification. Citing a pattern is not verifying it.
 
-THE LOCK WAS WORSE THAN NO LOCK (ASK-286, sp-626e9452, back-ported from the
-version PR #42 proved in converge.sh `receipt_transaction`). It used to PROCEED
-on timeout -- break out of the retry loop and enter the transaction holding
-nothing -- and its release removed the lock BY PATH. Together: a run that times
-out believes it is serialized, walks in, and on the way out deletes the live
-lock of the run that actually holds it. Both runs are then inside one
-read-decide-write, which is precisely what this file exists to stop.
+WHY fcntl.flock AND NOT A TOKEN FILE (codex round 1 on PR #67, findings 1 + 3).
+The first fix here back-ported converge.sh `receipt_transaction`: a token written
+into a file, published with os.link, released only if it still carried this run's
+token, and broken when the pid it named was not running. That is the right shape
+FOR BASH, where converge.sh lives -- macOS ships no flock(1) BINARY, so a shell
+script genuinely has to hand-roll one. It is the wrong shape here, and the
+docstring that justified it with a flat "macOS ships no flock" was simply false:
+this is Python, `fcntl.flock` works on both kernels this fleet runs on, and
+`session_recall.py` was already using it a few files away.
 
-It also propagated. On 2026-08-02 an agent was told to reuse an in-repo lock
-rather than invent a fourth, copied THIS one including both defects, and cited
-the source as justification. Citing a pattern is not verifying it.
+Keeping the hand-rolled version cost three separate defects, all of them the
+mechanism rather than the tuning:
 
-FOUR INVARIANTS, all absent from the version this replaces:
+  1. LIVENESS BY PID ANSWERS THE WRONG QUESTION. It asks "is some process with
+     this number running", not "is that process holding this lock". Pids wrap, so
+     a leftover lock eventually names a pid an unrelated live process now has --
+     and is then honoured forever. The attempts counter freezes, no issue reaches
+     MAX_ATTEMPTS, no issue reaches STUCK, and no human is paged. Silent and
+     permanent, which is the failure class this ledger exists to kill. Every
+     alternative is another heuristic with its own hole: an age cap breaks a slow
+     holder and trusts the clock.
+  2. IT COST 22.1s TO REFUSE, against a 10s retry budget, because each of the 100
+     retries did a full mkstemp + write + link + unlink publish attempt.
+  3. RELEASE-BY-OWNER, ATOMIC PUBLISH, AND CORPSE-BREAKING ARE ~90 LINES OF
+     HEURISTIC standing in for something the kernel already guarantees.
 
-  1. A TIMEOUT RETURNS FAILURE. The caller does no work and says so. A skipped
-     increment is recoverable -- the next scheduled run retries, and the run
-     that DID hold the lock is counting. Two runs inside one read-decide-write
-     is not recoverable.
-  2. A RELEASE REMOVES ONLY A LOCK CARRYING THIS RUN'S OWN TOKEN, never one
-     identified by path alone.
-  3. THE LOCK IS CREATED ALREADY CARRYING ITS OWNER. The token is written into a
-     temp file first and `os.link` publishes it at the lock path atomically, so
-     the lock never exists un-attributable for even an instant. mkdir left that
-     window open, and a run killed inside it left a lock nothing could ever own.
-  4. STALE LOCKS BREAK ON OWNER LIVENESS, so refusing to force does not let a
-     corpse wedge every future write. A lock whose pid is gone is broken; so is
-     one that carries no attributable owner at all -- an empty file, or the
-     leftover DIRECTORY a pre-fix worker killed mid-transaction leaves behind,
-     since by invariant 3 this writer can never produce either.
+flock erases all three. The lock is the open file description, so the kernel
+releases it on close AND on process death: a dead holder blocks nothing, with no
+pid to guess at and no timer to trust. A contended retry is one non-blocking
+syscall, so the refusal costs its sleep budget and nothing more.
 
-RESIDUAL, named rather than papered over: the token is re-read immediately
-before a break, but that is still a narrow TOCTOU window, and pid reuse can make
-a corpse look live. Both degrade in the SAFE direction -- either the write is
-skipped and says so, or a break happens that the re-read guard makes vanishingly
-unlikely. Neither can silently delete a live run's lock, which is the property
-that was actually broken.
+THE INVARIANTS, and where each now lives:
+
+  1. A TIMEOUT RETURNS FAILURE -- still enforced here, in `_mutate`. The caller
+     does no work and says so. A skipped increment is recoverable: the next
+     scheduled run retries, and the run that DID hold the lock is counting. Two
+     runs inside one read-decide-write is not recoverable.
+  2. A RELEASE ONLY EVER DROPS THIS RUN'S OWN HOLD -- the kernel's, by
+     construction. There is no path to release someone else's.
+  3. THE LOCK NEVER EXISTS UN-ATTRIBUTABLE -- the kernel's. The lock IS the open
+     file description; an empty or leftover lock FILE holds nothing.
+  4. A DEAD OWNER NEVER WEDGES A WRITE -- the kernel's. No corpse can exist.
+
+THE ONE WAY A FILE LOCK CAN STILL BE DEFEATED is two runs holding locks on two
+different inodes at the same path, which is why this file NEVER UNLINKS THE LOCK.
+A leftover zero-byte `.lock` is inert -- it carries no state, and the next run
+locks the same inode. A pre-ASK-286 worker still breaks locks by unlinking, so
+during a fleet rollout one can replace the file this run is holding; `_take_lock`
+therefore re-checks that the inode it locked is still the inode at the path, and
+retries on the live one if not.
+
+CONCURRENCY, the other half. The write is temp-then-os.replace so a crash
+mid-write cannot leave a truncated ledger, which would read as `{}` and silently
+reset every budget in the file.
+
+EXIT CODES, one meaning each (codex round 1 on PR #67, finding 2). Six call sites
+in linear-worker.sh route on these, so an exit that means two things silently
+drops a page:
+
+  0  the op succeeded. For claim-flag: claimed HERE, first time -- go page.
+  1  claim-flag ONLY: already claimed on an earlier run -- stay quiet.
+  2  usage error: unknown op, or the wrong number of arguments. Nothing written.
+  3  the lock could not be taken. Nothing written, nothing claimed.
+
+Arity is validated up front for exactly this reason: `claim-flag ASK-1` with the
+flag omitted used to raise IndexError and exit 1, and 1 is the one code that
+tells the caller to stay quiet. A crash that reads as "already paged" is the
+silent stall wearing the mechanism built to prevent it.
 """
+import fcntl
 import json
 import os
-import random
 import sys
 import tempfile
 import time
 
-# Overridable ONLY so the suite can assert the contended path without a 10s sleep
-# per case. Production never sets it, same posture as converge.sh's
+# Overridable ONLY so the suite can assert the contended path without sleeping
+# out the full budget. Production never sets it, same posture as converge.sh's
 # KIPI_RECEIPT_LOCK_TRIES.
 LOCK_TRIES = int(os.environ.get("KIPI_ATTEMPTS_LOCK_TRIES") or 100)
 LOCK_SLEEP = 0.1
@@ -77,105 +114,76 @@ class LockUnavailable(Exception):
     """The lock could not be taken. NEVER swallowed: the caller writes nothing."""
 
 
-def _new_token():
-    return "%d:%d:%d" % (os.getpid(), int(time.time()), random.randrange(1 << 30))
+class Usage(Exception):
+    """Wrong op or wrong arity. Exits 2, never 1: see the exit-code table above."""
 
 
-def _read_lock(lock):
-    """The token a lock carries, or "" if it carries none (missing, empty, or a
-    stale directory from the pre-ASK-286 writer)."""
+def _same_file(fh, lock):
+    """True when the handle we locked is still the file at `lock`.
+
+    Holding a lock on an inode that has been unlinked out from under us means
+    holding nothing anyone else can see -- the exact two-inodes-one-path race
+    that makes a file lock useless.
+    """
     try:
-        with open(lock) as fh:
-            return fh.read().strip()
+        live = os.stat(lock)
     except OSError:
-        return ""
+        return False
+    held = os.fstat(fh.fileno())
+    return (live.st_ino, live.st_dev) == (held.st_ino, held.st_dev)
 
 
-def _publish_lock(lock, token):
-    """Create `lock` already carrying `token`, or raise FileExistsError.
+def _take_lock(lock):
+    """Return an open handle holding an exclusive flock, or None if it timed out.
 
-    os.link is the atomic publish: the content is complete in the temp file
-    before the name exists, so there is no instant at which the lock is present
-    without an owner. Raises OSError for an unwritable parent -- which is a
-    refusal to write, not a licence to proceed unlocked.
+    Opened "a": never truncates, so a concurrent holder's file is untouched, and
+    creates the file when it is absent.
     """
     parent = os.path.dirname(lock) or "."
     os.makedirs(parent, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=parent)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(token + "\n")
-        os.link(tmp, lock)
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-
-def _owner_is_alive(seen):
-    """True unless the lock names a pid that is provably gone.
-
-    A lock carrying no parseable pid is NOT alive: nothing can ever prove it
-    owns the lock, so honouring it means waiting forever.
-    """
-    pid = seen.split(":", 1)[0]
-    if not pid.isdigit() or int(pid) <= 0:
-        return False
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True            # exists but not ours to signal
-    return True
-
-
-def _break_if_dead(lock):
-    """Remove a lock whose owner is gone. Leaves a live holder's lock alone."""
-    seen = _read_lock(lock)
-    if _owner_is_alive(seen):
-        return
-    # Re-read: a lock that changed hands between the liveness check and here
-    # belongs to someone else now and is not ours to break.
-    if _read_lock(lock) != seen:
-        return
-    try:
+    for attempt in range(LOCK_TRIES):
+        # A DIRECTORY here is what the original `os.mkdir` lock leaves when its
+        # run is killed. It cannot be opened, so the first instance to take this
+        # upgrade with one on disk would never count an attempt again. It also
+        # cannot be held by anything: no flock lives on it, and the writer that
+        # made it released by path, so it was never a reliable claim to begin
+        # with. Clearing it is the only outcome that is not a permanent wedge.
         if os.path.isdir(lock):
-            os.rmdir(lock)
-        else:
-            os.unlink(lock)
-    except OSError:
-        return
-    sys.stderr.write(
-        "attempts-ledger: broke the lock at %s -- it was left by a run that is no "
-        "longer alive\n" % lock)
-
-
-def _take_lock(lock, token):
-    for _ in range(LOCK_TRIES):
+            try:
+                os.rmdir(lock)
+                sys.stderr.write(
+                    "attempts-ledger: cleared the leftover pre-flock lock DIRECTORY at %s\n"
+                    % lock)
+            except OSError:
+                pass
         try:
-            _publish_lock(lock, token)
-            return True
-        except FileExistsError:
-            _break_if_dead(lock)
+            fh = open(lock, "a")
         except OSError as exc:
             raise LockUnavailable(
-                "the lock at %s cannot be created (%s)" % (lock, exc))
-        time.sleep(LOCK_SLEEP)
-    return False
+                "the lock at %s cannot be opened (%s)" % (lock, exc))
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            time.sleep(LOCK_SLEEP)
+            continue
+        if _same_file(fh, lock):
+            return fh
+        # Someone replaced the path while we were taking it. What we hold is an
+        # orphan inode nobody else will ever contend on, so it guards nothing.
+        fh.close()
+        if attempt + 1 < LOCK_TRIES:
+            time.sleep(LOCK_SLEEP)
+    return None
 
 
-def _drop_lock(lock, token):
-    """Only ever removes a lock carrying this run's token. A release that trusts
-    the path deletes whichever run happens to hold it."""
-    if _read_lock(lock) != token:
-        sys.stderr.write(
-            "attempts-ledger: NOT releasing %s -- it no longer carries this run's "
-            "token, so it belongs to another run now\n" % lock)
-        return
+def _drop_lock(fh):
+    """Close the handle. The kernel drops the flock with it -- and would drop it
+    anyway if this process died, which is what makes a corpse lock impossible.
+    The lock FILE is deliberately left in place: unlinking it is what lets two
+    runs end up holding two different inodes at one path."""
     try:
-        os.unlink(lock)
+        fh.close()
     except OSError:
         pass
 
@@ -186,16 +194,16 @@ def _mutate(path, fn):
     Raises LockUnavailable rather than proceeding: see invariant 1 above.
     """
     lock = path + ".lock"
-    token = _new_token()
-    if not _take_lock(lock, token):
+    fh = _take_lock(lock)
+    if fh is None:
         raise LockUnavailable(
             "another run still holds the lock at %s. NOT entering the transaction -- "
             "a run that cannot take the lock writes nothing rather than racing the "
             "run that can." % lock)
     try:
         try:
-            with open(path) as fh:
-                d = json.load(fh)
+            with open(path) as fp:
+                d = json.load(fp)
         except Exception:
             d = {}
         if not isinstance(d, dict):
@@ -206,8 +214,8 @@ def _mutate(path, fn):
         os.makedirs(parent, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=parent)
         try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(d, fh, indent=2)
+            with os.fdopen(fd, "w") as fp:
+                json.dump(d, fp, indent=2)
             os.replace(tmp, path)
         except Exception:
             try:
@@ -217,7 +225,7 @@ def _mutate(path, fn):
             raise
         return True
     finally:
-        _drop_lock(lock, token)
+        _drop_lock(fh)
 
 
 def op_bump(d, issue, counter, ts_key, ts, why=None):
@@ -258,6 +266,11 @@ def main(argv):
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
         return _run(path, op, rest, ts)
+    except Usage as exc:
+        # 2, never 1. For claim-flag, 1 means "already claimed, stay quiet", so a
+        # bad invocation answering 1 would suppress a page nothing recorded.
+        sys.stderr.write("attempts-ledger: %s\n" % exc)
+        return 2
     except LockUnavailable as exc:
         # 3, deliberately not 1 and never 0. For claim-flag, 1 already means
         # "already claimed, stay quiet" and 0 means "claimed, go page" -- a lock
@@ -268,8 +281,20 @@ def main(argv):
         return 3
 
 
+def _args(op, rest, want):
+    """Exactly `want` arguments, or exit 2. An IndexError here would exit 1, and
+    1 is the code that tells six call sites to stay quiet."""
+    if len(rest) != want:
+        raise Usage(
+            "`%s` takes %d argument(s), got %d (%r). Nothing was written."
+            % (op, want, len(rest), rest))
+    return rest
+
+
 def _run(path, op, rest, ts):
     if op == "get":                       # get <issue> <key> [default]
+        if len(rest) not in (2, 3):
+            raise Usage("`get` takes <issue> <key> [default], got %r" % (rest,))
         issue, key = rest[0], rest[1]
         default = rest[2] if len(rest) > 2 else "0"
         try:
@@ -281,16 +306,20 @@ def _run(path, op, rest, ts):
         return 0
 
     if op == "bump-attempt":              # bump-attempt <issue> <why>
-        _mutate(path, lambda d: op_bump(d, rest[0], "count", "last", ts, rest[1]))
+        issue, why = _args(op, rest, 2)
+        _mutate(path, lambda d: op_bump(d, issue, "count", "last", ts, why))
         return 0
     if op == "bump-conflict":             # bump-conflict <issue>
-        _mutate(path, lambda d: op_bump(d, rest[0], "conflict_rounds", "last_conflict", ts))
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_bump(d, issue, "conflict_rounds", "last_conflict", ts))
         return 0
     if op == "bump-drift":                # bump-drift <issue>
-        _mutate(path, lambda d: op_bump(d, rest[0], "drift_rounds", "last_drift", ts))
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_bump(d, issue, "drift_rounds", "last_drift", ts))
         return 0
     if op == "clear-conflict":            # clear-conflict <issue>
-        _mutate(path, lambda d: op_clear(d, rest[0], ("conflict_rounds", "conflict_paged", "last_conflict")))
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_clear(d, issue, ("conflict_rounds", "conflict_paged", "last_conflict")))
         return 0
     if op == "clear-automerge":           # clear-automerge <issue>
         # The op my previous edit claimed to add and did not. The shell side was
@@ -300,14 +329,17 @@ def _run(path, op, rest, ts):
         # could never be cleared, so a PR that was armed, unarmed, then armed again
         # went PERMANENTLY SILENT. Caught by test-severity-floor, not by me: I had
         # verified the caller and the write count, never the round trip.
+        (issue,) = _args(op, rest, 1)
         _mutate(path, lambda d: op_clear(
-            d, rest[0], ("automerge_unarmed_paged", "automerge_unknown_paged")))
+            d, issue, ("automerge_unarmed_paged", "automerge_unknown_paged")))
         return 0
     if op == "clear-drift":               # clear-drift <issue>
-        _mutate(path, lambda d: op_clear(d, rest[0], ("drift_rounds", "drift_paged", "last_drift")))
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_clear(d, issue, ("drift_rounds", "drift_paged", "last_drift")))
         return 0
-    if op == "claim-flag":                # claim-flag <issue> <flag> -> exit 0 first time, 1 after
-        claimed = _mutate(path, lambda d: op_claim(d, rest[0], rest[1]))
+    if op == "claim-flag":                # claim-flag <issue> <flag> -> 0 first time, 1 after
+        issue, flag = _args(op, rest, 2)
+        claimed = _mutate(path, lambda d: op_claim(d, issue, flag))
         return 0 if claimed else 1
 
     print("unknown op: %s" % op, file=sys.stderr)

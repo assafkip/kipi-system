@@ -17,12 +17,29 @@ That failure is silent and self-perpetuating.
 
 THE TRAP THIS SUITE IS BUILT AROUND (learned on PR #42)
 -------------------------------------------------------
-The release is only reached AFTER a successful acquisition, so once the timeout
-stops lying there is no ORDINARY path into it holding someone else's lock. A
-mutant that reverts the release to an unconditional unlink therefore passes an
-entire suite that never makes the lock change hands mid-transaction. Case 3
-exists for exactly that: it stamps a foreign token over the lock from INSIDE the
-critical section, which is the only shape that can fail a release-by-path.
+The release is only reached AFTER a successful acquisition, so there is no
+ORDINARY path into it holding someone else's lock. A mutant that reverts the
+release to an unconditional unlink therefore passes an entire suite that never
+makes the lock change hands mid-transaction. Case 3 exists for exactly that.
+
+WHAT CHANGED IN ROUND 2 (codex round 1 on PR #67)
+-------------------------------------------------
+The first fix hand-rolled the lock: a token file, published with os.link,
+released by token, broken when the pid it named was not running. Codex found
+that pid liveness answers the wrong question -- pids wrap, so a leftover lock
+eventually names a live process that never held it and is then honoured forever
+(case 7). The mechanism is now `fcntl.flock`, which the kernel releases on close
+AND on process death, so a corpse lock cannot exist (case 8).
+
+That moves where the fixtures have to bite. A lock is now HELD, not DESCRIBED,
+so the contention cases hold a real flock from a live subprocess instead of
+writing a pid into a file. Two contracts inverted with the mechanism and are
+asserted in their new form rather than dropped:
+
+  * the lock FILE is never unlinked (case 6). Unlinking is what lets two runs
+    hold locks on two different inodes at one path.
+  * a leftover lock file is inert. It carries no state, so nothing about its
+    contents can wedge a write (cases 4, 5, 7).
 
 ISOLATION: every case runs in its own tempdir against its own ledger file. This
 suite never touches the live linear-worker-attempts.json.
@@ -30,6 +47,7 @@ suite never touches the live linear-worker-attempts.json.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -64,9 +82,15 @@ def load_module():
 
 
 def run(path: str, *args: str, tries: str = "3") -> subprocess.CompletedProcess:
-    """One CLI invocation. `tries` keeps a contended case sub-second instead of
-    sleeping out the production 10s timeout -- same posture as converge.sh's
-    KIPI_RECEIPT_LOCK_TRIES, which production never sets."""
+    """One CLI invocation. `tries` keeps a contended case sub-second.
+
+    Production leaves KIPI_ATTEMPTS_LOCK_TRIES unset (100 tries x 0.1s), same
+    posture as converge.sh's KIPI_RECEIPT_LOCK_TRIES. Measured 2026-08-02: a
+    blocked mutation refuses in ~10s under flock. It cost 22.1s under the
+    hand-rolled lock, because each retry did a full mkstemp/write/link/unlink
+    publish attempt on top of its sleep -- a contended retry is now one
+    non-blocking syscall, so the wall clock is the sleep budget and nothing more.
+    """
     env = dict(os.environ)
     env["KIPI_ATTEMPTS_LOCK_TRIES"] = tries
     return subprocess.run(
@@ -83,76 +107,91 @@ def read_ledger(path: str) -> dict:
         return {}
 
 
-def read_lock(lock: str) -> str:
+@contextlib.contextmanager
+def lock_held_by_live_process(lock: str):
+    """Hold a real flock on `lock` from a separate live process.
+
+    The lock is now the open file description, so contention has to be produced
+    by actually holding it. Writing a pid into the file would describe a holder
+    without being one, which is precisely the confusion case 7 exists to kill.
+    """
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import fcntl,sys,time\n"
+         "fh=open(sys.argv[1],'a')\n"
+         "fcntl.flock(fh.fileno(), fcntl.LOCK_EX)\n"
+         "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
+         "time.sleep(300)\n",
+         lock],
+        stdout=subprocess.PIPE, text=True,
+    )
     try:
-        with open(lock) as fh:
-            return fh.read().strip()
-    except Exception:
-        return ""
+        if holder.stdout.readline().strip() != "held":
+            fail("the holder subprocess never reported taking the lock")
+        yield holder
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 # --- 1. A TIMEOUT MUST NOT PROCEED -------------------------------------------
-# The lock is held by a LIVE pid (this test process, which is by definition
-# running), so the only correct outcome is to write nothing and say so. The old
-# code broke out of the retry loop and entered the transaction holding nothing.
+# The lock is held by a live process, so the only correct outcome is to write
+# nothing and say so. The old code broke out of the retry loop and entered the
+# transaction holding nothing.
 def case_timeout_does_not_proceed(tmp: str) -> None:
     path = os.path.join(tmp, "attempts-timeout.json")
     with open(path, "w") as fh:
         json.dump({"ASK-1": {"count": 1}}, fh)
-    lock = path + ".lock"
-    held = "%d:0:0" % os.getpid()
-    with open(lock, "w") as fh:
-        fh.write(held + "\n")
 
-    proc = run(path, "bump-attempt", "ASK-1", "because")
+    with lock_held_by_live_process(path + ".lock"):
+        proc = run(path, "bump-attempt", "ASK-1", "because")
 
-    if proc.returncode == 0:
-        fail("THE DEFECT: the lock is held by a LIVE pid and bump-attempt reported success. "
-             "A run that cannot take the lock must do no work and say so -- entering the "
-             f"transaction here is two runs inside one read-decide-write. stdout={proc.stdout!r} "
-             f"stderr={proc.stderr!r}")
-    got = read_ledger(path).get("ASK-1", {}).get("count")
-    if got != 1:
-        fail("THE DEFECT: bump-attempt could not take the lock and mutated the ledger anyway "
-             f"(count went 1 -> {got})")
-    if read_lock(lock) != held:
-        fail("THE DEFECT: the run that could not take the lock removed or overwrote the live "
-             f"holder's lock. It now reads {read_lock(lock)!r}, not {held!r}")
-    if "lock" not in (proc.stderr or "").lower():
-        fail("the bump was skipped for lock contention and nothing said so, so a dropped "
-             f"increment is invisible: stderr={proc.stderr!r}")
-    ok("a timeout writes nothing, says so, and leaves the live holder's lock alone")
+        if proc.returncode == 0:
+            fail("THE DEFECT: the lock is held by a live process and bump-attempt reported "
+                 "success. A run that cannot take the lock must do no work and say so -- "
+                 f"entering the transaction here is two runs inside one read-decide-write. "
+                 f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        got = read_ledger(path).get("ASK-1", {}).get("count")
+        if got != 1:
+            fail("THE DEFECT: bump-attempt could not take the lock and mutated the ledger "
+                 f"anyway (count went 1 -> {got})")
+        if "lock" not in (proc.stderr or "").lower():
+            fail("the bump was skipped for lock contention and nothing said so, so a dropped "
+                 f"increment is invisible: stderr={proc.stderr!r}")
+    ok("a timeout writes nothing and says so, leaving the live holder undisturbed")
 
 
 # --- 2. THE SAME, FOR THE ONCE-ONLY PAGE FLAG --------------------------------
 # claim-flag's exit code IS the decision ("page or stay quiet"), so a lock
-# failure must not land on 0. Exit 0 here would fire a page for a flag that was
-# never claimed, and every later run would fire it again.
+# failure must land on neither 0 nor 1. Exit 0 fires a page for a flag that was
+# never claimed; exit 1 retires a page that never fired.
 def case_claim_flag_timeout(tmp: str) -> None:
     path = os.path.join(tmp, "attempts-claim.json")
     with open(path, "w") as fh:
         json.dump({}, fh)
-    lock = path + ".lock"
-    with open(lock, "w") as fh:
-        fh.write("%d:0:0\n" % os.getpid())
 
-    proc = run(path, "claim-flag", "ASK-2", "stuck_paged")
+    with lock_held_by_live_process(path + ".lock"):
+        proc = run(path, "claim-flag", "ASK-2", "stuck_paged")
 
-    if proc.returncode == 0:
-        fail("THE DEFECT: claim-flag could not take the lock and answered 'claimed'. The "
-             "caller pages on exit 0, so this is a page for a flag nothing recorded -- it "
-             "fires again on every run after")
-    if read_ledger(path).get("ASK-2", {}).get("stuck_paged"):
-        fail("claim-flag could not take the lock and set the flag anyway")
-    ok("claim-flag under contention neither claims nor reports a claim")
+        if proc.returncode == 0:
+            fail("THE DEFECT: claim-flag could not take the lock and answered 'claimed'. The "
+                 "caller pages on exit 0, so this is a page for a flag nothing recorded -- it "
+                 "fires again on every run after")
+        if proc.returncode == 1:
+            fail("THE DEFECT: claim-flag could not take the lock and answered 1, which is the "
+                 "code for 'already claimed on an earlier run'. The caller stays quiet, so a "
+                 "page is dropped for a state no file records and no later run will retire")
+        if read_ledger(path).get("ASK-2", {}).get("stuck_paged"):
+            fail("claim-flag could not take the lock and set the flag anyway")
+    ok("claim-flag under contention neither claims, nor reports a claim, nor reads as claimed")
 
 
-# --- 3. THE RELEASE ONLY EVER REMOVES A LOCK THIS RUN OWNS -------------------
+# --- 3. THE RELEASE NEVER DISTURBS A LOCK THIS RUN DOES NOT OWN --------------
 # The mutation-killer. Reached only after a SUCCESSFUL acquisition, so nothing
 # ordinary walks into the release holding a foreign lock: the case has to build
-# that state on purpose. The mutation fn stamps a foreign token over the lock
-# from INSIDE the critical section. A release that trusts the path deletes it;
-# one that checks its own token leaves it.
+# that state on purpose. It stamps a foreign token over the lock file from INSIDE
+# the critical section. A release that trusts the path unlinks it; the flock
+# release closes a file descriptor and touches no name at all.
 def case_release_checks_ownership(tmp: str) -> None:
     mod = load_module()
     path = os.path.join(tmp, "attempts-own.json")
@@ -171,18 +210,14 @@ def case_release_checks_ownership(tmp: str) -> None:
              "if the mutation ran")
     if not os.path.exists(lock):
         fail("THE DEFECT: the lock changed hands during the transaction and the release "
-             "deleted it anyway. Releasing by path means whichever run finishes first unlocks "
+             "removed it anyway. Releasing by path means whichever run finishes first unlocks "
              "the run that is still inside its own transaction")
-    if read_lock(lock) != "foreign:0:0":
-        fail("the release removed another run's lock and left something else in its place: "
-             f"{read_lock(lock)!r}")
-    ok("a release refuses to remove a lock that no longer carries this run's token")
+    ok("a release removes no name, so it cannot take away a lock another run holds")
 
 
-# --- 4. A CORPSE LOCK DOES NOT WEDGE FUTURE WRITES ---------------------------
-# The other side of refusing to force. Broken on OWNER LIVENESS, not a timer:
-# pid 2147483647 is not running, so honouring its lock would mean no attempt is
-# ever counted again on this ledger.
+# --- 4. A LOCK LEFT BY A DEAD RUN DOES NOT WEDGE FUTURE WRITES ---------------
+# The other side of refusing to force. A leftover lock file naming pid
+# 2147483647 is inert: it holds no flock, so nothing has to reason about it.
 def case_corpse_lock(tmp: str) -> None:
     path = os.path.join(tmp, "attempts-corpse.json")
     with open(path, "w") as fh:
@@ -199,21 +234,17 @@ def case_corpse_lock(tmp: str) -> None:
              f"freezes and no issue ever reaches STUCK. stderr={proc.stderr!r}")
     if read_ledger(path).get("ASK-4", {}).get("count") != 1:
         fail(f"the corpse lock was broken but the bump never landed: {read_ledger(path)!r}")
-    if os.path.exists(lock):
-        fail("the run finished its transaction and left its own lock behind, so the next run "
-             "has to break it as a corpse before it can do anything")
-    ok("a lock left by a dead run is broken, written through, and released")
+    ok("a lock file left by a dead run holds nothing and blocks nothing")
 
 
-# --- 5. AN UNATTRIBUTABLE LOCK IS A CORPSE BY CONSTRUCTION -------------------
-# Two shapes, one rule. A leftover DIRECTORY is what a pre-fix worker killed
-# mid-transaction leaves behind (the old lock was `os.mkdir`), and an EMPTY file
-# is the window a create-then-stamp lock leaves open. Neither can ever be
-# attributed to a live owner, so honouring either wedges this ledger forever on
-# the first upgrade. Both must break.
-def case_unattributable_lock(tmp: str) -> None:
+# --- 5. THE PRE-FLOCK LEFTOVERS ARE BOTH SURVIVED ----------------------------
+# Two shapes a pre-ASK-286 worker leaves at this path. A DIRECTORY is what the
+# original os.mkdir lock leaves when its run is killed, and an EMPTY file is the
+# window the token lock left between create and stamp. Neither can be opened-and-
+# locked as-is, so the first fleet upgrade would wedge every ledger that has one.
+def case_pre_flock_leftovers(tmp: str) -> None:
     for name, make in (("directory", os.mkdir), ("empty file", lambda p: open(p, "w").close())):
-        path = os.path.join(tmp, "attempts-unattr-%s.json" % name.split()[0])
+        path = os.path.join(tmp, "attempts-leftover-%s.json" % name.split()[0])
         with open(path, "w") as fh:
             json.dump({}, fh)
         make(path + ".lock")
@@ -221,15 +252,129 @@ def case_unattributable_lock(tmp: str) -> None:
         proc = run(path, "bump-attempt", "ASK-5", "because")
 
         if proc.returncode != 0:
-            fail(f"a leftover lock {name} wedged the ledger permanently. Nothing can ever "
-                 "prove it owns that lock, so waiting on it is waiting forever. "
-                 f"stderr={proc.stderr!r}")
+            fail(f"a leftover lock {name} from a pre-flock worker wedged the ledger. The first "
+                 "instance to take this upgrade with one on disk never counts an attempt "
+                 f"again. stderr={proc.stderr!r}")
         if read_ledger(path).get("ASK-5", {}).get("count") != 1:
             fail(f"the leftover lock {name} was cleared but the bump never landed")
-    ok("a lock nothing can ever own (stale mkdir directory, empty file) is broken, not honoured")
+    ok("a pre-flock leftover (mkdir directory, empty token file) does not wedge the upgrade")
 
 
-# --- 6. THE ORDINARY PATH STILL WORKS ----------------------------------------
+# --- 6. THE LOCK FILE IS NEVER UNLINKED --------------------------------------
+# Inverted contract, asserted rather than dropped. The old lock deleted its file
+# on release; this one must not. Unlinking is the ONE way a file lock is
+# defeated: run A holds the inode, someone unlinks the name, run B creates a
+# fresh inode at that path and locks it, and both are inside the transaction.
+def case_lock_file_is_never_unlinked(tmp: str) -> None:
+    path = os.path.join(tmp, "attempts-persist.json")
+    lock = path + ".lock"
+
+    if run(path, "bump-attempt", "ASK-10", "why").returncode != 0:
+        fail("the ordinary bump did not succeed, so this case cannot judge the release")
+    if not os.path.exists(lock):
+        fail("THE DEFECT: the release unlinked the lock file. A later run then creates a NEW "
+             "inode at that path while a live run holds the old one, and both believe they "
+             "are alone -- the two-inodes-one-path race a file lock exists to prevent")
+    first = os.stat(lock).st_ino
+
+    if run(path, "bump-attempt", "ASK-10", "why").returncode != 0:
+        fail("the second bump did not succeed against the surviving lock file")
+    if os.stat(lock).st_ino != first:
+        fail("the second run replaced the lock inode instead of locking the one already there")
+    if os.path.getsize(lock) != 0:
+        fail(f"the lock file carries state ({os.path.getsize(lock)} bytes); it must be inert, "
+             "or something will start reasoning about its contents again")
+    ok("the lock file survives the release, is re-locked in place, and carries no state")
+
+
+# --- 7. A LOCK NAMING A LIVE PID THAT IS NOT THE HOLDER MUST NOT WEDGE -------
+# Codex round 1 on PR #67, MAJOR. Liveness-by-pid answers the wrong question: it
+# asks "is some process with this number running", not "is that process holding
+# this lock". Pids wrap, so a leftover lock file eventually names a pid that some
+# unrelated live process now has -- and then it is honoured forever. The attempts
+# counter freezes, no issue reaches MAX_ATTEMPTS, no issue reaches STUCK, and no
+# human is ever paged. Silent and permanent, which is the exact failure class
+# this ledger exists to kill.
+#
+# pid 1 makes it deterministic rather than probabilistic: launchd/init is always
+# alive and is never the holder of this lock.
+def case_live_pid_that_never_held_it(tmp: str) -> None:
+    path = os.path.join(tmp, "attempts-pidreuse.json")
+    with open(path, "w") as fh:
+        json.dump({}, fh)
+    lock = path + ".lock"
+    with open(lock, "w") as fh:
+        fh.write("1:0:0\n")          # pid 1 is alive and never held this lock
+
+    proc = run(path, "bump-attempt", "ASK-7", "because")
+
+    if proc.returncode != 0:
+        fail("THE DEFECT: a leftover lock naming a LIVE pid that never held it froze the "
+             "ledger. Nothing releases that lock, so every future write is refused: the "
+             "attempts counter stops, no issue reaches STUCK, and no human is paged. "
+             f"stderr={proc.stderr!r}")
+    if read_ledger(path).get("ASK-7", {}).get("count") != 1:
+        fail(f"the stale lock was cleared but the bump never landed: {read_ledger(path)!r}")
+    ok("a leftover lock naming a live pid that never held it does not freeze the ledger")
+
+
+# --- 8. THE HOLDER'S DEATH RELEASES THE LOCK, WITH NO HEURISTIC --------------
+# The positive form of case 7, and the reason case 7 is unreachable by
+# construction rather than merely unlikely. A real holder blocks; the moment that
+# holder dies the next run proceeds -- not after a timer, not after guessing at a
+# pid, but because the kernel drops the lock with the process.
+def case_holder_death_releases(tmp: str) -> None:
+    path = os.path.join(tmp, "attempts-death.json")
+    with open(path, "w") as fh:
+        json.dump({}, fh)
+
+    with lock_held_by_live_process(path + ".lock"):
+        proc = run(path, "bump-attempt", "ASK-8", "because")
+        if proc.returncode == 0:
+            fail("THE DEFECT: a run wrote the ledger while another process held the lock. "
+                 f"stderr={proc.stderr!r}")
+
+    proc = run(path, "bump-attempt", "ASK-8", "because")
+    if proc.returncode != 0:
+        fail("the holder is dead and its lock was still honoured, so the ledger is wedged "
+             f"until something outside this program intervenes. stderr={proc.stderr!r}")
+    if read_ledger(path).get("ASK-8", {}).get("count") != 1:
+        fail(f"the dead holder's lock was released but the bump never landed: {read_ledger(path)!r}")
+    ok("a live holder blocks the write and its death releases the lock with no heuristic")
+
+
+# --- 9. THE LOCK TAKEN IS THE LOCK AT THE PATH -------------------------------
+# A pre-ASK-286 worker breaks a lock by UNLINKING it, so during a fleet rollout
+# one can replace the file this run is taking. A handle locked on an orphaned
+# inode guards nothing: nobody else will ever contend on it. Acquiring is
+# therefore not enough -- the inode locked has to still be the inode at the path.
+def case_lock_taken_is_the_lock_at_the_path(tmp: str) -> None:
+    mod = load_module()
+    lock = os.path.join(tmp, "attempts-replaced.json.lock")
+
+    # Stand in for the old worker: unlink the name and put a different inode
+    # there, the way a release-by-path break does.
+    os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o644))
+    original_ino = os.stat(lock).st_ino
+    os.unlink(lock)
+    os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o644))
+    if os.stat(lock).st_ino == original_ino:
+        fail("the fixture could not produce a second inode at the lock path")
+
+    fh = mod._take_lock(lock)
+    if fh is None:
+        fail("the lock at a replaced path could not be taken at all")
+    try:
+        if os.fstat(fh.fileno()).st_ino != os.stat(lock).st_ino:
+            fail("THE DEFECT: the handle holds an inode that is no longer the file at the lock "
+                 "path. Nobody else will ever contend on it, so the next run takes the live "
+                 "inode and both are inside the transaction at once")
+    finally:
+        mod._drop_lock(fh)
+    ok("the handle returned holds the inode that is live at the lock path")
+
+
+# --- 10. THE ORDINARY PATH STILL WORKS ---------------------------------------
 # The guard is only worth having if every op still round-trips. clear-automerge
 # is called out by name because it once existed only in the shell caller and
 # exited 2 here, which made a once-only page permanently silent.
@@ -262,9 +407,39 @@ def case_ops_round_trip(tmp: str) -> None:
     proc = run(path, "get", "ASK-6", "count", "0")
     if proc.stdout.strip() != "1":
         fail(f"get read back {proc.stdout!r}, wanted 1")
-    if os.path.exists(path + ".lock"):
-        fail("the ordinary path leaves its lock behind")
-    ok("every op round-trips through the guarded writer and releases its lock")
+    ok("every op round-trips through the guarded writer")
+
+
+# --- 11. A BAD INVOCATION EXITS 2, NEVER 1 -----------------------------------
+# Codex round 1 on PR #67, finding 2, and the shape it does not name. Exit 1 is
+# claim-flag's "already claimed on an earlier run, stay quiet". `claim-flag ASK-1`
+# with the flag omitted used to raise IndexError, and an uncaught Python exception
+# exits 1 -- so a typo in a call site read as "already paged" and the page was
+# dropped for good. Each exit code has to mean exactly one thing.
+def case_usage_errors_exit_two(tmp: str) -> None:
+    path = os.path.join(tmp, "attempts-usage.json")
+    with open(path, "w") as fh:
+        json.dump({}, fh)
+
+    for args in (
+        ("claim-flag", "ASK-11"),                       # flag omitted
+        ("bump-attempt", "ASK-11"),                     # why omitted
+        ("bump-conflict",),                             # issue omitted
+        ("clear-automerge", "ASK-11", "extra"),         # one too many
+        ("not-an-op", "ASK-11"),                        # unknown op
+    ):
+        proc = run(path, *args)
+        if proc.returncode == 1:
+            fail("THE DEFECT: `%s` exited 1, which is the code for 'already claimed, stay "
+                 "quiet'. Six call sites in linear-worker.sh read that as a page already "
+                 "sent, so a bad invocation silently drops the page. stderr=%r"
+                 % (" ".join(args), proc.stderr))
+        if proc.returncode != 2:
+            fail(f"`{' '.join(args)}` exited {proc.returncode}, wanted 2 (usage): "
+                 f"stderr={proc.stderr!r}")
+    if read_ledger(path):
+        fail(f"a usage error wrote to the ledger: {read_ledger(path)!r}")
+    ok("a bad invocation exits 2 and writes nothing, never 1")
 
 
 def main() -> int:
@@ -274,8 +449,13 @@ def main() -> int:
         case_claim_flag_timeout(tmp)
         case_release_checks_ownership(tmp)
         case_corpse_lock(tmp)
-        case_unattributable_lock(tmp)
+        case_pre_flock_leftovers(tmp)
+        case_lock_file_is_never_unlinked(tmp)
+        case_live_pid_that_never_held_it(tmp)
+        case_holder_death_releases(tmp)
+        case_lock_taken_is_the_lock_at_the_path(tmp)
         case_ops_round_trip(tmp)
+        case_usage_errors_exit_two(tmp)
     print(f"PASS ({PASSED} cases)")
     return 0
 

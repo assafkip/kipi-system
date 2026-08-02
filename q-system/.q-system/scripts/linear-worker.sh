@@ -547,6 +547,39 @@ clear_drift_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-drift "$1"; }
 # mechanism instead of each stuck-state inventing its own convention.
 claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 
+# page_once <issue> <flag>: TRUE when this caller should page. Every once-only
+# page routes through here rather than through `if claim_page_once`, because
+# bash `if` only asks "was the exit 0" and the ledger answers three things
+# (ASK-286, codex round 1 on PR #67, finding 2):
+#
+#   0  claimed here, first time         -> page
+#   1  already claimed on a prior run   -> quiet
+#   2  usage error, nothing written     -> page, and say so
+#   3  lock contended, nothing written  -> page, and say so
+#
+# The bare `if` collapsed 2 and 3 into the same branch as 1, so a page was
+# dropped for a state NO FILE RECORDS -- which means no later run retires it
+# either. It is simply gone. That is the silent stall this worker exists to kill,
+# re-created inside the mechanism built to kill it.
+#
+# Paging is the safe direction on 2 and 3. Nothing was claimed, so the state is
+# still true and still unpaged; a duplicate page is noise, a suppressed page is a
+# stall nobody sees. It is also bounded: contention lasts a retry budget, and the
+# first run that gets the lock claims the flag, after which every run is quiet.
+page_once() {
+  local rc
+  set +e
+  claim_page_once "$1" "$2"
+  rc=$?
+  set -e
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) say "WARN: the attempts ledger did not record the $2 flag for $1 (exit $rc) -- paging anyway, because a page nothing recorded is a page no later run will send"
+       return 0 ;;
+  esac
+}
+
 # Pops the two auto-merge page flags the moment the PR is SEEN armed. Same scar
 # clear_conflict_rounds and clear_drift_rounds both carry (PR #25 finding 3): a
 # once-only page with no clear is a page that fires once in an issue's LIFE, so
@@ -630,7 +663,7 @@ arm_automerge() {
       # fine. It pages anyway: this is the branch where the PR may really be
       # unarmed, and quieting it would re-create the stall one layer down.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE and could not read its state either -- gh answered neither. If it sits green: gh pr merge --auto --squash $pr"
-      if claim_page_once "$ISSUE" automerge_unknown_paged; then
+      if page_once "$ISSUE" automerge_unknown_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     else
@@ -644,7 +677,7 @@ arm_automerge() {
       # (everything green, nothing merges, no signal), so a log-only warning does
       # not kill the silent stall, it relocates it.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
-      if claim_page_once "$ISSUE" automerge_unarmed_paged; then
+      if page_once "$ISSUE" automerge_unarmed_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     fi
@@ -760,7 +793,7 @@ while IFS= read -r ISSUE; do
       STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
     fi
     say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
-    if claim_page_once "$ISSUE" stuck_paged; then
+    if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
         "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
 
@@ -907,7 +940,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       DR="$(drift_rounds_for "$ISSUE")"
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
-        if claim_page_once "$ISSUE" drift_paged; then
+        if page_once "$ISSUE" drift_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
         continue
@@ -929,7 +962,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       CR="$(conflict_rounds_for "$ISSUE")"
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
-        if claim_page_once "$ISSUE" conflict_paged; then
+        if page_once "$ISSUE" conflict_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
         continue
@@ -1062,7 +1095,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
       say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
-      if claim_page_once "$ISSUE" tree_paged; then
+      if page_once "$ISSUE" tree_paged; then
         bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
