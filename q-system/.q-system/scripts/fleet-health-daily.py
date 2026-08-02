@@ -1017,11 +1017,32 @@ def _read_pending() -> list:
 
 
 def _write_pending(shas: list) -> None:
+    """Replace the record atomically, and let a failed write BE a failure.
+
+    Swallowing the OSError reported success while nothing durable held the sha.
+    The sweep ledger dedupes on sha forever, so a write that never landed SPENT
+    the finding: the next morning read clean, with no record of it anywhere
+    (PR #66 round 3). A caller that could not write this file has recorded
+    nothing and must go blind rather than file against a record it does not have.
+
+    The write lands in a sibling temp file and is `os.replace`d in, so a process
+    killed mid-write leaves the previous retry set whole. A truncated file parses
+    as invalid JSON, `_read_pending` returns [], and every sha owed at that
+    moment is silently forgiven — the same false-clean by another route.
+    """
+    BYPASS_PENDING.parent.mkdir(parents=True, exist_ok=True)
+    # PID-suffixed: two processes writing concurrently must not replace each
+    # other's half-written temp file into place.
+    tmp = BYPASS_PENDING.with_suffix(f"{BYPASS_PENDING.suffix}.{os.getpid()}.tmp")
     try:
-        BYPASS_PENDING.parent.mkdir(parents=True, exist_ok=True)
-        BYPASS_PENDING.write_text(json.dumps(shas), encoding="utf-8")
-    except OSError as exc:
-        print(f"  could not write {BYPASS_PENDING}: {exc}", file=sys.stderr)
+        tmp.write_text(json.dumps(shas), encoding="utf-8")
+        os.replace(tmp, BYPASS_PENDING)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 @contextmanager
@@ -1085,6 +1106,10 @@ def _clear_pending(reported) -> None:
     older run's successful filing wiped a newer run's sha, that run's own filing
     then failed, and the sweep ledger had already deduped the sha — so it was owed
     by nobody and lost forever. What a filing spends is what it reported.
+
+    A write failure here raises into `on_filed`, which logs it. The sha then
+    stays owed and is re-filed next run: a duplicate report, which is the safe
+    direction. The unsafe direction is the other one, and that is `_record_pending`.
     """
     done = set(reported)
     with _pending_lock():
@@ -1136,6 +1161,13 @@ def detect_unaccounted_commits(_ctx) -> list:
         # just scanned may be missing commits pushed from anywhere else, and
         # "nothing unaccounted" over a stale ref is an unknown, not a zero.
         raise RuntimeError("the sweeper could not fetch; the swept ref may be stale")
+    if result.get("truncated"):
+        # The scan hit its commit cap with history still in range, so every
+        # number it returned is about the WINDOW. "Nothing unaccounted in the
+        # newest N" is not "nothing unaccounted", and the difference is exactly
+        # the false zero this detector exists to stop.
+        raise RuntimeError(
+            "the sweeper's scan window was truncated; commits in range went unread")
 
     # Newly recorded shas UNION whatever a previous run recorded but never got
     # onto the board. The sweep dedupes on sha permanently, so once it has
@@ -1144,7 +1176,15 @@ def detect_unaccounted_commits(_ctx) -> list:
     # forever and the next morning read clean. The ledger's job is the COUNT; the
     # pending file is the separate, independently-cleared record of what still
     # owes a report.
-    pending = _record_pending(result.get("commits") or [])
+    try:
+        pending = _record_pending(result.get("commits") or [])
+    except OSError as exc:
+        # Nothing durable holds these shas and the sweep ledger has already
+        # deduped them. Filing now would spend a finding the retry set cannot
+        # re-surface, so the honest result is "could not look", not a finding.
+        raise RuntimeError(
+            f"the pending record at {BYPASS_PENDING} could not be written: {exc}"
+        ) from exc
     if not pending:
         return []
 

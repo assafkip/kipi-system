@@ -361,6 +361,49 @@ OUT_LOCK=$(LINEAR_BYPASS_LEDGER="$TMP/lockflag.jsonl" python3 "$SWEEP" --rev ori
 check "the sweep reports that it held the lock" "True" \
   "$(printf '%s' "$OUT_LOCK" | field locked)"
 
+echo "=== a scan that ran out of window says so, instead of reading clean ==="
+
+# The scan reads a fixed number of commits back. One unaccounted commit followed
+# by enough accounted ones pushes it past the cap: every commit IN the window is
+# accounted, so the run reports zero and the ledger never learns. "Nothing
+# unaccounted in the newest N" is not "nothing unaccounted".
+#
+# The cap is the argument, not the fixture size: --max-count=2 over 3 commits
+# reproduces the same shape as 500 over 501, in a fixture that builds in a second.
+LEDGER_WIN="$TMP/window.jsonl"
+SHA_BEYOND=$(commit 20 "fix(window): the one past the cap")
+commit 21 "chore: filler one (ASK-2)" >/dev/null
+commit 22 "chore: filler two (ASK-2)" >/dev/null
+git push -q origin main
+
+OUT_WIN=$(LINEAR_BYPASS_LEDGER="$LEDGER_WIN" python3 "$SWEEP" --rev origin/main \
+  --all-history --max-count=2 --dry --json 2>/dev/null)
+check "a capped scan reports that it was truncated" "True" \
+  "$(printf '%s' "$OUT_WIN" | field truncated)"
+check "and the truncated scan saw only its window" 2 \
+  "$(printf '%s' "$OUT_WIN" | field scanned)"
+check "the capped scan found nothing unaccounted inside its window" 0 \
+  "$(printf '%s' "$OUT_WIN" | field unaccounted)"
+
+# Widened by one, the same scan finds it. This is what proves the case above is
+# a WINDOW defect and not a classification one.
+OUT_WIDE=$(LINEAR_BYPASS_LEDGER="$TMP/wide.jsonl" python3 "$SWEEP" --rev origin/main \
+  --all-history --max-count=3 --dry --json 2>/dev/null)
+check "widening the window by one finds the missed commit" 1 \
+  "$(printf '%s' "$OUT_WIDE" | field unaccounted)"
+if printf '%s' "$OUT_WIDE" | grep -q "$SHA_BEYOND"; then
+  ok "and it is the commit the capped scan walked past"
+else
+  no "the widened scan found a different commit than the fixture planted"
+fi
+
+# A scan whose window covers the whole range is NOT truncated. Without this the
+# fix could hardcode True and every case above would still pass.
+OUT_FULL=$(LINEAR_BYPASS_LEDGER="$TMP/full.jsonl" python3 "$SWEEP" --rev origin/main \
+  --all-history --max-count=1000 --dry --json 2>/dev/null)
+check "a scan that reached the end of history is not truncated" "False" \
+  "$(printf '%s' "$OUT_FULL" | field truncated)"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

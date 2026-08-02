@@ -270,8 +270,33 @@ def rev_exists(rev: str, cwd: Path) -> bool:
     return code == 0
 
 
-def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
-    """Commits reachable from `rev`, newest first, as {sha, subject, message, at}."""
+def within_floor(commit: dict, floor) -> bool:
+    """Did this commit object enter history at or after the floor?
+
+    Committer date, matching gate_live_since: a replayed pre-gate commit keeps
+    its author date but is a NEW object that entered after the gate. An
+    unparseable date is outside the floor — a commit whose position in time
+    cannot be established is not evidence of anything.
+    """
+    if floor is None:
+        return True
+    when = parse_floor(commit["committed_at"], strict=False)
+    return when is not None and when >= floor
+
+
+def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:
+    """(commits newest-first, truncated).
+
+    `truncated` says the CAP stopped the walk while commits inside the floor
+    were still unread. It has to be reported because a capped scan that finds
+    nothing describes its window, not the range: one unaccounted commit followed
+    by max_count accounted ones read as clean, and the ledger — whose whole job
+    is a true count — never learned (PR #66 round 3).
+
+    Asking git for one MORE than the cap is what makes that answer exact instead
+    of "we happened to fill the window". The extra record is the proof something
+    was left unread, and its committer date says whether it was even in range.
+    """
     fmt = FIELD_SEP_FMT.join(["%H", "%aI", "%cI", "%B"]) + RECORD_SEP_FMT
     # The floor is applied in Python, NOT via `git log --since`. Git's approxidate
     # parser silently IGNORES a value it cannot handle and returns the whole range
@@ -279,11 +304,11 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
     # disable the filter — the exact silent-no-op shape this ledger exists to stop.
     floor = parse_floor(since) if since else None
     code, out = git(
-        ["log", f"--max-count={max_count}", f"--format={fmt}", rev], cwd,
+        ["log", f"--max-count={max_count + 1}", f"--format={fmt}", rev], cwd,
     )
     if code != 0:
-        return []
-    commits = []
+        return [], False
+    raw = []
     for record in out.split(RECORD_SEP):
         record = record.strip("\n")
         if not record.strip():
@@ -293,21 +318,19 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
             continue
         sha, authored_at = parts[0].strip(), parts[1].strip()
         committed_at, message = parts[2].strip(), parts[3]
-        if floor is not None:
-            # Committer date, matching gate_live_since: a replayed pre-gate commit
-            # keeps its author date but is a new object that entered after the gate.
-            when = parse_floor(committed_at, strict=False)
-            if when is None or when < floor:
-                continue
         body = message.strip()
-        commits.append({
+        raw.append({
             "sha": sha,
             "authored_at": authored_at,
             "committed_at": committed_at,
             "message": body,
             "subject": body.splitlines()[0].strip() if body else "",
         })
-    return commits
+
+    beyond = raw[max_count:]
+    truncated = bool(beyond) and within_floor(beyond[0], floor)
+    commits = [c for c in raw[:max_count] if within_floor(c, floor)]
+    return commits, truncated
 
 
 def is_accounted(message: str, gate) -> bool:
@@ -394,9 +417,9 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
     if not rev_exists(rev, root):
         return {"rev": rev, "since": since, "fetched": fetched, "locked": False,
                 "scanned": 0, "unaccounted": 0, "recorded": 0, "commits": [],
-                "status": "rev-not-found"}
+                "truncated": False, "status": "rev-not-found"}
 
-    commits = read_commits(rev, max_count, root, since)
+    commits, truncated = read_commits(rev, max_count, root, since)
 
     # The read and the append are ONE critical section: the dedup asks "is this
     # sha already in the file", so a concurrent sweep landing between them
@@ -438,6 +461,10 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
         "locked": locked,
         "ledger": str(path),
         "scanned": len(commits),
+        # The cap cut the walk short with commits still in range. Everything
+        # below this line is true OF THE WINDOW; it is not a statement about the
+        # range, and a consumer that treats it as one is reporting a false zero.
+        "truncated": truncated,
         "unaccounted": unaccounted,
         "recorded": 0 if (dry or not written) else len(entries),
         "commits": [c["sha"] for c in reversed(fresh)],
@@ -488,6 +515,11 @@ def main(argv: list) -> int:
     if result["fetched"] == "failed":
         print(f"linear-bypass-sweep: WARNING fetch of {remote_of(rev, root)} failed; "
               f"{rev} may be stale and this count may be low.", file=sys.stderr)
+    if result["truncated"]:
+        print(f"linear-bypass-sweep: WARNING the scan stopped at --max-count="
+              f"{args.max_count} with commits still in range; this count covers the "
+              f"window, not the range. Re-run with a larger --max-count.",
+              file=sys.stderr)
     print(f"linear-bypass-sweep: {rev} — scanned {result['scanned']}, "
           f"unaccounted {result['unaccounted']}, newly recorded {result['recorded']} "
           f"(fetch: {result['fetched']})")

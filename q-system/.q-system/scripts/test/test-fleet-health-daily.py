@@ -644,6 +644,46 @@ if _survivor:
     fh.file_findings([_survivor[0]], apply=True, linear=_FakeLinear(_live_body))
     check("filing the survivor drains the ledger", _pending_now(), [])
 
+# --- a pending write that FAILED must not report a filed-able finding -------
+# `_write_pending` logged the OSError and returned success, so the sweep ledger
+# had already deduped the sha while nothing durable held it. The next morning
+# read clean. A write that did not land is a detector that could not look.
+_wedged = Path(_tmpdir.name) / "wedged" / "linear-bypass-pending.json"
+_wedged.mkdir(parents=True)  # the path exists as a DIRECTORY, so writes fail
+_real_pending = fh.BYPASS_PENDING
+fh.BYPASS_PENDING = _wedged
+_blind("a pending write that failed is blind, not a finding",
+       payload={**_OK, "commits": ["cccccccc1"]})
+fh.BYPASS_PENDING = _real_pending
+
+# The wedged run must not have disturbed the real record either.
+check("a failed pending write leaves the real record alone", _pending_now(), [])
+
+# --- the write is atomic: a crash mid-write cannot truncate the retry set ----
+# A partially-written pending file parses as invalid JSON, `_read_pending`
+# returns [], and every sha owed at that moment is silently forgiven.
+fh._write_pending(["ddddddddd", "eeeeeeeee"])
+_real_replace = fh.os.replace
+fh.os.replace = lambda *_a, **_k: (_ for _ in ()).throw(OSError("killed mid-write"))
+try:
+    fh._write_pending(["fffffffff"])
+except OSError:
+    pass
+finally:
+    fh.os.replace = _real_replace
+check("a killed write leaves the previous retry set intact",
+      _pending_now(), ["ddddddddd", "eeeeeeeee"])
+check("and no temp file is left behind",
+      [p.name for p in fh.BYPASS_PENDING.parent.iterdir() if ".tmp" in p.name],
+      [])
+fh._write_pending([])
+
+# --- a truncated scan is blind: the window may have cut off an older bypass --
+# The scan reads a fixed number of commits back. When history within the floor
+# runs past that cap, "nothing unaccounted" describes the window, not the range.
+_blind("a truncated scan window is blind, not clean",
+       payload={**_OK, "commits": [], "recorded": 0, "truncated": True})
+
 if failures:
     print("FAIL:")
     for line in failures:
