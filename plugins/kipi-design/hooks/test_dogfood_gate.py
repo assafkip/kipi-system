@@ -151,6 +151,40 @@ ok("[scope] uppercase internal path still skipped",
 ok("[scope] uppercase public page still scanned",
    is_public_facing_page("/repo/sites/eyeball/INDEX.HTML") is True)
 
+# ── ASK-134 regression, Codex major on PR #49: the classifier called the founder-only
+# GTM cockpit PUBLIC, so every unattended edit by the com.cole.cockpit job fired a
+# blocking false positive. A gate whose first act is refusing legitimate work gets
+# switched off, which is the worst direction for this one to fail in.
+#
+# These are the REAL registered paths, read off disk from the cockpit that
+# instance-registry.json points at -- NOT a path shaped to match the fix. A fixture I
+# invent tests my assumption; the producer's own path tests the system. The cockpit is
+# founder-only by its own bypass check (gtm/cockpit/checks/verify_auth_required.py
+# FAILS on an unauthenticated 200), so "internal" here is the cockpit's claim, not mine.
+COCKPIT_REAL_PATHS = [
+    "/Users/assafkipnis/projects/cole-gtm/gtm/cockpit/index.html",
+    "/Users/assafkipnis/projects/cole-gtm/gtm/cockpit/content.html",
+]
+for p in COCKPIT_REAL_PATHS:
+    ok("[scope] registered founder-only GTM cockpit is NOT public-facing: %s" % p,
+       is_public_facing_page(p) is False)
+
+# Negative self-test for the fixture above. Without it the two cases could pass because
+# some UNRELATED marker happens to match the path, and the assertion would survive the
+# "/cockpit/" marker being deleted -- a test that cannot fail. Drop that one marker and
+# the real paths must flip back to PUBLIC, which is the exact defect Codex reported.
+import dogfood_gate as _dg  # noqa: E402
+_saved_markers = _dg.INTERNAL_PATH_MARKERS
+try:
+    _dg.INTERNAL_PATH_MARKERS = tuple(m for m in _saved_markers if m != "/cockpit/")
+    ok("[scope][mutation] removing the /cockpit/ marker makes the real cockpit paths "
+       "PUBLIC again, so the cases above are driven by that marker and can fail",
+       all(_dg.is_public_facing_page(p) is True for p in COCKPIT_REAL_PATHS))
+finally:
+    _dg.INTERNAL_PATH_MARKERS = _saved_markers
+ok("[scope][mutation] marker tuple restored after the mutation",
+   _dg.INTERNAL_PATH_MARKERS is _saved_markers and "/cockpit/" in _dg.INTERNAL_PATH_MARKERS)
+
 if failures:
     print("test_dogfood_gate FAILED:")
     for f in failures:

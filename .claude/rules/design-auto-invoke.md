@@ -7,9 +7,20 @@ globs:
   - "sites/**/*.jsx"
 ---
 
+The scoping call is executable, not a judgement call left to the model:
+`is_public_facing_page()` in the kipi-design plugin's `dogfood_gate.py` hook decides
+public-vs-internal from the path, and `test_dogfood_gate.py` is its test.
+
 # Design Skill Auto-Invocation (ENFORCED)
 
 Invoke design skills ONLY when building output that will be published or seen by the founder's audience (prospects, investors, users, public web).
+
+The hook does not leave that to judgement:
+
+`is_public_facing_page()` in `dogfood_gate.py` is the deterministic half of the gate
+check below; a path it calls internal is skipped by the hook and needs no design pass.
+It errs toward internal on purpose: a false block on a founder-only page (the GTM
+cockpit, ASK-134) gets the gate switched off, and a gate that is off protects nothing.
 
 | Trigger | Skill | What it does |
 |---------|-------|-------------|

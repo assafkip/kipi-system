@@ -275,10 +275,26 @@ def scan_html(content, fp):
 
 # Paths that are HTML but nobody outside the founder ever sees: dashboards, schedules,
 # logs, templates, test fixtures, build output, internal harvest tooling.
+#
+# The list errs toward INTERNAL on purpose. The two failure directions are not
+# symmetric: a missed scan on a public page costs one advisory pass, but a false
+# BLOCK on a page the founder edits often costs the whole gate, because the first
+# thing a gate that refuses legitimate work gets is switched off. So a surface is
+# added here as soon as it is known to be founder-only, not once it is proven never
+# to be public.
+#
+# "/cockpit/" is here because the classifier called the GTM cockpit
+# (cole-gtm/gtm/cockpit/index.html + content.html) PUBLIC, and that page is
+# token-gated founder-only -- its own bypass check, gtm/cockpit/checks/
+# verify_auth_required.py, FAILS if the production URL ever answers an
+# unauthenticated request with a 200. It is edited unattended by the com.cole.cockpit
+# job, so every one of those edits was a blocking false positive (ASK-134, Codex
+# major on PR #49). Measured at the time of the fix: 465 of the fleet's registered
+# HTML files classified PUBLIC, and this was the founder-only one among them.
 INTERNAL_PATH_MARKERS = (
     "/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
-    "fixture", "dashboard", "schedule", "morning", "-log", "/logs/", "/output/",
-    "/build/", "/dist/", "debug", "/.git/", "storybook",
+    "fixture", "dashboard", "/cockpit/", "schedule", "morning", "-log", "/logs/",
+    "/output/", "/build/", "/dist/", "debug", "/.git/", "storybook",
     "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
 
 
