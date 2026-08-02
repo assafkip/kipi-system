@@ -372,6 +372,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_token_guard_commit_forms.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_token_guard_observation.py",
       "runner": "python3"
     },
