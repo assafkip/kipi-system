@@ -3038,6 +3038,49 @@ grep -qi "reviewed_at (" "$W2/conv-receipt.out" \
 $(sed 's/^/        /' "$W2/conv-receipt.out")"
 ok "the receipt carries reviewed_at from the verdict record when the record has one"
 
+# --- S1c. THE RECEIPT DECLARES WHAT IT DOES NOT COVER ------------------------
+# (round 3, finding 2 -- major.) converge can attest exactly one thing: an
+# adversarial review approved this exact sha. It cannot attest verification
+# (`validate` is the job that runs this gate -- gating on it deadlocks), findings
+# triage (never observed) or closure (converge never closes an issue). Those
+# omissions were named on STDOUT only, so the ARTIFACT was indistinguishable
+# from a full prd-os closeout receipt and a consumer could not tell "checked and
+# absent" from "never considered".
+RCPT_SCOPE="$("$REAL_PY" - "$RLEDGER" "$SHA_901" <<'PY'
+import json, sys
+led, sha = sys.argv[1:3]
+for line in open(led, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(rec, dict) and rec.get("commit_sha") == sha:
+        print("%s|%s" % (",".join(sorted(rec.get("receipts", {}))),
+                         ",".join(sorted(rec))))
+        break
+PY
+)"
+[ "${RCPT_SCOPE%%|*}" = "reviewed" ] \
+  || fail "the receipt declares its covered receipts as '${RCPT_SCOPE%%|*}', expected exactly
+      'reviewed'. converge proves a review and nothing else; a receipt that does not say so
+      lets a gate read a review-only claim as a completed closeout -- a false green in the one
+      mechanism whose whole job is proving work happened. Ledger:
+$(sed 's/^/        /' "$RLEDGER")"
+# AND IT MAY NOT CLAIM THE THREE IT CANNOT SEE, at top level either. Scoped to
+# converge's OWN record, not the file: receipt_world seeds an unrelated line
+# carrying closed_at, and a whole-ledger grep reads that as converge's claim --
+# which is what the first version of this assertion did.
+for f in verified_at findings_triaged_at closed_at; do
+  case ",${RCPT_SCOPE#*|}," in
+    *",$f,"*) fail "converge's receipt claims $f. It never observes it, so stamping it is a lie
+      the gate would pass on. That record's keys: ${RCPT_SCOPE#*|}" ;;
+  esac
+done
+ok "the receipt names the one receipt it carries and claims none of the three it cannot see"
+
 # --- S2. the PR CARRIES it: committed and pushed, not just written locally ---
 # The ledger is read from the PUSHED head by CI. A receipt that only exists in a
 # worktree is invisible to `validate` and clears nothing.
@@ -3193,7 +3236,9 @@ SHA_LOCK="$(git -C "$R_LOCK/tree" rev-parse HEAD)"
 S_LOCK="$W2/state-lock"; mkdir -p "$S_LOCK/pr-reviews"
 seed_record "$S_LOCK" 908 "APPROVE" "$SHA_LOCK"
 gh_says 908 CLEAN "$SHA_LOCK"
-mkdir -p "$S_LOCK/receipt-sana-ask-908.lock"      # another run is inside it
+# A LIVE holder: this shell's own pid is by definition running, so the liveness
+# check must read this lock as held and refuse to break it.
+printf '%s:0:0\n' "$$" > "$S_LOCK/receipt-sana-ask-908.lock"
 : > "$W2/pages.txt"
 ( cd "$R_LOCK/skel" \
   && HOME="$W2/home" KIPI_SKEL="$R_LOCK/skel" KIPI_STATE_DIR="$S_LOCK" \
@@ -3205,15 +3250,90 @@ grep -qi "receipt lock" "$W2/conv-lock.out" \
   || fail "converge entered the receipt transaction without ever consulting a lock, so two runs
       can interleave inside the read-decide-write and both lose. It said:
 $(sed 's/^/        /' "$W2/conv-lock.out")"
-# AND A CONTENDED LOCK STILL DELIVERS. Waiting forever, or skipping the receipt
-# because someone else might be holding it, is the same missing receipt by
-# another route -- the attempts ledger takes it by force for exactly this reason.
+# A TIMEOUT MUST NOT PROCEED (round 3, finding 1 -- major). The first version
+# returned SUCCESS after the timeout and entered the transaction holding nothing,
+# so two runs could be inside it each believing they were serialized.
 PUSHED_LOCK="$(git -C "$R_LOCK/origin" rev-parse sana/ask-908 2>/dev/null)"
-[ -n "$PUSHED_LOCK" ] && [ "$PUSHED_LOCK" != "$SHA_LOCK" ] \
-  || fail "a contended lock cost the receipt entirely: converge waited, gave up, and origin
-      carries nothing. A lock that drops the write is worse than no lock. It said:
+[ "$PUSHED_LOCK" = "$SHA_LOCK" ] \
+  || fail "THE DEFECT: converge could not take the receipt lock and wrote a receipt anyway. The
+      lock is held by a LIVE pid, so the only correct outcome is to write nothing and say so --
+      entering the transaction here is two runs inside one read-decide-write. It said:
 $(sed 's/^/        /' "$W2/conv-lock.out")"
-ok "the receipt transaction runs under a lock, and a contended lock still delivers"
+# ...AND THE LIVE HOLDER'S LOCK IS STILL THERE. The old release removed the lock
+# by PATH, so the run that failed to acquire deleted the lock belonging to the
+# run that held it -- strictly worse than having no lock at all.
+[ -f "$S_LOCK/receipt-sana-ask-908.lock" ] \
+  || fail "THE DEFECT: converge deleted a lock it never owned. The holder is still inside its
+      transaction and its lock is gone, so the next run walks straight in."
+[ "$(cat "$S_LOCK/receipt-sana-ask-908.lock")" = "$$:0:0" ] \
+  || fail "the live holder's lock was overwritten by the run that could not take it:
+      $(cat "$S_LOCK/receipt-sana-ask-908.lock")"
+# AND IT SAYS SO ON THE PAGE. Writing no receipt is the right call, but a silent
+# skip is a PR that never merges with nobody knowing why.
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "converge skipped the receipt for lock contention and paged nothing about it:
+$(cat "$W2/pages.txt")"
+ok "a run that cannot take the receipt lock writes nothing and leaves the holder's lock alone"
+
+# --- S2e2. A CORPSE LOCK DOES NOT WEDGE THE RECEIPT FOREVER ------------------
+# The other side of refusing to force: a lock left by a killed run must not block
+# every future receipt. Broken on OWNER LIVENESS -- pid 2147483647 is not running.
+rm -f "$S_LOCK/receipt-sana-ask-908.lock"
+printf '2147483647:0:0\n' > "$S_LOCK/receipt-sana-ask-908.lock"
+: > "$W2/pages.txt"
+( cd "$R_LOCK/skel" \
+  && HOME="$W2/home" KIPI_SKEL="$R_LOCK/skel" KIPI_STATE_DIR="$S_LOCK" \
+     KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+     KIPI_RECEIPT_LOCK_TRIES=3 \
+     bash "$CONV" --issue "ASK-908" --max-rounds 1 ) >"$W2/conv-lock2.out" 2>&1
+
+PUSHED_LOCK2="$(git -C "$R_LOCK/origin" rev-parse sana/ask-908 2>/dev/null)"
+[ -n "$PUSHED_LOCK2" ] && [ "$PUSHED_LOCK2" != "$SHA_LOCK" ] \
+  || fail "a lock left behind by a dead run blocked the receipt permanently. Refusing to force a
+      LIVE lock is right; honouring a corpse means no receipt is ever written again. It said:
+$(sed 's/^/        /' "$W2/conv-lock2.out")"
+[ -f "$S_LOCK/receipt-sana-ask-908.lock" ] \
+  && fail "converge finished its transaction and left its own lock behind, so the next run has
+      to break it as a corpse before it can do anything"
+ok "a lock left by a dead run is broken, delivered, and released"
+
+# --- S2e3. THE RELEASE ONLY EVER REMOVES A LOCK THIS RUN OWNS ----------------
+# The second half of round 3's finding 1: the old release removed the lock by
+# PATH. Reached only on a SUCCESSFUL acquisition, so once the timeout stopped
+# lying there is no ordinary path into it holding someone else's lock -- which is
+# exactly why it needed a case built on purpose. A mutant that reverted the
+# release to `rm -f "$1"` SURVIVED the whole suite until this case existed.
+#
+# The lock is made to change hands INSIDE the transaction: the tree's pre-commit
+# hook fires between take and drop, and here it stamps a foreign token over the
+# lock. A release that trusts the path deletes it; one that checks its own token
+# leaves it.
+R_OWN="$W2/world-lockown"; receipt_world "$R_OWN" 910
+SHA_OWN="$(git -C "$R_OWN/tree" rev-parse HEAD)"
+S_OWN="$W2/state-lockown"; mkdir -p "$S_OWN/pr-reviews"
+seed_record "$S_OWN" 910 "APPROVE" "$SHA_OWN"
+gh_says 910 CLEAN "$SHA_OWN"
+mkdir -p "$R_OWN/skel/.git/hooks"
+{ printf '#!/bin/sh\n'
+  printf 'printf "foreign:0:0\\n" > "%s/receipt-sana-ask-910.lock"\n' "$S_OWN"
+  printf 'exit 0\n'; } > "$R_OWN/skel/.git/hooks/pre-commit"
+chmod +x "$R_OWN/skel/.git/hooks/pre-commit"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_OWN" 910 "$S_OWN" "$W2/conv-lockown.out"
+
+[ -f "$S_OWN/receipt-sana-ask-910.lock" ] \
+  || fail "THE DEFECT: the lock changed hands during the transaction and converge's release
+      deleted it anyway. Releasing by path means whichever run finishes first unlocks the run
+      that is still inside its own transaction. It said:
+$(sed 's/^/        /' "$W2/conv-lockown.out")"
+[ "$(cat "$S_OWN/receipt-sana-ask-910.lock")" = "foreign:0:0" ] \
+  || fail "the release removed another run's lock and left something else in its place:
+      $(cat "$S_OWN/receipt-sana-ask-910.lock")"
+grep -qi "NOT releasing" "$W2/conv-lockown.out" \
+  || fail "converge declined to release a lock it did not own and never said so. A silent
+      non-release is indistinguishable from a leaked lock the next run has to break:
+$(sed 's/^/        /' "$W2/conv-lockown.out")"
+ok "a release refuses a lock that no longer carries this run's token, and says so"
 
 # --- S2f. THE COMMIT-FAILURE REMEDY HAS TO BE RUNNABLE -----------------------
 # (round 2, finding 3 -- minor.) The page told the operator to commit a ledger

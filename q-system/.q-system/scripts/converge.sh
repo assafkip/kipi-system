@@ -248,6 +248,21 @@ unclaimed = [
 ]
 if ISO.match(reviewed_at):
     receipt["reviewed_at"] = reviewed_at
+    # THE ARTIFACT DECLARES ITS OWN SCOPE (round 3, finding 2 -- major). The
+    # omissions above were named on STDOUT only, so the receipt itself was
+    # indistinguishable from a full prd-os closeout receipt: a consumer saw
+    # commit_sha + issue_id and could not tell "checked and absent" from "never
+    # considered". A receipt that can be written without the work is a claim, and
+    # a claim that does not say what it covers is the false green this whole
+    # mechanism exists to prevent.
+    #
+    # `receipts` is prd-os's own nested block and the ONLY structural way to say
+    # this inside the ledger's closed key allowlist (receipts-ledger-check.py,
+    # which is not this PR's to edit). Writing `reviewed` and NOTHING else states
+    # positively that exactly one of the three receipts is carried, so a gate
+    # requiring verified / findings_triaged can refuse it on what is present
+    # rather than infer scope from what is missing.
+    receipt["receipts"] = {"reviewed": reviewed_at}
 else:
     unclaimed.insert(0, "reviewed_at (the verdict record carries no usable timestamp)")
 
@@ -363,24 +378,86 @@ receipt_commit() {
 # would show up as untracked next to the file being committed, and the first
 # `git clean` or stray `add .` would either sweep it or commit it.
 #
-# Taken BY FORCE after 10s, exactly as the attempts ledger does: a stale lock
-# from a killed run is far likelier than a live run holding it that long, and a
-# receipt that never lands is the defect the whole PR exists to remove.
+# NOT TAKEN BY FORCE ON TIMEOUT (round 3, finding 1 -- major). The first version
+# copied attempts-ledger.py `_mutate` wholesale, including two defects that file
+# is ALREADY RECORDED as having: sp-626e9452, "the lock proceeds on timeout and
+# the release removes a directory it may not own". Copied here that produced a
+# lock strictly WORSE than no lock: a run that timed out returned success without
+# holding anything, entered the transaction anyway, and its release then deleted
+# the live lock belonging to the run that did hold it -- with both believing they
+# were serialized.
+#
+# Reusing an in-repo pattern is right; inheriting one without checking whether it
+# is sound is how a known defect gets a second home. The exemplar was not
+# verified before it was copied. That is what this block exists to correct.
+#
+# TWO INVARIANTS, both absent from the exemplar:
+#   1. A timeout returns FAILURE and the caller must not enter the transaction.
+#      Writing no receipt this run is recoverable -- the dispatcher re-runs and
+#      receipt_confirm_origin reports the miss honestly. Two runs inside one
+#      read-decide-write is not.
+#   2. A release removes ONLY a lock this process owns, proven by a token it
+#      wrote, never by the path alone.
+#
+# The lock is a FILE created under `noclobber`, not a directory: `set -C` makes
+# the create O_EXCL, so the create and the ownership stamp are ONE atomic step.
+# mkdir leaves a window where the directory exists carrying no owner yet, and a
+# run killed inside that window leaves a lock nothing can ever attribute.
+#
+# Stale locks are broken on OWNER LIVENESS, not on a timer: a lock whose creating
+# pid is gone is a corpse, and honouring it would block every future receipt
+# forever. The token is re-read immediately before the break, so a lock that
+# changed hands in between is left alone.
+#
+# RESIDUAL, named rather than papered over: that re-read is a narrow TOCTOU
+# window, and pid reuse can make a corpse look live. Both degrade in the SAFE
+# direction -- either a second run enters (which is where this PR started, and
+# receipt_append's dedup plus origin confirmation make that idempotent), or this
+# run writes no receipt and says so. Neither can delete a live run's lock, which
+# is the property that was actually broken.
+#
 # Overridable ONLY so the suite can assert the contended path without a 10s
 # sleep per case. Production never sets it, same posture as KIPI_SKEL.
 RECEIPT_LOCK_TRIES="${KIPI_RECEIPT_LOCK_TRIES:-100}"
+RECEIPT_LOCK_HELD=""
+RECEIPT_LOCK_TOKEN=""
+
 receipt_lock_take() {
-  local lock="$1" i=0
+  local lock="$1" i=0 seen owner
+  RECEIPT_LOCK_HELD=""
+  RECEIPT_LOCK_TOKEN="$$:$(date +%s):${RANDOM:-0}"
   mkdir -p "$(dirname "$lock")" 2>/dev/null || true
   while [ "$i" -lt "$RECEIPT_LOCK_TRIES" ]; do
-    mkdir "$lock" 2>/dev/null && return 0
+    if ( set -C; printf '%s\n' "$RECEIPT_LOCK_TOKEN" > "$lock" ) 2>/dev/null; then
+      RECEIPT_LOCK_HELD="$lock"
+      return 0
+    fi
+    seen="$(cat "$lock" 2>/dev/null)"
+    owner="${seen%%:*}"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null \
+       && [ -n "$seen" ] && [ "$seen" = "$(cat "$lock" 2>/dev/null)" ]; then
+      say "receipt: breaking the receipt lock at $lock -- it was left by pid $owner, which is no longer running"
+      rm -f "$lock" 2>/dev/null || true
+    fi
     sleep 0.1
     i=$((i + 1))
   done
-  say "receipt: waited 10s for the receipt lock at $lock and took it by force -- a stale lock from a killed run is likelier than a live run holding it that long"
-  return 0
+  say "receipt: another run still holds the receipt lock at $lock. NOT entering the transaction -- a run that cannot take the lock writes no receipt rather than racing the run that can."
+  return 1
 }
-receipt_lock_drop() { rmdir "$1" 2>/dev/null || true; }
+
+# Only ever removes a lock whose token this process wrote. A release that trusts
+# the path deletes whichever run happens to hold it.
+receipt_lock_drop() {
+  local lock="$1"
+  [ -n "$RECEIPT_LOCK_HELD" ] && [ "$RECEIPT_LOCK_HELD" = "$lock" ] || return 0
+  if [ "$(cat "$lock" 2>/dev/null)" = "$RECEIPT_LOCK_TOKEN" ]; then
+    rm -f "$lock" 2>/dev/null || true
+  else
+    say "receipt: NOT releasing $lock -- it no longer carries this run's token, so it belongs to another run now"
+  fi
+  RECEIPT_LOCK_HELD=""
+}
 
 # receipt_confirm_origin <tree> <sha> <record>
 #
@@ -478,9 +555,17 @@ receipt_ensure() {
   # Everything from the ledger read through the push is ONE transaction under one
   # lock, and origin -- not the tree it just wrote -- decides whether it worked.
   lock="$STATE_DIR/receipt-$(echo "$BRANCH" | tr '/' '-').lock"
-  receipt_lock_take "$lock"
-  receipt_transaction "$sha" "$record" "$tree"
-  receipt_lock_drop "$lock"
+  if receipt_lock_take "$lock"; then
+    receipt_transaction "$sha" "$record" "$tree"
+    receipt_lock_drop "$lock"
+  else
+    # A run that could not take the lock does NOT write. It still asks origin,
+    # because the run that DID hold the lock has most likely just delivered the
+    # receipt -- in which case there is nothing to report and confirm_origin
+    # clears this miss.
+    RECEIPT_MISS="another converge run held the receipt lock for $BRANCH, so this run wrote none"
+    RECEIPT_FIX="let the other run finish, then re-run: kipi converge --issue $ISSUE"
+  fi
   receipt_confirm_origin "$tree" "$sha" "$record"
   return 0
 }
