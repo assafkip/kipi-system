@@ -24,17 +24,26 @@ WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 
 THE THREE LAYERS
 
-  L1 additive-only  : the only ops that EXIST are insert_after, insert_before,
-                      append, create_file. There is no replace and no delete, so
-                      "remove a hook entry" is not expressible. Unknown ops and
-                      unknown proposal keys are refused, so a proposal cannot
-                      smuggle in a flag like disables_enforcement.
+  L1 op vocabulary  : insert_after, insert_before, append, create_file reach
+                      anything under .claude/. `replace` reaches RULE TEXT ONLY
+                      (.claude/rules/*.md) -- see rule_text_only. There is still
+                      no delete: insert must be a non-empty string, so "replace
+                      this paragraph with nothing" is refused, and "remove a hook
+                      entry" is not expressible at all because the config surface
+                      is out of replace's reach. Unknown ops and unknown proposal
+                      keys are refused, so a proposal cannot smuggle in a flag
+                      like disables_enforcement.
   L2 ratchet        : census the live enforcement points before and after. Every
                       pre-existing member must still be present and no category
                       may shrink. This catches the technically-additive edit that
                       removes something as a side effect -- e.g. inserting
                       " || true" after a hook command, which deletes nothing but
                       makes the old exact command string vanish from the census.
+                      The census reads rule CONTENT, not just the rules/ listing
+                      (_rule_content_marks): an (ENFORCED marker or a pointer to a
+                      named enforcer may not vanish from a rule. Filenames alone
+                      were blind to everything a replace does inside a file, which
+                      is exactly why replace could not exist before that census.
   L3 verify+revert  : run the gate suite before and after. Any gate that goes
                       pass -> fail auto-restores the backup. The founder must
                       never be the one who notices a regression.
@@ -44,12 +53,14 @@ after all of L1, L2 and the preconditions pass on that copy, so a refusal never
 half-writes.
 
 OUT OF REACH BY DESIGN (say so, do not pretend otherwise): removing a hook,
-deleting a rule, narrowing a matcher, and widening permissions.allow or
-defaultMode cannot be done through this path at all. Those need a different
-tool and a real conversation. See REFUSED_SURFACES.
+deleting a rule, narrowing a matcher, widening permissions.allow or defaultMode,
+and stripping a rule's (ENFORCED marker or its pointer to a named enforcer,
+cannot be done through this path at all. Those need a different tool and a real
+conversation. See REFUSED_SURFACES.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,9 +69,22 @@ import time
 
 SCHEMA_VERSION = 1
 
-# L1: the entire op vocabulary. Additive only. There is deliberately no
-# "replace" and no "delete" -- a removal is not expressible, not merely gated.
+# L1: the op vocabulary. Additive ops reach anything under .claude/.
 ADDITIVE_OPS = ("insert_after", "insert_before", "append", "create_file")
+# The one non-additive op. ASK-289: additive-only meant a wrong sentence in a
+# rule could be BURIED but never corrected -- design-auto-invoke.md still carries
+# its narrowing paragraph wedged ABOVE its own H1 because insert_before was the
+# only thing expressible. replace is pinned to rule text (rule_text_only) and
+# watched by the rule-content census, so it cannot reach the config surface.
+REPLACE_OPS = ("replace",)
+ALL_OPS = ADDITIVE_OPS + REPLACE_OPS
+ANCHOR_OPS = ("insert_after", "insert_before", "replace")
+
+RULES_DIR = os.path.join(".claude", "rules")
+
+# A rule's pointer to the thing that actually enforces it. Census member, so a
+# replace cannot quietly cut a reader's route to the enforcer.
+_EXEC_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)")
 
 ALLOWED_PROPOSAL_KEYS = {"schema_version", "slug", "reason", "requires", "edits"}
 ALLOWED_EDIT_KEYS = {"file", "op", "anchor", "insert", "reason"}
@@ -172,17 +196,21 @@ def load_proposal(path):
         if unknown_e:
             raise Refusal("edit %d has unknown key(s): %s" % (idx, ", ".join(sorted(unknown_e))))
         op = edit.get("op")
-        if op not in ADDITIVE_OPS:
+        if op not in ALL_OPS:
             raise Refusal(
-                "edit %d op %r is not additive (allowed: %s)" % (idx, op, ", ".join(ADDITIVE_OPS))
+                "edit %d op %r is not a permitted op (allowed: %s)" % (idx, op, ", ".join(ALL_OPS))
             )
+        # insert must be non-empty AND non-blank for every op including replace.
+        # That is what keeps "delete this paragraph" inexpressible now that a
+        # non-additive op exists: a replace with an empty (or whitespace-only)
+        # insert IS a delete, and it is refused here rather than downstream.
         for field in ("file", "insert", "reason"):
             if not isinstance(edit.get(field), str) or not edit[field].strip():
                 raise Refusal("edit %d.%s must be a non-empty string" % (idx, field))
         # THE boundary. After this line the proposal holds exactly one spelling
         # of each path and no other reader normalizes anything.
         edit["file"] = canonical_rel(edit["file"])
-        if op in ("insert_after", "insert_before"):
+        if op in ANCHOR_OPS:
             if not isinstance(edit.get("anchor"), str) or not edit["anchor"].strip():
                 raise Refusal("edit %d needs a non-empty anchor for op %s" % (idx, op))
         elif "anchor" in edit:
@@ -255,6 +283,35 @@ def resolve_special_keys(root, prop):
     return settings_key, template_key
 
 
+def rule_text_only(root, rel, settings_key, template_key):
+    """`replace` is the only non-additive op, so its reach is pinned to rule TEXT.
+
+    Three checks, because each alone has a hole the other two cover:
+
+      identity : rel IS .claude/settings.json or settings-template.json under
+                 some spelling. Already collapsed to one key by inode upstream
+                 (resolve_special_keys), so a case variant or a ./ spelling
+                 arrives here as the same key rather than as a new name.
+      shape    : anything that is not .claude/rules/<name>.md is out. agents/ and
+                 output-styles/ keep the additive-only guarantee they had before
+                 this op existed; widening to them is a separate decision with a
+                 separate blast radius, not a side effect of ASK-289.
+      realpath : a symlink parked at .claude/rules/x.md pointing somewhere else.
+                 scoped_path permits that today -- it only asks that the target
+                 stay under .claude/ -- so a string-shape check alone waves it
+                 through. Same class as settings.local.json (round 1) and the
+                 "./" spelling (round 2): a second name only some guards see.
+    """
+    if rel == settings_key or rel == template_key:
+        raise Refusal("replace may not target %s (rule text only)" % rel)
+    if not (rel.startswith(RULES_DIR + os.sep) and rel.endswith(".md")):
+        raise Refusal("replace is only permitted on %s%s*.md, got %s" % (RULES_DIR, os.sep, rel))
+    rules_dir = os.path.realpath(os.path.join(root, RULES_DIR))
+    real = os.path.realpath(os.path.join(root, rel))
+    if not real.startswith(rules_dir + os.sep):
+        raise Refusal("replace target resolves outside %s%s: %s" % (RULES_DIR, os.sep, rel))
+
+
 def scoped_path(root, rel, paired_ok=False):
     """Resolve rel under root/.claude, refusing anything that escapes it.
 
@@ -317,6 +374,21 @@ def scoped_path(root, rel, paired_ok=False):
 
 # ------------------------------------------------------------------- editing
 
+def _unique_anchor_hits(content, anchor, rel):
+    """Anchor arithmetic, shared by every anchored op.
+
+    One copy on purpose: when `replace` arrived it grew a second ambiguity check
+    beside this one, and the mutation case that proves the check is load-bearing
+    then matched two lines and aborted the suite. Two copies of a guard is also
+    two chances for them to drift apart -- the same two-readers defect round 2
+    found in the path normalization.
+    """
+    hits = content.count(anchor)
+    if hits > 1:
+        raise Refusal("anchor matches %d times (must be exactly 1) in %s: %r" % (hits, rel, _snip(anchor)))
+    return hits
+
+
 def apply_edit(content, edit, rel):
     """Return (new_content, already_satisfied). Pure; never touches disk."""
     op = edit["op"]
@@ -335,11 +407,27 @@ def apply_edit(content, edit, rel):
         raise Refusal("create_file target already exists with different content: %s" % rel)
 
     anchor = edit["anchor"]
-    hits = content.count(anchor)
-    if hits == 0:
+
+    if op == "replace":
+        # An anchor that survives into its own replacement never converges: the
+        # next run finds it again, inserts again, and the file grows forever
+        # while "already applied" stays undetectable. Refused, not tolerated --
+        # extending text is what the additive ops are for.
+        if anchor in ins:
+            raise Refusal(
+                "replace anchor is contained in the insert, so it never converges in %s; "
+                "use insert_after/insert_before to extend text" % rel)
+        if _unique_anchor_hits(content, anchor, rel) == 0:
+            # Anchor gone AND the replacement sitting there exactly once is the
+            # signature of a completed earlier run, not of a bad proposal. Same
+            # already-satisfied contract the insert ops report.
+            if content.count(ins) == 1:
+                return content, True
+            raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
+        return content.replace(anchor, ins, 1), False
+
+    if _unique_anchor_hits(content, anchor, rel) == 0:
         raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
-    if hits > 1:
-        raise Refusal("anchor matches %d times (must be exactly 1) in %s: %r" % (hits, rel, _snip(anchor)))
 
     pos = content.index(anchor)
     if op == "insert_after":
@@ -385,6 +473,47 @@ def _dir_names(path):
     return {n for n in os.listdir(path) if not n.startswith(".")}
 
 
+def _rule_content_marks(rules_dir):
+    """Enforcement-bearing tokens INSIDE rule text, keyed by rule file.
+
+    The rules census used to be _dir_names -- a directory listing, which is
+    blind to everything that happens inside a file. That was fine while every op
+    was additive. It is not fine now that `replace` exists: a replace keeps the
+    filename and can gut what the file says, and the listing would report clean.
+
+    Two token classes are countable without judgement, which is the bar for a
+    ratchet member:
+
+      enforced : the file claims (ENFORCED anywhere. Demoting a rule to advisory
+                 is enforcement-weakening whether or not the prose is honest. If
+                 the claim is genuinely false, the fix is to correct the SCOPE
+                 (which replace now allows) or to take the marker off through a
+                 different tool and a real conversation -- same standing as
+                 removing a hook.
+      exec     : a named .py/.sh the rule routes a reader to. A rule whose
+                 pointer to its enforcer vanishes is a rule nobody can act on.
+
+    Deliberately NOT counted: prose meaning, tone, length. A ratchet that tried
+    to judge those would refuse the honest corrections this op exists to enable.
+    """
+    marks = set()
+    if not os.path.isdir(rules_dir):
+        return marks
+    for name in sorted(os.listdir(rules_dir)):
+        if name.startswith(".") or not name.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(rules_dir, name)) as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for ref in set(_EXEC_REF.findall(text)):
+            marks.add("%s|exec|%s" % (name, ref))
+        if "(ENFORCED" in text:
+            marks.add("%s|enforced" % name)
+    return marks
+
+
 def census(root):
     """Count the live enforcement points. Enforcement may only grow."""
     c = {}
@@ -400,6 +529,7 @@ def census(root):
     perms = settings.get("permissions") or {}
     c["deny"] = set(perms.get("deny") or [])
     c["rules"] = _dir_names(os.path.join(root, ".claude", "rules"))
+    c["rule_marks"] = _rule_content_marks(os.path.join(root, ".claude", "rules"))
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
@@ -462,7 +592,6 @@ def permission_surface_check(root, staged_settings_text):
 
 def _hook_script_paths(settings):
     """Every $CLAUDE_PROJECT_DIR-relative script a hook command references."""
-    import re
     found = set()
     pat = re.compile(r'\$CLAUDE_PROJECT_DIR/([A-Za-z0-9_./-]+\.(?:py|sh))')
     for entry in _hook_entries(settings):
@@ -667,6 +796,8 @@ def main(argv):
     for idx, edit in enumerate(prop["edits"]):
         rel = edit["file"]
         full = scoped_path(root, rel, paired_ok=touches_settings)
+        if edit["op"] in REPLACE_OPS:
+            rule_text_only(root, rel, settings_key, template_key)
         if rel in staged:
             current = staged[rel]
         elif os.path.isfile(full):
@@ -712,9 +843,10 @@ def main(argv):
         before_census = census(root)
         after_census = census(copy_root)
         ratchet_check(before_census, after_census)
-        log.append("ratchet ok: hooks %d->%d, rules %d->%d, deny %d->%d" % (
+        log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
             len(before_census["hooks"]), len(after_census["hooks"]),
             len(before_census["rules"]), len(after_census["rules"]),
+            len(before_census["rule_marks"]), len(after_census["rule_marks"]),
             len(before_census["deny"]), len(after_census["deny"])))
 
         if settings_key is not None:

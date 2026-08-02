@@ -50,6 +50,16 @@ mk_fixture() {  # mk_fixture <root>
   mkdir -p "$r/q-system/.q-system/scripts" "$r/q-system/output"
   echo "# existing" > "$r/.claude/rules/coding-standards.md"
   echo "# agent" > "$r/.claude/agents/preflight.md"
+  # A rule carrying both enforcement-bearing token classes the content census
+  # counts: an (ENFORCED marker and a named executable. The last paragraph is
+  # the false claim a `replace` has to be able to correct.
+  cat > "$r/.claude/rules/enforced-rule.md" <<'MD'
+# Sample Rule (ENFORCED)
+
+The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.
+
+This rule is enforced end to end and covers every path in the repo.
+MD
   echo "print('lint')" > "$r/q-system/.q-system/scripts/existing-lint.py"
   cat > "$r/.claude/settings.json" <<'JSON'
 {
@@ -224,7 +234,7 @@ rm -r "$T"
 
 # ------------------------- 5. removal / disable is not expressible (no bypass)
 T=$(mktemp -d); mk_fixture "$T"
-for OP in replace delete remove overwrite; do
+for OP in delete remove overwrite; do
   cat > "$T/op.json" <<JSON
 {
   "schema_version": 1, "slug": "op-$OP", "reason": "try to remove a hook",
@@ -233,7 +243,7 @@ for OP in replace delete remove overwrite; do
 }
 JSON
   run_engine "$ENGINE" "$T/op.json" "$T"
-  check "op '$OP' refused as non-additive" 2 "is not additive" "$RC" "$OUT"
+  check "op '$OP' refused as unknown" 2 "is not a permitted op" "$RC" "$OUT"
 done
 
 # The flag the old design would have used. It must not be a bypass; it must not
@@ -556,6 +566,212 @@ case "$OUT" in
 esac
 rm -r "$T"
 
+# ---------------------------------------- 15. replace, pinned to rule text
+# ASK-289. Additive-only meant a wrong sentence in a rule could only be BURIED,
+# never corrected -- design-auto-invoke.md still carries a narrowing paragraph
+# wedged ABOVE its own H1 because insert_before was the only expressible op.
+# `replace` fixes that, and is safe only because the census now reads rule
+# CONTENT (see the two ratchet cases below), not just the directory listing.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/fixclaim.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-false-claim",
+  "reason": "correct an overbroad enforcement sentence",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "This rule is enforced end to end and covers every path in the repo.",
+               "insert": "This rule is enforced on Edit|Write only; other paths are advisory.",
+               "reason": "the old sentence claimed coverage the hook does not have" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/fixclaim.json" "$T"
+check "replace on rule text succeeds" 0 "OK applied fix-false-claim" "$RC" "$OUT"
+check_one_line "replace on rule text" "$OUT"
+if grep -q "other paths are advisory" "$T/.claude/rules/enforced-rule.md"; then
+  ok "replace wrote the corrected sentence"
+else bad "replace did not write the corrected sentence"; fi
+if grep -q "covers every path in the repo" "$T/.claude/rules/enforced-rule.md"; then
+  bad "replace left the false claim in place (it was buried, not corrected)"
+else ok "replace REMOVED the false claim, which no additive op could do"; fi
+if grep -q "(ENFORCED)" "$T/.claude/rules/enforced-rule.md"; then
+  ok "replace left the (ENFORCED) marker and the exec ref untouched"
+else bad "replace collaterally dropped the (ENFORCED) marker"; fi
+
+# Idempotent: the anchor is gone but the insert is present exactly once.
+BEFORE_RERUN=$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/fixclaim.json" "$T"
+check "replace re-run is a no-op" 0 "OK already-applied" "$RC" "$OUT"
+if [ "$BEFORE_RERUN" = "$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')" ]; then
+  ok "replace re-run changed nothing"
+else bad "replace re-run mutated the file"; fi
+rm -r "$T"
+
+# 15b. the ratchet reads rule CONTENT: stripping (ENFORCED) is refused.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/demote.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "demote-rule",
+  "reason": "quietly downgrade a rule to advisory",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule", "reason": "drop the marker" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/demote.json" "$T"
+check "stripping (ENFORCED) refused by the ratchet" 2 "enforcement ratchet" "$RC" "$OUT"
+check_one_line "stripping (ENFORCED)" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')" ]; then
+  ok "stripping (ENFORCED) wrote nothing"
+else bad "stripping (ENFORCED) mutated the rule"; fi
+
+# 15c. dropping the executable a rule routes readers to is the same class.
+cat > "$T/unwire.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "unwire-rule",
+  "reason": "remove the pointer to the enforcer",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "The deterministic half is a hook.", "reason": "drop the ref" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/unwire.json" "$T"
+check "dropping an exec reference refused by the ratchet" 2 "enforcement ratchet" "$RC" "$OUT"
+rm -r "$T"
+
+# 15d. replace cannot reach the config surface. .claude/settings.json is named
+# outright; the pair requirement is satisfied so the SCOPE check is what refuses.
+mk_replace_settings() {  # mk_replace_settings <root>
+  # Deliberately picks a swap NO other layer objects to: the census keys on the
+  # command string (unchanged), the JSON stays valid, permissions do not move.
+  # Only the rule-text scope check stands between this and a broken hook.
+  cat > "$1/rep-settings.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "replace-settings",
+  "reason": "reach the config surface through the one non-additive op",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude/settings.json", "op": "replace",
+               "anchor": "\"type\": \"command\"", "insert": "\"type\": \"cmd\"",
+               "reason": "silently break the hook type" } ]
+}
+JSON
+}
+T=$(mktemp -d); mk_fixture "$T"; mk_replace_settings "$T"
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/rep-settings.json" "$T"
+check "replace on settings.json refused" 2 "replace may not target" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "replace on settings.json wrote nothing"
+else bad "replace MUTATED settings.json"; fi
+
+cat > "$T/rep-agent.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "replace-agent", "reason": "reach an agent file",
+  "edits": [ { "file": ".claude/agents/preflight.md", "op": "replace",
+               "anchor": "# agent", "insert": "# other", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/rep-agent.json" "$T"
+check "replace outside .claude/rules/ refused" 2 "only permitted on" "$RC" "$OUT"
+rm -r "$T"
+
+# 15e. a symlink parked in .claude/rules/ is a second name for a file the string
+# scope check would wave through. Same class as settings.local.json (round 1)
+# and the ./ spelling (round 2), arriving through the new op.
+T=$(mktemp -d); mk_fixture "$T"
+ln -s "../settings.json" "$T/.claude/rules/sneak.md"
+cat > "$T/sneak.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "sneak-settings",
+  "reason": "reach settings.json through a symlink inside rules/",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude/rules/sneak.md", "op": "replace",
+               "anchor": "\"type\": \"command\"", "insert": "\"type\": \"cmd\"",
+               "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/sneak.json" "$T"
+check "symlink-to-settings refused" 2 "replace may not target" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "symlink-to-settings wrote nothing"
+else bad "symlink-to-settings MUTATED settings.json"; fi
+
+# A symlink out of rules/ that is NOT the settings pair: the realpath check is
+# the only layer left, so this case is what makes that check load-bearing.
+ln -s "../agents/preflight.md" "$T/.claude/rules/sneak2.md"
+cat > "$T/sneak2.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "sneak-agent",
+  "reason": "reach an agent file through a symlink inside rules/",
+  "edits": [ { "file": ".claude/rules/sneak2.md", "op": "replace",
+               "anchor": "# agent", "insert": "# other", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/sneak2.json" "$T"
+check "symlink out of rules/ refused" 2 "resolves outside" "$RC" "$OUT"
+rm -r "$T"
+
+# 15f. replace is not a delete: an empty insert is refused, so "remove this
+# paragraph" stays inexpressible (the Not-doing line of ASK-289).
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/erase.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "erase-para", "reason": "delete by replacing with nothing",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "This rule is enforced end to end and covers every path in the repo.",
+               "insert": "", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/erase.json" "$T"
+check "empty insert refused (no delete op)" 2 "must be a non-empty string" "$RC" "$OUT"
+
+# Whitespace-only is the same delete wearing a hat.
+cat > "$T/erase2.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "erase-para-ws", "reason": "delete via whitespace",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "This rule is enforced end to end and covers every path in the repo.",
+               "insert": "   ", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/erase2.json" "$T"
+check "whitespace-only insert refused" 2 "must be a non-empty string" "$RC" "$OUT"
+
+# 15g. anchor contained in the insert never converges: every run would find the
+# anchor again and grow the file. Refused, with the additive op named instead.
+cat > "$T/grow.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "grow-forever", "reason": "anchor survives its own replacement",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule (ENFORCED) and then some", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/grow.json" "$T"
+check "non-converging replace refused" 2 "never converges" "$RC" "$OUT"
+
+# 15h. anchor arithmetic is the same as for the insert ops.
+printf 'dup\ndup\n' > "$T/.claude/rules/dup.md"
+cat > "$T/repdup.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "rep-dup", "reason": "anchor matches twice",
+  "edits": [ { "file": ".claude/rules/dup.md", "op": "replace",
+               "anchor": "dup", "insert": "X", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/repdup.json" "$T"
+check "ambiguous replace anchor refused" 2 "must be exactly 1" "$RC" "$OUT"
+cat > "$T/repabs.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "rep-absent", "reason": "anchor is not there",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "NO SUCH TEXT ANYWHERE", "insert": "X", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/repabs.json" "$T"
+check "absent replace anchor refused" 2 "anchor not found" "$RC" "$OUT"
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -684,6 +900,47 @@ if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
   ok "MUTATION normalize: both readers restored -> ./ spelling widened permissions.allow (rc=$MRC), test goes RED as required"
 else
   bad "MUTATION normalize: mutant did not widen permissions - the ./ test is not load-bearing"
+fi
+rm -r "$T"
+
+echo
+echo "--- mutation: blind the rule-content census ---"
+# Before ASK-289 the rule census was a directory listing, so it could not see
+# anything a replace did INSIDE a file. Putting that blindness back must let the
+# quiet demotion through, or case 15b is decoration.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_marks.py"
+mutate "$MUT" '        if "(ENFORCED" in text:' '        if False:'
+cat > "$T/demote.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "demote-rule", "reason": "quietly downgrade a rule",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule", "reason": "drop the marker" } ]
+}
+JSON
+set +e
+python3 "$MUT" "$T/demote.json" --root "$T" >/dev/null 2>&1; MRC=$?
+set -e
+if grep -q "(ENFORCED)" "$T/.claude/rules/enforced-rule.md"; then
+  bad "MUTATION marks: census blinded but the demotion was still refused - case 15b is not load-bearing"
+else
+  ok "MUTATION marks: census blinded -> (ENFORCED) silently stripped (rc=$MRC), test goes RED as required"
+fi
+rm -r "$T"
+
+echo
+echo "--- mutation: remove the rule-text scope pin on replace ---"
+T=$(mktemp -d); mk_fixture "$T"; mk_replace_settings "$T"
+MUT="$T/mutant_scope.py"
+mutate "$MUT" '            rule_text_only(root, rel, settings_key, template_key)' '            pass'
+set +e
+python3 "$MUT" "$T/rep-settings.json" --root "$T" >/dev/null 2>&1; MRC=$?
+set -e
+if grep -q '"type": "cmd"' "$T/.claude/settings.json"; then
+  ok "MUTATION scope: pin removed -> replace reached settings.json and broke a hook (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION scope: pin removed but settings.json is untouched - case 15d is not load-bearing"
 fi
 rm -r "$T"
 
