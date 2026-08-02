@@ -52,7 +52,14 @@ INVOKE = re.compile(
         )""",
     re.VERBOSE,
 )
-KIND = re.compile(r"--kind")
+# TWO ACCEPTED FORMS. Shell producers classify with a command-prefix env var,
+# because a flag in argv is visible to notify stubs: stubs recording "$1" break
+# when flags come first, and stubs recording "$*" pull the flags into the page
+# TEXT when they come last. Both happened on this branch. A prefix is invisible
+# to both forms, so no stub here or in any fleet instance needs to know this
+# feature exists. argv flags stay valid for dispatch's page()/page_ok()
+# pass-through, for the Python producers (whose stubs read "$1"), and by hand.
+KIND = re.compile(r"--kind|KIPI_NOTIFY_KIND=")
 WINDOW = 4
 
 # CROSS-CHECKED AGAINST A MEASURED POPULATION, not eyeballed. Diffing this

@@ -123,6 +123,59 @@ D="$WORK/c1d"; run_notify "$D" "a decision, message first" --kind decision --cla
 delivered "$D" && ok "message-first decision+class IS delivered" \
   || bad "message-first decision delivered" "curl never called; err=$(cat "$D/err")"
 
+# --- 1e. THE ENV PREFIX: classification invisible to argv --------------------
+# This is how every shell producer classifies, and the reason is compatibility,
+# not taste. Notify stubs across these suites record either "$1" or "$*", and a
+# flag in argv breaks one or the other whichever end it sits on: flags first take
+# the message out of $1 (three suites went red at once), flags last append
+# " --kind receipt" to "$*" so an assertion on the page PROSE reads it
+# (test-severity-floor caught exactly that). A command-prefix env var is invisible
+# to both. These cases exist so nobody "simplifies" it back into argv.
+run_env() {
+  local dir="$1" kind="$2" klass="$3" msg="$4"
+  rm -rf "$dir"; mkdir -p "$dir"
+  env -u KIPI_LINEAR_API_URL PATH="$WORK/bin:$PATH" \
+      KIPI_TEST_CURL_LOG="$dir/curl.log" \
+      KIPI_SLACK_WEBHOOK="https://hooks.example.invalid/T/B/X" \
+      KIPI_NOTIFY_RECEIPTS="$dir/receipts.jsonl" \
+      KIPI_INSTANCE_NAME="testinst" \
+      KIPI_NOTIFY_KIND="$kind" KIPI_NOTIFY_CLASS="$klass" \
+      bash "$NOTIFY" "$msg" >"$dir/out" 2>"$dir/err"   # notify-kind-skip: env carries it
+  echo $? > "$dir/rc"
+  assert_ran "$dir"
+}
+D="$WORK/e1"; run_env "$D" receipt "" "converge ASK-1: stopped, no PR after round 4"
+delivered "$D" && bad "env receipt is NOT delivered" "curl was called" \
+  || ok "env-classified receipt is NOT delivered"
+[ "$(field "$D" kind)" = "receipt" ] && ok "env receipt is recorded as a receipt" \
+  || bad "env receipt recorded" "got '$(field "$D" kind)'"
+[ "$(field "$D" message)" = "[testinst] converge ASK-1: stopped, no PR after round 4" ] \
+  && ok "the recorded message carries NO flag text (the whole point)" \
+  || bad "message free of flags" "got '$(field "$D" message)'"
+
+D="$WORK/e2"; run_env "$D" decision credential "Linear auth expired, no issue can be picked"
+delivered "$D" && ok "env decision + allowlisted class IS delivered" \
+  || bad "env decision delivered" "curl never called; err=$(cat "$D/err")"
+grep -q -- '--kind' "$D/curl.log" 2>/dev/null \
+  && bad "the delivered payload leaks flag text" "payload=$(cat "$D/curl.log")" \
+  || ok "the delivered payload is the message alone, no flag text"
+
+D="$WORK/e3"; run_env "$D" decision made-up-class "should not reach a human"
+delivered "$D" && bad "env unknown class is REFUSED" "curl was called" \
+  || ok "env unknown class is REFUSED (the enum still binds)"
+
+# argv wins over the env, so dispatch's page_ok() pass-through keeps working
+# even if something upstream exported a kind.
+D="$WORK/e4"; rm -rf "$D"; mkdir -p "$D"
+env -u KIPI_LINEAR_API_URL PATH="$WORK/bin:$PATH" \
+    KIPI_TEST_CURL_LOG="$D/curl.log" KIPI_SLACK_WEBHOOK="https://hooks.example.invalid/T/B/X" \
+    KIPI_NOTIFY_RECEIPTS="$D/receipts.jsonl" KIPI_INSTANCE_NAME="testinst" \
+    KIPI_NOTIFY_KIND=receipt \
+    bash "$NOTIFY" "a real founder decision" --kind decision --class spend \
+    >"$D/out" 2>"$D/err"; echo $? > "$D/rc"
+delivered "$D" && ok "argv classification OVERRIDES the env" \
+  || bad "argv overrides env" "curl never called; err=$(cat "$D/err")"
+
 # --- 2. an allowlisted founder decision DOES get through ---------------------
 # This is the half that matters most. A gate that silences a real alert is a
 # worse outage than the noise it was built to stop, so this case is asserted

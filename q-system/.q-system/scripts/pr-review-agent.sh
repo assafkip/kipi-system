@@ -544,7 +544,7 @@ note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
   else
     msg="reviewer: codex is BACK (PR #$PR) -- $STATUS_CONTEXT is an independent second opinion again."
   fi
-  bash "$NOTIFY" "$msg" --kind receipt 2>/dev/null || true
+  KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "$msg" 2>/dev/null || true
 }
 
 echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
@@ -842,7 +842,7 @@ Sana: reply to this comment on THIS issue. For each finding, either the file:lin
       # the same overclaim this commit is removing one layer down. So: attempt it,
       # record what came back, and leave the stderr WARN above as the one record
       # that is always written.
-      NOTIFY_OUT="$(bash "$NOTIFY" "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." --kind receipt 2>&1)"
+      KIPI_NOTIFY_KIND=receipt NOTIFY_OUT="$(bash "$NOTIFY" "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." 2>&1)"
       NOTIFY_RC=$?
       if [ "$NOTIFY_RC" -ne 0 ]; then
         echo "  WARN: the page about that loss ALSO failed (rc=$NOTIFY_RC${NOTIFY_OUT:+: $NOTIFY_OUT}). This loss is recorded ONLY in this log." >&2

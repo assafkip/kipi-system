@@ -51,7 +51,26 @@ set -uo pipefail
 # Adding a class is deliberately a diff someone reviews; that is the brake.
 ALLOWED_CLASSES="irreversible-git out-of-tree-write spend publish credential"
 
-KIND=""; CLASS=""; MSG=""
+# CLASSIFICATION COMES FROM THE ENVIRONMENT FIRST, argv SECOND. That order is a
+# scar, not a preference. argv flags were tried first and broke suites that had
+# nothing to do with this change, in BOTH possible arrangements:
+#   flags BEFORE the message -> the message leaves $1, and notify stubs across
+#     these suites record "$1". Three untouched suites went red at once.
+#   flags AFTER the message  -> "$*" gains " --kind receipt", and a stub that
+#     records "$*" feeds that into assertions about the page PROSE.
+#     test-severity-floor: "the healthy page now carries receipt prose on a run
+#     where the receipt LANDED" -- every converged PR would have paged about a
+#     problem that was not there.
+# Rewriting the four stubs was the wrong instinct: they are tests this change
+# never touched, and editing them regressed three.
+#
+# A command-prefix env var is invisible to BOTH forms -- "$1" is still the
+# message, "$*" is still exactly the message -- so no stub here or in any fleet
+# instance has to know this feature exists. Written as a prefix and never
+# exported, so it stays per-invocation. argv still wins when both are given:
+# dispatch's page_ok() passes flags straight through, and the sink has to remain
+# usable by hand.
+KIND="${KIPI_NOTIFY_KIND:-}"; CLASS="${KIPI_NOTIFY_CLASS:-}"; MSG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --kind)  KIND="${2:-}"; shift 2 || break ;;

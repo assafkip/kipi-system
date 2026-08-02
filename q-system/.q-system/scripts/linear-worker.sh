@@ -249,7 +249,7 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 # environment that is down from a worker that was invoked wrong.
 if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
-  bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." --kind receipt 2>/dev/null || true
+  KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
 fi
 
@@ -432,7 +432,7 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   say "MISCONFIG: repo identity '$REPO_PROJECT' (from $TARGET_REPO) matches NO Linear project on team ASK."
   say "MISCONFIG: every issue would be filtered out, so this run picked nothing for a config reason, not an empty board."
   say "MISCONFIG: fix by renaming the Linear project to match the checkout, or set KIPI_LINEAR_PROJECT."
-  bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." --kind receipt 2>/dev/null || true
+  KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
   exit 9
 fi
 
@@ -637,7 +637,7 @@ ledger_fault() {
   say "WARN: the attempts ledger did not record the $flag flag for $issue (exit $rc) -- $detail"
   [ "$LEDGER_FAULT_ALERTED" -eq 0 ] || return 0
   LEDGER_FAULT_ALERTED=1
-  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." --kind receipt 2>/dev/null || true
+  KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
 }
 
 page_once() {
@@ -735,7 +735,7 @@ arm_automerge() {
       # unarmed, and quieting it would re-create the stall one layer down.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE and could not read its state either -- gh answered neither. If it sits green: gh pr merge --auto --squash $pr"
       if page_once "$ISSUE" automerge_unknown_paged; then
-        bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $pr" --kind receipt 2>/dev/null || true
+        KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     else
       AUTOMERGE="unarmed"
@@ -749,7 +749,7 @@ arm_automerge() {
       # not kill the silent stall, it relocates it.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
       if page_once "$ISSUE" automerge_unarmed_paged; then
-        bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" --kind receipt 2>/dev/null || true
+        KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     fi
   fi
@@ -881,7 +881,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # no page() helper here -- calling one would have been a silent no-op under
       # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
       # pages nobody, which is the exact defect this block fixes.
-      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." --kind receipt 2>/dev/null || true
+      KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
     continue
   fi
@@ -1012,7 +1012,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
         if page_once "$ISSUE" drift_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" --kind receipt 2>/dev/null || true
+          KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
         continue
       fi
@@ -1034,7 +1034,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
         if page_once "$ISSUE" conflict_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" --kind receipt 2>/dev/null || true
+          KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
         continue
       fi
@@ -1167,7 +1167,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
       say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
       if page_once "$ISSUE" tree_paged; then
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" --kind receipt 2>/dev/null || true
+        KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -1410,7 +1410,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" --kind receipt 2>/dev/null || true
+      KIPI_NOTIFY_KIND=receipt bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
     fi
   fi
 
