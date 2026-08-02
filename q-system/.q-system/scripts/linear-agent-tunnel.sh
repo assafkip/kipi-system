@@ -67,9 +67,34 @@ cmd_check() {
       blockers=$((blockers+1))
     fi
   else
-    echo "  [?]    a domain must already be on Cloudflare (nameservers delegated)."
-    echo "         Without one, a NAMED tunnel is not available and the stable-URL"
-    echo "         argument above does not hold. Confirm before spending clicks."
+    # PROBE, do not warn. A prose caveat about "you'll need a domain on Cloudflare"
+    # gets read past; a resolver answer does not. This is read-only DNS -- it changes
+    # nothing and needs no credentials, so there is no excuse for guessing instead.
+    local found=0
+    for d in ${KIPI_TUNNEL_DOMAINS:-ktlystlabs.com kipi.dev}; do
+      local ns
+      ns="$(dig +short NS "$d" 2>/dev/null | head -1)"
+      # Match the cloudflare.com SUFFIX, not an assumed `ns.` prefix. The first
+      # version grepped 'ns.cloudflare.com' and read cloudflare.com itself -- whose
+      # NS is ns6.cloudflare.com -- as NOT on Cloudflare. A detector that returns a
+      # false negative on the most obvious positive case in existence is one a
+      # negative self-test catches and a green run never does.
+      if echo "$ns" | grep -qiE 'cloudflare\.com\.?$'; then
+        ok "$d is on Cloudflare ($ns) -- named tunnel available"
+        found=1
+      elif [ -n "$ns" ]; then
+        miss "$d is NOT on Cloudflare (NS: $ns)"
+      fi
+    done
+    if [ "$found" -eq 0 ]; then
+      echo "  [BLOCKER] no probed domain is delegated to Cloudflare."
+      echo "            A NAMED tunnel needs a zone on Cloudflare. Without one the"
+      echo "            only cloudflared option is a QUICK tunnel, whose URL churns"
+      echo "            on every restart -- which respends the founder's OAuth"
+      echo "            clicks and is the exact cost this choice was making."
+      echo "            Decide the domain BEFORE anyone clicks anything."
+      blockers=$((blockers+1))
+    fi
   fi
 
   if lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
