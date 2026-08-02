@@ -154,7 +154,7 @@ def resolve_issue_key(issue_uuid: str, token: str = None) -> str:
     Guessing an identifier is worse than failing: a wrong key dispatches the runner at
     the WRONG issue, and that write is not reversible from here.
     """
-    token = token or os.environ.get("KIPI_LINEAR_AGENT_TOKEN", "")
+    token = token or get_token()   # same chokepoint; resolved at call time
     if not (issue_uuid and token):
         return ""
     body = json.dumps({"query": _IDENTIFIER_QUERY, "variables": {"id": issue_uuid}}).encode()
@@ -219,6 +219,37 @@ mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
 TERMINAL_TYPES = {"response", "elicitation", "error"}
 
 
+def _load_token_module():
+    """Import the hyphenated token module. Separate so an import failure is legible."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "linear_agent_token", SCRIPT_DIR / "linear-agent-token.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def get_token() -> str:
+    """The ONE place a token is obtained. Goes through the rotation chokepoint.
+
+    KIPI_LINEAR_AGENT_TOKEN wins so the suite can drive this without a token store.
+    In production it is unset and every call reaches ensure_fresh(), which renews an
+    hour before the 24h expiry and PAGES if it cannot. Reading a static token here
+    would reintroduce the daily silent death the token module exists to prevent --
+    the code would look wired while the refresh never ran.
+    """
+    env_token = os.environ.get("KIPI_LINEAR_AGENT_TOKEN", "")
+    if env_token:
+        return env_token
+    try:
+        return _load_token_module().ensure_fresh()
+    except Exception as exc:  # noqa: BLE001
+        # Surfaced, never swallowed. ensure_fresh has already paged for the cases it
+        # owns; this print is the last-resort trace for the ones it does not.
+        print(f"token unavailable: {exc}", file=sys.stderr)
+        return ""
+
+
 def post_activity(session_id: str, content: dict, token: str = None) -> tuple:
     """Emit one AgentActivity. Returns (ok, detail).
 
@@ -226,9 +257,9 @@ def post_activity(session_id: str, content: dict, token: str = None) -> tuple:
     the local run is the real work and it has its own logging; losing the comment is
     bad but losing the run is worse.
     """
-    token = token or os.environ.get("KIPI_LINEAR_AGENT_TOKEN", "")
+    token = token or get_token()
     if not token:
-        return False, "no KIPI_LINEAR_AGENT_TOKEN"
+        return False, "no usable Linear token"
 
     body = json.dumps({
         "query": _ACTIVITY_MUTATION,

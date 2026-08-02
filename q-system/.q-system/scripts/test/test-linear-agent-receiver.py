@@ -51,6 +51,7 @@ SCRIPT = Path(os.environ.get(
 SECRET = "test-secret-not-a-real-one"
 
 ACTIVITIES = []          # what the fake Linear was asked to post
+AUTH_HEADERS = []        # the token each call actually presented
 _ACT_LOCK = threading.Lock()
 
 
@@ -65,6 +66,8 @@ class FakeLinear(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        with _ACT_LOCK:
+            AUTH_HEADERS.append(self.headers.get("Authorization", ""))
         try:
             req = json.loads(raw)
         except ValueError:
@@ -251,6 +254,48 @@ def main() -> int:
         check("session recorded as done", rec.get("sess-abc", {}).get("status"), "done")
 
         proc.terminate()
+
+        # === LOAD-PATH PROOF: with NO env token, the TOKEN STORE is used =====
+        # Every case above injects KIPI_LINEAR_AGENT_TOKEN, so none of them proves the
+        # refresh path is reachable -- the receiver could read a static token forever
+        # and stay green. Grepping that ensure_fresh() appears in the source proves
+        # nothing either. This starts a receiver with the env token REMOVED and a real
+        # token store on disk, then reads back which credential actually went out on
+        # the wire.
+        (tmp / "linear-agent-token.json").write_text(json.dumps({
+            "access_token": "from-the-token-store",
+            "refresh_token": "r0",
+            "expires_at": int(time.time()) + 80000,
+        }))
+        env2 = {k: v for k, v in env.items() if k != "KIPI_LINEAR_AGENT_TOKEN"}
+        port2 = free_port()
+        proc2 = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "serve", "--port", str(port2)],
+            env=env2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        url2 = f"http://127.0.0.1:{port2}/"
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(url2, data=b"{}", timeout=1); break
+            except urllib.error.HTTPError:
+                break
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+
+        with _ACT_LOCK:
+            AUTH_HEADERS.clear()
+        ev2 = event(issue="ASK-111", session="sess-token")
+        post(url2, ev2, sign(ev2))
+        for _ in range(60):
+            with _ACT_LOCK:
+                if AUTH_HEADERS:
+                    break
+            time.sleep(0.1)
+        with _ACT_LOCK:
+            seen = list(AUTH_HEADERS)
+        check("no env token -> credential comes from the token store",
+              seen[:1], ["from-the-token-store"])
+        proc2.terminate()
+
         fake.shutdown()
 
     finally:
