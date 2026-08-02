@@ -58,6 +58,29 @@ git -C "$WORK/skel" push -q -u origin main
 # Everything else -- crucially linear-claim.py, the subject of this test --
 # is the real interpreter running the real script.
 STUB="$WORK/bin"; mkdir -p "$STUB"
+
+# NEVER LET A TEST REACH THE REAL REVIEWER (sp-cb48c3c0). This suite drives
+# linear-worker.sh for real, and the worker's review step shells
+# pr-review-agent.sh, whose DEFAULT ENGINE IS CODEX. $STUB carries no `codex`, so
+# the call fell through to /opt/homebrew/bin/codex: real spend, real `gh --post`
+# attempts against a PR number that does not exist, and codex running
+# workspace-write inside the founder's live checkout. Caught live 2026-07-30 by
+# finding `pr-review-agent.sh 807 --issue ASK-AAA --post --engine codex` in ps.
+#
+# KIPI_PR_REVIEWER is the override linear-worker.sh:72 already exposes, so one
+# export closes the whole path -- strictly better than adding a `codex` stub,
+# which would still run the real reviewer script against real `gh`.
+KIPI_PR_REVIEWER="$STUB/reviewer-noop"
+export KIPI_PR_REVIEWER
+cat > "$STUB/reviewer-noop" <<'NOOP'
+#!/usr/bin/env bash
+# Stands in for pr-review-agent.sh. Prints what it was asked to do so a test can
+# assert the worker TRIED to review, and exits 0 without touching any network.
+echo "  [stub reviewer] would review PR $1 ($*)"
+exit 0
+NOOP
+chmod +x "$STUB/reviewer-noop"
+
 cat > "$STUB/python3" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
@@ -91,10 +114,15 @@ export PATH="$STUB:$PATH"
 # run_worker <issue> <run-label> [hold-token]
 # cwd is the skeleton on purpose: that is where launchd runs this from, and it
 # is the cwd that made every issue share one lock.
+# KIPI_NOTIFY is stubbed at every --apply site below. --apply drives the real
+# worker, and several of its branches page the founder. The PATH-stubbed python3
+# happens to short-circuit the picker today so nothing escapes -- that is luck
+# about a stub, not isolation, and the stub is one edit away from changing.
 run_worker() {
   local issue="$1" label="$2" hold="${3:-}"
   ( cd "$WORK/skel" \
     && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-$label" STUB_HOLD="$hold" \
+       KIPI_NOTIFY="/usr/bin/true" \
        bash "$WORKER" --apply --issue "$issue" --limit 1 ) \
     >"$WORK/$label.out" 2>&1
   echo "$?" > "$WORK/$label.rc"
@@ -170,6 +198,7 @@ done
 # d shares c's state dir, so it lands on the SAME worktree for the same issue.
 ( cd "$WORK/skel" \
   && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-c" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-CCC --limit 1 ) >"$WORK/d.out" 2>&1
 touch "$HOLD2.go"
 wait "$C_PID"
@@ -211,6 +240,7 @@ PY
 
 ( cd "$WORK/skel" \
   && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-e" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-EEE --limit 1 ) >"$WORK/e.out" 2>&1
 
 grep -q "ask-eee" "$WORK/worked.txt" \
