@@ -18,14 +18,14 @@ Before declaring done, confirm (evidence required, not assumed):
 - Skeleton-vs-instance placement is correct; `kipi update --dry` confirms propagation if this is `kipi-system`
 - **Load-path proof (text-in-a-file is NOT wired).** For any edit to a command,
   skill, template, prompt, rule, or config: confirm the RUNNING system loads the
-  copy you edited, not a different copy. Grepping that the text exists in a repo
-  file proves nothing. Plugins/skills run from the marketplace clone
-  (`~/.claude/plugins/marketplaces/<mp>/`), NOT a project's `plugins/` dir; an
-  instance `plugins/` is a `kipi update` destination, overwritten from the
-  skeleton. Evidence = the running system shows the new behavior, OR grep the
-  actually-loaded copy. Scar: a gap-class checklist was "wired" into an
-  instance's `plugins/`; the runtime loaded the marketplace clone, so the edits
-  were inert until moved to the skeleton (2026-06-20).
+  copy you edited. Grepping that the text exists proves nothing. Plugins/skills
+  run from the marketplace clone (`~/.claude/plugins/marketplaces/<mp>/`), NOT a
+  project's `plugins/` (a `kipi update` destination, overwritten from the
+  skeleton) -- scar 2026-06-20, inert for weeks. **Instrument:
+  `will-it-run.py <ASK-N>|--all`** (`q-system/.q-system/scripts/`) -- observed
+  cap, budget, pool position, staleness, job state -> a budget day or NEVER;
+  `scheduling-claim-gate.py` (Stop) blocks a queued/armed/wired/live claim when
+  it did not run or when the answer contradicts it.
 - **A namespaced command (`foo:bar`) belongs to the `foo` plugin, possibly a
   third party.** Editing your own vendored copy of its prompt/file does nothing;
   the live command reads the plugin's own copy. Wire through what you control
