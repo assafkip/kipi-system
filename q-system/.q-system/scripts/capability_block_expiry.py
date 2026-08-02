@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expire a `blocked:capability` label when the capability it names now exists.
 
-THE DEFECT THIS CLOSES (ASK-284, 2026-08-02). `blocked:capability` was terminal.
+THE DEFECT THIS CLOSES (ASK-288, 2026-08-02). `blocked:capability` was terminal.
 It records a point-in-time verdict about the ENVIRONMENT -- "this runner is not
 equipped" -- and nothing ever re-tested it. The environment is exactly the thing
 that changes underneath a verdict: ASK-140 was parked on "no safe write route

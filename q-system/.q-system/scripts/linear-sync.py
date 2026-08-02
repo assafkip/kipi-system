@@ -783,7 +783,7 @@ _PICKABLE_STATE_TYPES = ("backlog", "unstarted", "triage")
 def unblock_issue(identifier: str, label: str, note: str) -> bool:
     """Remove a hold label AND put the issue back in a pickable state. One step.
 
-    WHY BOTH, NOT JUST THE LABEL (ASK-284, measured 2026-08-02). The picker tests
+    WHY BOTH, NOT JUST THE LABEL (ASK-288, measured 2026-08-02). The picker tests
     the label AND the state (linear_pick.ready). ASK-140/134/133/132 all sit at
     `started`, so dropping the label alone clears one test, fails the other, and
     leaves the issue exactly as invisible as before -- while the tool reports a

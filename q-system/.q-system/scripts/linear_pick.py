@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The worker's ready() predicate, in ONE place both the worker and its tests read.
 
-WHY THIS FILE EXISTS (ASK-284, 2026-08-02). This predicate used to live only
+WHY THIS FILE EXISTS (ASK-288, 2026-08-02). This predicate used to live only
 inside a quoted heredoc in linear-worker.sh. That made it untestable: any test
 asking "is ASK-140 pickable?" had to hand-copy the conditions, and a hand-copy of
 a checker is a second checker that drifts from the first. A reproducer that
@@ -33,7 +33,7 @@ PICKABLE_STATE_TYPES = ("backlog", "unstarted")
 #   blocked:capability -- Sana refused: the spec is fine, the RUNNER is not
 #                         equipped. Routes to whoever owns the config.
 # blocked:capability is the one that never expired on its own, which is the whole
-# of ASK-284: it records a point-in-time verdict about the ENVIRONMENT and the
+# of ASK-288: it records a point-in-time verdict about the ENVIRONMENT and the
 # environment changes underneath it. See capability_block_expiry.py.
 HOLD_LABELS = ("needs-scope", "blocked:capability")
 

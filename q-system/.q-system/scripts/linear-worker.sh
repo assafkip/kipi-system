@@ -305,7 +305,7 @@ export REPO_PROJECT
 
 # --- expire stale capability blocks BEFORE picking --------------------------
 # A `blocked:capability` label records a point-in-time verdict about the
-# ENVIRONMENT, and nothing used to re-test it (ASK-284/ASK-288). ASK-140 was
+# ENVIRONMENT, and nothing used to re-test it (ASK-288). ASK-140 was
 # parked on "no safe write route into .claude/" and apply-claude-changes.sh
 # shipped the next day; the block was stale within 24h and the picker would never
 # have offered it again. Ten issues had accumulated by 2026-08-02.
