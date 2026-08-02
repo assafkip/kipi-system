@@ -1002,6 +1002,37 @@ def detect_open_spillover(_ctx) -> list:
     }]
 
 
+BYPASS_PENDING = QROOT / "output" / "linear-bypass-pending.json"
+
+
+def _read_pending() -> list:
+    """Shas the sweep recorded that Linear has not accepted a finding for yet."""
+    try:
+        data = json.loads(BYPASS_PENDING.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
+
+
+def _write_pending(shas: list) -> None:
+    try:
+        BYPASS_PENDING.parent.mkdir(parents=True, exist_ok=True)
+        BYPASS_PENDING.write_text(json.dumps(shas), encoding="utf-8")
+    except OSError as exc:
+        print(f"  could not write {BYPASS_PENDING}: {exc}", file=sys.stderr)
+
+
+def _merge_pending(newly: list) -> list:
+    """Previously-unreported shas first, then this run's, order-stable, deduped."""
+    merged = list(_read_pending())
+    seen = set(merged)
+    for sha in newly:
+        if sha not in seen:
+            seen.add(sha)
+            merged.append(sha)
+    return merged
+
+
 def detect_unaccounted_commits(_ctx) -> list:
     """Commits that reached origin with no Linear id and no [no-issue:] tag (ASK-284).
 
@@ -1027,25 +1058,46 @@ def detect_unaccounted_commits(_ctx) -> list:
     """
     sweeper = HERE / "linear-bypass-sweep.py"
     if not sweeper.is_file():
-        return []
+        raise RuntimeError(f"the sweeper is missing at {sweeper}")
     try:
         res = subprocess.run(["python3", str(sweeper), "--json"],
                              capture_output=True, text=True, timeout=120,
                              cwd=REPO_ROOT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc
+    if res.returncode != 0:
+        raise RuntimeError(f"the sweeper exited {res.returncode}")
     try:
         result = json.loads(res.stdout or "{}")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("the sweeper produced no parseable JSON") from exc
+    if result.get("status") not in ("ok", "dry"):
+        raise RuntimeError(f"the sweeper reported status {result.get('status')!r}")
+    if result.get("fetched") == "failed":
+        # A remote-tracking ref is a local cache. If the fetch failed, the range
+        # just scanned may be missing commits pushed from anywhere else, and
+        # "nothing unaccounted" over a stale ref is an unknown, not a zero.
+        raise RuntimeError("the sweeper could not fetch; the swept ref may be stale")
+
+    # Newly recorded shas UNION whatever a previous run recorded but never got
+    # onto the board. The sweep dedupes on sha permanently, so once it has
+    # written a row that sha is never "new" again — which meant a transient
+    # Linear outage between the ledger write and the filing consumed the finding
+    # forever and the next morning read clean. The ledger's job is the COUNT; the
+    # pending file is the separate, independently-cleared record of what still
+    # owes a report.
+    pending = _merge_pending(result.get("commits") or [])
+    if not pending:
         return []
 
-    fresh = result.get("commits") or []
-    if not result.get("recorded") or not fresh:
-        return []
-
-    shown = fresh[:25]
-    more = len(fresh) - len(shown)
+    _write_pending(pending)
+    shown = pending[:25]
+    more = len(pending) - len(shown)
+    fresh = pending
     return [{
+        # Cleared ONLY after Linear has actually accepted the finding. A dry run
+        # never clears it: nothing was filed, so nothing was reported.
+        "on_filed": lambda: _write_pending([]),
         # Stable subject: ONE standing issue for this class. The shas live in the
         # body, which is updatable; putting them in the dedup key would fork a
         # permanent issue per bypass.
@@ -1415,6 +1467,7 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
         try:
             if key not in known:
                 result[_create_one(ls, f, apply, team_id, project, filer)] += 1
+                _mark_filed(f, apply)
                 continue
             tracked = _tracked_issue(ls, key, remote_keys, ledger)
             if not tracked:
@@ -1433,12 +1486,35 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
                       file=sys.stderr)
                 _create_one(ls, f, apply, team_id, project, filer)
                 result["relisted"] += 1
+                _mark_filed(f, apply)
                 continue
             result[_refresh_one(ls, f, apply, tracked, team_id, filer)] += 1
+            _mark_filed(f, apply)
         except Exception as exc:  # noqa: BLE001 - one finding's failure is not the run's
             print(f"  filing {key} FAILED: {exc}", file=sys.stderr)
             result["errors"] += 1
     return result
+
+
+def _mark_filed(finding: dict, apply: bool) -> None:
+    """Tell a detector its finding actually reached the board.
+
+    Only a detector that CONSUMES state on detection needs this: the bypass sweep
+    dedupes on sha forever, so without a confirmation the shas were spent whether
+    or not Linear took them, and a transient outage made the next run read clean
+    (PR #66 review, major 1). Reached on `existing` too — an unchanged tracked
+    issue already carries the content, which is what "reported" means here.
+
+    Never on a dry run: nothing was filed, so nothing was reported. A callback
+    that raises is one detector's bookkeeping failing, never the filing run's.
+    """
+    hook = finding.get("on_filed")
+    if not apply or not callable(hook):
+        return
+    try:
+        hook()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  on_filed for {finding.get('key')} failed: {exc}", file=sys.stderr)
 
 
 def _tracked_issue(ls, key: str, remote_keys: dict, ledger: dict) -> dict:

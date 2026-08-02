@@ -55,11 +55,13 @@ found something, which is exactly backwards.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +130,80 @@ def default_rev(cwd: Path) -> str:
     if code == 0 and out.strip():
         return out.strip()
     return "origin/main"
+
+
+def known_remotes(cwd: Path) -> list:
+    code, out = git(["remote"], cwd)
+    return out.split() if code == 0 else []
+
+
+def remote_of(rev: str, cwd: Path) -> str:
+    """The remote a remote-tracking rev belongs to, or "" for a local ref."""
+    name = rev
+    if name.startswith("refs/remotes/"):
+        name = name[len("refs/remotes/"):]
+    head = name.split("/", 1)[0]
+    return head if head and head in known_remotes(cwd) else ""
+
+
+def fetch_remote(remote: str, cwd: Path) -> str:
+    """Refresh the remote-tracking refs. Returns "ok" or "failed", never silence.
+
+    A remote-tracking ref is a LOCAL cache. Nothing refreshes it on its own, so a
+    commit pushed from another checkout (a worktree, another machine, a merge
+    landed on the web) is invisible here until some unrelated process happens to
+    fetch. The sweep would then report clean about a range it had not seen — the
+    same shape as the ledger it exists to fix, one layer down.
+
+    Failure is REPORTED rather than swallowed. `detect_unaccounted_commits` treats
+    a failed fetch as a blind detector, because a possibly-stale ref answering
+    "nothing unaccounted" is not a negative result, it is an unknown.
+    """
+    code, _ = git(["fetch", "--quiet", remote], cwd)
+    return "ok" if code == 0 else "failed"
+
+
+def lock_path(ledger: Path) -> Path:
+    return ledger.parent / (ledger.name + ".lock")
+
+
+@contextmanager
+def ledger_lock(ledger: Path):
+    """Hold an exclusive lock across the ledger's read-then-append.
+
+    The dedup is "is this sha already in the file", so the read and the append are
+    ONE critical section. Two sweeps overlapping between them (the daily launchd
+    job and a hand run, or two repos on one machine) both read an absent sha and
+    both append it, which double-counts in the one file whose entire job is to
+    carry a true count. That is the `dedup-ledger-append-only-single-writer`
+    lesson: a dedup ledger needs a single writer, and here the lock IS it.
+
+    The lock is a sidecar file, never the ledger itself: locking the ledger would
+    mean opening it for write to read it, and a reader must not be able to create
+    or truncate the thing it is counting.
+
+    Yields False when the lock could not be taken at all (a read-only directory).
+    The sweep still runs — an unlocked count beats no count — and the caller
+    reports `locked: false` so the weaker guarantee is visible, not assumed.
+    """
+    path = lock_path(ledger)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+")
+    except OSError as exc:
+        print(f"linear-bypass-sweep: WARNING could not open lock {path}: {exc}",
+              file=sys.stderr)
+        yield False
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield True
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
 
 
 def gate_live_since(cwd: Path) -> str:
@@ -281,44 +357,61 @@ def append_entries(path: Path, entries: list) -> bool:
     return True
 
 
-def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "") -> dict:
+def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
+          fetch: bool = True) -> dict:
     gate = load_gate()
     path = ledger_path(root)
 
+    remote = remote_of(rev, root)
+    if not remote:
+        fetched = "local-ref"
+    elif not fetch:
+        fetched = "skipped"
+    else:
+        fetched = fetch_remote(remote, root)
+
     if not rev_exists(rev, root):
-        return {"rev": rev, "since": since, "scanned": 0, "unaccounted": 0,
-                "recorded": 0, "commits": [], "status": "rev-not-found"}
+        return {"rev": rev, "since": since, "fetched": fetched, "locked": False,
+                "scanned": 0, "unaccounted": 0, "recorded": 0, "commits": [],
+                "status": "rev-not-found"}
 
     commits = read_commits(rev, max_count, root, since)
-    known = recorded_shas(path)
 
-    fresh = []
-    unaccounted = 0
-    for commit in commits:
-        if is_accounted(commit["message"], gate):
-            continue
-        unaccounted += 1
-        if commit["sha"] in known:
-            continue
-        fresh.append(commit)
+    # The read and the append are ONE critical section: the dedup asks "is this
+    # sha already in the file", so a concurrent sweep landing between them
+    # double-records. Everything above is a git read and holds no lock.
+    with ledger_lock(path) as locked:
+        known = recorded_shas(path)
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    entries = [{
-        "at": now,
-        "reason": SWEEP_REASON,
-        "subject": c["subject"][:200],
-        "commit": c["sha"],
-        "authored_at": c["authored_at"],
-        "source": "sweep",
-    } for c in reversed(fresh)]  # oldest first, so the ledger reads chronologically
+        fresh = []
+        unaccounted = 0
+        for commit in commits:
+            if is_accounted(commit["message"], gate):
+                continue
+            unaccounted += 1
+            if commit["sha"] in known:
+                continue
+            fresh.append(commit)
 
-    written = True
-    if entries and not dry:
-        written = append_entries(path, entries)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entries = [{
+            "at": now,
+            "reason": SWEEP_REASON,
+            "subject": c["subject"][:200],
+            "commit": c["sha"],
+            "authored_at": c["authored_at"],
+            "source": "sweep",
+        } for c in reversed(fresh)]  # oldest first, so the ledger reads chronologically
+
+        written = True
+        if entries and not dry:
+            written = append_entries(path, entries)
 
     return {
         "rev": rev,
         "since": since,
+        "fetched": fetched,
+        "locked": locked,
         "ledger": str(path),
         "scanned": len(commits),
         "unaccounted": unaccounted,
@@ -337,6 +430,8 @@ def main(argv: list) -> int:
     parser.add_argument("--since", help="floor date (default: when the gate went live)")
     parser.add_argument("--all-history", action="store_true",
                         help="ignore the gate-activation floor and scan the whole window")
+    parser.add_argument("--no-fetch", dest="fetch", action="store_false",
+                        help="do not refresh remote-tracking refs before reading them")
     parser.add_argument("--dry", "-n", action="store_true",
                         help="report what would be recorded, write nothing")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -353,7 +448,7 @@ def main(argv: list) -> int:
         since = gate_live_since(root)
 
     try:
-        result = sweep(rev, args.max_count, root, args.dry, since)
+        result = sweep(rev, args.max_count, root, args.dry, since, args.fetch)
     except RuntimeError as exc:
         print(f"linear-bypass-sweep: {exc}", file=sys.stderr)
         return 1
@@ -366,8 +461,12 @@ def main(argv: list) -> int:
         print(f"linear-bypass-sweep: {rev} does not resolve; nothing swept.")
         return 0
 
+    if result["fetched"] == "failed":
+        print(f"linear-bypass-sweep: WARNING fetch of {remote_of(rev, root)} failed; "
+              f"{rev} may be stale and this count may be low.", file=sys.stderr)
     print(f"linear-bypass-sweep: {rev} — scanned {result['scanned']}, "
-          f"unaccounted {result['unaccounted']}, newly recorded {result['recorded']}")
+          f"unaccounted {result['unaccounted']}, newly recorded {result['recorded']} "
+          f"(fetch: {result['fetched']})")
     for sha in result["commits"]:
         print(f"  {sha[:9]}")
     return 0

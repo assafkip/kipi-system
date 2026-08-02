@@ -58,7 +58,18 @@ commit() {
 SHA_OK=$(commit 1 "feat: compliant thing (ASK-1)")
 SHA_HATCH=$(commit 2 "chore: typo [no-issue: docs typo]")
 SHA_HOLE=$(commit 3 "fix(gate): the bypassed one")
-git merge -q --no-ff --no-verify -m "Merge branch 'side' into main" HEAD >/dev/null 2>&1 || true
+
+# A REAL merge commit, from a real divergent branch. `git merge --no-ff HEAD`
+# (the shipped fixture) is "already up to date": git creates nothing, so the
+# negative control below asserted the absence of a commit that never existed and
+# could not have caught a regression in merge classification.
+git checkout -q -b side
+SHA_SIDE=$(commit 4 "chore(side): divergent work [no-issue: fixture branch]")
+git checkout -q main
+SHA_MERGE=$(GIT_AUTHOR_DATE="2026-07-27T10:05:00+00:00" \
+  GIT_COMMITTER_DATE="2026-07-27T10:05:00+00:00" \
+  git merge -q --no-ff --no-verify -m "Merge branch 'side' into main" side \
+  && git rev-parse HEAD)
 git push -q origin main
 
 sweep() {
@@ -105,6 +116,17 @@ else
 fi
 
 # Merge machinery inherits provenance; gating it would break merges for no gain.
+# The fixture must actually CONTAIN a merge commit first, or the two checks below
+# assert the absence of something that was never created.
+MERGE_COUNT=$(git rev-list --merges --count origin/main)
+check "the fixture contains a real merge commit" 1 "$MERGE_COUNT"
+
+if [ -n "${SHA_MERGE:-}" ] && grep -q "$SHA_MERGE" "$LEDGER"; then
+  no "the merge commit's sha was recorded"
+else
+  ok "the merge commit's sha is not recorded"
+fi
+
 if grep -qi "merge branch" "$LEDGER"; then
   no "a merge commit was recorded"
 else
