@@ -567,18 +567,42 @@ claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 #
 #   0  claimed here, first time         -> page
 #   1  already claimed on a prior run   -> quiet
-#   2  usage error, nothing written     -> page, and say so
-#   3  lock contended, nothing written  -> page, and say so
+#   2  nothing written (usage error, or any unexpected failure)  -> ledger fault
+#   3  nothing written (lock contended)                          -> ledger fault
 #
 # The bare `if` collapsed 2 and 3 into the same branch as 1, so a page was
 # dropped for a state NO FILE RECORDS -- which means no later run retires it
 # either. It is simply gone. That is the silent stall this worker exists to kill,
 # re-created inside the mechanism built to kill it.
 #
-# Paging is the safe direction on 2 and 3. Nothing was claimed, so the state is
-# still true and still unpaged; a duplicate page is noise, a suppressed page is a
-# stall nobody sees. It is also bounded: contention lasts a retry budget, and the
-# first run that gets the lock claims the flag, after which every run is quiet.
+# WHAT 2 AND 3 MUST NOT DO IS RUN THE CALLER'S PAGE (codex round 4, major). They
+# used to `return 0`, and `return 0` here means the CALLER writes its artifact --
+# which at the stuck site is a permanent Linear comment. The dedup for that
+# comment is the ledger flag. So on exactly the two codes that mean THE LEDGER
+# DID NOT ANSWER, the worker drove a non-idempotent permanent write with its
+# dedup switched off:
+#
+#   exit 3, contention: run A pages, run B takes the lock and pages   = 2 comments
+#   exit 2, unwritable: nothing is ever claimed, so EVERY run posts, forever
+#
+# Observed pre-fix at 5 comments over 5 cycles and 4 comments for a 4-issue queue
+# in ONE run (cases 7-9). "Bounded by the retry budget" was true of contention and
+# false of exit 2, and the old comment above generalised from the bounded one.
+# Repeating "still stuck" every 15 minutes forever is the cry-wolf failure the
+# stuck site's own comment (line 814) says the once-only flag exists to prevent.
+#
+# So the two codes route to `ledger_fault` instead: return 1 (caller writes
+# nothing) and raise the alarm through the EPHEMERAL channel, ONCE PER RUN.
+# Nothing is dropped silently -- what changes is which channel hears it and what
+# it is about. The fault is the LEDGER, not the issue, so the alert names the
+# ledger; a Slack line is idempotent by nature where a Linear comment is not.
+#
+# The two codes differ in whether a later run recovers, and that difference is in
+# the message, not the routing:
+#   exit 3  the flag is still UNCLAIMED, so the next cycle claims it and pages.
+#           Contention defers a page by one heartbeat; it does not drop it.
+#   exit 2  no later run will claim it either, so no later run pages. That is a
+#           real drop, and it is why the fault alert has to exist at all.
 #
 # IT CAPTURES THE CODE WITHOUT TOUCHING THE SHELL'S FLAGS (codex round 2, major).
 # This body used to read `set +e; claim_page_once ...; rc=$?; set -e`, and that
@@ -597,14 +621,33 @@ claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 # test-claim-page-once-routing.sh asserts `$-` is unchanged across the call, from
 # a fork running THIS script's flags -- the suite itself runs `set -euo pipefail`,
 # so in-process the leak is invisible.
+# ONE ALERT PER RUN, not one per issue. A broken ledger is a property of the
+# WORKER, so a 40-issue queue must not send 40 alerts -- that is the same
+# cry-wolf failure in the channel we just moved the notice into. Every issue that
+# hits it still lands in the run log via `say`; the Slack line fires on the first
+# one and names it as an example. Run-scoped state, so the next worker run (a
+# fresh process, 15 minutes later) alerts again while the fault is still real.
+LEDGER_FAULT_ALERTED=0
+ledger_fault() {
+  local issue="$1" flag="$2" rc="$3" detail
+  case "$rc" in
+    3) detail="the lock was contended, so nothing was written. The flag is still UNCLAIMED and the next run will claim it and page -- this defers a page by one cycle, it does not drop it." ;;
+    *) detail="the ledger wrote nothing (exit $rc). No later run will claim this flag either, so no later run will page: this state is dropped until the ledger is writable." ;;
+  esac
+  say "WARN: the attempts ledger did not record the $flag flag for $issue (exit $rc) -- $detail"
+  [ "$LEDGER_FAULT_ALERTED" -eq 0 ] || return 0
+  LEDGER_FAULT_ALERTED=1
+  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
+}
+
 page_once() {
   local rc=0
   claim_page_once "$1" "$2" || rc=$?
   case "$rc" in
     0) return 0 ;;
     1) return 1 ;;
-    *) say "WARN: the attempts ledger did not record the $2 flag for $1 (exit $rc) -- paging anyway, because a page nothing recorded is a page no later run will send"
-       return 0 ;;
+    *) ledger_fault "$1" "$2" "$rc"
+       return 1 ;;
   esac
 }
 

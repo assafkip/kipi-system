@@ -101,8 +101,27 @@ drops a page:
 
   0  the op succeeded. For claim-flag: claimed HERE, first time -- go page.
   1  claim-flag ONLY: already claimed on an earlier run -- stay quiet.
-  2  usage error: unknown op, or the wrong number of arguments. Nothing written.
-  3  the lock could not be taken. Nothing written, nothing claimed.
+  2  NOTHING WAS WRITTEN, and the cause is not contention. Two populations:
+     a usage error (unknown op, wrong arity), and -- since the round-3
+     catch-all in main() -- ANY unanticipated failure, e.g. an OSError from
+     mkstemp / os.replace / json.dump on a full or read-only filesystem.
+  3  NOTHING WAS WRITTEN because the lock could not be taken.
+
+READ 2 AS OPEN-ENDED, NOT AS "a typo in a call site" (codex round 4, minor).
+This line used to say only "usage error", which reads as a bounded, transient,
+fix-the-invocation class -- and linear-worker.sh's page_once cited that reading
+to justify paging anyway on 2 and 3, calling it "bounded". It is not bounded.
+A read-only filesystem exits 2 on every run forever, so the caller's page fired
+on every run forever, and at the stuck call site that page is a permanent Linear
+comment. The catch-all is still right (see main(): the safe default for the
+unanticipated is the code that says NOTHING WAS WRITTEN, never 1). What was
+wrong was a doc that undersold what it covers, so keep this description as wide
+as the except clause actually is.
+
+The difference callers act on is not 2-vs-3 but WHETHER A LATER RUN RECOVERS:
+3 leaves the flag unclaimed and the lock frees in milliseconds, so the next run
+claims and pages. 2 can persist indefinitely, so no later run claims or pages
+either.
 
 Arity is validated up front for exactly this reason: `claim-flag ASK-1` with the
 flag omitted used to raise IndexError and exit 1, and 1 is the one code that
