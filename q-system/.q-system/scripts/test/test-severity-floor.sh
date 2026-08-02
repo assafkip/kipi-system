@@ -2737,10 +2737,17 @@ run_converge_at "$R_CVARM/skel" "$S_CV_ARM" "$W2/conv-armed.out" 1
 [ "$CRC" = "1" ] \
   || fail "converge exited $CRC on an approved, armed PR; expected 1 (goal met). It said:
 $(sed 's/^/        /' "$W2/conv-armed.out")"
+# THE PAGE NAMES THE LOG; THE FAILURE HAS TO CARRY IT (ASK-218). Every receipt
+# miss reported here ends in "see <state>/linear-worker.log" -- and on a CI runner
+# that log dies with the runner, so the one line that says WHY git refused the
+# receipt commit is unrecoverable after the fact. Diagnosing this failure from the
+# page alone means inferring git's words instead of reading them.
 grep -qi "no human merge needed" "$W2/pages.txt" \
   || fail "the worker recorded PR #902 as armed and converge's page does not say the merge is
       handled. The healthy case has to stay readable or the operator checks every one by hand:
-$(cat "$W2/pages.txt")"
+$(cat "$W2/pages.txt")
+      converge's own log ($S_CV_ARM/linear-worker.log), which carries git's stderr verbatim:
+$(sed 's/^/        /' "$S_CV_ARM/linear-worker.log" 2>/dev/null || echo '        (no log written)')"
 ok "converge says no human owes the merge when the worker RECORDED the PR armed"
 
 # AND THE RECEIPT SENTENCE STAYS OFF THE HEALTHY PAGE. A fix that makes the page
