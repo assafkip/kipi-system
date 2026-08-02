@@ -215,6 +215,82 @@ else
   ok "an unparseable floor writes nothing"
 fi
 
+echo "=== a commit pushed from another checkout is seen (the ref is a cache) ==="
+
+# origin/main in a second checkout is a LOCAL cache. Nothing refreshes it on its
+# own, so before this the sweep read a stale ref and reported clean about commits
+# it had never seen -- the same shape as the ledger hole, one layer down.
+CLONE="$TMP/clone"
+git clone -q "$ORIGIN" "$CLONE"
+CLONE_BEFORE=$(git -C "$CLONE" rev-parse origin/main)
+
+SHA_ELSEWHERE=$(commit 14 "chore: landed from another checkout")
+git push -q origin main
+
+# The reproducer only bites while the clone's ref is genuinely behind.
+if [ "$CLONE_BEFORE" != "$SHA_ELSEWHERE" ]; then
+  ok "the clone's origin/main is stale before the sweep"
+else
+  no "the clone is already current; the case below proves nothing"
+fi
+
+LEDGER_CLONE="$TMP/clone.jsonl"
+(cd "$CLONE" && LINEAR_BYPASS_LEDGER="$LEDGER_CLONE" python3 "$SWEEP" --json >/dev/null 2>&1)
+if grep -q "$SHA_ELSEWHERE" "$LEDGER_CLONE" 2>/dev/null; then
+  ok "the sweep fetched and recorded a commit pushed from elsewhere"
+else
+  no "the sweep read a stale ref and missed a commit pushed from elsewhere"
+fi
+
+# ...and --no-fetch is the opt-out, which must still read the stale ref.
+git -C "$CLONE" update-ref refs/remotes/origin/main "$CLONE_BEFORE"
+LEDGER_NOFETCH="$TMP/nofetch.jsonl"
+OUT_NF=$(cd "$CLONE" && LINEAR_BYPASS_LEDGER="$LEDGER_NOFETCH" \
+  python3 "$SWEEP" --no-fetch --json 2>/dev/null)
+check "--no-fetch reports that it did not refresh" "skipped" \
+  "$(printf '%s' "$OUT_NF" | field fetched)"
+
+echo "=== the ledger read and append are one critical section ==="
+
+# Two sweeps overlapping between "is this sha in the file" and "append it" both
+# see it as absent and both write it, double-counting the one file whose entire
+# job is a true count. Rather than race and hope, this HOLDS the lock, writes the
+# competing row inside it, and releases: if the sweep's read happens inside the
+# lock it sees that row and records nothing. If it does not, it duplicates.
+LEDGER_LOCK="$TMP/lock.jsonl"
+: > "$LEDGER_LOCK"
+SHA_RACE=$(commit 16 "chore: the contended one")
+git push -q origin main
+
+cat > "$TMP/contend.py" <<'PY'
+import fcntl, json, os, subprocess, sys, time
+
+sweep, ledger, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+env = dict(os.environ, LINEAR_BYPASS_LEDGER=ledger)
+
+with open(ledger + ".lock", "a+") as lock:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    proc = subprocess.Popen([sys.executable, sweep, "--rev", "origin/main", "--json"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    time.sleep(1.0)  # the sweep is either blocked on the lock, or already past it
+    with open(ledger, "a") as fh:
+        fh.write(json.dumps({"at": "2026-07-27T10:16:00+00:00", "reason": "competing writer",
+                             "commit": sha, "source": "sweep"}) + "\n")
+    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+proc.wait(timeout=60)
+rows = [ln for ln in open(ledger, encoding="utf-8") if sha in ln]
+print(len(rows))
+PY
+
+RACE_ROWS=$(cd "$WORK" && python3 "$TMP/contend.py" "$SWEEP" "$LEDGER_LOCK" "$SHA_RACE")
+check "a contended sha is recorded exactly once" 1 "$RACE_ROWS"
+
+OUT_LOCK=$(LINEAR_BYPASS_LEDGER="$TMP/lockflag.jsonl" python3 "$SWEEP" --rev origin/main \
+  --dry --json 2>/dev/null)
+check "the sweep reports that it held the lock" "True" \
+  "$(printf '%s' "$OUT_LOCK" | field locked)"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

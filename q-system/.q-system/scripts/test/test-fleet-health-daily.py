@@ -524,6 +524,95 @@ _LESSONS = Path(__file__).resolve().parents[3] / "lessons"
 check("cron-shells-claude's lesson slug is a real file",
       (_LESSONS / f"{_by_id['cron-shells-claude']['lesson']}.md").is_file(), True)
 
+# ===========================================================================
+# The bypass sweep detector: a finding is not spent until Linear takes it,
+# and a sweeper that cannot look is blind, not clean (PR #66 review)
+# ===========================================================================
+
+import json as _json
+import tempfile as _tempfile
+
+_tmpdir = _tempfile.TemporaryDirectory()
+fh.BYPASS_PENDING = Path(_tmpdir.name) / "linear-bypass-pending.json"
+
+
+def _pending_now():
+    if not fh.BYPASS_PENDING.is_file():
+        return []
+    return _json.loads(fh.BYPASS_PENDING.read_text())
+
+
+class _StubSweep:
+    """Stands in for the linear-bypass-sweep.py subprocess."""
+
+    def __init__(self, payload=None, returncode=0, stdout=None):
+        self.returncode = returncode
+        self.stdout = _json.dumps(payload) if stdout is None else stdout
+
+
+def _with_sweeper(payload=None, returncode=0, stdout=None, exists=True):
+    """Run the detector against a stubbed sweeper. Returns its findings."""
+    real_run, real_isfile = fh.subprocess.run, Path.is_file
+    fh.subprocess.run = lambda *_a, **_k: _StubSweep(payload, returncode, stdout)
+    Path.is_file = lambda self: exists if self.name == "linear-bypass-sweep.py" \
+        else real_isfile(self)
+    try:
+        return fh.detect_unaccounted_commits(None)
+    finally:
+        fh.subprocess.run, Path.is_file = real_run, real_isfile
+
+
+def _blind(name, **kwargs):
+    try:
+        _with_sweeper(**kwargs)
+    except RuntimeError:
+        print(f"  ok: {name}")
+        return
+    failures.append(f"{name}: reported a clean result instead of going blind")
+
+
+_OK = {"status": "ok", "fetched": "ok", "commits": ["deadbeef1"], "recorded": 1,
+       "unaccounted": 1, "scanned": 10, "rev": "origin/main"}
+
+# --- a sweeper that could not look must not read as "nothing found" ---------
+_blind("a missing sweeper is blind, not zero", exists=False)
+_blind("a sweeper that exited non-zero is blind", payload=_OK, returncode=1)
+_blind("unparseable sweeper output is blind", stdout="not json")
+_blind("a sweeper that could not resolve the rev is blind",
+       payload={**_OK, "status": "rev-not-found"})
+_blind("a sweeper whose ledger write failed is blind",
+       payload={**_OK, "status": "ledger-write-failed"})
+_blind("a stale ref (fetch failed) is blind, because the count may be low",
+       payload={**_OK, "fetched": "failed"})
+
+# --- the finding is not spent until Linear takes it -------------------------
+_first = _with_sweeper(payload=_OK)
+check("a newly recorded sha produces a finding", len(_first), 1)
+check("the sha is held pending until it is filed", _pending_now(), ["deadbeef1"])
+
+# The sweep dedupes on sha forever, so the SECOND run reports nothing new. Before
+# this fix that meant the finding vanished if the first filing never landed.
+_again = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
+check("an unfiled sha is re-surfaced on the next run", len(_again), 1)
+check("and it is still the same sha", _again[0]["body"].count("deadbeef1"), 1)
+
+# A dry run files nothing, so it reports nothing and clears nothing.
+_again[0]["key"] = "fleet-health/x/y"
+fh.file_findings([_again[0]], apply=False, linear=_FakeLinear(_live_body))
+check("a dry run does not clear the pending shas", _pending_now(), ["deadbeef1"])
+
+# Linear unreachable: the filing is counted as dropped and the sha stays owed.
+fh.file_findings([_again[0]], apply=True, linear=_DeadLinear())
+check("an unreachable Linear does not clear the pending shas",
+      _pending_now(), ["deadbeef1"])
+
+# Accepted: now, and only now, the sha is spent.
+fh.file_findings([_again[0]], apply=True, linear=_FakeLinear(_live_body))
+check("a filed finding clears the pending shas", _pending_now(), [])
+
+_clean = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
+check("with nothing owed and nothing new, there is no finding", _clean, [])
+
 if failures:
     print("FAIL:")
     for line in failures:

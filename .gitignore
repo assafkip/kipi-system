@@ -16,6 +16,9 @@ Thumbs.db
 q-system/output/*.html
 q-system/output/*.json
 q-system/output/*.log
+# flock sidecars for the local ledgers (linear-bypass-sweep.py). Runtime state,
+# never content: committing one would ship a lock file to every instance.
+q-system/output/*.jsonl.lock
 q-system/output/drafts/*
 q-system/output/lead-gen/*
 q-system/output/design-partner/*

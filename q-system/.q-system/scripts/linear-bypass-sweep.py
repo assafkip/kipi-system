@@ -47,6 +47,15 @@ USAGE
     python3 linear-bypass-sweep.py                     # sweep the tracked upstream
     python3 linear-bypass-sweep.py --rev origin/main
     python3 linear-bypass-sweep.py --dry --json        # report, write nothing
+    python3 linear-bypass-sweep.py --no-fetch          # read the local ref as-is
+
+A remote-tracking ref is fetched first by default, because it is a LOCAL cache and
+a commit pushed from another checkout is otherwise invisible. The fetch result is
+reported (`fetched`), never swallowed: a failed fetch means the answer may be low,
+which the daily detector treats as blind rather than clean.
+
+The ledger's read-then-append runs under an exclusive flock on a sidecar lock
+file, so two overlapping sweeps cannot both record the same commit.
 
 Exit code is 0 whenever the sweep itself ran. This is an accountant, not a gate:
 a non-zero exit would make the daily job that calls it look broken on the days it
