@@ -95,7 +95,7 @@ work_instance() {
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"
     log_step "$name" failed "agent run failed/timeout"
     SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
-    KIPI_INSTANCE_NAME="$name" bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "heartbeat: autonomous run failed/timeout -- check open-loops-heartbeat.log" 2>/dev/null || true
+    KIPI_INSTANCE_NAME="$name" bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" --kind receipt "heartbeat: autonomous run failed/timeout -- check open-loops-heartbeat.log" 2>/dev/null || true
   fi
 }
 
@@ -135,7 +135,7 @@ json.dump(expected, open('$RUNLOG_TMP.expected', 'w'))
 if ! AUDIT_OUT="$(python3 "$SKEL/q-system/.q-system/scripts/run-step-audit.py" \
     --manifest "$RUNLOG_TMP.expected" --log "$RUNLOG" --job open-loops-heartbeat 2>&1)"; then
   echo "$(TS) heartbeat AUDIT: $AUDIT_OUT" >> "$LOG"
-  bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" "heartbeat step-audit: $(printf '%s' "$AUDIT_OUT" | head -3 | tr '\n' ' ')" 2>/dev/null || true
+  bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" --kind receipt "heartbeat step-audit: $(printf '%s' "$AUDIT_OUT" | head -3 | tr '\n' ' ')" 2>/dev/null || true
   SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
 else
   echo "$(TS) heartbeat AUDIT: $AUDIT_OUT" >> "$LOG"

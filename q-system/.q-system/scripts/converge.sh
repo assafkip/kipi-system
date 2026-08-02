@@ -725,7 +725,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
-    bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
     exit 7
   fi
 
@@ -821,12 +821,12 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
       esac
     fi
     say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
     say "STOP exit-7: PR #$PR has no verdict after round $ROUND -- the review died or timed out. Re-run: kipi review $PR --issue $ISSUE --post"
-    bash "$NOTIFY" "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
     exit 7
   fi
 
@@ -863,7 +863,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
       STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
     fi
     say "$STALL_LOG"
-    bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "$STALL_PAGE" 2>/dev/null || true
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"
@@ -871,5 +871,5 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 done
 
 say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+bash "$NOTIFY" --kind receipt "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
 exit 2

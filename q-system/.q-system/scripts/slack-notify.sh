@@ -42,7 +42,14 @@ set -uo pipefail
 # read literally: founder sign-off exists for irreversible acts and for writes
 # outside the canonical tree, plus the two authorizations only he holds. Four
 # cases, and every one of them is something a machine must NOT decide alone.
-ALLOWED_CLASSES="irreversible-git out-of-tree-write spend publish"
+#
+# `credential` is the fifth and it was NOT in the first cut. Dispatch pages once
+# when the Linear token is dead: no issue can be picked, the loop is stopped not
+# slow, and no agent can rotate a secret it cannot read. Refusing that page would
+# have left the whole loop silently dark -- a gate that swallows a real alert is a
+# worse outage than the noise it was built to stop, which outranks this issue.
+# Adding a class is deliberately a diff someone reviews; that is the brake.
+ALLOWED_CLASSES="irreversible-git out-of-tree-write spend publish credential"
 
 KIND=""; CLASS=""; MSG=""
 while [ $# -gt 0 ]; do

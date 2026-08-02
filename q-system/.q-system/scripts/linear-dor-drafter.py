@@ -565,7 +565,7 @@ def notify(message: str) -> bool:
     if not NOTIFY_SCRIPT.exists():
         return False
     try:
-        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+        subprocess.run(["bash", str(NOTIFY_SCRIPT), "--kind", "receipt", message], timeout=20)
         return True
     except Exception:  # noqa: BLE001 - a failed ping must not fail the run
         return False
