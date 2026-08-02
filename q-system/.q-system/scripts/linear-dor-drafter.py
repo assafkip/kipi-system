@@ -185,7 +185,7 @@ REDRAFT_CAP = 3
 #     rationale has to be READABLE on the issue by whoever opens it anyway. If
 #     the rationale must live on the issue, so must the number behind it.
 # Single writer: this job is the only thing that writes this marker, and it
-# writes it only inside the one issueUpdate call in apply_redraft/apply_terminal.
+# writes it only inside apply_write(), which is the one path to a description write.
 REDRAFT_MARKER_RE = re.compile(r"<!--\s*kipi-dor:\s*redrafts=(\d+)(\s+terminal)?\s*-->")
 
 # What goes on the issue when the cap is spent. Deliberately NOT a new escalation
@@ -337,25 +337,77 @@ def label_names(issue: dict) -> set:
     return {(lab.get("name") or "") for lab in issue_labels(issue)}
 
 
-def split_dor_section(desc: str) -> tuple:
-    """(before, section, after) around the DoR section this job owns.
+# Any markdown ATX heading, captured so its LEVEL can be compared.
+HEADING_RE = re.compile(r"(?m)^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+(?P<text>.*?)[ \t]*$")
+# The DoR heading, as a STRUCTURE: a heading line whose text begins with the
+# phrase. Trailing words are allowed so the generated capability issues, which
+# title their section in their own wording, are still recognised.
+DOR_HEADING_RE = re.compile(
+    r"(?mi)^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+definition of ready\b.*$")
 
-    The owned span runs from `## Definition of Ready` to the next top-level `##`
-    heading, or to the end when there is none. `after` is somebody else's text --
-    a `## Notes`, an operator record, a later human edit -- and the first cut of
-    this function took everything from the heading onward as replaceable, which
-    silently deleted all of it on every redraft (codex-review finding-1). Nothing
-    outside the middle element is ever rewritten.
+
+def find_dor_heading(desc: str):
+    """The ONE place this file decides where a Definition of Ready section is.
+
+    STRUCTURE, not phrase -- and that distinction is the whole reason this
+    function exists rather than three `in desc` tests. Matching the words
+    "Definition of Ready" wherever they appear went wrong three separate times
+    in this one file:
+
+      1. needs_dor() excluded any description CONTAINING the phrase, so a
+         needs-scope issue (which HAS a bad DoR) was never redrafted. That is
+         the defect this whole branch exists to fix.
+      2. selection_mode() excluded on the same phrase in ordinary prose, so a
+         founder writing "this needs a Definition of Ready" hid their own issue
+         from the drafter permanently (sp-b784a19a).
+      3. split_dor_section() located the owned span with `desc.find()`, so an
+         inline MENTION became the section start and everything from that
+         sentence to the next heading was replaced on redraft (codex round 2).
+
+    Same mistake three times, so the fix is one resolver every site calls, not a
+    fourth correct comparison. A heading is a line that starts with #s. A
+    sentence that happens to contain the words is not a section.
+
+    Known limit, chosen deliberately: a DoR titled with bold text
+    (`**Definition of Ready**`) rather than a heading reads as absent, so such an
+    issue gets a second section appended. That is the tradeoff rebuild_description
+    already makes explicit -- a duplicate section is recoverable, silently
+    deleting or permanently hiding a human's text is not.
+    """
+    return DOR_HEADING_RE.search(desc or "")
+
+
+def has_dor_section(desc: str) -> bool:
+    """Whether the issue already carries a DoR section. See find_dor_heading."""
+    return find_dor_heading(desc) is not None
+
+
+def split_dor_section(desc: str) -> tuple:
+    """(before, heading, section, after) around the DoR section this job owns.
+
+    The owned span runs from the DoR heading LINE to the next heading of the same
+    or a higher level, or to the end when there is none. `after` is somebody
+    else's text -- a `## Notes`, an operator record, a later human edit -- and the
+    first cut of this function took everything from the heading onward as
+    replaceable, which silently deleted all of it on every redraft (codex round 1,
+    finding 1). Nothing outside `section` is ever rewritten.
+
+    The heading LINE comes back as its own element so a redraft can put the
+    founder's exact wording back rather than normalising it to DOR_HEADING.
     """
     desc = desc or ""
-    start = desc.find(DOR_HEADING)
-    if start < 0:
-        return desc, "", ""
-    rest = desc[start + len(DOR_HEADING):]
-    nxt = re.search(r"(?m)^##\s+", rest)
+    match = find_dor_heading(desc)
+    if not match:
+        return desc, "", "", ""
+    level = len(match.group("hashes"))
+    rest = desc[match.end():]
+    # Same-or-higher level ends the section; a deeper `###` inside it does not.
+    nxt = next((m for m in HEADING_RE.finditer(rest)
+                if len(m.group("hashes")) <= level), None)
+    heading = match.group(0).strip()
     if not nxt:
-        return desc[:start], rest, ""
-    return desc[:start], rest[:nxt.start()], rest[nxt.start():]
+        return desc[:match.start()], heading, rest, ""
+    return desc[:match.start()], heading, rest[:nxt.start()], rest[nxt.start():]
 
 
 def redraft_state(desc: str) -> tuple:
@@ -426,10 +478,13 @@ def selection_mode(issue: dict) -> str | None:
             return "terminal"  # exhausted -- record the rationale, once
         return "redraft"
 
-    if DOR_HEADING in desc:
-        return None
-    # The generated capability issues already carry a DoR under their own wording.
-    if "Definition of Ready" in desc:
+    # One resolver, so "already has a DoR" cannot drift from "where is the DoR".
+    # This replaces two separate phrase tests: an exact-DOR_HEADING substring and
+    # a bare "Definition of Ready" substring. The second matched ordinary prose,
+    # so a founder writing "this needs a Definition of Ready" removed their own
+    # issue from the drafter forever (sp-b784a19a). A heading is structure; a
+    # sentence mentioning the words is not. See find_dor_heading.
+    if has_dor_section(desc):
         return None
     return "draft"
 
@@ -619,7 +674,7 @@ def refusal_reason(ls, issue: dict) -> str:
 
 def existing_dor(desc: str) -> str:
     """The DoR section as it stands, for the redraft prompt to argue with."""
-    section = split_dor_section(desc)[1].strip()
+    section = split_dor_section(desc)[2].strip()
     return section[:3000] or "(the section could not be located by its heading)"
 
 
@@ -636,10 +691,12 @@ def rebuild_description(desc: str, body: str, count: int,
     Guessing at the boundary of a section we did not write would risk deleting a
     human's text, and a duplicate section is a recoverable mistake where that is not.
     """
-    before, _old, after = split_dor_section(desc)
+    before, heading, _old, after = split_dor_section(desc)
     prefix = strip_owned_marker(before)
     marker = f"<!-- kipi-dor: redrafts={count}{' terminal' if terminal else ''} -->"
-    out = f"{prefix}\n\n{marker}\n{DOR_HEADING}\n\n{body.strip()}\n"
+    # The founder's own heading wording is theirs, not this job's. Reuse it when
+    # there is one; DOR_HEADING is only the fallback for an appended section.
+    out = f"{prefix}\n\n{marker}\n{heading or DOR_HEADING}\n\n{body.strip()}\n"
     if terminal:
         out += f"\n{TERMINAL_NOTE}\n"
     if after.strip():
@@ -728,17 +785,61 @@ def update_issue(ls, issue: dict, payload: dict) -> None:
                            "(nothing was written)")
 
 
-def apply_terminal(ls, issue: dict) -> None:
-    """Record the exhausted cap on the issue. One write, no `claude` call.
+def apply_write(ls, issue: dict, mode: str, body: str, attempt: int = 0) -> str | None:
+    """THE path from a drafted body to a description write. Every mode goes here.
 
-    The needs-scope label is deliberately NOT removed: the issue really is
-    unscoped, and dropping the label would feed it back to a picker that has
-    already refused it REDRAFT_CAP times.
+    Returns None when the write landed, or a short reason when it was deliberately
+    skipped. Raises only on a real transport/refusal failure.
+
+    One function rather than one per mode, because the freshness guard was written
+    for the redraft path and the other two paths silently did not have it (codex
+    round 2): `terminal` and first-`draft` both built their payload from the
+    description read at SELECTION, so an edit made after selection was overwritten
+    by text that predated it -- the exact defect just fixed one branch over. Three
+    call sites cannot drift apart if there is only one.
+
+    Every mode re-reads first and builds from the CURRENT description. What differs
+    per mode is only the applicability check and the payload shape, so those sit
+    here side by side where a missing one is visible.
     """
-    desc = issue.get("description") or ""
-    update_issue(ls, issue, {
-        "description": rebuild_description(desc, existing_dor(desc),
-                                           REDRAFT_CAP, terminal=True)})
+    selected = issue.get("description") or ""
+    fresh = reread_before_write(ls, issue)
+    if fresh is None:
+        raise RuntimeError("could not re-read the issue before writing")
+    fresh_desc = fresh.get("description") or ""
+
+    if mode == "redraft":
+        if rival_writer_moved(selected, fresh):
+            return "another writer redrove it while this attempt was drafting"
+        # Description and label drop go in ONE mutation on purpose. As two calls,
+        # a failure between them leaves a rewritten DoR still wearing needs-scope:
+        # the picker keeps ignoring it and the next night spends another capped
+        # attempt rewriting work already done.
+        #
+        # removedLabelIds, not a full labelIds replacement: Linear applies it as a
+        # delta against the label set as it stands at write time, so a label added
+        # while this redraft was drafting survives. That is the label half of
+        # round 1 finding 2, and it needs no version check because the server-side
+        # semantics already give the atomicity.
+        payload = {"description": rebuild_description(fresh_desc, body, attempt),
+                   "removedLabelIds": needs_scope_label_ids(fresh)}
+    elif mode == "terminal":
+        # The needs-scope label is deliberately NOT removed: the issue really is
+        # unscoped, and dropping it would feed the issue back to a picker that has
+        # already refused it REDRAFT_CAP times.
+        if rival_writer_moved(selected, fresh):
+            return "another writer moved it while this run was working"
+        payload = {"description": rebuild_description(
+            fresh_desc, existing_dor(fresh_desc), REDRAFT_CAP, terminal=True)}
+    else:
+        # A first draft appends. If the issue gained a DoR since selection then
+        # somebody else drafted it, and appending now would give it two.
+        if has_dor_section(fresh_desc):
+            return "it gained a Definition of Ready while this attempt was drafting"
+        payload = {"description": fresh_desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
+
+    update_issue(ls, issue, payload)
+    return None
 
 
 def _is_missing_issue(exc: Exception) -> bool:
@@ -863,6 +964,21 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         return "unreachable"
 
 
+def queue_breakdown(total: int, redrives: int) -> str:
+    """The ONE phrasing of the lacks-a-DoR / has-a-bad-one split.
+
+    Both status lines call this. They used to phrase the same split themselves,
+    and the opening line was corrected while the closing line kept saying the
+    remainder "still lack a DoR" (codex round 2, twin of round 1 finding 3).
+    Every redrive candidate HAS a Definition of Ready -- having one the worker
+    refused is the entire reason it is queued -- so counting it as lacking one
+    reports the opposite of the state the run is acting on. A shared formatter
+    is what stops one caller from being fixed and the other from drifting.
+    """
+    return (f"{total - redrives} lacking a Definition of Ready, "
+            f"{redrives} {NEEDS_SCOPE_LABEL} redrive (DoR present, being rewritten)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--limit", type=int, default=5, help="issues per run (default 5)")
@@ -903,13 +1019,8 @@ def main() -> int:
 
     plan = prioritise(todo)
     redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
-    # Counted apart, never folded into one number. Every redrive candidate HAS a
-    # Definition of Ready -- having one the worker refused is the entire reason it
-    # is here -- so counting it under "need a Definition of Ready" told the operator
-    # the opposite of the state the run was acting on (codex round 1, finding 3).
     print(f"dor-drafter {_now()}: {len(todo)} issue(s) queued: "
-          f"{len(todo) - redrives} lacking a Definition of Ready, "
-          f"{redrives} {NEEDS_SCOPE_LABEL} redrive (DoR present, being rewritten)")
+          f"{queue_breakdown(len(todo), redrives)}")
     batch = plan[: args.limit]
     if not args.apply:
         for mode, i in batch:
@@ -919,18 +1030,26 @@ def main() -> int:
 
     # Collected, not just printed, and each one carries its own cause. draft_one()
     # still writes the reason to stderr; this list is what leaves the machine.
-    drafted, failed = 0, []
+    # done_redrives feeds the CLOSING status line: without it the closing count
+    # cannot tell a redrive apart from a first draft and reports the same wrong
+    # thing the opening line used to (codex round 2, twin of round 1 finding 3).
+    drafted, failed, done_redrives = 0, [], 0
     for mode, issue in batch:
         desc = issue.get("description") or ""
+        attempt = 0  # bound for every mode; only a redraft carries a real number
 
         # The cap is spent. One write, no model call, and the label stays on.
         if mode == "terminal":
             try:
-                apply_terminal(ls, issue)
+                skipped = apply_write(ls, issue, "terminal", "")
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{issue['identifier']}: terminal write failed: {str(exc)[:120]}")
                 continue
+            if skipped:
+                print(f"  skipped {issue['identifier']}: {skipped}")
+                continue
             drafted += 1
+            done_redrives += 1
             print(f"  marked terminal {issue['identifier']}  redraft cap "
                   f"{REDRAFT_CAP}/{REDRAFT_CAP} spent")
             continue
@@ -955,47 +1074,21 @@ def main() -> int:
             failed.append(f"{issue['identifier']}: {reason}")
             continue
 
-        if mode == "redraft":
-            # Re-read HERE, after the `claude` call and immediately before the
-            # write, so the description being rewritten is the one Linear holds
-            # now rather than the copy selection saw up to --timeout ago.
-            fresh = reread_before_write(ls, issue)
-            if fresh is None:
-                failed.append(f"{issue['identifier']}: could not re-read before "
-                              f"write, redraft not applied")
-                continue
-            if rival_writer_moved(desc, fresh):
-                # Not a failure: the issue got what it needed, from someone else.
-                # Counting it as drafted would overstate the run, and reporting it
-                # as failed would file a noise issue about work that got done.
-                print(f"  skipped {issue['identifier']}: another writer redrove it "
-                      f"while this attempt was drafting")
-                continue
-            fresh_desc = fresh.get("description") or ""
-
-            # Description and label drop go in ONE mutation on purpose. As two
-            # calls, a failure between them leaves a rewritten DoR still wearing
-            # needs-scope: the picker keeps ignoring it and the next night spends
-            # another capped attempt rewriting work already done.
-            #
-            # removedLabelIds, not a full labelIds replacement: Linear applies it
-            # as a delta against the label set as it stands at write time, so a
-            # label added while this redraft was drafting survives. That is the
-            # label half of finding 2, and it needs no version check because the
-            # server-side semantics already give the atomicity.
-            payload = {"description": rebuild_description(fresh_desc, body, attempt),
-                       "removedLabelIds": needs_scope_label_ids(fresh)}
-        else:
-            payload = {"description": desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
-
         try:
-            update_issue(ls, issue, payload)
+            skipped = apply_write(ls, issue, mode, body, attempt)
         except Exception as exc:  # noqa: BLE001
             print(f"  {issue['identifier']}: update failed: {str(exc)[:120]}", file=sys.stderr)
             failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
             continue
+        if skipped:
+            # Not a failure: the issue got what it needed, from someone else.
+            # Counting it as drafted would overstate the run, and reporting it as
+            # failed would file a noise issue about work that got done.
+            print(f"  skipped {issue['identifier']}: {skipped}")
+            continue
         drafted += 1
         if mode == "redraft":
+            done_redrives += 1
             print(f"  redrafted {issue['identifier']} (attempt {attempt}/{REDRAFT_CAP}, "
                   f"{NEEDS_SCOPE_LABEL} dropped)  {issue['title'][:44]}")
         else:
@@ -1016,7 +1109,8 @@ def main() -> int:
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
-          f"{carried_note}{held_note}, {len(todo) - drafted} still lack a DoR")
+          f"{carried_note}{held_note}, {len(todo) - drafted} still queued: "
+          f"{queue_breakdown(len(todo) - drafted, redrives - done_redrives)}")
     return 0
 
 

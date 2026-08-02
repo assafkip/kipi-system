@@ -689,6 +689,153 @@ else
       "status line was: $STATUS"
 fi
 
+echo "== case 14: an inline MENTION of the phrase is not the section boundary =="
+reset
+# codex round 2. THE CLASS: three sites in this file matched the PHRASE
+# "Definition of Ready" where the intent was the STRUCTURE (a heading). Here the
+# owned span was located with desc.find(), so a founder SENTENCE containing the
+# words became the section start and everything from that sentence to the next
+# heading was replaced on redraft. Now one resolver, find_dor_heading(), decides,
+# and it requires a heading at line start.
+MENTION_TEXT='I have not had time to write the ## Definition of Ready for this yet.
+
+Some context that must survive: the Friday call with Chris is the deadline.'
+python3 - "$WORK/board.json" "$MENTION_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+path, mention, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-920", "identifier": "ASK-920", "title": "ASK-920",
+    "description": mention + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+run_drafter --limit 5 --apply
+DESC14="$(written_desc)"
+if [ -n "$DESC14" ] && [ "${DESC14#*"$MENTION_TEXT"}" != "$DESC14" ]; then
+  ok "text between an inline mention and the next heading survives"
+else
+  bad "text between an inline mention and the next heading survives" \
+      "written description was: $(printf '%s' "$DESC14" | tr '\n' '|' | cut -c1-260)"
+fi
+
+echo "== case 15: prose mentioning the phrase does not hide an issue (sp-b784a19a) =="
+reset
+# The second instance of the same class. selection_mode excluded on the bare
+# substring, so an issue whose description merely TALKED about needing a DoR was
+# removed from the drafter permanently -- silent, and forever.
+python3 - "$WORK/board.json" <<'PY'
+import json, sys
+json.dump([{
+    "id": "u-921", "identifier": "ASK-921", "title": "ASK-921",
+    "description": "Someone should write a Definition of Ready for this one.",
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": []},
+}], open(sys.argv[1], "w"))
+PY
+run_drafter --limit 5
+if grep -q 'would draft ASK-921' "$WORK/out.txt"; then
+  ok "an issue that only MENTIONS the phrase is still drafted"
+else
+  bad "an issue that only MENTIONS the phrase is still drafted" \
+      "drafter said: $(tr '\n' '|' < "$WORK/out.txt" | cut -c1-200)"
+fi
+
+echo "== case 16: a real heading still counts as having a DoR =="
+reset
+# The negative half of case 15: narrowing to headings must not make the drafter
+# start appending a second DoR to issues that already have one.
+python3 - "$WORK/board.json" "$BAD_DOR" <<'PY'
+import json, sys
+json.dump([{
+    "id": "u-922", "identifier": "ASK-922", "title": "ASK-922",
+    "description": "Some context.\n\n" + sys.argv[2],
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": []},
+}], open(sys.argv[1], "w"))
+PY
+run_drafter --limit 5
+if grep -q 'ASK-922' "$WORK/out.txt"; then
+  bad "an issue with a real DoR heading is still excluded" \
+      "it was selected: $(tr '\n' '|' < "$WORK/out.txt" | cut -c1-200)"
+else
+  ok "an issue with a real DoR heading is still excluded"
+fi
+
+echo "== case 17: the TERMINAL write re-reads too, like every other write =="
+reset
+# codex round 2. The freshness guard from round 1 covered the redraft branch only.
+# The terminal path built its payload from the selection-time description, so an
+# edit landing after selection was overwritten by text that predated it -- the
+# same defect, on the branch that was not touched. Both now route through
+# apply_write(), so there is no second path to forget.
+TERMINAL_LATE_NOTE='## Notes
+
+Added while the run was working. Must survive the terminal write.'
+python3 - "$WORK/board.json" "$WORK/live.json" "$BAD_DOR" "$TERMINAL_LATE_NOTE" <<'PY'
+import json, sys
+board, live, dor, note = sys.argv[1:5]
+# redrafts=3 -> the cap is spent, so this issue takes the terminal path.
+desc = "Founder context above.\n\n<!-- kipi-dor: redrafts=3 -->\n" + dor
+issue = {
+    "id": "u-923", "identifier": "ASK-923", "title": "ASK-923",
+    "description": desc,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+json.dump([dict(issue, description=desc + "\n\n" + note)], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+DESC17="$(written_desc)"
+if printf '%s' "$DESC17" | grep -q 'Must survive the terminal write'; then
+  ok "a note added mid-run survives the TERMINAL write"
+else
+  bad "a note added mid-run survives the TERMINAL write" \
+      "written description was: $(printf '%s' "$DESC17" | tr '\n' '|' | cut -c1-260)"
+fi
+if printf '%s' "$DESC17" | grep -q 'Redraft cap reached'; then
+  ok "the terminal rationale is still written"
+else
+  bad "the terminal rationale is still written" \
+      "no rationale in: $(printf '%s' "$DESC17" | tr '\n' '|' | cut -c1-260)"
+fi
+
+echo "== case 18: the CLOSING status line does not say a redrive lacks a DoR =="
+reset
+# codex round 2, twin of round 1 finding 3. The opening line was corrected and the
+# closing line kept the old claim, which is exactly why both now call one
+# formatter. STUB_MODE=fail so the issue stays queued and is counted in the tail.
+python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+path, founder, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-924", "identifier": "ASK-924", "title": "ASK-924",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+STUB_MODE=fail run_drafter --limit 5 --apply
+CLOSING="$(grep '^dor-drafter: drafted' "$WORK/out.txt" || true)"
+if printf '%s' "$CLOSING" | grep -q 'still lack a DoR'; then
+  bad "the closing line does not claim a redrive issue lacks a DoR" \
+      "closing line was: $CLOSING"
+else
+  ok "the closing line does not claim a redrive issue lacks a DoR"
+fi
+if printf '%s' "$CLOSING" | grep -q '1 needs-scope redrive'; then
+  ok "the closing line counts the unfinished redrive as a redrive"
+else
+  bad "the closing line counts the unfinished redrive as a redrive" \
+      "closing line was: $CLOSING"
+fi
+
 echo
 printf 'redrive: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
