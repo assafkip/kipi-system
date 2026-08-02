@@ -174,6 +174,39 @@ def format_output(handoff, cards, yesterday, morning_status, loops_result=None):
     return "\n".join(lines)
 
 
+def check_claude_integrity(project_dir):
+    """Run the .claude/ integrity tripwire in report mode (ASK-282).
+
+    Returns a banner string when the tree drifted from its sanctioned baseline,
+    else "". Never raises: a session must still start if the tripwire is absent
+    or broken. It DOES page, because a drift nobody sees is the same as no
+    tripwire at all.
+    """
+    import subprocess
+    tw = os.path.join(project_dir, "q-system", ".q-system", "scripts",
+                      "claude-integrity-tripwire.py")
+    if not os.path.isfile(tw):
+        return ""
+    try:
+        res = subprocess.run(["python3", tw, "--root", project_dir, "--check"],
+                             capture_output=True, text=True, timeout=25)
+    except Exception:
+        return ""
+    if res.returncode not in (1, 2):
+        return ""
+    detail = (res.stderr or "").strip()
+    notifier = os.environ.get("KIPI_NOTIFY") or os.path.join(
+        project_dir, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    try:
+        subprocess.run([notifier, detail.split("\n")[0][:400]],
+                       capture_output=True, timeout=20)
+    except Exception:
+        pass
+    return ("SECURITY -- .claude/ drifted from its sanctioned baseline:\n" + detail +
+            "\nIf this was you, re-baseline: python3 q-system/.q-system/scripts/"
+            "claude-integrity-tripwire.py --baseline")
+
+
 def main():
     # Only run once per day
     if already_ran_today():
@@ -187,8 +220,23 @@ def main():
     morning_status = load_today_log(project_dir)
     loops_result = load_open_loops(project_dir)
 
+    # .claude/ integrity tripwire (ASK-282). Called from HERE, not from a
+    # settings.json entry, because wiring a hook means editing .claude/ and an
+    # agent cannot write there -- the bootstrap problem this very issue is about.
+    # session-start.py is already wired and lives outside .claude/, so calling
+    # the tripwire from here arms Layer 2 now instead of after PR #63 merges.
+    #
+    # --check, deliberately NOT --enforce: a change found at session start has
+    # no attribution. It could be the founder's own editor between sessions.
+    # Auto-reverting an unattributed change would eat the founder's work. The
+    # per-tool-call PostToolUse entry (proposal, PR #63) is the one that
+    # enforces, because there the actor IS the agent.
+    integrity_warning = check_claude_integrity(project_dir)
+
     # Format and output
     output = format_output(handoff, cards, yesterday, morning_status, loops_result)
+    if integrity_warning:
+        output = integrity_warning + "\n" + (output or "")
 
     if output:
         # Mark as ran BEFORE printing (so even if output is ignored, we don't repeat)

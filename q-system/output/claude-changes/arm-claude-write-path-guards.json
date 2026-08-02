@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "slug": "arm-claude-write-path-guards",
+  "reason": "ASK-282. Arm the two .claude/ write-path guards. Layer 1 (claude-path-write-guard.py) blocks the ordinary Bash write shapes at PreToolUse. Layer 2 (claude-integrity-tripwire.py --enforce) is the real control: it ignores command shape and checks whether the CONTENT of .claude/ moved, so an unlisted command form is not an evasion. Both scripts, and their 41-case suite, landed on the ASK-282 branch. They CANNOT be wired by the agent that wrote them, because wiring means editing .claude/settings.json -- which is the exact vulnerability being closed. That is why this is a proposal and not a commit.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/claude-path-write-guard.py",
+      "q-system/.q-system/scripts/claude-integrity-tripwire.py",
+      "q-system/.q-system/claude-integrity-baseline.json"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "        \"matcher\": \"Write|Edit|MultiEdit\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/read-first-gate.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/read-first-gate.py\\\"\",\n            \"timeout\": 10\n          }",
+      "insert": "\n        ]\n      },\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\\\"\",\n            \"timeout\": 10\n          }",
+      "reason": "Layer 1. PreToolUse on Bash. Closes the measured hole: `touch .claude/_probe.txt` succeeded via Bash while Write/Edit were refused on the same path. The insert closes the existing Write|Edit|MultiEdit hooks array and opens a Bash sibling; the file's own following `]` and `}` close the new block, so the result stays valid JSON. Additive: no existing hook string is touched."
+    },
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py\\\"\",\n            \"timeout\": 5\n          }",
+      "insert": ",\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\\\" --enforce --quiet\",\n            \"timeout\": 20\n          }",
+      "reason": "Layer 2, the control that actually holds. PostToolUse. This is the entry that narrows the detection window from one SESSION to one TOOL CALL. --enforce (not --check) is correct HERE and only here: on this path the actor is provably the agent, because the founder's own editor is not a tool call. Drift is quarantined before it is reverted, so a false positive costs nothing."
+    }
+  ],
+  "notes": [
+    "SETTINGS-TEMPLATE PAIR REQUIRED BEFORE THIS APPLIES. settings-template-sync-check fails in both directions, so a matching pair of entries must be added to settings-template.json in the same proposal or the applier will (correctly) refuse. Those anchors were not transcribed here because they were not verified against the file byte-for-byte, and an unverified anchor is a guess. Verify both, then extend this proposal.",
+    "The anchors above were taken verbatim from .claude/settings.json at 1389d4c. If settings.json moved since, the applier refuses loudly with 'anchor not found' rather than applying to the wrong place.",
+    "Layer 2 is ALREADY ARMED at session granularity without this proposal, via q-system/hooks/session-start.py, which is wired and lives outside .claude/. This proposal only tightens the window; it is not what makes the tripwire exist."
+  ]
+}
