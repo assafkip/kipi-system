@@ -60,6 +60,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
 QROOT = HERE.parent.parent
@@ -319,7 +320,7 @@ ISSUE_STATE_Q = """query($id:String!){issue(id:$id){id identifier state{name typ
 # Re-read one issue immediately before writing it. Same fields the redraft write
 # depends on, and nothing else. See reread_before_write().
 ISSUE_WRITE_Q = """query($id:String!){issue(id:$id){
-  id identifier description labels{nodes{id name}}}}"""
+  id identifier description state{name type} labels{nodes{id name}}}}"""
 
 TEAM_STATES_Q = """query($t:String!){team(id:$t){
   states(first:50){nodes{id name type position}}}}"""
@@ -731,10 +732,39 @@ def refusal_reason(ls, issue: dict) -> str:
     return "(no refusal comment found on the issue)"
 
 
+# The redraft prompt's budget for quoting the old DoR. A PROMPT cap, never a
+# storage cap -- see dor_section() for why the two may not share one function.
+PROMPT_DOR_CHARS = 3000
+NO_SECTION_NOTE = "(the section could not be located by its heading)"
+
+
+def dor_section(desc: str) -> str:
+    """The DoR section exactly as it stands, in full. NEVER truncated.
+
+    This is what the terminal path writes BACK to the issue, so any cap here is a
+    silent partial write to a permanent object: terminalising an issue whose DoR
+    ran past 3000 characters deleted everything after it, with no error and no
+    record (codex round 4). Measured as introduced by this branch -- main has no
+    terminal path at all and its only description write is a pure append, which
+    cannot truncate.
+
+    The producer/consumer mismatch had two honest resolutions: cap the producer so
+    the trim can never happen, or stop the consumer trimming. Capping the producer
+    is wrong here -- the "producer" is a previous redraft's body and whatever a
+    human wrote, and refusing to store a long DoR is worse than storing it. So the
+    write path takes the section whole, and the prompt keeps its own budget below.
+    """
+    return split_dor_section(desc)[2].strip()
+
+
 def existing_dor(desc: str) -> str:
-    """The DoR section as it stands, for the redraft prompt to argue with."""
-    section = split_dor_section(desc)[2].strip()
-    return section[:3000] or "(the section could not be located by its heading)"
+    """The DoR section trimmed to the redraft PROMPT's budget. Model input ONLY.
+
+    Safe to truncate because nothing here is written back: it is context for the
+    model to argue with. Never call this on a write path -- that is exactly the
+    confusion that cost the tail of a long DoR. Write paths call dor_section().
+    """
+    return dor_section(desc)[:PROMPT_DOR_CHARS] or NO_SECTION_NOTE
 
 
 def rebuild_description(desc: str, body: str, count: int,
@@ -799,8 +829,11 @@ def reread_before_write(ls, issue: dict) -> dict | None:
         return None
 
 
-def rival_writer_moved(selected_desc: str, fresh: dict) -> bool:
-    """True when another DRAFTER already redrove this issue since it was selected.
+def moved_since_selection(selected_desc: str, fresh: dict) -> bool:
+    """True when anything this write depends on changed since selection.
+
+    Named for what it checks, not for one cause of it: it began as a
+    rival-drafter test and a human editing the DoR by hand trips it too.
 
     The counter marker is this job's own single-writer token, so it doubles as a
     compare-and-swap version: this job is the only thing that writes it, therefore
@@ -824,9 +857,18 @@ def rival_writer_moved(selected_desc: str, fresh: dict) -> bool:
     issueUpdate takes no expected-version argument, so a true CAS is not available
     to ask for; two drafters colliding inside that gap still resolve last-write-wins.
     """
+    fresh_desc = fresh.get("description") or ""
     if NEEDS_SCOPE_LABEL not in label_names(fresh):
         return True
-    return redraft_state(fresh.get("description") or "") != redraft_state(selected_desc)
+    if redraft_state(fresh_desc) != redraft_state(selected_desc):
+        return True
+    # THIRD signal, and the one a person actually trips: the DoR section itself
+    # changed. The counter and the label are both machine-written, so a human who
+    # rewrote the scope by hand during the model call left both untouched and the
+    # redraft wrote straight over their words (codex round 4). A hand edit is the
+    # most likely edit there is -- someone reading the refusal and fixing it -- so
+    # the section body is part of what "unchanged since selection" has to mean.
+    return dor_section(fresh_desc) != dor_section(selected_desc)
 
 
 def update_issue(ls, issue: dict, payload: dict) -> None:
@@ -844,7 +886,20 @@ def update_issue(ls, issue: dict, payload: dict) -> None:
                            "(nothing was written)")
 
 
-def apply_write(ls, issue: dict, mode: str, body: str, attempt: int = 0) -> str | None:
+class Skipped(NamedTuple):
+    """Why a write was not made, and whether the issue is still queued.
+
+    `still_queued` is the part callers got wrong: a skip was read as "somebody
+    else finished it", but a rival redraft the WORKER REFUSED AGAIN still carries
+    needs-scope and is back in the queue, not done. Reporting it as completed
+    deletes real remaining work from the count (codex round 4).
+    """
+    reason: str
+    still_queued: bool
+
+
+def apply_write(ls, issue: dict, mode: str, body: str,
+                attempt: int = 0) -> Skipped | None:
     """THE path from a drafted body to a description write. Every mode goes here.
 
     Returns None when the write landed, or a short reason when it was deliberately
@@ -868,8 +923,11 @@ def apply_write(ls, issue: dict, mode: str, body: str, attempt: int = 0) -> str 
     fresh_desc = fresh.get("description") or ""
 
     if mode == "redraft":
-        if rival_writer_moved(selected, fresh):
-            return "another writer redrove it while this attempt was drafting"
+        if moved_since_selection(selected, fresh):
+            return Skipped(
+                "it changed while this attempt was drafting "
+                "(rival redraft, label change, or a hand edit)",
+                selection_mode(fresh) is not None)
         # Description and label drop go in ONE mutation on purpose. As two calls,
         # a failure between them leaves a rewritten DoR still wearing needs-scope:
         # the picker keeps ignoring it and the next night spends another capped
@@ -886,15 +944,21 @@ def apply_write(ls, issue: dict, mode: str, body: str, attempt: int = 0) -> str 
         # The needs-scope label is deliberately NOT removed: the issue really is
         # unscoped, and dropping it would feed the issue back to a picker that has
         # already refused it REDRAFT_CAP times.
-        if rival_writer_moved(selected, fresh):
-            return "another writer moved it while this run was working"
+        if moved_since_selection(selected, fresh):
+            return Skipped("it changed while this run was working",
+                           selection_mode(fresh) is not None)
+        # dor_section, NOT existing_dor: this value is WRITTEN BACK, so the
+        # prompt's character budget must not touch it.
         payload = {"description": rebuild_description(
-            fresh_desc, existing_dor(fresh_desc), REDRAFT_CAP, terminal=True)}
+            fresh_desc, dor_section(fresh_desc) or NO_SECTION_NOTE,
+            REDRAFT_CAP, terminal=True)}
     else:
         # A first draft appends. If the issue gained a DoR since selection then
         # somebody else drafted it, and appending now would give it two.
         if has_dor_section(fresh_desc):
-            return "it gained a Definition of Ready while this attempt was drafting"
+            return Skipped("it gained a Definition of Ready while this "
+                           "attempt was drafting",
+                           selection_mode(fresh) is not None)
         payload = {"description": fresh_desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
 
     update_issue(ls, issue, payload)
@@ -1109,9 +1173,10 @@ def main() -> int:
                 failed.append(f"{issue['identifier']}: terminal write failed: {str(exc)[:120]}")
                 continue
             if skipped:
-                elsewhere += 1
-                elsewhere_redrives += 1
-                print(f"  skipped {issue['identifier']}: {skipped}")
+                if not skipped.still_queued:
+                    elsewhere += 1
+                    elsewhere_redrives += 1
+                print(f"  skipped {issue['identifier']}: {skipped.reason}")
                 continue
             drafted += 1
             done_redrives += 1
@@ -1146,14 +1211,17 @@ def main() -> int:
             failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
             continue
         if skipped:
-            # Not a failure: the issue got what it needed, from someone else.
-            # Counting it as drafted would overstate the run, and reporting it as
-            # failed would file a noise issue about work that got done. It has
-            # also LEFT the queue, which is what `elsewhere` carries.
-            elsewhere += 1
-            if mode == "redraft":
-                elsewhere_redrives += 1
-            print(f"  skipped {issue['identifier']}: {skipped}")
+            # Not a failure: the issue got what it needed, or somebody is working
+            # on it. Counting it as drafted would overstate the run, and reporting
+            # it as failed would file a noise issue about work that got done.
+            # It only leaves the queue if it is actually FINISHED -- a rival
+            # redraft the worker refused again still wears needs-scope and is
+            # still real remaining work.
+            if not skipped.still_queued:
+                elsewhere += 1
+                if mode == "redraft":
+                    elsewhere_redrives += 1
+            print(f"  skipped {issue['identifier']}: {skipped.reason}")
             continue
         drafted += 1
         if mode == "redraft":

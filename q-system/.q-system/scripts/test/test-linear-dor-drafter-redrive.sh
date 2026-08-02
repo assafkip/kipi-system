@@ -988,6 +988,190 @@ else
       "drafter said: $(tr '\n' '|' < "$WORK/out.txt" | cut -c1-200)"
 fi
 
+echo "== case 23: terminalising a LONG DoR does not silently truncate it =="
+reset
+# codex round 4. existing_dor() capped the section at 3000 chars. That cap is fine
+# for the redraft PROMPT (model input) but the TERMINAL path fed the same value
+# back as the description it WRITES, so terminalising an issue whose DoR ran past
+# 3000 characters silently deleted the tail from a permanent object. Measured as
+# introduced by this PR: main has no existing_dor and no terminal path -- its only
+# description write is a pure append, which cannot truncate.
+python3 - "$WORK/board.json" <<'PY'
+import json, sys
+bullet = ("- **Outcome:** a deliberately long bounded outcome line that exists "
+          "only to push this section past the three thousand character cap.\n")
+long_dor = "## Definition of Ready\n\n" + (bullet * 60) + "\nTAIL-SENTINEL-DO-NOT-DROP\n"
+assert len(long_dor) > 3000, len(long_dor)
+json.dump([{
+    "id": "u-940", "identifier": "ASK-940", "title": "ASK-940",
+    # redrafts=3 -> the cap is spent, so this takes the terminal path.
+    "description": ("Founder context above.\n\n<!-- kipi-dor: redrafts=3 -->\n"
+                    + long_dor),
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(sys.argv[1], "w"))
+PY
+run_drafter --limit 5 --apply
+DESC23="$(written_desc)"
+if printf '%s' "$DESC23" | grep -q 'TAIL-SENTINEL-DO-NOT-DROP'; then
+  ok "the tail of a >3000 char DoR survives terminalisation"
+else
+  bad "the tail of a >3000 char DoR survives terminalisation" \
+      "written description was ${#DESC23} chars, tail: $(printf '%s' "$DESC23" | tail -c 120 | tr '\n' '|')"
+fi
+
+echo "== case 24: a human edit INSIDE the DoR is not overwritten by the redraft =="
+reset
+# codex round 4, third site of the staleness class. The guard compared the counter
+# marker and the label, so an edit to the DoR SECTION ITSELF -- the most likely
+# human edit of all, someone fixing the scope by hand while the model runs -- left
+# both signals untouched and the redraft wrote straight over it.
+python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, founder, dor = sys.argv[1:5]
+issue = {
+    "id": "u-941", "identifier": "ASK-941", "title": "ASK-941",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+# Same counter, same label. A person rewrote the DoR by hand mid-run.
+human = ("## Definition of Ready\n\n"
+         "- **Outcome:** I scoped this myself: ship the one endpoint.\n"
+         "- **Files:** api/routes.py")
+json.dump([dict(issue, description=founder + "\n\n" + human)], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+if [ -z "$(written_desc)" ]; then
+  ok "a hand-edited DoR is left alone, not overwritten"
+else
+  bad "a hand-edited DoR is left alone, not overwritten" \
+      "it wrote: $(written_desc | tr '\n' '|' | cut -c1-240)"
+fi
+
+echo "== case 25: a rival redraft that was REFUSED AGAIN is still queued =="
+reset
+# codex round 4, fifth site of the status class. A skip was always counted as
+# "completed by another writer", but a rival redraft that the worker refused again
+# still carries needs-scope: it is back in the queue, not done. Reporting it as
+# completed removes real remaining work from the count.
+python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, founder, dor = sys.argv[1:5]
+issue = {
+    "id": "u-942", "identifier": "ASK-942", "title": "ASK-942",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+# A rival redrafted it (counter moved) but the worker refused the result and put
+# needs-scope straight back on. Still unscoped, still queued.
+json.dump([dict(issue,
+                description=(founder + "\n\n<!-- kipi-dor: redrafts=1 -->\n"
+                             "## Definition of Ready\n\n- **Outcome:** rival attempt."),
+                labels={"nodes": [{"id": "L-needs", "name": "needs-scope"}]})],
+          open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+CLOSING25="$(grep '^dor-drafter: drafted' "$WORK/out.txt" || true)"
+if printf '%s' "$CLOSING25" | grep -q '1 still queued'; then
+  ok "an issue still wearing needs-scope stays in the remaining count"
+else
+  bad "an issue still wearing needs-scope stays in the remaining count" \
+      "closing line was: $CLOSING25"
+fi
+if printf '%s' "$CLOSING25" | grep -q 'completed by another writer'; then
+  bad "it is not reported as completed by another writer" \
+      "closing line was: $CLOSING25"
+else
+  ok "it is not reported as completed by another writer"
+fi
+
+echo "== case 26: an already-terminalised issue HAS left the queue =="
+reset
+# Found by mutation, not by review: case 25 is a redraft, so it never exercised
+# the TERMINAL call site's still-queued test and a mutation there survived.
+# Writing this case then exposed a real bug in the first fix -- "still wears
+# needs-scope" is the WRONG queued test, because a terminalised issue keeps the
+# label deliberately (it really is unscoped) while being unselectable. The honest
+# predicate is the selection predicate itself, so still_queued now asks
+# selection_mode(). This case is the one that tells the two apart.
+python3 - "$WORK/board.json" "$WORK/live.json" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, dor = sys.argv[1:4]
+issue = {
+    "id": "u-950", "identifier": "ASK-950", "title": "ASK-950",
+    # redrafts=3 -> this run picks it up in TERMINAL mode.
+    "description": "Founder context.\n\n<!-- kipi-dor: redrafts=3 -->\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+# A rival already wrote the terminal. The label STAYS ON by design, so a
+# label-based queued test would call this "still queued" -- but it is finished.
+json.dump([dict(issue,
+                description=("Founder context.\n\n<!-- kipi-dor: redrafts=3 terminal -->\n"
+                             + dor))], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+CLOSING26="$(grep '^dor-drafter: drafted' "$WORK/out.txt" || true)"
+if [ -z "$(written_desc)" ]; then
+  ok "the duplicate terminal write is skipped"
+else
+  bad "the duplicate terminal write is skipped" \
+      "it wrote: $(written_desc | tr '\n' '|' | cut -c1-200)"
+fi
+if printf '%s' "$CLOSING26" | grep -q '0 still queued'; then
+  ok "a terminalised issue is NOT counted as still queued despite keeping the label"
+else
+  bad "a terminalised issue is NOT counted as still queued despite keeping the label" \
+      "closing line was: $CLOSING26"
+fi
+
+echo "== case 27: the operator's documented reset mid-run keeps the issue queued =="
+reset
+# Also found by mutation: case 26's terminal skip is NOT still-queued, so it could
+# not tell `if not still_queued` from `if True` at the terminal call site. The
+# case that separates them is the one TERMINAL_NOTE actually instructs the
+# operator to perform -- "delete the <!-- kipi-dor: ... --> line above. The
+# counter resets and the next nightly run redrafts it again." Do that while this
+# run is mid-flight and the issue is genuinely back in the queue, so reporting it
+# as completed would delete real work from the count.
+python3 - "$WORK/board.json" "$WORK/live.json" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, dor = sys.argv[1:4]
+issue = {
+    "id": "u-951", "identifier": "ASK-951", "title": "ASK-951",
+    "description": "Founder context.\n\n<!-- kipi-dor: redrafts=3 -->\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+# The operator deleted the marker line, exactly as the terminal note tells them to.
+json.dump([dict(issue, description="Founder context.\n\n" + dor)], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+CLOSING27="$(grep '^dor-drafter: drafted' "$WORK/out.txt" || true)"
+if [ -z "$(written_desc)" ]; then
+  ok "the terminal is not written over the operator's reset"
+else
+  bad "the terminal is not written over the operator's reset" \
+      "it wrote: $(written_desc | tr '\n' '|' | cut -c1-200)"
+fi
+if printf '%s' "$CLOSING27" | grep -q '1 still queued'; then
+  ok "the reset issue stays in the remaining count"
+else
+  bad "the reset issue stays in the remaining count" \
+      "closing line was: $CLOSING27"
+fi
+
 echo
 printf 'redrive: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
