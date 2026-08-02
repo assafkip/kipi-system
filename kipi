@@ -102,8 +102,11 @@ case "${1:-help}" in
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
     # satisfy Definition of Ready, so this is the gate on autonomy, not paperwork.
+    # Founder decision 2026-08-01: pin the drafter's model; unpinned it rides the
+    # interactive default (Fable on 2026-08-01) and burns quota unattended.
     shift || true
-    python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
+    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
+      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear

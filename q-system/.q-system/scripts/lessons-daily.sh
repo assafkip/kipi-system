@@ -26,6 +26,10 @@ fail() { echo "$(TS) FAILURE: $*" >> "$LOG"; bash "$NOTIFY" "lessons-daily: $*" 
 # with a clean exit status -- the one state the four bars forbid.
 command -v claude >/dev/null 2>&1 || fail "no claude CLI on PATH -> nothing distilled"
 
+# Founder decision 2026-08-01: pin the distiller's model; unpinned it rides the
+# interactive default (Fable on 2026-08-01) and burns quota unattended.
+export ANTHROPIC_MODEL="claude-opus-5"
+
 SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
 echo "$(TS) $SUMMARY" >> "$LOG"
 

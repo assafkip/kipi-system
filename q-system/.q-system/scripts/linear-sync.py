@@ -682,6 +682,90 @@ def cmd_progress(args) -> int:
     return EXIT_OK
 
 
+ISSUE_LABELS = """query($id:String!){
+  issue(id: $id) {
+    id identifier
+    team { id }
+    labels { nodes { id name } }
+  }
+}"""
+
+TEAM_LABELS = """query($t:String!){
+  team(id: $t) { labels(first: 250) { nodes { id name } } }
+}"""
+
+LABEL_CREATE = """mutation($input: IssueLabelCreateInput!){
+  issueLabelCreate(input: $input) { success issueLabel { id name } }
+}"""
+
+
+def cmd_label(args) -> int:
+    """Add a label to an issue, without disturbing the labels already on it.
+
+    WHY THIS EXISTS (ASK-275). linear-triage.py has classified issues as
+    `needs-scope` since 2026-07-27, and its verdict has always been a COMMENT.
+    Grepping that file for a label mutation returns zero. So the classifier was a
+    producer with no machine-readable output: a human could read the verdict, and
+    nothing in the loop could. The worker picker cannot filter on prose.
+
+    Adding the label is what turns a refusal into something ready() can exclude.
+    Before this, the only way to get a correctly-refused issue out of the queue
+    was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how ASK-149
+    ended up there on 2026-07-30. A re-scope is engineering work, so it must not
+    land on the founder.
+
+    READ-MODIFY-WRITE, deliberately: Linear's issueUpdate takes labelIds as the
+    COMPLETE set, so sending only the new id would silently strip every existing
+    label, including owner:sana -- which would drop the issue out of the queue for
+    the wrong reason and make it un-findable. The union is computed here and the
+    result is verified below rather than assumed.
+    """
+    try:
+        issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    if args.name in current:
+        # Idempotent on purpose: the worker may refuse the same issue twice before
+        # the picker next runs, and a second call must not be an error.
+        print(f"{issue['identifier']}: already labelled {args.name}")
+        return EXIT_OK
+
+    team_id = (issue.get("team") or {}).get("id")
+    known = {n["name"]: n["id"]
+             for n in ((graphql(TEAM_LABELS, {"t": team_id}).get("team") or {})
+                       .get("labels") or {}).get("nodes", [])}
+    label_id = known.get(args.name)
+    if not label_id:
+        made = graphql(LABEL_CREATE, {"input": {"name": args.name, "teamId": team_id}})
+        created = (made or {}).get("issueLabelCreate") or {}
+        if not created.get("success"):
+            print(f"BLOCK: could not create label {args.name}: {created}", file=sys.stderr)
+            return EXIT_USAGE
+        label_id = created["issueLabel"]["id"]
+
+    result = graphql(ISSUE_UPDATE, {
+        "id": issue["id"],
+        "input": {"labelIds": sorted(set(current.values()) | {label_id})},
+    })
+    updated = (result or {}).get("issueUpdate") or {}
+    # CHECK THE MUTATION RESULT, same reason cmd_progress does (codex 2026-07-29):
+    # a discarded return value turns a rejected write into a reported success, and
+    # here that would mean the worker believes an issue is out of the queue while
+    # the picker keeps handing it back -- an infinite, silent redispatch loop.
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not apply {args.name} to {issue['identifier']}. "
+              f"Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue['identifier']}: labelled {args.name}")
+    return EXIT_OK
+
+
 def cmd_comments(args) -> int:
     """Print an issue's comment thread so an agent can READ what the other said.
 
@@ -1081,6 +1165,11 @@ def main() -> int:
     p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
     p.add_argument("--evidence", help="the command and its real output")
     p.set_defaults(func=cmd_progress)
+
+    p = sub.add_parser("label", help="add one label to an issue, keeping the rest")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-148")
+    p.add_argument("name", help="label to add, e.g. needs-scope")
+    p.set_defaults(func=cmd_label)
 
     p = sub.add_parser("comments", help="read an issue's comment thread")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
