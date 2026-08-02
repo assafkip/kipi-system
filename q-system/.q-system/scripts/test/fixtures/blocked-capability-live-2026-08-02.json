@@ -1,0 +1,582 @@
+{
+ "issues": [
+  {
+   "id": "079325f1-2970-4e72-9c27-3eee3c5bad5e",
+   "identifier": "ASK-281",
+   "title": "blocked:capability must have a continuation: try Codex before parking the issue",
+   "description": "Founder directive, 2026-08-01: \"Blocked is not a state that makes sense because it has no continuation. I'm not going to unblock it, Sana or Codex need to do that.\"\n\nHe is right, and the ledger proves it. Ten issues sit at `blocked:capability` ([ASK-140](https://linear.app/ask-consulting/issue/ASK-140/cap-31-rule-voice-enforcement-founder-voice-enforcement-for-external) 139 138 137 136 135 134 133 132 116). The loop has logged `nothing ready (0 ready issue)` every 15 minutes since 2026-08-01T14:24Z. The queue is not empty; it is parked.\n\n## The asymmetry\n\n`linear-worker.sh` has two refusal classes and only one of them continues.\n\n* `.sana-needs-scope` -> label `needs-scope` -> `linear-dor-drafter.py` rewrites the spec -> the issue returns to the pool. Fully automated. Nobody is needed.\n* `.sana-blocked-capability` -> label `blocked:capability` -> a Linear comment reading \"the capability above has to be granted or built... it is the one thing an agent must not grant itself.\" The only actor named is the founder. He has declined. The issue never moves again, and the label removes it from the picker so nothing comes back for it.\n\nThe refusal-to-self-grant is correct and stays (the 2026-05-17 production-volume scar). The defect is the unstated assumption that \"not Sana\" means \"the founder.\" It skipped the third runner.\n\n## Why Codex is the continuation\n\nSana runs inside Claude Code. Claude Code refuses `Edit`/`Write` under `.claude/**` via a built-in guard, and that guard is not liftable by `permissions.allow` \u2014 probed independently and confirmed on 2026-08-01 with `claude -p --settings '{\"permissions\":{\"allow\":[\"Edit(.claude/rules/**)\",\"Write(.claude/rules/**)\"]}}'`, which came back BLOCKED with the file unchanged. That is a Claude Code feature, not a filesystem permission.\n\nCodex is a different binary (`/opt/homebrew/bin/codex`), already installed, already reviewing every PR this loop opens. It does not inherit Claude Code's guard.\n\nSo the general shape: a capability Sana lacks is not automatically a capability the FLEET lacks. Before parking an issue, ask the other runner.\n\n## Definition of Ready\n\n* **Outcome:** `blocked:capability` stops being terminal. When Sana writes `.sana-blocked-capability`, the worker makes ONE attempt at the same issue with the Codex runner before applying any label. The label applies only if Codex also refuses, and the Linear comment then records BOTH refusals and the capability each runner lacked. \"The founder grants a permission\" stops being the only exit from this state.\n* **Files:** `q-system/.q-system/scripts/linear-worker.sh` -- the refusal block (~1301-1365 as of `a5ac9c1`, which already sets `$REFUSED` and falls through to step 5 instead of `continue`-ing). The Codex attempt goes between reading the sentinel and applying the label. Add an injectable entry point mirroring `REVIEWER_CMD`/`KIPI_PR_REVIEWER` (`linear-worker.sh:72`) so the suite can inject a fake instead of billing a real Codex run per test -- that seam is why `test-worker-refusal.sh` can assert the review path at all. `q-system/.q-system/scripts/test/test-worker-refusal.sh` -- 17 cases today, registered in `capability-manifest.json:177`.\n* **Check:** `bash q-system/.q-system/scripts/test/test-worker-refusal.sh`, with a new red-first case: an issue whose Sana stub writes `.sana-blocked-capability` and whose Codex stub SUCCEEDS must end with the issue NOT labelled `blocked:capability`. Observe it red before the change. All 17 existing cases stay green -- they pin that a refusal does not burn an attempt, does not spend the work budget, routes the two classes to different people, and (case 6, `a5ac9c1`) still sends any PR it left to the reviewer.\n\n  **This comes first and is not optional:** record a real probe of what Codex can actually write under `.claude/`. A real billed call with its output pasted into the PR, never `--help` and never an assumption (see `reference_review_tooling_2026_07` -- a stale capability claim about Codex survived in the index for days). If Codex is ALSO refused, the handoff mechanism is still correct and still ships; it just does not clear the ten CAP-0n issues, and that fact goes in the PR in place of a claim that it does.\n* **Blast radius:** `q-system/.q-system/scripts/` propagates to every instance via `kipi update`, so this is fleet-wide. It changes what an unattended 3am run does with a blocked issue: today it parks, after this it spends one Codex run first. Cap it at ONE Codex attempt per issue per run, never a retry loop -- `loop-exits.md` exit 7, and a dead Codex at 3am must not become unbounded model spend. The daily dispatch budget (3/day, `~/.config/kipi/dispatch.log`) is unaffected: a refusal costs a turn, not a dispatch.\n* **Not doing:** Not granting Sana any permission. Not routing around the `.claude/**` guard by writing through Bash or disabling the gate -- the ban in the worker prompt stands and a gate that is inconvenient is a gate doing its job. Not re-scoping the ten blocked issues; `needs-scope` is the wrong channel for a capability block and stays wrong. Not touching `attempts-ledger.py` (founder-deferred pending a rested pass, `sp-626e9452`).\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here, the reproducer green after being observed red, wiring proven end to end, and a commit naming this issue id.\n\n**Energy:** Deep Focus - **Time Est:** 3 h",
+   "state": {
+    "name": "Done",
+    "type": "completed"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 01:57 UTC\n\nReview of PR #52 complete (codex engine). Verdict: APPROVE. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nseverity|one-sentence claim|file:line\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T01:57:22.222Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 20:23 UTC\n\nReview of PR #52 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|A rejected continuation push still clears the park and invokes review against the stale remote PR head.|q-system/.q-system/scripts/linear-worker.sh:1584\nmajor|A transient nonzero Codex exit without a refusal sentinel enters blocked:capability and can leave the reusable worktree dirty.|q-system/.q-system/scripts/linear-worker.sh:1440\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T20:23:39.605Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 20:15 UTC\n\n**Blocked on a missing capability, not on scope.** Labelled `blocked:capability`; the picker will not offer it again until the capability exists.\n\nMISSING CAPABILITY: this session cannot commit. A stale git index.lock sits at\n/Users/assafkipnis/projects/kipi-system/.git/worktrees/ask-281/index.lock and no\ngit process holds it (pgrep -fl git: no git processes). Every `git add` and\n`git commit` in this worktree fails with:\n\n  fatal: Unable to create '.../worktrees/ask-281/index.lock': File exists.\n  Another git process seems to be running in this repository, or the lock file\n  may be stale\n\nWHAT REFUSED THE FIX: the harness sensitive-file guard. `rm <that path>` returns\n\"Claude requested permissions to edit ... which is a sensitive file\", and the\npath is outside this session's allowed working directory (the worktree), so\n`ls` on it is refused too. There is no git subcommand that clears a stale lock,\nand routing around the guard (GIT_INDEX_FILE elsewhere, os.remove from python,\ncommitting from the main checkout) is exactly what must not be done.\n\nWHAT IT UNBLOCKS: three finished pieces of ASK-281 work that are complete and\nverified in the worktree but cannot be committed or pushed:\n\n1. SHIPPED AND GREEN, blocking CI right now:\n   q-system/.q-system/scripts/test/test-severity-floor.sh -- the \"arm sits\n   before the reviewer call\" assertion grepped the bare identifier REVIEWER_CMD\n   and subtracted only the assignment, so the comment this branch added at\n   linear-worker.sh:85 counted as the reviewer call. CI validate on PR #52 is\n   RED on a COMMENT, not on behaviour. Fixed by matching $REVIEWER_CMD (the\n   expansion, i.e. \n\n**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.\n\n**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up.",
+      "createdAt": "2026-08-01T20:15:07.225Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 20:15 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-08-01T20:15:05.539Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 20:14 UTC\n\nBLOCKED on a runner capability, not on scope. PR #52 stays open with the 4 commits already on it -- DO NOT MERGE, and note CI validate is RED on it (see below).\n\n**The block:** this session cannot commit. A stale `index.lock` sits at `/Users/assafkipnis/projects/kipi-system/.git/worktrees/ask-281/index.lock` with no git process holding it. Every `git add`/`git commit` in the worktree fails. The harness sensitive-file guard refuses `rm` on that path (it is outside this session's allowed working directory), and there is no git subcommand that clears a stale lock. Routing around the guard is not an option, so the work stops here. Written to `.sana-blocked-capability`.\n\n**The DoR is sound. Do not re-scope.** One person clearing one file unblocks it, and the work below is intact in the worktree.\n\n**Three finished pieces stranded, none committable:**\n\n1. **CI fix, green, and it is what is currently failing PR #52.** `test-severity-floor.sh`'s wiring assertion greps the bare identifier `REVIEWER_CMD` and subtracts only the assignment line, so the comment this branch added at `linear-worker.sh:85` (explaining the CODEX_CMD seam) counted as the reviewer call. Skeleton Validation is RED on a COMMENT, not on behaviour. Fixed by matching `$REVIEWER_CMD` -- the expansion, i.e. the invocation, which is what the ordering rule is about.\n\n2. **Reproducers for both round-3 Codex findings, RED observed.** `test-worker-refusal.sh` 35 passed / 8 failed, on a second fixture board (ASK-811, ASK-812) with its own repo and state dir -- run 1's `--limit 2` budget assertion (case 11) needs ASK-807 to stay unprocessed, so anything appended to that board would pass vacuously.\n   - **case 13** (major, :1584) a rejected continuation push still cleared the park. Fixture is a real `pre-receive` hook on origin, armed by Sana's stub after her own push lands, so only what comes after the PR exists is refused.\n   - **case 14** (major, :1440) a transient nonzero Codex exit with no sentinel claimed 'BOTH runners tried, neither is equipped' and left the worktree dirty. Fixture: exit 3, no commit, one uncommitted file.\n\n3. **The worker fix is NOT written.** A fix that cannot be committed cannot be reviewed, so I stopped rather than pile up more uncommittable diff. Design is settled: extract `push_branch()` and call it from the handoff BEFORE declaring CODEX_CONTINUED (the remote is the bar, since the reviewer reads origin); add a refused|incomplete outcome so the note stops asserting a capability finding off a crash; NAME a dirty worktree rather than discard it, per the same rule `position_tree_on_pr_head` is built on.\n\n**Next:** clear that one lock file. Nothing needs redoing.\n\n```\n$ git add q-system/.q-system/scripts/test/test-severity-floor.sh\nfatal: Unable to create '/Users/assafkipnis/projects/kipi-system/.git/worktrees/ask-281/index.lock': File exists.\nAnother git process seems to be running in this repository, or the lock file may be stale\n\n$ pgrep -fl git   # no git process holds it (only Logitech binaries match 'git' as a substring)\n\n$ rm /Users/assafkipnis/projects/kipi-system/.git/worktrees/ask-281/index.lock\nClaude requested permissions to edit /Users/assafkipnis/projects/kipi-system/.git/worktrees/ask-281/index.lock which is a sensitive file.\n\n$ bash q-system/.q-system/scripts/test/test-severity-floor.sh\nRED:   FAIL: the arm does not sit before the reviewer call in linear-worker.sh (arm at 555, reviewer at 85)\nGREEN: PASS: 169/169 severity-floor checks\n\n$ bash q-system/.q-system/scripts/test/test-worker-refusal.sh   # RED observed, fix not yet written\n  FAIL a continuation whose push was rejected still parks\n     ASK-811 was never labelled blocked:capability -- a commit that never left the worktree un-parked it\n  FAIL the stranded continuation is named\n  FAIL a transient Codex failure still parks the issue\n     ASK-812 was never labelled blocked:capability -- a Codex crash un-parked an issue Sana is genuinely blocked on\n  FAIL the incomplete handoff is named as incomplete\n  FAIL a worktree left dirty by the Codex run is named\n  35 passed, 8 failed\n\n$ git status --short   # the stranded work\n M q-system/.q-system/scripts/test/test-severity-floor.sh\n M q-system/.q-system/scripts/test/test-worker-refusal.sh\n```",
+      "createdAt": "2026-08-01T20:14:44.459Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:56 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-281`. Attempt 1 of 3.",
+      "createdAt": "2026-08-01T19:56:21.459Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 19:56 UTC\n\nReview of PR #52 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|A rejected continuation push still clears the park and invokes review against the stale remote PR head.|q-system/.q-system/scripts/linear-worker.sh:1584\nmajor|A transient nonzero Codex exit without a refusal sentinel enters blocked:capability and can leave the reusable worktree dirty.|q-system/.q-system/scripts/linear-worker.sh:1440\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T19:56:14.904Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:47 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-08-01T19:47:49.536Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:47 UTC\n\nCodex round-2 major finding fixed on PR #52 (commit 2bbe884). DO NOT MERGE.\n\n**major -- a continuation is never pushed when a PR already exists** (linear-worker.sh:1555). Confirmed, not deflected. The worker's only `git push` lived INSIDE the `[ -z \\$PR_NUM ]` branch, so it ran only when the worker itself opened the PR. Every commit made AFTER a PR existed stayed local -- and the Codex handoff is exactly that case, because a capability block is usually PARTIAL: Sana ships a half and opens a PR, then blocks, and only then does the second runner commit. So on the precise path this issue built, the continuation never left the worktree. The reviewer got that PR, read a remote head still at Sana's half, and the run reported CONTINUED.\n\nWorse than skipping the review: the label is cleared, the issue leaves the parked pool, and an approval exists for a diff the work is absent from -- while the only copy of that work is a worktree on one machine that the next round's position guard will refuse to move.\n\nThe push is hoisted out of the no-PR branch, guarded on commits-past-origin/main AND local-tip != remote-tip (a missing origin/BRANCH reads as 'differs', which is right). A failed push is said, not swallowed: the review still runs, but an operator must be able to tell an approval of the real head from one of an old head.\n\nFixture now reproduces the ordering: ASK-804 ships a half, PUSHES it, and opens a PR before blocking. The assertion reads refs/heads/sana/ask-804 in the bare origin, not a log line -- 'the worker said it pushed' is the claim under test. Two paired checks keep the RED honest. The gh stub moved to one PR marker per issue (a shared marker made ASK-804 look like it already had a PR the moment ASK-803's stub ran, so the severity-floor gate would have skipped it).\n\n```\n$ bash q-system/.q-system/scripts/test/test-worker-refusal.sh\n\nRED (before the fix):\n  FAIL a Codex continuation is pushed to the remote before the review\n     origin/sana/ask-804 does not hold codex-continued.txt -- the continuation never left the worktree, so the reviewed PR is missing it. Remote holds: 'sana-half-804.txt\n     seed'\n  ok   negative self-test: Sana's half really is on the remote (the branch is live, not absent)\n  ok   the continued issue's PR is the one handed to the reviewer (the stale head had a reader)\n  31 passed, 1 failed\n\nGREEN (after):\n  ok   a Codex continuation is pushed to the remote before the review (the PR carries the work)\n  ok   negative self-test: Sana's half really is on the remote (the branch is live, not absent)\n  ok   the continued issue's PR is the one handed to the reviewer (the stale head had a reader)\n  32 passed, 0 failed\n\nNo regressions in the sibling suites:\n  $ bash test-linear-worker-parallel.sh -> PASS: linear-worker parallel (9 checks)\n  $ bash test-worker-project-scope.sh   -> 14 passed, 0 failed\n  $ bash test-linear-worker-fetch.sh    -> PASS: linear-worker fetch (10 checks)\n\n$ git ls-remote origin refs/heads/sana/ask-281\n2bbe8843d3373ff5c1dc66c7b0dc1d646202ecbd\trefs/heads/sana/ask-281\n$ gh pr view 52 --json headRefOid -q .headRefOid\n2bbe8843d3373ff5c1dc66c7b0dc1d646202ecbd\n```",
+      "createdAt": "2026-08-01T19:47:20.198Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:41 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-281`. Attempt 1 of 3.",
+      "createdAt": "2026-08-01T19:41:28.811Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 19:41 UTC\n\nReview of PR #52 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|A successful Codex continuation is never pushed when Sana opened the PR earlier in the same run, so the worker reviews the old remote commit and reports success for work absent from the PR.|q-system/.q-system/scripts/linear-worker.sh:1555\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T19:41:23.651Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:32 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-08-01T19:32:02.942Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:31 UTC\n\nBoth Codex findings fixed on PR #52 (commit d082dce). DO NOT MERGE.\n\n**major -- a successful continuation still set $REFUSED** (linear-worker.sh:1495). Confirmed, not deflected. The handoff cleared $REFUSE_LABEL and stopped there, so all three downstream readers of $REFUSED saw a completed issue as a park: no budget slot spent (an unattended run overruns its own --limit, the ASK-221 silent-burn shape), the closing line announced the issue 'held at .' -- held at the label the handoff had just emptied -- and the no-PR branch waived an attempt bump that a run WITH commits has earned. Now `[ -n \"\\$CODEX_CONTINUED\" ] || REFUSED=\"\\$REFUSE_KIND\"`, so the label clear reaches the rest of the loop instead of stopping at the label.\n\n**minor -- the predicate accepted any new commit** (linear-worker.sh:1407). Confirmed. An empty commit, an --amend onto the same tree, and a rebase that drops its only hunk all move HEAD while leaving the branch byte-identical. Compares the TREE now (`git diff --name-only BEFORE AFTER`), not the pointer, and fails closed: a git error parks. Asymmetry is deliberate -- parking work that WAS done is recoverable (a human clears the label), un-parking work that was NOT done is not, because the picker never offers the issue again. The park message names which of the two it hit.\n\nSuite 23 -> 29 cases, RED observed first. Board 4 -> 7 issues, ordered so the budget claim has an observable edge: the two continuations are the whole of --limit 2 and ASK-807 sits behind them. Both absence-assertions carry their own negative self-test, because an absence passes for free when the issue was never reached.\n\nAlso dropped an accidental .codex-probe-281 gitlink the probe left staged on the branch.\n\n```\n$ bash q-system/.q-system/scripts/test/test-worker-refusal.sh\n\nRED (before the fix):\n  FAIL a continued issue is not reported as held\n     ASK-804 was continued but the closing line still reports it held: 'ASK-804 is NOT done: held at . Any PR above carries only the half that shipped...'\n  FAIL an empty Codex commit does not count as a continuation\n     ASK-805 was never labelled blocked:capability -- an empty commit un-parked it\n  FAIL an empty commit is not announced as a continuation\n     ASK-805 was reported CONTINUED on an empty commit\n  FAIL a Codex continuation spends a budget slot\n     ASK-807 was processed, so the two continuations before it cost no budget and the run overran --limit 2\n  25 passed, 4 failed\n\nGREEN (after):\n  ok   a continued issue is NOT reported as held at a label (the closing line matches reality)\n  ok   an empty Codex commit does NOT count as a continuation (ASK-805 still parks)\n  ok   an empty commit is not announced as a continuation\n  ok   negative self-test: Codex really ran on ASK-805 (the empty-commit assertions are not vacuous)\n  ok   a Codex continuation spends a budget slot (--limit 2 stopped the run before ASK-807)\n  ok   negative self-test: ASK-806 really continued (the budget cap was reached, not stumbled into)\n  29 passed, 0 failed\n\nNo regressions in the sibling suites:\n  $ bash test-linear-worker-parallel.sh   -> PASS: linear-worker parallel (9 checks)\n  $ bash test-worker-project-scope.sh     -> 14 passed, 0 failed\n  $ bash test-linear-worker-fetch.sh      -> PASS: linear-worker fetch (10 checks)\n```",
+      "createdAt": "2026-08-01T19:31:30.417Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:25 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-281`. Attempt 1 of 3.",
+      "createdAt": "2026-08-01T19:25:24.441Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 19:25 UTC\n\nReview of PR #52 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|A successful Codex continuation remains marked as a refusal, so it bypasses --limit, processes extra issues, and falsely reports the completed issue as held at an empty label.|q-system/.q-system/scripts/linear-worker.sh:1495\nminor|The continuation predicate accepts any new commit, including an empty commit with no changed files, as proof that Codex completed the blocked work.|q-system/.q-system/scripts/linear-worker.sh:1407\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T19:25:17.943Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:20 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-08-01T19:20:55.263Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:19 UTC\n\nblocked:capability now has a continuation. PR #52 open (https://github.com/assafkip/kipi-system/pull/52), 2 commits, DO NOT MERGE.\n\nThe probe came first and it is decisive: Codex CAN write under .claude/. Real billed call, 14,332 tokens, file verified on disk afterwards. Same session, this Claude Code runner could not even mkdir /tmp/cxprobe281/.claude/rules -- 'sensitive file'. So the handoff clears the ten CAP-0n issues, not merely the mechanism.\n\nlinear-worker.sh: capability refusals now get ONE Codex attempt before any label. New CODEX_CMD / KIPI_CODEX_RUNNER seam mirroring REVIEWER_CMD. A new commit on the branch is the bar for 'continued', not exit 0 (the ASK-221 shape would un-park an issue nobody worked). Both-refused writes both reasons into the Linear comment naming what each runner lacked. Scope refusals untouched.\n\nSuite 17 -> 23 cases, RED observed first (5 failures), now 23/23.\n\n```\n$ bash q-system/.q-system/scripts/test/test-worker-refusal.sh\n\nRED (before the change):\n  FAIL a capability block is handed to the Codex runner before it is parked\n     codex was never invoked for ASK-804. Log: '<empty>'\n  FAIL a Codex continuation does not park the issue\n     ASK-804 was labelled blocked:capability even though Codex continued it\n  FAIL the continuation is reported\n  FAIL the handoff is ONE Codex attempt per issue per run\n  FAIL when Codex also refuses, its reason is recorded alongside Sana's\n  18 passed, 5 failed\n\nGREEN (after):\n  ok   a capability block is handed to the Codex runner before it is parked\n  ok   a Codex continuation does NOT apply blocked:capability (the state is no longer terminal)\n  ok   the continuation is reported, so the 3am operator can see a second runner ran\n  ok   the handoff is ONE Codex attempt per issue per run, not a retry loop\n  ok   when Codex also refuses, its reason is recorded alongside Sana's\n  ok   negative self-test: ASK-804 really entered the capability-refusal path\n  23 passed, 0 failed\n\n$ codex exec --skip-git-repo-check -s workspace-write 'Create .claude/rules/probe.md ... CODEX_WROTE_UNDER_DOT_CLAUDE'\n  exec sed -n '1p' .claude/rules/probe.md succeeded in 0ms:\n  CODEX_WROTE_UNDER_DOT_CLAUDE\n  new file mode 100644 .claude/rules/probe.md\n  tokens used 14,332\n```",
+      "createdAt": "2026-08-01T19:19:53.203Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 19:10 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-281`. Attempt 1 of 3.",
+      "createdAt": "2026-08-01T19:10:06.195Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "dda1c81b-e57a-431e-9bb3-db15dad747b4",
+   "identifier": "ASK-140",
+   "title": "CAP-31 rule voice-enforcement: Founder voice enforcement for external-facing written content",
+   "description": "<!-- kipi-key: kipi-system/rule-voice-enforcement -->\n\nFounder voice enforcement for external-facing written content\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/voice-enforcement.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/voice-enforcement.md: 22 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/voice-enforcement.md` stops being a prompt-only ENFORCED claim: it names the executables that actually enforce it (`voice-lint.py`, `voice-substance-lint.py`, `voice-stop-gate.py`), and a test fails if that reference goes stale or the hook wiring disappears.\n* **Files:** `.claude/rules/voice-enforcement.md` (22 lines, names no executable today); `q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh` (new); `q-system/.q-system/capability-manifest.json` (one entry, same shape as the existing `test-voice-lint-topups.sh` / `test-voice-lint-warn-detectors.sh` lines at 229/233). Read-only evidence: `.claude/settings.json:181,216,258` and `settings-template.json:188,193,261` already wire the three scripts.\n* **Check:** no reproducer exists yet. Has to be written: a shell test asserting (a) the rule file greps for `voice-lint.py`, (b) that path is present in both `.claude/settings.json` and `settings-template.json`, (c) the script file exists and is executable. Run it red against today's rule file first, then green: `bash q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh`. Regression cover already runnable: `bash q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh`.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates to every instance via `kipi update` (root `CLAUDE.md` does not, rules do), and this is an always-on rule loaded into every session's instruction context. No settings edit planned, so `settings-template-sync-check` stays quiet; if a settings edit does become necessary, both `.claude/settings.json` and `settings-template.json` change together or the sync check aborts the update.\n* **Not doing:** not changing what `voice-lint.py` detects, not reconciling the rule's trigger list against the hook's actual file-path scope, and not touching the `founder-voice` skill or `assaf-voice`. Detector coverage gaps are a separate issue.\n\n**Energy:** Quick Win \u00b7 **Time Est:** 45 min",
+   "state": {
+    "name": "In Progress",
+    "type": "started"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "blocked:capability"
+     },
+     {
+      "name": "owner:sana"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 07:44 UTC\n\nReview of PR #48 complete (codex engine). Verdict: APPROVE WITH NITS. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nminor|The wiring test accepts unrelated filename text as proof that a hook is wired|q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh:44\nminor|The rule falsely claims the Stop gate honors no bypass marker|.claude/rules/voice-enforcement.md:26\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T07:44:05.440Z"
+     },
+     {
+      "body": "**Correction to the `blocked:capability` note: no permission grant will unblock this, per-run or standing.**\n\nThe label's note says \"the capability has to be granted... once it exists, remove this label and the loop picks the issue straight back up\". Measured 2026-07-30, that is wrong, and it is wrong for all six issues carrying this label (ASK-135, 136, 137, 138, 139, 140).\n\nThe block on `.claude/rules/**` is not a settings rule. It is a harness-level sensitive-file boundary, and it is **cross-tool**. Four probes, each a real non-interactive `claude -p` run against a scratch tree shaped like the worker's worktree (`defaultMode: acceptEdits`, the repo's real deny list):\n\n| Probe | Lever | Result |\n| -- | -- | -- |\n| 1 | `--allowedTools \"Edit(.claude/rules/**)\"` | DENIED |\n| 2 | `--settings` inline `permissions.allow` | DENIED |\n| 3 | standing `permissions.allow` in `.claude/settings.json` | DENIED |\n| 4 | `Bash` redirect (`printf >> .claude/rules/...`) | DENIED |\n\nProbe 2 is the airtight one: the harness printed its own warning about the rule form it had just parsed from those settings, proving the allow list was loaded, and denied the edit anyway as \"classified as a sensitive file\".\n\nThree consequences:\n\n1. **The standing grant that was declined would not have worked either.** The choice was never between a safe narrow grant and a risky wide one. Probe 3 is the same allow rule in the same place, and it is denied.\n2. **A grant file or capability token cannot help.** `capability-token.sh` gates a *Bash command* through a PreToolUse hook. It cannot lift a built-in Edit guard, and its trust root (`~/.claude/bin/capability-signer`, `~/.claude/capability-token.pub`) is absent on this machine, so it currently denies everything anyway.\n3. **Probe 4 is the one that decides the design.** Because Bash is denied too, this is a real boundary, not a tool-level speed bump. Any on-disk grant marker an unattended agent could write would break a boundary that currently holds. I am not shipping that.\n\n**What this boundary is actually protecting:** these six issues all ask an unattended agent to rewrite the instruction files that govern it. The harness refusing that is the gate working as designed, not a gap to be engineered around.\n\n**Label stays on all six.** The unblock is a re-scope, not a grant: the automatable majority of each issue (the script, the reproducer, the `capability-manifest.json` line) separated from the one `.claude/rules/*.md` edit, which needs a human-approved interactive step. ASK-139 is the clearest example: only its rules-file line is blocked; `token-guard.py` and its test are not.\n\nCaptured as `sp-caa6152a`. PR #48 left red and unmerged (`validate` FAILURE, `kipi/reviewer-approved` FAILURE).",
+      "createdAt": "2026-07-30T20:47:43.896Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:23 UTC\n\n**Relabel correction: `needs-scope` -> `blocked:capability`.**\n\nThe autonomous worker refused this correctly but filed it under the wrong class. Sana's own words in the run were \"blocked on a harness permission, NOT on scope\", and the worker labelled it `needs-scope` anyway -- which routes to linear-dor-drafter.py to REWRITE this DoR. The DoR is sound. Re-scoping it would have burned a drafter pass and returned the same blocked issue.\n\nThe refusal channel had one class where the repo's own self-healing-retry.md rule 5 has two: environmental-trigger is not latent-defect, and retrying logic cannot fix an environment. That was a defect in the worker, found on its first live run and fixed in the same session.\n\n**Nothing is wrong with this issue.** The spec is achievable; the runner is not equipped. It needs `Edit(.claude/rules/**)` for the non-interactive session. That is an authorization decision and an agent must not grant it to itself. Once granted, remove `blocked:capability` and the loop picks this straight back up -- PR #48 already carries the reproducer, observed red.\n\nSame blocker applies to ASK-139/138/137/136/135.",
+      "createdAt": "2026-07-30T20:23:19.615Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:19 UTC\n\n**Refused as unexecutable by the autonomous worker.** Labelled `needs-scope`; the picker will not offer it again until it is re-scoped.\n\nASK-140 is blocked on a harness permission, NOT on scope.\nRe-scoping will not unblock it. Do not send this to the DoR drafter for a rewrite.\n\nThe DoR is correct and executable. Everything it scopes is built except the one\nedit that turns the reproducer green.\n\nDONE (commit 5906a1f on sana/ask-140)\n- q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh, the\n  reproducer, including a negative self-test that runs the same check against a\n  copy with the script names stripped and proves the check can actually go red.\n- capability-manifest.json entry, same shape as the neighbouring\n  test-voice-lint-topups.sh line.\n- Observed RED at HEAD:\n    $ bash q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh\n    FAIL: voice-enforcement.md claims ENFORCED but does not name all of:\n    voice-lint.py voice-substance-lint.py voice-stop-gate.py\n    exit=1\n- Sibling regression named in the DoR, still green:\n    $ bash q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh\n    PASS: emphasis-opener + rhetorical-qa flag the AI tells as WARN (exit 0), do\n    not flag mid-sentence use or real reader-directed questions, and WARN_RULES\n    membership is unchanged except the two new names\n\nBLOCKED\n- Remaining work is ONE edit to .claude/rules/voice-enforcement.md: an\n  Enforcement section naming voice-lint.py (PostToolUse Edit/Write),\n  voice-substance-lint.py (PostToolUse Edit/Write) and voice-stop-gate.py (Stop),\n  plus the <!-- voice-lint-skip --> bypass.\n\n**Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder.",
+      "createdAt": "2026-07-30T20:19:07.758Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:19 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-07-30T20:19:06.312Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:18 UTC\n\nBLOCKED on a harness permission, not on scope. Reproducer + capability-manifest entry are committed RED on purpose (5906a1f). The one remaining step is a single edit to .claude/rules/voice-enforcement.md naming voice-lint.py / voice-substance-lint.py / voice-stop-gate.py with their hook events; Claude Code refuses it as a sensitive .claude/ config path, which needs an interactive approval a non-interactive dispatch cannot produce. Not an in-repo deny rule (settings.json denies only .env/credentials globs), so nothing in the repo can be changed to fix it, and routing around it via a Bash write would be circumventing a security control. Second dispatch to hit this exact wall, so it is recorded in .sana-needs-scope to stop re-picking. PR #48 converted to DRAFT so a red-by-design test cannot reach review or auto-merge. Unblock: run ASK-140 interactively and approve the one edit, or add an Edit(.claude/rules/**) allow entry to the dispatch harness (fleet-wide blast radius, policy call).\n\n```\n$ bash q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh\nFAIL: voice-enforcement.md claims ENFORCED but does not name all of: voice-lint.py voice-substance-lint.py voice-stop-gate.py\nexit=1\n\n$ bash q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh\nWARN_RULES membership OK (orig 9 + 2 new, nothing re-tiered)\nPASS: emphasis-opener + rhetorical-qa flag the AI tells as WARN (exit 0), do not flag mid-sentence use or real reader-directed questions, and WARN_RULES membership is unchanged except the two new names\n\nEdit tool on .claude/rules/voice-enforcement.md:\nClaude requested permissions to edit /Users/assafkipnis/.config/kipi/worktrees/ask-140/.claude/rules/voice-enforcement.md which is a sensitive file.\n```",
+      "createdAt": "2026-07-30T20:18:30.879Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:14 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-140`. Attempt 1 of 3.",
+      "createdAt": "2026-07-30T20:14:46.494Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-07-30 20:14 UTC\n\nReview of PR #48 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|Registering the new test makes every full capability gate and CI run red because the unchanged rule names none of the required scripts.|q-system/.q-system/capability-manifest.json:242\nminor|The substring checks accept disabled shell comments as live wiring, so all three hooks can become no-ops while the test stays green.|q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh:44\nEND FINDINGS\n```",
+      "createdAt": "2026-07-30T20:14:39.887Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:04 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-07-30T20:04:12.337Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:03 UTC\n\nReproducer shipped RED, PR #48 open, NOT mergeable yet. test-voice-enforcement-rule-wired.sh asserts the rule names voice-lint.py / voice-substance-lint.py / voice-stop-gate.py, that each exists and is executable, and that each is wired in BOTH .claude/settings.json and settings-template.json. Registered in capability-manifest.json. Green needs one edit to .claude/rules/voice-enforcement.md; Edit and Write were both refused by the harness built-in sensitive-path guard on .claude/**, which a non-interactive session cannot grant. No configured deny rule covers it. Not writing the file through Bash to dodge a refused permission. Re-dispatch with Edit(.claude/rules/**) pre-approved and it goes green. DoR is sound, so no needs-scope refusal.\n\n```\nbash q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh -> FAIL: voice-enforcement.md claims ENFORCED but does not name all of: voice-lint.py voice-substance-lint.py voice-stop-gate.py (EXIT=1). bash q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh -> PASS ... (EXIT=0). commit 5906a1f, lefthook pre-commit all 7 checks green incl settings-template-sync, PR https://github.com/assafkip/kipi-system/pull/48\n```",
+      "createdAt": "2026-07-30T20:03:52.631Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-30 19:59 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-140`. Attempt 1 of 3.",
+      "createdAt": "2026-07-30T19:59:11.981Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nIdentical machine-filed shape to ASK-139/138/137/136/135: same kipi-key template, same 'claims ENFORCED but names NO executable' evidence line, same DoD boilerplate, all six targeting .claude/rules/*.md in one repo; the fix is one prompt-only-rule audit pass plus a per-rule decision, not six issue threads.\n\n**Next:** Open a single parent issue 'audit the 6 CAP prompt-only rules'; for each rule decide hook-or-drop-the-ENFORCED-claim, and close ASK-140/139/138/137/136/135 against it.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:14Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:14.676Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "15fdd1ed-6c23-47ac-9315-f4d415255c45",
+   "identifier": "ASK-139",
+   "title": "CAP-30 rule token-discipline: Token consumption guardrails and self-monitoring rules",
+   "description": "<!-- kipi-key: kipi-system/rule-token-discipline -->\n\nToken consumption guardrails and self-monitoring rules\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/token-discipline.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/token-discipline.md: 46 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** The two subsections of `.claude/rules/token-discipline.md` that claim ENFORCED but have no executable (Cleanup/Migration two-grep-pass, Pre-Action Echo) are either backed by a real hook check or downgraded to advisory prose, so the file's ENFORCED labels match what actually blocks. The rest of the rule is already backed: `token-guard.py` exists (40KB), is wired in `.claude/settings.json:132,149,161` and `settings-template.json:144,161,173`, so the issue's \"names NO executable\" evidence is only true for those two subsections.\n* **Files:** `.claude/rules/token-discipline.md` (the ENFORCED headings, and a line naming the enforcing script path), `q-system/.q-system/token-guard.py` (if the Pre-Action Echo check gets a real PreToolUse branch), `q-system/.q-system/scripts/test/test-token-guard-hook-behavior.sh` (new red case), `q-system/.q-system/capability-manifest.json` (`expected_tests` entry if a new test file is added).\n* **Check:** currently green and blind: `bash q-system/.q-system/scripts/test/test-token-guard-hook-behavior.sh` and `python3 q-system/.q-system/scripts/test_token_guard_observation.py` both pass while `grep -n -i \"pre-action\\|two grep\\|pass 2\" q-system/.q-system/token-guard.py` returns nothing. The reproducer to write: a case in `test-token-guard-hook-behavior.sh` that feeds a first-Edit-on-a-multi-file-task PreToolUse payload with no prior plan echo and asserts exit 2. Must be observed red before the fix.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates via `kipi update` (`kipi-update.sh:599,790,1398`), and this rule's frontmatter is `paths: [\"**/*\"]`, so it is always-on instruction context in every instance. `token-guard.py` is also fleet-wired through `settings-template.json`, so any new blocking branch fires everywhere on the next update. A false positive on Pre-Action Echo would block the first Edit of every multi-file task fleet-wide.\n* **Not doing:** not touching the Layer 1 block thresholds (3 retries, 50 tool calls, 25 subagents, etc.) that `token-guard.py` already enforces, and not rewriting the self-monitoring bullet list in lines 25-32, which is judgment-layer prose by design.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 3 h",
+   "state": {
+    "name": "Backlog",
+    "type": "backlog"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:24 UTC\n\n**Held at `blocked:capability`. Nothing is wrong with this issue.**\n\nSame blocker proven on ASK-140 by an unattended run today: the fix lands in `.claude/rules/*.md`, and the harness sensitive-path guard refuses Edit/Write on `.claude/**` from a non-interactive session. The DoR here is sound; the runner is not equipped. Verified this issue is the same shape (entry point is a `.claude/rules/` file).\n\nLabelled ahead of dispatch deliberately. Left in the queue, each of these would spend a dispatch, open a PR, draw REQUEST CHANGES and stop at the same wall -- five dispatches to rediscover one fact already established. That is budget spent on a known answer.\n\n**Unblocks with one authorization:** `Edit(.claude/rules/**)` for the dispatched session. An agent must not grant itself a permission, so this one is not mine to make. Once granted, remove the label and the loop picks all six up on its own.\n\nReversible: remove `blocked:capability` to requeue.",
+      "createdAt": "2026-07-30T20:24:12.581Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame auto-filed CAP template as ASK-140/138/137/136/135 with the same 'prompt-only, names NO executable' finding against .claude/rules/token-discipline.md; note token-guard.py already exists and is wired, so this one resolves by pointing the rule at its executable inside the same batch pass.\n\n**Next:** Work under the ASK-140 parent: add the token-guard.py reference to .claude/rules/token-discipline.md and close as part of the batch.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:13Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:14.398Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "f47a5787-bf39-4b22-883b-35e8d8793988",
+   "identifier": "ASK-138",
+   "title": "CAP-27 rule social-reaction-gate: Fires when the founder shares someone else's content and asks to comment, reply, qu...",
+   "description": "<!-- kipi-key: kipi-system/rule-social-reaction-gate -->\n\nFires when the founder shares someone else's content and asks to comment, reply, quote-post, or DM.\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/social-reaction-gate.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/social-reaction-gate.md: 18 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** the social-reaction gate stops being a prompt-only ENFORCED claim: it either names a real executable that runs (fixture-backed trigger eval and/or a lint on the deterministic slice), or its ENFORCED label is downgraded to match what actually holds it.\n* **Files:** `.claude/rules/social-reaction-gate.md` (18 lines, the claim itself); `q-system/.q-system/skill-evals/social-reaction-gate.json` (new fixture, same shape as the 4 existing ones: `skill`, `fired_marker`, `cases[].prompt/.should_trigger`). If a deterministic lint turns out to exist: `q-system/.q-system/scripts/social-reaction-lint.py` + wiring in BOTH `.claude/settings.json` and root `settings-template.json`. Open design question, not a guess to bake in now: a reaction draft is chat output with no file artifact, so a PostToolUse hook has nothing to inspect unless drafts get written to a file first. That call belongs in the recon pass.\n* **Check:** `python3 q-system/.q-system/scripts/skill-trigger-eval.py social-reaction-gate`. Red today for two reasons: no fixture file exists at `q-system/.q-system/skill-evals/social-reaction-gate.json`, and in this sandbox the harness aborts first with `error: claude command not runnable: claude (set SKILL_EVAL_CLAUDE_CMD)`. Green means a fixture loads and a trigger_rate prints. Note this harness is ADVISORY by design (`skill-hook-pairing.md`, \"Trigger-eval pairings\") so it never becomes a blocking gate. The blocking check for closeout stays `python3 plugins/prd-os/scripts/prd_runner.py gates run`.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates via `kipi update`, and `q-system/output/capability-digest.json` lists this capability in 24 repos (4_points_consulting, ASK_AI_consultant, Pure_spectrum_Q, investigations, ...). It is always-on instruction context in every one of them, so wording changes hit 24 repos' prompt budget. If a hook gets added, `settings-template-sync-check` blocks a `.claude/settings.json` edit that is missing from `settings-template.json`.\n* **Not doing:** not touching `voice-enforcement.md`, `founder-voice`, `voice-lint.py`, or `linkedin-format-lint.py`; not rewriting the engagement/reaction drafting workflow itself; not auditing the other prompt-only ENFORCED rules surfaced by the same CAP sweep (each gets its own issue).\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 2 h",
+   "state": {
+    "name": "Backlog",
+    "type": "backlog"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:24 UTC\n\n**Held at `blocked:capability`. Nothing is wrong with this issue.**\n\nSame blocker proven on ASK-140 by an unattended run today: the fix lands in `.claude/rules/*.md`, and the harness sensitive-path guard refuses Edit/Write on `.claude/**` from a non-interactive session. The DoR here is sound; the runner is not equipped. Verified this issue is the same shape (entry point is a `.claude/rules/` file).\n\nLabelled ahead of dispatch deliberately. Left in the queue, each of these would spend a dispatch, open a PR, draw REQUEST CHANGES and stop at the same wall -- five dispatches to rediscover one fact already established. That is budget spent on a known answer.\n\n**Unblocks with one authorization:** `Edit(.claude/rules/**)` for the dispatched session. An agent must not grant itself a permission, so this one is not mine to make. Once granted, remove the label and the loop picks all six up on its own.\n\nReversible: remove `blocked:capability` to requeue.",
+      "createdAt": "2026-07-30T20:24:14.505Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame CAP scanner template and same 'claims ENFORCED, no executable' evidence as its five siblings; social-reaction-gate.md is a claims-extraction step that is judgment, not regex, so per skill-hook-pairing.md it belongs in the 'no hook, drop the ENFORCED label' half of the same batch decision.\n\n**Next:** Work under the ASK-140 parent: reclassify social-reaction-gate.md as interpretive per skill-hook-pairing.md and close as part of the batch.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:13Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:13.611Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "5de5bc72-8f78-4630-a5b0-961be2476c6b",
+   "identifier": "ASK-137",
+   "title": "CAP-23 rule rca-mode: Root-cause analysis is handled by the **rca skill** in the `kipi-core` plugin.",
+   "description": "<!-- kipi-key: kipi-system/rule-rca-mode -->\n\nRoot-cause analysis is handled by the **rca skill** in the `kipi-core` plugin.\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/rca-mode.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/rca-mode.md: 37 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/rca-mode.md` names the two executables that already enforce it (`rca-lint.py`, `rca-notify.py`), so its ENFORCED claim is backed by a citable path and the capability map reads LIVE instead of NEEDS_WORK. The gap is prose, not enforcement: both hooks exist and are wired.\n* **Files:** `.claude/rules/rca-mode.md` (the only edit). Read-only evidence: `plugins/kipi-core/hooks/hooks.json` (where both hooks are wired), `plugins/kipi-core/skills/rca/scripts/rca-lint.py`, `plugins/kipi-core/skills/rca/scripts/rca-notify.py`. Detector that grades it: `q-system/.q-system/scripts/capability-map-gen.py:222` (regex `[\\w\\-/]+\\.(?:py|sh)\\b`, status logic at :226).\n* **Check:** currently red, verified just now, returns `NEEDS_WORK`:\n\n  ```\n  python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo kipi-system --out /tmp/cap-rca.json && python3 -c \"import json;print([ (c['name'],c['status']) for c in json.load(open('/tmp/cap-rca.json'))['capabilities'] if c['name']=='rule rca-mode'])\"\n  ```\n\n  Green = `[('rule rca-mode', 'LIVE')]`.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates to every instance via `kipi update` (root `CLAUDE.md` does not; rules do). It is an always-on instruction file, so the edit lands in every instance's context budget. No settings, no hook, no script behavior changes. Alternative fix worth naming before starting: loosen the detector at `capability-map-gen.py:222` to also accept a named-hook reference. That is a wider blast radius (regrades every rule in every repo) and is not the pick here.\n* **Not doing:** not building or rewiring any RCA enforcement (both hooks are already live in `plugins/kipi-core/hooks/hooks.json`), not touching the rca skill or its scripts, and not sweeping the other rules the same detector flags NEEDS_WORK. If that sweep is real, it gets its own capture.\n\n**Energy:** Quick Win \u00b7 **Time Est:** 30 min",
+   "state": {
+    "name": "Backlog",
+    "type": "backlog"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:24 UTC\n\n**Held at `blocked:capability`. Nothing is wrong with this issue.**\n\nSame blocker proven on ASK-140 by an unattended run today: the fix lands in `.claude/rules/*.md`, and the harness sensitive-path guard refuses Edit/Write on `.claude/**` from a non-interactive session. The DoR here is sound; the runner is not equipped. Verified this issue is the same shape (entry point is a `.claude/rules/` file).\n\nLabelled ahead of dispatch deliberately. Left in the queue, each of these would spend a dispatch, open a PR, draw REQUEST CHANGES and stop at the same wall -- five dispatches to rediscover one fact already established. That is budget spent on a known answer.\n\n**Unblocks with one authorization:** `Edit(.claude/rules/**)` for the dispatched session. An agent must not grant itself a permission, so this one is not mine to make. Once granted, remove the label and the loop picks all six up on its own.\n\nReversible: remove `blocked:capability` to requeue.",
+      "createdAt": "2026-07-30T20:24:17.735Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame CAP template and same evidence sentence as its siblings, and the claim is factually wrong on disk: rca-mode.md names rca-notify and rca-lint hooks in its 'The deterministic part' section, so it is a scanner false positive resolved by fixing the detector once for all six.\n\n**Next:** Work under the ASK-140 parent: fix the CAP scanner's executable-detection to read hook references in rule bodies, then close as part of the batch.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:12Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:12.966Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "9247322b-b36b-41f9-a1dd-907be0a2d1a3",
+   "identifier": "ASK-136",
+   "title": "CAP-22 rule quick-plan: A lightweight, non-gated planning reflex: the moment the founder has an idea, a bug, a pasted...",
+   "description": "<!-- kipi-key: kipi-system/rule-quick-plan -->\n\nA lightweight, non-gated planning reflex: the moment the founder has an idea, a bug, a pasted error, or a task bigger than a one-line change, the first move is a `plan.md` grounded in this instance's\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/quick-plan.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/quick-plan.md: 24 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/quick-plan.md` stops being a prompt-only ENFORCED claim: the deterministic slice (a plan file at `q-system/output/plans/<slug>-<YYYY-MM-DD>.md` carries the five required sections and a dated filename) is checked by a real script wired as a PostToolUse hook, and the interpretive slice (does the reflex fire at all) is either demoted from ENFORCED or covered by a trigger-eval fixture.\n* **Files:** `.claude/rules/quick-plan.md` (name the executable, per `skill-hook-pairing.md`); `q-system/.q-system/scripts/plan-lint.py` (new, self-scoped to `q-system/output/plans/` by `tool_input.file_path`, exit 2 = block); `q-system/.q-system/scripts/test_plan_lint.py` (new reproducer); `.claude/settings.json` + `settings-template.json` (both, or `settings-template-sync-check` blocks the edit); `q-system/.q-system/capability-manifest.json` (`expected_tests` entry: `{\"path\": \"...test_plan_lint.py\", \"runner\": \"python3\"}`); optional `q-system/.q-system/skill-evals/quick-plan.json`.\n* **Check:** nothing exists today. What has to be written: `python3 q-system/.q-system/scripts/test_plan_lint.py` \u2014 red first against a fixture plan missing \"Acceptance criteria\", green after. Then the wiring proof `python3 q-system/.q-system/scripts/capability-gate.py` (manifest entry present and runnable) and `python3 plugins/prd-os/scripts/prd_runner.py gates run`. Corpus sanity: the linter run over the 49 existing files in `q-system/output/plans/` \u2014 expect failures there, they predate the rule, so decide grandfather-vs-fix before wiring the hook.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates via `kipi update`, so the rule text lands in every instance; the hook only reaches instances if it is in `settings-template.json`, and a `.claude/settings.json`-only wiring ships a dead switch (that's what `settings-template-sync-check` blocks). Always-on rule + settings both touched. A too-strict linter blocks plan writes fleet-wide, so scope the script to `q-system/output/plans/` and fast-exit on everything else.\n* **Not doing:** not building a detector for whether the quick-plan reflex fired when it should have (that is a model decision, advisory trigger-eval territory, never a blocking hook), and not touching the other prompt-only L0 rules in `.claude/rules/` flagged by the same CAP sweep.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** half day",
+   "state": {
+    "name": "Backlog",
+    "type": "backlog"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:24 UTC\n\n**Held at `blocked:capability`. Nothing is wrong with this issue.**\n\nSame blocker proven on ASK-140 by an unattended run today: the fix lands in `.claude/rules/*.md`, and the harness sensitive-path guard refuses Edit/Write on `.claude/**` from a non-interactive session. The DoR here is sound; the runner is not equipped. Verified this issue is the same shape (entry point is a `.claude/rules/` file).\n\nLabelled ahead of dispatch deliberately. Left in the queue, each of these would spend a dispatch, open a PR, draw REQUEST CHANGES and stop at the same wall -- five dispatches to rediscover one fact already established. That is budget spent on a known answer.\n\n**Unblocks with one authorization:** `Edit(.claude/rules/**)` for the dispatched session. An agent must not grant itself a permission, so this one is not mine to make. Once granted, remove the label and the loop picks all six up on its own.\n\nReversible: remove `blocked:capability` to requeue.",
+      "createdAt": "2026-07-30T20:24:19.102Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame CAP template as its five siblings; the extra 'names-a-path-that-does-not-exist' flag is a scanner artifact, since quick-plan.md's `plan.md` is a filename pattern for q-system/output/plans/<slug>-<date>.md, not a repo path, so it folds into the same detector fix.\n\n**Next:** Work under the ASK-140 parent: exclude generic filename tokens from the path-existence check, then close as part of the batch.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:12Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:12.320Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "06ddfb67-5759-4a79-8dd4-8feaa7812786",
+   "identifier": "ASK-135",
+   "title": "CAP-08 rule dev-skills-auto-invoke: Auto-invoke development skills when building skills, plugins, MCP servers, hooks,...",
+   "description": "<!-- kipi-key: kipi-system/rule-dev-skills-auto-invoke -->\n\nAuto-invoke development skills when building skills, plugins, MCP servers, hooks, or using Claude API\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/dev-skills-auto-invoke.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/dev-skills-auto-invoke.md: 27 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/dev-skills-auto-invoke.md` stops being a prompt-only ENFORCED claim: a runnable validator proves every skill named in its trigger table actually resolves to an installed SKILL.md, and a trigger-eval fixture measures whether the rule fires (advisory, per `skill-hook-pairing.md`).\n* **Files:** `.claude/rules/dev-skills-auto-invoke.md` (fix or earn the ENFORCED label) \u00b7 `q-system/.q-system/scripts/dev-skills-lint.py` (new validator) \u00b7 `validate-separation.py` (register it so `kipi check` runs it) \u00b7 `q-system/.q-system/skill-evals/dev-skills-auto-invoke.json` (new fixture, same shape as `q-system/.q-system/skill-evals/rca.json`: `{skill, fired_marker, cases}`) \u00b7 `.claude/rules/skill-hook-pairing.md` (add to the wired/trigger-eval lists).\n* **Check:** No pass/fail check exists today. `python3 q-system/.q-system/scripts/skill-trigger-eval.py` runs but prints `ADVISORY ... not a pass/fail gate`, so it cannot be the reproducer. The red-then-green check has to be written: `python3 q-system/.q-system/scripts/dev-skills-lint.py` exiting non-zero while a table row names an unresolvable skill. Expected to start RED \u2014 this session's skill listing resolves `working-with-claude-code`, `developing-claude-code-plugins`, and `claude-api`, but shows no `skill-creator`, `mcp-builder`, or `hook-development`, which are 3 of the 6 rows.\n* **Blast radius:** Fleet-wide. `.claude/rules/*.md` and `q-system/.q-system/scripts/*` both propagate via `kipi update`, so a strict validator lands red on every instance at once if the 3 unresolved skills are left in the table. The rule is path-scoped (`plugins/**`, `.claude/settings.json`, `**/SKILL.md`), not session-always-on. If this is wired as a settings hook instead of a `kipi check` validator, `settings-template.json` needs the matching entry or `settings-template-sync-check` blocks the edit.\n* **Not doing:** Not installing or authoring the 3 missing skills, and not touching the sibling prompt-only auto-invoke rules (`design-auto-invoke.md`, `fable-discipline-auto-invoke.md`) that share this shape.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 2 h",
+   "state": {
+    "name": "Backlog",
+    "type": "backlog"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-07-30 20:24 UTC\n\n**Held at `blocked:capability`. Nothing is wrong with this issue.**\n\nSame blocker proven on ASK-140 by an unattended run today: the fix lands in `.claude/rules/*.md`, and the harness sensitive-path guard refuses Edit/Write on `.claude/**` from a non-interactive session. The DoR here is sound; the runner is not equipped. Verified this issue is the same shape (entry point is a `.claude/rules/` file).\n\nLabelled ahead of dispatch deliberately. Left in the queue, each of these would spend a dispatch, open a PR, draw REQUEST CHANGES and stop at the same wall -- five dispatches to rediscover one fact already established. That is budget spent on a known answer.\n\n**Unblocks with one authorization:** `Edit(.claude/rules/**)` for the dispatched session. An agent must not grant itself a permission, so this one is not mine to make. Once granted, remove the label and the loop picks all six up on its own.\n\nReversible: remove `blocked:capability` to requeue.",
+      "createdAt": "2026-07-30T20:24:20.388Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSixth instance of the identical CAP auto-filed shape against .claude/rules/dev-skills-auto-invoke.md, with the same prompt-only evidence line and no Files line; auto-invoke rules are model-trigger decisions that skill-hook-pairing.md explicitly routes to trigger-eval fixtures rather than blocking hooks.\n\n**Next:** Work under the ASK-140 parent: decide trigger-eval fixture or ENFORCED-label removal for dev-skills-auto-invoke.md and close as part of the batch.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:11Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:12.089Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "29f37199-9ae0-4f69-91c6-83adc558a438",
+   "identifier": "ASK-134",
+   "title": "CAP-07 rule design-auto-invoke: Auto-invoke design skills only for public-facing pages and assets",
+   "description": "<!-- kipi-key: kipi-system/rule-design-auto-invoke -->\n\nAuto-invoke design skills only for public-facing pages and assets\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/design-auto-invoke.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/design-auto-invoke.md: 27 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/design-auto-invoke.md` stops claiming ENFORCED on nothing \u2014 either the public-vs-internal scoping decision gets backed by an executable (the classifier already living in `plugins/kipi-design/hooks/dogfood_gate.py`, which skips internal HTML) plus a trigger-eval fixture for the \"did the skill actually fire\" half, or the ENFORCED label comes off and the rule is listed as correctly-interpretive in `skill-hook-pairing.md` alongside research-mode and kipi-design.\n* **Files:** `.claude/rules/design-auto-invoke.md` (27 lines, frontmatter globs `sites/**/*.{html,css,tsx,jsx}`); `q-system/.q-system/skill-evals/design-auto-invoke.json` (new \u2014 the dir holds 4 fixtures today: audhd-executive-function, fable-discipline, founder-voice, rca); `plugins/kipi-design/hooks/dogfood_gate.py` + `plugins/kipi-design/hooks/test_dogfood_gate.py` if the public/internal path classifier is what the rule ends up pointing at.\n* **Check:** `python3 plugins/kipi-design/hooks/test_dogfood_gate.py` runs today but covers the AI-slop fingerprint, not the public/internal scoping decision \u2014 a red-first case has to be added there (internal path \u2192 skipped, public path \u2192 scanned). The interpretive half is advisory only: `python3 q-system/.q-system/scripts/skill-trigger-eval.py` against the new fixture. Per `skill-hook-pairing.md` a trigger-eval is never a blocking exit-2 gate, so it cannot serve as the DoD check.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` and `plugins/*/` both propagate via `kipi update` (`wiring-check.md:44-48`), so both the rule text and any `dogfood_gate.py` change land in every instance. Not always-on: the frontmatter globs confine it to `sites/**`, so the instruction-budget cost only lands on files under `sites/`. No settings change unless a new hook gets wired \u2014 that would also require the repo-root `settings-template.json`, since `settings-template-sync-check.py` (wired at `.claude/settings.json:241`) blocks a hook present in one and missing from the other.\n* **Not doing:** `dogfood-gate.md` and its blocking slop gate stay as-is \u2014 this issue is the *auto-invoke scoping* rule (when to load `kipi-design` skills), not the ship-quality gate. Also not revisiting the `paths:`/globs frontmatter proposal in `q-system/output/prd-claude-md-diet-2026-04-12.md`; that landed already.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 2 h",
+   "state": {
+    "name": "In Progress",
+    "type": "started"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 16:49 UTC\n\nReview of PR #49 complete (codex engine, DEGRADED: codex down, Opus fallback). Verdict: APPROVE WITH NITS. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nminor|The new publish_gate description says any non-design-room public page publishes at exit 0, but an unmappable Vercel deploy fails closed at exit 2|.claude/rules/design-auto-invoke.md:31\nminor|The rule names is_public_facing_page() as its scoping answer, but that function returns False for the .css/.tsx/.jsx paths in the rule's own globs, so the rule reads as exempting public JSX pages from a design pass|.claude/rules/design-auto-invoke.md:21\nnit|The cockpit regression fixture is a hardcoded absolute path while its comment claims it was read off disk via instance-registry.json, so a producer move leaves the test green|plugins/kipi-design/hooks/test_dogfood_gate.py:165\nnit|Version bumped 1.2.5 to 1.2.8 but the PR body says 1.2.6|plugins/kipi-design/.claude-plugin/plugin.json:3\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T16:49:06.054Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 07:34 UTC\n\nReview of PR #49 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|The new ENFORCED claim is false because clean public pages pass both dogfood and Vercel publish gates without a design-room receipt|.claude/rules/design-auto-invoke.md:14\nminor|The comment incorrectly says com.cole.cockpit edits the cloud cockpit HTML files, but the actual job serves a different dashboard path|plugins/kipi-design/hooks/dogfood_gate.py:290\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T07:34:14.121Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 00:44 UTC\n\nReview of PR #49 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|The path classifier treats the registered founder-only GTM cockpit as public, so every unattended edit to its current HTML triggers a false blocking alert.|plugins/kipi-design/hooks/dogfood_gate.py:278\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T00:44:49.828Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 17:52 UTC\n\nReview of PR #49 complete (codex engine). Verdict: APPROVE WITH NITS. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nminor|The new scope tests call only is_public_facing_page(), so they remain green if the PostToolUse entrypoint bypasses the classifier and public HTML ships unscanned.|plugins/kipi-design/hooks/test_dogfood_gate.py:142\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T17:52:39.742Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:11 UTC\n\n**Blocked on a missing capability, not on scope.** Labelled `blocked:capability`; the picker will not offer it again until the capability exists.\n\nASK-134 \u2014 blocked on write access to `.claude/rules/*.md`.\n\nMISSING CAPABILITY\n  Write/Edit on `/Users/assafkipnis/.config/kipi/worktrees/ask-134/.claude/rules/design-auto-invoke.md`.\n\nWHAT REFUSED IT\n  The harness permission layer, on both tools, with:\n    \"Claude requested permissions to edit <path> which is a sensitive file.\"\n  Write was refused first, then Edit on the identical path. This session is\n  non-interactive, so the prompt cannot be granted mid-run. The block is\n  path-class based (`.claude/**`), not content based \u2014 no hook fired, no gate\n  rejected the diff.\n\nWHY THIS IS A RUNNER PROBLEM, NOT A SPEC PROBLEM\n  The DoR is well-formed and executable. Its Outcome is an OR, and BOTH branches\n  terminate in an edit to the same refused file:\n    branch A (back the scoping decision with an executable) -> rewrite the rule\n      header so it names that executable;\n    branch B (drop the ENFORCED label)                      -> edit the rule\n      header to remove ENFORCED, plus edit `.claude/rules/skill-hook-pairing.md`,\n      which is in the same refused path class.\n  A perfectly re-scoped DoR would hit the same wall. Do NOT send this to the DoR\n  drafter; re-scoping burns a pass and returns the same blocked issue.\n\nWHAT IT UNBLOCKS\n  The remaining ~20 lines of ASK-134, and the same wall for the four sibling\n  CAP-0n issues (ASK-130/131/132/133), which are all edits to `.claude/rules/*.md`.\n\nWHAT SHIPPED ANYWAY (the executable half, committed on sana/ask-134)\n  The Do\n\n**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.\n\n**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up.",
+      "createdAt": "2026-07-31T14:11:20.909Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:11 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-07-31T14:11:16.797Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:10 UTC\n\nBLOCKED ON CAPABILITY, not on scope. Shipped the executable half; the rule text is refused to this session. PR #49 open (do not merge as issue completion). The DoR Outcome is an OR and BOTH branches end in an edit to .claude/rules/design-auto-invoke.md (branch B also needs .claude/rules/skill-hook-pairing.md). Write and Edit were both refused there by the harness permission layer with 'which is a sensitive file'. Non-interactive session, so the prompt cannot be answered mid-run; I did not route around it via Bash. A perfectly re-scoped DoR hits the same wall, so this must NOT go to the DoR drafter. Filed .sana-blocked-capability. Same wall applies to siblings ASK-130/131/132/133. What DID ship (commit 1fac311): for an .html file the rule's question 'will someone other than the founder see this?' is a path decision, not judgement, and dogfood_gate.py already made it inline in main() where no test could reach it. Extracted to is_public_facing_page(path); main() calls it so the gate and its proof read one answer. Behavior identical. 18 new [scope] cases; runner declared in capability-manifest.json (it was undeclared); kipi-design 1.2.5->1.2.6 after the plugin-version-bump gate caught the miss. To unblock: grant Write/Edit on .claude/rules/** in the worktree, or run the ~20-line rule edit interactively.\n\n```\nRED first: $ python3 plugins/kipi-design/hooks/test_dogfood_gate.py -> ImportError: cannot import name 'is_public_facing_page' from 'dogfood_gate' (EXIT=1). GREEN after extraction: same command -> 'test_dogfood_gate: 42 checks passed (live + fallback)' (EXIT=0). End-to-end through the real hook, identical slop HTML on two paths: index.html exit=2 expected=2 OK (blocked, public); dashboard.html exit=0 expected=0 OK (skipped, internal). STILL RED, only the refused file clears it: $ python3 q-system/.q-system/scripts/prompt-only-enforcement-guard.py .claude/rules/design-auto-invoke.md -> 'BLOCK: prompt-only enforcement is not allowed' at :8 :10 :12 (EXIT=2). Refusal observed twice: 'Claude requested permissions to edit .claude/rules/design-auto-invoke.md which is a sensitive file' on Write, then on Edit.\n```",
+      "createdAt": "2026-07-31T14:10:51.135Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:03 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-134`. Attempt 1 of 3.",
+      "createdAt": "2026-07-31T14:03:23.266Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nOne of five identical CAP-0n rule issues (ASK-130/131/132/133/134) whose entire evidence is the same sentence -- 'claims ENFORCED but names NO executable' -- and whose fix is the same decision from .claude/rules/skill-hook-pairing.md applied per file; design-auto-invoke.md's trigger ('will someone other than the founder see this?') is judgment, and skill-hook-pairing.md already lists kipi-design as correctly interpretive, so its resolution is dropping the ENFORCED label, not writing a hook.\n\n**Next:** Fold into one batch issue 'rules claiming ENFORCED with no named executable' covering ASK-130..134; for this file, remove ENFORCED from the header and close as batched.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:11Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:11.762Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "4055f312-fd6c-4e2b-a251-a3cec90d5dc9",
+   "identifier": "ASK-133",
+   "title": "CAP-05 rule coding-standards: Code style and naming conventions for Python, JS, Shell, and JSON",
+   "description": "<!-- kipi-key: kipi-system/rule-coding-standards -->\n\nCode style and naming conventions for Python, JS, Shell, and JSON\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/coding-standards.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/coding-standards.md: 23 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/coding-standards.md` stops being prompt-only: its deterministic lines (shell `set -euo pipefail`, JSON 2-space indent, no `var` in JS, snake_case scripts / kebab-case output files) are enforced by a wired PostToolUse lint that blocks with exit 2, and the rule names that executable.\n* **Files:**\n  * `.claude/rules/coding-standards.md` (name the executable; split deterministic vs interpretive lines)\n  * `q-system/.q-system/scripts/coding-standards-lint.py` (new; header names the rule it pairs with, per `skill-hook-pairing.md`)\n  * `q-system/.q-system/scripts/test_coding_standards_lint.py` (new; follows `test_voice_lint_caps.py` convention)\n  * `.claude/settings.json` PostToolUse block (the lint cluster at lines 191-226)\n  * `settings-template.json` (repo root; `settings-template-sync-check` aborts `kipi update` if the hook is in settings.json but not here)\n  * `q-system/.q-system/capability-manifest.json` (`expected_tests` entry, or the capability gate reads it as silently absent)\n  * `.claude/rules/skill-hook-pairing.md` \"Wired pairings\" line\n* **Check:** none exists today. Has to be written: `python3 q-system/.q-system/scripts/test_coding_standards_lint.py` with fixtures per rule (a `.sh` missing `set -euo pipefail`, a 4-space `.json`, a `.js` using `var`), observed red before the lint exists, green after. Live proof of the wire, not just the unit: edit a scratch `.sh` through the hook and show exit 2. One unknown to settle by reading `voice-lint.py` first: the wired hooks take the payload on stdin, while `format-lint.py` documents an argv path. Match the stdin contract, do not guess it.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` and `q-system/.q-system/scripts/` both propagate via `kipi update`, so every instance gets the new blocking hook. It touches an always-on rule and both settings files. A false positive here blocks writes across the fleet, so the lint self-scopes by `tool_input.file_path` extension and fast-exits on everything else. Bypass marker: `# coding-standards-lint-skip`. Run `kipi update --dry` before propagating.\n* **Not doing:** no autofix or formatter (block only, no rewriting founder code). No retroactive sweep of existing repo files. The \"Test After Edit\" half of the rule stays interpretive and unhooked; that is a model decision, not a regex, and belongs in a trigger-eval fixture if it gets covered at all.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 3 h",
+   "state": {
+    "name": "In Progress",
+    "type": "started"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 18:37 UTC\n\nReview of PR #50 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|The PR ships an unreachable hook and an undeclared test, so the required capability gate is red and the detector cannot run.|q-system/.q-system/scripts/coding-standards-lint.py:283\nmajor|The strict-shell rule rejects intentional no-`-e` handling in two tracked operational scripts, so wiring it fleet-wide will block valid edits and force manual bypasses.|q-system/.q-system/scripts/coding-standards-lint.py:92\nminor|The strict-shell check searches the whole file, so a later local `set -e` makes a script whose startup mode is `set -uo pipefail` pass as strict.|q-system/.q-system/scripts/coding-standards-lint.py:92\nminor|The JavaScript noise stripper does not recognize regex literals, so valid regex text containing `var x` is rejected as a declaration.|q-system/.q-system/scripts/coding-standards-lint.py:156\nminor|The JSON checker examines only the dominant positive indent delta, so one invalid 4-space indentation step can pass in an otherwise 2-space file.|q-system/.q-system/scripts/coding-standards-lint.py:144\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T18:37:42.269Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:28 UTC\n\n**Blocked on a missing capability, not on scope.** Labelled `blocked:capability`; the picker will not offer it again until the capability exists.\n\nASK-133 \u2014 blocked on write permission for `.claude/` in this worker session.\n\nMISSING CAPABILITY\n  Write/Edit access to files under `.claude/` in the ask-133 worktree.\n  Refused by the harness permission layer, twice, on two different files:\n    - Edit `.claude/settings.json`\n      -> \"Claude requested permissions to write to ... but you haven't granted it yet.\"\n    - Write `.claude/rules/coding-standards.md`\n      -> \"Claude requested permissions to edit ... which is a sensitive file.\"\n  I did not route around either refusal (no Bash heredoc, no python open()).\n\nWHY THIS IS A CAPABILITY BLOCK, NOT A SCOPE PROBLEM\n  The DoR is correct and executable. Three of its six named files live under\n  `.claude/`:\n    - .claude/settings.json           (the PostToolUse switch)\n    - .claude/rules/coding-standards.md  (the rule must name its executable)\n    - .claude/rules/skill-hook-pairing.md (\"Wired pairings\" line)\n  A perfectly re-written DoR would name the same three files, because that is\n  where the wiring lives. Re-scoping burns a pass and returns the same block.\n\nWHAT IS DONE AND SHIPPED ON THIS BRANCH\n  - q-system/.q-system/scripts/coding-standards-lint.py (new, 4 rules,\n    stdin hook contract + CLI mode, self-scoping, bypass marker)\n  - q-system/.q-system/scripts/test_coding_standards_lint.py (new, 39 cases)\n  - 35/39 green, including every behavior case and the full hook contract\n    (exit 2 on a violating Write, exit 0 out of scope / non-edit tool /\n    garbage stdin / mis\n\n**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.\n\n**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up.",
+      "createdAt": "2026-07-31T14:28:04.871Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:27 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-07-31T14:27:59.032Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:27 UTC\n\nLint + tests shipped and PR #50 open. BLOCKED on the wiring: harness refused writes under .claude/ twice (settings.json and rules/coding-standards.md), and 3 of the DoR's 6 files live there. Wrote .sana-blocked-capability (capability block, NOT a scope problem - any correct DoR names the same .claude/ files). Did not route around either refusal. Deviation flagged: the rule's 'snake_case for scripts' prose would block ~70% of script edits fleet-wide (repo is 85 kebab vs 35 snake), so the lint accepts both.\n\n```\npython3 q-system/.q-system/scripts/test_coding_standards_lint.py -> observed RED first (FileNotFoundError: coding-standards-lint.py, before the lint existed), then: Ran 39 tests in 0.981s / FAILED (failures=4). 35 green incl. the full hook contract (exit 2 on violating Write, exit 0 on out-of-scope/non-edit-tool/garbage-stdin/missing-file). The 4 red are the Wiring class only: test_wired_in_settings_json, test_wired_in_settings_template, test_registered_in_the_capability_manifest, test_the_rule_names_its_executable. settings-template.json edit was made, correctly rejected by settings-template-sync-check as skeleton-dead, and reverted rather than commit a red gate. Commit 72e2617, PR https://github.com/assafkip/kipi-system/pull/50\n```",
+      "createdAt": "2026-07-31T14:27:45.097Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:18 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-133`. Attempt 1 of 3.",
+      "createdAt": "2026-07-31T14:18:38.103Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame shape and same fix as ASK-130/131/132/134 -- .claude/rules/coding-standards.md, 23 lines, flagged solely for the 'ENFORCED without an executable' pattern; style/naming conventions for Python, JS, Shell and JSON are the most hookable of the five (a linter config plus one settings.json PostToolUse line), which is exactly the 'one script plus N config lines' batch shape.\n\n**Next:** Fold into the ASK-130..134 batch issue; in that pass, decide lint-hook vs drop-ENFORCED for this file and close as batched.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:10Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:11.045Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "b9b9f2c7-4957-4286-8925-f0f0edfe5d8f",
+   "identifier": "ASK-132",
+   "title": "CAP-04 rule coding-audhd: AUDHD-adapted coding rules - structure, communication, emotional scaffolding",
+   "description": "<!-- kipi-key: kipi-system/rule-coding-audhd -->\n\nAUDHD-adapted coding rules - structure, communication, emotional scaffolding\n\n| Field | Value |\n| -- | -- |\n| Repo | `kipi-system` |\n| Layer | L0 Governance and rules |\n| Status claimed | NEEDS_WORK |\n| Entry point | .claude/rules/coding-audhd.md |\n| Trigger | always-on instruction context |\n| Depends on | *nothing recorded* |\n| Feeds | *nothing recorded* |\n\n## Evidence\n\n.claude/rules/coding-audhd.md: 56 lines; claims ENFORCED but names NO executable, so it is prompt-only.\n\n## Definition of Done\n\nPer the fleet SDLC standard: the command and its real output pasted here,\nthe reproducer green after being observed red, wiring proven end to end,\nand a commit naming this issue id.\n\n## Definition of Ready\n\n* **Outcome:** `.claude/rules/coding-audhd.md` stops being prompt-only: it names its already-wired executable (`q-system/.q-system/scripts/wiring-check.py`), its ENFORCED claim matches what that script actually does, and a test proves the checks fire on a bad file and stay quiet on a clean one.\n* **Files:** `.claude/rules/coding-audhd.md` (add the enforcement-pairing line + narrow or keep the ENFORCED label); `q-system/.q-system/scripts/wiring-check.py` (header comment naming the rule it pairs with; the exit-code decision \u2014 it currently always exits 0, line 8-9: \"Non-zero exits are reserved for future hard blocks\"); new `q-system/.q-system/scripts/test_wiring_check.py`; one line in `q-system/.q-system/capability-manifest.json`.\n* **Check:** none exists today \u2014 `ls q-system/.q-system/scripts/ | grep test_wiring` returns empty. What has to be written: `python3 q-system/.q-system/scripts/test_wiring_check.py`, feeding [wiring-check.py](<http://wiring-check.py>) a fixture .py with nesting depth 3, a 40-line function, and a `print(`, asserting it reports all three; plus a clean fixture asserting silence. Observe it red before the rule edit lands. Existing hook wiring is already provable: `grep -n wiring-check .claude/settings.json` \u2192 line 186.\n* **Blast radius:** fleet-wide. `.claude/rules/*.md` propagates via `kipi update` ([kipi-update.sh:790](<http://kipi-update.sh:790>), :1395) and the capability-overlap plan lists `rule-coding-audhd` in 24 instances. The script is also wired in `settings-template.json:240`, so any exit-code change from 0 to 2 turns an advisory warning into a hard block on every code Edit/Write across the fleet. Always-on rule + settings: yes to both. If the exit code changes, that is the founder decision in this issue, not a silent call.\n* **Not doing:** does not touch `audhd-lint.py` or the `audhd-executive-function` skill (that pair covers founder-facing output, different scope), and does not build detectors for the rule's non-deterministic sections \u2014 Presentation, Error Communication, Session Structure, and the banned-language list are model-behavior, not file-inspectable, so they stay interpretive.\n\n**Energy:** Deep Focus \u00b7 **Time Est:** 2 h",
+   "state": {
+    "name": "In Progress",
+    "type": "started"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 01:24 UTC\n\nReview of PR #51 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|The test reports enforcement even though violations exit successfully and can land unattended.|q-system/.q-system/scripts/test_wiring_check.py:132\nminor|The new depth calculation treats elif as another nesting level and produces a false warning on a real repo dispatch shape.|q-system/.q-system/scripts/wiring-check.py:114\nminor|The detector omits asynchronous control nodes and underreports a real four-level control path as depth 3.|q-system/.q-system/scripts/wiring-check.py:180\nminor|The new comment claims only the outermost violating block warns, but four nested blocks produce two warnings for one stack.|q-system/.q-system/scripts/wiring-check.py:112\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T01:24:03.928Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-02 01:01 UTC\n\nReview of PR #51 complete (codex engine). Verdict: REQUEST CHANGES. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nmajor|The new test reports enforcement even though a dirty violation exits 0, so unattended code can break the stated limits while the suite stays green.|q-system/.q-system/scripts/test_wiring_check.py:132\nminor|The new +1 counts an elif AST node as another nesting level, so a valid two-level dispatch from this repo gets a false nesting warning.|q-system/.q-system/scripts/wiring-check.py:114\nEND FINDINGS\n```",
+      "createdAt": "2026-08-02T01:01:03.195Z"
+     },
+     {
+      "body": "**codex-reviewer** \u00b7 2026-08-01 19:08 UTC\n\nReview of PR #51 complete (codex engine). Verdict: APPROVE. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.\n\nSana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below.\n\n```\nFINDINGS:\nseverity|one-sentence claim|file:line\nEND FINDINGS\n```",
+      "createdAt": "2026-08-01T19:08:07.577Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:43 UTC\n\n**Blocked on a missing capability, not on scope.** Labelled `blocked:capability`; the picker will not offer it again until the capability exists.\n\nASK-132 \u2014 PARTIAL BLOCK. The spec is correct and executable; this session lacks write\naccess to one of the four files it names.\n\nMISSING CAPABILITY\n  Write/Edit access to `.claude/rules/coding-audhd.md`.\n\nWHAT REFUSED IT\n  The Claude Code permission layer, on the Edit tool:\n    \"Claude requested permissions to edit\n     /Users/assafkipnis/.config/kipi/worktrees/ask-132/.claude/rules/coding-audhd.md\n     which is a sensitive file.\"\n  `.claude/rules/*.md` is classified sensitive, so the edit needs an interactive\n  approval this non-interactive autonomous session cannot obtain. I did NOT route\n  around it via Bash/heredoc/sed \u2014 that gate is doing its job.\n\nWHAT IT UNBLOCKS\n  The DoR's primary outcome: \"`.claude/rules/coding-audhd.md` stops being prompt-only:\n  it names its already-wired executable, and its ENFORCED claim matches what that\n  script actually does.\" Everything else in the DoR shipped on branch sana/ask-132:\n\n    - q-system/.q-system/scripts/test_wiring_check.py   (new, 3 contracts, observed RED then GREEN)\n    - q-system/.q-system/scripts/wiring-check.py        (header names the rule; off-by-one nesting fix; still exits 0)\n    - q-system/.q-system/capability-manifest.json       (one line, the test is now gate-covered)\n\n  Only the rule-file edit is outstanding. Its exact intended content is in the PR\n  description for this branch, ready to paste.\n\nWHO OWNS THE FIX\n  Whoever owns this session's permission config. Either grant the autonomous worker\n  write access \n\n**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.\n\n**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up.",
+      "createdAt": "2026-07-31T14:43:04.771Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:43 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-07-31T14:43:01.912Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:41 UTC\n\nShipped the test + the defect it found; the rule-file edit is BLOCKED on a permission, not on scope. PR #51 (https://github.com/assafkip/kipi-system/pull/51), branch sana/ask-132, commit 920f2fe.\n\nDONE: test_wiring_check.py (new, 3 contracts), wiring-check.py (docstring names the paired rule + the exit-0 decision; nesting off-by-one fixed), capability-manifest.json (+1 line).\n\nThe reproducer was RED first and caught a real defect: _nesting_depth counted levels BELOW a node, so 'for > if > while' scored 2 and slipped past MAX_NESTING = 2 while breaking the rule's own 'max nesting: 2 levels'. Fixed by counting the node itself.\n\nExit code left at 0 on purpose. wiring-check.py is wired via settings-template.json:240 and rule-coding-audhd is in 24 instances, so 0 -> 2 is a hard block on every code Edit/Write fleet-wide. The DoR called that a founder decision; the docstring now states it instead of leaving 'reserved for future hard blocks' hanging.\n\nBLOCKED: .claude/rules/coding-audhd.md is classified sensitive by the permission layer and this non-interactive session's Edit was refused verbatim: 'Claude requested permissions to edit .claude/rules/coding-audhd.md which is a sensitive file.' I did not route around it via Bash/sed. This is a capability block, NOT a scope problem: a perfectly written DoR hits the identical refusal, so do not send this to the DoR drafter. Recorded in .sana-blocked-capability. The exact intended rule-file content is in the PR body, ready to paste by whoever holds write access.\n\nNot doing, per DoR: untouched audhd-lint.py and the audhd-executive-function skill; no detectors for Presentation / Error Communication / Session Structure / banned language.\n\n```\npython3 q-system/.q-system/scripts/test_wiring_check.py\nBEFORE the wiring-check.py fix:\n  FAIL dirty: reports nesting depth 3\n  PASS dirty: reports the 40-line function\n  PASS dirty: reports the leftover print()\n  PASS clean: no warnings at all\n  PASS mutation: MAX_NESTING = 99 silences the nesting report\nFAIL: 1 contract(s) broken\nexit=1\n\nAFTER:\n  PASS dirty: reports nesting depth 3\n  PASS dirty: reports the 40-line function\n  PASS dirty: reports the leftover print()\n  PASS clean: no warnings at all\n  PASS mutation: MAX_NESTING = 99 silences the nesting report\nPASS: wiring-check.py enforces the file-inspectable coding-audhd limits\nexit=0\n\ngit commit -> lefthook pre-commit 7/7 green (blocked-paths, large-files, plugin-version-bump, receipts-ledger, settings-template-sync, instruction-budget RATCHET PASS 513/513, gitleaks no leaks), commit-msg linear-issue-ref green. [sana/ask-132 920f2fe] 3 files changed, 161 insertions(+), 5 deletions(-)\n\npython3 -c manifest check -> entries: 89 sorted: True present: True\n```",
+      "createdAt": "2026-07-31T14:41:52.080Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-07-31 14:33 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-132`. Attempt 1 of 3.",
+      "createdAt": "2026-07-31T14:33:54.340Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `batch`** \u2014 one of N near-identical siblings; work them as one change, not N\n\nSame scanner template as ASK-130/131/133/134 against .claude/rules/coding-audhd.md (56 lines); its content is structure/communication/emotional scaffolding, i.e. the 'needs judgment' half of skill-hook-pairing.md's decision rule, so working it alone would repeat the identical triage the other four need.\n\n**Next:** Fold into the ASK-130..134 batch issue; split the deterministic slice (if any) into the existing audhd-lint, otherwise drop ENFORCED, and close as batched.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:10Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:10.814Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": "9f08b749-1094-4e61-92f0-8ab40099ce32",
+   "identifier": "ASK-116",
+   "title": "evidence-capture-protocol has 3 versions across 3 repos and none in the skeleton",
+   "description": "<!-- kipi-key: kipi-system/divergent-evidence-capture-protocol -->\n\n`.claude/rules/evidence-capture-protocol.md` exists in **three repos, in three different versions, and is absent from the skeleton.**\n\n| Content hash | Repo |\n| -- | -- |\n| `79aec127bf30` | `4_points_consulting` |\n| `e9f11c1fb928` | `investigations` |\n| `1a1b1e2674b2` | `Alice` |\n\nVerified by hashing the three files directly, not inferred from the recon.\n\n## Why this is the finding the overlap pass exists to produce\n\nThree repos independently wrote a rule about how evidence is captured. They are the three repos where evidence capture matters most: the production investigation OS, the investigations product line, and a client instance doing investigation work.\n\nNothing propagates between them. Each one improved its protocol without the other two learning anything. The fleet-homogeneity principle says a shared capability lives in ONE canonical source with `kipi update` fanning it out, and a `--check` drift gate refusing to let copies diverge. This is that principle being violated in the exact domain where getting evidence handling wrong is most expensive.\n\nThe three versions are also **not** a skeleton propagation, so no existing gate can see the divergence. `kipi update --check` cannot flag drift in a file the skeleton does not have.\n\n## Definition of Ready\n\n* **Outcome:** one canonical `evidence-capture-protocol.md` in the skeleton at `.claude/rules/`, propagating to instances, with the three current versions reconciled rather than one arbitrarily winning.\n* **Files:** the three paths above, plus the new skeleton copy.\n* **Check:**\n\n  ```bash\n  python3 q-system/.q-system/scripts/capability-overlap.py \\\n    --out /tmp/overlap.md --digest /tmp/digest.json\n  ```\n\n  `.claude/rules/evidence-capture-protocol.md` should no longer appear under DIVERGENT.\n* **Blast radius:** fleet-wide. A new always-on rule is blocked by `instruction-budget-audit.py --ratchet` (always-on total is 513 against a 300 target, and it exits 1 on any regression). **Path-scope this rule** the way `folder-structure.md` and `loop-exits.md` are scoped, or trimming an existing rule becomes a founder decision.\n* **Not doing:** the other 53 divergent paths. Most are commands and skills whose drift is lower-stakes; this one is picked because the domain makes the drift expensive.\n\n## Reconciliation, not a coin flip\n\nRead all three, take the union of what each learned, and record which repo contributed which clause. Picking one and deleting two throws away two repos' worth of learning, which is what produced three versions in the first place.\n\nFound by `capability-overlap.py` under [ASK-113](https://linear.app/ask-consulting/issue/ASK-113/epic-fleet-wide-linear-rollout-project-per-instance-auto-issue-on).",
+   "state": {
+    "name": "Todo",
+    "type": "unstarted"
+   },
+   "project": {
+    "name": "kipi-system"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "fleet-shared"
+     },
+     {
+      "name": "owner:sana"
+     },
+     {
+      "name": "kind:capability"
+     },
+     {
+      "name": "needs-evidence"
+     },
+     {
+      "name": "blocked:capability"
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "body": "**sana** \u00b7 2026-08-01 14:20 UTC\n\n**Blocked on a missing capability, not on scope.** Labelled `blocked:capability`; the picker will not offer it again until the capability exists.\n\nMissing capability: write access to .claude/rules/ paths. The harness permission\nsystem classifies .claude/rules/evidence-capture-protocol.md as a sensitive file\nand the Write tool request auto-denied in this headless session (\"Claude requested\npermissions to edit ... which is a sensitive file\"). ASK-116's entire deliverable\nis that exact path: create the reconciled canonical at\n<skeleton>/.claude/rules/evidence-capture-protocol.md and converge the three\ninstance copies at the same .claude/rules/ path in 4_points_consulting,\nkipi-investigations, and Alice. A perfectly written DoR still fails under this\ngate, so this is a runner-equipment block, not a spec defect.\n\nWhat it unblocks: the whole issue. The reconciliation work is DONE and staged in\nthis worktree at .sana-reconciled-evidence-capture-protocol.md (union of the\nthree versions with per-repo provenance table, path-scoped frontmatter so\ninstruction-budget-audit.py --ratchet sees it as conditional, not always-on).\nRED already observed: capability-overlap.py reports the path under DIVERGENT\nwith 3 distinct versions (79aec127bf30 / 1a1b1e2674b2 / e9f11c1fb928).\n\nConfig fix for whoever owns permissions: allow Write/Edit on\n.claude/rules/*.md for the sana worker session (or pre-approve the path in the\nworktree's permission settings). Then re-dispatch: copy the staged file to\n.claude/rules/evidence-capture-protocol.md, sync the same bytes to the three\ninstance paths, re-run\n  python3 q-system/.q-system/scripts/capability-overl\n\n**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.\n\n**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up.",
+      "createdAt": "2026-08-01T14:20:00.723Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 14:19 UTC\n\nWorker run completed. See the branch/PR for the diff.",
+      "createdAt": "2026-08-01T14:19:57.182Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 14:18 UTC\n\nBLOCKED on runner capability, not spec. The reconciliation itself is finished and staged; the harness refused the one write that ships it. The permission system classifies .claude/rules/evidence-capture-protocol.md as a sensitive file and auto-denied the Write in this headless session. The DoR's deliverable is exactly that path (skeleton + the three instance repos), so no re-scope helps -- routed via .sana-blocked-capability in the worktree, not needs-scope. Staged in worktree: .sana-reconciled-evidence-capture-protocol.md -- union of all three versions with per-repo provenance (investigations: local-only archive-skip semantics; Alice: WALLED classification + case-001 scar; 4_points: client-doc ingest pair + evidence-pipeline-guard gate + case-039 scar), path-scoped frontmatter so the instruction-budget ratchet counts it conditional. Config fix: allow Write/Edit on .claude/rules/*.md for the sana worker, then re-dispatch; remaining work is copy staged file into place, sync same bytes to the 3 instances, re-run overlap check (GREEN = path off DIVERGENT), ratchet audit, commit, PR.\n\n```\npython3 q-system/.q-system/scripts/capability-overlap.py --maps .../capability-maps --out /tmp/overlap-red.md --skip-resources -> '25 maps joined -> DIVERGENT=54'; report shows '.claude/rules/evidence-capture-protocol.md in 3 repos, 3 distinct versions: 79aec127bf30 (4_points_consulting), 1a1b1e2674b2 (Alice), e9f11c1fb928 (investigations)'. Write to .claude/rules/evidence-capture-protocol.md -> 'requested permissions to edit ... sensitive file' (auto-denied, headless)\n```",
+      "createdAt": "2026-08-01T14:18:59.591Z"
+     },
+     {
+      "body": "**sana** \u00b7 2026-08-01 14:08 UTC\n\nPicked up by the autonomous worker. Branch `sana/ask-116`. Attempt 1 of 3.",
+      "createdAt": "2026-08-01T14:08:52.418Z"
+     },
+     {
+      "body": "<!-- kipi-triage-verdict -->\n**Triage: `do-now`** \u2014 real, scoped, and worth working now\n\nThree divergent copies of evidence-capture-protocol.md (hashes 79aec127bf30 / e9f11c1fb928 / 1a1b1e2674b2) exist in 4_points_consulting, investigations, and Alice with no skeleton copy, so kipi update --check structurally cannot see the drift; the reconcile target and the capability-overlap.py check are both named.\n\n**Next:** Diff the three files, write the reconciled union to .claude/rules/evidence-capture-protocol.md in the skeleton, run kipi update --dry to confirm propagation, then re-run capability-overlap.py and confirm the file drops off the divergence table.\n\n<sub>`linear-triage.py` 2026-07-28T01:30:35Z. Re-running updates this comment in place. Disagree? Change the state or say so here; the next pass reads existing comments.</sub>",
+      "createdAt": "2026-07-28T01:30:35.254Z"
+     }
+    ]
+   }
+  }
+ ]
+}
