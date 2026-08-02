@@ -766,6 +766,123 @@ def cmd_label(args) -> int:
     return EXIT_OK
 
 
+ISSUE_UNBLOCK = """query($id:String!){
+  issue(id: $id) {
+    id identifier
+    team { id }
+    state { id name type }
+    labels { nodes { id name } }
+  }
+}"""
+
+# IMPORTED, NOT RESTATED (codex review of PR #69). This was a hand-written tuple
+# that added `triage` to linear_pick's list. Two copies of one truth: an unblock
+# landing on `triage` reported success while the picker still refused the issue --
+# the exact defect this un-block exists to fix, reintroduced one file over. The
+# picker's list is the only definition of "pickable"; if reopen_state_id can land
+# somewhere the picker refuses, that is a bug to see, not a difference to encode.
+def _pickable_state_types():
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parent / "linear_pick.py"
+    spec = importlib.util.spec_from_file_location("linear_pick", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.PICKABLE_STATE_TYPES
+
+
+_PICKABLE_STATE_TYPES = _pickable_state_types()
+
+
+def _label_id(team_id: str, name: str) -> str:
+    known = {n["name"]: n["id"]
+             for n in ((graphql(TEAM_LABELS, {"t": team_id}).get("team") or {})
+                       .get("labels") or {}).get("nodes", [])}
+    if name in known:
+        return known[name]
+    made = graphql(LABEL_CREATE, {"input": {"name": name, "teamId": team_id}})
+    created = (made or {}).get("issueLabelCreate") or {}
+    if not created.get("success"):
+        raise LinearAPIError(f"could not create label {name}: {created}")
+    return created["issueLabel"]["id"]
+
+
+def unblock_issue(identifier: str, label: str, note: str, add_label: str = "") -> bool:
+    """Remove a hold label AND put the issue back in a pickable state. One step.
+
+    WHY BOTH, NOT JUST THE LABEL (ASK-288, measured 2026-08-02). The picker tests
+    the label AND the state (linear_pick.ready). ASK-140/134/133/132 all sit at
+    `started`, so dropping the label alone clears one test, fails the other, and
+    leaves the issue exactly as invisible as before -- while the tool reports a
+    successful un-block. A half-applied un-block is worse than none, because it
+    looks done.
+
+    THE SPENT-RE-OFFER MARKER IS A LABEL, WRITTEN IN THIS SAME MUTATION (codex
+    review of PR #69). It used to be text inside the comment below, and that had
+    an ordering hazard with no safe answer: post the comment first and a failed
+    issueUpdate spends the re-offer while the block stays on -- permanently wedged,
+    carrying a comment claiming it was released. Post it second and a failed
+    comment re-arms the re-offer forever. Neither order is correct because the
+    marker and the removal have to agree, and two writes cannot. One atomic
+    labelIds write has neither failure: the marker and the removal land together
+    or not at all.
+
+    The comment is now only a record. It is still posted first so the reasoning
+    is on the issue even if the update fails, and its wording no longer asserts
+    that the removal already happened.
+    """
+    issue = graphql(ISSUE_UNBLOCK, {"id": identifier}).get("issue")
+    if not issue:
+        raise LinearAPIError(f"no issue {identifier}")
+
+    current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    state_type = (issue.get("state") or {}).get("type")
+    if label not in current and state_type in _PICKABLE_STATE_TYPES:
+        # Idempotent: a re-run after a partial failure must not be an error.
+        print(f"{issue['identifier']}: already unblocked")
+        return True
+
+    if note:
+        posted = graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": note}})
+        if not ((posted or {}).get("commentCreate") or {}).get("success"):
+            print(f"BLOCK: could not record the expiry note on {identifier}; "
+                  f"leaving the label in place", file=sys.stderr)
+            return False
+
+    keep = set(current.values()) - {current.get(label)} - {None}
+    if add_label and add_label not in current:
+        keep.add(_label_id((issue.get("team") or {}).get("id"), add_label))
+    update = {"labelIds": sorted(keep)}
+    if state_type not in _PICKABLE_STATE_TYPES:
+        target = reopen_state_id((issue.get("team") or {}).get("id"))
+        if not target:
+            print(f"BLOCK: {identifier} is '{state_type}' and the team exposes no "
+                  f"pickable state to move it to", file=sys.stderr)
+            return False
+        update["stateId"] = target
+
+    result = graphql(ISSUE_UPDATE, {"id": issue["id"], "input": update})
+    updated = (result or {}).get("issueUpdate") or {}
+    # CHECK THE MUTATION RESULT, same reason cmd_label does: a discarded return
+    # value turns a rejected write into a reported success, and here that means
+    # the expiry believes an issue is back in the pool while the picker never
+    # sees it -- a block that reports itself cleared and is not.
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not unblock {identifier}. Raw: {updated}", file=sys.stderr)
+        return False
+    moved = f" and moved {state_type} -> pickable" if "stateId" in update else ""
+    print(f"{issue['identifier']}: removed {label}{moved}")
+    return True
+
+
+def cmd_unblock(args) -> int:
+    try:
+        return EXIT_OK if unblock_issue(args.issue, args.name, args.note or "") else EXIT_USAGE
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+
 def cmd_comments(args) -> int:
     """Print an issue's comment thread so an agent can READ what the other said.
 
@@ -1170,6 +1287,12 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-148")
     p.add_argument("name", help="label to add, e.g. needs-scope")
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("unblock", help="remove a hold label and restore a pickable state")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-140")
+    p.add_argument("name", help="label to remove, e.g. blocked:capability")
+    p.add_argument("--note", default="", help="comment recording WHY it expired")
+    p.set_defaults(func=cmd_unblock)
 
     p = sub.add_parser("comments", help="read an issue's comment thread")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")

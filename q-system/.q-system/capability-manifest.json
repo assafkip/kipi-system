@@ -30,6 +30,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-block-expiry.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-claim-page-once-routing.sh",
       "runner": "bash"
     },

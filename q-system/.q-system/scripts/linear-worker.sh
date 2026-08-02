@@ -303,6 +303,37 @@ fi
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
 
+# --- expire stale capability blocks BEFORE picking --------------------------
+# A `blocked:capability` label records a point-in-time verdict about the
+# ENVIRONMENT, and nothing used to re-test it (ASK-288). ASK-140 was
+# parked on "no safe write route into .claude/" and apply-claude-changes.sh
+# shipped the next day; the block was stale within 24h and the picker would never
+# have offered it again. Ten issues had accumulated by 2026-08-02.
+#
+# THIS RUNS BEFORE THE PICK on purpose: an expired block re-enters the pool in
+# the SAME run, so the loop never needs a second pass (or a human) to notice.
+#
+# Cheap on the hold path by construction: a probe that still reads "absent" is a
+# comparison and silence -- no write, no dispatch, no pick burned. Re-offering a
+# still-blocked issue would be worse than the disease, so the common case costs
+# nothing. Failure here is NOT fatal to the run: a Linear hiccup during expiry
+# must not stop the worker from doing the work it already had.
+if [ -z "$ONLY_ISSUE" ]; then
+  # --root IS $TARGET_REPO, NOT $SKEL (codex review of PR #69). The issues are
+  # filtered to REPO_PROJECT, which is derived from TARGET_REPO, and the agent
+  # that wrote the probe worked in TARGET_REPO. Probing the skeleton instead
+  # would resolve a same-named path that q-system/ rsyncs fleet-wide -- present
+  # in the skeleton, absent in the instance -- and falsely expire the block on
+  # every run. Harmless today because nothing dispatches cross-repo yet; wrong
+  # the day it does, which is exactly when nobody would be looking.
+  EXPIRY_OUT="$(python3 "$SCRIPT_DIR/capability_block_expiry.py" \
+      --repo-project "$REPO_PROJECT" --root "$TARGET_REPO" --apply 2>&1 || true)"
+  printf '%s\n' "$EXPIRY_OUT" >>"$LOG"
+  printf '%s\n' "$EXPIRY_OUT" | grep -E '^(EXPIRE|FAIL) ' | while IFS= read -r line; do
+    say "worker: $line"
+  done
+fi
+
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
 import importlib.util, json, os, sys, pathlib
@@ -1376,9 +1407,23 @@ Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founde
 
    b) THE SPEC IS FINE, THE RUNNER IS NOT EQUIPPED (a refused harness permission, a
       missing binary, an expired credential, a tool this session does not have):
-        printf '%s' \"<the exact capability missing, what refused it, and what it unblocks>\" > $TREE/.sana-blocked-capability
+        printf '%s' \"PROBE: <token>\n<the exact capability missing, what refused it, and what it unblocks>\" > $TREE/.sana-blocked-capability
       This does NOT go to the drafter. Re-scoping a correct spec burns a pass and
       returns the same blocked issue. It routes to whoever owns the config.
+
+      THE FIRST LINE MUST BE A PROBE, and it decides whether this block can ever
+      clear itself. A block is a claim about the ENVIRONMENT, and the environment
+      changes; without a probe nothing can re-test it and the issue sits forever
+      (ten did, until ASK-288). Write one PROBE: line per missing thing, from this
+      exact vocabulary -- it is DATA, never a shell command, and it is never
+      executed:
+        PROBE: file:<repo-relative-path>     a script or tool checked into the repo
+        PROBE: exec:<name>                   a binary that must be on PATH
+        PROBE: env:<VAR>                     a credential or setting
+        PROBE: manifest_test:<path>          declared in capability-manifest.json
+      Name what would have to EXIST for you to finish, not what refused you. If
+      the blocker is a missing safe route, probe for the route. The block clears
+      by itself the moment every probe passes.
 
    Choosing (a) when it is really (b) is the costly mistake: it throws away a good
    spec and hides the real constraint. Ask yourself: would a perfectly written DoR
@@ -1609,7 +1654,40 @@ The Codex runner was handed the same issue and committed on \`$BRANCH\` (HEAD no
 
 **Next:** review the branch/PR as normal. No capability grant is needed and no founder decision is pending."
     elif [ "$REFUSE_KIND" = "capability" ]; then
-      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
+      # THE PROBE IS WHAT MAKES THIS BLOCK EXPIRE BY ITSELF (ASK-288). Pulled out
+      # of the sentinel and posted in a fenced block because Linear is where the
+      # LABEL lives: a machine-local note would disagree with the board the moment
+      # the checkout is rebuilt. capability_block_expiry.py re-reads this block on
+      # every run and clears the label when every probe passes.
+      #
+      # A refusal that records NO probe still parks correctly -- it just falls back
+      # to the unverifiable path and gets exactly one re-offer, once, ever. Missing
+      # probes degrade, they do not wedge.
+      CAP_PROBES="$(printf '%s' "$SCOPE_WHY" | sed -n 's/^ *PROBE: *//p' | grep -v '^$' || true)"
+      if [ -n "$CAP_PROBES" ]; then
+        CAP_PROBE_BLOCK="
+
+The capability is recorded as a re-testable probe, so this block clears itself the moment it passes:
+
+\`\`\`kipi-capability-probe
+$CAP_PROBES
+\`\`\`"
+      else
+        # A PROBE-LESS REFUSAL STILL EMITS A FENCE (codex review of PR #69).
+        # Emitting nothing meant this refusal could not SUPERSEDE an older
+        # passing fence, so an issue that had ever recorded a passing probe
+        # re-expired on every worker tick -- one runner dispatch burned per
+        # cycle, forever, against an issue nobody could work. The explicit
+        # no-probe token is what makes the newest refusal win.
+        CAP_PROBE_BLOCK="
+
+**No probe was recorded**, so this block cannot be re-tested mechanically. It will be re-offered ONCE and then held until a refusal records one.
+
+\`\`\`kipi-capability-probe
+no-probe
+\`\`\`"
+      fi
+      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.$CAP_PROBE_BLOCK
 
 BOTH runners were tried. Neither is equipped:
 
@@ -1618,7 +1696,7 @@ BOTH runners were tried. Neither is equipped:
 
 **The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, neither runner is equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
 
-**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up."
+**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. **Nobody has to remember to clear this label.** The worker re-tests the probe before every pick and removes the label itself once the capability exists, so an unblocked issue returns to the queue on its own."
     else
       REFUSE_NOTE="**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
 
