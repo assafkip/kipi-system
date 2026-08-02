@@ -224,7 +224,11 @@ rm -r "$T"
 
 # ------------------------- 5. removal / disable is not expressible (no bypass)
 T=$(mktemp -d); mk_fixture "$T"
-for OP in replace delete remove overwrite; do
+# `replace` LEFT this list on 2026-08-02 and is now a first-class op (see the
+# replace section below). Deleting a file is still not expressible. The safety
+# property was never the op vocabulary; it is the ratchet, which had to learn to
+# read rule CONTENT before replace could be admitted.
+for OP in delete remove overwrite; do
   cat > "$T/op.json" <<JSON
 {
   "schema_version": 1, "slug": "op-$OP", "reason": "try to remove a hook",
@@ -233,7 +237,7 @@ for OP in replace delete remove overwrite; do
 }
 JSON
   run_engine "$ENGINE" "$T/op.json" "$T"
-  check "op '$OP' refused as non-additive" 2 "is not additive" "$RC" "$OUT"
+  check "op '$OP' refused as not allowed" 2 "is not an allowed op" "$RC" "$OUT"
 done
 
 # The flag the old design would have used. It must not be a bypass; it must not
@@ -556,6 +560,143 @@ case "$OUT" in
 esac
 rm -r "$T"
 
+# =========================== 15. replace ===================================
+# `replace` exists so that a FALSE claim in a rule can be corrected. Additive-only
+# meant "the system can detect the lie and cannot correct it" (three PRs on
+# 2026-08-01 each found a rule carrying a false enforcement claim).
+#
+# The danger it introduces is exact: under the census as it stood, a replace
+# could gut a rule's whole body and pass, because the census counted rule FILE
+# NAMES and never read inside one. Case 15a is that gap; it was watched RED
+# (the gutting APPLIED, rc=0) before the content census was written.
+
+# A rule that makes a REAL enforcement claim: the token ENFORCED, and a script
+# name that resolves to a file that actually exists in the fixture repo.
+mk_enforced_rule() {  # mk_enforced_rule <root>
+  cat > "$1/.claude/rules/voice-thing.md" <<'MD'
+# Voice Rule (ENFORCED)
+
+Enforced by `existing-lint.py` (PostToolUse on Edit/Write). Bypass per file with
+the marker.
+MD
+}
+
+# ---- 15a. gutting a rule's enforcement claim is refused (THE gap case)
+T=$(mktemp -d); mk_fixture "$T"; mk_enforced_rule "$T"
+cat > "$T/gut.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "gut-rule", "reason": "quietly retire a rule",
+  "edits": [ { "file": ".claude/rules/voice-thing.md", "op": "replace",
+               "anchor": "# Voice Rule (ENFORCED)\n\nEnforced by `existing-lint.py` (PostToolUse on Edit/Write). Bypass per file with\nthe marker.",
+               "insert": "# Voice Rule\n\nAdvisory only. Nothing runs.",
+               "reason": "demote to advisory" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/voice-thing.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/gut.json" "$T"
+check "replace gutting a rule refused" 2 "enforcement ratchet" "$RC" "$OUT"
+check_one_line "replace gutting a rule" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/voice-thing.md" | awk '{print $1}')" ]; then
+  ok "replace gutting a rule wrote nothing"
+else bad "replace gutting a rule mutated the rule file"; fi
+rm -r "$T"
+
+# ---- 15b. dropping ONLY the ENFORCED token is refused
+T=$(mktemp -d); mk_fixture "$T"; mk_enforced_rule "$T"
+cat > "$T/demote.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "demote-rule", "reason": "drop the ENFORCED claim",
+  "edits": [ { "file": ".claude/rules/voice-thing.md", "op": "replace",
+               "anchor": "# Voice Rule (ENFORCED)",
+               "insert": "# Voice Rule (advisory)", "reason": "demote" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/demote.json" "$T"
+check "replace dropping ENFORCED refused" 2 "enforcement ratchet" "$RC" "$OUT"
+rm -r "$T"
+
+# ---- 15c. dropping the name of a script that EXISTS is refused
+T=$(mktemp -d); mk_fixture "$T"; mk_enforced_rule "$T"
+cat > "$T/unname.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "unname-script", "reason": "stop naming the lint",
+  "edits": [ { "file": ".claude/rules/voice-thing.md", "op": "replace",
+               "anchor": "Enforced by `existing-lint.py` (PostToolUse on Edit/Write).",
+               "insert": "Enforced by convention.", "reason": "drop the executable" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/unname.json" "$T"
+check "replace dropping a REAL executable refused" 2 "enforcement ratchet" "$RC" "$OUT"
+rm -r "$T"
+
+# ---- 15d. THE PERMISSIVE HALF: dropping the name of a script that does NOT
+# exist is ALLOWED. Without this the ratchet would forbid the very thing replace
+# was built for -- correcting a false claim. A rule naming a nonexistent script
+# is a lie, not enforcement, so removing the name is a correction. Measured on
+# the real repo: 4 such names exist today (kebab-case.py, kebab-case.sh,
+# destructive-op-deny.sh, and the `<skill>-lint.py` regex artifact).
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/.claude/rules/false-claim.md" <<'MD'
+# Some Rule (ENFORCED)
+
+Enforced by `kebab-case.py` on every write.
+MD
+cat > "$T/fix.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-false-claim", "reason": "correct a false enforcement claim",
+  "edits": [ { "file": ".claude/rules/false-claim.md", "op": "replace",
+               "anchor": "Enforced by `kebab-case.py` on every write.",
+               "insert": "No executable enforces this yet; it is advisory until one does.",
+               "reason": "the named script does not exist" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/fix.json" "$T"
+check "replace correcting a FALSE claim allowed" 0 "applied" "$RC" "$OUT"
+if grep -q "kebab-case.py" "$T/.claude/rules/false-claim.md"; then
+  bad "false-claim correction did not land"
+else ok "false-claim correction landed (the lie is gone)"; fi
+
+# ---- 15e. and it is idempotent: re-running the same proposal is not an error
+run_engine "$ENGINE" "$T/fix.json" "$T"
+if [ "$RC" = "0" ]; then ok "replace is idempotent on re-run (rc=0)"
+else bad "replace re-run failed (rc=$RC) :: $OUT"; fi
+rm -r "$T"
+
+# ---- 15f. anchor discipline carries over to replace
+T=$(mktemp -d); mk_fixture "$T"
+printf 'dup\ndup\n' > "$T/.claude/rules/dup.md"
+cat > "$T/dupr.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "dup-replace", "reason": "ambiguous anchor",
+  "edits": [ { "file": ".claude/rules/dup.md", "op": "replace",
+               "anchor": "dup", "insert": "X", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/dupr.json" "$T"
+check "replace with ambiguous anchor refused" 2 "must be exactly 1" "$RC" "$OUT"
+
+cat > "$T/missr.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "miss-replace", "reason": "anchor absent",
+  "edits": [ { "file": ".claude/rules/dup.md", "op": "replace",
+               "anchor": "nowhere-at-all", "insert": "X", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/missr.json" "$T"
+check "replace with missing anchor refused" 2 "anchor not found" "$RC" "$OUT"
+
+# An anchor that survives inside its own replacement would re-fire on every run.
+cat > "$T/overlap.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "overlap-replace", "reason": "non-idempotent",
+  "edits": [ { "file": ".claude/rules/dup.md", "op": "replace",
+               "anchor": "dup\ndup", "insert": "dup\ndup extra", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/overlap.json" "$T"
+check "replace with self-containing anchor refused" 2 "not idempotent" "$RC" "$OUT"
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -684,6 +825,98 @@ if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
   ok "MUTATION normalize: both readers restored -> ./ spelling widened permissions.allow (rc=$MRC), test goes RED as required"
 else
   bad "MUTATION normalize: mutant did not widen permissions - the ./ test is not load-bearing"
+fi
+rm -r "$T"
+
+echo "--- mutation: blind the census to a rule's ENFORCED claim ---"
+T=$(mktemp -d); mk_fixture "$T"; mk_enforced_rule "$T"
+MUT="$T/mutant_enforced.py"
+mutate "$MUT" '        if "ENFORCED" in text:' '        if False and "ENFORCED" in text:'
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$MUT" \
+  && ok "MUTATION enforced: mutant parses (not a false kill)" \
+  || bad "MUTATION enforced: mutant does not parse"
+cat > "$T/demote.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "demote-rule", "reason": "drop the ENFORCED claim",
+  "edits": [ { "file": ".claude/rules/voice-thing.md", "op": "replace",
+               "anchor": "# Voice Rule (ENFORCED)",
+               "insert": "# Voice Rule (advisory)", "reason": "demote" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/demote.json" --root "$T" 2>&1); MRC=$?
+set -e
+if [ "$MRC" = "2" ]; then
+  bad "MUTATION enforced: mutant still refused - the ENFORCED census is not load-bearing"
+else
+  ok "MUTATION enforced: census blinded -> rule demoted to advisory (rc=$MRC), test goes RED as required"
+fi
+if grep -q "advisory" "$T/.claude/rules/voice-thing.md"; then
+  ok "MUTATION enforced: confirmed the mutant really wrote the demotion"
+else bad "MUTATION enforced: mutant did not write; mutation may be inert"; fi
+rm -r "$T"
+
+echo "--- mutation: blind the census to a rule's named executables ---"
+T=$(mktemp -d); mk_fixture "$T"; mk_enforced_rule "$T"
+MUT="$T/mutant_named.py"
+mutate "$MUT" '            if script in repo_scripts:' '            if False and script in repo_scripts:'
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$MUT" \
+  && ok "MUTATION named: mutant parses (not a false kill)" \
+  || bad "MUTATION named: mutant does not parse"
+cat > "$T/unname.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "unname-script", "reason": "stop naming the lint",
+  "edits": [ { "file": ".claude/rules/voice-thing.md", "op": "replace",
+               "anchor": "Enforced by `existing-lint.py` (PostToolUse on Edit/Write).",
+               "insert": "Enforced by convention.", "reason": "drop the executable" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/unname.json" --root "$T" 2>&1); MRC=$?
+set -e
+if [ "$MRC" = "2" ]; then
+  bad "MUTATION named: mutant still refused - the named-executable census is not load-bearing"
+else
+  ok "MUTATION named: census blinded -> live executable un-named (rc=$MRC), test goes RED as required"
+fi
+if grep -q "Enforced by convention." "$T/.claude/rules/voice-thing.md"; then
+  ok "MUTATION named: confirmed the mutant really wrote the removal"
+else bad "MUTATION named: mutant did not write; mutation may be inert"; fi
+rm -r "$T"
+
+# The existence qualifier is itself a guard: drop it and named_executables would
+# protect NAMES THAT DO NOT RESOLVE, which forbids the false-claim correction
+# that replace exists to make. This mutation proves the carve-out is load-bearing
+# in the permissive direction -- the direction a ratchet is least likely to be
+# tested in, and the one where over-blocking hides as "safe".
+echo "--- mutation: protect names that do not resolve (over-block) ---"
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/.claude/rules/false-claim.md" <<'MD'
+# Some Rule (ENFORCED)
+
+Enforced by `kebab-case.py` on every write.
+MD
+MUT="$T/mutant_exists.py"
+mutate "$MUT" '            if script in repo_scripts:' '            if True or script in repo_scripts:'
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$MUT" \
+  && ok "MUTATION exists: mutant parses (not a false kill)" \
+  || bad "MUTATION exists: mutant does not parse"
+cat > "$T/fix.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-false-claim", "reason": "correct a false enforcement claim",
+  "edits": [ { "file": ".claude/rules/false-claim.md", "op": "replace",
+               "anchor": "Enforced by `kebab-case.py` on every write.",
+               "insert": "No executable enforces this yet; it is advisory until one does.",
+               "reason": "the named script does not exist" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/fix.json" --root "$T" 2>&1); MRC=$?
+set -e
+if [ "$MRC" = "2" ]; then
+  ok "MUTATION exists: qualifier removed -> false-claim correction wrongly REFUSED, test goes RED as required"
+else
+  bad "MUTATION exists: mutant still allowed the correction - the existence qualifier is not load-bearing"
 fi
 rm -r "$T"
 
