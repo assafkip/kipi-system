@@ -36,6 +36,16 @@ pre-commit:
     receipts-ledger:
       run: python3 q-system/.q-system/scripts/receipts-ledger-check.py
 
+    # ASK-294. A new producer that pages the founder without declaring a --kind
+    # is caught at the commit that writes it, not weeks later in the channel.
+    # Wired HERE and not only in kipi check because the runtime gate in
+    # slack-notify.sh deliberately FAILS OPEN for an unclassified caller: kipi
+    # update ships that script to instances carrying producers this repo has
+    # never seen, and silencing one of those is worse than the noise it stops.
+    # This is the half that closes the hole where the code actually lives.
+    notify-callsite-audit:
+      run: python3 q-system/.q-system/scripts/notify-callsite-audit.py
+
     blocked-paths:
       run: |
         # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,

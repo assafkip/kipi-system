@@ -59,13 +59,20 @@ export ANTHROPIC_MODEL="${KIPI_DISPATCH_MODEL:-claude-opus-5}"
 
 mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
-page() { bash "$NOTIFY" --kind receipt "$1" >/dev/null 2>&1 || true; }
+# $1 = message, $2.. = classification flags. Defaults to receipt because most
+# callers here are all-clears ("Nothing to do", the daily cap), but NOT all of
+# them are -- see the two liveness sites below, which stay decisions.
+page() {
+  local m="$1"; shift
+  [ $# -gt 0 ] || set -- --kind receipt
+  bash "$NOTIFY" "$m" "$@" >/dev/null 2>&1 || true  # notify-kind-skip: default set above, callers may override
+}
 # Same notifier, but REPORTS whether it went out. page() ends in `|| true` on
 # purpose -- a notifier must never take its caller down -- which makes it useless
 # to a caller that has to know. Kept as a sibling rather than changing page()'s
 # contract for the dozen sites that correctly do not care. Used by stale_check,
 # which must not write a dedupe marker for a page that never arrived.
-page_ok() { local m="$1"; shift; bash "$NOTIFY" "$@" "$m" >/dev/null 2>&1; }  # notify-kind-skip: callers classify
+page_ok() { local m="$1"; shift; bash "$NOTIFY" "$m" "$@" >/dev/null 2>&1; }  # notify-kind-skip: callers classify
 
 # ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (ASK-283, 2026-08-02).
 # Audited across this file: four guards -- missing repo, unusable `date`, gh off
@@ -916,7 +923,7 @@ if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
   # the bug above. The budget slot is already spent, so say so plainly.
   say "FAILED to launch converge for $NEXT (rc=$RC); the budget slot is spent"
-  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error."
+  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error." --kind decision --class spend
   exit 1
 fi
 
@@ -960,7 +967,7 @@ if [ "$DISPATCH_OK" -eq 1 ]; then
   say "dispatched $NEXT (confirmed running)"
 else
   say "DISPATCH DIED: $NEXT was launched but no converge process is alive after 10s"
-  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child."
+  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child." --kind decision --class spend
   exit 1
 fi
 exit 0

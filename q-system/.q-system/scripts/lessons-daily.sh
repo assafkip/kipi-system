@@ -19,7 +19,7 @@ mkdir -p "$(dirname "$LOG")"
 # Observed 2026-07-27: the 06:00 run logged "propagate FAILED", Slacked it, and
 # `launchctl list` still said LastExitStatus = 0. Pinned by
 # test/test-lessons-daily-exit.sh.
-fail() { echo "$(TS) FAILURE: $*" >> "$LOG"; bash "$NOTIFY" --kind receipt "lessons-daily: $*" 2>/dev/null; exit 1; }
+fail() { echo "$(TS) FAILURE: $*" >> "$LOG"; bash "$NOTIFY" "lessons-daily: $*" --kind receipt 2>/dev/null; exit 1; }
 
 # The plist pins PATH to include ~/.local/bin, so a missing binary here is a
 # broken machine, not a normal night. Skipping silently would make this job dark
@@ -61,7 +61,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 [ "$PROP" = "propagate FAILED" ] && MSG="$MSG · propagation FAILED, see log"
-bash "$NOTIFY" --kind receipt "$MSG"
+bash "$NOTIFY" "$MSG" --kind receipt
 echo "$(TS) slacked: $MSG" >> "$LOG"
 
 # Lessons that published but never reached the fleet are a half-done run: the
