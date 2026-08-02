@@ -1624,7 +1624,7 @@ def main() -> int:
         {"ran_at": _now(), "per_detector": per_detector, "outcome": outcome}, indent=2))
 
     if not args.quiet and should_notify(outcome, per_detector, args.apply) and NOTIFY.exists():
-        subprocess.run(["bash", str(NOTIFY), notify_text(outcome, per_detector)],
+        subprocess.run(["bash", str(NOTIFY), notify_text(outcome, per_detector), "--kind", "receipt"],
                        timeout=20, check=False)
     return 0
 

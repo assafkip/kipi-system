@@ -46,19 +46,33 @@ LOG="$HOME/.config/kipi/dispatch.log"
 MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-2}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
 NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
+# OVERRIDABLE, unlike PREFLIGHT above, and the difference is the direction each
+# one fails. Aiming the preflight at /bin/true would DISARM a client-repo safety
+# gate; aiming this at a missing path only disables self-healing, so the loop
+# pages exactly as it did before. The suite needs it because it extracts
+# stale_check into a harness file, where a $REPO-relative path resolves into the
+# fixture clone and the handler is silently inert -- which is how it first shipped.
+FF_MERGE="${KIPI_FF_MERGE:-$REPO/q-system/.q-system/scripts/ff-merge-if-safe.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
 # unpinned they rode the interactive default (Fable) and burned quota on 2026-08-01.
 export ANTHROPIC_MODEL="${KIPI_DISPATCH_MODEL:-claude-opus-5}"
 
 mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
-page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
+# $1 = message, $2.. = classification flags. Defaults to receipt because most
+# callers here are all-clears ("Nothing to do", the daily cap), but NOT all of
+# them are -- see the two liveness sites below, which stay decisions.
+page() {
+  local m="$1"; shift
+  [ $# -gt 0 ] || set -- --kind receipt
+  bash "$NOTIFY" "$m" "$@" >/dev/null 2>&1 || true  # notify-kind-skip: default set above, callers may override
+}
 # Same notifier, but REPORTS whether it went out. page() ends in `|| true` on
 # purpose -- a notifier must never take its caller down -- which makes it useless
 # to a caller that has to know. Kept as a sibling rather than changing page()'s
 # contract for the dozen sites that correctly do not care. Used by stale_check,
 # which must not write a dedupe marker for a page that never arrived.
-page_ok() { bash "$NOTIFY" "$1" >/dev/null 2>&1; }
+page_ok() { local m="$1"; shift; bash "$NOTIFY" "$m" "$@" >/dev/null 2>&1; }  # notify-kind-skip: callers classify
 
 # ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (ASK-283, 2026-08-02).
 # Audited across this file: four guards -- missing repo, unusable `date`, gh off
@@ -149,6 +163,7 @@ page_clear() {
 
 page_once() {
   local key="$1" msg="$2" mark hash now prev stamp lock
+  shift 2   # remaining args = classification flags, passed through to the sink
   mark="$(dirname "$LOG")/paged-$key"
   hash="$(printf '%s' "$msg" | cksum | tr -d ' \n')"
   now="$(date -u +%s)"
@@ -194,7 +209,7 @@ page_once() {
       return 0
     fi
   fi
-  if page_ok "$msg"; then
+  if page_ok "$msg" "$@"; then
     printf '%s\n%s\n' "$hash" "$now" > "$mark" 2>/dev/null || true
   else
     say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
@@ -204,7 +219,7 @@ page_once() {
 
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
-  page_once repo-missing "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
+  page_once repo-missing "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist." --kind receipt
   exit 1
 }
 page_clear repo-missing
@@ -285,7 +300,48 @@ stale_check() {
   base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo 0)"
   case "$base" in ''|*[!0-9]*) return 0 ;; esac   # unparseable count = no answer = run
   [ "$base" -gt 0 ] || { page_clear stale-checkout; return 0; }
-  say "STALE: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded control code and auto-merge the result."
+  say "STALE: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7})."
+
+  # SELF-HEAL FIRST; PAGE ONLY FOR WHAT IS ACTUALLY THE FOUNDER'S CALL (ASK-294).
+  # This block sent 15 of the 48 founder pings measured in one 24h window, every
+  # one of them naming him as the actor and handing him a shell command for
+  # something the loop can do itself. He said it twice: "why do I keep getting
+  # slack messages I can't do anything about", then "I just want the underlying
+  # issues to be dealt with so I don't get a message."
+  #
+  # The comment above still stands: a blind `git merge --ff-only` here is a
+  # data-loss path and was removed for it. ff-merge-if-safe.sh is not that. It
+  # proves the fast-forward cannot clobber anything -- over the EXACT finite set
+  # of paths the merge writes, not over the whole tree -- and declines otherwise.
+  # See its header for why that bound is what makes the difference.
+  local ff_out ff_rc cls
+  ff_out="$(bash "$FF_MERGE" "$REPO" main origin 2>&1)"; ff_rc=$?
+  say "stale-check: ff-merge-if-safe rc=$ff_rc: $ff_out"
+  if [ "$ff_rc" -eq 0 ]; then
+    # Handled. The founder hears nothing, which is the entire point.
+    page_clear stale-checkout
+    return 0
+  fi
+  if [ "$ff_rc" -eq 2 ]; then
+    # No answer is not proof of staleness. Same fail-open posture as the fetch above.
+    say "stale-check: no freshness answer, proceeding"
+    return 0
+  fi
+  # ANY OTHER CODE IS THE HANDLER ITSELF BEING BROKEN, NOT A VERDICT ABOUT THE
+  # TREE. A missing or non-executable script exits 127, and the first cut read
+  # that as "refuses to merge" and paged the founder -- turning a bug in my own
+  # code into a page about his. Only 0, 1 and 2 are answers.
+  if [ "$ff_rc" -ne 1 ]; then
+    say "stale-check: ff-merge-if-safe is not answering (rc=$ff_rc); proceeding without a freshness answer"
+    return 0
+  fi
+  # Only two things get here, and both are on the short list of what genuinely
+  # needs him: a diverged history (a real merge, irreversible) and a path the
+  # merge would overwrite that git is not tracking (outside the canonical tree).
+  case "$ff_out" in
+    collision:*) cls="out-of-tree-write" ;;
+    *)           cls="irreversible-git" ;;
+  esac
 
   # ONE PAGE PER STALE EPISODE, NOT ONE PER COMMIT.
   # The measured complaint: 19 refusing cycles overnight sent 9 Slack pages, one
@@ -298,7 +354,7 @@ stale_check() {
   # shas go to the log, which is free, not to the founder's phone, which is not.
   # page_clear on the healthy path below turns a recovery into silence and makes the
   # NEXT episode page immediately, which is what a per-sha key was reaching for.
-  page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main, so it will not dispatch (it would run superseded control code and auto-merge the result). Do: cd $REPO && git merge --ff-only origin/main. The loop resumes by itself once the checkout is current."
+  page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main and could NOT be brought current unattended: $ff_out. The loop resumes by itself once this is resolved." --kind decision --class "$cls"
   return 1
 }
 stale_check || exit 0
@@ -577,7 +633,7 @@ BUDGET_DAY="$(date -v-"${RESET_HOUR}"H +%Y-%m-%d 2>/dev/null \
               || date -d "-${RESET_HOUR} hours" +%Y-%m-%d 2>/dev/null)"
 if [ -z "$BUDGET_DAY" ]; then
   say "FATAL: could not compute the budget day (neither BSD nor GNU date worked)"
-  page_once budget-day "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
+  page_once budget-day "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine." --kind receipt
   exit 1
 fi
 page_clear budget-day
@@ -651,7 +707,7 @@ if command -v gh >/dev/null 2>&1; then
 fi
 if ! command -v gh >/dev/null 2>&1; then
   say "FATAL: gh not on PATH ($PATH)"
-  page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist."
+  page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist." --kind receipt
   exit 1
 fi
 
@@ -766,7 +822,7 @@ WORK_RC=$?
 # SURVIVED. A fixture must not be anchored to the text it is testing.
 if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: linear unreachable|infra_error|authentication|unauthorized'; then
   say "infra error from kipi work: $(printf '%s' "$WORK_OUT" | head -3 | tr '\n' ' ')"
-  page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
+  page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token." --kind decision --class credential
   exit 1
 fi
 # A RUN THAT NEVER REACHED LINEAR IS NOT EVIDENCE LINEAR RECOVERED -- the same rule
@@ -867,7 +923,7 @@ if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
   # the bug above. The budget slot is already spent, so say so plainly.
   say "FAILED to launch converge for $NEXT (rc=$RC); the budget slot is spent"
-  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error."
+  page "kipi dispatch: could not launch the converge run for $NEXT, so NO work is happening even though the loop looks alive. Do: run \`bash kipi-dispatch.sh\` by hand and read the error." --kind decision --class spend
   exit 1
 fi
 
@@ -911,7 +967,7 @@ if [ "$DISPATCH_OK" -eq 1 ]; then
   say "dispatched $NEXT (confirmed running)"
 else
   say "DISPATCH DIED: $NEXT was launched but no converge process is alive after 10s"
-  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child."
+  page "kipi dispatch: $NEXT was launched but died immediately -- the loop is spending budget and doing no work. Do: check ~/.config/kipi/converge-$NEXT.log and whether launchd is reaping the child." --kind decision --class spend
   exit 1
 fi
 exit 0

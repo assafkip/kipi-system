@@ -89,7 +89,7 @@ CASES = [
 PAGER_RUNNER = (
     '#!/usr/bin/env bash\n'
     'NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"\n'
-    'bash "$NOTIFY" "a human needs to look at this"\n'
+    'bash "$NOTIFY" "a human needs to look at this"\n'  # notify-kind-skip: fixture text, not a call
 )
 # Names the notifier only in PROSE -> not notify-capable, must not be flagged.
 QUIET_RUNNER = (

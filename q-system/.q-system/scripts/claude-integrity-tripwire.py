@@ -274,7 +274,7 @@ def notify(root, message):
     notifier = os.environ.get("KIPI_NOTIFY") or os.path.join(
         root, "q-system", ".q-system", "scripts", "slack-notify.sh")
     try:
-        subprocess.run([notifier, message], capture_output=True, timeout=20)
+        subprocess.run([notifier, message, "--kind", "receipt"], capture_output=True, timeout=20)
     except Exception:
         pass  # a dead notifier must never stop the revert
 

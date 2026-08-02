@@ -215,7 +215,7 @@ def send_ping(message):
     if not NOTIFY_SCRIPT.exists():
         return
     try:
-        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+        subprocess.run(["bash", str(NOTIFY_SCRIPT), message, "--kind", "receipt"], timeout=20)
     except Exception:
         pass
 
