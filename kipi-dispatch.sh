@@ -64,10 +64,12 @@ page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
 # which must not write a dedupe marker for a page that never arrived.
 page_ok() { bash "$NOTIFY" "$1" >/dev/null 2>&1; }
 
-# ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (founder, 2026-08-02).
+# ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (ASK-283, 2026-08-02).
 # Audited across this file: four guards -- missing repo, unusable `date`, gh off
 # PATH, Linear auth dead -- each name a PERMANENT condition and each had NO marker,
-# on a 900s timer. That is 96 identical Slack lines a day per guard. The founder's
+# on a 900s timer. That is 96 identical Slack lines a day per guard, and three of
+# them can hold at once: ~288 pages a day, worse than the stale-checkout alert that
+# actually got noticed. The loud one is rarely the worst one. The founder's
 # own detect-act-learn rule already says one summary line, never one ping per
 # finding. The cost of the noise is not annoyance, it is that it trains him to skim
 # the channel, which is how the one page that matters gets missed.
@@ -135,7 +137,7 @@ cd "$REPO" 2>/dev/null || {
 # we are behind; a network blip, an auth prompt or a missing remote logs and
 # proceeds. Two different safe directions, deliberately: fail closed on
 # staleness, fail open on not knowing.
-# THE DETECTOR COMPUTES THE REMEDY, SO IT MUST APPLY IT (founder, 2026-08-02).
+# THE DETECTOR COMPUTES THE REMEDY, SO IT MUST APPLY IT (ASK-283, 2026-08-02).
 # For one night this printed `git merge --ff-only origin/main` every 15 minutes
 # while the gap grew 7 -> 10 commits. Measured from the log: 19 refusing cycles,
 # 9 Slack pages, ZERO automated action. Nobody read them; the founder fixed it by

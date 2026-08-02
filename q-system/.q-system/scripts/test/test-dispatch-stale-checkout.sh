@@ -2,10 +2,18 @@
 # Reproducer for sp-c775b116: the dispatcher ran the founder's working tree with
 # no freshness check, so a merge alone never reached the running loop.
 #
-# And for the 2026-08-02 follow-up: the freshness check WORKED and then asked a
-# human to type the fix. Measured from ~/.config/kipi/dispatch.log that night --
-# 19 refusing cycles, 9 Slack pages, the gap growing 7 -> 10 commits, zero
-# automated action. The founder fixed it by hand in the morning.
+# And for ASK-283 (2026-08-02): the freshness check WORKED and then asked a human
+# to type the fix. Measured from ~/.config/kipi/dispatch.log that night -- 19
+# refusing cycles, 9 Slack pages (per-sha dedupe already worked; it was the LOG
+# line that repeated every cycle, not the page), the gap growing 7 -> 10 commits,
+# zero automated action. The founder fixed it by hand in the morning.
+#
+# WHAT THIS DOES NOT FIX, kept here so nobody reads the green suite as "solved":
+# that night's early HEAD 97e7fc7 was DIVERGED from origin/main, so a fast-forward
+# could not have applied and it would still have paged. Only the later a5ac9c1 was
+# fast-forwardable. This heals the tail of that incident. The head needed a human
+# because the checkout was genuinely on the wrong history -- case 5 is that case,
+# and it still refuses on purpose.
 #
 # Pairs with: stale_check() + attempt_ff() in kipi-dispatch.sh.
 #
