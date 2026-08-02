@@ -368,25 +368,40 @@ def in_this_repo(i):
     # issues got into this queue in the first place.
     return project_of(i) == repo_project
 
-# THE PICK RULE LIVES IN linear_pick.py, NOT HERE (ASK-288). It used to be
-# written out inline below, which made it untestable: a reproducer asking "is
-# ASK-140 pickable?" had to hand-copy the conditions, and a hand-copy of a
-# checker is a second checker that drifts from the first. It also put the rule
-# inside a quoted heredoc in a $( ), where one apostrophe in a Python COMMENT
-# swallowed the whole substitution and killed the script (ASK-275). A real .py
-# file has neither hazard, and the tests now exercise the SAME predicate the
-# picker runs.
-lpspec = importlib.util.spec_from_file_location("lp", here / "linear_pick.py")
-lp = importlib.util.module_from_spec(lpspec); lpspec.loader.exec_module(lp)
-
-
 def ready(i):
-    return lp.ready(i, repo_project)
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    if "owner:assaf" in labels:      return False   # founder decision, hands off
+    if "owner:sana" not in labels:   return False
+    # A REJECTION BY SANA, MADE MACHINE-READABLE (ASK-275).
+    # NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( )
+    # command substitution, and bash tracks quote state through a quoted
+    # heredoc there -- one apostrophe in a PYTHON COMMENT swallowed the rest of
+    # the substitution and the whole script died at "unexpected EOF".
+    # Before this label the only way to get a correctly-refused issue out of the
+    # queue was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how
+    # ASK-149 got there on 2026-07-30. Routing an engineering re-scope to the
+    # founder is the thing this loop exists to avoid, so the refusal needed a
+    # label of its own that means "re-scope this", not "the founder decides".
+    if "needs-scope" in labels:      return False
+    # blocked:capability is the OTHER terminal refusal: the spec is fine, the
+    # runner lacks something it cannot grant itself (a harness permission, a
+    # missing tool). Excluded for the same reason, routed somewhere different.
+    if "blocked:capability" in labels: return False
+    if i["state"]["type"] not in ("backlog", "unstarted"): return False
+    if not in_this_repo(i):          return False
+    d = i.get("description") or ""
+    return "## Definition of Ready" in d or "Definition of Ready" in d
 
-
+# Everything the project filter is ABOUT to drop, counted before it drops it, so
+# the run can report the shrink. A queue that silently falls from 29 to 11 is
+# indistinguishable from a broken query, and "it got quiet" is the failure mode
+# this filter could most easily cause.
 def ready_ignoring_project(i):
-    return lp.ready_ignoring_project(i)
-
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    return ("owner:assaf" not in labels and "owner:sana" in labels
+            and "needs-scope" not in labels and "blocked:capability" not in labels
+            and i["state"]["type"] in ("backlog", "unstarted")
+            and "Definition of Ready" in (i.get("description") or ""))
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
 def held_with(label):

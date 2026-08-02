@@ -131,11 +131,40 @@ PY
 
 # --- 1. the defect is real: ASK-140 is not pickable as it stands -------------
 python3 - "$FIXTURE" "$HERE/.." <<'PY'
-import json, sys, importlib.util, pathlib
-spec = importlib.util.spec_from_file_location("lp", pathlib.Path(sys.argv[2]) / "linear_pick.py")
+import json, sys, re, importlib.util, pathlib
+
+# THE PREDICATE IS EXTRACTED FROM linear-worker.sh, NOT REIMPLEMENTED HERE.
+# It lives inline in the worker because test-terminal-states.sh enumerates the
+# loop's abnormal exits out of that file; moving it to a module hid six exits
+# from that gate. So the rule stays there and this test reads the real source
+# rather than keeping a copy -- a reproducer run against a hand-copy of the rule
+# only proves the copy agrees with itself.
+scripts = pathlib.Path(sys.argv[2])
+src = (scripts / "linear-worker.sh").read_text()
+start = src.index("def project_of(i):")
+end = src.index("def ready_ignoring_project(i):")
+block = src[start:end]
+assert "def ready(i):" in block, "could not extract ready() from linear-worker.sh"
+
+ns = {"repo_project": "kipi-system"}
+exec(compile(block, "linear-worker.sh:ready", "exec"), ns)
+ready = ns["ready"]
+
+# DRIFT GUARD: the worker's inline state tuple must equal the constant
+# linear-sync.py imports for its un-block. Two copies of "which states are
+# pickable" is how an un-block reports success while landing the issue somewhere
+# the picker still refuses.
+spec = importlib.util.spec_from_file_location("lp", scripts / "linear_pick.py")
 lp = importlib.util.module_from_spec(spec); spec.loader.exec_module(lp)
+literal = re.search(r'i\["state"\]\["type"\] not in \(([^)]*)\)', block)
+assert literal, "could not find the worker's pickable-state literal"
+worker_states = tuple(re.findall(r'"([^"]+)"', literal.group(1)))
+assert worker_states == tuple(lp.PICKABLE_STATE_TYPES), (
+    "drift: linear-worker.sh says %r, linear_pick.PICKABLE_STATE_TYPES says %r"
+    % (worker_states, tuple(lp.PICKABLE_STATE_TYPES)))
+
 i = {x["identifier"]: x for x in json.load(open(sys.argv[1]))["issues"]}["ASK-140"]
-assert not lp.ready(i, "kipi-system"), "ASK-140 should NOT be pickable while blocked"
+assert not ready(i), "ASK-140 should NOT be pickable while blocked"
 
 # BOTH conditions are load-bearing. Dropping only the label leaves it at
 # `started`, which ready() also refuses -- an expiry that stopped at the label
@@ -143,13 +172,13 @@ assert not lp.ready(i, "kipi-system"), "ASK-140 should NOT be pickable while blo
 no_label = json.loads(json.dumps(i))
 no_label["labels"]["nodes"] = [l for l in no_label["labels"]["nodes"]
                                if l["name"] != "blocked:capability"]
-assert not lp.ready(no_label, "kipi-system"), \
+assert not ready(no_label), \
     "label-only removal must NOT be enough: ASK-140 is 'started'"
 
 unblocked = json.loads(json.dumps(no_label))
 unblocked["state"] = {"name": "Todo", "type": "unstarted"}
-assert lp.ready(unblocked, "kipi-system"), "label removed + state restored must be pickable"
-print("PASS  picker: blocked -> not ready; label-only -> still not ready; both -> ready")
+assert ready(unblocked), "label removed + state restored must be pickable"
+print("PASS  picker (real source): blocked -> no; label-only -> no; both -> yes")
 PY
 [ $? -eq 0 ] && PASS=$((PASS+1)) || bad "picker predicate contract" "see above"
 
