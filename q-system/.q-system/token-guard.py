@@ -439,31 +439,56 @@ def warn(message):
     sys.exit(0)
 
 
+# The subcommands that make a checkpoint possible, for the volume-ceiling
+# exemption only. `add` is here because a blocked `git add` makes the commit
+# impossible regardless — staging is part of the checkpoint, not a separate
+# errand. It is deliberately NOT in the reset/grace readers below: `git add`
+# ships nothing, so it must never reset the ceiling or mint a grace budget.
+GIT_CHECKPOINT_SUBCOMMANDS = ("commit", "add")
+
+
 def _is_commit_command(tool_name, tool_input):
-    """A `git commit` invocation, judged from the command alone (PreToolUse has no
-    response yet). Used to EXEMPT a commit from the volume ceiling — a commit is the
-    checkpoint the ceiling is asking for, so blocking it deadlocks the run (the
-    PostToolUse commit-reset can never fire if PreToolUse blocks the commit first)."""
+    """A `git commit`/`git add` invocation, judged from the command alone
+    (PreToolUse has no response yet). Used to EXEMPT the checkpoint from the
+    volume ceiling — a commit is the checkpoint the ceiling is asking for, so
+    blocking it deadlocks the run (the PostToolUse commit-reset can never fire
+    if PreToolUse blocks the commit first).
+
+    Scar (sp-91a19d16, observed live 2026-08-01): this was `"git commit" in cmd`,
+    a raw substring test, and it was wrong in BOTH directions at once. Too tight:
+    `git -C <worktree> commit -m ...` contains no "git commit" substring, and
+    `git add` was never matched at all — so an agent working in a worktree (the
+    standard dispatch pattern here) could never clear the ceiling. One finished
+    cross-repo GH_REPO scoping with a passing 26-case suite, could not commit any
+    of it, correctly refused to route around the gate, and stopped. Too loose:
+    `echo "git commit"` and `grep -r "git commit" .` carried the substring and
+    cleared the ceiling while shipping nothing. Match the INVOCATION, not the
+    substring; the tokeniser below already knew how."""
     if tool_name != "Bash":
         return False
     cmd = (tool_input or {}).get("command", "") or ""
-    return "git commit" in cmd and "--dry-run" not in cmd
+    return _invokes_git_subcommand(cmd, GIT_CHECKPOINT_SUBCOMMANDS)
 
 
-def _invokes_git_commit(command):
-    """True only when the command actually RUNS `git commit`.
+def _invokes_git_subcommand(command, subcommands):
+    """True only when the command actually RUNS `git <subcommand>`, for any
+    subcommand in `subcommands`.
 
     A substring test on the command text is not that: `grep -rn "git commit"
     canonical/` carries the string and ships nothing, and a failing one was read
     as a refused checkpoint (PR #27 review, finding 2). Tokenising drops the
-    quoted mention while keeping `cd x && git commit -m y`.
+    quoted mention (shlex collapses "git commit" into ONE token, which is not
+    `git`) while keeping `cd x && git add -A && git commit -m y`, `git -C x
+    commit`, and the newline/`;`-separated forms — the scan walks every token,
+    so the position of the verb in the command does not matter.
 
-    Deliberately NOT used by _is_commit_command above. There the error costs run
-    the other way: a false negative blocks the checkpoint the ceiling is asking
-    for and deadlocks the run, while a false positive only exempts one harmless
-    call from the ceiling. Here — and in _is_successful_commit — a false positive
-    is the expensive one: it mints a grace budget, or resets the ceiling, for a
-    command that committed nothing. Two readers, two error budgets, on purpose."""
+    Two callers, two subcommand sets, on purpose. The ceiling exemption passes
+    GIT_CHECKPOINT_SUBCOMMANDS, where a false negative is the expensive error: it
+    blocks the checkpoint the ceiling is asking for and deadlocks the run, while
+    a false positive costs one exempted call that still cannot reset anything.
+    _invokes_git_commit passes commit-only, because there a false positive is the
+    expensive one: it mints a grace budget, or resets the ceiling, for a command
+    that committed nothing."""
     if not command or "--dry-run" in command:
         return False
     try:
@@ -481,10 +506,17 @@ def _invokes_git_commit(command):
                     cursor += 2
                 else:
                     cursor += 1
-            if cursor < len(tokens) and tokens[cursor] == "commit":
+            if cursor < len(tokens) and tokens[cursor] in subcommands:
                 return True
         index += 1
     return False
+
+
+def _invokes_git_commit(command):
+    """True only when the command actually RUNS `git commit`. Feeds the
+    volume-counter reset and the gate-grace budget, so it stays commit-only:
+    `git add` ships nothing and must not look like progress."""
+    return _invokes_git_subcommand(command, ("commit",))
 
 
 def _is_successful_commit(command, tool_response):
