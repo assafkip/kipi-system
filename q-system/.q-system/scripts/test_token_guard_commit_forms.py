@@ -255,6 +255,62 @@ check("19. `git -C <wt> commit` DOES reset the volume ceiling",
 check("20. compound cd+add+commit DOES reset the volume ceiling",
       _reset["compound_commit_resets"] is True, str(_reset))
 
+# --- --dry-run belongs to an INVOCATION, not to the command string ----------
+# Round-1 review, MAJOR (sp-9ca7e393): the disqualifier was `"--dry-run" in
+# command`, a global substring test. A real commit whose MESSAGE mentions the
+# flag was read as a dry run and blocked at the ceiling — the exact
+# strands-finished-work failure this whole change exists to remove. shlex
+# collapses a quoted message into ONE token, so exact-token matching scoped to
+# the invocation that carries the flag fixes it.
+check_clears(21, "real commit whose message mentions --dry-run",
+             'git commit -m "fix: honor --dry-run flag"')
+check_clears(22, "real commit after a dry-run probe in the same command",
+             f'git commit --dry-run && git -C {WT} commit -m "msg"')
+check_clears(23, "git commit -n is --no-verify, a REAL commit",
+             'git commit -n -m "msg"')
+check_blocks(24, "git add --dry-run ships nothing", "git add --dry-run .")
+check_blocks(25, "git add -n is add's dry-run spelling", "git add -n .")
+
+# --- Unreachable checkpoints must not earn the exemption --------------------
+# Round-1 review, MINOR. Only the literal always-false/always-true builtins are
+# decided statically; see the comment on _segment_is_reachable for why this is a
+# named narrow case and not general reachability.
+check_blocks(26, "commit unreachable after `false &&`",
+             'false && git commit -m "msg"')
+check_blocks(27, "commit unreachable after `true ||`",
+             'true || git commit -m "msg"')
+check_clears(28, "commit IS reachable after `false ||`",
+             'false || git commit -m "msg"')
+check_clears(29, "commit IS reachable after `true &&`",
+             'true && git commit -m "msg"')
+
+# --- The reset reader must agree on all of the above ------------------------
+_mod2 = subprocess.run(
+    [sys.executable, "-c",
+     "import importlib.util,sys,json;"
+     "s=importlib.util.spec_from_file_location('g',sys.argv[1]);"
+     "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+     "resp={'exit_code':0,'stdout':'1 file changed'};"
+     "print(json.dumps({"
+     "'msg_mentions_dryrun': m._is_successful_commit("
+     "'git commit -m \\\"note about --dry-run\\\"', resp),"
+     "'pure_dry_run': m._is_successful_commit('git commit --dry-run', resp),"
+     "'dryrun_then_real': m._is_successful_commit("
+     "'git commit --dry-run && git -C /w commit -m x', resp),"
+     "'unreachable': m._is_successful_commit("
+     "'false && git commit -m x', resp)}))",
+     str(GUARD)],
+    capture_output=True, text=True, check=True)
+_r2 = json.loads(_mod2.stdout)
+check("30. reset: commit whose message mentions --dry-run DOES reset",
+      _r2["msg_mentions_dryrun"] is True, str(_r2))
+check("31. reset: a pure --dry-run does NOT reset",
+      _r2["pure_dry_run"] is False, str(_r2))
+check("32. reset: dry-run probe then a real commit DOES reset",
+      _r2["dryrun_then_real"] is True, str(_r2))
+check("33. reset: an unreachable commit does NOT reset",
+      _r2["unreachable"] is False, str(_r2))
+
 _tmpdir.cleanup()
 print()
 if failures:
