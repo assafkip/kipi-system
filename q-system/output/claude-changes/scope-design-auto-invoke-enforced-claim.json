@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "slug": "scope-design-auto-invoke-enforced-claim",
+  "reason": "Codex major, PR #49 round 3. Naming the executable in design-auto-invoke.md revealed that the rule's ENFORCED claim is overstated: it reads as requiring a design pass on every public page, and nothing requires one. Measured 2026-08-02: a genuinely clean public page returns EXIT=0 from dogfood_gate.py, and publish_gate.py returns EXIT=0 for a public page that is not under a design-room/ directory. The honest fix is to make the claim match the code. Deliberately NOT adding a hard requirement to make the prose true, since that would be a behaviour change with fleet-wide blast radius smuggled in as a documentation edit. The route is additive-only, so the over-broad implication on the 'needs no design pass' line cannot be reworded; this insert scopes it explicitly instead.",
+  "requires": {
+    "files_present": [
+      "plugins/kipi-design/hooks/dogfood_gate.py",
+      "plugins/kipi-design/hooks/publish_gate.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/design-auto-invoke.md",
+      "op": "insert_after",
+      "anchor": "cockpit, ASK-134) gets the gate switched off, and a gate that is off protects nothing.",
+      "insert": "\n\n**What ENFORCED covers here: detection, not a receipt.** Measured 2026-08-02 by\nrunning both hooks rather than by reading their docs:\n\n- `dogfood_gate.py` (PostToolUse) exits 2 only when it FINDS a tell against the\n  AI-default fingerprint, or finds no interactive element. A clean public page\n  returns exit 0.\n- `publish_gate.py` (PreToolUse) requires a converged design-room receipt only for a\n  deliverable living under a `design-room/` directory. Any other public page\n  publishes at exit 0.\n\nSo read the line above narrowly. An internal path needs no design pass, but that does\nNOT make a design pass required for a public one. No script, hook or required check\nrequires a design-room receipt on an ordinary public page; running design-room there\nis advisory, strongly wanted and not machine-required. If it SHOULD be required, that\nis a new gate whose blast radius is every public page in the fleet, and it earns its\nown issue instead of arriving as a side effect of a documentation edit (Codex major,\nPR #49 round 3).",
+      "reason": "State what the two hooks actually do, scope the ENFORCED tag to detection, and record why the requirement was not added to make the prose true."
+    }
+  ]
+}

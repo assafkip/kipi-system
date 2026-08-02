@@ -493,15 +493,33 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # the no-PR bump added tonight would have been the sixth. Fixing the shared helper
 # fixes all of them at once, which is why it belongs here and not at a call site.
 #
-# mkdir is the lock because it is atomic on POSIX and needs no flock -- macOS
-# ships no flock, so the portable primitive is the only one that works on both
-# kernels this fleet runs on. Write-temp-then-rename makes the replacement atomic
-# too, so a crash mid-write cannot leave a truncated ledger.
+# The lock is `fcntl.flock` on the ledger's own lock file. This paragraph used to
+# describe an O_EXCL file carrying its owner's token, justified by "macOS ships no
+# flock" -- and that justification was simply false (attempts-ledger.py:60 retracts
+# it in this same PR; the claim is true of the flock(1) BINARY, which is why
+# converge.sh, being bash, does have to hand-roll one). The hand-rolled version had
+# to guess whether a leftover lock's owner was alive, and pids wrap, so a corpse
+# lock eventually named a live process that never held it and froze the counter
+# forever. The kernel drops an flock on close AND on process death, so there is no
+# liveness to guess at. Write-temp-then-rename makes the replacement atomic too, so
+# a crash mid-write cannot leave a truncated ledger.
 #
-# A lock we cannot take within the timeout does NOT silently skip the bump: the
-# whole point is that attempts are counted, and a dropped bump is the defect. It
-# takes the lock by force after the timeout, on the reasoning that a stale lock
-# from a killed worker is far likelier than a live worker holding it for 10s.
+# KEEP THIS PARAGRAPH TRUE. It is the one a future agent cites when it is told to
+# reuse an in-repo lock rather than invent another -- which already happened once,
+# on 2026-08-02, and propagated both defects of the version it cited.
+#
+# A LOCK IT CANNOT TAKE MEANS IT WRITES NOTHING AND EXITS 3 (ASK-286). This
+# paragraph used to say the opposite -- that the timeout took the lock BY FORCE
+# rather than drop a bump -- and that reasoning was wrong in a way that made the
+# lock worse than none: the forced run entered the transaction holding nothing
+# and its release then deleted the live holder's lock, so both runs sat inside
+# one read-decide-write. A skipped bump is recoverable (the next scheduled run
+# retries, and the run that DID hold the lock is counting); two writers in one
+# transaction is not. None of the callers below run under `set -e`, so a 3 is a
+# reported miss on stderr, not a dead worker -- and that sentence is only true
+# because nothing in this script turns errexit on behind them. `page_once` did
+# exactly that for one commit (codex round 2), which is why it now reads its exit
+# code through a `||` list instead of bracketing the call in `set +e`/`set -e`.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
@@ -557,6 +575,97 @@ clear_drift_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-drift "$1"; }
 # Takes the flag NAME so every once-only page in this script shares one
 # mechanism instead of each stuck-state inventing its own convention.
 claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
+
+# page_once <issue> <flag>: TRUE when this caller should page. Every once-only
+# page routes through here rather than through `if claim_page_once`, because
+# bash `if` only asks "was the exit 0" and the ledger answers three things
+# (ASK-286, codex round 1 on PR #67, finding 2):
+#
+#   0  claimed here, first time         -> page
+#   1  already claimed on a prior run   -> quiet
+#   2  nothing written (usage error, or any unexpected failure)  -> ledger fault
+#   3  nothing written (lock contended)                          -> ledger fault
+#
+# The bare `if` collapsed 2 and 3 into the same branch as 1, so a page was
+# dropped for a state NO FILE RECORDS -- which means no later run retires it
+# either. It is simply gone. That is the silent stall this worker exists to kill,
+# re-created inside the mechanism built to kill it.
+#
+# WHAT 2 AND 3 MUST NOT DO IS RUN THE CALLER'S PAGE (codex round 4, major). They
+# used to `return 0`, and `return 0` here means the CALLER writes its artifact --
+# which at the stuck site is a permanent Linear comment. The dedup for that
+# comment is the ledger flag. So on exactly the two codes that mean THE LEDGER
+# DID NOT ANSWER, the worker drove a non-idempotent permanent write with its
+# dedup switched off:
+#
+#   exit 3, contention: run A pages, run B takes the lock and pages   = 2 comments
+#   exit 2, unwritable: nothing is ever claimed, so EVERY run posts, forever
+#
+# Observed pre-fix at 5 comments over 5 cycles and 4 comments for a 4-issue queue
+# in ONE run (cases 7-9). "Bounded by the retry budget" was true of contention and
+# false of exit 2, and the old comment above generalised from the bounded one.
+# Repeating "still stuck" every 15 minutes forever is the cry-wolf failure the
+# stuck site's own comment (line 814) says the once-only flag exists to prevent.
+#
+# So the two codes route to `ledger_fault` instead: return 1 (caller writes
+# nothing) and raise the alarm through the EPHEMERAL channel, ONCE PER RUN.
+# Nothing is dropped silently -- what changes is which channel hears it and what
+# it is about. The fault is the LEDGER, not the issue, so the alert names the
+# ledger; a Slack line is idempotent by nature where a Linear comment is not.
+#
+# The two codes differ in whether a later run recovers, and that difference is in
+# the message, not the routing:
+#   exit 3  the flag is still UNCLAIMED, so the next cycle claims it and pages.
+#           Contention defers a page by one heartbeat; it does not drop it.
+#   exit 2  no later run will claim it either, so no later run pages. That is a
+#           real drop, and it is why the fault alert has to exist at all.
+#
+# IT CAPTURES THE CODE WITHOUT TOUCHING THE SHELL'S FLAGS (codex round 2, major).
+# This body used to read `set +e; claim_page_once ...; rc=$?; set -e`, and that
+# trailing `set -e` does not RESTORE errexit -- it ENABLES it. This script runs
+# `set -uo pipefail` (line 47) and has never had `-e`, so the first page in a run
+# re-flagged everything after it: the queue drain is a pipeline into `while read`,
+# and the next benign non-zero killed it mid-drain while the worker still printed
+# "run complete" and exited 0 -- which this file's own header tells callers to
+# treat as healthy. A partial drain reported healthy is the silent stall this
+# worker exists to kill, which is the second time that class has been re-created
+# inside the mechanism built to kill it (finding 2 was the first).
+#
+# `|| rc=$?` rather than a bare call: inside a `||` list errexit is suspended, so
+# this reads the code correctly whether or not a future caller has `-e`, and it
+# still leaves the caller's flags exactly as it found them. Case 5 of
+# test-claim-page-once-routing.sh asserts `$-` is unchanged across the call, from
+# a fork running THIS script's flags -- the suite itself runs `set -euo pipefail`,
+# so in-process the leak is invisible.
+# ONE ALERT PER RUN, not one per issue. A broken ledger is a property of the
+# WORKER, so a 40-issue queue must not send 40 alerts -- that is the same
+# cry-wolf failure in the channel we just moved the notice into. Every issue that
+# hits it still lands in the run log via `say`; the Slack line fires on the first
+# one and names it as an example. Run-scoped state, so the next worker run (a
+# fresh process, 15 minutes later) alerts again while the fault is still real.
+LEDGER_FAULT_ALERTED=0
+ledger_fault() {
+  local issue="$1" flag="$2" rc="$3" detail
+  case "$rc" in
+    3) detail="the lock was contended, so nothing was written. The flag is still UNCLAIMED and the next run will claim it and page -- this defers a page by one cycle, it does not drop it." ;;
+    *) detail="the ledger wrote nothing (exit $rc). No later run will claim this flag either, so no later run will page: this state is dropped until the ledger is writable." ;;
+  esac
+  say "WARN: the attempts ledger did not record the $flag flag for $issue (exit $rc) -- $detail"
+  [ "$LEDGER_FAULT_ALERTED" -eq 0 ] || return 0
+  LEDGER_FAULT_ALERTED=1
+  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
+}
+
+page_once() {
+  local rc=0
+  claim_page_once "$1" "$2" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) ledger_fault "$1" "$2" "$rc"
+       return 1 ;;
+  esac
+}
 
 # Pops the two auto-merge page flags the moment the PR is SEEN armed. Same scar
 # clear_conflict_rounds and clear_drift_rounds both carry (PR #25 finding 3): a
@@ -641,7 +750,7 @@ arm_automerge() {
       # fine. It pages anyway: this is the branch where the PR may really be
       # unarmed, and quieting it would re-create the stall one layer down.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE and could not read its state either -- gh answered neither. If it sits green: gh pr merge --auto --squash $pr"
-      if claim_page_once "$ISSUE" automerge_unknown_paged; then
+      if page_once "$ISSUE" automerge_unknown_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr -- gh could neither arm auto-merge nor read its state, so whether this PR merges itself is unknown. Needs a human to check: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     else
@@ -655,7 +764,7 @@ arm_automerge() {
       # (everything green, nothing merges, no signal), so a log-only warning does
       # not kill the silent stall, it relocates it.
       say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
-      if claim_page_once "$ISSUE" automerge_unarmed_paged; then
+      if page_once "$ISSUE" automerge_unarmed_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi
     fi
@@ -771,7 +880,7 @@ while IFS= read -r ISSUE; do
       STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
     fi
     say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
-    if claim_page_once "$ISSUE" stuck_paged; then
+    if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
         "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
 
@@ -918,7 +1027,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       DR="$(drift_rounds_for "$ISSUE")"
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
-        if claim_page_once "$ISSUE" drift_paged; then
+        if page_once "$ISSUE" drift_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
         continue
@@ -940,7 +1049,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       CR="$(conflict_rounds_for "$ISSUE")"
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
-        if claim_page_once "$ISSUE" conflict_paged; then
+        if page_once "$ISSUE" conflict_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
         continue
@@ -1073,7 +1182,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
       say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
-      if claim_page_once "$ISSUE" tree_paged; then
+      if page_once "$ISSUE" tree_paged; then
         bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
