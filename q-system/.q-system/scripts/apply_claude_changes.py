@@ -77,6 +77,11 @@ REFUSED_SURFACES = (
 # proposal as .claude/settings.json. See scoped_path for why it has to exist.
 PAIRED_OUTSIDE = frozenset({"settings-template.json"})
 
+# Refused anywhere, at any depth. These carry permissions.allow and hooks but are
+# untracked machine-local overrides, so the permission and census checks that key
+# off settings.json would silently inspect the wrong file. See scoped_path.
+REFUSED_BASENAMES = frozenset({"settings.local.json"})
+
 
 class Refusal(Exception):
     """A refusal is a normal outcome, not a crash. Carries the one-line reason."""
@@ -87,6 +92,35 @@ class Refusal(Exception):
 # a test run against a temp fixture would append to the live repo's apply.log --
 # a test touching a live data path, which the fable-discipline lint exists to stop.
 _ROOT = None
+
+
+def acquire_lock(root):
+    """Serialise the whole read-decide-write. Returns the held file object.
+
+    Without this, two concurrent applies each read the same base content, each
+    stage against it, and the second write silently discards the first
+    proposal -- both reporting success. Last-writer-wins on a config file means
+    a change that was reported as landed is simply gone.
+
+    The critical section has to span the READ as well as the write: locking only
+    the write still lets both stage from the same stale base.
+
+    Non-blocking on purpose. A queued apply would sit behind an unattended run
+    holding the lock; refusing is the fail-closed answer and the founder just
+    re-runs. The lock is released when the process exits, so a crashed run does
+    not wedge the tool (flock is bound to the fd, not to a file that must be
+    cleaned up).
+    """
+    import fcntl
+    lock_dir = os.path.join(root, "q-system", "output", "claude-changes")
+    os.makedirs(lock_dir, exist_ok=True)
+    handle = open(os.path.join(lock_dir, ".apply.lock"), "w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        handle.close()
+        raise Refusal("another apply is already running (lock held); nothing was read or written")
+    return handle
 
 
 def repo_root_from_script():
@@ -179,6 +213,24 @@ def scoped_path(root, rel, paired_ok=False):
         return os.path.join(root, norm)
     if not (norm == ".claude" or norm.startswith(".claude" + os.sep)):
         raise Refusal("edit path is outside .claude/: %s" % rel)
+
+    # settings.local.json is REFUSED, not merely unchecked.
+    #
+    # It is the whole tool undone by one filename. permission_surface_check and
+    # the hook census both key off ".claude/settings.json"; the local override
+    # carries its own permissions.allow and hooks, so a proposal aimed here would
+    # widen permissions while the ratchet, the additive-only vocabulary and the
+    # census all inspected a file the proposal never touched, and reported clean.
+    # sp-f434981b already noted this file is excluded from the tripwire as too
+    # noisy while still carrying permissions.allow; this is the same file biting
+    # from the other side.
+    #
+    # Refused rather than checked: it is untracked and machine-local, so a change
+    # here leaves no reviewable trace, and a tool whose purpose is AUDITABLE
+    # config changes has no business writing it.
+    if os.path.basename(norm) in REFUSED_BASENAMES:
+        raise Refusal("%s may not be edited through this path (untracked local override)"
+                      % os.path.basename(norm))
 
     claude_dir = os.path.realpath(os.path.join(root, ".claude"))
     full = os.path.join(root, norm)
@@ -508,6 +560,11 @@ def main(argv):
     if not os.path.isdir(os.path.join(root, ".claude")):
         raise Refusal("no .claude/ directory under %s" % root)
 
+    # Held for the rest of the process. Acquired BEFORE the proposal is read so
+    # the base content every decision rests on cannot move under us.
+    lock = acquire_lock(root)
+    assert lock is not None  # keep a reference; releasing early reopens the race
+
     log = []
     prop = load_proposal(proposal_path)
     slug = prop["slug"]
@@ -610,12 +667,32 @@ def main(argv):
                 fh.write("")
     log.append("backup: %s" % backup_dir)
 
-    for rel in sorted(staged):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as fh:
-            fh.write(staged[rel])
-        written.append(rel)
+    # A write failure on the SECOND file used to escape uncaught and leave a
+    # PARTIALLY APPLIED config -- worse than a refusal, because everything
+    # downstream believes the change landed. Two defences:
+    #   per-file: write a sibling temp then os.replace, so a single file is never
+    #             observed half-written (replace is atomic within a filesystem).
+    #   per-run:  ANY exception restores every target that has a backup, not just
+    #             the ones already written, since the in-flight file may be torn.
+    try:
+        for rel in sorted(staged):
+            full = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            tmp_path = full + ".claude-changes.tmp"
+            with open(tmp_path, "w") as fh:
+                fh.write(staged[rel])
+            os.replace(tmp_path, full)
+            written.append(rel)
+    except (OSError, IOError) as exc:
+        for rel in sorted(staged):
+            leftover = os.path.join(root, rel) + ".claude-changes.tmp"
+            if os.path.isfile(leftover):
+                os.remove(leftover)
+        restore(root, backup_dir, sorted(staged))
+        log.append("write failed after %d of %d file(s): %s" % (len(written), len(staged), exc))
+        log.append("AUTO-REVERTED from %s" % backup_dir)
+        return emit("REVERTED %s: write failed on %s, %d file(s) restored, no partial apply"
+                    % (slug, _snip(str(exc)), len(staged)), log, root, 3)
     log.append("wrote: %s" % ", ".join(written))
 
     # ---- L3 gates AFTER, auto-revert on any regression.

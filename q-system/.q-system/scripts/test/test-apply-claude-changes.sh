@@ -5,13 +5,19 @@
 # at it with --root. No case touches the repo's real .claude/ -- that is both the
 # fable-discipline test-isolation rule and the whole point of the tool.
 #
-# The two mutation cases at the end are the reason to trust the rest: they copy
+# The three mutation cases at the end are the reason to trust the rest: they copy
 # the engine, break one specific guard in the copy, and prove the matching test
 # goes RED. A guard never seen to fail is not a guard.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ENGINE="$SCRIPT_DIR/../apply_claude_changes.py"
+# Ref hatch: point the suite at a pre-fix engine to watch a case fail.
+#   git show <ref>:q-system/.q-system/scripts/apply_claude_changes.py > /tmp/old.py
+#   APPLY_ENGINE=/tmp/old.py bash <this script>
+# A regression case that has never been watched fail is not known to catch
+# anything. The three round-1 MAJORs (settings.local.json, concurrent apply,
+# partial write) were each confirmed red against 8c22e29 this way.
+ENGINE="${APPLY_ENGINE:-$SCRIPT_DIR/../apply_claude_changes.py}"
 PASS=0
 FAIL=0
 
@@ -99,7 +105,9 @@ JSON
 
 run_engine() {  # run_engine <engine> <proposal> <root>  -> sets RC and OUT
   set +e
-  OUT=$("$1" "$2" --root "$3" 2>&1)
+  # Invoked via python3, not the shebang: a ref-hatch engine pulled with
+  # `git show` is not executable, and exit 126 would look like a real failure.
+  OUT=$(python3 "$1" "$2" --root "$3" 2>&1)
   RC=$?
   set -e
 }
@@ -241,7 +249,7 @@ run_engine "$ENGINE" "$T/flag.json" "$T"
 check "disables_enforcement key refused" 2 "unknown proposal key" "$RC" "$OUT"
 
 set +e
-OUT=$("$ENGINE" "$T/flag.json" --root "$T" --force 2>&1); RC=$?
+OUT=$(python3 "$ENGINE" "$T/flag.json" --root "$T" --force 2>&1); RC=$?
 set -e
 check "--force is not a flag" 2 "unknown option --force" "$RC" "$OUT"
 rm -r "$T"
@@ -356,6 +364,106 @@ if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]
 else bad "auto-revert left the file modified"; fi
 rm -r "$T"
 
+# ---------------------------- 10. settings.local.json is refused outright
+# Round-1 review MAJOR: the allowlist accepted .claude/settings.local.json, so a
+# proposal could widen permissions.allow there while permission_surface_check and
+# the hook census both inspected .claude/settings.json and reported clean.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/.claude/settings.local.json" <<'JSON'
+{ "permissions": { "allow": [ "Bash(ls:*)" ] } }
+JSON
+cat > "$T/local.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "widen-via-local", "reason": "widen permissions via the local override",
+  "edits": [ { "file": ".claude/settings.local.json", "op": "insert_after",
+               "anchor": "\"Bash(ls:*)\"", "insert": ", \"Bash(:*)\"",
+               "reason": "widen through the file nobody checks" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/settings.local.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/local.json" "$T"
+check "settings.local.json refused" 2 "may not be edited through this path" "$RC" "$OUT"
+check_one_line "settings.local.json" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.local.json" | awk '{print $1}')" ]; then
+  ok "settings.local.json untouched"
+else bad "settings.local.json was modified"; fi
+rm -r "$T"
+
+# ------------------------------- 11. concurrent applies do not both succeed
+# Round-1 review MAJOR: two applies each read the same base and the second write
+# silently discarded the first proposal, both reporting success.
+T=$(mktemp -d); mk_fixture "$T"
+echo "print('new')" > "$T/q-system/.q-system/scripts/new-lint.py"
+mkdir -p "$T/q-system/output/claude-changes"
+python3 - "$T" <<'PY' &
+import fcntl, os, sys, time
+d = os.path.join(sys.argv[1], "q-system", "output", "claude-changes")
+os.makedirs(d, exist_ok=True)
+f = open(os.path.join(d, ".apply.lock"), "w")
+fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+time.sleep(8)
+PY
+LOCKER=$!
+python3 -c "import time; time.sleep(1.5)"
+cat > "$T/concurrent.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "concurrent", "reason": "second writer",
+  "edits": [ { "file": ".claude/rules/coding-standards.md", "op": "append",
+               "insert": "second writer\n", "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/concurrent.json" "$T"
+check "concurrent apply refused" 2 "another apply is already running" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')" ]; then
+  ok "concurrent apply wrote nothing"
+else bad "concurrent apply mutated the file"; fi
+kill "$LOCKER" 2>/dev/null || true
+wait "$LOCKER" 2>/dev/null || true
+# lock is released on process exit, so the same proposal applies cleanly after
+run_engine "$ENGINE" "$T/concurrent.json" "$T"
+check "apply succeeds once the lock is free" 0 "OK applied concurrent" "$RC" "$OUT"
+rm -r "$T"
+
+# --------------------- 12. write failure mid-apply leaves NO partial config
+# Round-1 review MAJOR: a write failure after the first target escaped uncaught
+# and left a partially applied configuration. Files are written in sorted order,
+# so .claude/rules/... lands before .claude/settings.json. Making the directory
+# that holds settings.json read-only fails the SECOND write specifically.
+T=$(mktemp -d); mk_fixture "$T"
+echo "print('new')" > "$T/q-system/.q-system/scripts/new-lint.py"
+cat > "$T/partial.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "partial-write",
+  "reason": "second write fails; first must be rolled back",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [
+    { "file": ".claude/rules/coding-standards.md", "op": "append",
+      "insert": "\nFIRST TARGET WRITTEN\n", "reason": "lands first" },
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "      \"Read(.env)\"", "insert": ",\n      \"Read(secret)\"",
+      "reason": "lands second, into a read-only directory" }
+  ]
+}
+JSON
+RULES_SUM=$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')
+SET_SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+chmod 555 "$T/.claude"
+run_engine "$ENGINE" "$T/partial.json" "$T"
+chmod 755 "$T/.claude"
+check "write failure reverts" 3 "no partial apply" "$RC" "$OUT"
+check_one_line "write failure" "$OUT"
+if [ "$RULES_SUM" = "$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')" ]; then
+  ok "first target rolled back byte-for-byte"
+else bad "PARTIAL APPLY: first target kept its write"; fi
+if [ "$SET_SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "second target unchanged"
+else bad "second target was modified"; fi
+if ls "$T/.claude"/*.claude-changes.tmp >/dev/null 2>&1; then
+  bad "left a .claude-changes.tmp behind"
+else ok "no temp files left behind"; fi
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -406,6 +514,37 @@ fi
 if grep -q '|| true' "$T/.claude/settings.json"; then
   ok "MUTATION ratchet: confirmed the mutant really wrote the disabling text"
 else bad "MUTATION ratchet: mutant did not write; mutation may be inert"; fi
+rm -r "$T"
+
+echo "--- mutation: remove the write-failure rollback ---"
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_partial.py"
+mutate "$MUT" "        restore(root, backup_dir, sorted(staged))" "        pass"
+cat > "$T/partial.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "partial-write",
+  "reason": "second write fails; first must be rolled back",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [
+    { "file": ".claude/rules/coding-standards.md", "op": "append",
+      "insert": "\nFIRST TARGET WRITTEN\n", "reason": "lands first" },
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "      \"Read(.env)\"", "insert": ",\n      \"Read(secret)\"",
+      "reason": "lands second, into a read-only directory" }
+  ]
+}
+JSON
+RULES_SUM=$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')
+chmod 555 "$T/.claude"
+set +e
+python3 "$MUT" "$T/partial.json" --root "$T" >/dev/null 2>&1
+set -e
+chmod 755 "$T/.claude"
+if [ "$RULES_SUM" = "$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')" ]; then
+  bad "MUTATION partial: rollback removed but first target still clean - test not load-bearing"
+else
+  ok "MUTATION partial: rollback removed -> first target kept its write (partial apply), test goes RED as required"
+fi
 rm -r "$T"
 
 echo
