@@ -836,6 +836,158 @@ else
       "closing line was: $CLOSING"
 fi
 
+echo "== case 19: a DoR heading inside a FENCED BLOCK is not the section boundary =="
+reset
+# codex round 3. Sixth layer of the phrase-vs-structure class: phrase anywhere ->
+# heading at line start -> heading not inside a code fence. Real hazard here
+# specifically, because this repo's own DoR template gets pasted into fenced
+# blocks in issue descriptions. A founder quoting the template had the QUOTE
+# treated as the section start: their prose was deleted from the quote onward and
+# the actually-refused DoR below was left untouched.
+python3 - "$WORK/board.json" > "$WORK/expect19.txt" <<'PY'
+import json, sys
+fence = "```"
+quoted = (f"Here is the template we all use:\n\n{fence}markdown\n"
+          "## Definition of Ready\n\n- **Outcome:** one sentence.\n"
+          f"{fence}\n\nThat quote is documentation, not this issue's own section.")
+real = ("## Definition of Ready\n\n"
+        "- **Outcome:** triage all 304 spillover items.\n- **Files:** unknown")
+json.dump([{
+    "id": "u-930", "identifier": "ASK-930", "title": "ASK-930",
+    "description": quoted + "\n\n" + real,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(sys.argv[1], "w"))
+print(quoted)
+PY
+run_drafter --limit 5 --apply
+python3 - "$WORK/updates.jsonl" "$WORK/expect19.txt" > "$WORK/v19.txt" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+desc = next((r["input"]["description"] for r in rows
+             if "description" in (r.get("input") or {})), "")
+quoted = open(sys.argv[2]).read().rstrip("\n")
+kept = quoted in desc
+gone = "triage all 304 spillover items" not in desc
+print("PASS" if (kept and gone) else "FAIL")
+print(f"quote_survived={kept} refused_dor_replaced={gone} :: {desc[:200]!r}")
+PY
+if head -1 "$WORK/v19.txt" | grep -q PASS; then
+  ok "a fenced DoR quote survives and the REAL section is the one replaced"
+else
+  bad "a fenced DoR quote survives and the REAL section is the one replaced" \
+      "$(sed -n 2p "$WORK/v19.txt")"
+fi
+
+echo "== case 20: an UNCLOSED fence does not hide the real DoR heading =="
+reset
+# The dangerous half of fence handling. If an unclosed ``` is treated as opening a
+# region that runs to end-of-description, the real heading below it disappears,
+# the refused DoR is never replaced, and a second one is appended instead. So an
+# unclosed fence is deliberately NOT a fence.
+python3 - "$WORK/board.json" > "$WORK/expect20.txt" <<'PY'
+import json, sys
+fence = "```"
+before = (f"Bring back the per-repo dispatch.\n\n{fence}\n"
+          "some snippet whose fence was never closed")
+real = ("## Definition of Ready\n\n"
+        "- **Outcome:** triage all 304 spillover items.\n- **Files:** unknown")
+json.dump([{
+    "id": "u-931", "identifier": "ASK-931", "title": "ASK-931",
+    "description": before + "\n\n" + real,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(sys.argv[1], "w"))
+print(before)
+PY
+run_drafter --limit 5 --apply
+python3 - "$WORK/updates.jsonl" "$WORK/expect20.txt" > "$WORK/v20.txt" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+desc = next((r["input"]["description"] for r in rows
+             if "description" in (r.get("input") or {})), "")
+before = open(sys.argv[2]).read().rstrip("\n")
+kept = before in desc
+replaced = "triage all 304 spillover items" not in desc
+one = desc.count("## Definition of Ready") == 1
+print("PASS" if (kept and replaced and one) else "FAIL")
+print(f"prefix_kept={kept} replaced={replaced} exactly_one_dor={one} :: {desc[:200]!r}")
+PY
+if head -1 "$WORK/v20.txt" | grep -q PASS; then
+  ok "an unclosed fence does not hide the heading below it"
+else
+  bad "an unclosed fence does not hide the heading below it" \
+      "$(sed -n 2p "$WORK/v20.txt")"
+fi
+
+echo "== case 21: an issue completed by another writer is not still 'queued' =="
+reset
+# codex round 3, fourth instance of the status-line class. A skip means the issue
+# got what it needed from someone else, so it has LEFT the queue. Counting it as
+# remaining reports work that no longer exists.
+python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, founder, dor = sys.argv[1:5]
+issue = {
+    "id": "u-932", "identifier": "ASK-932", "title": "ASK-932",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+json.dump([dict(issue,
+                description=(founder + "\n\n<!-- kipi-dor: redrafts=1 -->\n"
+                             "## Definition of Ready\n\n- **Outcome:** already done."),
+                labels={"nodes": []})], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+CLOSING21="$(grep '^dor-drafter: drafted' "$WORK/out.txt" || true)"
+if printf '%s' "$CLOSING21" | grep -q '0 still queued'; then
+  ok "a concurrently-completed issue leaves the queued count"
+else
+  bad "a concurrently-completed issue leaves the queued count" \
+      "closing line was: $CLOSING21"
+fi
+if printf '%s' "$CLOSING21" | grep -q 'completed by another writer'; then
+  ok "the closing line says where that issue went"
+else
+  bad "the closing line says where that issue went" \
+      "closing line was: $CLOSING21"
+fi
+
+echo "== case 22: a fenced DoR quote does not count as HAVING a DoR (selection) =="
+reset
+# Found by mutation, not by review: breaking fence-skipping in find_dor_heading
+# left every other case green, because they all carry needs-scope and are selected
+# by the LABEL branch above the has-a-DoR exclusion. This is the selection half --
+# an issue with no label whose description only QUOTES the template has no DoR of
+# its own, so it must still be drafted. Without it, quoting the template hides the
+# issue from the drafter forever, which is the sp-b784a19a failure with a fence
+# around it.
+python3 - "$WORK/board.json" <<'PY'
+import json, sys
+fence = "```"
+json.dump([{
+    "id": "u-933", "identifier": "ASK-933", "title": "ASK-933",
+    "description": (f"Please scope this one.\n\n{fence}markdown\n"
+                    "## Definition of Ready\n\n- **Outcome:** one sentence.\n"
+                    f"{fence}\n\nThat is the template, not this issue's section."),
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": []},
+}], open(sys.argv[1], "w"))
+PY
+run_drafter --limit 5
+if grep -q 'would draft ASK-933' "$WORK/out.txt"; then
+  ok "an issue whose only DoR heading is inside a fence is still drafted"
+else
+  bad "an issue whose only DoR heading is inside a fence is still drafted" \
+      "drafter said: $(tr '\n' '|' < "$WORK/out.txt" | cut -c1-200)"
+fi
+
 echo
 printf 'redrive: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -346,7 +346,47 @@ DOR_HEADING_RE = re.compile(
     r"(?mi)^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+definition of ready\b.*$")
 
 
-def find_dor_heading(desc: str):
+# An opening or closing code fence: up to 3 spaces, then 3+ backticks or tildes.
+FENCE_RE = re.compile(r"(?m)^[ \t]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)$")
+
+
+def fenced_spans(text: str) -> list:
+    """Character spans of CLOSED fenced code blocks, so headings inside them can
+    be ignored.
+
+    An UNCLOSED fence is deliberately NOT a span, and that is the load-bearing
+    choice here. Treating a stray ``` as opening a region that runs to the end of
+    the description would hide every real heading below it: the refused DoR would
+    never be located, so it would never be replaced, and a second section would be
+    appended beneath it. Of the two ways to be wrong, ignoring a real-but-unclosed
+    fence costs at most a mis-scoped section, while swallowing the remainder loses
+    the section boundary entirely on a permanent object.
+
+    Fence rules follow CommonMark closely enough for issue descriptions: a closing
+    fence matches the opening CHARACTER, is at least as long, and carries no info
+    string; a backtick opener may not have backticks in its info string.
+    """
+    spans, open_at, open_char, open_len = [], None, "", 0
+    for m in FENCE_RE.finditer(text):
+        marker = m.group("fence")
+        char, length, info = marker[0], len(marker), m.group("info").strip()
+        if open_at is None:
+            if char == "`" and "`" in info:
+                continue      # not a valid backtick opener
+            open_at, open_char, open_len = m.start(), char, length
+        elif char == open_char and length >= open_len and not info:
+            spans.append((open_at, m.end()))
+            open_at = None
+    return spans
+
+
+def _outside_fences(pattern, text: str, spans: list):
+    """Matches of `pattern` in `text` that do not start inside a fenced block."""
+    return (m for m in pattern.finditer(text)
+            if not any(s <= m.start() < e for s, e in spans))
+
+
+def find_dor_heading(desc: str, spans: list | None = None):
     """The ONE place this file decides where a Definition of Ready section is.
 
     STRUCTURE, not phrase -- and that distinction is the whole reason this
@@ -364,9 +404,21 @@ def find_dor_heading(desc: str):
          inline MENTION became the section start and everything from that
          sentence to the next heading was replaced on redraft (codex round 2).
 
-    Same mistake three times, so the fix is one resolver every site calls, not a
-    fourth correct comparison. A heading is a line that starts with #s. A
-    sentence that happens to contain the words is not a section.
+      4. A heading line INSIDE A FENCED CODE BLOCK counted, so a founder quoting
+         this repo's own DoR template -- which is routinely pasted into a fenced
+         block -- had the QUOTE treated as the section start: their prose was
+         deleted from the quote onward while the actually-refused DoR below it
+         was left untouched (codex round 3).
+
+    Same mistake four times, so the fix is one resolver every site calls, not a
+    fifth correct comparison. A heading is a line that starts with #s, outside a
+    fence. A sentence that happens to contain the words is not a section.
+
+    `spans` is an optimisation only: split_dor_section already computes the fence
+    spans for its end-boundary search and passes them back in. It must NOT resolve
+    the heading itself -- when it did, this function covered only the selection
+    path while the write path kept its own copy, and a mutation that broke fence
+    skipping here left every write-side test green. Found by mutation, not review.
 
     Known limit, chosen deliberately: a DoR titled with bold text
     (`**Definition of Ready**`) rather than a heading reads as absent, so such an
@@ -374,7 +426,9 @@ def find_dor_heading(desc: str):
     already makes explicit -- a duplicate section is recoverable, silently
     deleting or permanently hiding a human's text is not.
     """
-    return DOR_HEADING_RE.search(desc or "")
+    desc = desc or ""
+    spans = fenced_spans(desc) if spans is None else spans
+    return next(_outside_fences(DOR_HEADING_RE, desc, spans), None)
 
 
 def has_dor_section(desc: str) -> bool:
@@ -396,18 +450,23 @@ def split_dor_section(desc: str) -> tuple:
     founder's exact wording back rather than normalising it to DOR_HEADING.
     """
     desc = desc or ""
-    match = find_dor_heading(desc)
+    spans = fenced_spans(desc)
+    match = find_dor_heading(desc, spans)
     if not match:
         return desc, "", "", ""
     level = len(match.group("hashes"))
-    rest = desc[match.end():]
-    # Same-or-higher level ends the section; a deeper `###` inside it does not.
-    nxt = next((m for m in HEADING_RE.finditer(rest)
-                if len(m.group("hashes")) <= level), None)
     heading = match.group(0).strip()
+    # Searched over `desc`, not over a slice, so the fence spans stay in one
+    # coordinate system. Same-or-higher level ends the section; a deeper `###`
+    # inside it does not, and neither does a heading inside a fenced block --
+    # a fenced `## Notes` would otherwise cut the section short and shunt the
+    # rest of the DoR into `after`, where it is never rewritten again.
+    nxt = next((m for m in _outside_fences(HEADING_RE, desc, spans)
+                if m.start() >= match.end() and len(m.group("hashes")) <= level), None)
     if not nxt:
-        return desc[:match.start()], heading, rest, ""
-    return desc[:match.start()], heading, rest[:nxt.start()], rest[nxt.start():]
+        return desc[:match.start()], heading, desc[match.end():], ""
+    return (desc[:match.start()], heading,
+            desc[match.end():nxt.start()], desc[nxt.start():])
 
 
 def redraft_state(desc: str) -> tuple:
@@ -1033,7 +1092,11 @@ def main() -> int:
     # done_redrives feeds the CLOSING status line: without it the closing count
     # cannot tell a redrive apart from a first draft and reports the same wrong
     # thing the opening line used to (codex round 2, twin of round 1 finding 3).
+    # `elsewhere` is issues a concurrent writer finished first. They are neither
+    # drafted by this run nor still queued, and counting them as remaining
+    # reported work that no longer exists (codex round 3).
     drafted, failed, done_redrives = 0, [], 0
+    elsewhere, elsewhere_redrives = 0, 0
     for mode, issue in batch:
         desc = issue.get("description") or ""
         attempt = 0  # bound for every mode; only a redraft carries a real number
@@ -1046,6 +1109,8 @@ def main() -> int:
                 failed.append(f"{issue['identifier']}: terminal write failed: {str(exc)[:120]}")
                 continue
             if skipped:
+                elsewhere += 1
+                elsewhere_redrives += 1
                 print(f"  skipped {issue['identifier']}: {skipped}")
                 continue
             drafted += 1
@@ -1083,7 +1148,11 @@ def main() -> int:
         if skipped:
             # Not a failure: the issue got what it needed, from someone else.
             # Counting it as drafted would overstate the run, and reporting it as
-            # failed would file a noise issue about work that got done.
+            # failed would file a noise issue about work that got done. It has
+            # also LEFT the queue, which is what `elsewhere` carries.
+            elsewhere += 1
+            if mode == "redraft":
+                elsewhere_redrives += 1
             print(f"  skipped {issue['identifier']}: {skipped}")
             continue
         drafted += 1
@@ -1102,15 +1171,21 @@ def main() -> int:
     reported = report_failures(ls, to_report, carried=len(pending))
     unfiled = to_report if reported == "unreachable" else []
 
+    # One arithmetic for the queue, used by the state file and the status line, so
+    # the two cannot disagree about what is left.
+    remaining = len(todo) - drafted - elsewhere
+    remaining_redrives = redrives - done_redrives - elsewhere_redrives
     write_state(ran_at=_now(), drafted=drafted, failed=len(failed),
                 carried_in=len(pending), failures_reported=reported,
                 pending_failures=unfiled[-PENDING_CAP:],
-                remaining=len(todo) - drafted)
+                remaining=remaining)
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
+    elsewhere_note = (f", {elsewhere} completed by another writer"
+                      if elsewhere else "")
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
-          f"{carried_note}{held_note}, {len(todo) - drafted} still queued: "
-          f"{queue_breakdown(len(todo) - drafted, redrives - done_redrives)}")
+          f"{carried_note}{held_note}{elsewhere_note}, {remaining} still queued: "
+          f"{queue_breakdown(remaining, remaining_redrives)}")
     return 0
 
 
