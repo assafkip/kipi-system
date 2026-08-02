@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/ack", "destination": "/api/poll" }
+  ],
+  "functions": {
+    "api/*.py": {
+      "maxDuration": 10
+    }
+  }
+}

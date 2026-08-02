@@ -108,3 +108,6 @@ q-system/output/capability-maps/
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
 q-system/output/claude-integrity/
+
+# Vercel CLI project link (project/org ids)
+.vercel/
