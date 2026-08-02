@@ -477,15 +477,20 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # the no-PR bump added tonight would have been the sixth. Fixing the shared helper
 # fixes all of them at once, which is why it belongs here and not at a call site.
 #
-# mkdir is the lock because it is atomic on POSIX and needs no flock -- macOS
+# The lock is an O_EXCL file created already carrying its owner's token -- macOS
 # ships no flock, so the portable primitive is the only one that works on both
 # kernels this fleet runs on. Write-temp-then-rename makes the replacement atomic
 # too, so a crash mid-write cannot leave a truncated ledger.
 #
-# A lock we cannot take within the timeout does NOT silently skip the bump: the
-# whole point is that attempts are counted, and a dropped bump is the defect. It
-# takes the lock by force after the timeout, on the reasoning that a stale lock
-# from a killed worker is far likelier than a live worker holding it for 10s.
+# A LOCK IT CANNOT TAKE MEANS IT WRITES NOTHING AND EXITS 3 (ASK-286). This
+# paragraph used to say the opposite -- that the timeout took the lock BY FORCE
+# rather than drop a bump -- and that reasoning was wrong in a way that made the
+# lock worse than none: the forced run entered the transaction holding nothing
+# and its release then deleted the live holder's lock, so both runs sat inside
+# one read-decide-write. A skipped bump is recoverable (the next scheduled run
+# retries, and the run that DID hold the lock is counting); two writers in one
+# transaction is not. None of the callers below run under `set -e`, so a 3 is a
+# reported miss on stderr, not a dead worker.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
