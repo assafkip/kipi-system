@@ -114,10 +114,15 @@ export PATH="$STUB:$PATH"
 # run_worker <issue> <run-label> [hold-token]
 # cwd is the skeleton on purpose: that is where launchd runs this from, and it
 # is the cwd that made every issue share one lock.
+# KIPI_NOTIFY is stubbed at every --apply site below. --apply drives the real
+# worker, and several of its branches page the founder. The PATH-stubbed python3
+# happens to short-circuit the picker today so nothing escapes -- that is luck
+# about a stub, not isolation, and the stub is one edit away from changing.
 run_worker() {
   local issue="$1" label="$2" hold="${3:-}"
   ( cd "$WORK/skel" \
     && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-$label" STUB_HOLD="$hold" \
+       KIPI_NOTIFY="/usr/bin/true" \
        bash "$WORKER" --apply --issue "$issue" --limit 1 ) \
     >"$WORK/$label.out" 2>&1
   echo "$?" > "$WORK/$label.rc"
@@ -193,6 +198,7 @@ done
 # d shares c's state dir, so it lands on the SAME worktree for the same issue.
 ( cd "$WORK/skel" \
   && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-c" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-CCC --limit 1 ) >"$WORK/d.out" 2>&1
 touch "$HOLD2.go"
 wait "$C_PID"
@@ -234,6 +240,7 @@ PY
 
 ( cd "$WORK/skel" \
   && KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-e" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-EEE --limit 1 ) >"$WORK/e.out" 2>&1
 
 grep -q "ask-eee" "$WORK/worked.txt" \

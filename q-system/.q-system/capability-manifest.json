@@ -42,6 +42,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
@@ -171,6 +175,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-linear-worker-parallel.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
       "runner": "bash"
     },
     {
