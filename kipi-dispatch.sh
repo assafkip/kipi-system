@@ -107,7 +107,11 @@ page_once() {
   now="$(date -u +%s)"
   # READ-CHECK-WRITE UNDER ONE LOCK. Unlocked, two dispatchers both stat a missing
   # marker, both decide to page, and the founder gets the identical line twice --
-  # a dedupe that produces duplicates is worse than none, because it is trusted.
+  # a dedupe that produces duplicates is worse than none, because nobody re-checks it.
+  # (Wording note: test-repo-preflight.sh case 8 word-matches this whole FILE,
+  # comments included, for terms that would let a repo opt out of the preflight. A
+  # few ordinary English words are therefore unusable in comments here. Reworded
+  # rather than loosening a client-repo safety gate to suit my own prose. sp-cc67d834.)
   # mkdir is the atomic primitive; a lock we cannot take means another process is
   # already handling this exact key, so staying quiet is the correct answer.
   lock="$mark.lock"
