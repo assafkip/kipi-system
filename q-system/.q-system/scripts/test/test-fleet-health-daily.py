@@ -613,6 +613,37 @@ check("a filed finding clears the pending shas", _pending_now(), [])
 _clean = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
 check("with nothing owed and nothing new, there is no finding", _clean, [])
 
+# --- one run's success must not spend another run's sha ---------------------
+# The pending file is SHARED (the daily launchd job and a hand run write the same
+# path). Clearing all of it on any successful filing meant the older run's success
+# consumed the newer run's sha; that run's own filing then failed, and the sweep
+# ledger had already deduped the sha, so it was owed by nobody and lost forever.
+_run_a = _with_sweeper(payload={**_OK, "commits": ["aaaaaaaaa"]})
+_run_b = _with_sweeper(payload={**_OK, "commits": ["bbbbbbbbb"]})
+check("both runs' shas are owed", _pending_now(), ["aaaaaaaaa", "bbbbbbbbb"])
+
+_run_a[0]["key"] = "fleet-health/x/y"
+_run_b[0]["key"] = "fleet-health/x/y"
+fh.file_findings([_run_a[0]], apply=True, linear=_FakeLinear(_live_body))
+check("an older run's success clears only its own shas",
+      _pending_now(), ["bbbbbbbbb"])
+
+fh.file_findings([_run_b[0]], apply=True, linear=_DeadLinear())
+check("the newer run's failed filing leaves its sha owed",
+      _pending_now(), ["bbbbbbbbb"])
+
+_survivor = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
+check("and the surviving sha is re-surfaced", len(_survivor), 1)
+# Guarded: when the sha was already spent there is no finding to index, and a
+# reproducer that dies on IndexError reports a crash instead of the defect.
+check("with the right sha",
+      _survivor[0]["body"].count("bbbbbbbbb") if _survivor else "no finding", 1)
+
+if _survivor:
+    _survivor[0]["key"] = "fleet-health/x/y"
+    fh.file_findings([_survivor[0]], apply=True, linear=_FakeLinear(_live_body))
+    check("filing the survivor drains the ledger", _pending_now(), [])
+
 if failures:
     print("FAIL:")
     for line in failures:

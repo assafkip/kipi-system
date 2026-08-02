@@ -215,6 +215,76 @@ else
   ok "an unparseable floor writes nothing"
 fi
 
+echo "=== a pre-gate commit REPLAYED after the gate went live is a bypass ==="
+
+# A cherry-pick or rebase writes a BRAND NEW commit object that carries the
+# original AUTHOR date. Comparing author dates against the floor meant that
+# commit was "before the gate" forever, even though the object was created after
+# activation, reached origin after activation, and no hook ever saw it. The
+# activation floor is about when a commit ENTERED this history, so both sides
+# compare committer dates.
+CHERRY="$TMP/cherry"
+CHERRY_ORIGIN="$TMP/cherry-origin.git"
+CHERRY_LEDGER="$TMP/cherry.jsonl"
+git init --bare -q "$CHERRY_ORIGIN"
+git init -q -b main "$CHERRY"
+git -C "$CHERRY" config user.email sweep@test.local
+git -C "$CHERRY" config user.name "Sweep Test"
+git -C "$CHERRY" config commit.gpgsign false
+
+echo base > "$CHERRY/base.txt"
+git -C "$CHERRY" add base.txt
+GIT_AUTHOR_DATE=2026-06-30T10:00:00Z GIT_COMMITTER_DATE=2026-06-30T10:00:00Z \
+  git -C "$CHERRY" commit -q --no-verify -m 'chore: base (ASK-1)'
+
+# The pre-gate work, parked on a stale branch.
+git -C "$CHERRY" checkout -q -b legacy
+echo old > "$CHERRY/old-change.txt"
+git -C "$CHERRY" add old-change.txt
+GIT_AUTHOR_DATE=2026-07-01T10:00:00Z GIT_COMMITTER_DATE=2026-07-01T10:00:00Z \
+  git -C "$CHERRY" commit -q --no-verify -m 'fix: old work with no id'
+git -C "$CHERRY" checkout -q main
+
+# The gate goes live. gate_live_since derives the floor from THIS commit.
+mkdir -p "$CHERRY/q-system/.q-system/scripts"
+cp "$SCRIPT_DIR/../linear-issue-ref-check.py" "$CHERRY/q-system/.q-system/scripts/"
+git -C "$CHERRY" add .
+GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+  git -C "$CHERRY" commit -q --no-verify -m 'feat: install the gate (ASK-1)'
+
+# ...and the stale branch is replayed onto it. New object, old author date.
+# No --no-verify here: git cherry-pick does not accept it (and this fixture repo
+# has no hooks installed anyway, which is the point — a replay runs no gate).
+if GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
+     git -C "$CHERRY" cherry-pick legacy >/dev/null 2>&1; then
+  ok "the cherry-pick landed"
+else
+  no "the cherry-pick failed; every case below proves nothing"
+fi
+CHERRY_SHA=$(git -C "$CHERRY" rev-parse HEAD)
+git -C "$CHERRY" remote add origin "$CHERRY_ORIGIN"
+git -C "$CHERRY" push -q -u origin main
+
+# The fixture only proves something if the two dates actually straddle the floor.
+CHERRY_A=$(git -C "$CHERRY" log -1 --format=%aI "$CHERRY_SHA")
+CHERRY_C=$(git -C "$CHERRY" log -1 --format=%cI "$CHERRY_SHA")
+if [ "$CHERRY_A" != "$CHERRY_C" ]; then
+  ok "the replayed commit kept its old author date ($CHERRY_A vs $CHERRY_C)"
+else
+  no "the cherry-pick did not preserve the author date; the case proves nothing"
+fi
+
+OUT_CHERRY=$(cd "$CHERRY" && LINEAR_BYPASS_LEDGER="$CHERRY_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --json 2>/dev/null)
+check "a pre-gate commit replayed after activation is recorded" 1 \
+  "$(printf '%s' "$OUT_CHERRY" | field recorded)"
+
+if [ -s "$CHERRY_LEDGER" ] && grep -q "$CHERRY_SHA" "$CHERRY_LEDGER"; then
+  ok "the replayed commit's sha is in the ledger"
+else
+  no "the replayed commit's sha is NOT in the ledger"
+fi
+
 echo "=== a commit pushed from another checkout is seen (the ref is a cache) ==="
 
 # origin/main in a second checkout is a LOCAL cache. Nothing refreshes it on its

@@ -216,19 +216,27 @@ def ledger_lock(ledger: Path):
 
 
 def gate_live_since(cwd: Path) -> str:
-    """Authored date of the commit that ADDED the commit-msg gate.
+    """COMMITTER date of the commit that ADDED the commit-msg gate.
 
     A commit made before the gate existed did not bypass anything, so counting it
     as a bypass makes the ledger lie in the opposite direction — the first real
     run reported 246 when the true number was 3. The floor is derived from git,
     not hardcoded, so it stays right if the gate is ever re-added or moved.
 
+    Committer, not author, on BOTH sides of the comparison. The question the floor
+    answers is "did this commit object enter this history after the gate went
+    live", and a cherry-pick or rebase writes a brand-new object carrying the
+    ORIGINAL author date. Comparing author dates meant pre-gate work replayed onto
+    a post-gate branch was skipped forever, even though it reached origin after
+    activation and no hook ever saw it. Committer dates also stay order-preserving
+    under a rebase, which rewrites both the floor commit and everything above it.
+
     Empty string when it cannot be derived, which means no floor: better to
     over-count than to silently drop the whole window.
     """
     rel = GATE_PATH.name
     code, out = git(
-        ["log", "--diff-filter=A", "--format=%aI", "--", f"*{rel}"], cwd,
+        ["log", "--diff-filter=A", "--format=%cI", "--", f"*{rel}"], cwd,
     )
     if code != 0 or not out.strip():
         return ""
@@ -264,7 +272,7 @@ def rev_exists(rev: str, cwd: Path) -> bool:
 
 def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
     """Commits reachable from `rev`, newest first, as {sha, subject, message, at}."""
-    fmt = FIELD_SEP_FMT.join(["%H", "%aI", "%B"]) + RECORD_SEP_FMT
+    fmt = FIELD_SEP_FMT.join(["%H", "%aI", "%cI", "%B"]) + RECORD_SEP_FMT
     # The floor is applied in Python, NOT via `git log --since`. Git's approxidate
     # parser silently IGNORES a value it cannot handle and returns the whole range
     # (`--since=2999-01-01` returned every commit), so a bad floor would quietly
@@ -281,17 +289,21 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
         if not record.strip():
             continue
         parts = record.split(FIELD_SEP)
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
-        sha, authored_at, message = parts[0].strip(), parts[1].strip(), parts[2]
+        sha, authored_at = parts[0].strip(), parts[1].strip()
+        committed_at, message = parts[2].strip(), parts[3]
         if floor is not None:
-            when = parse_floor(authored_at, strict=False)
+            # Committer date, matching gate_live_since: a replayed pre-gate commit
+            # keeps its author date but is a new object that entered after the gate.
+            when = parse_floor(committed_at, strict=False)
             if when is None or when < floor:
                 continue
         body = message.strip()
         commits.append({
             "sha": sha,
             "authored_at": authored_at,
+            "committed_at": committed_at,
             "message": body,
             "subject": body.splitlines()[0].strip() if body else "",
         })
@@ -409,6 +421,9 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
             "subject": c["subject"][:200],
             "commit": c["sha"],
             "authored_at": c["authored_at"],
+            # Recorded alongside the author date because they diverge on a replay,
+            # and the committer date is the one the floor actually compared.
+            "committed_at": c["committed_at"],
             "source": "sweep",
         } for c in reversed(fresh)]  # oldest first, so the ledger reads chronologically
 

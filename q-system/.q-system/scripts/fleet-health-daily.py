@@ -56,6 +56,7 @@ goes to stdout and the ledger.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -63,6 +64,7 @@ import re
 import shlex
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -1022,6 +1024,40 @@ def _write_pending(shas: list) -> None:
         print(f"  could not write {BYPASS_PENDING}: {exc}", file=sys.stderr)
 
 
+@contextmanager
+def _pending_lock():
+    """Hold the pending file's read-then-write as ONE critical section.
+
+    Both sides of this file are read-modify-write, and the file is SHARED: the
+    daily launchd job and a hand run write the same path. Two of them interleaving
+    between the read and the write lose whichever sha was added in between — the
+    sweep ledger has already deduped it, so nothing re-surfaces it. Same shape as
+    linear-bypass-sweep.py's ledger lock, same lesson: a dedup record needs a
+    single writer, and the lock IS it.
+
+    Yields even when the lock cannot be taken (read-only dir). An unlocked update
+    beats losing the record entirely; the weaker guarantee is warned about, not
+    assumed away.
+    """
+    path = BYPASS_PENDING.with_suffix(BYPASS_PENDING.suffix + ".lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+")
+    except OSError as exc:
+        print(f"  could not lock {path}: {exc}", file=sys.stderr)
+        yield False
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield True
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
 def _merge_pending(newly: list) -> list:
     """Previously-unreported shas first, then this run's, order-stable, deduped."""
     merged = list(_read_pending())
@@ -1031,6 +1067,28 @@ def _merge_pending(newly: list) -> list:
             seen.add(sha)
             merged.append(sha)
     return merged
+
+
+def _record_pending(newly: list) -> list:
+    """Merge this run's shas into the shared record and return everything owed."""
+    with _pending_lock():
+        merged = _merge_pending(newly)
+        if merged:
+            _write_pending(merged)
+    return merged
+
+
+def _clear_pending(reported) -> None:
+    """Drop ONLY the shas this finding carried; anything owed since stays owed.
+
+    Clearing the whole file assumed one finding owned all of it. It does not: an
+    older run's successful filing wiped a newer run's sha, that run's own filing
+    then failed, and the sweep ledger had already deduped the sha — so it was owed
+    by nobody and lost forever. What a filing spends is what it reported.
+    """
+    done = set(reported)
+    with _pending_lock():
+        _write_pending([sha for sha in _read_pending() if sha not in done])
 
 
 def detect_unaccounted_commits(_ctx) -> list:
@@ -1086,18 +1144,19 @@ def detect_unaccounted_commits(_ctx) -> list:
     # forever and the next morning read clean. The ledger's job is the COUNT; the
     # pending file is the separate, independently-cleared record of what still
     # owes a report.
-    pending = _merge_pending(result.get("commits") or [])
+    pending = _record_pending(result.get("commits") or [])
     if not pending:
         return []
 
-    _write_pending(pending)
     shown = pending[:25]
     more = len(pending) - len(shown)
     fresh = pending
     return [{
-        # Cleared ONLY after Linear has actually accepted the finding. A dry run
-        # never clears it: nothing was filed, so nothing was reported.
-        "on_filed": lambda: _write_pending([]),
+        # Cleared ONLY after Linear has actually accepted the finding, and only
+        # for the shas THIS finding reported. A dry run never clears it: nothing
+        # was filed, so nothing was reported. The list is bound at build time, so
+        # a sha recorded after this finding was assembled is not spent by it.
+        "on_filed": lambda spent=tuple(pending): _clear_pending(spent),
         # Stable subject: ONE standing issue for this class. The shas live in the
         # body, which is updatable; putting them in the dedup key would fork a
         # permanent issue per bypass.
