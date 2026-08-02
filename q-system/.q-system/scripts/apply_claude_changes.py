@@ -40,10 +40,13 @@ THE THREE LAYERS
                       " || true" after a hook command, which deletes nothing but
                       makes the old exact command string vanish from the census.
                       The census reads rule CONTENT, not just the rules/ listing
-                      (_rule_content_marks): an (ENFORCED marker or a pointer to a
-                      named enforcer may not vanish from a rule. Filenames alone
-                      were blind to everything a replace does inside a file, which
-                      is exactly why replace could not exist before that census.
+                      (_rule_marks): an (ENFORCED marker or a pointer to a named
+                      enforcer may not vanish from a rule, and a rule's count of
+                      substantive lines may not shrink. Filenames alone were
+                      blind to everything a replace does inside a file, which is
+                      exactly why replace could not exist before that census; the
+                      line floor is there because 5 of 34 rules carry no token at
+                      all, so tokens alone left them free to be gutted.
   L3 verify+revert  : run the gate suite before and after. Any gate that goes
                       pass -> fail auto-restores the backup. The founder must
                       never be the one who notices a regression.
@@ -54,9 +57,17 @@ half-writes.
 
 OUT OF REACH BY DESIGN (say so, do not pretend otherwise): removing a hook,
 deleting a rule, narrowing a matcher, widening permissions.allow or defaultMode,
-and stripping a rule's (ENFORCED marker or its pointer to a named enforcer,
-cannot be done through this path at all. Those need a different tool and a real
-conversation. See REFUSED_SURFACES.
+stripping a rule's (ENFORCED marker or its pointer to a named enforcer, changing
+a rule's frontmatter (the keys that decide whether it loads at all), and
+shortening a rule's body, cannot be done through this path at all. Those need a
+different tool and a real conversation. See REFUSED_SURFACES.
+
+WHAT STILL GETS THROUGH (the honest residue, do not read the list above as
+wider than it is): the census counts markers, executable references and line
+COUNT -- never meaning. A replace that rewrites a rule into something vaguer
+while keeping its (ENFORCED marker, every script name and its line count passes.
+That is the deliberate trade: a ratchet that judged prose would refuse the
+honest corrections this op exists to enable.
 """
 import json
 import os
@@ -84,7 +95,23 @@ RULES_DIR = os.path.join(".claude", "rules")
 
 # A rule's pointer to the thing that actually enforces it. Census member, so a
 # replace cannot quietly cut a reader's route to the enforcer.
-_EXEC_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)")
+#
+# The trailing boundary is load-bearing and is NOT a plain \b. Without it,
+# rewriting `voice-lint.py` to `voice-lint.py.retired` left the mark
+# `voice-lint.py` intact -- the pattern simply matched the prefix -- while the
+# reader's route to the enforcer was dead (PR #70 round 3, minor). But a plain
+# boundary over-corrects the other way: rules routinely end a sentence with
+# "... is voice-lint.py.", and rejecting a following "." would quietly drop
+# every one of those from the census. So the lookaheads reject exactly two
+# things: more filename characters, and a dot that STARTS another extension.
+_EXEC_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_])")
+
+# A rule's frontmatter decides whether the rule LOADS. Narrowing paths:/globs:
+# leaves the body, the tokens and the line count all identical while switching
+# the rule off, so no content census can see it (PR #70 round 3, major).
+# `replace` therefore may not move this block at all -- same standing as removing
+# a hook: a different tool and a real conversation.
+_FRONTMATTER = re.compile(r"\A---\n.*?\n---(?:\n|\Z)", re.S)
 
 ALLOWED_PROPOSAL_KEYS = {"schema_version", "slug", "reason", "requires", "edits"}
 ALLOWED_EDIT_KEYS = {"file", "op", "anchor", "insert", "reason"}
@@ -424,7 +451,17 @@ def apply_edit(content, edit, rel):
             if content.count(ins) == 1:
                 return content, True
             raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
-        return content.replace(anchor, ins, 1), False
+        new = content.replace(anchor, ins, 1)
+        # Compared before/after rather than "is the anchor inside the block":
+        # that also catches an insert that ADDS or CLOSES a --- fence, which
+        # would move the frontmatter boundary without the anchor ever sitting in
+        # it. Equality is transitive, so checking each edit is enough to hold
+        # across a whole proposal.
+        if _frontmatter(new) != _frontmatter(content):
+            raise Refusal(
+                "replace may not change the frontmatter of %s; the scoping keys "
+                "decide whether the rule loads at all" % rel)
+        return new, False
 
     if _unique_anchor_hits(content, anchor, rel) == 0:
         raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
@@ -473,8 +510,19 @@ def _dir_names(path):
     return {n for n in os.listdir(path) if not n.startswith(".")}
 
 
-def _rule_content_marks(rules_dir):
-    """Enforcement-bearing tokens INSIDE rule text, keyed by rule file.
+def _frontmatter(text):
+    """The leading --- block, or "" when the file has none. See _FRONTMATTER."""
+    match = _FRONTMATTER.match(text or "")
+    return match.group(0) if match else ""
+
+
+def _rule_marks(rules_dir):
+    """Read every rule ONCE and return (token_marks, line_marks).
+
+    One walk and one read per file on purpose. Two functions each opening the
+    same rules is two readers free to drift -- the defect class round 2 found in
+    the path normalization and round 3 found again between the token census and
+    the frontmatter it never looked at.
 
     The rules census used to be _dir_names -- a directory listing, which is
     blind to everything that happens inside a file. That was fine while every op
@@ -493,12 +541,30 @@ def _rule_content_marks(rules_dir):
       exec     : a named .py/.sh the rule routes a reader to. A rule whose
                  pointer to its enforcer vanishes is a rule nobody can act on.
 
-    Deliberately NOT counted: prose meaning, tone, length. A ratchet that tried
-    to judge those would refuse the honest corrections this op exists to enable.
+    Deliberately NOT counted: prose meaning and tone. A ratchet that tried to
+    judge those would refuse the honest corrections this op exists to enable.
+
+    LINE MARKS are the second half, and they exist because tokens alone are not
+    enough: 5 of this repo's 34 rules carry NEITHER token class (security.md has
+    no (ENFORCED marker and names no script), so a replace swapped the whole
+    475-char body of one for a single sentence while the token census reported
+    rule_marks 113 -> 113 and the tool exited OK applied. Measured 2026-08-02,
+    PR #70 round 3 major.
+
+    A count only becomes visible to ratchet_check's set-difference when it is
+    encoded as a SET, hence one mark per substantive line INDEX. Dropping a line
+    drops the highest index, which is exactly the refusal wanted.
+
+    Lines, not words or characters: rewording a line has to stay free, because
+    that IS the correction this op exists for, while deleting lines must not. So
+    a replace may reword a rule and may grow it; it may never shorten it. The
+    residue is named in the module docstring rather than papered over: a rewrite
+    that keeps the shape and hollows out the meaning still passes.
     """
-    marks = set()
+    token_marks = set()
+    line_marks = set()
     if not os.path.isdir(rules_dir):
-        return marks
+        return token_marks, line_marks
     for name in sorted(os.listdir(rules_dir)):
         if name.startswith(".") or not name.endswith(".md"):
             continue
@@ -508,10 +574,13 @@ def _rule_content_marks(rules_dir):
         except (OSError, UnicodeDecodeError):
             continue
         for ref in set(_EXEC_REF.findall(text)):
-            marks.add("%s|exec|%s" % (name, ref))
+            token_marks.add("%s|exec|%s" % (name, ref))
         if "(ENFORCED" in text:
-            marks.add("%s|enforced" % name)
-    return marks
+            token_marks.add("%s|enforced" % name)
+        substantive = sum(1 for line in text.splitlines() if line.strip())
+        for index in range(substantive):
+            line_marks.add("%s|line|%d" % (name, index))
+    return token_marks, line_marks
 
 
 def census(root):
@@ -529,7 +598,7 @@ def census(root):
     perms = settings.get("permissions") or {}
     c["deny"] = set(perms.get("deny") or [])
     c["rules"] = _dir_names(os.path.join(root, ".claude", "rules"))
-    c["rule_marks"] = _rule_content_marks(os.path.join(root, ".claude", "rules"))
+    c["rule_marks"], c["rule_lines"] = _rule_marks(os.path.join(root, ".claude", "rules"))
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 

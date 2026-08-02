@@ -61,6 +61,25 @@ The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.
 This rule is enforced end to end and covers every path in the repo.
 MD
   echo "print('lint')" > "$r/q-system/.q-system/scripts/existing-lint.py"
+  # A rule carrying NEITHER token class the content census counts, plus the
+  # frontmatter that decides whether it loads at all. 5 of this repo's 34 real
+  # rules look exactly like this (security.md, content-output.md, ...), so it is
+  # the shape a token-only census is blind to.
+  cat > "$r/.claude/rules/advisory-rule.md" <<'MD'
+---
+description: Advisory guidance for generated output
+paths:
+  - "q-system/output/**"
+---
+
+# Advisory Rule
+
+Never publish a number whose source is not in this repo.
+
+Every claim traces to a file a reader can open.
+
+Ambiguity is preserved with an explicit marker, never smoothed over.
+MD
   cat > "$r/.claude/settings.json" <<'JSON'
 {
   "permissions": {
@@ -772,6 +791,120 @@ run_engine "$ENGINE" "$T/repabs.json" "$T"
 check "absent replace anchor refused" 2 "anchor not found" "$RC" "$OUT"
 rm -r "$T"
 
+# 15i. gutting a rule that carries NO enforcement tokens (PR #70 round 3, major).
+# A token-only census reports rule_marks unchanged while the whole body goes,
+# because a rule with no (ENFORCED marker and no named script has nothing to
+# count. The body-line floor is the layer that has to refuse this.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/gut.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "gut-advisory",
+  "reason": "swap an entire rule body for one sentence",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "Never publish a number whose source is not in this repo.\n\nEvery claim traces to a file a reader can open.\n\nAmbiguity is preserved with an explicit marker, never smoothed over.",
+               "insert": "Use your judgement.", "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/advisory-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/gut.json" "$T"
+check "gutting a zero-token rule refused" 2 "enforcement ratchet" "$RC" "$OUT"
+check_one_line "gutting a zero-token rule" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/advisory-rule.md" | awk '{print $1}')" ]; then
+  ok "gutting a zero-token rule wrote nothing"
+else bad "gutting a zero-token rule REMOVED the body"; fi
+
+# Rewording at the same body length stays allowed -- that is the correction this
+# op exists for, and a floor that refused it would refuse the whole feature.
+cat > "$T/reword.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "reword-advisory",
+  "reason": "correct one sentence without shortening the rule",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "Never publish a number whose source is not in this repo.",
+               "insert": "Never publish a number whose source is not a file in this repo.",
+               "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/reword.json" "$T"
+check "same-length reword still succeeds" 0 "OK applied reword-advisory" "$RC" "$OUT"
+rm -r "$T"
+
+# 15j. narrowing frontmatter so the rule never loads (PR #70 round 3, major).
+# Same body, same tokens, same line count -- every content check sees no change,
+# and the rule is dead because its paths: no longer match anything.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/unload.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "unload-rule",
+  "reason": "narrow the scoping key so the rule stops loading",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "  - \"q-system/output/**\"",
+               "insert": "  - \"q-system/output/__never__/**\"", "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/advisory-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/unload.json" "$T"
+check "narrowing frontmatter refused" 2 "frontmatter" "$RC" "$OUT"
+check_one_line "narrowing frontmatter" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/advisory-rule.md" | awk '{print $1}')" ]; then
+  ok "narrowing frontmatter wrote nothing"
+else bad "narrowing frontmatter MUTATED the scoping key"; fi
+
+# The body of a rule that HAS frontmatter is still reachable; the refusal above
+# is about the frontmatter block, not about the file carrying one.
+cat > "$T/body-ok.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-body",
+  "reason": "correct body text in a rule that has frontmatter",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "Every claim traces to a file a reader can open.",
+               "insert": "Every claim traces to a file any reader can open.", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/body-ok.json" "$T"
+check "body of a frontmattered rule still editable" 0 "OK applied fix-body" "$RC" "$OUT"
+rm -r "$T"
+
+# 15k. renaming a rule's enforcer to a dead name (PR #70 round 3, minor).
+# `existing-lint.py.retired` still CONTAINS `existing-lint.py`, so an exec-ref
+# pattern with no trailing boundary reports the mark intact while the reader's
+# route to the enforcer is dead.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/retire.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "retire-enforcer",
+  "reason": "point the rule at a name that does not run",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "The deterministic half was `existing-lint.py.retired`, now unwired.",
+               "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/retire.json" "$T"
+check "renaming the enforcer to a dead name refused" 2 "enforcement ratchet" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')" ]; then
+  ok "renaming the enforcer wrote nothing"
+else bad "renaming the enforcer left a dead pointer in the rule"; fi
+
+# A ref at the end of a sentence is still a ref: the boundary must reject a
+# LONGER filename, not a following period. Otherwise every "see foo.py." line in
+# the real rules silently stops being a census member.
+printf -- '---\ndescription: d\n---\n\n# Sentence End (ENFORCED)\n\nThe gate is q-system/.q-system/scripts/existing-lint.py.\n\nIt runs on write.\n' \
+  > "$T/.claude/rules/sentence-end.md"
+cat > "$T/sentence.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "drop-sentence-end-ref",
+  "reason": "drop a ref that sat at the end of a sentence",
+  "edits": [ { "file": ".claude/rules/sentence-end.md", "op": "replace",
+               "anchor": "The gate is q-system/.q-system/scripts/existing-lint.py.",
+               "insert": "The gate is somewhere in the repo, look for it.", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/sentence.json" "$T"
+check "a ref ending a sentence is still a census member" 2 "enforcement ratchet" "$RC" "$OUT"
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -877,6 +1010,79 @@ assert text != open(src).read(), "mutant is identical to the original"
 open(dest, "w").write(text)
 PY
 }
+echo "--- mutation: blind the body-line floor ---"
+# Stop emitting line marks and a rule with no enforcement tokens is defenceless
+# again: the whole body goes and the ratchet reports nothing missing.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_lines.py"
+mutate "$MUT" "            line_marks.add(\"%s|line|%d\" % (name, index))" "            pass"
+cat > "$T/gut.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "gut-advisory", "reason": "swap a whole rule body",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "Never publish a number whose source is not in this repo.\n\nEvery claim traces to a file a reader can open.\n\nAmbiguity is preserved with an explicit marker, never smoothed over.",
+               "insert": "Use your judgement.", "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/gut.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "Never publish a number" "$T/.claude/rules/advisory-rule.md"; then
+  bad "MUTATION lines: mutant did not gut the rule - the body-floor test is not load-bearing"
+else
+  ok "MUTATION lines: floor blinded -> a zero-token rule's whole body vanished (rc=$MRC), test goes RED as required"
+fi
+rm -r "$T"
+
+echo "--- mutation: drop the frontmatter pin ---"
+# Without it, the scoping key narrows, the rule stops loading, and every content
+# check reports clean because the body never moved.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_fm.py"
+mutate "$MUT" "        if _frontmatter(new) != _frontmatter(content):" "        if False:"
+cat > "$T/unload.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "unload-rule", "reason": "narrow the scoping key",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "replace",
+               "anchor": "  - \"q-system/output/**\"",
+               "insert": "  - \"q-system/output/__never__/**\"", "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/unload.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "__never__" "$T/.claude/rules/advisory-rule.md"; then
+  ok "MUTATION frontmatter: pin dropped -> the rule was switched off via paths: (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION frontmatter: mutant did not narrow paths: - the frontmatter test is not load-bearing"
+fi
+rm -r "$T"
+
+echo "--- mutation: restore the unbounded exec-ref pattern ---"
+# The prefix match is the whole defect: `existing-lint.py.retired` contains
+# `existing-lint.py`, so the census sees a mark that no longer points anywhere.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_ref.py"
+mutate "$MUT" '(?:py|sh)(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_])' '(?:py|sh)'
+cat > "$T/retire.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "retire-enforcer", "reason": "point at a dead name",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "The deterministic half was `existing-lint.py.retired`, now unwired.",
+               "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/retire.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "existing-lint.py.retired" "$T/.claude/rules/enforced-rule.md"; then
+  ok "MUTATION execref: boundary removed -> the rule now points at a name that does not run (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION execref: mutant did not write the dead pointer - the boundary test is not load-bearing"
+fi
+rm -r "$T"
+
 T=$(mktemp -d); mk_fixture "$T"
 MUT="$T/mutant_norm.py"
 mutate2 "$MUT" \
