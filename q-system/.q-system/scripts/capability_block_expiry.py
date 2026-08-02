@@ -65,6 +65,27 @@ HERE = pathlib.Path(__file__).resolve().parent
 PROBE_FENCE = "kipi-capability-probe"
 LEGACY_CONSUMED = "legacy-reoffer-consumed"
 
+# Written by a refusal that could not name a probe. It exists so the NEWEST
+# refusal always wins: without an explicit token, a probe-less refusal emitted no
+# fence at all and therefore could not supersede an older PASSING fence, so a
+# still-real block re-expired on every tick -- one runner dispatch burned per
+# cycle, forever (codex review of PR #69, reproduced 2026-08-02). The claim that
+# "missing probes degrade, they do not wedge" was true; the claim that a still-
+# real block never burns a pick was NOT, and this is what makes it true.
+NO_PROBE = "no-probe"
+
+# The label that records a spent re-offer. It is a LABEL and not a comment marker
+# because it is written in the SAME issueUpdate that removes blocked:capability,
+# so the two cannot disagree. The comment-marker version had an ordering hazard
+# with no safe answer: post first and a failed update spends the re-offer while
+# the block stays on (permanently wedged), post second and a failed comment
+# re-arms the re-offer forever. One atomic write has neither failure.
+REOFFERED_LABEL = "capability:reoffered"
+
+# Producer text from linear-worker.sh's capability REFUSE_NOTE. Used only to date
+# the newest refusal, never to parse one -- see stale-fence handling below.
+REFUSAL_MARKER = "Blocked on a missing capability"
+
 # States that mean nobody is waiting on this issue. A closed issue keeps its
 # labels, so the live board hands back a `blocked:capability` issue that is
 # already Done (ASK-281 is one). Un-blocking it would reopen finished work.

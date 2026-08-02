@@ -67,6 +67,28 @@ json.dump({"issues": [with_comment(by["ASK-140"], probe)]}, open(tmp + "/probed.
 json.dump({"issues": [with_comment(by["ASK-140"], spent)]}, open(tmp + "/spent.json", "w"))
 json.dump({"issues": [with_comment(by["ASK-140"], bogus)]}, open(tmp + "/bogus.json", "w"))
 json.dump({"issues": [with_comment(by["ASK-140"], unknown)]}, open(tmp + "/unknown.json", "w"))
+
+# --- the codex-found MAJOR (PR #69 review, 2026-08-02) --------------------
+# An issue that once recorded a PASSING probe, then was re-blocked by a refusal
+# that recorded NO probe. The old fence must not answer for the new block: the
+# capability that is missing NOW is what decides workability. Getting this wrong
+# re-expires a real block on every worker tick, burning one runner dispatch per
+# cycle forever -- the exact opposite of the anti-thrash property this file
+# claims. Both comment shapes below come from the real producers (the worker's
+# refusal note and cbe.expire_note), not from my idea of them.
+noprobe_fence = "```kipi-capability-probe\nno-probe\n```"
+reblock = ("**Blocked on a missing capability, not on scope.**\n\n"
+           "**No probe was recorded**, so this block cannot be re-tested mechanically.")
+
+# (a) the new worker always emits a fence, so the newest fence says `no-probe`
+stale_fenced = with_comment(with_comment(by["ASK-140"], probe), reblock + "\n\n" + noprobe_fence)
+json.dump({"issues": [stale_fenced]}, open(tmp + "/stale-fenced.json", "w"))
+
+# (b) the backstop: a refusal that emitted NO fence at all (old data, or any
+# producer that forgets). The newest FENCE is still the old passing one, so
+# fence-ordering alone cannot see this. Recency of the refusal is what does.
+stale_unfenced = with_comment(with_comment(by["ASK-140"], probe), reblock)
+json.dump({"issues": [stale_unfenced]}, open(tmp + "/stale-unfenced.json", "w"))
 PY
 
 # --- 1. the defect is real: ASK-140 is not pickable as it stands -------------
@@ -101,6 +123,8 @@ expect "probe now present -> EXPIRE"                       "$TMP/probed.json" "$
 expect "spent re-offer is never re-spent"                  "$TMP/spent.json"  "$TMP/absent"  ASK-140 HOLD
 expect "known kind, target absent -> HOLD"                 "$TMP/bogus.json"  "$TMP/present" ASK-140 HOLD
 expect "UNKNOWN probe kind fails CLOSED"                   "$TMP/unknown.json" "$TMP/present" ASK-140 HOLD
+expect "a newer no-probe fence supersedes an older PASSING probe" "$TMP/stale-fenced.json"   "$TMP/present" ASK-140 HOLD
+expect "a newer refusal with NO fence supersedes it too"          "$TMP/stale-unfenced.json" "$TMP/present" ASK-140 HOLD
 
 # --- 3. a probe is never executed -------------------------------------------
 # The refusal text is agent-authored. If a probe were shelled out, this would
