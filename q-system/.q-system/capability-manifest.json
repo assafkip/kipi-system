@@ -364,6 +364,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_token_guard_observation.py",
       "runner": "python3"
     },
