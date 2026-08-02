@@ -42,10 +42,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
@@ -178,14 +174,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -219,6 +207,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -279,6 +271,14 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
@@ -294,6 +294,15 @@
     {
       "path": "q-system/.q-system/scripts/test_client_output_evidence_gate.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_coding_standards_lint.py",
+      "runner": "python3",
+      "quarantine": {
+        "reason": "4 of 39 cases assert the hook is wired in .claude/settings.json + settings-template.json. It is deliberately NOT wired: measured over 400 tracked files, arming it refuses edits to 36, including linear-worker.sh, kipi-dispatch.sh, converge.sh and slack-notify.sh. Arming is a founder decision; the suite stays declared so it cannot vanish silently.",
+        "spillover_id": "sp-994363e8",
+        "expires": "2026-09-01"
+      }
     },
     {
       "path": "q-system/.q-system/scripts/test_correction_outcome.py",
@@ -413,6 +422,11 @@
       "path": "q-system/.q-system/scripts/accept-rate.py",
       "reason": "sycophancy pi metric script with no caller on any wiring surface",
       "spillover_id": "sp-cc33bdb0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/coding-standards-lint.py",
+      "reason": "built and tested (39 cases) but not on any wiring surface on purpose: as a blocking PostToolUse hook it would refuse edits to 36 of 400 tracked files, including the loop's own hot path. Arm-vs-narrow is the open founder decision.",
+      "spillover_id": "sp-994363e8"
     },
     {
       "path": "q-system/.q-system/scripts/granola-voice-synthesize.py",
