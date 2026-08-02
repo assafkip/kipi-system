@@ -39,10 +39,12 @@ THE THREE LAYERS
                       removes something as a side effect -- e.g. inserting
                       " || true" after a hook command, which deletes nothing but
                       makes the old exact command string vanish from the census.
-                      The census reads rule CONTENT, not just the rules/ listing
-                      (_rule_marks): an (ENFORCED marker or a pointer to a named
-                      enforcer may not vanish from a rule, and a rule's count of
-                      substantive lines may not shrink. Filenames alone were
+                      The census reads rule CONTENT at any depth under rules/,
+                      not just the rules/ listing (_rule_marks): an (ENFORCED
+                      marker may not lose an occurrence NOR leave the heading it
+                      sits on, a pointer to a named enforcer may not vanish or be
+                      rerouted, and a rule's count of substantive lines may not
+                      shrink. Filenames alone were
                       blind to everything a replace does inside a file, which is
                       exactly why replace could not exist before that census; the
                       line floor is there because 5 of 34 rules carry no token at
@@ -57,17 +59,21 @@ half-writes.
 
 OUT OF REACH BY DESIGN (say so, do not pretend otherwise): removing a hook,
 deleting a rule, narrowing a matcher, widening permissions.allow or defaultMode,
-stripping a rule's (ENFORCED marker or its pointer to a named enforcer, changing
-a rule's frontmatter (the keys that decide whether it loads at all), and
-shortening a rule's body, cannot be done through this path at all. Those need a
-different tool and a real conversation. See REFUSED_SURFACES.
+dropping an occurrence of a rule's (ENFORCED marker or moving it off the heading
+it sits on, dropping or rerouting a rule's pointer to a named enforcer, changing
+a rule's frontmatter (the keys that decide whether it loads at all) by ANY op
+including the additive ones, and shortening a rule's body, cannot be done through
+this path at all. Those need a different tool and a real conversation. See
+REFUSED_SURFACES.
 
 WHAT STILL GETS THROUGH (the honest residue, do not read the list above as
-wider than it is): the census counts markers, executable references and line
-COUNT -- never meaning. A replace that rewrites a rule into something vaguer
-while keeping its (ENFORCED marker, every script name and its line count passes.
-That is the deliberate trade: a ratchet that judged prose would refuse the
-honest corrections this op exists to enable.
+wider than it is): the census counts markers, the routes to executables, and
+line COUNT -- never meaning. A replace that rewrites a rule into something vaguer
+while keeping its (ENFORCED marker on the same heading, every script route and
+its line count passes. Marker placement is checked at heading granularity only:
+moving it between two headings of the same file is invisible here. That is the
+deliberate trade: a ratchet that judged prose would refuse the honest
+corrections this op exists to enable.
 """
 import json
 import os
@@ -96,6 +102,14 @@ RULES_DIR = os.path.join(".claude", "rules")
 # A rule's pointer to the thing that actually enforces it. Census member, so a
 # replace cannot quietly cut a reader's route to the enforcer.
 #
+# The DIRECTORY PREFIX is part of the mark, not decoration. Matching the
+# basename alone let a replace keep `existing-lint.py` while moving its route to
+# `q-system/retired/hooks/existing-lint.py` -- the census saw the same member and
+# the reader's route pointed at nothing (PR #70 round 4, minor). The route as the
+# rule WRITES it is the census member, so moving it is a removal. The leading
+# lookbehind stops the match from starting mid-token, which is what keeps a
+# prefixed route from also registering as its own bare basename.
+#
 # The trailing boundary is load-bearing and is NOT a plain \b. Without it,
 # rewriting `voice-lint.py` to `voice-lint.py.retired` left the mark
 # `voice-lint.py` intact -- the pattern simply matched the prefix -- while the
@@ -104,13 +118,21 @@ RULES_DIR = os.path.join(".claude", "rules")
 # "... is voice-lint.py.", and rejecting a following "." would quietly drop
 # every one of those from the census. So the lookaheads reject exactly two
 # things: more filename characters, and a dot that STARTS another extension.
-_EXEC_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_])")
+_EXEC_REF = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_])")
+
+# A markdown heading line. Used only to ask WHERE an (ENFORCED marker sits; see
+# _rule_marks for why the location and not just the presence has to be counted.
+_HEADING = re.compile(r"[ ]{0,3}#{1,6}[ \t]")
 
 # A rule's frontmatter decides whether the rule LOADS. Narrowing paths:/globs:
 # leaves the body, the tokens and the line count all identical while switching
 # the rule off, so no content census can see it (PR #70 round 3, major).
-# `replace` therefore may not move this block at all -- same standing as removing
-# a hook: a different tool and a real conversation.
+# NO op may move this block -- same standing as removing a hook: a different tool
+# and a real conversation. Pinning it to `replace` alone was itself a hole:
+# insert_before wedged a never-matching paths: block ABOVE the H1 of any rule
+# that had no frontmatter yet, which deletes nothing and switches the rule off
+# just the same (PR #70 round 4, major). "Additive" is a claim about the text,
+# not about the effect.
 _FRONTMATTER = re.compile(r"\A---\n.*?\n---(?:\n|\Z)", re.S)
 
 ALLOWED_PROPOSAL_KEYS = {"schema_version", "slug", "reason", "requires", "edits"}
@@ -310,6 +332,22 @@ def resolve_special_keys(root, prop):
     return settings_key, template_key
 
 
+def is_rule_text(rel):
+    """The SHAPE half of "is this rule text", in one place.
+
+    Two callers ask it -- the `replace` scope pin and the frontmatter pin -- and
+    two spellings of one question is the drift class round 2 found in the path
+    normalization and round 3 found again between the token census and the
+    frontmatter nobody was reading.
+
+    Depth-permissive on purpose, and that is now safe: _rule_marks walks the
+    whole rules/ tree, so a rule in a subdirectory is inside the content census
+    and inside these pins together. It used to be inside replace's reach and
+    outside the census at the same time (PR #70 round 4, minor).
+    """
+    return rel.startswith(RULES_DIR + os.sep) and rel.endswith(".md")
+
+
 def rule_text_only(root, rel, settings_key, template_key):
     """`replace` is the only non-additive op, so its reach is pinned to rule TEXT.
 
@@ -331,7 +369,7 @@ def rule_text_only(root, rel, settings_key, template_key):
     """
     if rel == settings_key or rel == template_key:
         raise Refusal("replace may not target %s (rule text only)" % rel)
-    if not (rel.startswith(RULES_DIR + os.sep) and rel.endswith(".md")):
+    if not is_rule_text(rel):
         raise Refusal("replace is only permitted on %s%s*.md, got %s" % (RULES_DIR, os.sep, rel))
     rules_dir = os.path.realpath(os.path.join(root, RULES_DIR))
     real = os.path.realpath(os.path.join(root, rel))
@@ -416,26 +454,53 @@ def _unique_anchor_hits(content, anchor, rel):
     return hits
 
 
+def _guard_frontmatter(rel, before, after):
+    """A rule's frontmatter block may not move, whatever op moved it.
+
+    Compared before/after rather than "is the anchor inside the block": that
+    also catches an insert that ADDS or CLOSES a --- fence, which moves the
+    frontmatter boundary without the anchor ever sitting in it. Equality is
+    transitive, so checking each edit holds across a whole proposal.
+
+    Called for EVERY op with prior content, not just `replace`. The round-3 fix
+    lived inside the replace branch, which left insert_before free to wedge a
+    never-matching paths: block above the H1 of a rule that had no frontmatter
+    yet -- additive text, dead rule, rc=0 (PR #70 round 4, major).
+    """
+    if not is_rule_text(rel):
+        return
+    if _frontmatter(after) != _frontmatter(before):
+        raise Refusal(
+            "edit may not change the frontmatter of %s; the scoping keys "
+            "decide whether the rule loads at all" % rel)
+
+
 def apply_edit(content, edit, rel):
-    """Return (new_content, already_satisfied). Pure; never touches disk."""
+    """Return (new_content, already_satisfied). Pure; never touches disk.
+
+    Every op that has prior content leaves through the single _guard_frontmatter
+    call at the bottom. One exit on purpose: a per-branch guard is what round 4
+    found missing on three of the four branches.
+    """
     op = edit["op"]
     ins = edit["insert"]
 
-    if op == "append":
-        if content.endswith(ins):
-            return content, True
-        return content + ins, False
-
     if op == "create_file":
+        # No prior content, so there is no frontmatter to preserve. A brand-new
+        # rule declaring its own scope is an addition, not a narrowing.
         if content is None:
             return ins, False
         if content == ins:
             return content, True
         raise Refusal("create_file target already exists with different content: %s" % rel)
 
-    anchor = edit["anchor"]
+    if op == "append":
+        if content.endswith(ins):
+            return content, True
+        new = content + ins
 
-    if op == "replace":
+    elif op == "replace":
+        anchor = edit["anchor"]
         # An anchor that survives into its own replacement never converges: the
         # next run finds it again, inserts again, and the file grows forever
         # while "already applied" stays undetectable. Refused, not tolerated --
@@ -452,31 +517,24 @@ def apply_edit(content, edit, rel):
                 return content, True
             raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
         new = content.replace(anchor, ins, 1)
-        # Compared before/after rather than "is the anchor inside the block":
-        # that also catches an insert that ADDS or CLOSES a --- fence, which
-        # would move the frontmatter boundary without the anchor ever sitting in
-        # it. Equality is transitive, so checking each edit is enough to hold
-        # across a whole proposal.
-        if _frontmatter(new) != _frontmatter(content):
-            raise Refusal(
-                "replace may not change the frontmatter of %s; the scoping keys "
-                "decide whether the rule loads at all" % rel)
-        return new, False
 
-    if _unique_anchor_hits(content, anchor, rel) == 0:
-        raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
+    else:
+        anchor = edit["anchor"]
+        if _unique_anchor_hits(content, anchor, rel) == 0:
+            raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
+        pos = content.index(anchor)
+        if op == "insert_after":
+            cut = pos + len(anchor)
+            if content[cut:cut + len(ins)] == ins:
+                return content, True
+            new = content[:cut] + ins + content[cut:]
+        else:  # insert_before
+            if content[max(0, pos - len(ins)):pos] == ins:
+                return content, True
+            new = content[:pos] + ins + content[pos:]
 
-    pos = content.index(anchor)
-    if op == "insert_after":
-        cut = pos + len(anchor)
-        if content[cut:cut + len(ins)] == ins:
-            return content, True
-        return content[:cut] + ins + content[cut:], False
-
-    # insert_before
-    if content[max(0, pos - len(ins)):pos] == ins:
-        return content, True
-    return content[:pos] + ins + content[pos:], False
+    _guard_frontmatter(rel, content, new)
+    return new, False
 
 
 def _snip(text, n=60):
@@ -565,21 +623,47 @@ def _rule_marks(rules_dir):
     line_marks = set()
     if not os.path.isdir(rules_dir):
         return token_marks, line_marks
-    for name in sorted(os.listdir(rules_dir)):
-        if name.startswith(".") or not name.endswith(".md"):
-            continue
-        try:
-            with open(os.path.join(rules_dir, name)) as fh:
-                text = fh.read()
-        except (OSError, UnicodeDecodeError):
-            continue
-        for ref in set(_EXEC_REF.findall(text)):
-            token_marks.add("%s|exec|%s" % (name, ref))
-        if "(ENFORCED" in text:
-            token_marks.add("%s|enforced" % name)
-        substantive = sum(1 for line in text.splitlines() if line.strip())
-        for index in range(substantive):
-            line_marks.add("%s|line|%d" % (name, index))
+    # os.walk, not os.listdir. rule_text_only permits a rule at any depth under
+    # rules/, so a one-level census left a subdirectory rule inside replace's
+    # reach and outside every content check at once (PR #70 round 4, minor). The
+    # mark key is the path relative to rules/, which is identical to the old
+    # filename for every top-level rule, so nothing that was censused stops being.
+    for dirpath, dirnames, filenames in os.walk(rules_dir):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for filename in sorted(filenames):
+            if filename.startswith(".") or not filename.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, filename)
+            name = os.path.relpath(full, rules_dir)
+            try:
+                with open(full) as fh:
+                    text = fh.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for ref in set(_EXEC_REF.findall(text)):
+                token_marks.add("%s|exec|%s" % (name, ref))
+            # (ENFORCED is counted twice, and the second count is the one that
+            # closes the hole. A whole-file presence boolean let a replace lift
+            # the marker off the heading that DECLARES the rule enforced and park
+            # the token in a sentence saying the rule is advisory -- the token was
+            # still in the file, so the census reported clean (PR #70 round 4).
+            #   occurrences      : total, so losing one anywhere is visible.
+            #   enforced-heading : how many HEADING lines carry it, so moving it
+            #                      out of a heading and into prose drops a mark.
+            # Counts encoded as sets, never positions: rewording a heading and
+            # adding a section above it both have to stay free, and only a count
+            # survives both. Same encode-a-count-as-a-set trick as line marks,
+            # for the same reason -- ratchet_check compares sets.
+            for index in range(text.count("(ENFORCED")):
+                token_marks.add("%s|enforced|%d" % (name, index))
+            lines = text.splitlines()
+            headings = sum(1 for line in lines
+                           if _HEADING.match(line) and "(ENFORCED" in line)
+            for index in range(headings):
+                token_marks.add("%s|enforced-heading|%d" % (name, index))
+            substantive = sum(1 for line in lines if line.strip())
+            for index in range(substantive):
+                line_marks.add("%s|line|%d" % (name, index))
     return token_marks, line_marks
 
 

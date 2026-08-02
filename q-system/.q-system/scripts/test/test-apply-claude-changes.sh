@@ -905,6 +905,166 @@ run_engine "$ENGINE" "$T/sentence.json" "$T"
 check "a ref ending a sentence is still a census member" 2 "enforcement ratchet" "$RC" "$OUT"
 rm -r "$T"
 
+# 15l. switching a rule off with an ADDITIVE op (PR #70 round 4, major).
+# The frontmatter pin used to live inside the `replace` branch, so insert_before
+# could wedge a never-matching paths: block above the H1 of any rule that has no
+# frontmatter yet. Nothing is deleted, the body is untouched, every content
+# check reports clean -- and the rule stops loading.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/addfm.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "add-frontmatter",
+  "reason": "switch an ENFORCED rule off by giving it a scope it can never match",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "insert_before",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "---\npaths:\n  - \"__never__/**\"\n---\n\n", "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/addfm.json" "$T"
+check "insert_before cannot ADD frontmatter to a rule" 2 "frontmatter" "$RC" "$OUT"
+check_one_line "insert_before adding frontmatter" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')" ]; then
+  ok "adding frontmatter wrote nothing"
+else bad "adding frontmatter SWITCHED THE RULE OFF"; fi
+
+# insert_after INSIDE an existing frontmatter block is the same move on a rule
+# that already has one.
+cat > "$T/widenfm.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "narrow-frontmatter-additively",
+  "reason": "append a second, narrower scope key inside the frontmatter",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "insert_after",
+               "anchor": "  - \"q-system/output/**\"",
+               "insert": "\nglobs:\n  - \"__never__/**\"", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/widenfm.json" "$T"
+check "insert_after inside frontmatter refused" 2 "frontmatter" "$RC" "$OUT"
+
+# Additive edits to the BODY of a rule stay free; the pin is about the block,
+# not about the file. A guard that refused this would refuse the whole tool.
+cat > "$T/bodyadd.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "extend-body",
+  "reason": "add a sentence to the body of a frontmattered rule",
+  "edits": [ { "file": ".claude/rules/advisory-rule.md", "op": "insert_after",
+               "anchor": "Every claim traces to a file a reader can open.",
+               "insert": "\n\nA claim with no file is marked unverified.", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/bodyadd.json" "$T"
+check "additive body edit still succeeds" 0 "OK applied extend-body" "$RC" "$OUT"
+rm -r "$T"
+
+# 15m. a rule in a SUBDIRECTORY of rules/ (PR #70 round 4, minor).
+# rule_text_only permits any depth; the content census used to read one
+# directory level, so a rule one level down was inside replace's reach and
+# outside every content check at the same time.
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/rules/sub"
+cat > "$T/.claude/rules/sub/deep-rule.md" <<'MD'
+# Deep Rule (ENFORCED)
+
+The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.
+
+Every generated file is checked before it is written.
+
+No output leaves this repo without passing that check.
+MD
+cat > "$T/gutdeep.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "gut-deep-rule",
+  "reason": "gut a rule that lives one directory below rules/",
+  "edits": [ { "file": ".claude/rules/sub/deep-rule.md", "op": "replace",
+               "anchor": "# Deep Rule (ENFORCED)\n\nThe deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.\n\nEvery generated file is checked before it is written.\n\nNo output leaves this repo without passing that check.",
+               "insert": "# Deep Rule\n\nUse your judgement.", "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/sub/deep-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/gutdeep.json" "$T"
+check "gutting a rule in a rules/ subdir refused" 2 "enforcement ratchet" "$RC" "$OUT"
+check_one_line "gutting a rule in a subdir" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/sub/deep-rule.md" | awk '{print $1}')" ]; then
+  ok "gutting a subdir rule wrote nothing"
+else bad "gutting a subdir rule REMOVED an ENFORCED body"; fi
+
+# The subdir is censused, not fenced off: correcting a sentence there still works.
+cat > "$T/deepfix.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-deep-rule",
+  "reason": "correct one sentence in a subdir rule",
+  "edits": [ { "file": ".claude/rules/sub/deep-rule.md", "op": "replace",
+               "anchor": "No output leaves this repo without passing that check.",
+               "insert": "No generated output leaves this repo without passing that check.",
+               "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/deepfix.json" "$T"
+check "a subdir rule is still correctable" 0 "OK applied fix-deep-rule" "$RC" "$OUT"
+rm -r "$T"
+
+# 15n. repointing an enforcer at a directory that does not exist (PR #70 round 4,
+# minor). The exec-ref mark was the BASENAME only, so moving the route while
+# keeping the filename left the census member intact and the reader's route dead.
+T=$(mktemp -d); mk_fixture "$T"
+printf -- '# Routed Rule (ENFORCED)\n\nThe gate is q-system/.q-system/scripts/existing-lint.py, run PostToolUse.\n\nIt refuses on a bad write.\n' \
+  > "$T/.claude/rules/routed-rule.md"
+cat > "$T/reroute.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "reroute-enforcer",
+  "reason": "keep the filename, move the route to a directory that does not exist",
+  "edits": [ { "file": ".claude/rules/routed-rule.md", "op": "replace",
+               "anchor": "The gate is q-system/.q-system/scripts/existing-lint.py, run PostToolUse.",
+               "insert": "The gate is q-system/retired/hooks/existing-lint.py, run PostToolUse.",
+               "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/routed-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/reroute.json" "$T"
+check "repointing an enforcer to a dead directory refused" 2 "enforcement ratchet" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/routed-rule.md" | awk '{print $1}')" ]; then
+  ok "repointing the enforcer wrote nothing"
+else bad "repointing the enforcer left a dead route in the rule"; fi
+rm -r "$T"
+
+# 15o. moving (ENFORCED out of the heading and parking it in prose that says the
+# opposite (PR #70 round 4, minor). A whole-file presence boolean sees the token
+# either way, the line count GROWS, and the rule reads as advisory.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/park.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "park-the-marker",
+  "reason": "take the marker off the heading while keeping the token in the file",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule\n\nThis rule is no longer (ENFORCED); treat it as advisory guidance.",
+               "reason": "r" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')
+run_engine "$ENGINE" "$T/park.json" "$T"
+check "moving (ENFORCED out of the heading refused" 2 "enforcement ratchet" "$RC" "$OUT"
+check_one_line "moving (ENFORCED out of the heading" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/enforced-rule.md" | awk '{print $1}')" ]; then
+  ok "parking the marker wrote nothing"
+else bad "parking the marker DEMOTED the rule to advisory"; fi
+
+# Rewording the heading around the marker stays free: the census counts how many
+# headings carry it, not what they say, so a title fix is not a demotion.
+cat > "$T/retitle.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "retitle-rule",
+  "reason": "reword the heading, keep the marker on it",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule: writes only (ENFORCED)", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/retitle.json" "$T"
+check "rewording an (ENFORCED heading still succeeds" 0 "OK applied retitle-rule" "$RC" "$OUT"
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -1039,7 +1199,7 @@ echo "--- mutation: drop the frontmatter pin ---"
 # check reports clean because the body never moved.
 T=$(mktemp -d); mk_fixture "$T"
 MUT="$T/mutant_fm.py"
-mutate "$MUT" "        if _frontmatter(new) != _frontmatter(content):" "        if False:"
+mutate "$MUT" "    if _frontmatter(after) != _frontmatter(before):" "    if False:"
 cat > "$T/unload.json" <<'JSON'
 {
   "schema_version": 1, "slug": "unload-rule", "reason": "narrow the scoping key",
@@ -1083,6 +1243,119 @@ else
 fi
 rm -r "$T"
 
+echo "--- mutation: put the frontmatter pin back inside the replace branch ---"
+# Where it lived in round 3. The additive ops then reach the block again and an
+# insert_before switches an ENFORCED rule off without deleting one character.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_fmops.py"
+mutate "$MUT" '    _guard_frontmatter(rel, content, new)' \
+              '    _guard_frontmatter(rel, content, new) if op == "replace" else None'
+cat > "$T/addfm.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "add-frontmatter", "reason": "scope a rule out of existence",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "insert_before",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "---\npaths:\n  - \"__never__/**\"\n---\n\n", "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/addfm.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "__never__" "$T/.claude/rules/enforced-rule.md"; then
+  ok "MUTATION fm-ops: pin re-scoped to replace -> insert_before switched an ENFORCED rule off (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION fm-ops: mutant did not add frontmatter - case 15l is not load-bearing"
+fi
+rm -r "$T"
+
+echo "--- mutation: put the rule census back to one directory level ---"
+# The one-level listing is what left a subdirectory rule inside replace's reach
+# and outside the content census at the same time.
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/rules/sub"
+cat > "$T/.claude/rules/sub/deep-rule.md" <<'MD'
+# Deep Rule (ENFORCED)
+
+The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.
+
+Every generated file is checked before it is written.
+
+No output leaves this repo without passing that check.
+MD
+MUT="$T/mutant_depth.py"
+mutate "$MUT" '    for dirpath, dirnames, filenames in os.walk(rules_dir):' \
+              '    for dirpath, dirnames, filenames in [(rules_dir, [], sorted(os.listdir(rules_dir)))]:'
+cat > "$T/gutdeep.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "gut-deep-rule", "reason": "gut a rule below rules/",
+  "edits": [ { "file": ".claude/rules/sub/deep-rule.md", "op": "replace",
+               "anchor": "# Deep Rule (ENFORCED)\n\nThe deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.\n\nEvery generated file is checked before it is written.\n\nNo output leaves this repo without passing that check.",
+               "insert": "# Deep Rule\n\nUse your judgement.", "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/gutdeep.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "Use your judgement." "$T/.claude/rules/sub/deep-rule.md"; then
+  ok "MUTATION depth: census back to one level -> a subdir ENFORCED rule was gutted (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION depth: mutant did not gut the subdir rule - case 15m is not load-bearing"
+fi
+rm -r "$T"
+
+echo "--- mutation: drop the directory prefix from the exec-ref pattern ---"
+# Basename-only marks: the filename survives the move, so the census cannot tell
+# a live route from one pointed at a directory that does not exist.
+T=$(mktemp -d); mk_fixture "$T"
+printf -- '# Routed Rule (ENFORCED)\n\nThe gate is q-system/.q-system/scripts/existing-lint.py, run PostToolUse.\n\nIt refuses on a bad write.\n' \
+  > "$T/.claude/rules/routed-rule.md"
+MUT="$T/mutant_route.py"
+mutate "$MUT" '(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_]' '[A-Za-z0-9_]'
+cat > "$T/reroute.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "reroute-enforcer", "reason": "move the route, keep the name",
+  "edits": [ { "file": ".claude/rules/routed-rule.md", "op": "replace",
+               "anchor": "The gate is q-system/.q-system/scripts/existing-lint.py, run PostToolUse.",
+               "insert": "The gate is q-system/retired/hooks/existing-lint.py, run PostToolUse.",
+               "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/reroute.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "q-system/retired/hooks" "$T/.claude/rules/routed-rule.md"; then
+  ok "MUTATION route: prefix dropped -> the rule now routes readers to a directory that does not exist (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION route: mutant did not write the dead route - case 15n is not load-bearing"
+fi
+rm -r "$T"
+
+echo "--- mutation: stop counting which headings carry (ENFORCED ---"
+# Leaves the whole-file occurrence count, which is exactly the boolean that let
+# the marker be lifted off the heading and parked in prose saying the opposite.
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_head.py"
+mutate "$MUT" '                token_marks.add("%s|enforced-heading|%d" % (name, index))' \
+              '                pass'
+cat > "$T/park.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "park-the-marker", "reason": "demote while keeping the token",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "# Sample Rule (ENFORCED)",
+               "insert": "# Sample Rule\n\nThis rule is no longer (ENFORCED); treat it as advisory guidance.",
+               "reason": "r" } ]
+}
+JSON
+set +e
+MOUT=$(python3 "$MUT" "$T/park.json" --root "$T" 2>&1); MRC=$?
+set -e
+if grep -q "treat it as advisory guidance" "$T/.claude/rules/enforced-rule.md"; then
+  ok "MUTATION heading: placement uncounted -> (ENFORCED left the heading for a sentence saying the opposite (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION heading: mutant did not demote the rule - case 15o is not load-bearing"
+fi
+rm -r "$T"
+
 T=$(mktemp -d); mk_fixture "$T"
 MUT="$T/mutant_norm.py"
 mutate2 "$MUT" \
@@ -1116,7 +1389,11 @@ echo "--- mutation: blind the rule-content census ---"
 # quiet demotion through, or case 15b is decoration.
 T=$(mktemp -d); mk_fixture "$T"
 MUT="$T/mutant_marks.py"
-mutate "$MUT" '        if "(ENFORCED" in text:' '        if False:'
+# Both (ENFORCED counters, because either one alone still refuses the demotion:
+# the occurrence count and the heading count each see this edit.
+mutate2 "$MUT" \
+  '                token_marks.add("%s|enforced|%d" % (name, index))' '                pass' \
+  '                token_marks.add("%s|enforced-heading|%d" % (name, index))' '                pass'
 cat > "$T/demote.json" <<'JSON'
 {
   "schema_version": 1, "slug": "demote-rule", "reason": "quietly downgrade a rule",
