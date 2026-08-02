@@ -48,6 +48,7 @@ Coverage limits, stated rather than implied:
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 
@@ -242,10 +243,71 @@ def check_naming(file_path):
     return []
 
 
+def _git(args, cwd, timeout=3):
+    """One place that shells git. Returns (rc, stdout). Never raises: a lint
+    that dies because git was slow or absent would block an edit for a reason
+    that has nothing to do with coding standards."""
+    try:
+        proc = subprocess.run(
+            ["git"] + args, cwd=cwd, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode, proc.stdout.decode("utf-8", "replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def existed_at_baseline(file_path):
+    """True when this file was already tracked before the current line of work.
+
+    Grandfathering, and why it is not a loophole: armed against every tracked
+    file, this lint refuses edits to 36 of 400 -- including linear-worker.sh,
+    kipi-dispatch.sh, converge.sh and slack-notify.sh, the scripts the
+    autonomous loop runs ON. A gate whose first act is to refuse the hot path
+    gets switched off within a day, and a switched-off gate still reads as a
+    live one, which is strictly worse than never shipping it. So the rule binds
+    NEW files only: full forward value (no new violation ever lands), near-zero
+    blast radius, and it can arm today instead of sitting quarantined.
+    Backfilling the 36 is its own bounded issue that blocks nobody.
+
+    The two failure directions are NOT the same, so they are split:
+
+    * No git repo at all -> ENFORCE. A file with no history has nothing to be
+      grandfathered against, so it is new by definition. Returning "skip" here
+      instead made the lint a silent no-op for every tmpdir fixture and turned
+      12 of its own behavior tests red -- caught only because those tests
+      assert violations rather than assert "no crash".
+    * Repo known but git could not answer (transient: slow fs, detached
+      origin, timeout) -> GRANDFATHER. We already know the file lives in a
+      tracked repo, and a flaky `git cat-file` must never be the thing that
+      starts blocking linear-worker.sh. Flipping to enforce on a transient
+      would recreate exactly the hot-path wedge this narrowing exists to avoid.
+    """
+    directory = os.path.dirname(os.path.abspath(file_path)) or "."
+    rc, root = _git(["rev-parse", "--show-toplevel"], directory)
+    if rc != 0 or not root:
+        return False
+
+    rel = os.path.relpath(os.path.abspath(file_path), root).replace(os.sep, "/")
+
+    # merge-base first: on a PR branch the baseline is where the branch left
+    # main, so a file this branch ADDS is correctly seen as new even after it
+    # is committed. Plain HEAD would grandfather it the moment it landed.
+    for ref_args in (["merge-base", "HEAD", "origin/main"],
+                     ["rev-parse", "origin/main"],
+                     ["rev-parse", "HEAD"]):
+        rc, ref = _git(ref_args, root)
+        if rc == 0 and ref:
+            return _git(["cat-file", "-e", f"{ref}:{rel}"], root)[0] == 0
+    return True
+
+
 def lint_file(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     in_output = OUTPUT_DIR_RE.search(file_path.replace(os.sep, "/"))
     if ext not in IN_SCOPE_EXT and not in_output:
+        return []
+    if existed_at_baseline(file_path):
         return []
     try:
         with open(file_path, encoding="utf-8") as handle:
