@@ -319,8 +319,15 @@ export REPO_PROJECT
 # nothing. Failure here is NOT fatal to the run: a Linear hiccup during expiry
 # must not stop the worker from doing the work it already had.
 if [ -z "$ONLY_ISSUE" ]; then
+  # --root IS $TARGET_REPO, NOT $SKEL (codex review of PR #69). The issues are
+  # filtered to REPO_PROJECT, which is derived from TARGET_REPO, and the agent
+  # that wrote the probe worked in TARGET_REPO. Probing the skeleton instead
+  # would resolve a same-named path that q-system/ rsyncs fleet-wide -- present
+  # in the skeleton, absent in the instance -- and falsely expire the block on
+  # every run. Harmless today because nothing dispatches cross-repo yet; wrong
+  # the day it does, which is exactly when nobody would be looking.
   EXPIRY_OUT="$(python3 "$SCRIPT_DIR/capability_block_expiry.py" \
-      --repo-project "$REPO_PROJECT" --root "$SKEL" --apply 2>&1 || true)"
+      --repo-project "$REPO_PROJECT" --root "$TARGET_REPO" --apply 2>&1 || true)"
   printf '%s\n' "$EXPIRY_OUT" >>"$LOG"
   printf '%s\n' "$EXPIRY_OUT" | grep -E '^(EXPIRE|FAIL) ' | while IFS= read -r line; do
     say "worker: $line"
@@ -1542,9 +1549,19 @@ The capability is recorded as a re-testable probe, so this block clears itself t
 $CAP_PROBES
 \`\`\`"
       else
+        # A PROBE-LESS REFUSAL STILL EMITS A FENCE (codex review of PR #69).
+        # Emitting nothing meant this refusal could not SUPERSEDE an older
+        # passing fence, so an issue that had ever recorded a passing probe
+        # re-expired on every worker tick -- one runner dispatch burned per
+        # cycle, forever, against an issue nobody could work. The explicit
+        # no-probe token is what makes the newest refusal win.
         CAP_PROBE_BLOCK="
 
-**No probe was recorded**, so this block cannot be re-tested mechanically. It will be re-offered ONCE and then held until a refusal records one."
+**No probe was recorded**, so this block cannot be re-tested mechanically. It will be re-offered ONCE and then held until a refusal records one.
+
+\`\`\`kipi-capability-probe
+no-probe
+\`\`\`"
       fi
       REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.$CAP_PROBE_BLOCK
 

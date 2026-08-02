@@ -38,10 +38,23 @@ again, that refusal writes a probe, and the issue is probe-gated from then on.
 The population of unverifiable blocks is finite and strictly shrinking; it
 converges to zero and cannot thrash.
 
-ANTI-THRASH, THE PROPERTY THAT MATTERS. A probe that still reads "absent" holds
-the block with NO write and NO dispatch. Re-offering an issue whose block is
-still real is the failure mode that would make this worse than the disease, so
-the hold path is the cheap one: a read, a comparison, and silence.
+THE GUARANTEE, STATED EXACTLY (revised after the PR #69 review found the first
+version false). Per issue, forever:
+
+  1. A block whose NEWEST refusal records a probe that still reads "absent" is
+     held with NO write and NO dispatch. Only the newest refusal's probe is
+     consulted; an older fence never answers for a newer block.
+  2. A block whose newest refusal records NO probe is re-offered AT MOST ONCE,
+     ever. The re-offer is recorded by the REOFFERED_LABEL, written in the same
+     mutation that removes the block, so the count cannot drift.
+
+The first version claimed "a still-real block never burns a pick" and that was
+false: a probe-less refusal emitted no fence, could not supersede an older
+PASSING fence, and so re-expired the same real block on every worker tick --
+unbounded, one runner dispatch per cycle. Both the anti-thrash claim and the
+"exactly one re-offer" bound rode on that. What makes them true now is that
+every refusal emits a fence (`no-probe` when it has nothing better), plus a
+staleness backstop for any producer that forgets.
 """
 import argparse
 import importlib.util
@@ -161,29 +174,62 @@ def evaluate_probe(token, root):
 
 # ------------------------------------------------------------------ parsing
 
+def _ordered(comments):
+    """Comments oldest-first by createdAt, with a stable fallback.
+
+    Never trust arrival order for a recency decision. Sorting on the field the
+    decision actually rests on is the difference between "the newest fence" and
+    "whichever fence the API happened to hand back last".
+    """
+    return sorted(comments, key=lambda c: (c.get("createdAt") or "", ))
+
+
 def probe_blocks(comments):
-    """Every fenced probe block on an issue, oldest first."""
+    """(createdAt, tokens) for every fenced probe block, oldest first."""
     out = []
-    for c in comments:
+    for c in _ordered(comments):
         for m in _FENCE_RE.finditer(c.get("body") or ""):
-            out.append([ln.strip() for ln in m.group(1).splitlines() if ln.strip()])
+            out.append((c.get("createdAt") or "",
+                        [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]))
     return out
 
 
 def parse_probes(comments):
-    """(probe tokens from the NEWEST real probe block, legacy_reoffer_spent).
+    """(tokens of the NEWEST fence, reoffer_spent). [] means unverifiable.
 
-    Newest wins because a re-block supersedes an earlier one: the capability that
-    is missing NOW is the one that decides whether the issue is workable, and an
-    older block naming an already-satisfied capability would expire it wrongly.
+    THE NEWEST FENCE ANSWERS, AND ONLY THE NEWEST (codex review of PR #69). The
+    first version walked backwards until it found a fence with tokens, so a fence
+    with no tokens -- or no fence at all -- silently deferred to an OLDER one. An
+    issue that once recorded a passing probe then re-expired forever, because the
+    stale fence kept answering for a block it never described. "The newest fence
+    anywhere in history" and "this block's probe" are different claims, and
+    reading the first as the second is the whole defect.
+
+    STALENESS BACKSTOP. Fence-ordering alone only works if every refusal emits a
+    fence. The worker now does, but a producer that forgets (or any comment
+    written before this existed) would put the newest FENCE behind the newest
+    REFUSAL, and the stale fence would answer again. So a fence older than the
+    most recent refusal is discarded as stale. Belt and braces on purpose: a
+    false expiry costs a runner dispatch every cycle, which is far dearer than
+    the ten lines that prevent it.
     """
     blocks = probe_blocks(comments)
-    spent = any(LEGACY_CONSUMED in b for b in blocks)
-    for block in reversed(blocks):
-        tokens = [t for t in block if t != LEGACY_CONSUMED and not t.startswith("#")]
-        if tokens:
-            return tokens, spent
-    return [], spent
+    spent = any(LEGACY_CONSUMED in toks for _, toks in blocks)
+    if not blocks:
+        return [], spent
+
+    fence_at, tokens = blocks[-1]
+    refusals = [c.get("createdAt") or "" for c in _ordered(comments)
+                if REFUSAL_MARKER in (c.get("body") or "")]
+    # Strict >: a refusal and the fence it carries share one comment and one
+    # timestamp, and that fence is the current one, not a stale one.
+    if refusals and refusals[-1] > fence_at:
+        return [], spent
+
+    tokens = [t for t in tokens if t != LEGACY_CONSUMED and not t.startswith("#")]
+    if tokens == [NO_PROBE]:
+        return [], spent
+    return tokens, spent
 
 
 # ------------------------------------------------------------------ verdict
@@ -195,7 +241,14 @@ def verdict(issue, root):
         return "skip", "issue is %s; a closed issue keeps its labels" % state
 
     comments = (issue.get("comments") or {}).get("nodes", [])
-    tokens, spent = parse_probes(comments)
+    tokens, marker_spent = parse_probes(comments)
+
+    # The label is authoritative (atomic with the un-block). The comment marker
+    # is still honoured because ten issues were expired on 2026-08-02 under the
+    # marker-only design; dropping it would hand every one of them a second
+    # "first" re-offer.
+    labels = {n["name"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    spent = REOFFERED_LABEL in labels or marker_spent
 
     if not tokens:
         if spent:
@@ -262,26 +315,40 @@ def blocked_issues(issues, repo_project, label):
 
 
 def expire_note(reason, probes):
+    """The comment recording an expiry.
+
+    IT NEVER EMITS A PROBE FENCE. The first version re-posted the probes it had
+    just re-run, which put a PASSING fence at the top of the history -- so the
+    next real block inherited a fence saying its capability was present and
+    re-expired forever. The expiry was manufacturing the stale fence that broke
+    it (codex review of PR #69). Probes are recorded by REFUSALS; the expiry only
+    reports.
+
+    IT ALSO DOES NOT CLAIM THE LABEL IS ALREADY OFF. It is posted before the
+    update, so on a failed update the old wording left a permanent comment on an
+    undeletable object asserting something that never happened.
+    """
     body = (
-        "**`blocked:capability` expired -- the block was re-tested, not "
+        "**`blocked:capability` is being expired -- the block was re-tested, not "
         "hand-cleared.**\n\n%s\n\n" % reason
     )
     if probes:
-        body += "Probe re-run:\n\n```%s\n%s\n```\n\n" % (PROBE_FENCE, "\n".join(probes))
+        body += "Probes re-run, all passing: %s\n\n" % ", ".join("`%s`" % p for p in probes)
     else:
         body += (
-            "```%s\n%s\n```\n\n"
-            "This block predates probe-recording, so it could not be re-tested "
-            "mechanically and was re-offered once. The marker above is what makes "
-            "that once-ever: if the runner blocks again it must record a probe, and "
-            "this issue will never take a free re-offer a second time.\n\n"
-            % (PROBE_FENCE, LEGACY_CONSUMED)
+            "This block records no probe, so it could not be re-tested "
+            "mechanically and is being re-offered **once**. The `%s` label "
+            "applied with this change is what makes that once-ever: if the runner "
+            "blocks again it must record a probe, and this issue will never take a "
+            "free re-offer a second time.\n\n" % REOFFERED_LABEL
         )
     body += (
-        "The label is removed and the state moved back so the picker can offer it "
-        "again. **Next:** the worker picks this up on its next run. No founder "
-        "action is needed -- a block expiring is the loop re-testing its own "
-        "verdict, not a decision."
+        "The label removal and state move are being applied now. **If you can "
+        "still see `blocked:capability` on this issue, the update did not land** "
+        "and the block still stands -- the run logs a `FAIL` line in that case.\n\n"
+        "**Next:** the worker picks this up on its next run. No founder action is "
+        "needed -- a block expiring is the loop re-testing its own verdict, not a "
+        "decision."
     )
     return body
 
@@ -331,7 +398,12 @@ def main(argv=None):
         # reporting success.
         ls = load_sync()
         try:
-            ok = ls.unblock_issue(ident, args.label, expire_note(reason, tokens))
+            # The re-offer marker rides in the SAME mutation that removes the
+            # block, so a partial write cannot leave the two disagreeing. Only an
+            # unverifiable block (no probe) spends a re-offer; a probe-verified
+            # expiry needs no marker because its probe can simply be re-run.
+            ok = ls.unblock_issue(ident, args.label, expire_note(reason, tokens),
+                                  add_label="" if tokens else REOFFERED_LABEL)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             ok, exc_detail = False, str(exc)[:200]
             failures.append((ident, exc_detail))

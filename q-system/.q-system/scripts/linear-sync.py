@@ -775,12 +775,39 @@ ISSUE_UNBLOCK = """query($id:String!){
   }
 }"""
 
-# The state types a picker will offer. Mirrors linear_pick.PICKABLE_STATE_TYPES
-# plus `triage`, which reopen_state_id may legitimately land on.
-_PICKABLE_STATE_TYPES = ("backlog", "unstarted", "triage")
+# IMPORTED, NOT RESTATED (codex review of PR #69). This was a hand-written tuple
+# that added `triage` to linear_pick's list. Two copies of one truth: an unblock
+# landing on `triage` reported success while the picker still refused the issue --
+# the exact defect this un-block exists to fix, reintroduced one file over. The
+# picker's list is the only definition of "pickable"; if reopen_state_id can land
+# somewhere the picker refuses, that is a bug to see, not a difference to encode.
+def _pickable_state_types():
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parent / "linear_pick.py"
+    spec = importlib.util.spec_from_file_location("linear_pick", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.PICKABLE_STATE_TYPES
 
 
-def unblock_issue(identifier: str, label: str, note: str) -> bool:
+_PICKABLE_STATE_TYPES = _pickable_state_types()
+
+
+def _label_id(team_id: str, name: str) -> str:
+    known = {n["name"]: n["id"]
+             for n in ((graphql(TEAM_LABELS, {"t": team_id}).get("team") or {})
+                       .get("labels") or {}).get("nodes", [])}
+    if name in known:
+        return known[name]
+    made = graphql(LABEL_CREATE, {"input": {"name": name, "teamId": team_id}})
+    created = (made or {}).get("issueLabelCreate") or {}
+    if not created.get("success"):
+        raise LinearAPIError(f"could not create label {name}: {created}")
+    return created["issueLabel"]["id"]
+
+
+def unblock_issue(identifier: str, label: str, note: str, add_label: str = "") -> bool:
     """Remove a hold label AND put the issue back in a pickable state. One step.
 
     WHY BOTH, NOT JUST THE LABEL (ASK-288, measured 2026-08-02). The picker tests
@@ -790,15 +817,19 @@ def unblock_issue(identifier: str, label: str, note: str) -> bool:
     successful un-block. A half-applied un-block is worse than none, because it
     looks done.
 
-    WHY THE COMMENT IS POSTED FIRST. For a block with no probe, the comment
-    carries the marker that says its single re-offer has been spent. If the label
-    came off first and the comment then failed, the issue would be re-offered
-    with nothing on the record saying it already had its turn -- and it could take
-    a free re-offer again on the next run, forever. Comment-first inverts the
-    failure direction: a failure between the two steps leaves the issue BLOCKED
-    with its marker recorded, which the next run reads as "already spent" and
-    holds. Fail closed, and the cost of the failure is one wasted re-offer rather
-    than an unbounded loop.
+    THE SPENT-RE-OFFER MARKER IS A LABEL, WRITTEN IN THIS SAME MUTATION (codex
+    review of PR #69). It used to be text inside the comment below, and that had
+    an ordering hazard with no safe answer: post the comment first and a failed
+    issueUpdate spends the re-offer while the block stays on -- permanently wedged,
+    carrying a comment claiming it was released. Post it second and a failed
+    comment re-arms the re-offer forever. Neither order is correct because the
+    marker and the removal have to agree, and two writes cannot. One atomic
+    labelIds write has neither failure: the marker and the removal land together
+    or not at all.
+
+    The comment is now only a record. It is still posted first so the reasoning
+    is on the issue even if the update fails, and its wording no longer asserts
+    that the removal already happened.
     """
     issue = graphql(ISSUE_UNBLOCK, {"id": identifier}).get("issue")
     if not issue:
@@ -818,7 +849,10 @@ def unblock_issue(identifier: str, label: str, note: str) -> bool:
                   f"leaving the label in place", file=sys.stderr)
             return False
 
-    update = {"labelIds": sorted(set(current.values()) - {current.get(label)} - {None})}
+    keep = set(current.values()) - {current.get(label)} - {None}
+    if add_label and add_label not in current:
+        keep.add(_label_id((issue.get("team") or {}).get("id"), add_label))
+    update = {"labelIds": sorted(keep)}
     if state_type not in _PICKABLE_STATE_TYPES:
         target = reopen_state_id((issue.get("team") or {}).get("id"))
         if not target:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducer + guard for capability_block_expiry.py (ASK-284).
+# Reproducer + guard for capability_block_expiry.py (ASK-288).
 #
 # THE DEFECT, STATED AS A TEST: a `blocked:capability` label is a point-in-time
 # verdict about the environment that nothing re-tests, so an issue whose blocker
@@ -49,9 +49,24 @@ src, tmp = sys.argv[1], sys.argv[2]
 data = json.load(open(src))
 by = {i["identifier"]: i for i in data["issues"]}
 
+_clock = [0]
+
+
 def with_comment(issue, body):
+    # STRICTLY INCREASING TIMESTAMPS. The first version stamped every synthetic
+    # comment with one fixed time, so "is this fence older than that refusal?"
+    # compared equal and the staleness check could never fire -- a fixture that
+    # made the test unable to see the bug it was written for.
+    _clock[0] += 1
     c = copy.deepcopy(issue)
-    c["comments"]["nodes"].append({"body": body, "createdAt": "2026-08-02T12:00:00Z"})
+    c["comments"]["nodes"].append(
+        {"body": body, "createdAt": "2026-08-02T12:%02d:00Z" % _clock[0]})
+    return c
+
+
+def with_label(issue, name):
+    c = copy.deepcopy(issue)
+    c["labels"]["nodes"].append({"name": name})
     return c
 
 probe = "```kipi-capability-probe\nfile:q-system/.q-system/scripts/apply-claude-changes.sh\n```"
@@ -80,15 +95,38 @@ noprobe_fence = "```kipi-capability-probe\nno-probe\n```"
 reblock = ("**Blocked on a missing capability, not on scope.**\n\n"
            "**No probe was recorded**, so this block cannot be re-tested mechanically.")
 
-# (a) the new worker always emits a fence, so the newest fence says `no-probe`
-stale_fenced = with_comment(with_comment(by["ASK-140"], probe), reblock + "\n\n" + noprobe_fence)
+# (a) the new worker always emits a fence, so the newest fence says `no-probe`.
+# The re-offer is ALREADY SPENT here, which is what makes this discriminating:
+# under the old code the spent marker only gated the no-tokens path, so the stale
+# passing fence supplied tokens and it expired anyway -- forever.
+stale_fenced = with_label(
+    with_comment(with_comment(by["ASK-140"], probe), reblock + "\n\n" + noprobe_fence),
+    "capability:reoffered")
 json.dump({"issues": [stale_fenced]}, open(tmp + "/stale-fenced.json", "w"))
 
 # (b) the backstop: a refusal that emitted NO fence at all (old data, or any
 # producer that forgets). The newest FENCE is still the old passing one, so
 # fence-ordering alone cannot see this. Recency of the refusal is what does.
-stale_unfenced = with_comment(with_comment(by["ASK-140"], probe), reblock)
+stale_unfenced = with_label(with_comment(with_comment(by["ASK-140"], probe), reblock),
+                            "capability:reoffered")
 json.dump({"issues": [stale_unfenced]}, open(tmp + "/stale-unfenced.json", "w"))
+
+# (d) THE SUPERSESSION DEFECT IN ISOLATION, no unknown-token luck involved.
+# Newest fence carries only the consumed marker, so it filters to zero tokens.
+# The old engine treated "this fence has no tokens" as "keep looking backwards"
+# and reached the older PASSING probe -> EXPIRE. The newest fence is the only one
+# entitled to answer, and here it says "nothing recorded".
+json.dump({"issues": [with_comment(with_comment(by["ASK-140"], probe), spent)]},
+          open(tmp + "/marker-over-passing.json", "w"))
+
+# (c) the bound itself: an unverifiable block that has NOT spent its re-offer
+# gets exactly one, and the same issue with the marker gets none. This is the
+# guarantee stated in the module docstring, asserted in both directions.
+json.dump({"issues": [with_comment(by["ASK-140"], reblock + "\n\n" + noprobe_fence)]},
+          open(tmp + "/noprobe-fresh.json", "w"))
+json.dump({"issues": [with_label(with_comment(by["ASK-140"], reblock + "\n\n" + noprobe_fence),
+                                 "capability:reoffered")]},
+          open(tmp + "/noprobe-spent.json", "w"))
 PY
 
 # --- 1. the defect is real: ASK-140 is not pickable as it stands -------------
@@ -125,6 +163,9 @@ expect "known kind, target absent -> HOLD"                 "$TMP/bogus.json"  "$
 expect "UNKNOWN probe kind fails CLOSED"                   "$TMP/unknown.json" "$TMP/present" ASK-140 HOLD
 expect "a newer no-probe fence supersedes an older PASSING probe" "$TMP/stale-fenced.json"   "$TMP/present" ASK-140 HOLD
 expect "a newer refusal with NO fence supersedes it too"          "$TMP/stale-unfenced.json" "$TMP/present" ASK-140 HOLD
+expect "marker-only newest fence never defers to an older passing one" "$TMP/marker-over-passing.json" "$TMP/present" ASK-140 HOLD
+expect "unverifiable + re-offer unspent -> exactly one"           "$TMP/noprobe-fresh.json"  "$TMP/present" ASK-140 EXPIRE
+expect "unverifiable + re-offer spent -> never again"             "$TMP/noprobe-spent.json"  "$TMP/present" ASK-140 HOLD
 
 # --- 3. a probe is never executed -------------------------------------------
 # The refusal text is agent-authored. If a probe were shelled out, this would
@@ -142,6 +183,45 @@ PY
 python3 "$ENGINE" --fixture "$TMP/inject.json" --root "$TMP/present" --repo-project kipi-system >/dev/null 2>&1
 if [ -e "$TMP/PWNED" ]; then bad "probe must never execute" "the injected command RAN"
 else ok "probe text is never executed"; fi
+
+# --- 5. producer and consumer agree on the no-probe token --------------------
+# The whole supersession fix rests on the WORKER emitting a fence the ENGINE
+# recognises. Asserting the engine's constant alone would pass while the worker
+# emitted something else entirely -- two halves of one contract, tested apart.
+# This reads the literal out of linear-worker.sh and runs it through the engine.
+python3 - "$HERE/../linear-worker.sh" "$HERE/.." <<'PY'
+import importlib.util, pathlib, re, sys
+worker = open(sys.argv[1]).read()
+spec = importlib.util.spec_from_file_location(
+    "cbe", pathlib.Path(sys.argv[2]) / "capability_block_expiry.py")
+cbe = importlib.util.module_from_spec(spec); spec.loader.exec_module(cbe)
+
+# The worker writes the fence inside a double-quoted bash string, so each
+# backtick is BACKSLASH-ESCAPED on disk (`\`\`\``). Matching a bare ``` finds
+# nothing and the assert below would report "emits no fence" for a worker that
+# emits one correctly -- a false alarm about the producer, from the consumer.
+fences = re.findall(r"(?:\\?`){3}kipi-capability-probe[ \t]*\n(.*?)(?:\\?`){3}",
+                    worker, re.DOTALL)
+emitted = [f.strip() for f in fences if "$" not in f]
+assert emitted, "linear-worker.sh emits no literal probe fence for the no-probe case"
+assert cbe.NO_PROBE in emitted, (
+    "worker emits %r but the engine's NO_PROBE is %r" % (emitted, cbe.NO_PROBE))
+
+body = "Blocked on a missing capability\n\n```kipi-capability-probe\n%s\n```" % cbe.NO_PROBE
+tokens, _ = cbe.parse_probes([{"body": body, "createdAt": "2026-08-02T12:00:00Z"}])
+assert tokens == [], "engine must read the worker's no-probe fence as unverifiable, got %r" % tokens
+print("PASS  worker's no-probe fence round-trips into the engine as unverifiable")
+
+# THE EXPIRY MUST NOT MANUFACTURE A PASSING FENCE. The first version re-posted
+# the probes it had just re-run, putting a PASSING fence at the top of history --
+# so the next real block inherited it and re-expired forever. The expiry was
+# building the stale fence that broke it. Probes are recorded by REFUSALS only.
+note = cbe.expire_note("every recorded probe now passes: file:x", ["file:x"])
+tokens, _ = cbe.parse_probes([{"body": note, "createdAt": "2026-08-02T13:00:00Z"}])
+assert tokens == [], "expire_note must not emit a re-readable probe fence, got %r" % tokens
+print("PASS  an expiry note never re-posts a passing probe fence")
+PY
+[ $? -eq 0 ] && PASS=$((PASS+1)) || bad "producer/consumer agree on no-probe" "see above"
 
 # --- 4. --apply is required before anything writes ---------------------------
 OUT="$TMP/dry.txt"
