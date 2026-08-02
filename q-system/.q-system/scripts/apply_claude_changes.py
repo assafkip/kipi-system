@@ -179,12 +179,80 @@ def load_proposal(path):
         for field in ("file", "insert", "reason"):
             if not isinstance(edit.get(field), str) or not edit[field].strip():
                 raise Refusal("edit %d.%s must be a non-empty string" % (idx, field))
+        # THE boundary. After this line the proposal holds exactly one spelling
+        # of each path and no other reader normalizes anything.
+        edit["file"] = canonical_rel(edit["file"])
         if op in ("insert_after", "insert_before"):
             if not isinstance(edit.get("anchor"), str) or not edit["anchor"].strip():
                 raise Refusal("edit %d needs a non-empty anchor for op %s" % (idx, op))
         elif "anchor" in edit:
             raise Refusal("edit %d op %s takes no anchor" % (idx, op))
     return prop
+
+
+def canonical_rel(rel):
+    """THE one place a proposal path is normalized. Boundary, called from
+    load_proposal; every later reader consumes the stored canonical value.
+
+    Round-2 review found the bypass this exists to kill: permission_surface_check
+    was gated on a RAW staged key while touches_settings used normpath, so
+    ".claude/./settings.json" wrote the real file while the permission check
+    never fired. Two readers of one input with different semantics is a defect
+    even when each is individually defensible.
+
+    The fix is NOT another normalization call beside the first -- that would be a
+    third reader and a fourth spelling. The proposal's own edit["file"] is
+    rewritten to this value at load, so there is only one spelling in the data
+    structure afterwards and nothing downstream has anything else to read.
+
+    Covered here: "." segments, ".." segments, duplicate slashes, trailing
+    slash (all collapsed by normpath). Case variants and symlinked parents are
+    NOT covered by string normalization and are handled separately by inode
+    identity in resolve_special_keys -- normpath cannot see either.
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        raise Refusal("edit.file must be a non-empty string")
+    if os.path.isabs(rel):
+        raise Refusal("edit path must be relative, got %s" % rel)
+    norm = os.path.normpath(rel)
+    if norm.startswith("..") or os.path.isabs(norm):
+        raise Refusal("edit path escapes the repo: %s" % rel)
+    return norm
+
+
+def _same_file(root, rel, target):
+    """Inode identity, not string equality.
+
+    Catches the spellings normpath cannot: a case variant on a case-insensitive
+    filesystem (.claude/Settings.json is the SAME file on macOS), and a symlinked
+    parent directory. Both would otherwise be a second name for a guarded file
+    that only some guards recognise -- the round-1 settings.local.json class and
+    the round-2 "./" class over again.
+    """
+    p = os.path.join(root, rel)
+    try:
+        return os.path.exists(p) and os.path.exists(target) and os.path.samefile(p, target)
+    except OSError:
+        return False
+
+
+def resolve_special_keys(root, prop):
+    """Resolve, ONCE, which canonical edit keys are the guarded files.
+
+    Returns (settings_key, template_key): the actual keys used in `staged`, or
+    None. Every downstream check consumes these instead of comparing strings, so
+    a new spelling cannot make one guard match and another miss.
+    """
+    settings_target = os.path.join(root, ".claude", "settings.json")
+    template_target = os.path.join(root, "settings-template.json")
+    settings_key = template_key = None
+    for edit in prop["edits"]:
+        rel = edit["file"]
+        if settings_key is None and _same_file(root, rel, settings_target):
+            settings_key = rel
+        if template_key is None and _same_file(root, rel, template_target):
+            template_key = rel
+    return settings_key, template_key
 
 
 def scoped_path(root, rel, paired_ok=False):
@@ -228,7 +296,11 @@ def scoped_path(root, rel, paired_ok=False):
     # Refused rather than checked: it is untracked and machine-local, so a change
     # here leaves no reviewable trace, and a tool whose purpose is AUDITABLE
     # config changes has no business writing it.
-    if os.path.basename(norm) in REFUSED_BASENAMES:
+    # Lowercased: on a case-insensitive filesystem .claude/Settings.Local.json is
+    # the SAME file, and an exact-case check would wave it through. On a
+    # case-sensitive filesystem that name is a different file that does not
+    # exist, so refusing it costs nothing and fails closed either way.
+    if os.path.basename(norm).lower() in REFUSED_BASENAMES:
         raise Refusal("%s may not be edited through this path (untracked local override)"
                       % os.path.basename(norm))
 
@@ -499,7 +571,7 @@ def check_requires(root, prop, log):
             raise Refusal("required file missing: %s" % rel)
         log.append("require ok: %s present" % rel)
 
-def check_template_pairs(root, prop, staged, log):
+def check_template_pairs(root, prop, staged, template_key, log):
     """settings.json and settings-template.json are both-or-neither.
 
     kipi update rebuilds every instance's settings.json from the TEMPLATE only,
@@ -515,12 +587,11 @@ def check_template_pairs(root, prop, staged, log):
     commands = req.get("template_pairs") or []
     if not commands:
         return
-    tpl_rel = "settings-template.json"
-    if tpl_rel in staged:
-        content = staged[tpl_rel]
+    if template_key is not None:
+        content = staged[template_key]
         origin = "this proposal"
     else:
-        tpl = os.path.join(root, tpl_rel)
+        tpl = os.path.join(root, "settings-template.json")
         if not os.path.isfile(tpl):
             raise Refusal("settings-template.json missing; cannot verify the pair")
         with open(tpl) as fh:
@@ -545,6 +616,12 @@ def main(argv):
             if not rest:
                 raise Refusal("--root needs a value")
             root = rest.pop(0)
+            # Assigned HERE, not after the loop. A later arg-parse refusal
+            # (e.g. --force) used to fall back to repo_root_from_script() and
+            # append apply.log to the LIVE repo even when --root aimed the run
+            # at a temp tree. A refusal path must never write to a tree the run
+            # was not pointed at.
+            _ROOT = os.path.abspath(root)
         elif arg.startswith("--"):
             # No --force exists. An unknown flag is refused, never ignored.
             raise Refusal("unknown option %s" % arg)
@@ -574,9 +651,10 @@ def main(argv):
     check_requires(root, prop, log)
 
     # ---- stage every edit against an in-memory COPY. Nothing on disk yet.
-    targets = {os.path.normpath(e["file"]) for e in prop["edits"]}
-    touches_settings = ".claude/settings.json" in targets
-    touches_template = bool(targets & PAIRED_OUTSIDE)
+    # Resolved ONCE by inode; every check below reads these, never a string.
+    settings_key, template_key = resolve_special_keys(root, prop)
+    touches_settings = settings_key is not None
+    touches_template = template_key is not None
     # Both-or-neither, enforced in both directions so the repo is never left in
     # the state sync-check calls red.
     if touches_template and not touches_settings:
@@ -604,7 +682,7 @@ def main(argv):
         log.append("edit %d %s %s: %s (%s)" % (
             idx, edit["op"], rel, "already-applied" if already else "staged", edit["reason"]))
 
-    check_template_pairs(root, prop, staged, log)
+    check_template_pairs(root, prop, staged, template_key, log)
 
     # ---- idempotency. All satisfied = nothing to do. Mixed = a half-applied
     # tree from some earlier run; refuse rather than guess which half is right.
@@ -639,8 +717,8 @@ def main(argv):
             len(before_census["rules"]), len(after_census["rules"]),
             len(before_census["deny"]), len(after_census["deny"])))
 
-        if ".claude/settings.json" in staged:
-            permission_surface_check(root, staged[".claude/settings.json"])
+        if settings_key is not None:
+            permission_surface_check(root, staged[settings_key])
             log.append("permission surfaces unchanged")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

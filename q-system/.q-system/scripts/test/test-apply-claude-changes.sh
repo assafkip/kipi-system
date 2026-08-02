@@ -5,7 +5,7 @@
 # at it with --root. No case touches the repo's real .claude/ -- that is both the
 # fable-discipline test-isolation rule and the whole point of the tool.
 #
-# The three mutation cases at the end are the reason to trust the rest: they copy
+# The four mutation cases at the end are the reason to trust the rest: they copy
 # the engine, break one specific guard in the copy, and prove the matching test
 # goes RED. A guard never seen to fail is not a guard.
 set -euo pipefail
@@ -464,6 +464,98 @@ if ls "$T/.claude"/*.claude-changes.tmp >/dev/null 2>&1; then
 else ok "no temp files left behind"; fi
 rm -r "$T"
 
+# ------------- 13. a second SPELLING of settings.json cannot dodge the checks
+# Round-2 review MAJOR: permission_surface_check was gated on a RAW staged key
+# while touches_settings used normpath, so ".claude/./settings.json" wrote the
+# real file with the permission surface check never firing. Same class as
+# settings.local.json in round 1: a second spelling only one guard recognises.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/dotslash.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "dotslash-widen",
+  "reason": "widen permissions.allow via a ./ spelling",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude/./settings.json", "op": "insert_after",
+               "anchor": "      \"Bash(ls:*)\"",
+               "insert": ",\n      \"Bash(:*)\"",
+               "reason": "widen through a spelling only one reader normalizes" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/dotslash.json" "$T"
+check "./ spelling cannot dodge the permission check" 2 "may not be changed" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "./ spelling wrote nothing"
+else bad "./ spelling MUTATED settings.json"; fi
+
+# Redundant-slash and trailing-segment spellings collapse to the same key.
+cat > "$T/slashes.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "slashes-widen", "reason": "widen via redundant slashes",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude//rules/../settings.json", "op": "insert_after",
+               "anchor": "      \"Bash(ls:*)\"",
+               "insert": ",\n      \"Bash(:*)\"", "reason": "widen" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/slashes.json" "$T"
+check "redundant-slash spelling cannot dodge it either" 2 "may not be changed" "$RC" "$OUT"
+
+# Case variant. On a case-insensitive filesystem (macOS default) this is the SAME
+# file and inode identity must catch it; on a case-sensitive one it simply does
+# not exist. Both outcomes are a refusal, which is the point.
+cat > "$T/case.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "case-widen", "reason": "widen via a case variant",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude/SETTINGS.json", "op": "insert_after",
+               "anchor": "      \"Bash(ls:*)\"",
+               "insert": ",\n      \"Bash(:*)\"", "reason": "widen" } ]
+}
+JSON
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/case.json" "$T"
+check "case-variant spelling refused" 2 "REFUSED" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "case-variant wrote nothing"
+else bad "case-variant MUTATED settings.json"; fi
+
+# settings.local.json under a case variant must still be refused by basename.
+cat > "$T/.claude/settings.local.json" <<'JSON'
+{ "permissions": { "allow": [ "Bash(ls:*)" ] } }
+JSON
+cat > "$T/localcase.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "local-case", "reason": "local override, case variant",
+  "edits": [ { "file": ".claude/Settings.Local.json", "op": "append",
+               "insert": "x", "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/localcase.json" "$T"
+check "settings.local.json case variant refused" 2 "may not be edited through this path" "$RC" "$OUT"
+rm -r "$T"
+
+# ------------- 14. an arg-parse refusal never logs into a tree it was not aimed at
+# Round-2 review MINOR: _ROOT was assigned after the argument loop, so refusals
+# raised DURING parsing fell back to the real repo and appended apply.log there.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/ok.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "argparse", "reason": "never reached",
+  "edits": [ { "file": ".claude/rules/coding-standards.md", "op": "append",
+               "insert": "x", "reason": "r" } ]
+}
+JSON
+set +e
+OUT=$(python3 "$ENGINE" "$T/ok.json" --root "$T" --force 2>&1); RC=$?
+set -e
+check "arg-parse refusal still refuses" 2 "unknown option --force" "$RC" "$OUT"
+case "$OUT" in
+  *"$T"*) ok "arg-parse refusal logged into the target tree, not the live repo" ;;
+  *) bad "arg-parse refusal logged outside the target tree :: $OUT" ;;
+esac
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -544,6 +636,54 @@ if [ "$RULES_SUM" = "$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | aw
   bad "MUTATION partial: rollback removed but first target still clean - test not load-bearing"
 else
   ok "MUTATION partial: rollback removed -> first target kept its write (partial apply), test goes RED as required"
+fi
+rm -r "$T"
+
+echo
+echo "--- mutation: restore the two-reader path defect ---"
+# The ./ bypass is now closed TWICE over, and that was measured, not assumed:
+# removing the boundary normalization alone does NOT reopen it (inode identity
+# still resolves the key), and reverting identity to a string compare alone does
+# not either (the boundary already canonicalized the spelling). The original
+# round-2 defect needed BOTH readers to disagree, so the mutation restores both.
+mutate2() {  # mutate2 <dest> <old1> <new1> <old2> <new2>
+  python3 - "$ENGINE" "$@" <<'PY'
+import sys, ast
+src, dest = sys.argv[1], sys.argv[2]
+pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
+text = open(src).read()
+for old, new in pairs:
+    assert text.count(old) == 1, "mutation anchor hit %d times: %s" % (text.count(old), old[:60])
+    text = text.replace(old, new)
+assert text.strip(), "mutant is empty"
+ast.parse(text)          # a mutant that does not parse reports a FALSE kill
+assert text != open(src).read(), "mutant is identical to the original"
+open(dest, "w").write(text)
+PY
+}
+T=$(mktemp -d); mk_fixture "$T"
+MUT="$T/mutant_norm.py"
+mutate2 "$MUT" \
+  '        edit["file"] = canonical_rel(edit["file"])' '        pass' \
+  '        return os.path.exists(p) and os.path.exists(target) and os.path.samefile(p, target)' \
+  '        return rel == os.path.relpath(target, root)'
+cat > "$T/dotslash.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "dotslash-widen",
+  "reason": "widen permissions.allow via a ./ spelling",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [ { "file": ".claude/./settings.json", "op": "insert_after",
+               "anchor": "      \"Bash(ls:*)\"",
+               "insert": ",\n      \"Bash(:*)\"", "reason": "widen" } ]
+}
+JSON
+set +e
+python3 "$MUT" "$T/dotslash.json" --root "$T" >/dev/null 2>&1; MRC=$?
+set -e
+if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
+  ok "MUTATION normalize: both readers restored -> ./ spelling widened permissions.allow (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION normalize: mutant did not widen permissions - the ./ test is not load-bearing"
 fi
 rm -r "$T"
 
