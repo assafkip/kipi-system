@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
       "runner": "python3"
     },
@@ -27,6 +31,18 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -158,6 +174,18 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -202,12 +230,25 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 420
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
@@ -276,6 +317,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_launchd_health_check.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_linear_sync_comments.py",
       "runner": "python3"
     },
     {
@@ -393,6 +438,11 @@
       "spillover_id": "sp-0f773063"
     },
     {
+      "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
+      "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
+      "spillover_id": "sp-fb332466"
+    },
+    {
       "path": "q-system/.q-system/scripts/linear-triage.py",
       "reason": "built and tested (21 cases) but deliberately unwired: --apply writes permanent Linear comments and closes issues, so no trigger exists until the founder reviews the full dry-pass table. sp-0126e55b is the wiring destination -- triage must GATE the DoR drafter, which is loaded and currently drafting readiness ahead of it",
       "spillover_id": "sp-0126e55b"
@@ -433,14 +483,14 @@
       "spillover_id": "sp-0f773063"
     },
     {
+      "path": "q-system/.q-system/scripts/verify-codex-review-live.sh",
+      "reason": "live-environment receipt check: asserts against the launchd plist and the live checkout, so it fails by design on any unmerged branch and cannot be an expected_test. Operator-invoked at PR landing.",
+      "spillover_id": "sp-b249b1b1"
+    },
+    {
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
-    },
-    {
-      "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
-      "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
-      "spillover_id": "sp-fb332466"
     }
   ],
   "uncovered_known": [

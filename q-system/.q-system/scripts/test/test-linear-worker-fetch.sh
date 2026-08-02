@@ -60,6 +60,29 @@ unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID 2>/dev/null || true
 G() { git -c user.email=t@t.t -c user.name=t "$@"; }
 
 STUB="$WORK/bin"; mkdir -p "$STUB" "$WORK/home"
+
+# NEVER LET A TEST REACH THE REAL REVIEWER (sp-cb48c3c0). This suite drives
+# linear-worker.sh for real, and the worker's review step shells
+# pr-review-agent.sh, whose DEFAULT ENGINE IS CODEX. $STUB carries no `codex`, so
+# the call fell through to /opt/homebrew/bin/codex: real spend, real `gh --post`
+# attempts against a PR number that does not exist, and codex running
+# workspace-write inside the founder's live checkout. Caught live 2026-07-30 by
+# finding `pr-review-agent.sh 807 --issue ASK-AAA --post --engine codex` in ps.
+#
+# KIPI_PR_REVIEWER is the override linear-worker.sh:72 already exposes, so one
+# export closes the whole path -- strictly better than adding a `codex` stub,
+# which would still run the real reviewer script against real `gh`.
+KIPI_PR_REVIEWER="$STUB/reviewer-noop"
+export KIPI_PR_REVIEWER
+cat > "$STUB/reviewer-noop" <<'NOOP'
+#!/usr/bin/env bash
+# Stands in for pr-review-agent.sh. Prints what it was asked to do so a test can
+# assert the worker TRIED to review, and exits 0 without touching any network.
+echo "  [stub reviewer] would review PR $1 ($*)"
+exit 0
+NOOP
+chmod +x "$STUB/reviewer-noop"
+
 # No PR exists and none may be created.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/gh"
 chmod +x "$STUB/gh"
@@ -124,6 +147,7 @@ picker_stub '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":
 # cwd is the skeleton, which is where launchd runs this from.
 ( cd "$WORK/skel" \
   && HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --issue ASK-AAA --limit 1 ) >"$WORK/run.out" 2>&1
 RC=$?
 
@@ -163,6 +187,7 @@ picker_stub '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"},{"id":"ASK-BBB
 
 ( cd "$WORK/skel" \
   && PATH="$CSTUB:$PATH" HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state2" \
+     KIPI_NOTIFY="/usr/bin/true" \
      bash "$WORKER" --apply --limit 2 ) >"$WORK/run2.out" 2>&1
 
 # `grep -c` exits 1 on a zero count, so the old `|| echo 0` idiom printed "0\n0"

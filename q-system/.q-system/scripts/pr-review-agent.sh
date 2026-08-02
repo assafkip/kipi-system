@@ -3,7 +3,7 @@
 #
 # WHO IT IS
 # ---------
-# A senior staff engineer from Netflix who has never seen this codebase. That
+# A senior staff engineer from Meta who has never seen this codebase. That
 # persona is chosen for two specific properties, not for flavour:
 #
 #   FRESH EYES. It has no memory of why anything here is the way it is, so it
@@ -14,7 +14,7 @@
 #   emits, so a mutex's remote half never fired while its suite stayed green. Only
 #   an outsider checking the real payload caught it.
 #
-#   OPERATIONAL BAR. Netflix staff review is about what happens at 3am: blast
+#   OPERATIONAL BAR. Meta staff review is about what happens at 3am: blast
 #   radius, failure modes, what pages a human, what cannot be rolled back. This
 #   fleet runs unattended agents against permanent Linear objects and a public
 #   repo. That is exactly the bar it needs.
@@ -34,7 +34,32 @@
 # either stamp `codex-adversarial` (a false record) or skip the stamp and never
 # approve. In a repo whose thesis is receipts, the honest token had to exist first.
 #
+# TWO ENGINES, ONE SCRIPT -- CODEX IS THE ONE THAT GATES (ASK-221)
+# ----------------------------------------------------------------
+# Sana (the PR author) is Claude. A Claude reviewer is a different process with no
+# shared memory, genuinely useful -- but the same lab and the same model family, so
+# the blind spots stay CORRELATED. Fresh context is not an independent mind.
+#
+# So codex is THE reviewer, not a second opinion appended to a Claude one:
+# founder directive 2026-07-29, "codex with gpt-5.6 as a sr. staff swe at Meta is
+# the agent that checks sana's work". It owns `kipi/reviewer-approved` and writes
+# the ONE verdict record converge.sh and linear-worker.sh gate on. Claude keeps
+# the same script but posts an ADVISORY `kipi/claude-approved` and writes its
+# record out of the gate's way.
+#
+# The Opus fallback below is what makes this safe: when codex is down, Claude
+# fills the PRIMARY slot and the status says DEGRADED out loud, so an outage
+# degrades the gate's independence instead of wedging every open PR.
+#
+# It is a FLAG, not a second script, on purpose: sha capture (ASK-216), verdict
+# derivation from labelled severities, the commit-status post (ASK-217) and
+# spillover capture all stay shared and identical. A separate codex script would
+# be a second writer with its own semantics -- the defect class this repo keeps
+# finding. What the engine changes is exactly three things: which binary runs,
+# which status context it posts, and which directory its artifacts land in.
+#
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
+#                            [--engine claude|codex]
 #         --post also comments the review on the PR and the Linear issue.
 set -uo pipefail
 
@@ -43,26 +68,108 @@ SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
 TIMEOUT_SECONDS=2400
+NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
+
+# PIN THE REVIEWER'S IDENTITY. Before ASK-221 the claude engine passed no
+# --model and silently inherited whatever the calling session defaulted to, so
+# "the reviewer" was a different model depending on who woke it. A reviewer whose
+# identity drifts cannot be reasoned about: the severity anchors are calibrated
+# against a specific bar, and a weaker model drops exactly the subtle findings
+# that earn this thing its keep. Env-overridable so a model bump is a config
+# change, not an edit to a script that gates every PR in the repo.
+CLAUDE_MODEL="${KIPI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
+CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
 # semantics -- the defect class review round 2 flagged on this very PR line.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 
-PR=""; ISSUE=""; POST=0
+# CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
+# config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
+# gates every PR in the repo.
+PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-codex}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --issue) shift; ISSUE="${1:-}" ;;
-    --post)  POST=1 ;;
+    --issue)  shift; ISSUE="${1:-}" ;;
+    --engine) shift; ENGINE="${1:-}" ;;
+    --post)   POST=1 ;;
     -*) echo "unknown arg: $1" >&2; exit 1 ;;
     *) PR="$1" ;;
   esac
   shift || true
 done
-[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]" >&2; exit 1; }
+[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
 
-mkdir -p "$OUT_DIR"
+# WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
+# the whole reason this is a flag and not a second script.
+#
+# TWO SEPARATE DIRECTORY QUESTIONS, deliberately decoupled -- conflating them is
+# what made codex non-gating before the founder directive, and naively swapping
+# the pair would have introduced a fresh defect in the other direction:
+#
+#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs `pr-<N>-*.md`, so
+#   an engine reading another engine's review files counts their rounds as its own
+#   and arms the anti-re-litigation rule early. Each engine therefore KEEPS its
+#   historical directory across this change -- claude's rounds stay in $OUT_DIR,
+#   codex's in $OUT_DIR/codex. Nothing about the counters moves.
+#
+#   VERDICT_DIR (the ONE record the loop gates on). converge.sh:36 and
+#   linear-worker.sh:76 both read `$STATE_DIR/pr-reviews/pr-<N>.verdict.json` --
+#   the ROOT, not a subdir. So "codex is the gate" means codex writes THAT path,
+#   and claude's record moves down into $OUT_DIR/claude to get out of its way.
+#   Exactly one engine writes the gating record: single writer, preserved.
+PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-codex}"
+
+# WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
+# REVIEW RAN; it could not prove THE DISPATCHER RAN ONE UNATTENDED, which is the
+# only thing that actually closes the loop. A hand-run review and a scheduled one
+# wrote byte-identical evidence, so no number of green checks answered the
+# question -- every proof shown to the founder had this hole in it.
+#
+# DEFAULT IS `manual`, AND THAT IS THE WHOLE SAFETY PROPERTY. An unlabelled run
+# must never pass as dispatcher-driven, or the field manufactures exactly the
+# evidence it exists to supply. Same posture as the commit status: absent is not
+# approved. Records written before this field existed carry no key at all, and the
+# verifier treats a missing key as not-dispatcher for the same reason.
+#
+# Set by linear-worker.sh at its single reviewer call site, so the label follows
+# the real invocation path rather than being something a human remembers to pass.
+INVOKER="${KIPI_REVIEW_INVOKER:-manual}"
+case "$ENGINE" in
+  claude) ENGINE_DIR="$OUT_DIR" ;;
+  codex)  ENGINE_DIR="$OUT_DIR/codex" ;;
+  *) echo "unknown engine: '$ENGINE' (expected claude|codex)" >&2; exit 1 ;;
+esac
+# The gate belongs to the PRIMARY engine; the other engine is advisory. Naming the
+# advisory context per-engine (never `kipi/reviewer-approved`) is what stops two
+# writers from ever answering for the same slot.
+if [ "$ENGINE" = "$PRIMARY_ENGINE" ]; then
+  VERDICT_DIR="$OUT_DIR";              STATUS_CONTEXT="kipi/reviewer-approved"; MINOR_TAG=""
+else
+  VERDICT_DIR="$OUT_DIR/$ENGINE";      STATUS_CONTEXT="kipi/$ENGINE-approved";  MINOR_TAG="$ENGINE "
+fi
+# Degraded is a property of the ENGINE, not of a PR: codex being down is one
+# fact, and paging per-PR would turn one outage into a page per open PR.
+DEGRADED_STATE="$OUT_DIR/codex/degraded.state"
+DEGRADED=0
+# Set when THE REVIEW IN THE PRIMARY SLOT is not parseable, whichever engine
+# produced it. It is a SEPARATE flag from the derived verdict because
+# verdict_from_findings reads an unclosed FINDINGS block as an EMPTY one and
+# returns APPROVE -- so "the derivation produced something" is not evidence that
+# the review said anything. Caught by the truncated-stream case in
+# test-severity-floor.sh, which passed the first cut of this fix.
+#
+# It was CODEX_UNUSABLE and checked only on the codex path. Codex itself found the
+# hole on 2026-07-29 reviewing this branch (major, pr-review-agent.sh:403): the
+# Opus FALLBACK path had no such check, so a fallback that exited 0 with truncated
+# output would derive APPROVE and post state=success on the REQUIRED context --
+# a green gate for a review nobody read, which is the worst outcome in this script.
+# The flag is a property of the SLOT, not of the engine.
+REVIEW_UNUSABLE=0
+
+mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$OUT_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
+REVIEW="$ENGINE_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -86,17 +193,175 @@ PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .ti
   || { echo "no PR #$PR" >&2; exit 1; }
 HEAD_SHA="${PR_META%%$'\t'*}"
 PR_TITLE="${PR_META#*$'\t'}"
+
+# CONFIRM THE HEAD HAS SETTLED (sp-f8edcdeb). The comment above reasons that
+# pinning an OLDER sha is the safe direction because it reads as drift and routes
+# to a re-review. That is true of the GATE, and it was still wrong in practice:
+# on 2026-07-30 a push and a review ran in the same command, `gh pr view` returned
+# the PRE-PUSH sha, and the run posted kipi/reviewer-approved=SUCCESS on it. The
+# newest commits went unreviewed while a green required check sat on the branch.
+# Drift catches it on the next worker pass; a human reading the PR in between sees
+# a green codex check that does not cover the top commits.
+#
+# A second read a few seconds later is enough, because the failure is propagation
+# delay, not a persistent disagreement. Refuse rather than adopt the newer value:
+# if the head is moving RIGHT NOW, whatever we pick may be stale again by the time
+# the model finishes, and a review nobody ran is cheaper than a green check on the
+# wrong code. Also catches a concurrent push by anyone, which the caller cannot.
+#
+# The confirm read uses the IDENTICAL query and the IDENTICAL extraction as the
+# first one. A differently-shaped second query is a second reader of one fact:
+# my first cut asked for `--json headRefOid -q .headRefOid` while the first read
+# asked for the sha+title tuple, so the two strings never matched and the check
+# refused every review. Caught by test-review-tree-guard going 1/23.
+sleep 3
+PR_META_CONFIRM="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null || true)"
+HEAD_SHA_CONFIRM="${PR_META_CONFIRM%%$'\t'*}"
+if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
+  echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
+  echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
+  echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# THE TREE MUST ACTUALLY CONTAIN THE PR (sp-a72a9567). $SKEL comes from this
+# script's own location, and the diff comes from `gh pr diff <N>` -- two
+# independent sources that nothing was checking against each other. Run from
+# worktree A against a PR on branch B and the reviewer reads A's files off disk
+# while B's diff scrolls past, then writes a verdict record and a commit status
+# attributing its findings to B's head sha.
+#
+# Not hypothetical. 2026-07-29, run from the ask-221 worktree against PR #35: it
+# returned three findings in linear-sync.py, a file PR #35's diff does not touch at
+# all. The findings were real bugs in ask-221; the PROVENANCE was false. That is
+# worse than a wrong verdict, because the record looks authoritative.
+#
+# TWO TIERS, because a flat equality check would be wrong twice over. The PR's head
+# may legitimately be BEHIND local HEAD (a push landing after the `gh pr view`
+# above), so equality would refuse healthy runs -- ancestry is the real question.
+# And an UNKNOWN object is not evidence of a mismatch: a stale or partial clone
+# cannot prove ancestry either way, and inventing a refusal there would wedge the
+# loop on a fetch problem. Unknown warns; known-but-unrelated refuses.
+#
+# WHY THIS RESOLVES INSTEAD OF REFUSING (codex review round 1 of PR #34, major).
+# The first cut of this guard compared $HEAD_SHA against $SKEL's HEAD and exited 1
+# on a mismatch. That reads correctly and is still wrong, because $SKEL is derived
+# from BASH_SOURCE -- the script's own location -- and the autonomous caller is
+# `linear-worker.sh:1133`, which runs `bash $SCRIPT_DIR/pr-review-agent.sh` out of
+# the MAIN checkout while the PR's commits live in a worktree it cut at
+# $STATE_DIR/worktrees/<issue>. cwd is irrelevant; BASH_SOURCE wins. So the PR head
+# is never an ancestor of main's HEAD, the guard refuses EVERY autonomous review,
+# and the worker's call site swallows it as `|| say WARN ... (the PR stands,
+# unreviewed)`. A guard whose success case is "the loop silently reviews nothing"
+# is worse than the hole it closed.
+#
+# The question the scar actually asks is not "is SKEL right?" but "which tree on
+# this machine holds the code this PR's diff describes?" Worktrees share one object
+# database, so the answer is discoverable: ask each worktree. Refusal is kept for
+# the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
+# still must never be reviewed.
+REVIEW_ROOT="$SKEL"
+
+# REVIEW IN A DEDICATED DETACHED WORKTREE, NEVER IN A CHECKOUT SOMEONE IS USING
+# (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
+# but when the live checkout happens to sit at that sha, "a tree that holds it"
+# IS the founder's working directory, and that is where the review ran. Both
+# PR #47 rounds recorded `workdir: <the founder's live checkout>` with
+# `sandbox: workspace-write`.
+#
+# Two failures at once, and the second is the worse one:
+#   READ  -- an edit during a 7-13 minute review means the reviewer judged a tree
+#            state that never existed as a commit, while the verdict is stamped on
+#            a head_sha whose content it did not read. The provenance is false in
+#            exactly the way the tree guard exists to prevent.
+#   WRITE -- workspace-write lets the reviewer modify the founder's live checkout.
+#
+# The workaround was "everyone holds still for 13 minutes", which is not a control.
+# A detached worktree pinned to the exact sha is: it cannot drift while the review
+# runs, nobody else is editing it, and the tree/PR match becomes true by
+# construction rather than by search.
+#
+# One tree per PR, reused across rounds by re-detaching rather than removing --
+# removal is a destructive op on a path this script does not own, and re-checkout
+# reaches the same state.
+review_worktree() {  # review_worktree <sha> -> prints path, or nothing
+  local sha="$1" wt="$HOME/.config/kipi/review-trees/pr-$PR"
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
+    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
+  else
+    git -C "$SKEL" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+  fi
+  # Prove it landed where we asked. A worktree silently sitting at the wrong sha
+  # is the same false-provenance bug in a new costume.
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+  printf '%s' "$wt"
+}
+
+if [ -n "$HEAD_SHA" ] && git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+  ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
+  if [ -n "$ISOLATED" ]; then
+    REVIEW_ROOT="$ISOLATED"
+    echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
+    HEAD_SHA_ISOLATED=1
+  else
+    # Say it out loud rather than quietly reviewing the live tree. A degraded run
+    # that nobody knows is degraded is how the original defect stayed invisible.
+    echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2
+    HEAD_SHA_ISOLATED=0
+  fi
+elif [ -n "$HEAD_SHA" ]; then
+  # OBJECT ABSENT -> fall through to the ORIGINAL tier-1 path (warn, proceed).
+  # I briefly made this refuse, on the reasoning that no tree can be built at a
+  # missing object so the provenance must be false. The tree-guard suite refused
+  # the change and was right: a stale or partial clone cannot prove ancestry
+  # EITHER WAY, so refusing wedges the loop on a fetch problem, and every reviewer
+  # case in test-severity-floor.sh reports a fabricated sha and takes exactly this
+  # branch. Isolation raises the floor for the case that actually occurs (the
+  # object is present); it does not get to redefine the case it cannot serve.
+  HEAD_SHA_ISOLATED=0
+else
+  HEAD_SHA_ISOLATED=0
+fi
+
+if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
+  if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+    echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
+  elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+    # SKEL does not contain the PR. Find a worktree that does. `worktree list
+    # --porcelain` emits a `worktree <path>` line per tree, SKEL included; testing
+    # SKEL again is harmless and keeps the loop free of a special case.
+    FOUND_ROOT=""
+    while IFS= read -r wt; do
+      [ -n "$wt" ] || continue
+      [ -d "$wt" ] || continue
+      if git -C "$wt" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+        FOUND_ROOT="$wt"; break
+      fi
+    done < <(git -C "$SKEL" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+
+    if [ -n "$FOUND_ROOT" ]; then
+      REVIEW_ROOT="$FOUND_ROOT"
+      echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL)"
+    else
+      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $SKEL (HEAD $(git -C "$SKEL" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
+      echo "  The reviewer reads FILES from a tree and the DIFF from the PR. With no tree holding this commit, every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
+      echo "  Fetch the PR's head, or run it from a tree that has it. No review was dispatched and NO status was posted -- absent is not approved." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)
-ROUND="$(review_round "$OUT_DIR" "$PR")"
-echo "  round: $ROUND"
+ROUND="$(review_round "$ENGINE_DIR" "$PR")"
+echo "  round: $ROUND (engine: $ENGINE)"
 
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
@@ -127,8 +392,8 @@ Then apply this rule, which is binding:
   a finding about the review process, and it is worth more than another nit."
 fi
 
-PROMPT="You are a SENIOR STAFF ENGINEER at Netflix. You have NEVER seen this codebase before.
-You were asked to review pull request #$PR in $SKEL, and you are ADVERSARIAL by default:
+PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
+You were asked to review pull request #$PR in $REVIEW_ROOT, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.$ROUND_RULE
 
 ## Read the change
@@ -156,7 +421,7 @@ Be specifically suspicious of:
 - **Error paths, retries, partial failure.** What is left behind when this dies
   halfway? What does the operator see?
 
-## The operational bar (this is the Netflix part)
+## The operational bar (this is the Meta staff part)
 
 This fleet runs UNATTENDED agents on a schedule, against Linear objects that CANNOT
 BE DELETED, in a PUBLIC repo. So judge it that way:
@@ -231,13 +496,110 @@ FINDINGS:
 severity|one-sentence claim|file:line
 END FINDINGS"
 
-echo "$(TS) running the reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
-if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$SKEL' && claude -p \"\$1\" </dev/null > '$REVIEW' 2>&1" _ "$PROMPT"; then
-  echo "$(TS) review written: $REVIEW"
+# ONE ATTEMPT PER ENGINE, and the fallback is one more. Codex costs real tokens
+# per PR (~26k on a trivial prompt, far more on a real diff), so a retry loop
+# here is a runaway bill on every scheduled run against every open PR. Bounded
+# exactly as the existing reviewer already is: the same wall clock, no retries.
+#
+# `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
+# additional input from stdin..."), and outside a trusted directory it refuses
+# with "Not inside a trusted directory". Both are load-bearing, not decoration.
+run_engine() {   # run_engine <claude|codex> <destination-file>
+  case "$1" in
+    claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+    codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+  esac
+}
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block.
+# A truncated review that green-lights a PR nobody read is the worst outcome
+# available in this script.
+#
+# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
+# "complete": both markers, anywhere, in any order. That passes a review whose
+# only complete block is a quoted prior round while the real trailing block is
+# truncated -- unusable stays off, the gate goes green, and the verdict comes from
+# findings the review itself withdrew. One definition, one reader.
+review_has_complete_findings_block() {
+  has_complete_findings_block "$1"
+}
+
+# PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
+# cry-wolf failure: it trains the operator to skim, which costs the real alert
+# later. Both edges earn their one line -- going degraded means the two statuses
+# stopped being independent, and an operator who never hears the recovery cannot
+# tell a live second opinion from an Opus stand-in wearing its context.
+note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
+  local now="$1" reason="${2:-}" prev="" msg
+  [ -f "$DEGRADED_STATE" ] && prev="$(tr -dc '01' < "$DEGRADED_STATE" 2>/dev/null | head -c1)"
+  [ -n "$prev" ] || prev=0
+  mkdir -p "$(dirname "$DEGRADED_STATE")"
+  printf '%s\n' "$now" > "$DEGRADED_STATE"
+  [ "$now" = "$prev" ] && return 0
+  if [ "$now" = "1" ]; then
+    msg="reviewer: codex is not producing an independent review (PR #$PR): $reason. $STATUS_CONTEXT stops being a second lab's opinion until codex is back."
+  else
+    msg="reviewer: codex is BACK (PR #$PR) -- $STATUS_CONTEXT is an independent second opinion again."
+  fi
+  bash "$NOTIFY" "$msg" 2>/dev/null || true
+}
+
+echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
+if [ "$ENGINE" != "codex" ]; then
+  if run_engine claude "$REVIEW"; then
+    echo "$(TS) review written: $REVIEW"
+  else
+    rc=$?
+    echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
+    exit "$rc"
+  fi
+elif run_engine codex "$REVIEW"; then
+  if review_has_complete_findings_block "$REVIEW"; then
+    note_degraded_transition 0
+    echo "$(TS) review written: $REVIEW"
+  else
+    # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
+    # path: an outage leaves no review to trust, but this is an attempted review
+    # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
+    # over it would invent a verdict for a review that said nothing. It falls
+    # through UNSTATED, and unstated posts state=failure a few lines below.
+    REVIEW_UNUSABLE=1
+    note_degraded_transition 1 \
+      "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
+    echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+  fi
 else
+  # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
+  # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
+  # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
+  # real hazard: both statuses would come from one model family and nobody would
+  # know the independence this engine exists to buy had been lost.
   rc=$?
-  echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
-  exit "$rc"
+  DEGRADED=1
+  mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
+  echo "$(TS) codex failed or timed out (rc=$rc); running the Opus fallback so $STATUS_CONTEXT does not wedge. Partial codex output: $REVIEW.codex-failed" >&2
+  note_degraded_transition 1 \
+    "it exited $rc, so the Opus fallback filled the slot and the status is marked DEGRADED"
+  if run_engine claude "$REVIEW"; then
+    # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
+    # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
+    # block, which derives APPROVE and would post state=success on the REQUIRED
+    # context. Filling the gate with an unread approval is worse than leaving it
+    # unstated, because unstated holds the PR and green releases it.
+    if review_has_complete_findings_block "$REVIEW"; then
+      echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+    else
+      REVIEW_UNUSABLE=1
+      echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+    fi
+  else
+    rc=$?
+    echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+    exit "$rc"
+  fi
 fi
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
@@ -247,7 +609,18 @@ fi
 # setting the gate.
 STATED_VERDICT="$(extract_verdict "$REVIEW")"
 DERIVED_VERDICT="$(verdict_from_findings "$REVIEW")"
-if [ -n "$DERIVED_VERDICT" ]; then
+if [ "$REVIEW_UNUSABLE" = "1" ]; then
+  # UNUSABLE WINS OVER THE DERIVATION, and this ordering is the whole fix. An
+  # unclosed `FINDINGS:` block parses as an EMPTY findings list, and an empty
+  # list derives APPROVE -- so a stream that died one line into the block would
+  # otherwise green-light the PR, with the truncated prose "VERDICT: APPROVE"
+  # above it agreeing. There is also no prose fallback on this slot: codex stdout
+  # carries harness noise (`hook: Stop`, `tokens used`, a repeated final line)
+  # that a whole-file token grep reads an APPROVE out of. Unstated posts
+  # state=failure, which is the safe direction -- absent evidence is not consent.
+  VERDICT=""
+  echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
+elif [ -n "$DERIVED_VERDICT" ]; then
   VERDICT="$DERIVED_VERDICT"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
     echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
@@ -268,13 +641,20 @@ echo "  verdict: ${VERDICT:-unstated}"
 # the approval. The key is ALWAYS written -- empty when `gh` could not answer --
 # because rework_gate reads empty as "unknown, fall back and say so", and a
 # key that sometimes vanishes is a shape the reader would have to guess at.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" <<'PY'
+#
+# The record lands in $VERDICT_DIR, NOT next to the review. Those are the same
+# directory only for a non-primary engine; for the gating engine the reviews live
+# in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
+# where converge.sh and linear-worker.sh actually read it.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha = sys.argv[1:10]
-out = review.rsplit("/", 1)[0] + f"/pr-{pr}.verdict.json"
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
+out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
+           "engine": engine,
+           "invoker": invoker,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
@@ -291,7 +671,7 @@ if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
     [ -n "$claim" ] || continue
     MINOR_COUNT=$((MINOR_COUNT+1))
     python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
-      --source "$ISSUE" --desc "PR #$PR review minor: $claim ($loc)" >/dev/null 2>&1 \
+      --source "$ISSUE" --desc "PR #$PR ${MINOR_TAG}review minor: $claim ($loc)" >/dev/null 2>&1 \
       && CAPTURED=$((CAPTURED+1))
   done <<EOF
 $(extract_minor_findings "$REVIEW")
@@ -318,7 +698,11 @@ fi
 # holds the PR -- the safe direction. Nothing on an error path here invents one.
 post_reviewer_status() {
   local sha="$1" verdict="$2" target="$3"
-  local context="kipi/reviewer-approved" state="failure" desc
+  # The context is the ENGINE's slot: kipi/reviewer-approved for claude,
+  # kipi/codex-approved for the independent second opinion. Two contexts, one
+  # writer each, so a gate can require either or both without either engine
+  # being able to answer for the other.
+  local context="$STATUS_CONTEXT" state="failure" desc
   # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
   # written to the record; re-grepping the review prose here would be a second
   # reader with its own semantics, which is the defect class this repo keeps
@@ -327,7 +711,13 @@ post_reviewer_status() {
   case "$verdict" in
     "APPROVE"|"APPROVE WITH NITS") state="success" ;;
   esac
-  desc="$(printf '%.140s' "${verdict:-unstated: no verdict parsed from the review}")"
+  desc="${verdict:-unstated: no verdict parsed from the review}"
+  # SAY IT IN THE SLOT ITSELF. The page fires once on the transition and is gone;
+  # the status description is what a human reads on the PR weeks later. Without
+  # this marker a green kipi/codex-approved is indistinguishable from a real
+  # second opinion, and the whole point of this engine is that it is not Claude.
+  [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
+  desc="$(printf '%.140s' "$desc")"
   local args=(api -X POST "repos/{owner}/{repo}/statuses/$sha"
               -f "state=$state" -f "context=$context" -f "description=$desc")
   # Link only a real URL. The PR comment just above is what --post creates; when
@@ -342,9 +732,58 @@ post_reviewer_status() {
 
 if [ "$POST" = "1" ]; then
   COMMENT_URL=""
-  COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW" 2>/dev/null)" \
-    && echo "  posted to PR #$PR" \
-    || { COMMENT_URL=""; echo "  WARN: could not comment on PR" >&2; }
+  # POST THE RENDERED REVIEW, NEVER THE RAW FILE (sp-48688b24). `--body-file
+  # "$REVIEW"` sent the codex agent's entire stdout. Measured on disk 2026-07-30,
+  # four real rounds: 435,280 / 519,377 / 278,439 / 197,279 bytes. Three were
+  # rejected; only the 197,279-byte round landed (as a 197,208-character comment
+  # on PR #46). So the old failure was SIZE-DEPENDENT, not universal -- worth
+  # stating because the first two write-ups of this defect, mine included, both
+  # claimed it failed every time and were wrong.
+  #
+  # THE CAP IS DELIBERATELY CONSERVATIVE, NOT TUNED. The observed ceiling sits
+  # somewhere between 197,279 and 278,439 bytes, while a reproduced rejection
+  # reported `Body is too long (maximum is 65536 characters) (addComment)`. Those
+  # two facts do not agree, so the limit is path-dependent and I do not know which
+  # path a future gh version takes. 60,000 is under BOTH, which makes the comment
+  # succeed regardless of which limit applies. Tuning it upward would trade a
+  # guaranteed delivery for a longer transcript nobody reads.
+  # EXPLICIT XXXXXX TEMPLATE, because `mktemp -t name` is not portable. BSD
+  # mktemp (macOS) appends the random suffix itself; GNU mktemp (the Linux CI
+  # runner) rejects a template with fewer than three X's. My first cut used the
+  # BSD form, passed 14/14 locally, and turned `validate` red on the PR -- the
+  # body file was never created, so --body-file got an empty path. Nothing on
+  # this machine could have caught it; the runner is the other OS.
+  # NEVER FALL BACK TO $REVIEW ITSELF (codex round 4, minor). My first fallback was
+  # `|| REVIEW_BODY="$REVIEW"`, which then ran
+  # `review_comment_body "$REVIEW" > "$REVIEW_BODY"` -- the same path as input and
+  # output. The `>` truncates the review before the renderer reads it, so a mktemp
+  # failure would DESTROY the only copy of a review that cost 8-13 minutes of codex
+  # time, and post a self-copy of the wreckage. A degraded path may post something
+  # worse; it may never eat the artifact.
+  REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX" 2>/dev/null)" || REVIEW_BODY=""
+  # POST_FILE is what gh sends; REVIEW_BODY is only ever a file WE created. Keeping
+  # them separate is what makes the degraded path safe: with no temp file we post
+  # the raw review unchanged and write nothing, instead of redirecting into the
+  # artifact we are trying to read.
+  if [ -n "$REVIEW_BODY" ]; then
+    review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
+    POST_FILE="$REVIEW_BODY"
+  else
+    POST_FILE="$REVIEW"
+    echo "  WARN: could not create a temp file; posting the RAW review, which GitHub may reject on size" >&2
+  fi
+  # Keep the reason. A bare "could not comment" sent the maintainer to guess
+  # between a size rejection, an auth failure and a closed PR -- the same
+  # discard-the-reason defect PR #46 fixed one call lower down.
+  COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
+  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+    echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
+  else
+    COMMENT_URL=""
+    echo "  WARN: could not comment on PR #$PR: $(tr '\n' ' ' <"$COMMENT_ERR" | cut -c1-300)" >&2
+    echo "  WARN: the review is on disk at $REVIEW but NO human-readable copy reached the PR" >&2
+  fi
+  rm -f "$REVIEW_BODY" "$COMMENT_ERR"
   # No sha, no status. A status on a guessed commit is worse than none because
   # it looks authoritative -- the same reason ASK-216 captured the sha before
   # dispatch instead of looking it up afterwards.
@@ -354,10 +793,63 @@ if [ "$POST" = "1" ]; then
     echo "  no head sha for PR #$PR: posting NO commit status (a status on a guessed sha looks authoritative)"
   fi
   if [ -n "$ISSUE" ]; then
-    python3 "$SYNC" progress "$ISSUE" \
-      "Adversarial review of PR #$PR complete. Verdict: ${VERDICT:-unstated}. Reviewer: Netflix-staff persona, fresh eyes, every finding required to ship an executed reproducer." \
-      --agent "reviewer" >/dev/null 2>&1 \
-      && echo "  progress noted on $ISSUE" || true
+    # THE REVIEWER'S HALF OF THE CONVERSATION (ASK-221, founder directive
+    # 2026-07-29: Sana and codex talk to each other in the issue's comments).
+    #
+    # This used to post a one-line summary, which is a NOTIFICATION, not a turn in
+    # a conversation: Sana had nothing to answer because the findings themselves
+    # only ever landed on the PR. Carrying the actual findings block onto the issue
+    # is what makes a reply possible, and the issue is the one surface both agents
+    # can see (the worker reads PR comments; the founder reads Linear).
+    #
+    # Attributed to "$ENGINE-reviewer", never a bare "reviewer": the whole point of
+    # the flip is that the checker is not Claude, so a thread that cannot tell you
+    # WHICH engine spoke loses the only fact that matters. It also gives Sana a
+    # string to filter on (`linear-sync.py comments --agent codex-reviewer`).
+    # Through the ONE reader (sp-c0a9dac3). Its own sed range here was the third
+    # copy of that extraction, so the Linear comment could carry a DIFFERENT set of
+    # findings than the verdict was derived from -- Sana would be answering findings
+    # that never set the gate, on a review whose gate came from findings she never saw.
+    REVIEW_FINDINGS="$(findings_block "$REVIEW")"
+    [ -n "$REVIEW_FINDINGS" ] || REVIEW_FINDINGS="(no findings block parsed from this review)"
+    # `|| true` HERE WAS A SILENT DROP (codex round 2 of PR #34, minor;
+    # sp-583dc1a0). Every other failure on this path says so out loud -- the PR
+    # comment warns, and a failed commit status warns that NO gate moved -- but a
+    # failed Linear post printed nothing, discarded the reason down /dev/null, and
+    # the run still exited 0 and printed `done`. Linear is the ONE surface Sana
+    # reads, so losing it silently means she never answers findings she was never
+    # shown, and the loop looks healthy while the conversation never happens. Not
+    # hypothetical: the round-2 run on 2026-07-30 lost its PR comment
+    # (`WARN: could not comment on PR`) and only the loud branch revealed it.
+    #
+    # STILL EXIT 0, deliberately. The gate above is already correctly set from a
+    # review that really ran; making the run fail here would make the worker log
+    # `codex reviewer failed` for a review that succeeded, which trades a silent
+    # drop for a false alarm. Loud plus a page is the fix, not a non-zero exit.
+    SYNC_ERR="$(python3 "$SYNC" progress "$ISSUE" \
+      "Review of PR #$PR complete ($ENGINE engine$([ "$DEGRADED" = "1" ] && printf ', DEGRADED: codex down, Opus fallback')). Verdict: ${VERDICT:-unstated}. Reviewer: Meta senior-staff persona, fresh eyes, every finding required to ship an executed reproducer.
+
+Sana: reply to this comment on THIS issue. For each finding, either the file:line that already handles it, or what you changed. Findings below." \
+      --agent "$ENGINE-reviewer" --evidence "$REVIEW_FINDINGS" 2>&1 >/dev/null)"
+    if [ $? -eq 0 ]; then
+      echo "  review posted to $ISSUE as $ENGINE-reviewer (findings included)"
+    else
+      echo "  WARN: could not post the review to $ISSUE as $ENGINE-reviewer. The gate is set from a review nobody on the issue can see, so Sana has no findings to answer. Reason: ${SYNC_ERR:-(no output)}" >&2
+      # THE PAGE IS BEST-EFFORT AND SAYS SO (codex round 1 of PR #46, major 2).
+      # slack-notify.sh no-ops silently when no webhook is configured -- that is
+      # deliberate per founder-notifications.md, so callers never break -- which
+      # means a zero exit here does NOT prove delivery. Claiming "paged" would be
+      # the same overclaim this commit is removing one layer down. So: attempt it,
+      # record what came back, and leave the stderr WARN above as the one record
+      # that is always written.
+      NOTIFY_OUT="$(bash "$NOTIFY" "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." 2>&1)"
+      NOTIFY_RC=$?
+      if [ "$NOTIFY_RC" -ne 0 ]; then
+        echo "  WARN: the page about that loss ALSO failed (rc=$NOTIFY_RC${NOTIFY_OUT:+: $NOTIFY_OUT}). This loss is recorded ONLY in this log." >&2
+      else
+        echo "  page attempted for the lost review (delivery not confirmable: the notifier no-ops silently when unconfigured)" >&2
+      fi
+    fi
   fi
 fi
 

@@ -10,6 +10,8 @@ usage() {
   echo "  kipi update --dry    Show what would happen without changing anything"
   echo "  kipi rollback [name]  Revert the last skeleton sync (all instances, or one by name)"
   echo "  kipi new <path> <name>   Create a new project with the skeleton"
+  echo "                           (creates + pushes a PRIVATE GitHub repo by default;"
+  echo "                            KIPI_LOCAL_ONLY=1 KIPI_LOCAL_ONLY_REASON='...' to opt out)"
   echo "  kipi push            Push generic improvements back to skeleton (run from a project)"
   echo "  kipi dev             Launch Claude Code with all kipi plugins loaded"
   echo "  kipi check [phase]   Run validation harness (default: all phases)"
@@ -100,8 +102,11 @@ case "${1:-help}" in
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
     # satisfy Definition of Ready, so this is the gate on autonomy, not paperwork.
+    # Founder decision 2026-08-01: pin the drafter's model; unpinned it rides the
+    # interactive default (Fable on 2026-08-01) and burns quota unattended.
     shift || true
-    python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
+    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
+      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear
@@ -187,6 +192,16 @@ PY
     ;;
   check)
     shift || true
+    # Fleet remote-coverage gate. Runs FIRST and fleet-wide (not per-instance)
+    # because the failure it catches is a repo whose only copy is this laptop --
+    # a property of the fleet, not of whichever tree you happen to stand in.
+    # Scar 2026-07-29: `kipi new` never created a remote, so 12 repos (oldest
+    # 219 commits, several client engagements) existed on one disk for months.
+    # Inflow was automated, outflow was manual, and nothing reported the gap.
+    # Declared-local repos live in remote-coverage-allow.json; exit 2 = undeclared.
+    if [ -f "$KIPI_HOME/remote-coverage-check.py" ]; then
+      python3 "$KIPI_HOME/remote-coverage-check.py" || exit 1
+    fi
     # Capability gate runs against the repo you are STANDING in, so an
     # instance gets ITS tree gated. Without this, `kipi check` cd'd to
     # KIPI_HOME and only ever validated the skeleton — an instance-side

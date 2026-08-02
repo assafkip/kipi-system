@@ -74,6 +74,52 @@ if [ ! -d .git ]; then
   echo "  Initialized git repo"
 fi
 
+# A PRIVATE remote is the DEFAULT. Local-only must be asked for, in writing.
+#
+# Scar 2026-07-29: this script created git repos and never a remote, so an
+# instance's only copy was the laptop. The audit found 12 remote-less repos,
+# oldest 219 commits, several of them client engagements, plus 475 client files
+# in a directory that was not a repo at all. Inflow was automated, outflow was
+# manual, so the default silently accumulated risk for months.
+#
+# Opting out is deliberate and self-documenting:
+#   KIPI_LOCAL_ONLY=1 KIPI_LOCAL_ONLY_REASON="..." kipi new <path> <name>
+# The reason is written to remote-coverage-allow.json AT CREATION TIME, so a
+# local-only instance is a recorded decision on day one rather than an audit
+# finding a year later. Some instances genuinely must stay local (family
+# health data), which is exactly why the escape hatch exists and is loud.
+KIPI_REMOTE_NAME="${KIPI_REMOTE:-$INST_NAME}"
+COVERAGE_TOOL="$SCRIPT_DIR/remote-coverage-check.py"
+
+if [ -n "${KIPI_LOCAL_ONLY:-}" ]; then
+  if [ -z "${KIPI_LOCAL_ONLY_REASON:-}" ]; then
+    echo "ERROR: KIPI_LOCAL_ONLY=1 requires KIPI_LOCAL_ONLY_REASON=\"why\"." >&2
+    echo "       An undeclared local-only instance is the bug this prevents." >&2
+    exit 1
+  fi
+  echo "  LOCAL-ONLY by request. Recording the decision..."
+  python3 "$COVERAGE_TOOL" --declare "$INST_PATH" \
+    --reason "$KIPI_LOCAL_ONLY_REASON" || {
+      echo "ERROR: could not record the local-only decision; refusing to" >&2
+      echo "       leave an undeclared remote-less instance behind." >&2
+      exit 1; }
+elif command -v gh >/dev/null 2>&1; then
+  echo "  Creating PRIVATE remote assafkip/$KIPI_REMOTE_NAME ..."
+  # --private is not a default to be overridden here: a fresh instance carries
+  # the skeleton's enforcement layer plus whatever the operator seeds next, and
+  # nobody has reviewed that content yet. Public is a later, explicit choice.
+  if gh repo create "assafkip/$KIPI_REMOTE_NAME" --private --source="$INST_PATH" 2>&1; then
+    echo "  Remote added: assafkip/$KIPI_REMOTE_NAME (private)"
+  else
+    echo "  WARNING: remote creation failed; instance is LOCAL-ONLY." >&2
+    echo "           \`kipi check\` will stay RED until you push it or run:" >&2
+    echo "           python3 $COVERAGE_TOOL --declare $INST_PATH --reason '...'" >&2
+  fi
+else
+  echo "  WARNING: gh not installed; instance is LOCAL-ONLY." >&2
+  echo "           \`kipi check\` will stay RED until resolved." >&2
+fi
+
 # Ensure at least one commit exists
 if ! git rev-parse HEAD >/dev/null 2>&1; then
   git commit --allow-empty -m "Initial commit"
@@ -216,3 +262,24 @@ echo ""
 echo "=== Done ==="
 echo "Instance created at $INST_PATH"
 echo "Next: edit CLAUDE.md to add your project details, then run the setup wizard."
+
+# The remote was created BEFORE the seed commit existed, so push now that there
+# is something to push. Without this the instance has an origin and no content,
+# which the coverage gate counts as covered and a disk failure would disprove.
+if [ -n "$(git -C "$INST_PATH" remote 2>/dev/null)" ]; then
+  echo ""
+  if git -C "$INST_PATH" push -u origin HEAD 2>&1 | tail -2; then
+    echo "Pushed to assafkip/$KIPI_REMOTE_NAME (private)."
+  else
+    echo "WARNING: push failed. Content is committed locally but NOT off-disk." >&2
+  fi
+else
+  # A remote-less instance must never end the run silently -- that silence is
+  # the whole 2026-07-29 scar. Say it out loud and name both legitimate exits.
+  echo ""
+  echo "NOTE: this instance has NO git remote. Its only copy is this disk."
+  echo "  push it:    gh repo create assafkip/<name> --private --source=$INST_PATH --push"
+  echo "  or declare: python3 $SCRIPT_DIR/remote-coverage-check.py \\"
+  echo "                --declare $INST_PATH --reason '<why, class not content>'"
+  echo "  \`kipi check\` stays RED until you do one of those."
+fi
