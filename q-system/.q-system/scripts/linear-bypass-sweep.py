@@ -130,14 +130,61 @@ def default_rev(cwd: Path) -> str:
     return "origin/main"
 
 
+def gate_live_since(cwd: Path) -> str:
+    """Authored date of the commit that ADDED the commit-msg gate.
+
+    A commit made before the gate existed did not bypass anything, so counting it
+    as a bypass makes the ledger lie in the opposite direction — the first real
+    run reported 246 when the true number was 3. The floor is derived from git,
+    not hardcoded, so it stays right if the gate is ever re-added or moved.
+
+    Empty string when it cannot be derived, which means no floor: better to
+    over-count than to silently drop the whole window.
+    """
+    rel = GATE_PATH.name
+    code, out = git(
+        ["log", "--diff-filter=A", "--format=%aI", "--", f"*{rel}"], cwd,
+    )
+    if code != 0 or not out.strip():
+        return ""
+    # --diff-filter=A can list several adds (a move re-adds the path); the FIRST
+    # time it existed is the floor, and git log is newest-first.
+    return out.strip().splitlines()[-1].strip()
+
+
+def parse_floor(value: str, strict: bool = True):
+    """Parse an ISO-8601 date or timestamp into an aware datetime.
+
+    `strict` callers get a RuntimeError on junk. A floor that cannot be parsed
+    must never degrade into "no floor" — that is the failure mode that made
+    `git log --since` unusable here.
+    """
+    text = (value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        if strict:
+            raise RuntimeError(
+                f"--since must be ISO-8601 (YYYY-MM-DD or a full timestamp), got {value!r}")
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def rev_exists(rev: str, cwd: Path) -> bool:
     code, _ = git(["rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd)
     return code == 0
 
 
-def read_commits(rev: str, max_count: int, cwd: Path) -> list:
+def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> list:
     """Commits reachable from `rev`, newest first, as {sha, subject, message, at}."""
     fmt = FIELD_SEP_FMT.join(["%H", "%aI", "%B"]) + RECORD_SEP_FMT
+    # The floor is applied in Python, NOT via `git log --since`. Git's approxidate
+    # parser silently IGNORES a value it cannot handle and returns the whole range
+    # (`--since=2999-01-01` returned every commit), so a bad floor would quietly
+    # disable the filter — the exact silent-no-op shape this ledger exists to stop.
+    floor = parse_floor(since) if since else None
     code, out = git(
         ["log", f"--max-count={max_count}", f"--format={fmt}", rev], cwd,
     )
@@ -152,6 +199,10 @@ def read_commits(rev: str, max_count: int, cwd: Path) -> list:
         if len(parts) < 3:
             continue
         sha, authored_at, message = parts[0].strip(), parts[1].strip(), parts[2]
+        if floor is not None:
+            when = parse_floor(authored_at, strict=False)
+            if when is None or when < floor:
+                continue
         body = message.strip()
         commits.append({
             "sha": sha,
@@ -230,15 +281,15 @@ def append_entries(path: Path, entries: list) -> bool:
     return True
 
 
-def sweep(rev: str, max_count: int, root: Path, dry: bool) -> dict:
+def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "") -> dict:
     gate = load_gate()
     path = ledger_path(root)
 
     if not rev_exists(rev, root):
-        return {"rev": rev, "scanned": 0, "unaccounted": 0, "recorded": 0,
-                "commits": [], "status": "rev-not-found"}
+        return {"rev": rev, "since": since, "scanned": 0, "unaccounted": 0,
+                "recorded": 0, "commits": [], "status": "rev-not-found"}
 
-    commits = read_commits(rev, max_count, root)
+    commits = read_commits(rev, max_count, root, since)
     known = recorded_shas(path)
 
     fresh = []
@@ -267,6 +318,7 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool) -> dict:
 
     return {
         "rev": rev,
+        "since": since,
         "ledger": str(path),
         "scanned": len(commits),
         "unaccounted": unaccounted,
@@ -282,6 +334,9 @@ def main(argv: list) -> int:
     parser.add_argument("--rev", help="ref to sweep (default: tracked upstream)")
     parser.add_argument("--max-count", type=int, default=DEFAULT_MAX_COUNT,
                         help=f"how many commits back to scan (default {DEFAULT_MAX_COUNT})")
+    parser.add_argument("--since", help="floor date (default: when the gate went live)")
+    parser.add_argument("--all-history", action="store_true",
+                        help="ignore the gate-activation floor and scan the whole window")
     parser.add_argument("--dry", "-n", action="store_true",
                         help="report what would be recorded, write nothing")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -290,8 +345,15 @@ def main(argv: list) -> int:
     root = repo_root(Path.cwd())
     rev = args.rev or default_rev(root)
 
+    if args.all_history:
+        since = ""
+    elif args.since:
+        since = args.since
+    else:
+        since = gate_live_since(root)
+
     try:
-        result = sweep(rev, args.max_count, root, args.dry)
+        result = sweep(rev, args.max_count, root, args.dry, since)
     except RuntimeError as exc:
         print(f"linear-bypass-sweep: {exc}", file=sys.stderr)
         return 1

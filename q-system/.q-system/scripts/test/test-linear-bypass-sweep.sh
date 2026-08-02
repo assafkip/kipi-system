@@ -40,17 +40,24 @@ git config user.name "Sweep Test"
 git config commit.gpgsign false
 git remote add origin "$ORIGIN"
 
+# The minute is an ARGUMENT, not a counter. Every call site is `$(commit ...)`,
+# a command substitution, so a mutating counter increments inside a subshell and
+# every commit lands on the same timestamp -- which silently makes the floor case
+# untestable rather than failing loudly.
 commit() {
-  # commit <message>  — --no-verify mirrors the incident: the gate never runs.
+  # commit <minute> <message>  — --no-verify mirrors the incident: no gate runs.
+  local when
+  when=$(printf '2026-07-27T10:%02d:00+00:00' "$1")
   echo "$RANDOM$RANDOM" >> file.txt
   git add file.txt
-  git commit -q --no-verify -m "$1"
+  GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+    git commit -q --no-verify -m "$2"
   git rev-parse HEAD
 }
 
-SHA_OK=$(commit "feat: compliant thing (ASK-1)")
-SHA_HATCH=$(commit "chore: typo [no-issue: docs typo]")
-SHA_HOLE=$(commit "fix(gate): the bypassed one")
+SHA_OK=$(commit 1 "feat: compliant thing (ASK-1)")
+SHA_HATCH=$(commit 2 "chore: typo [no-issue: docs typo]")
+SHA_HOLE=$(commit 3 "fix(gate): the bypassed one")
 git merge -q --no-ff --no-verify -m "Merge branch 'side' into main" HEAD >/dev/null 2>&1 || true
 git push -q origin main
 
@@ -112,7 +119,7 @@ check "ledger unchanged on re-run" 1 "$(wc -l < "$LEDGER" | tr -d ' ')"
 
 echo "=== a new occurrence is still caught ==="
 
-SHA_HOLE2=$(commit "docs: another bypassed one")
+SHA_HOLE2=$(commit 9 "docs: another bypassed one")
 git push -q origin main
 OUT3="$(sweep)"
 check "third sweep records the new one only" 1 "$(printf '%s' "$OUT3" | field recorded)"
@@ -144,6 +151,47 @@ echo "=== a pre-existing hook entry (no sha) does not break dedup ==="
 printf '{"at":"2026-08-01T19:48:50+00:00","reason":"legacy hook entry","subject":"chore: old"}\n' >> "$LEDGER"
 OUT4="$(sweep)"
 check "sweep still records nothing new alongside a legacy entry" 0 "$(printf '%s' "$OUT4" | field recorded)"
+
+echo "=== a commit predating the gate is not a bypass ==="
+
+# Nothing to bypass before the gate existed. Counting pre-gate history makes the
+# ledger lie in the OTHER direction: on the real repo the unfloored sweep
+# reported 246 when the true number was 3.
+LEDGER_FLOOR="$TMP/floor.jsonl"
+FLOOR=$(git log -1 --format=%aI "$SHA_HOLE2")
+# An empty floor would fall back to the gate-activation default and silently
+# test nothing, which is the failure this whole file exists to refuse.
+if [ -n "$FLOOR" ]; then
+  ok "fixture floor resolved ($FLOOR)"
+else
+  no "fixture floor is empty; the cases below would prove nothing"
+fi
+OUT5=$(LINEAR_BYPASS_LEDGER="$LEDGER_FLOOR" python3 "$SWEEP" --rev origin/main \
+  --since "$FLOOR" --json 2>/dev/null)
+check "a floor at the newer bypass excludes the older one" 1 "$(printf '%s' "$OUT5" | field recorded)"
+
+if grep -q "$SHA_HOLE" "$LEDGER_FLOOR"; then
+  no "the pre-floor commit was recorded"
+else
+  ok "the pre-floor commit is not recorded"
+fi
+
+# ...and the floor is an OPT-IN bound, not a silent drop of the whole window.
+LEDGER_ALL="$TMP/all.jsonl"
+OUT6=$(LINEAR_BYPASS_LEDGER="$LEDGER_ALL" python3 "$SWEEP" --rev origin/main \
+  --all-history --json 2>/dev/null)
+check "--all-history sees both bypasses" 2 "$(printf '%s' "$OUT6" | field recorded)"
+
+# A floor git would silently ignore must be a hard error, never "no floor".
+LEDGER_JUNK="$TMP/junk.jsonl"
+LINEAR_BYPASS_LEDGER="$LEDGER_JUNK" python3 "$SWEEP" --rev origin/main \
+  --since "last tuesday-ish" --json >/dev/null 2>&1
+check "an unparseable floor exits non-zero" 1 "$?"
+if [ -s "$LEDGER_JUNK" ]; then
+  no "an unparseable floor still wrote rows (silently became no floor)"
+else
+  ok "an unparseable floor writes nothing"
+fi
 
 echo
 echo "passed=$pass failed=$fail"
