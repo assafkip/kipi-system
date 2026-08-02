@@ -255,6 +255,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
+          }
+        ]
       }
     ],
     "PostCompact": [

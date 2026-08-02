@@ -608,6 +608,29 @@ ISSUE_BY_ID = """
 query($id: String!) { issue(id: $id) { id identifier title state { name type } } }
 """
 
+# THE READ HALF OF THE REVIEW CONVERSATION (ASK-221). `progress` could already
+# WRITE a comment onto an issue, so the trail was one-way: codex posted its review
+# and Sana never saw it, because the worker reads PR comments and the review
+# conversation the founder asked for lives on the Linear issue. Without a read verb
+# "they can talk to each other" is one agent talking.
+#
+# `botActor` is the FALLBACK, not the usual case: verified against ASK-221's live
+# thread 2026-07-29, `user.name` comes back as the token owner ("Assaf Kipnis") for
+# agent-written comments, because these go through the founder's API token. So the
+# API author identifies the TOKEN, never the agent -- which is exactly why the
+# agent name is carried in the BODY by `progress` and why --agent below filters on
+# text rather than on this field. botActor only covers a genuine bot integration.
+ISSUE_COMMENTS = """
+query($id: String!) {
+  issue(id: $id) {
+    id identifier title
+    comments(first: 100) {
+      nodes { id createdAt body user { name } botActor { name } }
+    }
+  }
+}
+"""
+
 
 def cmd_progress(args) -> int:
     """Post a progress note onto an issue, and optionally move its state.
@@ -637,13 +660,193 @@ def cmd_progress(args) -> int:
         # "I ran X and got Y" beats "should work" -- the repo's own bar.
         body += f"\n\n```\n{args.evidence}\n```"
 
-    graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    # CHECK THE MUTATION RESULT. Codex found this on 2026-07-29 (major,
+    # linear-sync.py:663): the return value was discarded, so a rejected
+    # commentCreate still printed "progress noted" and exited 0. That is the
+    # slack-notify.sh always-exits-0 defect again (sp-8f879dc5) on the channel the
+    # review CONVERSATION now depends on -- the reviewer would report that its
+    # findings reached the issue when no comment exists, and Sana would be told to
+    # reply to a thread that is not there.
+    result = graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": body}})
+    created = (result or {}).get("commentCreate") or {}
+    if not created.get("success") or not (created.get("comment") or {}).get("id"):
+        print(f"BLOCK: Linear accepted the request but did not create the comment on "
+              f"{issue['identifier']}. Nothing was posted. Raw: {created}", file=sys.stderr)
+        return EXIT_USAGE
     print(f"{issue['identifier']}: progress noted by {who} (state: {issue['state']['name']})")
     # Deliberately does NOT change state. A progress note and a state transition
     # are different claims: "here is what happened" vs "this is now done". Moving
     # state belongs to the closeout gates (/issue-verify, /issue-closeout), which
     # refuse without receipts. Letting a comment also flip state would route
     # around them.
+    return EXIT_OK
+
+
+ISSUE_LABELS = """query($id:String!){
+  issue(id: $id) {
+    id identifier
+    team { id }
+    labels { nodes { id name } }
+  }
+}"""
+
+TEAM_LABELS = """query($t:String!){
+  team(id: $t) { labels(first: 250) { nodes { id name } } }
+}"""
+
+LABEL_CREATE = """mutation($input: IssueLabelCreateInput!){
+  issueLabelCreate(input: $input) { success issueLabel { id name } }
+}"""
+
+
+def cmd_label(args) -> int:
+    """Add a label to an issue, without disturbing the labels already on it.
+
+    WHY THIS EXISTS (ASK-275). linear-triage.py has classified issues as
+    `needs-scope` since 2026-07-27, and its verdict has always been a COMMENT.
+    Grepping that file for a label mutation returns zero. So the classifier was a
+    producer with no machine-readable output: a human could read the verdict, and
+    nothing in the loop could. The worker picker cannot filter on prose.
+
+    Adding the label is what turns a refusal into something ready() can exclude.
+    Before this, the only way to get a correctly-refused issue out of the queue
+    was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how ASK-149
+    ended up there on 2026-07-30. A re-scope is engineering work, so it must not
+    land on the founder.
+
+    READ-MODIFY-WRITE, deliberately: Linear's issueUpdate takes labelIds as the
+    COMPLETE set, so sending only the new id would silently strip every existing
+    label, including owner:sana -- which would drop the issue out of the queue for
+    the wrong reason and make it un-findable. The union is computed here and the
+    result is verified below rather than assumed.
+    """
+    try:
+        issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    if args.name in current:
+        # Idempotent on purpose: the worker may refuse the same issue twice before
+        # the picker next runs, and a second call must not be an error.
+        print(f"{issue['identifier']}: already labelled {args.name}")
+        return EXIT_OK
+
+    team_id = (issue.get("team") or {}).get("id")
+    known = {n["name"]: n["id"]
+             for n in ((graphql(TEAM_LABELS, {"t": team_id}).get("team") or {})
+                       .get("labels") or {}).get("nodes", [])}
+    label_id = known.get(args.name)
+    if not label_id:
+        made = graphql(LABEL_CREATE, {"input": {"name": args.name, "teamId": team_id}})
+        created = (made or {}).get("issueLabelCreate") or {}
+        if not created.get("success"):
+            print(f"BLOCK: could not create label {args.name}: {created}", file=sys.stderr)
+            return EXIT_USAGE
+        label_id = created["issueLabel"]["id"]
+
+    result = graphql(ISSUE_UPDATE, {
+        "id": issue["id"],
+        "input": {"labelIds": sorted(set(current.values()) | {label_id})},
+    })
+    updated = (result or {}).get("issueUpdate") or {}
+    # CHECK THE MUTATION RESULT, same reason cmd_progress does (codex 2026-07-29):
+    # a discarded return value turns a rejected write into a reported success, and
+    # here that would mean the worker believes an issue is out of the queue while
+    # the picker keeps handing it back -- an infinite, silent redispatch loop.
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not apply {args.name} to {issue['identifier']}. "
+              f"Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue['identifier']}: labelled {args.name}")
+    return EXIT_OK
+
+
+def cmd_comments(args) -> int:
+    """Print an issue's comment thread so an agent can READ what the other said.
+
+    Why this exists: the review conversation between Sana and the codex reviewer
+    is supposed to happen on the Linear issue (founder directive 2026-07-29), and
+    an issue is the only place both agents can see. Before this, `progress` could
+    write a comment but nothing could read one back, so each agent was posting
+    into a channel it could not hear.
+
+    Prints plain text, not JSON, on purpose: the consumer is an LLM reading its
+    own prompt context, and a JSON blob costs tokens to restate as prose.
+    """
+    try:
+        issue = graphql(ISSUE_COMMENTS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    nodes = (issue.get("comments") or {}).get("nodes") or []
+    # SORT EXPLICITLY. Do not trust the API's order. Verified live on ASK-221
+    # 2026-07-29: Linear returns this connection NEWEST-FIRST, and the first cut of
+    # this verb documented and assumed oldest-first -- so `--last N` sliced the tail
+    # of a descending list and returned the OLDEST N. It hid the Codex reply that
+    # arrived 4 seconds after the request, through two turns of looking straight at
+    # it. My own test passed because its fixture was hand-written ascending: the
+    # exact defect Codex flagged in this same session (a fixture built from the
+    # author's mental model rather than from what the producer emits), committed
+    # twice in one day. Sorting here makes the order a property of this function
+    # instead of an assumption about a remote API.
+    nodes.sort(key=lambda n: n.get("createdAt") or "")
+    if args.agent:
+        # MATCH THE ATTRIBUTION MARKER, NOT ANY MENTION. `progress` writes the
+        # author as the literal first line "**<who>** · <stamp>", so `**sana**` is
+        # the author and a bare "sana" anywhere else is just prose ABOUT Sana.
+        #
+        # Codex found the bare-substring version on 2026-07-29 (minor,
+        # linear-sync.py:699) and it was a live bug, not a hypothetical: the
+        # reviewer's own comment body contains the sentence "Sana: reply to this
+        # comment on THIS issue", so `--agent sana` returned the REVIEWER's comment
+        # as if Sana had written it. My own test passed because its fixture never
+        # put the word "sana" inside the reviewer's comment. The real prompt does.
+        # ANCHOR TO THE FIRST LINE, not anywhere in the body. `progress` writes the
+        # author as the literal first line "**<who>** · <stamp>", so that line IS the
+        # attribution and everything after it is prose.
+        #
+        # Codex found the whole-body version on 2026-07-30 (minor, reproducer with
+        # real output): a comment authored by codex-reviewer whose prose contains the
+        # markdown `**sana**` was attributed to Sana. Third time in one session that
+        # my fixture missed the shape that breaks it -- the earlier regression case
+        # covered the bare text "Sana:" and not the marker token itself, so the suite
+        # stayed green over a live bug. See feedback-fixtures-from-producers.
+        # MATCH THE COMPLETE PRODUCER-OWNED PREFIX, delimiter included. `progress`
+        # emits exactly "**<who>** · <stamp>", so the attribution is the marker AND
+        # the " · " that follows it. Without the delimiter, prose that merely OPENS
+        # with a bold mention -- "**sana** please review this note" -- is read as
+        # authorship.
+        #
+        # THIRD NARROWING OF THE SAME BUG, all three found by codex, each time
+        # because I removed the case in front of me instead of the ambiguity:
+        # bare substring -> marker anywhere in body -> marker at start of line ->
+        # (now) the full attribution prefix. The delimiter is what makes this a
+        # producer contract rather than a guess about prose.
+        prefix = f"**{args.agent.lower()}** · "
+        nodes = [n for n in nodes
+                 if (n.get("body") or "").lstrip().split("\n", 1)[0].lower().startswith(prefix)]
+    if args.last and args.last > 0:
+        nodes = nodes[-args.last:]
+
+    if not nodes:
+        print(f"{issue['identifier']}: no comments match")
+        return EXIT_OK
+
+    print(f"{issue['identifier']}: {issue['title']}  ({len(nodes)} comment(s))")
+    for n in nodes:
+        who = (n.get("user") or {}).get("name") \
+            or (n.get("botActor") or {}).get("name") or "unknown"
+        print(f"\n--- {n.get('createdAt', '?')} · via {who} ---")
+        print((n.get("body") or "").strip())
     return EXIT_OK
 
 
@@ -962,6 +1165,17 @@ def main() -> int:
     p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
     p.add_argument("--evidence", help="the command and its real output")
     p.set_defaults(func=cmd_progress)
+
+    p = sub.add_parser("label", help="add one label to an issue, keeping the rest")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-148")
+    p.add_argument("name", help="label to add, e.g. needs-scope")
+    p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("comments", help="read an issue's comment thread")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-221")
+    p.add_argument("--agent", help="only comments whose body names this agent")
+    p.add_argument("--last", type=int, default=0, help="only the N most recent")
+    p.set_defaults(func=cmd_comments)
 
     p = sub.add_parser("remote", help="fetch the remote snapshot plan --remote wants")
     p.add_argument("--repo", required=True)

@@ -72,6 +72,10 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
+# THE one writer of that ledger. Six functions here used to each do their own
+# unsynchronised read-modify-write on it (sp-53b02cc4); codex round 5 caught that
+# my round-4 lock covered only one of the six.
+LEDGER="$SCRIPT_DIR/attempts-ledger.py"
 LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
@@ -79,9 +83,17 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
-# MAX_ATTEMPTS only counts runs where `claude` exits non-zero, and the cited
-# failure mode is an agent that exits 0 having done the wrong thing -- so it
-# would never bound a rebase that cannot succeed.
+# MAX_ATTEMPTS counts two things, and it used to count only the first:
+#   1. runs where `claude` exits non-zero
+#   2. runs that exit 0 and open NO PR (added 2026-07-30, ASK-221)
+# Case 2 was the gap. An agent exiting 0 with nothing written was invisible to
+# the counter, so the issue stayed at `attempt 1/3` forever and was immediately
+# re-dispatchable -- it could never become stuck, so it never stopped costing
+# budget. Budget day 2026-07-30 was spent entirely on that: ASK-149 twice and
+# ASK-148 once, all `ok`, all zero commits, all converge STOP exit-7.
+# The cited rebase failure mode (an agent that exits 0 having done the WRONG
+# thing, as opposed to nothing) is still not counted here, which is why conflict
+# rounds keep their own separate counter below.
 # 2: a rebase either works on the first honest attempt or the conflict needs a
 # human. Round 3 has never been the one that lands it here.
 #
@@ -115,16 +127,47 @@ TIMEOUT_SECONDS=1800
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
+TARGET_REPO_ARG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1 ;;
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
+    --repo) shift; TARGET_REPO_ARG="${1:-}" ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
 done
+
+# --- WHICH REPO THIS RUN WORKS IN ----------------------------------------
+# $SKEL used to mean two things at once, and separating them is the whole point
+# of this argument:
+#
+#   TARGET_REPO  the repo the work happens in -- fetch, worktree, auto-merge, and
+#                the project-identity lookup that decides which issues are ours.
+#   SKEL         where the CONTROL CODE lives: $SKEL/kipi and $SKEL/plugins/prd-os,
+#                which the agent prompt tells the agent to run.
+#
+# THEY ARE NOT INTERCHANGEABLE, and assuming they were is the trap here. Measured
+# 2026-08-01: every registered instance carries a synced copy of this worker but
+# NO ./kipi entrypoint and no plugins/prd-os. Repointing $SKEL at an instance would
+# hand the agent `bash <instance>/kipi linear progress ...` and
+# `python3 <instance>/plugins/prd-os/...`, neither of which exists there -- so the
+# agent could do the work and then be unable to report or capture any of it.
+#
+# Defaults to $SKEL, so every existing caller behaves exactly as before.
+#
+# KIPI_TARGET_REPO is the env form, and it exists for one concrete reason:
+# converge.sh drives this script through $WORKER_CMD and forwards only its own
+# arguments. The env crosses that boundary by inheritance, so a dispatched
+# converge run reaches the right repo without converge.sh needing to change.
+TARGET_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
+if [ ! -d "$TARGET_REPO" ]; then
+  echo "--repo: no such directory: $TARGET_REPO" >&2; exit 1
+fi
+TARGET_REPO="$(cd "$TARGET_REPO" && pwd)"
+export TARGET_REPO
 
 export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
@@ -188,11 +231,61 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 #
 # 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
 # environment that is down from a worker that was invoked wrong.
-if ! git -C "$SKEL" fetch --quiet origin 2>>"$LOG"; then
-  say "INFRA: git fetch failed in $SKEL. Stopping before any worktree is cut from a stale base."
-  bash "$NOTIFY" "worker: git fetch failed in $SKEL -- the run did NO work. Check credentials/network." 2>/dev/null || true
+if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
+  say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
+  bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
 fi
+
+# --- repo identity, for the project-scope filter -----------------------------
+# The worker cuts EVERY worktree from $TARGET_REPO (which defaults to $SKEL). An issue filed against
+# another repo can therefore never reach a terminal state here: the agent lands
+# in kipi-system, cannot find the files the DoR names, and exits 0 with no diff.
+# Measured against the live board 2026-07-30: of 29 ready issues, 11 were the
+# kipi-system project and 18 were for repos this checkout cannot check out --
+# under two thirds of the worker's own queue was undispatchable by construction.
+# The GraphQL query below has selected project{name} the whole time; nothing read it.
+#
+# DERIVED, never hardcoded: this same script runs from other skeletons, and a
+# literal "kipi-system" would empty every other instance's queue while silently
+# disabling the filter here. basename of the checkout is the convention the
+# fleet already uses (instance dir name == Linear project name).
+#
+# KIPI_LINEAR_PROJECT is the override for the instance where those two names
+# legitimately differ. It is also the test seam.
+# basename is the LAST resort, not the first. instance-registry.json maps every
+# instance path to its name, and that name IS the Linear project name -- while the
+# directory very often is not:
+#   <Persona>_strategy   -> .../<persona>/projects/strategy (basename: strategy)
+#   <Persona>_product    -> .../<persona>/projects/product  (basename: product)
+#   <Persona>_consultant -> .../consulting                  (basename: consulting)
+# Three of the first three checked. Shipping basename alone would have made this
+# filter reject every issue on those instances -- caught loud by the MISCONFIG
+# guard below rather than as a silently empty queue, but still wrong.
+#
+# Order: explicit env override, then the registry, then basename.
+REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
+if [ -z "$REPO_PROJECT" ]; then
+  # The path being looked UP is the target; the registry doing the looking up is
+  # always the skeleton's. An instance carries no instance-registry.json, so
+  # reading it from the target would fall through to basename for every repo and
+  # quietly re-break the filter for exactly the three instances named below.
+  REPO_PROJECT="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
+import json, os
+skel = os.path.realpath(os.environ["SKEL_PATH"])
+try:
+    reg = json.load(open(os.environ["REG"]))
+except Exception:
+    reg = []
+entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+for e in entries if isinstance(entries, list) else []:
+    if isinstance(e, dict) and e.get("path") and os.path.realpath(e["path"]) == skel:
+        print(e.get("name", "")); break
+PY
+)"
+fi
+[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
+export REPO_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -217,20 +310,89 @@ while True:
     if not p["pageInfo"]["hasNextPage"]: break
     after = p["pageInfo"]["endCursor"]
 
+repo_project = os.environ["REPO_PROJECT"]
+
+def project_of(i):
+    return (i.get("project") or {}).get("name")
+
+def in_this_repo(i):
+    # Unset project is NOT this repo. "Target unknown" and "target is here" are
+    # different claims, and treating the first as the second is how 18 foreign
+    # issues got into this queue in the first place.
+    return project_of(i) == repo_project
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
     if "owner:sana" not in labels:   return False
+    # A REJECTION BY SANA, MADE MACHINE-READABLE (ASK-275).
+    # NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( )
+    # command substitution, and bash tracks quote state through a quoted
+    # heredoc there -- one apostrophe in a PYTHON COMMENT swallowed the rest of
+    # the substitution and the whole script died at "unexpected EOF".
+    # Before this label the only way to get a correctly-refused issue out of the
+    # queue was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how
+    # ASK-149 got there on 2026-07-30. Routing an engineering re-scope to the
+    # founder is the thing this loop exists to avoid, so the refusal needed a
+    # label of its own that means "re-scope this", not "the founder decides".
+    if "needs-scope" in labels:      return False
+    # blocked:capability is the OTHER terminal refusal: the spec is fine, the
+    # runner lacks something it cannot grant itself (a harness permission, a
+    # missing tool). Excluded for the same reason, routed somewhere different.
+    if "blocked:capability" in labels: return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
+    if not in_this_repo(i):          return False
     d = i.get("description") or ""
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
+# Everything the project filter is ABOUT to drop, counted before it drops it, so
+# the run can report the shrink. A queue that silently falls from 29 to 11 is
+# indistinguishable from a broken query, and "it got quiet" is the failure mode
+# this filter could most easily cause.
+def ready_ignoring_project(i):
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    return ("owner:assaf" not in labels and "owner:sana" in labels
+            and "needs-scope" not in labels and "blocked:capability" not in labels
+            and i["state"]["type"] in ("backlog", "unstarted")
+            and "Definition of Ready" in (i.get("description") or ""))
+
+dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
+def held_with(label):
+    return [i for i in issues
+            if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
+deferred = held_with("needs-scope")
+# Counted SEPARATELY from needs-scope. A rising blocked:capability count is a
+# claim about the ENVIRONMENT, and averaging it into "held" would hide the one
+# number that says the loop is starving for a capability nobody has granted.
+blocked_cap = held_with("blocked:capability")
+
 pool = [i for i in issues if ready(i)]
+# An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
+# converge.sh and an explicit kipi-work invocation both name an issue the picker
+# already chose, and a rework round must be able to return to it. The job of the
+# filter is choosing, not vetoing a choice already made.
+# NOTE: no backticks either. Inside a $( ) a backtick opens a nested command
+# substitution even here, which is the second way this heredoc has been broken.
 if only:
     pool = [i for i in issues if i["identifier"] == only]
-print(json.dumps({"ready": [
-    {"id": i["identifier"], "title": i["title"], "project": (i.get("project") or {}).get("name")}
-    for i in pool], "total_open": len(issues)}))
+
+print(json.dumps({
+    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i)}
+              for i in pool],
+    "total_open": len(issues),
+    "dropped_out_of_repo": len(dropped),
+    "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
+    "deferred_needs_scope": len(deferred),
+    "blocked_capability": len(blocked_cap),
+    "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
+    # Does the derived repo identity name a project that EXISTS on the board?
+    # If not, every issue fails in_this_repo() and the queue reads a healthy
+    # empty -- a permanently silent loop reporting success. That is strictly
+    # worse than the bug being fixed here, so it is called out as MISCONFIG
+    # rather than allowed to look like a finished board.
+    "project_known": any(project_of(i) == repo_project for i in issues),
+    "repo_project": repo_project,
+}))
 PY
 )"
 
@@ -241,7 +403,43 @@ if [ -n "$INFRA" ]; then
 fi
 
 READY_COUNT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["ready"]))')"
-say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf)"
+
+# MISCONFIG BEFORE ANY COUNT IS BELIEVED (ASK-275). Checked ahead of the ready
+# line because if the derived project matches nothing on the board, that count
+# is 0 for a reason that has nothing to do with the board being empty. Reporting
+# "nothing ready" there would be a loop that stopped working while claiming to
+# be finished -- the one outcome worse than the queue it replaced. It PAGES and
+# exits non-zero for the same reason the git-fetch guard at line 203 does: a log
+# line is not surfacing, and this is environmental, not an issue's fault.
+PROJECT_KNOWN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("project_known"))' 2>/dev/null)"
+if [ "$PROJECT_KNOWN" = "False" ]; then
+  say "MISCONFIG: repo identity '$REPO_PROJECT' (from $TARGET_REPO) matches NO Linear project on team ASK."
+  say "MISCONFIG: every issue would be filtered out, so this run picked nothing for a config reason, not an empty board."
+  say "MISCONFIG: fix by renaming the Linear project to match the checkout, or set KIPI_LINEAR_PROJECT."
+  bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
+  exit 9
+fi
+
+DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dropped_out_of_repo",0))' 2>/dev/null)"
+DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("dropped_projects",[])))' 2>/dev/null)"
+DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
+
+say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
+# Accounted for, never silently dropped. These two lines are what let an operator
+# tell a working filter from a broken query without re-querying Linear by hand.
+[ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+[ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+
+BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
+BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("blocked_capability_ids",[])))' 2>/dev/null)"
+# ONE consolidated line per run, never one per issue. Six issues blocked on the
+# same missing permission is ONE fact about the environment, and six pages of it
+# is the cry-wolf failure founder-notifications.md names. The count is the signal:
+# a queue starving on a capability nobody has granted looks identical to a quiet
+# queue unless someone says the number out loud.
+if [ "${BLOCKED_CAP:-0}" != "0" ]; then
+  say "worker: $BLOCKED_CAP issue(s) held at blocked:capability -- the specs are sound, the runner is missing something it cannot grant itself ($BLOCKED_IDS)"
+fi
 
 if [ "$READY_COUNT" = "0" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
@@ -254,31 +452,34 @@ try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
 print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 
-bump_attempt() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)" "$2"; }
+# SINGLE-WRITER CHOKEPOINT FOR THE ATTEMPTS LEDGER (codex round 4, major 1).
+#
+# This was a bare read-modify-write. Two workers finishing together both read the
+# same count, both wrote count+1, and one update vanished -- so an issue could
+# exceed MAX_ATTEMPTS and keep being dispatched, which is exactly the runaway the
+# cap exists to stop. sp-53b02cc4 already recorded FIVE bumpers with this shape;
+# the no-PR bump added tonight would have been the sixth. Fixing the shared helper
+# fixes all of them at once, which is why it belongs here and not at a call site.
+#
+# mkdir is the lock because it is atomic on POSIX and needs no flock -- macOS
+# ships no flock, so the portable primitive is the only one that works on both
+# kernels this fleet runs on. Write-temp-then-rename makes the replacement atomic
+# too, so a crash mid-write cannot leave a truncated ledger.
+#
+# A lock we cannot take within the timeout does NOT silently skip the bump: the
+# whole point is that attempts are counted, and a dropped bump is the defect. It
+# takes the lock by force after the timeout, on the reasoning that a stale lock
+# from a killed worker is far likelier than a live worker holding it for 10s.
+bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
 # and NOT `rounds` (review rounds). Three different budgets answering three
 # different questions; sharing one would let a rebase attempt spend a review
 # round, which is the thing the separate cap exists to prevent.
-conflict_rounds_for() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-print(d.get(sys.argv[1],{}).get('conflict_rounds',0))" "$1"; }
+conflict_rounds_for() { python3 "$LEDGER" "$ATTEMPTS" get "$1" conflict_rounds 0; }
 
-bump_conflict_round() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); e['conflict_rounds']=e.get('conflict_rounds',0)+1
-e['last_conflict']=sys.argv[2]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+bump_conflict_round() { python3 "$LEDGER" "$ATTEMPTS" bump-conflict "$1"; }
 
 # CONSECUTIVE, NOT LIFETIME (PR #25 review, finding 3). Nothing used to clear
 # these keys, so the cap counted every conflict the issue ever had -- including
@@ -292,33 +493,16 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
 # how an unresolvable conflict gets infinite rounds. Clearing conflict_paged
 # alongside is deliberate: a NEW conflict streak after the PR was healthy is new
 # information, not a repeat of the page the founder already got.
-clear_conflict_rounds() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('conflict_rounds') or e.get('conflict_paged')): raise SystemExit(0)
-for k in ('conflict_rounds','conflict_paged','last_conflict'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_conflict_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-conflict "$1"; }
 
 # --- drift-round ledger (ASK-219, PR #30 review round 2) ---------------------
 # A FOURTH key, deliberately not `count`, not `rounds`, not `conflict_rounds`.
 # Four budgets, four questions. A drift round that spent the conflict budget
 # would leave a real conflict un-dispatchable later; one that spent `count`
 # would mark good work STUCK after three rounds that all ran fine.
-drift_rounds_for() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-print(d.get(sys.argv[1],{}).get('drift_rounds',0))" "$1"; }
+drift_rounds_for() { python3 "$LEDGER" "$ATTEMPTS" get "$1" drift_rounds 0; }
 
-bump_drift_round() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{}); e['drift_rounds']=e.get('drift_rounds',0)+1
-e['last_drift']=sys.argv[2]
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
+bump_drift_round() { python3 "$LEDGER" "$ATTEMPTS" bump-drift "$1"; }
 
 # CONSECUTIVE, NOT LIFETIME -- the same scar clear_conflict_rounds carries (PR
 # #25 finding 3). Without this the cap would count every drift in the issue's
@@ -331,14 +515,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1" "$(TS)"; }
 # repinned the record to the head, or the verdict is no longer approving, or the
 # record is gone. Re-deriving that comparison in this file is exactly the
 # two-readers-of-one-input defect pr-verdict-lib.sh exists to close.
-clear_drift_rounds() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('drift_rounds') or e.get('drift_paged')): raise SystemExit(0)
-for k in ('drift_rounds','drift_paged','last_drift'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_drift_rounds() { python3 "$LEDGER" "$ATTEMPTS" clear-drift "$1"; }
 
 # Returns 0 the FIRST time <flag> is claimed for this issue and 1 every time
 # after, so a page fires exactly once instead of once per scheduled run. A
@@ -347,15 +524,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
 # same write that reports it, so two runs cannot both read "not paged yet".
 # Takes the flag NAME so every once-only page in this script shares one
 # mechanism instead of each stuck-state inventing its own convention.
-claim_page_once() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: d={}
-e=d.setdefault(sys.argv[1],{})
-first = not e.get(sys.argv[2])
-e[sys.argv[2]]=True
-json.dump(d,open('$ATTEMPTS','w'),indent=2)
-raise SystemExit(0 if first else 1)" "$1" "$2"; }
+claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 
 # Pops the two auto-merge page flags the moment the PR is SEEN armed. Same scar
 # clear_conflict_rounds and clear_drift_rounds both carry (PR #25 finding 3): a
@@ -363,15 +532,7 @@ raise SystemExit(0 if first else 1)" "$1" "$2"; }
 # the second time the state is real it is silent -- and silent is the failure
 # this whole issue exists to kill. Only ever called on a STATED "armed": clearing
 # off a state nobody could read would refill the budget from a guess.
-clear_automerge_pages() { python3 -c "
-import json,sys
-try: d=json.load(open('$ATTEMPTS'))
-except Exception: raise SystemExit(0)
-e=d.get(sys.argv[1])
-if not e or not (e.get('automerge_unarmed_paged') or e.get('automerge_unknown_paged')):
-    raise SystemExit(0)
-for k in ('automerge_unarmed_paged','automerge_unknown_paged'): e.pop(k,None)
-json.dump(d,open('$ATTEMPTS','w'),indent=2)" "$1"; }
+clear_automerge_pages() { python3 "$LEDGER" "$ATTEMPTS" clear-automerge "$1"; }
 
 # --- arm auto-merge (ASK-222) ------------------------------------------------
 # arm_automerge <pr-number> <dir>: make GitHub own the merge, and publish what
@@ -520,7 +681,12 @@ position_tree_on_pr_head() {
   # work made every inherited tree unrepositionable -- turning a destructive
   # round into a permanently stalled issue plus a page. It is this worker's own
   # lock, never a human's work.
-  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v '\.linear-claims\.json$')"
+  # .sana-needs-scope joins the ignore list for the same reason .linear-claims.json
+  # is on it: both are the loop talking to itself, never a human's work. It is
+  # normally consumed in the same run that writes it, but a run killed between the
+  # write and the read would otherwise leave a file that makes this tree
+  # permanently unrepositionable -- a refusal that wedges the issue it refused.
+  dirty="$(git -C "$tree" status --porcelain 2>/dev/null | grep -v -e '\.linear-claims\.json$' -e '\.sana-needs-scope$')"
   if [ -n "$dirty" ]; then
     POSITION_REFUSAL="the tree has uncommitted changes"
     return 1
@@ -547,7 +713,51 @@ while IFS= read -r ISSUE; do
 
   N="$(attempts_for "$ISSUE")"
   if [ "$N" -ge "$MAX_ATTEMPTS" ]; then
-    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts already. Marked stuck; a human decides next."
+    # NOTHING IS TERMINAL WITHOUT A NAMED HUMAN ACTION (sp-58f0ec83).
+    #
+    # This branch said "a human decides next" to a LOG FILE and continued, every
+    # heartbeat, forever. No Linear comment, no page, no statement of what the
+    # human was supposed to decide. So "stuck" was indistinguishable from
+    # "nobody has looked yet", and an issue could sit there indefinitely while
+    # the log repeated a sentence nobody reads.
+    #
+    # Every other gate in this repo distinguishes REFUSED from PASSED. This one
+    # did not, which is the same defect that let a correct BLOCKED diagnosis on
+    # ASK-149 read as success (the agent had done the right thing and the worker
+    # could not tell). The fix is not "add a BLOCKED state" -- it is that a
+    # terminal state must carry the ONE action that ends it. If the loop cannot
+    # name that action, it has not finished diagnosing and must say SO rather
+    # than parking the issue quietly.
+    #
+    # Paged ONCE via the shared claim_page_once flag, not per heartbeat: a
+    # repeated "still stuck" every 15 minutes is the cry-wolf failure that trains
+    # the reader to mute the channel (founder-notifications.md).
+    STUCK_WHY="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" why "" 2>/dev/null)"
+    if [ -z "$STUCK_WHY" ]; then
+      # The honest degraded case. An unexplained cap is itself the finding: the
+      # loop burned its whole budget and cannot say what a human should do.
+      STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
+    fi
+    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
+    if claim_page_once "$ISSUE" stuck_paged; then
+      python3 "$SYNC" progress "$ISSUE" \
+        "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
+
+Last recorded reason: $STUCK_WHY
+
+**Human action needed:** review the reason above and do ONE of:
+- fix the blocker, then clear the attempt count so the loop retries, or
+- rewrite the Definition of Ready so it is achievable from a non-interactive session, or
+- close the issue if it should not be built.
+
+A DoR that cannot be met from the environment the worker actually runs in is a defective spec, not a founder decision. Rewriting it is engineering work." \
+        --agent sana >/dev/null 2>&1 || true
+      # `bash "$NOTIFY"`, the shape used at five other sites in this file. There is
+      # no page() helper here -- calling one would have been a silent no-op under
+      # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
+      # pages nobody, which is the exact defect this block fixes.
+      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
+    fi
     continue
   fi
 
@@ -639,7 +849,7 @@ while IFS= read -r ISSUE; do
       # merge needed" across exactly this state. Arming here does not turn a done
       # PR into a round: no agent, no reviewer, no Linear comment. The skip stays
       # a skip; only the arm is new.
-      arm_automerge "$EXISTING_PR" "$SKEL"
+      arm_automerge "$EXISTING_PR" "$TARGET_REPO"
       # AND THE LINE SAYS WHO MERGES IT (round 3, finding 2 -- minor). Round 2
       # fixed this sentence at the closing line and at converge's and left this
       # third site saying "waiting on founder merge". For a PR armed a round ago,
@@ -739,7 +949,7 @@ while IFS= read -r ISSUE; do
   # only defensible start point.
   BASE="origin/main"
   if [ -n "$EXISTING_PR" ]; then
-    if git -C "$SKEL" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
+    if git -C "$TARGET_REPO" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
       BASE="origin/$BRANCH"
     else
       # gh named a PR whose head branch is not on the remote (deleted after a
@@ -754,7 +964,7 @@ while IFS= read -r ISSUE; do
   fi
   if [ ! -d "$TREE" ]; then
     mkdir -p "$(dirname "$TREE")"
-    if ! git -C "$SKEL" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
+    if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
       # test above and this line. That is the collision the claim below exists to
       # adjudicate, not an infra failure -- so fall through and let it, rather
@@ -949,18 +1159,38 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
 
 ## THIS IS A REWORK, NOT A FRESH START
 
-PR #$EXISTING_PR already exists for this branch and has been reviewed by an
-adversarial senior-staff reviewer. Read the review before touching anything:
+PR #$EXISTING_PR already exists for this branch and has been reviewed by CODEX
+(gpt-5.6-sol) acting as a senior staff engineer at Meta. It is a DIFFERENT LAB'S
+MODEL, not another instance of you -- so when it reports something you are sure is
+fine, the default assumption is that it saw something you structurally cannot,
+because you and the code share one mental model and it does not.
+
+Read the review before touching anything. It is in two places:
 
   gh pr view $EXISTING_PR --comments
+  python3 q-system/.q-system/scripts/linear-sync.py comments $ISSUE
 
 THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
 re-litigate the design. For EACH finding, either:
   - fix it, and add a test that FAILS without the fix (observed red, then green), or
-  - reply on the PR with why it is not a defect, citing the code.
+  - answer it with the file:line that already handles it.
+
+## REPLY ON THE LINEAR ISSUE, NOT ONLY THE PR
+
+The review conversation lives on $ISSUE, because that is the one surface both you
+and the reviewer read (and the founder reads it too). When you have worked the
+findings, post ONE reply there:
+
+  python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
+    "<one line per finding: fixed + the test that now covers it, or answered + the file:line>" \\
+    --agent sana --evidence "<the command you ran and its real output>"
+
+One reply per rework pass, not one per finding: the issue is permanent and a
+comment per finding turns one review into ten objects nobody can read.
 
 Findings you disagree with are answered, never silently ignored -- a finding that
-gets no response reads as a finding nobody read.
+gets no response reads as a finding nobody read. "I ran X and got Y" is an answer;
+"should be fine" is not.
 
 The reviewer's own bar applies to your fixes too: a fix with no test that could
 have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
@@ -999,7 +1229,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
-Work here. Never `cd` to $SKEL and never switch this branch -- the founder may be using that checkout.
+Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.
@@ -1011,7 +1241,33 @@ Work here. Never `cd` to $SKEL and never switch this branch -- the founder may b
    OPEN IT BEFORE YOUR TURN ENDS. Never finish on \"I'll open the PR once X finishes\" -- your turn
    ends there and the PR never exists, so the review never runs and the work is stranded (observed
    on ASK-184). If a check is still running, open the PR FIRST and post the result as a comment.
-7. If the DoR turns out to be wrong or impossible, say so on the issue via progress and STOP. Do not improvise a different task.
+7. If you cannot finish, REFUSE IN A FILE, not only in prose. TWO different files, and
+   picking the right one decides who acts next, so do not guess:
+
+   a) THE SPEC IS WRONG (unbounded, contradictory, names files that do not exist,
+      no achievable outcome). The environment is fine; the issue is not workable as written:
+        printf '%s' \"<why it cannot be executed as written, and what a workable DoR would scope>\" > $TREE/.sana-needs-scope
+      This routes to linear-dor-drafter.py to be re-scoped.
+
+   b) THE SPEC IS FINE, THE RUNNER IS NOT EQUIPPED (a refused harness permission, a
+      missing binary, an expired credential, a tool this session does not have):
+        printf '%s' \"<the exact capability missing, what refused it, and what it unblocks>\" > $TREE/.sana-blocked-capability
+      This does NOT go to the drafter. Re-scoping a correct spec burns a pass and
+      returns the same blocked issue. It routes to whoever owns the config.
+
+   Choosing (a) when it is really (b) is the costly mistake: it throws away a good
+   spec and hides the real constraint. Ask yourself: would a perfectly written DoR
+   still fail here? If yes, it is (b).
+
+   Then post the same reasoning via progress and STOP. Do not improvise a different task.
+   NEVER route around a refused permission by another route (writing the file through
+   Bash, disabling the gate). A gate that is inconvenient is a gate doing its job.
+   The file is what makes the refusal stick: the worker reads it, labels the issue needs-scope so the
+   picker stops handing it back, and routes it to the DoR drafter for re-scoping. A refusal written
+   ONLY as a comment is invisible to the loop -- the issue returns as the top pick on the next run and
+   burns the budget again (observed on ASK-148 and ASK-149, three dispatches, zero diffs).
+   Refusing is a correct outcome and is not counted as a failed attempt. Refuse when the DoR is
+   genuinely unexecutable, not when it is merely hard.
 
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
@@ -1031,6 +1287,131 @@ Anything real you find and are not fixing: capture it, never just mention it:
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
     fi
+  fi
+
+  # 4b. A REFUSAL IS A DECISION, NOT A FAILURE (ASK-275).
+  #
+  # Sana already had the judgment and used it correctly on ASK-148 and ASK-149.
+  # What she had no way to do was ACT on it. The only lever available was
+  # relabelling to owner:assaf -- the founder queue -- so a spec that needed
+  # re-scoping became a founder decision. The founder does not do implementation,
+  # so that lever was the wrong one and the issue simply came back.
+  #
+  # A FILE, not a grep of the run log. The agent writes one path; this reads it.
+  # Parsing prose out of stdout for the word BLOCKED would make the loop depend on
+  # the model phrasing its refusal a particular way, which is exactly the
+  # prompt-only enforcement this repo bans. Presence of a file is deterministic.
+  #
+  # It does NOT bump_attempt: the attempt counter measures runs that failed to
+  # produce, and a reasoned refusal produced the correct answer. Counting it would
+  # spend a real budget on being right, and after three would mark the issue STUCK
+  # and page a human -- routing to the founder by the back door.
+  # TWO CLASSES, NOT ONE (ASK-275, corrected 2026-07-30 after first live contact).
+  #
+  # The first build of this had a single sentinel. On its first real run Sana used
+  # it to escape ASK-140 and wrote, in her own words, "blocked on a harness
+  # permission, NOT on scope" -- and the worker labelled it needs-scope anyway,
+  # which routes the issue to linear-dor-drafter.py to be RE-SCOPED. The spec was
+  # already correct. Re-scoping it would rewrite a good DoR and hand the loop the
+  # same blocked issue again, having burned a drafter pass to learn nothing.
+  #
+  # self-healing-retry.md rule 5 already draws this line: environmental-trigger is
+  # not latent-defect, and retrying logic cannot fix an environment. One channel
+  # for both was my error, and the loop surfaced it in one run.
+  #
+  #   .sana-needs-scope        the SPEC is wrong    -> needs-scope        -> DoR drafter
+  #   .sana-blocked-capability the RUNNER lacks a   -> blocked:capability -> capability grant
+  #                            capability; spec ok
+  #
+  # Both leave the ready pool. They differ in who acts next and what they do, and
+  # collapsing them loses exactly the information that decides which.
+  # RESET PER ISSUE. $REFUSED gates two decisions further down (the no-PR attempt
+  # bump and the budget spend), and this loop reuses every variable across
+  # iterations -- a value that survived would make the issue AFTER a refusal
+  # inherit its exemptions.
+  SENTINEL=""; REFUSE_LABEL=""; REFUSE_KIND=""; REFUSED=""
+  if [ -f "$TREE/.sana-blocked-capability" ]; then
+    SENTINEL="$TREE/.sana-blocked-capability"; REFUSE_LABEL="blocked:capability"; REFUSE_KIND="capability"
+  elif [ -f "$TREE/.sana-needs-scope" ]; then
+    SENTINEL="$TREE/.sana-needs-scope"; REFUSE_LABEL="needs-scope"; REFUSE_KIND="scope"
+  fi
+  # Capability is checked FIRST: a run that wrote both is telling us the spec is
+  # fine and the environment is not, and the environment is the blocking fact.
+  if [ -n "$SENTINEL" ]; then
+    SCOPE_WHY="$(head -c 1500 "$SENTINEL" 2>/dev/null)"
+    [ -n "$SCOPE_WHY" ] || SCOPE_WHY="the run refused the DoR but recorded no reason"
+    # CONSUMED, NOT KEPT. Two failures if it survives the run, and the worktree
+    # is reused across runs so both are certain rather than theoretical:
+    #   1. after the DoR is re-scoped, the next run reads the STALE file and
+    #      refuses again -- an issue that can never be un-refused.
+    #   2. an untracked file makes the tree dirty, and the position guard above
+    #      refuses to reposition a dirty tree, wedging this issue permanently.
+    # The durable record is the label plus the Linear comment, not this file.
+    rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
+    if [ "$REFUSE_KIND" = "capability" ]; then
+      say "$ISSUE BLOCKED on a missing capability (the spec is fine, the runner is not): $SCOPE_WHY"
+    else
+      say "$ISSUE REFUSED as unexecutable: $SCOPE_WHY"
+    fi
+    if python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
+      say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
+    else
+      # The label is the ONLY thing that makes this stick. If it did not land, the
+      # issue returns as the top pick next run, so say so rather than reporting a
+      # clean refusal: a silent failure here is an infinite redispatch loop.
+      say "$ISSUE REFUSED but the $REFUSE_LABEL label did NOT apply (see $LOG) -- it will be offered again"
+    fi
+    # Different next action per class. A capability block that says "re-scope this"
+    # sends the drafter to rewrite a spec that was already right.
+    if [ "$REFUSE_KIND" = "capability" ]; then
+      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
+
+$SCOPE_WHY
+
+**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
+
+**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up."
+    else
+      REFUSE_NOTE="**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
+
+$SCOPE_WHY
+
+**Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
+    fi
+    python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
+    # A REFUSAL DOES NOT SKIP THE REVIEW (ASK-275, 2026-08-01).
+    #
+    # This was `release` + `continue` -- jumping the whole of step 5. The
+    # reasoning was that a refusal produces no diff, so there is nothing to
+    # review. That is false for the capability class, and it is false in the
+    # common case: a capability block is usually PARTIAL. Sana ships the half
+    # she can, pushes it, opens the PR, and refuses the rest. The `continue`
+    # then abandoned that PR: no reviewer, no verdict record, no
+    # kipi/reviewer-approved -- and because the blocked:capability label pulls
+    # the issue out of the picker, no later run ever comes back for it.
+    #
+    # Observed on the first three live partial blocks, all on 2026-07-31:
+    # PR #49 (ASK-134), #50 (ASK-133), #51 (ASK-132). Each has a real commit,
+    # each is still open, none has a verdict. converge.sh reported them
+    # correctly ("STOP exit-7: PR #49 has no verdict after round 1 -- the review
+    # died or timed out") and its diagnosis was wrong in the only way that
+    # mattered: the review did not die, it was never invoked. The loop had just
+    # been taught to review every PR it opens, and the refusal path was a second
+    # way to open one it would not review.
+    #
+    # So: FALL THROUGH to step 5 instead of continuing. Step 5 is the single
+    # chokepoint where a PR gets armed and reviewed, and a PR that came out of a
+    # blocked run is not a different kind of PR -- it is committed code sitting
+    # on a branch, which is exactly what the reviewer is for. A second review
+    # call in this branch would be a second copy of that chokepoint with its own
+    # drift; there is one.
+    #
+    # $REFUSED carries the refusal past step 5 so the two things a refusal must
+    # NOT do still hold: it does not bump the attempt counter, and it does not
+    # spend the work budget. Both are enforced below at their own sites. The
+    # claim release moves to step 6, which already owns it -- releasing here and
+    # then falling through would release the same claim twice from two places.
+    REFUSED="$REFUSE_KIND"
   fi
 
   # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
@@ -1098,8 +1479,24 @@ except Exception: d={}
 e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
 json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
-    $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post >>"$LOG" 2>&1 \
-      || say "WARN: reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    # CODEX REVIEWS SANA'S WORK (ASK-221, founder directive 2026-07-29). Sana is
+    # Claude, so a Claude reviewer shares her lab and model family and re-derives
+    # her blind spots -- fresh context is not an independent mind. `--engine codex`
+    # is stated EXPLICITLY here rather than inherited from the reviewer's default,
+    # because which model checks this fleet's work is the kind of fact that must be
+    # readable at the call site, not two files away.
+    #
+    # ONE call, not two. Before this it was claude-then-codex, with codex advisory;
+    # codex now owns kipi/reviewer-approved and writes the one verdict record every
+    # gate below reads, so a second Claude pass would only burn spend and post an
+    # advisory status nobody gates on. A codex outage cannot wedge the loop: the
+    # reviewer's own Opus fallback fills the primary slot and marks it DEGRADED.
+    # LABEL THE INVOKER HERE, at the one place the scheduled path runs the reviewer
+    # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
+    # from a hand run in the verdict record. It is set on the call rather than
+    # exported once, so it cannot leak into an unrelated reviewer invocation.
+    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine codex >>"$LOG" 2>&1 \
+      || say "WARN: codex reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
@@ -1171,6 +1568,40 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     fi
   else
     say "no PR found for $BRANCH; nothing to review"
+    # A RUN THAT PRODUCED NOTHING IS A FAILED ATTEMPT (ASK-221, 2026-07-30).
+    #
+    # MAX_ATTEMPTS used to count only runs where `claude` exited non-zero (the
+    # note at the top of this file said so deliberately). But the agent can exit
+    # 0 having written nothing at all, and that outcome was invisible to the
+    # counter: no bump, ledger stays {}, the issue reads `attempt 1/3` forever
+    # and is immediately re-dispatchable. It never becomes stuck, so it never
+    # stops costing budget.
+    #
+    # Measured on the founder's machine for budget day 2026-07-30: the loop spent
+    # its ENTIRE 3-issue budget on this. 14:15 ASK-149, 14:30 ASK-149 again
+    # (third dispatch of that issue overall), 14:45 ASK-148 -- every one exiting
+    # `ok` with zero commits, zero dirty files and no remote branch, then
+    # converge STOP exit-7. Three unattended dispatches, no PR, and therefore no
+    # review and no verdict record on a day the loop ran to its cap.
+    #
+    # Bumping here reuses the mechanism that already exists rather than adding a
+    # new one: three no-output runs mark the issue stuck and a human decides,
+    # which is the correct terminal state for "the agent cannot make progress on
+    # this spec". The cost of getting it wrong is bounded and visible -- a stuck
+    # issue is reported, whereas the current behaviour is silent budget burn.
+    #
+    # EXCEPT WHEN THE RUN REFUSED. A refusal with no diff is the correct answer,
+    # not a failed attempt -- the same reasoning stated at the sentinel above,
+    # enforced here because the refusal path now REACHES this line instead of
+    # `continue`-ing past it. Without this guard the fall-through would silently
+    # start counting every refusal as a failure and mark a correctly-refused
+    # issue STUCK after three, which is the founder-queue routing the whole of
+    # ASK-275 removed.
+    if [ -n "$REFUSED" ]; then
+      say "$ISSUE: refused ($REFUSED) and left no PR -- nothing to review, and a refusal is not a failed attempt"
+    else
+      bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
+    fi
   fi
 
   # 6. RELEASE at PR-open, not at close, so a reviewer can pick the tree up.
@@ -1180,7 +1611,21 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   # worktree forever, wedging that issue permanently. Asserted by case 3 of
   # test-linear-worker-parallel.sh, which reads the lock files back after the run.
   ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
-  DONE=$((DONE+1))
+  # THE CLOSING LINE MUST NOT SAY "converged" ABOUT A BLOCKED ISSUE. The verdict
+  # report above speaks for the PR and is correct about it -- an APPROVE on a
+  # partial diff is a real approval of the code that is there. It is not a
+  # statement about the ISSUE, which is still held at $REFUSE_LABEL and is not
+  # done. The closing line is the one an operator scans, so it says which.
+  if [ -n "$REFUSED" ]; then
+    say "$ISSUE is NOT done: held at $REFUSE_LABEL. Any PR above carries only the half that shipped before the block, and the verdict on it is a verdict on that half."
+  fi
+  # A REFUSAL COSTS A TURN, NOT A DISPATCH. This was a `continue` before the
+  # DONE++ at the sentinel above; the fall-through moved the skip here so the
+  # budget semantics are unchanged while the review is no longer skipped with
+  # them. When the worker holds the pool (no --issue), the loop moves straight to
+  # the next ready issue and spends its budget on one that can actually yield a
+  # diff.
+  [ -n "$REFUSED" ] || DONE=$((DONE+1))
 done
 
 say "worker: run complete"
