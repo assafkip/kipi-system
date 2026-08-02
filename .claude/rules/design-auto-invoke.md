@@ -22,6 +22,24 @@ check below; a path it calls internal is skipped by the hook and needs no design
 It errs toward internal on purpose: a false block on a founder-only page (the GTM
 cockpit, ASK-134) gets the gate switched off, and a gate that is off protects nothing.
 
+**What ENFORCED covers here: detection, not a receipt.** Measured 2026-08-02 by
+running both hooks rather than by reading their docs:
+
+- `dogfood_gate.py` (PostToolUse) exits 2 only when it FINDS a tell against the
+  AI-default fingerprint, or finds no interactive element. A clean public page
+  returns exit 0.
+- `publish_gate.py` (PreToolUse) requires a converged design-room receipt only for a
+  deliverable living under a `design-room/` directory. Any other public page
+  publishes at exit 0.
+
+So read the line above narrowly. An internal path needs no design pass, but that does
+NOT make a design pass required for a public one. No script, hook or required check
+requires a design-room receipt on an ordinary public page; running design-room there
+is advisory, strongly wanted and not machine-required. If it SHOULD be required, that
+is a new gate whose blast radius is every public page in the fleet, and it earns its
+own issue instead of arriving as a side effect of a documentation edit (Codex major,
+PR #49 round 3).
+
 | Trigger | Skill | What it does |
 |---------|-------|-------------|
 | Creating a public-facing webpage, landing page, or UI | `kipi-design:ui-ux-pro-max` | UX guidelines, styling, accessibility |

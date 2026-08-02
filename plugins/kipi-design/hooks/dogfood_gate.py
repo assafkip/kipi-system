@@ -287,10 +287,17 @@ def scan_html(content, fp):
 # (cole-gtm/gtm/cockpit/index.html + content.html) PUBLIC, and that page is
 # token-gated founder-only -- its own bypass check, gtm/cockpit/checks/
 # verify_auth_required.py, FAILS if the production URL ever answers an
-# unauthenticated request with a 200. It is edited unattended by the com.cole.cockpit
-# job, so every one of those edits was a blocking false positive (ASK-134, Codex
-# major on PR #49). Measured at the time of the fix: 465 of the fleet's registered
-# HTML files classified PUBLIC, and this was the founder-only one among them.
+# unauthenticated request with a 200. So every edit to it was a blocking false
+# positive (ASK-134, Codex major on PR #49). Measured at the time of the fix: 465
+# of the fleet's registered HTML files classified PUBLIC, and this was the
+# founder-only one among them.
+#
+# Do not infer the editor from the job name. An earlier draft of this comment said
+# the com.cole.cockpit launchd job edits these files; it does not. Read against the
+# plist (cole-gtm/gtm/dashboard/com.cole.cockpit.plist), that job runs
+# gtm/dashboard/server.py with WorkingDirectory gtm/dashboard -- it SERVES a
+# different surface and never writes gtm/cockpit/*.html. The label and the directory
+# disagree, which is exactly why the name was not evidence (Codex minor, round 3).
 INTERNAL_PATH_MARKERS = (
     "/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
     "fixture", "dashboard", "/cockpit/", "schedule", "morning", "-log", "/logs/",
