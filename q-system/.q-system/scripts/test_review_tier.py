@@ -16,6 +16,9 @@ Sections, selectable with --only:
   list-breadth which LOOP_CRITICAL entries actually change the tier (only the
              .py ones do; the shell entries cannot reach the comment-only class
              at all, so narrowing the list would not have spared PR #60)
+  fixture-hygiene  stored .diff fixtures carry no founder/instance strings --
+             this dir PROPAGATES to every instance, and two independent gates
+             have now misread a captured removal here as a live reference
 
 The mutation section is the negative self-test. A check that has never been seen
 to fail is a rubber stamp, so each trigger is disabled at the source and the case
@@ -25,6 +28,7 @@ a mutation that silently no-ops gives a false green.
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -446,8 +450,47 @@ def section_list_breadth():
                   code == EXIT_ESCALATE, f"code={code} {out[:200]}")
 
 
+# --- fixture hygiene ----------------------------------------------------------
+# These fixtures live under q-system/, which `kipi update` PROPAGATES to every
+# instance. A captured diff is data, but rsync does not care: a founder-specific
+# string sitting in a stored .diff ships fleet-wide exactly like one in source.
+#
+# Scar (2026-08-02): pr-60.diff captured the commit that DELETED the fleet's
+# instance-name comments, so the fixture carried `KTLYST_strategy`, `ktlyst` and
+# a literal /Users/... path on `-` (removal) lines. Two INDEPENDENT detectors
+# then flagged it -- validate-separation's Full skeleton sweep (this one) and
+# earlier the scar detector (sp-f3bd6be4). Two gates reading the same directory
+# the same way is a signal about the directory, not a quirk of either gate.
+#
+# The comment TEXT was redacted, never the diff structure: line count, hunk
+# headers and every non-comment line are byte-identical, and the classifier's
+# JSON output (tier + reasons + files) is unchanged before vs after. That is
+# safe here for a specific reason -- PR #60 escalates on BASENAME
+# (linear-worker.sh) and, with the list emptied, on shell having no
+# COMMENT_TOKEN. Neither path ever reads a comment's words, so redacting them
+# cannot move the classification. Excluding this dir from the sweep was the
+# wrong fix: it would have shipped the strings to the whole fleet silently.
+FOUNDER_STRINGS = re.compile(r"KTLYST|ktlyst|q-ktlyst|/Users/assafkip")
+
+
+def section_fixture_hygiene():
+    fixtures = sorted(FIXTURES.glob("*.diff"))
+    check("fixture-hygiene: fixtures are present", bool(fixtures),
+          f"none found in {FIXTURES}")
+    for f in fixtures:
+        hits = FOUNDER_STRINGS.findall(f.read_text(errors="ignore"))
+        check(f"fixture-hygiene: {f.name} carries no founder/instance strings "
+              f"(it propagates to every instance)",
+              not hits, f"{len(hits)} hit(s): {sorted(set(hits))[:4]}")
+    # NEGATIVE SELF-TEST: the detector must actually fire on a planted string,
+    # or every green above means only "the regex never matches anything".
+    check("fixture-hygiene CONTROL: detector fires on a planted string",
+          bool(FOUNDER_STRINGS.search("-#   KTLYST_strategy -> ...")))
+
+
 SECTIONS = {
     "real": section_real, "precedence": section_precedence,
+    "fixture-hygiene": section_fixture_hygiene,
     "unknown": section_unknown, "self": section_self,
     "errors": section_errors, "mutation": section_mutation,
     "list-breadth": section_list_breadth,

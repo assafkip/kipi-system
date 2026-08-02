@@ -6,9 +6,9 @@ index deb556c8..b734214c 100755
  # basename is the LAST resort, not the first. instance-registry.json maps every
  # instance path to its name, and that name IS the Linear project name -- while the
  # directory very often is not:
--#   KTLYST_strategy    -> .../cole-gtm/projects/strategy   (basename: strategy)
--#   ktlyst             -> .../ktlyst-saas/projects/product (basename: product)
--#   ASK_AI_consultant  -> .../consulting                   (basename: consulting)
+-#   INSTANCE_ALPHA    -> .../cole-gtm/projects/strategy   (basename: strategy)
+-#   instance-beta             -> .../instance-beta-saas/projects/product (basename: product)
+-#   INSTANCE_GAMMA  -> .../consulting                   (basename: consulting)
 +#   <Persona>_strategy   -> .../<persona>/projects/strategy (basename: strategy)
 +#   <Persona>_product    -> .../<persona>/projects/product  (basename: product)
 +#   <Persona>_consultant -> .../consulting                  (basename: consulting)
@@ -23,7 +23,7 @@ index 175134b5..f5674948 100755
  # (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
  # but when the live checkout happens to sit at that sha, "a tree that holds it"
  # IS the founder's working directory, and that is where the review ran. Both
--# PR #47 rounds recorded `workdir: /Users/assafkipnis/projects/kipi-system` with
+-# PR #47 rounds recorded `workdir: /Users/<founder>/projects/kipi-system` with
 +# PR #47 rounds recorded `workdir: <the founder's live checkout>` with
  # `sandbox: workspace-write`.
  #
@@ -36,8 +36,8 @@ index bc74a1db..0bccb4f5 100644
  
  # --- case 4b: the registry BEATS basename -----------------------------------
  # instance-registry.json maps instance path -> name, and that name is the Linear
--# project name while the directory usually is NOT: KTLYST_strategy lives at
--# .../projects/strategy, ktlyst at .../projects/product, ASK_AI_consultant at
+-# project name while the directory usually is NOT: INSTANCE_ALPHA lives at
+-# .../projects/strategy, instance-beta at .../projects/product, INSTANCE_GAMMA at
 +# project, while the directory usually is NOT: a registered instance named
 +# <Persona>_strategy lives at .../projects/strategy, one named for its product
 +# lives at .../projects/product, one named <Persona>_consultant lives at
