@@ -48,15 +48,28 @@ mechanism rather than the tuning:
      permanent, which is the failure class this ledger exists to kill. Every
      alternative is another heuristic with its own hole: an age cap breaks a slow
      holder and trusts the clock.
-  2. IT COST 22.1s TO REFUSE, against a 10s retry budget, because each of the 100
-     retries did a full mkstemp + write + link + unlink publish attempt.
-  3. RELEASE-BY-OWNER, ATOMIC PUBLISH, AND CORPSE-BREAKING ARE ~90 LINES OF
+  2. RELEASE-BY-OWNER, ATOMIC PUBLISH, AND CORPSE-BREAKING ARE ~90 LINES OF
      HEURISTIC standing in for something the kernel already guarantees.
 
-flock erases all three. The lock is the open file description, so the kernel
-releases it on close AND on process death: a dead holder blocks nothing, with no
-pid to guess at and no timer to trust. A contended retry is one non-blocking
-syscall, so the refusal costs its sleep budget and nothing more.
+flock erases both. The lock is the open file description, so the kernel releases
+it on close AND on process death: a dead holder blocks nothing, with no pid to
+guess at and no timer to trust.
+
+FINDING 4 IS A THIRD DEFECT AND IT IS NOT THE MECHANISM -- the retry budget was a
+COUNT PRETENDING TO BE A CLOCK. `LOCK_TRIES=100` x `LOCK_SLEEP=0.1` was
+documented as "the production 10s timeout" and measured 22.1s. The first guess,
+that the 100 mkstemp/link/unlink publish attempts were the overhead, was wrong:
+
+  $ python3 -c "import time; t=time.time()
+  > [time.sleep(0.1) for _ in range(100)]; print(time.time()-t)"
+  21.2
+
+`time.sleep(0.1)` costs 212ms on this kernel, so the sleeps alone were 21.2s of
+the 22.1. A count cannot express a duration on a kernel whose sleeps do not keep
+to their argument, and switching mechanism would not have changed that by one
+second. So the budget is a wall-clock DEADLINE now, and the number in the comment
+is enforced rather than asserted. LOCK_TRIES survives as a second cap, because
+the suite needs a way to make the contended path sub-second.
 
 THE INVARIANTS, and where each now lives:
 
@@ -103,10 +116,14 @@ import sys
 import tempfile
 import time
 
-# Overridable ONLY so the suite can assert the contended path without sleeping
-# out the full budget. Production never sets it, same posture as converge.sh's
+# TWO CAPS, whichever comes first. LOCK_TIMEOUT is what a caller actually cares
+# about -- "how long before this refuses" -- and it is measured, so it stays true
+# no matter what a sleep really costs. LOCK_TRIES only bounds the iteration count
+# so a wedged clock cannot spin; it is overridable ONLY so the suite can make the
+# contended path sub-second. Production sets neither, same posture as converge.sh's
 # KIPI_RECEIPT_LOCK_TRIES.
-LOCK_TRIES = int(os.environ.get("KIPI_ATTEMPTS_LOCK_TRIES") or 100)
+LOCK_TIMEOUT = float(os.environ.get("KIPI_ATTEMPTS_LOCK_TIMEOUT") or 10.0)
+LOCK_TRIES = int(os.environ.get("KIPI_ATTEMPTS_LOCK_TRIES") or 1000)
 LOCK_SLEEP = 0.1
 
 
@@ -141,7 +158,10 @@ def _take_lock(lock):
     """
     parent = os.path.dirname(lock) or "."
     os.makedirs(parent, exist_ok=True)
+    deadline = time.monotonic() + LOCK_TIMEOUT
     for attempt in range(LOCK_TRIES):
+        if attempt and time.monotonic() >= deadline:
+            return None
         # A DIRECTORY here is what the original `os.mkdir` lock leaves when its
         # run is killed. It cannot be opened, so the first instance to take this
         # upgrade with one on disk would never count an attempt again. It also

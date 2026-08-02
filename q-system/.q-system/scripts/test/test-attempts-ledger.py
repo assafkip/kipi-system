@@ -54,6 +54,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -84,12 +85,13 @@ def load_module():
 def run(path: str, *args: str, tries: str = "3") -> subprocess.CompletedProcess:
     """One CLI invocation. `tries` keeps a contended case sub-second.
 
-    Production leaves KIPI_ATTEMPTS_LOCK_TRIES unset (100 tries x 0.1s), same
-    posture as converge.sh's KIPI_RECEIPT_LOCK_TRIES. Measured 2026-08-02: a
-    blocked mutation refuses in ~10s under flock. It cost 22.1s under the
-    hand-rolled lock, because each retry did a full mkstemp/write/link/unlink
-    publish attempt on top of its sleep -- a contended retry is now one
-    non-blocking syscall, so the wall clock is the sleep budget and nothing more.
+    Production leaves both KIPI_ATTEMPTS_LOCK_* unset, same posture as
+    converge.sh's KIPI_RECEIPT_LOCK_TRIES. This comment used to claim a
+    "production 10s timeout" while a blocked mutation really took 22.1s
+    (measured 2026-08-02, codex round 1 on PR #67, finding 4). The budget was a
+    COUNT -- 100 tries x 0.1s -- and `time.sleep(0.1)` costs 212ms on this
+    kernel, so the sleeps alone were 21.2s of it. It is a wall-clock deadline
+    now, so the documented number is the measured one. Verified below.
     """
     env = dict(os.environ)
     env["KIPI_ATTEMPTS_LOCK_TRIES"] = tries
@@ -352,26 +354,46 @@ def case_lock_taken_is_the_lock_at_the_path(tmp: str) -> None:
     mod = load_module()
     lock = os.path.join(tmp, "attempts-replaced.json.lock")
 
-    # Stand in for the old worker: unlink the name and put a different inode
-    # there, the way a release-by-path break does.
-    os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o644))
-    original_ino = os.stat(lock).st_ino
-    os.unlink(lock)
-    os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o644))
-    if os.stat(lock).st_ino == original_ino:
-        fail("the fixture could not produce a second inode at the lock path")
+    # The replacement has to happen DURING acquisition, in the window between
+    # opening the file and deciding we hold it. Replacing it beforehand proves
+    # nothing -- the open lands on the live inode and an implementation with NO
+    # guard at all looks correct, which is exactly how this case first shipped
+    # decorative (its mutant survived).
+    #
+    # `mod.open` shadows the builtin inside that module, so this wraps the exact
+    # call `_take_lock` makes: once, then it gets out of the way.
+    real_open = open
+    state = {"swapped": False}
 
-    fh = mod._take_lock(lock)
+    def open_then_replace(path, *a, **kw):
+        fh = real_open(path, *a, **kw)
+        if path == lock and not state["swapped"]:
+            state["swapped"] = True
+            orphan = os.fstat(fh.fileno()).st_ino
+            os.unlink(lock)                                   # what an old worker does
+            os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o644))
+            if os.stat(lock).st_ino == orphan:
+                fail("the fixture could not produce a second inode at the lock path")
+        return fh
+
+    mod.open = open_then_replace
+    try:
+        fh = mod._take_lock(lock)
+    finally:
+        del mod.open
     if fh is None:
         fail("the lock at a replaced path could not be taken at all")
     try:
+        if not state["swapped"]:
+            fail("the fixture never fired, so this case asserted nothing")
         if os.fstat(fh.fileno()).st_ino != os.stat(lock).st_ino:
-            fail("THE DEFECT: the handle holds an inode that is no longer the file at the lock "
-                 "path. Nobody else will ever contend on it, so the next run takes the live "
-                 "inode and both are inside the transaction at once")
+            fail("THE DEFECT: the handle holds an inode that was unlinked out from under it "
+                 "while the lock was being taken. Nobody will ever contend on that orphan, so "
+                 "the next run locks the live inode and both are inside the transaction at "
+                 "once -- two locks at one path is how a file lock is beaten")
     finally:
         mod._drop_lock(fh)
-    ok("the handle returned holds the inode that is live at the lock path")
+    ok("a lock file replaced mid-acquire is re-taken on the live inode, not held as an orphan")
 
 
 # --- 10. THE ORDINARY PATH STILL WORKS ---------------------------------------
@@ -442,6 +464,44 @@ def case_usage_errors_exit_two(tmp: str) -> None:
     ok("a bad invocation exits 2 and writes nothing, never 1")
 
 
+# --- 12. THE DOCUMENTED TIMEOUT IS THE MEASURED ONE --------------------------
+# Codex round 1 on PR #67, finding 4. The old budget was a COUNT that everything
+# described as a duration, and the two differed by 2.2x. A number in a comment
+# that nothing checks drifts from the code the moment either changes; this asserts
+# the refusal actually lands inside the budget it advertises.
+def case_timeout_is_the_documented_budget(tmp: str) -> None:
+    path = os.path.join(tmp, "attempts-budget.json")
+    with open(path, "w") as fh:
+        json.dump({}, fh)
+
+    budget = 2.0
+    env = dict(os.environ)
+    env["KIPI_ATTEMPTS_LOCK_TIMEOUT"] = str(budget)
+    env.pop("KIPI_ATTEMPTS_LOCK_TRIES", None)
+
+    with lock_held_by_live_process(path + ".lock"):
+        started = time.monotonic()
+        proc = subprocess.run(
+            [sys.executable, str(LEDGER), path, "bump-attempt", "ASK-12", "why"],
+            capture_output=True, text=True, env=env,
+        )
+        elapsed = time.monotonic() - started
+
+    if proc.returncode != 3:
+        fail(f"the contended bump exited {proc.returncode}, wanted 3: stderr={proc.stderr!r}")
+    if elapsed < budget:
+        fail(f"the refusal came back in {elapsed:.1f}s, inside its own {budget}s budget -- it "
+             "gave up early, so a holder that was about to finish is not waited out")
+    # Generous headroom: one sleep of slop plus interpreter startup. The defect
+    # this catches is a budget that is off by a MULTIPLE, which is what a count
+    # standing in for a clock produces.
+    if elapsed > budget * 2:
+        fail(f"THE DEFECT: the documented {budget}s budget took {elapsed:.1f}s. A retry budget "
+             "expressed as a count is not a duration -- time.sleep(0.1) costs 212ms on this "
+             "kernel, so 100 tries advertised as 10s really took 22.1s")
+    ok(f"a contended refusal lands inside the budget it documents ({elapsed:.1f}s of {budget}s)")
+
+
 def main() -> int:
     print("test-attempts-ledger: the lock around the attempts counter (ASK-286)")
     with tempfile.TemporaryDirectory() as tmp:
@@ -456,6 +516,7 @@ def main() -> int:
         case_lock_taken_is_the_lock_at_the_path(tmp)
         case_ops_round_trip(tmp)
         case_usage_errors_exit_two(tmp)
+        case_timeout_is_the_documented_budget(tmp)
     print(f"PASS ({PASSED} cases)")
     return 0
 
