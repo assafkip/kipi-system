@@ -21,6 +21,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$(cd "$HERE/.." && pwd)"
 GUARD="$SCRIPTS/claude-path-write-guard.py"
 TRIPWIRE="$SCRIPTS/claude-integrity-tripwire.py"
+REPO_ROOT="$(cd "$SCRIPTS/../../.." && pwd)"
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -140,7 +141,7 @@ KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check >/dev/null 2
 KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --enforce >/dev/null 2>&1
 [ ! -f "$FIX/.claude/agents/evil.md" ] && pass "added file reverted" || fail "added file reverted"
 
-/bin/rm -f "$FIX/.claude/rules/alpha.md"
+mv "$FIX/.claude/rules/alpha.md" "$WORK/aside-$RANDOM.md"
 KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check >/dev/null 2>&1
 [ "$?" = "1" ] && pass "removed file detected" || fail "removed file detected"
 KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --enforce >/dev/null 2>&1
@@ -241,6 +242,111 @@ printf 'pwned\n' > "$FIX/.claude/rules/alpha.md"
 out="$(KIPI_NOTIFY=/usr/bin/true python3 "$SS_PROBE" "$FIX/q-system/hooks/session-start.py" "$FIX" 2>/dev/null)"
 [ "$out" = "BANNER" ] && pass "drifted tree -> session-start surfaces the banner" \
                       || fail "drifted tree -> session-start surfaces the banner (got $out)"
+
+echo "== F. Round-2 review findings (each FAILS against the round-1 code) =="
+
+# F1 MINOR: SANCTIONED was a substring match on the raw segment, so merely
+# MENTIONING a sanctioned script disarmed Layer 1 for that statement.
+FIX="$(new_fixture)"
+assert_block "sanctioned name in a comment does not disarm" \
+  'touch .claude/evil.txt  # kipi-update.sh'
+assert_block "sanctioned name in an argument does not disarm" \
+  'cp kipi-update.sh .claude/settings.json'
+assert_allow "really running the sanctioned applier still works" \
+  'bash q-system/.q-system/scripts/apply-claude-changes.sh prop.json'
+
+# F2 MINOR: the redirect regex required whitespace before '>'.
+assert_block "redirect with no space before >" 'printf pwned>.claude/settings.json'
+assert_block "append with no space before >>" 'printf pwned>>.claude/rules/alpha.md'
+assert_allow "2>&1 is not a path"              'ls -la .claude 2>&1'
+
+# F3 MINOR: EXCLUDED_DIRS was pruned at EVERY depth, hiding loadable artifacts
+# under any nested dir that happened to be named state/ or plans/.
+FIX="$(new_fixture)"
+mkdir -p "$FIX/.claude/skills/plans" "$FIX/.claude/commands/state"
+printf 'loadable skill\n' > "$FIX/.claude/skills/plans/SKILL.md"
+printf 'loadable command\n' > "$FIX/.claude/commands/state/cmd.md"
+git -C "$FIX" add -A >/dev/null 2>&1
+git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm nested >/dev/null 2>&1
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --baseline --quiet
+printf 'tampered\n' > "$FIX/.claude/skills/plans/SKILL.md"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check >/dev/null 2>&1
+[ "$?" = "1" ] && pass "nested .claude/skills/plans/ IS watched" \
+                || fail "nested .claude/skills/plans/ IS watched"
+printf 'tampered\n' > "$FIX/.claude/commands/state/cmd.md"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check >/dev/null 2>&1
+[ "$?" = "1" ] && pass "nested .claude/commands/state/ IS watched" \
+                || fail "nested .claude/commands/state/ IS watched"
+# Top-level volatile dirs must STILL be excluded, or the fix trades one false
+# alarm for another.
+FIX="$(new_fixture)"
+mkdir -p "$FIX/.claude/state"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --baseline --quiet
+printf 'churn\n' > "$FIX/.claude/state/active-issue.json"
+printf 'churn\n' > "$FIX/.claude/settings.local.json"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "0" ] && pass "top-level state/ + settings.local.json still excluded" \
+                || fail "top-level state/ + settings.local.json still excluded"
+
+# F4 MAJOR: the restore path wrote THROUGH a symlink, overwriting an arbitrary
+# file outside .claude/ and reporting success. This is the decisive round-2 test.
+FIX="$(new_fixture)"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --baseline --quiet
+VICTIM="$WORK/victim-outside-claude.txt"
+printf 'PRECIOUS UNRELATED FILE\n' > "$VICTIM"
+mv "$FIX/.claude/rules/alpha.md" "$WORK/aside-$RANDOM.md"
+ln -s "$VICTIM" "$FIX/.claude/rules/alpha.md"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --enforce >/dev/null 2>&1
+if grep -q 'PRECIOUS UNRELATED FILE' "$VICTIM"; then
+  pass "symlink swap does NOT clobber the file outside .claude/"
+else
+  fail "symlink swap does NOT clobber the file outside .claude/ (ARBITRARY WRITE)"
+fi
+[ ! -L "$FIX/.claude/rules/alpha.md" ] && pass "symlink itself was removed, not left in place" \
+                                       || fail "symlink itself was removed, not left in place"
+if grep -q 'rule alpha' "$FIX/.claude/rules/alpha.md" 2>/dev/null; then
+  pass "sanctioned content restored as a real file"
+else
+  fail "sanctioned content restored as a real file"
+fi
+# find, not a glob: the quarantined name starts with a dot
+# (.claude__rules__alpha.md.SYMLINK) and shell globs skip leading-dot files.
+if [ -n "$(find "$FIX/q-system/output/claude-integrity" -name '*.SYMLINK' 2>/dev/null)" ]; then
+  pass "symlink target recorded as evidence"
+else
+  fail "symlink target recorded as evidence"
+fi
+
+# F5 MAJOR: no baseline must ARM silently, never alarm. A committed/propagated
+# baseline would have paged every instance daily.
+FIX="$(new_fixture)"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "0" ] && pass "first run arms silently (no fleet-wide daily page)" \
+                || fail "first run arms silently (no fleet-wide daily page)"
+[ -f "$FIX/q-system/.q-system/claude-integrity-baseline.json" ] \
+  && pass "first run actually wrote a baseline" || fail "first run actually wrote a baseline"
+KIPI_NOTIFY=/usr/bin/true python3 "$TRIPWIRE" --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "0" ] && pass "second run is clean, not a repeat alarm" \
+                || fail "second run is clean, not a repeat alarm"
+# The baseline must never be committed: a propagated baseline is the defect.
+if git -C "$REPO_ROOT" ls-files --error-unmatch \
+     q-system/.q-system/claude-integrity-baseline.json >/dev/null 2>&1; then
+  fail "baseline is NOT tracked by git (it would propagate via kipi update)"
+else
+  pass "baseline is NOT tracked by git (it would propagate via kipi update)"
+fi
+
+# F6 MAJOR: the only armed trigger sat behind a machine-wide daily sentinel.
+# Compare line numbers, not an awk range: the range version ended at the word
+# "already_ran_today" inside the explanatory comment and never reached the call.
+SS="$SCRIPTS/../../hooks/session-start.py"
+L_INT="$(grep -n 'integrity_warning = check_claude_integrity' "$SS" | head -1 | cut -d: -f1)"
+L_SENT="$(grep -n 'if already_ran_today()' "$SS" | head -1 | cut -d: -f1)"
+if [ -n "$L_INT" ] && [ -n "$L_SENT" ] && [ "$L_INT" -lt "$L_SENT" ]; then
+  pass "session-start runs the tripwire BEFORE the daily sentinel (L$L_INT < L$L_SENT)"
+else
+  fail "session-start runs the tripwire BEFORE the daily sentinel (L$L_INT vs L$L_SENT)"
+fi
 
 echo
 echo "passed=$PASS failed=$FAIL"

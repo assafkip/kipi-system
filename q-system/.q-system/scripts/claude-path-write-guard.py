@@ -122,7 +122,9 @@ def analyse(command, cwd):
 
         # Pipeline judged whole: any stage that re-enters an interpreter turns
         # a .claude/ path anywhere in the statement into a write.
-        if ".claude" in stmt and not any(s in stmt for s in SANCTIONED):
+        # Same program-position rule as _is_sanctioned: a mention of a
+        # sanctioned script must never disarm a pipeline (review finding, r2).
+        if ".claude" in stmt and not any(_is_sanctioned(s.split()) for s in stages):
             for stage in stages:
                 head = stage.split()
                 if head and os.path.basename(head[0]) in SHELL_SINKS:
@@ -135,6 +137,32 @@ def analyse(command, cwd):
             effective_cwd = reason[0]
 
     return None
+
+
+def _is_sanctioned(tokens):
+    """True only if the command actually EXECUTES a sanctioned entrypoint.
+
+    Round 1 tested `any(s in seg for s in SANCTIONED)` -- a substring match on
+    the raw segment. That meant any command merely CONTAINING the text
+    "kipi-update.sh", including inside a quoted string or a trailing comment,
+    disabled Layer 1 for that statement:
+
+        touch .claude/evil.txt  # kipi-update.sh
+
+    Which is the phrase-versus-structure defect this guard's own header warns
+    about, committed inside the guard. Caught in review, round 2. The check now
+    looks at the PROGRAM POSITION only: argv[0], plus argv[1] when argv[0] is an
+    interpreter, since `bash apply-claude-changes.sh ...` is the normal form.
+    """
+    if not tokens:
+        return False
+    cands = [os.path.basename(tokens[0])]
+    if cands[0] in ("bash", "sh", "zsh", "python", "python3") and len(tokens) > 1:
+        for t in tokens[1:]:
+            if not t.startswith("-"):
+                cands.append(os.path.basename(t))
+                break
+    return any(c in SANCTIONED for c in cands)
 
 
 def _stage(seg, assigns, cwd_box):
@@ -150,7 +178,11 @@ def _stage(seg, assigns, cwd_box):
         return ok
 
     # Redirection into a .claude path is a write no matter the program.
-    for redir in re.finditer(r"(?:^|\s)\d?>>?\s*([^\s;&|]+)", seg):
+    # No leading-whitespace requirement: `printf pwned>.claude/settings.json`
+    # is valid shell and walked straight past the first version of this regex
+    # (review finding, round 2). Excluding & and < from the target keeps `2>&1`
+    # and here-strings from matching as paths.
+    for redir in re.finditer(r">>?\s*([^\s;&|<>]+)", seg):
         if hits_claude(expand(redir.group(1), effective_cwd, assigns)):
             return "redirects output into .claude/: %s" % redir.group(1)
 
@@ -171,7 +203,7 @@ def _stage(seg, assigns, cwd_box):
     if prog == "cd" and args:
         return [expand(args[0], effective_cwd, assigns)]
 
-    if any(s in seg for s in SANCTIONED):
+    if _is_sanctioned(tokens):
         return ok
 
     paths = [expand(a, effective_cwd, assigns) for a in args

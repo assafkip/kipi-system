@@ -208,11 +208,31 @@ def check_claude_integrity(project_dir):
 
 
 def main():
-    # Only run once per day
+    project_dir = get_project_dir()
+
+    # .claude/ integrity tripwire (ASK-282). Runs BEFORE the daily sentinel,
+    # deliberately.
+    #
+    # SCAR (review finding, round 2): round 1 put this call after the
+    # already_ran_today() gate. That gate keys on /tmp/q-session-<date>, which is
+    # machine-wide and NOT repo-scoped -- so the tripwire ran at most once per
+    # calendar day, and whichever repo opened a session first that day consumed
+    # the sentinel for every other repo. In this repo it could have run never.
+    # A security check gated behind a briefing's noise-suppression sentinel is
+    # not armed; it is decorative. The briefing is what should be rate-limited,
+    # not the tripwire.
+    #
+    # --check, NOT --enforce: a change found at session start has no attribution
+    # and could be the founder's own editor between sessions. Auto-reverting an
+    # unattributed change would eat his work. The PostToolUse entry (proposal,
+    # PR #63) is the one that enforces, because there the actor IS the agent.
+    integrity_warning = check_claude_integrity(project_dir)
+    if integrity_warning:
+        print(integrity_warning)
+
+    # Only run the briefing once per day
     if already_ran_today():
         sys.exit(0)
-
-    project_dir = get_project_dir()
 
     # Gather context
     handoff = load_handoff(project_dir)
@@ -220,23 +240,8 @@ def main():
     morning_status = load_today_log(project_dir)
     loops_result = load_open_loops(project_dir)
 
-    # .claude/ integrity tripwire (ASK-282). Called from HERE, not from a
-    # settings.json entry, because wiring a hook means editing .claude/ and an
-    # agent cannot write there -- the bootstrap problem this very issue is about.
-    # session-start.py is already wired and lives outside .claude/, so calling
-    # the tripwire from here arms Layer 2 now instead of after PR #63 merges.
-    #
-    # --check, deliberately NOT --enforce: a change found at session start has
-    # no attribution. It could be the founder's own editor between sessions.
-    # Auto-reverting an unattributed change would eat the founder's work. The
-    # per-tool-call PostToolUse entry (proposal, PR #63) is the one that
-    # enforces, because there the actor IS the agent.
-    integrity_warning = check_claude_integrity(project_dir)
-
     # Format and output
     output = format_output(handoff, cards, yesterday, morning_status, loops_result)
-    if integrity_warning:
-        output = integrity_warning + "\n" + (output or "")
 
     if output:
         # Mark as ran BEFORE printing (so even if output is ignored, we don't repeat)

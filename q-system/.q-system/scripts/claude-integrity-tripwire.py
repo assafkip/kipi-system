@@ -83,9 +83,20 @@ def watch_set(root):
     if not os.path.isdir(base):
         return found
     for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+        # Prune the volatile names ONLY at the top of .claude/. Pruning at every
+        # depth made loadable artifacts invisible: `.claude/skills/plans/` and
+        # `.claude/commands/state/` are real content, not scratch, and a watcher
+        # that cannot see them is a hole shaped like a convenience.
+        # (Review finding, round 2.) __pycache__ stays pruned everywhere.
+        at_top = os.path.abspath(dirpath) == os.path.abspath(base)
+        if at_top:
+            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+        else:
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
         for name in filenames:
-            if name in EXCLUDED_FILES:
+            if at_top and name in EXCLUDED_FILES:
+                continue
+            if name == ".DS_Store":
                 continue
             full = os.path.join(dirpath, name)
             if os.path.islink(full) or not os.path.isfile(full):
@@ -195,27 +206,72 @@ def quarantine(root, rels, stamp):
     os.makedirs(qdir, exist_ok=True)
     for rel in rels:
         full = os.path.join(root, rel)
-        if os.path.isfile(full):
-            shutil.copy2(full, os.path.join(qdir, rel.replace(os.sep, "__")))
+        dest = os.path.join(qdir, rel.replace(os.sep, "__"))
+        if os.path.islink(full):
+            # Record where it pointed WITHOUT following it. A watched file
+            # replaced by a symlink is the tamper shape that turned the restore
+            # path into an arbitrary write (review finding, round 2), so the
+            # evidence is the target, not the target's contents.
+            with open(dest + ".SYMLINK", "w") as fh:
+                fh.write(os.readlink(full) + "\n")
+        elif os.path.isfile(full):
+            shutil.copy2(full, dest)
     return qdir
 
 
+def _inside_claude(root, full):
+    """True only if `full` sits inside <root>/.claude, WITHOUT resolving the
+    leaf through a symlink. Compares the resolved PARENT so a symlinked leaf
+    cannot smuggle the target outside the tree."""
+    base = os.path.realpath(os.path.join(root, ".claude"))
+    parent = os.path.realpath(os.path.dirname(full))
+    return parent == base or parent.startswith(base + os.sep)
+
+
 def restore(root, baseline, modified, added, removed):
+    """Put the sanctioned content back.
+
+    SCAR (review finding, round 2 -- the worst defect in round 1): this function
+    used to `open(full, "wb")` directly. If an attacker replaced a watched file
+    with a SYMLINK pointing outside .claude/, watch_set skipped it (it skips
+    symlinks), so it registered as `removed`, and the restore wrote THROUGH the
+    link -- silently overwriting an arbitrary file anywhere on disk, leaving the
+    link in place, and reporting "reverted 1". The repair path was itself an
+    arbitrary-write primitive, which is strictly worse than the hole it closes.
+
+    Two invariants now, both tested:
+      1. Never write through a symlink. Unlink it first (removing the LINK, not
+         its target), after quarantining it.
+      2. Never write to a path whose parent resolves outside <root>/.claude.
+         Refuse and report instead. A restore that cannot be done safely is a
+         page, not a best effort.
+    """
     recorded = baseline.get("entries", {})
     restored, failed = [], []
+
     for rel in modified + removed:
+        full = os.path.join(root, rel)
+        if not _inside_claude(root, full):
+            failed.append("%s (parent resolves outside .claude/)" % rel)
+            continue
         content = blob_content(root, recorded.get(rel, {}).get("blob", ""))
         if content is None:
-            failed.append(rel)  # fail loud; never guess at content
+            failed.append("%s (no stored blob)" % rel)  # fail loud, never guess
             continue
-        full = os.path.join(root, rel)
+        if os.path.islink(full):
+            # Unlinks the symlink itself. The file it pointed at is untouched.
+            os.remove(full)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "wb") as fh:
             fh.write(content)
         restored.append(rel)
+
     for rel in added:
         full = os.path.join(root, rel)
-        if os.path.isfile(full):
+        if not _inside_claude(root, full):
+            failed.append("%s (parent resolves outside .claude/)" % rel)
+            continue
+        if os.path.islink(full) or os.path.isfile(full):
             os.remove(full)  # content is already in quarantine
             restored.append(rel)
     return restored, failed
@@ -256,9 +312,27 @@ def main(argv=None):
 
     baseline = load_baseline(root)
     if baseline is None:
-        # No baseline yet is not "clean" -- it is "unknown". Say so.
+        # FIRST RUN IN THIS INSTANCE -> arm silently, do not alarm.
+        #
+        # SCAR (review finding, round 2, the one that would have hurt most):
+        # round 1 COMMITTED the baseline. `kipi update` propagates it fleet-wide,
+        # but every instance regenerates .claude/settings.json from
+        # settings-template.json -- so the shared baseline could never match, and
+        # --check would have paged Slack DAILY ON EVERY INSTANCE. A security fix
+        # whose main observable effect is an unactionable daily alarm on every
+        # repo the founder owns is a worse defect than the hole it closes.
+        #
+        # The baseline is therefore INSTANCE-LOCAL and gitignored. That is also
+        # the correct semantics: this tripwire answers "did THIS tree change
+        # since we last sanctioned it", not "does it match the skeleton".
+        entries = measure(root, watch_set(root))
+        save_baseline(root, entries)
+        # Page once, on the arming transition only. This is deliberate: an
+        # attacker who DELETES the baseline to force a clean re-arm produces
+        # this same ping in a repo that was already armed, which is the signal.
+        notify(root, "armed .claude/ integrity tripwire: %d file(s) baselined" % len(entries))
         if not args.quiet:
-            print("NO BASELINE: run --baseline first (tripwire is not armed)")
+            print("armed: baselined %d file(s) (first run)" % len(entries))
         return 0
     if baseline.get("corrupt"):
         notify(root, "SECURITY: .claude integrity baseline is unreadable/corrupt. Tripwire cannot verify.")
@@ -287,7 +361,9 @@ def main(argv=None):
 
     if args.enforce:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        qdir = quarantine(root, modified + added, stamp)
+        # `removed` is quarantined too: the symlink-swap tamper shows up as a
+        # removal, and its target is the evidence (review finding, round 2).
+        qdir = quarantine(root, modified + added + removed, stamp)
         restored, failed = restore(root, baseline, modified, added, removed)
         msg = summary + (" | reverted %d, quarantined at %s" % (len(restored), os.path.relpath(qdir, root)))
         if failed:

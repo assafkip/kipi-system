@@ -5,8 +5,7 @@
   "requires": {
     "files_present": [
       "q-system/.q-system/scripts/claude-path-write-guard.py",
-      "q-system/.q-system/scripts/claude-integrity-tripwire.py",
-      "q-system/.q-system/claude-integrity-baseline.json"
+      "q-system/.q-system/scripts/claude-integrity-tripwire.py"
     ]
   },
   "edits": [
