@@ -79,7 +79,10 @@ HARNESS="$WORK/stale_check.sh"
   echo 'set -uo pipefail'
   echo 'REPO="$PWD"'
   echo 'SELF="/dev/null"'
-  echo 'say()  { printf "SAY %s\n"  "$*"; }'
+  # say() goes to STDERR, matching production where it appends to $LOG. On stdout it
+  # would be swallowed by any command substitution around the code under test, which
+  # is exactly how the preserve-and-receipt path first looked like it was missing.
+  echo 'say()  { printf "SAY %s\n"  "$*" >&2; }'
   echo 'page() { printf "PAGE %s\n" "$*"; }'
   # page_ok reports delivery, and its exit code is the thing under test in case 7:
   # KIPI_TEST_PAGE_FAILS=1 makes the notifier fail so the dedupe marker must NOT
@@ -87,6 +90,12 @@ HARNESS="$WORK/stale_check.sh"
   # cannot be reproduced at all.
   echo 'page_ok() { printf "PAGE %s\n" "$*"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
   echo 'relaunch_self() { printf "RELAUNCH\n"; return 0; }'
+  echo 'checkout_unlock() { :; }'
+  # page_once takes (key, msg); stale_check uses it for the preserved-files receipt.
+  echo 'page_once() { printf "PAGE %s\n" "$2"; }'
+  echo 'FF_PRESERVE_DIR=""'
+  echo 'FF_PRESERVED_COUNT=0'
+  echo 'ATTEMPT_FF_REASON=""'
   awk '/^attempt_ff\(\) \{/,/^\}/' "$DISPATCH"
   awk '/^stale_check\(\) \{/,/^\}/' "$DISPATCH"
   echo 'stale_check && echo "VERDICT=RUN" || echo "VERDICT=REFUSE"'
@@ -104,7 +113,12 @@ git init -q --bare -b main "$ORIGIN"
 git init -q -b main "$WORK/seed"
 ( cd "$WORK/seed"
   git config user.email t@e.com; git config user.name t
-  echo one > f.txt; echo side > other.txt; git add -A; git commit -qm one
+  echo one > f.txt; echo side > other.txt
+  # Shipped from the seed, NOT committed locally in a clone: a local commit would
+  # make that clone AHEAD, and combined with an upstream commit it becomes DIVERGED,
+  # so case 15 would measure ff-refuses-on-divergence instead of the ignore path.
+  printf 'ignored-dir/\n' > .gitignore
+  git add -A; git commit -qm one
   git remote add origin "$ORIGIN"; git push -q origin main ) >/dev/null 2>&1
 
 # One commit onto origin/main. Every "behind" case calls this after cloning.
@@ -120,7 +134,10 @@ fresh_clone() {
 }
 head_of() { git -C "$1" rev-parse HEAD 2>/dev/null; }
 
-run_check() { ( cd "$1" && bash "$HARNESS" 2>&1 ); }
+# LOG is set even though say() is stubbed: attempt_ff derives the preserve dir from
+# $(dirname "$LOG"), so an unset LOG trips `set -u` inside the code under test.
+CHECKSTATE="$WORK/checkstate"; mkdir -p "$CHECKSTATE"
+run_check() { ( cd "$1" && LOG="$CHECKSTATE/dispatch.log" bash "$HARNESS" 2>&1 ); }
 
 echo "== 1. equal: HEAD == origin/main -> RUN =="
 C1="$(fresh_clone c-equal)"
@@ -386,6 +403,120 @@ echo "$OUT" | grep -q 'VERDICT=REFUSE' \
 echo "$OUT" | grep -q 'RELAUNCH' \
   && bad "THE DEFECT: it re-execed a second time in one launch" \
   || ok "no second re-exec"
+
+echo
+echo "== 15. BLOCKER: an IGNORED file where origin/main starts tracking the path =="
+# THE DATA-LOSS PATH, and the one measurement that reassured me hid it.
+# Measured 2026-08-02: git ABORTS for untracked-not-ignored (case 16 below) but
+# SILENTLY OVERWRITES an ignored file, exit 0, no warning. An untracked file has no
+# object in the database, so there is no reflog and nothing to recover.
+# `git ls-files --others --exclude-standard` -- the 5488 I quoted -- EXCLUDES
+# ignored files, so the number that made "let git arbitrate" look safe could not
+# see this class at all. The founder's checkout carries 3982 of them.
+C15="$(fresh_clone c-ignored)"
+mkdir -p "$C15/ignored-dir"
+echo "FOUNDER WORK - must survive" > "$C15/ignored-dir/notes.md"
+# Upstream starts tracking that exact path.
+( cd "$WORK/seed"; mkdir -p ignored-dir; echo "upstream version" > ignored-dir/notes.md
+  git add -f ignored-dir/notes.md; git commit -qm "upstream tracks it"; git push -q origin main ) >/dev/null 2>&1
+OUT="$(run_check "$C15")"
+# The ff SHOULD still apply -- refusing here would make the guard inert again.
+R15="$(git -C "$C15" rev-parse origin/main)"
+[ "$(head_of "$C15")" = "$R15" ] \
+  && ok "the fast-forward still applied (preserving must not make the heal inert)" \
+  || bad "preserving the file blocked the heal"
+# THE LOAD-BEARING ASSERTION: the founder's bytes still exist somewhere.
+PRESERVED="$(grep -rl "FOUNDER WORK - must survive" "$CHECKSTATE/ff-preserved" 2>/dev/null | head -1)"
+if [ -n "$PRESERVED" ]; then
+  ok "the ignored file's content was copied out before the merge ($PRESERVED)"
+else
+  bad "THE BLOCKER: the founder's ignored file was destroyed with no copy anywhere"
+fi
+echo "$OUT" | grep -q 'SAY self-heal:.*copied to' \
+  && ok "the preservation is logged with its restore path" \
+  || bad "files were moved out of the way with no log line saying where"
+echo "$OUT" | grep -q 'PAGE.*nothing was lost' \
+  && ok "the founder gets a receipt naming the restore path" \
+  || bad "no receipt: the founder never learns his ignored file was replaced"
+
+echo
+echo "== 16. an UNTRACKED (not ignored) collision must ABORT, never be forced =="
+# git's own refusal is correct here and must reach the founder as a refusal. If any
+# future edit adds -f, reset --hard, clean or a stash-then-drop, this goes red.
+C16="$(fresh_clone c-untracked-collide)"
+echo "FOUNDER WORK - untracked" > "$C16/newfile.md"
+( cd "$WORK/seed"; echo "upstream" > newfile.md; git add newfile.md
+  git commit -qm "upstream adds newfile"; git push -q origin main ) >/dev/null 2>&1
+B16="$(head_of "$C16")"
+OUT="$(run_check "$C16")"
+[ "$(head_of "$C16")" = "$B16" ] \
+  && ok "the tree was not moved when git refused" \
+  || bad "THE DEFECT: it forced past git's abort"
+grep -q "FOUNDER WORK - untracked" "$C16/newfile.md" \
+  && ok "the untracked file is untouched" \
+  || bad "THE BLOCKER: an untracked file was destroyed"
+echo "$OUT" | grep -q 'VERDICT=REFUSE' \
+  && ok "an abort is an honest refusal that pages" \
+  || bad "the abort was swallowed and it dispatched anyway"
+
+echo
+echo "== 17-19. the alert-state primitives (page_once / page_clear / checkout_lock) =="
+# A SECOND HARNESS, because these are top-level functions rather than parts of
+# stale_check. Same rule: the real functions are extracted, only the notifier is
+# stubbed.
+PH="$WORK/primitives.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  echo 'page_ok() { printf "PAGE %s\n" "$1"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
+  awk '/^page_clear\(\) \{/,/^\}/'  "$DISPATCH"
+  awk '/^page_once\(\) \{/,/^\}/'   "$DISPATCH"
+  awk '/^checkout_unlock\(\) /,/^$/' "$DISPATCH"
+  awk '/^checkout_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"'
+  echo '"$@"'
+} > "$PH"
+for fn in page_clear page_once checkout_lock; do
+  grep -q "^$fn() {" "$PH" || { echo "primitive harness did not extract $fn"; exit 1; }
+done
+PSTATE="$WORK/pstate"; mkdir -p "$PSTATE"
+prim() { ( export LOG="$PSTATE/dispatch.log" CHECKOUT_LOCK="$PSTATE/co.lock"; bash "$PH" "$@" 2>&1 ); }
+
+echo "-- 17. a recovered alert that RECURS must page again (clear-on-recovery) --"
+N1="$(prim page_once k1 "boom" | grep -c '^PAGE ' || true)"
+N2="$(prim page_once k1 "boom" | grep -c '^PAGE ' || true)"   # unchanged -> suppressed
+prim page_clear k1 >/dev/null 2>&1                             # the fault recovers
+N3="$(prim page_once k1 "boom" | grep -c '^PAGE ' || true)"    # and recurs
+if [ "${N1:-0}" -eq 1 ] && [ "${N2:-0}" -eq 0 ] && [ "${N3:-0}" -eq 1 ]; then
+  ok "pages, suppresses the repeat, and pages again after recovery ($N1/$N2/$N3)"
+else
+  bad "THE DEFECT: recurrence after recovery was swallowed ($N1/$N2/$N3) -- a dedupe that can never re-fire"
+fi
+
+echo "-- 18. concurrent page_once must not duplicate the same alert --"
+PSTATE2="$WORK/pstate2"; mkdir -p "$PSTATE2"
+conc() { ( export LOG="$PSTATE2/dispatch.log" CHECKOUT_LOCK="$PSTATE2/co.lock"; bash "$PH" page_once k2 "same line" 2>/dev/null ); }
+conc > "$WORK/c1.out" & C1PID=$!
+conc > "$WORK/c2.out" & C2PID=$!
+wait $C1PID $C2PID 2>/dev/null
+TOTAL=$(( $(grep -c '^PAGE ' "$WORK/c1.out" || true) + $(grep -c '^PAGE ' "$WORK/c2.out" || true) ))
+[ "$TOTAL" -le 1 ] \
+  && ok "two dispatchers deciding the same key produced $TOTAL page(s), not 2" \
+  || bad "THE DEFECT: unlocked marker check let concurrent dispatchers send $TOTAL duplicate pages"
+
+echo "-- 19. the checkout lock is exclusive, and is released --"
+PSTATE3="$WORK/pstate3"; mkdir -p "$PSTATE3"
+lk() { ( export LOG="$PSTATE3/dispatch.log" CHECKOUT_LOCK="$PSTATE3/co.lock"; bash "$PH" "$@" >/dev/null 2>&1; echo $?; ) }
+# Taken in one process and released, a second take must succeed.
+A="$( ( export LOG="$PSTATE3/dispatch.log" CHECKOUT_LOCK="$PSTATE3/co.lock"; bash "$PH" checkout_lock >/dev/null 2>&1; echo $? ) )"
+B="$( ( export LOG="$PSTATE3/dispatch.log" CHECKOUT_LOCK="$PSTATE3/co.lock"; bash "$PH" checkout_lock >/dev/null 2>&1; echo $? ) )"
+[ "$A" = "0" ] && [ "$B" != "0" ] \
+  && ok "a held checkout lock blocks a second dispatcher (first=$A second=$B)" \
+  || bad "THE DEFECT: two dispatchers both took the checkout lock ($A/$B) -- both would merge the same tree"
+C="$( ( export LOG="$PSTATE3/dispatch.log" CHECKOUT_LOCK="$PSTATE3/co.lock"; bash "$PH" checkout_unlock >/dev/null 2>&1; bash "$PH" checkout_lock >/dev/null 2>&1; echo $? ) )"
+[ "$C" = "0" ] \
+  && ok "the lock is reacquirable after release (no permanent wedge)" \
+  || bad "THE DEFECT: the lock was never released, so the loop wedges forever"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
