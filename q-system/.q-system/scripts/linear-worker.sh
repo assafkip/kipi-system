@@ -1588,7 +1588,10 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
     fi
     if [ -z "$REFUSE_LABEL" ]; then
       : # Codex continued it; there is nothing to park and no label to apply.
-    elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
+    # --remove ready (ASK-308): a refusal means the DoR is not executable, so the
+    # issue must leave the machine-ready view in the SAME write that marks it
+    # refused. Otherwise the board keeps advertising work the worker just declined.
+    elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" --remove ready >>"$LOG" 2>&1; then
       say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
       # The label is the ONLY thing that makes this stick. If it did not land, the
