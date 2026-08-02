@@ -69,10 +69,17 @@ WINDOW = 4
 #       with NO "bash" argv[0] and a lowercase name, so a bash-anchored pattern
 #       could never see its four pages. Hence the third form.
 # `bash -n` and a read-through would have caught neither.
+# ONE EXPLICIT ACK, never a widened detector. Three shapes legitimately reach the
+# sink without a literal --kind on the line: the dispatcher's page_ok() pass-through
+# (its CALLERS carry the classification), a lint fixture that only quotes a call,
+# and this gate's own suite, which must be able to make a bare call to prove the
+# fail-open path. Loosening the regex to accommodate them would blind it to the
+# real thing; a marker keeps each exemption named, greppable and countable.
 NOT_A_CALL = re.compile(
     r"""(?:
           ^\s*(?:\#|\*|//)                    # comment
         | env\[|setdefault|export\s           # test/env stubbing
+        | notify-kind-skip                    # explicit, per-line ack
         )""",
     re.VERBOSE,
 )

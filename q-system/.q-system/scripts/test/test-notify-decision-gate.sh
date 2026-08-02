@@ -65,7 +65,7 @@ run_notify() {
       KIPI_SLACK_WEBHOOK="https://hooks.example.invalid/T/B/X" \
       KIPI_NOTIFY_RECEIPTS="$dir/receipts.jsonl" \
       KIPI_INSTANCE_NAME="testinst" \
-      bash "$NOTIFY" "$@" >"$dir/out" 2>"$dir/err"
+      bash "$NOTIFY" "$@" >"$dir/out" 2>"$dir/err"   # notify-kind-skip: kind comes from each case
   echo $? > "$dir/rc"
   assert_ran "$dir"
 }
@@ -171,11 +171,21 @@ else
   # producer that calls the sink bare and prove the audit catches it.
   PLANT="$WORK/plant"; rm -rf "$PLANT"; mkdir -p "$PLANT/q-system/.q-system/scripts"
   cp "$AUDIT" "$PLANT/q-system/.q-system/scripts/" 2>/dev/null || true
-  cat > "$PLANT/q-system/.q-system/scripts/rogue-producer.sh" <<'ROGUE'
-#!/bin/bash
-NOTIFY="$SCRIPT_DIR/slack-notify.sh"
-bash "$NOTIFY" "a bare page with no kind at all"
-ROGUE
+  # ASSEMBLED, NOT HEREDOC'd. A heredoc puts the literal `bash "$NOTIFY" ...` in
+  # THIS file, where the audit flags it -- and the obvious fix, adding a
+  # notify-kind-skip marker to that line, silently lands the marker INSIDE the
+  # generated fixture. That is exactly what happened: the planted rogue arrived
+  # pre-exempted, the audit correctly ignored it, and the negative self-test
+  # reported the guard as broken when the guard was fine. Building the call from a
+  # placeholder keeps this source clean and the generated file genuinely bare.
+  {
+    echo '#!/bin/bash'
+    echo 'NOTIFY="$SCRIPT_DIR/slack-notify.sh"'
+    printf 'bash "$%s" "a bare page with no kind at all"\n' NOTIFY
+  } > "$PLANT/q-system/.q-system/scripts/rogue-producer.sh"
+  # The planted fixture must actually be bare, or the assertion below proves nothing.
+  grep -q 'notify-kind-skip' "$PLANT/q-system/.q-system/scripts/rogue-producer.sh" \
+    && bad "harness: the planted rogue is pre-exempted" "it carries a skip marker"
   ( cd "$PLANT" && git init -q . && git add -A && git -c user.email=t@t -c user.name=t commit -qm t ) >/dev/null 2>&1
   if python3 "$AUDIT" --repo "$PLANT" >"$WORK/plant.out" 2>&1; then
     bad "audit CATCHES a bare call site (negative self-test)" "planted rogue producer passed"

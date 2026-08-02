@@ -67,6 +67,11 @@ HARNESS="$WORK/stale_check.sh"
   # can be reproduced at all.
   echo 'page_ok() { printf "PAGE %s\n" "$1"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
   echo 'PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"'
+  # The self-heal handler (ASK-294). $REPO is the fixture clone in here, so the
+  # production $REPO-relative path resolves to a file that does not exist and the
+  # handler is silently INERT -- which is how it first shipped, with every case
+  # below still green because a missing script reads as "declined to merge".
+  echo "FF_MERGE=\"$(cd "$(dirname "$DISPATCH")" && pwd)/q-system/.q-system/scripts/ff-merge-if-safe.sh\""
   awk '/^page_lock\(\) \{/,/^\}/'   "$DISPATCH"
   awk '/^page_clear\(\) \{/,/^\}/'  "$DISPATCH"
   awk '/^page_once\(\) \{/,/^\}/'   "$DISPATCH"
@@ -94,6 +99,27 @@ fresh_clone() {
   ( cd "$d"; git config user.email t@e.com; git config user.name t )
   echo "$d"
 }
+# A clone that is behind AND CANNOT be brought current unattended, so it still
+# pages. Cases 6, 7 and 9 test page_once mechanics -- dedupe, clear-on-recovery,
+# failed-delivery -- which say nothing about WHY the loop refused. Before ASK-294
+# a plain behind-clone was enough to make it page; now that shape self-heals and
+# is silent, so those cases would have been asserting against zero pages and
+# passing for the wrong reason once someone "fixed" them. The collision is on a
+# path origin ADDS, so recovery is just moving the local file aside.
+advance_origin_add() {
+  ( cd "$WORK/seed"; echo blocked > "$1"; git add "$1"; git commit -qm "add $1"; git push -q origin main ) >/dev/null 2>&1
+}
+# THE BLOCKER PATH IS UNIQUE PER FIXTURE. With one shared name the second caller
+# cloned an origin that ALREADY tracked blocker.txt, so the local file was tracked
+# (no collision at all), the re-add was an empty commit (origin never moved), and
+# cases 7 and 9 measured zero pages against a checkout that was not even stale --
+# green for a reason that had nothing to do with what they assert.
+pageable_clone() {
+  local d; d="$(fresh_clone "$1")"
+  printf 'local untracked work\n' > "$d/blocker-$1.txt"
+  advance_origin_add "blocker-$1.txt"
+  echo "$d"
+}
 # LOG is set even though say() is stubbed: page_once derives its marker dir from
 # $(dirname "$LOG"), so an unset LOG trips `set -u` inside the code under test.
 CHECKSTATE="$WORK/checkstate"; mkdir -p "$CHECKSTATE"
@@ -107,26 +133,59 @@ echo "$OUT" | grep -q 'VERDICT=RUN' \
   || bad "an up-to-date checkout was refused: $(echo "$OUT" | tr '\n' ' ')"
 
 echo
-echo "== 2. behind -> REFUSE, and the page carries the remedy =="
+# CONTRACT CHANGED DELIBERATELY, 2026-08-02, ASK-294. This case used to assert
+# that a behind-but-clean checkout REFUSES, leaves the tree untouched, and pages
+# the founder a `git merge --ff-only` command to type. That page fired 15 times in
+# one measured 24h window; he asked twice why he keeps getting messages he cannot
+# act on, then: "I just want the underlying issues to be dealt with so I don't get
+# a message."
+#
+# The guard that stood here ("the guard must not grow hands") encoded ASK-284's
+# finding that an automatic ff-merge loses data. That finding STANDS and is not
+# being waved away -- it is answered. ASK-284's three rounds each tried to make an
+# UNBOUNDED write safe. ff-merge-if-safe.sh does not attempt that: it merges only
+# after proving the fast-forward cannot clobber anything over the EXACT finite set
+# of paths it writes, and declines otherwise. The scar's protection now lives in
+# test-ff-merge-if-safe.sh, case 4, which holds the specific thing that killed the
+# last attempt -- a fast-forward silently overwriting a GITIGNORED file, exit 0,
+# no reflog. Removing a guard is only honest if you can name what replaced it.
+echo "== 2. behind + clean -> the loop merges it ITSELF and stays silent =="
 C2="$(fresh_clone c-behind)"
 B2="$(git -C "$C2" rev-parse HEAD)"
 advance_origin two
 S2="$WORK/s2"; mkdir -p "$S2"
 OUT="$(run_check "$C2" "$S2")"
-echo "$OUT" | grep -q 'VERDICT=REFUSE' \
-  && ok "a checkout behind origin/main refuses to dispatch" \
-  || bad "THE DEFECT: a stale checkout dispatched, running superseded control code"
-# THE GUARD MUST NOT GROW HANDS. The auto-merge was removed for losing data; if a
-# future edit puts one back, this catches it.
-[ "$(git -C "$C2" rev-parse HEAD)" = "$B2" ] \
-  && ok "the working tree was NOT touched (no auto-merge; ASK-284 owns that)" \
-  || bad "THE DEFECT: something rewrote the founder's working tree"
+echo "$OUT" | grep -q 'VERDICT=RUN' \
+  && ok "a behind-but-clean checkout is brought current and dispatches" \
+  || bad "THE DEFECT: still refusing work the loop could unblock itself: $(echo "$OUT" | tr '\n' ' ')"
+[ "$(git -C "$C2" rev-parse HEAD)" != "$B2" ] \
+  && [ "$(git -C "$C2" rev-parse HEAD)" = "$(git -C "$C2" rev-parse origin/main)" ] \
+  && ok "the checkout ACTUALLY advanced to origin/main" \
+  || bad "THE DEFECT: reported RUN without merging (HEAD still $B2)"
 echo "$OUT" | grep -q '^PAGE ' \
-  && ok "the refusal pages the founder" \
+  && bad "THE DEFECT: paged the founder about something it handled itself" \
+  || ok "no page: the condition was handled, so there is nothing to tell him"
+
+echo
+echo "== 2b. behind + a path the merge would clobber -> REFUSE and page =="
+# The half that must STILL reach him. A file git is not tracking, sitting where
+# the merge wants to write, is data only he can adjudicate. A gate that silences
+# this is a worse outage than the noise it was built to stop.
+C2B="$(fresh_clone c-collide)"
+advance_origin threeee
+( cd "$C2B" && git rm -q --cached f.txt && git commit -qm untrack ) >/dev/null 2>&1
+printf 'LOCAL WORK GIT CANNOT SEE\n' > "$C2B/f.txt"
+S2B="$WORK/s2b"; mkdir -p "$S2B"
+OUT2B="$(run_check "$C2B" "$S2B")"
+echo "$OUT2B" | grep -q 'VERDICT=REFUSE' \
+  && ok "a checkout with a clobberable path refuses to dispatch" \
+  || bad "THE DEFECT: merged over a path git is not tracking: $(echo "$OUT2B" | tr '\n' ' ')"
+echo "$OUT2B" | grep -q '^PAGE ' \
+  && ok "that refusal DOES page: it is a real founder decision" \
   || bad "refused silently: an unattended refusal nobody is told about is a dead loop"
-echo "$OUT" | grep -q 'git merge --ff-only' \
-  && ok "the page carries the fix command" \
-  || bad "the page does not say what to do"
+grep -q 'LOCAL WORK GIT CANNOT SEE' "$C2B/f.txt" \
+  && ok "the at-risk file is untouched" \
+  || bad "THE DEFECT: the at-risk file was overwritten"
 
 echo
 echo "== 3. ahead: local commits not yet pushed -> RUN (must not wedge) =="
@@ -175,7 +234,7 @@ echo "== 6. THE ASK-283 REGRESSION: one page per EPISODE, not one per commit =="
 # The measured complaint. A per-sha key sent 9 pages for one unchanged problem
 # because main kept moving. Four heartbeats across four different remote shas must
 # produce exactly ONE page.
-C6="$(fresh_clone c-episode)"
+C6="$(pageable_clone c-episode)"
 S6="$WORK/s6"; mkdir -p "$S6"
 advance_origin ep-1
 P_TOTAL=0
@@ -203,14 +262,18 @@ echo "$MUTED_OUT" | grep -q 'SAY STALE' \
 
 echo
 echo "== 7. recovery clears the page state, so the NEXT episode is heard at once =="
-C7="$(fresh_clone c-recover)"
+C7="$(pageable_clone c-recover)"
 S7="$WORK/s7"; mkdir -p "$S7"
 advance_origin rec-1
 R1="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"
 R2="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"          # unchanged -> muted
-( cd "$C7"; git merge -q --ff-only origin/main ) >/dev/null 2>&1  # a human fixes it
+( cd "$C7"; mv blocker-c-recover.txt blocker.kept; git merge -q --ff-only origin/main ) >/dev/null 2>&1  # a human fixes it
 RCLR="$(run_check "$C7" "$S7" 2>&1)"                              # healthy -> clears
-advance_origin rec-2                                              # a NEW episode
+# The NEW episode has to be a PAGEABLE one. A plain `advance_origin` now leaves the
+# clone behind-but-clean, which self-heals silently -- so this case would read 1/0/0
+# and blame page_clear for a mute that never happened.
+printf 'more local untracked work\n' > "$C7/blocker2-c-recover.txt"
+advance_origin_add blocker2-c-recover.txt                         # a NEW episode
 R3="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"
 if [ "${R1:-0}" -eq 1 ] && [ "${R2:-0}" -eq 0 ] && [ "${R3:-0}" -eq 1 ]; then
   ok "pages, mutes the repeat, and pages again on a new episode ($R1/$R2/$R3)"
@@ -241,7 +304,7 @@ echo
 echo "== 9. a FAILED page must not create the dedupe marker (codex round 4, major 2) =="
 # Writing the marker for a page that never went out permanently silences the founder
 # about a refusing loop. A storm is annoying; silence is invisible, and worse.
-C9="$(fresh_clone c-pagefail)"
+C9="$(pageable_clone c-pagefail)"
 S9="$WORK/s9"; mkdir -p "$S9"
 advance_origin pf-1
 F1="$( cd "$C9" && KIPI_TEST_PAGE_FAILS=1 LOG="$S9/dispatch.log" bash "$HARNESS" 2>/dev/null | grep -c '^PAGE ' || true )"

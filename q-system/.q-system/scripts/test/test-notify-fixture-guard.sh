@@ -97,9 +97,9 @@ fi
 send() {
   : > "$CAPTURE_FILE"
   if [ -n "${1:-}" ]; then
-    env "$1" bash "$NOTIFY" "guard suite probe" 2> "$WORK/err"
+    env "$1" bash "$NOTIFY" "guard suite probe" 2> "$WORK/err"  # notify-kind-skip: fixture-guard suite
   else
-    env -u KIPI_LINEAR_API_URL bash "$NOTIFY" "guard suite probe" 2> "$WORK/err"
+    env -u KIPI_LINEAR_API_URL bash "$NOTIFY" "guard suite probe" 2> "$WORK/err"  # notify-kind-skip: fixture-guard suite
   fi
   sleep 0.3
   printf '%s|%s' "$(wc -l < "$CAPTURE_FILE" | tr -d ' ')" "$(cat "$WORK/err")"
