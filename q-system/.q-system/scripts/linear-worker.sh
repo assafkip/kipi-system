@@ -477,10 +477,20 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # the no-PR bump added tonight would have been the sixth. Fixing the shared helper
 # fixes all of them at once, which is why it belongs here and not at a call site.
 #
-# The lock is an O_EXCL file created already carrying its owner's token -- macOS
-# ships no flock, so the portable primitive is the only one that works on both
-# kernels this fleet runs on. Write-temp-then-rename makes the replacement atomic
-# too, so a crash mid-write cannot leave a truncated ledger.
+# The lock is `fcntl.flock` on the ledger's own lock file. This paragraph used to
+# describe an O_EXCL file carrying its owner's token, justified by "macOS ships no
+# flock" -- and that justification was simply false (attempts-ledger.py:60 retracts
+# it in this same PR; the claim is true of the flock(1) BINARY, which is why
+# converge.sh, being bash, does have to hand-roll one). The hand-rolled version had
+# to guess whether a leftover lock's owner was alive, and pids wrap, so a corpse
+# lock eventually named a live process that never held it and froze the counter
+# forever. The kernel drops an flock on close AND on process death, so there is no
+# liveness to guess at. Write-temp-then-rename makes the replacement atomic too, so
+# a crash mid-write cannot leave a truncated ledger.
+#
+# KEEP THIS PARAGRAPH TRUE. It is the one a future agent cites when it is told to
+# reuse an in-repo lock rather than invent another -- which already happened once,
+# on 2026-08-02, and propagated both defects of the version it cited.
 #
 # A LOCK IT CANNOT TAKE MEANS IT WRITES NOTHING AND EXITS 3 (ASK-286). This
 # paragraph used to say the opposite -- that the timeout took the lock BY FORCE
@@ -490,7 +500,10 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # one read-decide-write. A skipped bump is recoverable (the next scheduled run
 # retries, and the run that DID hold the lock is counting); two writers in one
 # transaction is not. None of the callers below run under `set -e`, so a 3 is a
-# reported miss on stderr, not a dead worker.
+# reported miss on stderr, not a dead worker -- and that sentence is only true
+# because nothing in this script turns errexit on behind them. `page_once` did
+# exactly that for one commit (codex round 2), which is why it now reads its exit
+# code through a `||` list instead of bracketing the call in `set +e`/`set -e`.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
@@ -566,12 +579,27 @@ claim_page_once() { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$1" "$2"; }
 # still true and still unpaged; a duplicate page is noise, a suppressed page is a
 # stall nobody sees. It is also bounded: contention lasts a retry budget, and the
 # first run that gets the lock claims the flag, after which every run is quiet.
+#
+# IT CAPTURES THE CODE WITHOUT TOUCHING THE SHELL'S FLAGS (codex round 2, major).
+# This body used to read `set +e; claim_page_once ...; rc=$?; set -e`, and that
+# trailing `set -e` does not RESTORE errexit -- it ENABLES it. This script runs
+# `set -uo pipefail` (line 47) and has never had `-e`, so the first page in a run
+# re-flagged everything after it: the queue drain is a pipeline into `while read`,
+# and the next benign non-zero killed it mid-drain while the worker still printed
+# "run complete" and exited 0 -- which this file's own header tells callers to
+# treat as healthy. A partial drain reported healthy is the silent stall this
+# worker exists to kill, which is the second time that class has been re-created
+# inside the mechanism built to kill it (finding 2 was the first).
+#
+# `|| rc=$?` rather than a bare call: inside a `||` list errexit is suspended, so
+# this reads the code correctly whether or not a future caller has `-e`, and it
+# still leaves the caller's flags exactly as it found them. Case 5 of
+# test-claim-page-once-routing.sh asserts `$-` is unchanged across the call, from
+# a fork running THIS script's flags -- the suite itself runs `set -euo pipefail`,
+# so in-process the leak is invisible.
 page_once() {
-  local rc
-  set +e
-  claim_page_once "$1" "$2"
-  rc=$?
-  set -e
+  local rc=0
+  claim_page_once "$1" "$2" || rc=$?
   case "$rc" in
     0) return 0 ;;
     1) return 1 ;;

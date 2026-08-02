@@ -502,6 +502,57 @@ def case_timeout_is_the_documented_budget(tmp: str) -> None:
     ok(f"a contended refusal lands inside the budget it documents ({elapsed:.1f}s of {budget}s)")
 
 
+# --- 13. AN OS ERROR ON THE WRITE PATH MUST NOT ANSWER 1 ---------------------
+# Codex round 2 on PR #67, minor 3. `main` caught `Usage` and `LockUnavailable`
+# and nothing else, so an OSError from mkstemp / os.replace / json.dump escaped
+# as an uncaught exception -- and Python exits 1 on those. For claim-flag, 1 is
+# the ONE code that means "already claimed on a prior run, stay quiet". So a
+# write that failed hard read as a page already sent, for a flag no file records,
+# which means no later run retires it either. Same silent-drop class as findings
+# 2 and 3, arriving through the one door still left open.
+#
+# The trigger here is constructed (a read-only ledger directory); the natural
+# producer is a full disk. That is why the exit code is what gets asserted rather
+# than the specific errno -- the point is that EVERY unexpected failure lands on
+# 2, not that this one does.
+def case_write_failure_is_not_already_claimed(tmp: str) -> None:
+    ro_dir = os.path.join(tmp, "readonly-ledger")
+    os.mkdir(ro_dir)
+    path = os.path.join(ro_dir, "attempts.json")
+    with open(path, "w") as fh:
+        json.dump({}, fh)
+    # PRE-CREATE THE LOCK FILE. Without it the read-only directory stops the run
+    # at lock CREATION, which already answers 3 -- so the fixture would pass
+    # against an implementation that has none of this handling, testing the lock
+    # path instead of the write path. The defect lives after acquisition: flock
+    # opens an existing file fine, and `mkstemp` in the same directory is the
+    # first thing that cannot proceed.
+    open(path + ".lock", "a").close()
+    os.chmod(ro_dir, 0o555)          # writable files, unwritable directory
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(LEDGER), path, "claim-flag", "ASK-13", "stuck_paged"],
+            capture_output=True, text=True,
+        )
+    finally:
+        os.chmod(ro_dir, 0o755)
+
+    if proc.returncode == 0:
+        fail("the failed write answered 0, so the caller pages off a flag no file records")
+    if proc.returncode == 1:
+        fail("THE DEFECT: the ledger write failed with an OSError and the process exited 1 -- "
+             "the same answer as 'already claimed on a prior run'. page_once routes 1 to "
+             "'stay quiet', so the page is dropped for a state nothing recorded and no later "
+             f"run will retire. stderr tail={proc.stderr.strip().splitlines()[-1:]!r}")
+
+    # And the flag really was not written, which is what makes 1 a lie.
+    with open(path) as fh:
+        after = json.load(fh)
+    if after:
+        fail(f"the ledger recorded {after!r} despite the write failing")
+    ok(f"a hard write failure exits {proc.returncode}, not 1 ('already claimed'), and records nothing")
+
+
 def main() -> int:
     print("test-attempts-ledger: the lock around the attempts counter (ASK-286)")
     with tempfile.TemporaryDirectory() as tmp:
@@ -517,6 +568,7 @@ def main() -> int:
         case_ops_round_trip(tmp)
         case_usage_errors_exit_two(tmp)
         case_timeout_is_the_documented_budget(tmp)
+        case_write_failure_is_not_already_claimed(tmp)
     print(f"PASS ({PASSED} cases)")
     return 0
 

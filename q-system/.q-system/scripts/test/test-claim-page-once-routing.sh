@@ -46,8 +46,21 @@ extract_claim_page_once() {
   awk '/^claim_page_once\(\)/{print; exit}' "$WORKER"
 }
 
+# LIFT THE ROUTER ITSELF, DO NOT RE-WRITE IT (codex round 2 on PR #67, minor 2).
+# Case 3 used to define a local `route()` that reimplemented the routing from the
+# same mental model that wrote `page_once` -- and it happened to omit the very
+# `set -e` that made the shipped function a major defect. A test that reimplements
+# its subject asserts the author's intent, not the code. The function wired to six
+# call sites had zero executed coverage and the suite was green anyway.
+extract_page_once() {
+  sed -n '/^page_once() {/,/^}/p' "$WORKER"
+}
+
 CLAIM_FN="$(extract_claim_page_once)"
 [ -n "$CLAIM_FN" ] || fail "claim_page_once is no longer a one-line definition in $WORKER; this test has to be re-pointed"
+
+PAGE_FN="$(extract_page_once)"
+[ -n "$PAGE_FN" ] || fail "page_once is no longer a \`page_once() {\` .. \`}\` block in $WORKER; this test has to be re-pointed"
 
 LEDGER="$LEDGER_PY"
 ATTEMPTS="$WORK/attempts.json"
@@ -99,17 +112,21 @@ ok "a failed ledger write is distinguishable from 'already claimed' (rc=$CONTEND
 
 # --- 3. THE CALL-SITE SHAPE ROUTES THE THREE ANSWERS TO TWO BRANCHES --------
 # The exit code only matters if the six call sites read it. This asserts the
-# routing the worker actually performs, on the three answers it can get.
+# routing the worker actually performs, on the three answers it can get -- by
+# running the WORKER'S OWN `page_once`, lifted above, not a copy of it.
+SAYLOG="$WORK/say.log"
+say() { echo "$*" >> "$SAYLOG"; }
+eval "$PAGE_FN"
+
+# `page_once` answers page/quiet with its exit code and distinguishes the third
+# route by warning through `say`, so the observation has to read both.
 route() {
-  set +e
-  claim_page_once "$@" >/dev/null 2>&1
-  local rc=$?
-  set -e
-  case "$rc" in
-    0) echo page ;;
-    1) echo quiet ;;
-    *) echo page-and-warn ;;
-  esac
+  : > "$SAYLOG"
+  if page_once "$@" 2>/dev/null; then
+    if [ -s "$SAYLOG" ]; then echo page-and-warn; else echo page; fi
+  else
+    echo quiet
+  fi
 }
 echo '{}' > "$ATTEMPTS"
 rm -f "$ATTEMPTS.lock"   # case 2 deliberately left a held lock behind
@@ -133,5 +150,72 @@ if [ "$BARE" -ne 0 ]; then
 same branch as exit 1 (already claimed). Those pages are silently dropped."
 fi
 ok "no call site uses the bare \`if claim_page_once\` shape that collapses exit 3"
+
+# --- 5. page_once MUST LEAVE THE SHELL FLAGS IT FOUND ----------------------
+# (codex round 2 on PR #67, major.) `page_once` bracketed its call in
+# `set +e` .. `set -e`, which does not RESTORE errexit, it TURNS IT ON. The
+# worker runs `set -uo pipefail` (line 47) and has never had `-e`, so the first
+# page in a run silently re-flags the rest of the script.
+#
+# THIS CASE CANNOT RUN IN-PROCESS. This suite itself runs `set -euo pipefail`,
+# so errexit is already on here and the leak is invisible. The observation only
+# exists under the worker's REAL flags, which is why it forks.
+cat > "$WORK/flags.sh" <<EOF
+set -uo pipefail                       # the worker's flags at linear-worker.sh:47
+LEDGER="$LEDGER_PY"
+ATTEMPTS="$WORK/flags-attempts.json"
+echo '{}' > "\$ATTEMPTS"
+say() { echo "\$*" >&2; }
+$CLAIM_FN
+$PAGE_FN
+BEFORE="\$-"
+page_once ASK-FLAGS stuck_paged >/dev/null 2>&1
+AFTER="\$-"
+echo "\$BEFORE|\$AFTER"
+EOF
+FLAGS="$(bash "$WORK/flags.sh")"
+FLAGS_BEFORE="${FLAGS%%|*}"
+FLAGS_AFTER="${FLAGS##*|}"
+if [ "$FLAGS_BEFORE" != "$FLAGS_AFTER" ]; then
+  fail "THE DEFECT: page_once changed the caller's shell flags from '$FLAGS_BEFORE' to
+'$FLAGS_AFTER'. \`set -e\` at the end of the function does not restore errexit, it
+enables it, and linear-worker.sh never had it. Every command after the first page
+in a run is now fatal."
+fi
+ok "page_once leaves the shell flags unchanged ($FLAGS_BEFORE -> $FLAGS_AFTER)"
+
+# --- 6. THE 3AM CONSEQUENCE: A PARTIAL QUEUE DRAIN THAT EXITS 0 -------------
+# Flags are only worth asserting because of what they do to the drain. The
+# worker's queue is a pipeline into `while read`, and it ends by saying
+# "run complete" and exiting 0 -- its header documents that as "a caller may
+# treat this as healthy". With errexit leaked, the first benign non-zero after
+# the first page kills the loop and the worker still reports healthy: issues
+# silently never processed, which is the stall class this file exists to kill.
+cat > "$WORK/drain.sh" <<EOF
+set -uo pipefail
+LEDGER="$LEDGER_PY"
+ATTEMPTS="$WORK/drain-attempts.json"
+echo '{}' > "\$ATTEMPTS"
+say() { echo "\$*" >&2; }
+$CLAIM_FN
+$PAGE_FN
+printf 'ASK-1\nASK-2\nASK-3\n' | while read -r I; do
+  echo "processing \$I"
+  page_once "\$I" stuck_paged >/dev/null 2>&1 || true
+  # A benign non-zero the worker runs constantly: a grep that matches nothing.
+  grep -q 'no-such-pattern' /dev/null || true
+  [ -f "$WORK/no-such-file" ]        # unguarded, exits 1, harmless without -e
+  echo "finished \$I"
+done
+echo "LOOP DONE"
+EOF
+DRAINED="$(bash "$WORK/drain.sh" 2>/dev/null | grep -c '^processing ' || true)"
+if [ "$DRAINED" -ne 3 ]; then
+  fail "THE DEFECT: the queue drained $DRAINED of 3 issues. page_once leaked errexit,
+so the first benign non-zero after the first page killed the drain -- and the
+worker still exits 0 and says 'run complete', which its own header tells callers
+to treat as healthy. A partial drain reported healthy is a silent stall."
+fi
+ok "a 3-issue queue still drains all 3 after a page fires (drained $DRAINED)"
 
 echo "PASS ($PASS checks)"

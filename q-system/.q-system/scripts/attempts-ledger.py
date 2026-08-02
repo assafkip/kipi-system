@@ -115,6 +115,7 @@ import os
 import sys
 import tempfile
 import time
+import traceback
 
 # TWO CAPS, whichever comes first. LOCK_TIMEOUT is what a caller actually cares
 # about -- "how long before this refuses" -- and it is measured, so it stays true
@@ -299,6 +300,26 @@ def main(argv):
         # answering 1 would retire a page that never fired.
         sys.stderr.write("attempts-ledger: `%s` wrote nothing -- %s\n" % (op, exc))
         return 3
+    except Exception:
+        # 2, and the catch-all is the point (codex round 2 on PR #67, minor 3).
+        # This block used to name only the two exceptions above, so an OSError
+        # from mkstemp / os.replace / json.dump on a full or read-only filesystem
+        # escaped as an uncaught exception -- and Python exits 1 on those. For
+        # claim-flag, 1 is the ONE code that means "already claimed on a prior
+        # run, stay quiet". So a write that failed hard read as a page already
+        # sent, for a flag no file records, which means no later run retires it
+        # either. That is the same silent drop findings 2 and 3 closed, arriving
+        # through the one door still left open.
+        #
+        # Enumerating OSError instead would leave the next unnamed exception on
+        # 1. The safe default for "something we did not anticipate" is the code
+        # that says NOTHING WAS WRITTEN, so the caller pages and says so.
+        # The traceback still goes to stderr, because a swallowed error here is
+        # how a real bug becomes a shrug.
+        traceback.print_exc()
+        sys.stderr.write(
+            "attempts-ledger: `%s` failed unexpectedly and wrote nothing (exit 2)\n" % op)
+        return 2
 
 
 def _args(op, rest, want):
