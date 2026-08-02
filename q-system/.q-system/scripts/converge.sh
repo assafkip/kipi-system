@@ -343,6 +343,87 @@ receipt_commit() {
     git -C "$tree" commit -q -m "$msg" -- .prd-os/receipts.jsonl 2>>"$LOG"
 }
 
+# --- the guard, and the only thing that counts as delivery -------------------
+#
+# TWO RUNS MUST NOT INTERLEAVE INSIDE THE TRANSACTION (round 2, finding 2 --
+# major). Reading the ledger, deciding it needs a line, appending, committing and
+# pushing was a bare read-decide-write. Two convergence runs on one issue (a hand
+# `kipi converge` next to the scheduled one) both read "no receipt", both append,
+# and then contend on the same git index -- both commits can fail, both roll back,
+# and origin ends with no receipt after TWO terminal approvals. sp-53b02cc4
+# already records this exact shape across five sites in this fleet.
+#
+# mkdir IS the lock: atomic on POSIX and needing no flock, which macOS does not
+# ship -- the same primitive and the same reasoning as the attempts ledger
+# (attempts-ledger.py `_mutate`, wired at linear-worker.sh:464). It is NOT a new
+# fourth mechanism; page_once, apply_claude_changes and the checkout self-heal
+# all closed this shape the same way.
+#
+# It lives under STATE_DIR, not in the tree: a lock directory inside .prd-os/
+# would show up as untracked next to the file being committed, and the first
+# `git clean` or stray `add .` would either sweep it or commit it.
+#
+# Taken BY FORCE after 10s, exactly as the attempts ledger does: a stale lock
+# from a killed run is far likelier than a live run holding it that long, and a
+# receipt that never lands is the defect the whole PR exists to remove.
+# Overridable ONLY so the suite can assert the contended path without a 10s
+# sleep per case. Production never sets it, same posture as KIPI_SKEL.
+RECEIPT_LOCK_TRIES="${KIPI_RECEIPT_LOCK_TRIES:-100}"
+receipt_lock_take() {
+  local lock="$1" i=0
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+  while [ "$i" -lt "$RECEIPT_LOCK_TRIES" ]; do
+    mkdir "$lock" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  say "receipt: waited 10s for the receipt lock at $lock and took it by force -- a stale lock from a killed run is likelier than a live run holding it that long"
+  return 0
+}
+receipt_lock_drop() { rmdir "$1" 2>/dev/null || true; }
+
+# receipt_confirm_origin <tree> <sha> <record>
+#
+# A LOCAL COMMIT IS NOT DELIVERY (round 2, finding 1 -- major). Success used to
+# be decided from the working tree: a line in the ledger FILE set receipted=1,
+# and a tree that was not ahead returned success without ever asking the remote.
+# So a run that died between the append and the commit left an uncommitted line,
+# the next run dedup'd against that line, reported success, and told the founder
+# no human was needed -- while origin carried zero receipts and `validate` would
+# refuse the PR forever. The receipt exists for exactly one reader, CI, and CI
+# reads the PUSHED head. Nothing in a worktree is evidence about that.
+#
+# So the last word belongs to origin, always, whatever happened locally.
+#
+# It reuses receipt_append as the PREDICATE rather than re-deriving "is this head
+# receipted" out here: exit 3 is that function's own "already receipted" answer,
+# so origin is judged by the identical rule that decided the append. Two readers
+# of one input with different semantics is the defect this file keeps paying for.
+# The probe is a throwaway copy of ORIGIN's ledger, so an append lands in a
+# tempfile and changes nothing.
+receipt_confirm_origin() {
+  local tree="$1" sha="$2" record="$3" probe rc
+  if ! git -C "$tree" fetch -q origin "$BRANCH" 2>>"$LOG"; then
+    say "receipt: could not reach origin/$BRANCH to confirm the receipt landed (see $LOG), so this run claims nothing about it"
+    RECEIPT_MISS="${RECEIPT_MISS:-converge could not reach origin/$BRANCH to confirm a receipt landed, so nothing here proves one did}"
+    RECEIPT_FIX="${RECEIPT_FIX:-git -C $tree fetch origin $BRANCH to see why, then re-run: kipi converge --issue $ISSUE}"
+    return 0
+  fi
+  probe="$(mktemp)"
+  git -C "$tree" show "FETCH_HEAD:.prd-os/receipts.jsonl" > "$probe" 2>/dev/null || : > "$probe"
+  receipt_append "$probe" "$ISSUE" "$sha" "$record" "$sha" >/dev/null 2>&1; rc=$?
+  rm "$probe" 2>/dev/null || true
+  if [ "$rc" = "3" ]; then
+    RECEIPT_MISS=""; RECEIPT_FIX=""
+    say "receipt: CONFIRMED on origin/$BRANCH -- validate reads a receipt for $ISSUE at $(printf '%.12s' "$sha")"
+    return 0
+  fi
+  say "receipt: origin/$BRANCH carries NO receipt for $ISSUE at $(printf '%.12s' "$sha"). Whatever happened in the worktree, the head CI reads has nothing on it."
+  RECEIPT_MISS="${RECEIPT_MISS:-origin/$BRANCH carries no receipt for this head, so nothing CI reads proves it was reviewed}"
+  RECEIPT_FIX="${RECEIPT_FIX:-re-run: kipi converge --issue $ISSUE}"
+  return 0
+}
+
 # receipt_ensure <sha> <verdict-record> <reviewed-sha> <pr>
 # Best-effort by design and NEVER touches this run's exit code, exactly like the
 # worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
@@ -350,7 +431,7 @@ receipt_commit() {
 # It DOES change what the report says, which is a different thing: the exit code
 # is a contract other code reads, the page is what a human reads.
 receipt_ensure() {
-  local sha="$1" record="$2" reviewed="$3" pr="$4" tree ledger head note rc backup had=0 ahead gained receipted=0
+  local sha="$1" record="$2" reviewed="$3" pr="$4" tree lock
   RECEIPT_MISS=""; RECEIPT_FIX=""
   if [ -z "$sha" ]; then
     say "receipt: no head sha to pin one to, so no receipt was written"
@@ -394,6 +475,24 @@ receipt_ensure() {
     RECEIPT_FIX="git -C $SKEL worktree add <path> $BRANCH, then write a receipt for $ISSUE at $sha and push it"
     return 0
   fi
+  # Everything from the ledger read through the push is ONE transaction under one
+  # lock, and origin -- not the tree it just wrote -- decides whether it worked.
+  lock="$STATE_DIR/receipt-$(echo "$BRANCH" | tr '/' '-').lock"
+  receipt_lock_take "$lock"
+  receipt_transaction "$sha" "$record" "$tree"
+  receipt_lock_drop "$lock"
+  receipt_confirm_origin "$tree" "$sha" "$record"
+  return 0
+}
+
+# receipt_transaction <sha> <verdict-record> <tree>
+# The guarded body: read the ledger, decide, append, commit, push. Runs under the
+# receipt lock and never decides its own success -- receipt_confirm_origin does
+# that, from the remote. Its RECEIPT_MISS/RECEIPT_FIX lines are the local REASON
+# a receipt may be missing, kept because they are more specific than "origin has
+# none"; the confirm step clears them when origin proves them wrong.
+receipt_transaction() {
+  local sha="$1" record="$2" tree="$3" ledger head note rc backup had=0 ahead gained receipted=0
   ledger="$tree/.prd-os/receipts.jsonl"
   head="$(git -C "$tree" rev-parse HEAD 2>/dev/null)"
 
@@ -407,7 +506,26 @@ receipt_ensure() {
   # they are not the same miss: 4 is a filesystem the tree cannot write, 5 is a
   # tree parked on the wrong commit. Handing both the same fix sends the operator
   # to `git status` on a tree whose problem is where it is standing.
-  if [ "$rc" = "3" ]; then receipted=1; fi
+  # A LINE IN THE FILE IS NOT A DELIVERED RECEIPT (round 2, finding 1 -- major).
+  # 3 means the ledger FILE already carries this receipt. That used to be read as
+  # "done", which is true only when the line is also COMMITTED. A run killed
+  # between the append and the commit leaves it uncommitted, and every retry then
+  # dedup'd against it, skipped the commit, found nothing to push, and reported
+  # success -- a permanent dead end that got louder the more it was retried.
+  #
+  # An uncommitted line is not a reason to stop, it is the work this run should
+  # finish: hand it to the commit path below by treating it as a fresh append.
+  # The rollback there restores the same content it started from, so a failing
+  # commit is no worse off than before.
+  if [ "$rc" = "3" ]; then
+    if ! git -C "$tree" diff --quiet -- .prd-os/receipts.jsonl 2>/dev/null \
+       || ! git -C "$tree" diff --cached --quiet -- .prd-os/receipts.jsonl 2>/dev/null; then
+      say "receipt: the ledger already carries this receipt but it was never committed (a run that died mid-transaction). Finishing it now rather than dedup'ing against a line origin has never seen."
+      rc=0
+    else
+      receipted=1
+    fi
+  fi
   if [ "$rc" = "4" ]; then
     RECEIPT_MISS="the ledger write was refused ($note)"
     RECEIPT_FIX="git -C $tree status, then write a receipt for $ISSUE at $sha into .prd-os/receipts.jsonl and push it"
@@ -435,7 +553,14 @@ receipt_ensure() {
       else rm -f "$ledger" 2>/dev/null || true; fi
       say "receipt: the commit was REFUSED in $tree (see $LOG) -- rolled the ledger line back rather than leave an uncommitted receipt. PR #23's gate will refuse this PR until one lands."
       RECEIPT_MISS="the receipt commit was REFUSED in $tree (see $LOG); the ledger line was rolled back"
-      RECEIPT_FIX="git -C $tree commit -m 'chore(receipt): prd-os receipt for $ISSUE' -- .prd-os/receipts.jsonl && git -C $tree push origin $BRANCH"
+      # A REMEDY THAT CANNOT WORK BURNS THE ONE HUMAN WHO READS IT (round 2,
+      # finding 3 -- minor). This said `git commit -- .prd-os/receipts.jsonl`,
+      # but the rollback two lines up already removed that line, so the operator's
+      # copy-paste died with `nothing to commit` and told them the page was wrong
+      # rather than the commit. There is nothing staged to rescue by hand: the
+      # only thing that re-creates the line is another converge run, so send them
+      # to the cause first and then to that.
+      RECEIPT_FIX="read $LOG for why the commit was refused and fix that (the rolled-back line is gone, so there is nothing to commit by hand), then re-run: kipi converge --issue $ISSUE"
     fi
   fi
   rm -f "$backup" 2>/dev/null || true

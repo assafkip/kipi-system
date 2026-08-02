@@ -3104,6 +3104,146 @@ grep -qi "resolves no committer identity" "$W2/conv-noident.out" \
 $(sed 's/^/        /' "$W2/conv-noident.out")"
 ok "a receipt lands with no ambient git identity, signed by converge and said out loud"
 
+# --- S2c. A CRASHED RUN'S LEFTOVER LINE IS FINISHED, NOT COUNTED -------------
+# (round 2, finding 1 -- major.) receipt_append dedups on the ledger FILE, and
+# the file is written before the commit. A run killed in that window leaves an
+# uncommitted line; every retry then matched it, skipped the commit, found
+# nothing to push, and reported SUCCESS -- while origin carried zero receipts.
+# The failure got quieter the more it was retried, which is the worst direction.
+R_CRASH="$W2/world-crash"; receipt_world "$R_CRASH" 906
+SHA_CRASH="$(git -C "$R_CRASH/tree" rev-parse HEAD)"
+S_CRASH="$W2/state-crash"; mkdir -p "$S_CRASH/pr-reviews"
+seed_record "$S_CRASH" 906 "APPROVE" "$SHA_CRASH"
+gh_says 906 CLEAN "$SHA_CRASH"
+# The corpse a killed run leaves: the line in the file, nothing committed.
+printf '{"commit_sha": "%s", "issue_id": "ASK-906"}\n' "$SHA_CRASH" \
+  >> "$R_CRASH/tree/.prd-os/receipts.jsonl"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_CRASH" 906 "$S_CRASH" "$W2/conv-crash.out"
+
+PUSHED_CRASH="$(git -C "$R_CRASH/origin" rev-parse sana/ask-906 2>/dev/null)"
+[ -n "$PUSHED_CRASH" ] && [ "$PUSHED_CRASH" != "$SHA_CRASH" ] \
+  || fail "THE DEFECT: a receipt line left uncommitted by a killed run was read as a delivered
+      receipt. converge skipped the commit, pushed nothing, and origin/sana/ask-906 still
+      carries no receipt -- and every retry repeats it, so the PR can never satisfy PR #23's
+      gate. It said:
+$(sed 's/^/        /' "$W2/conv-crash.out")"
+grep -qi "never committed" "$W2/conv-crash.out" \
+  || fail "converge recovered the orphaned line without saying that is what it did. A silent
+      recovery on a durability path is indistinguishable from never having had the bug:
+$(sed 's/^/        /' "$W2/conv-crash.out")"
+ok "a receipt line left uncommitted by a crashed run is finished, not counted as delivered"
+
+# --- S2d. AND ONLY THE REMOTE GETS TO SAY IT LANDED --------------------------
+# The other half of the same finding, and the ONE case no local signal catches.
+# Every other miss here trips a local error the run can see: a refused commit, a
+# failed push, a tree standing on the wrong sha. This one has none. The receipt
+# was genuinely written, committed and pushed, and THEN origin lost it (a force
+# push, a branch rebuilt, a rewound ref).
+#
+# On the next run every local reading still says done: the ledger file carries
+# the line, it is committed, and `rev-list origin/$BRANCH..HEAD` answers 0 --
+# because the remote-TRACKING ref is a local cache that still points at the
+# commit origin no longer has. So the old code returned success without one
+# error to report, and the page said no human was needed. Nothing short of
+# asking the remote can tell this apart from a healthy run.
+R_STALE="$W2/world-stale"; receipt_world "$R_STALE" 907
+SHA_STALE="$(git -C "$R_STALE/tree" rev-parse HEAD)"
+S_STALE="$W2/state-stale"; mkdir -p "$S_STALE/pr-reviews"
+seed_record "$S_STALE" 907 "APPROVE" "$SHA_STALE"
+gh_says 907 CLEAN "$SHA_STALE"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_STALE" 907 "$S_STALE" "$W2/conv-stale1.out"
+DELIVERED_STALE="$(git -C "$R_STALE/origin" rev-parse sana/ask-907 2>/dev/null)"
+[ "$DELIVERED_STALE" != "$SHA_STALE" ] \
+  || fail "the S2d fixture never delivered a receipt on its first run, so it cannot judge what
+      happens when origin loses one:
+$(sed 's/^/        /' "$W2/conv-stale1.out")"
+
+# origin loses the receipt commit; the tree and its tracking ref know nothing.
+git -C "$R_STALE/origin" update-ref refs/heads/sana/ask-907 "$SHA_STALE"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_STALE" 907 "$S_STALE" "$W2/conv-stale2.out"
+
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "THE DEFECT ON THE PHONE: origin carries no receipt for this head, so CI reads none,
+      and the one line that wakes the founder says the merge is handled. Every local signal
+      said done -- which is exactly why the local signals cannot be the ones that decide. It
+      paged:
+$(cat "$W2/pages.txt")"
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "origin carries no receipt and the page does not mention one, so the operator is left
+      with a PR that silently never merges: $(cat "$W2/pages.txt")"
+[ "$RRC" = "1" ] \
+  || fail "an undelivered receipt changed converge's exit code to $RRC. The writer is
+      best-effort by design; only the REPORT moves."
+ok "a receipt origin no longer carries is a miss, however done the worktree looks"
+
+# --- S2e. THE TRANSACTION IS GUARDED ----------------------------------------
+# (round 2, finding 2 -- major.) Two convergence runs on one issue -- a hand
+# `kipi converge` next to the scheduled one -- both read "no receipt", both
+# append, and then contend on the same git index; both commits can fail and
+# origin ends with nothing after TWO terminal approvals. Same read-decide-write
+# shape sp-53b02cc4 records across five other sites in this fleet.
+#
+# Driven at the lock itself rather than by racing two processes: a race that
+# passes because the timing happened to work proves nothing on a quiet runner.
+R_LOCK="$W2/world-lock"; receipt_world "$R_LOCK" 908
+SHA_LOCK="$(git -C "$R_LOCK/tree" rev-parse HEAD)"
+S_LOCK="$W2/state-lock"; mkdir -p "$S_LOCK/pr-reviews"
+seed_record "$S_LOCK" 908 "APPROVE" "$SHA_LOCK"
+gh_says 908 CLEAN "$SHA_LOCK"
+mkdir -p "$S_LOCK/receipt-sana-ask-908.lock"      # another run is inside it
+: > "$W2/pages.txt"
+( cd "$R_LOCK/skel" \
+  && HOME="$W2/home" KIPI_SKEL="$R_LOCK/skel" KIPI_STATE_DIR="$S_LOCK" \
+     KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+     KIPI_RECEIPT_LOCK_TRIES=3 \
+     bash "$CONV" --issue "ASK-908" --max-rounds 1 ) >"$W2/conv-lock.out" 2>&1
+
+grep -qi "receipt lock" "$W2/conv-lock.out" \
+  || fail "converge entered the receipt transaction without ever consulting a lock, so two runs
+      can interleave inside the read-decide-write and both lose. It said:
+$(sed 's/^/        /' "$W2/conv-lock.out")"
+# AND A CONTENDED LOCK STILL DELIVERS. Waiting forever, or skipping the receipt
+# because someone else might be holding it, is the same missing receipt by
+# another route -- the attempts ledger takes it by force for exactly this reason.
+PUSHED_LOCK="$(git -C "$R_LOCK/origin" rev-parse sana/ask-908 2>/dev/null)"
+[ -n "$PUSHED_LOCK" ] && [ "$PUSHED_LOCK" != "$SHA_LOCK" ] \
+  || fail "a contended lock cost the receipt entirely: converge waited, gave up, and origin
+      carries nothing. A lock that drops the write is worse than no lock. It said:
+$(sed 's/^/        /' "$W2/conv-lock.out")"
+ok "the receipt transaction runs under a lock, and a contended lock still delivers"
+
+# --- S2f. THE COMMIT-FAILURE REMEDY HAS TO BE RUNNABLE -----------------------
+# (round 2, finding 3 -- minor.) The page told the operator to commit a ledger
+# line that the rollback immediately above it had already removed, so the
+# copy-paste died with `nothing to commit`. A remedy that cannot work teaches the
+# one human who reads pages to stop reading them -- the same category as the
+# alert findings on ASK-283.
+R_HOOK="$W2/world-hookfail"; receipt_world "$R_HOOK" 909
+SHA_HOOK="$(git -C "$R_HOOK/tree" rev-parse HEAD)"
+S_HOOK="$W2/state-hookfail"; mkdir -p "$S_HOOK/pr-reviews"
+seed_record "$S_HOOK" 909 "APPROVE" "$SHA_HOOK"
+gh_says 909 CLEAN "$SHA_HOOK"
+# A refusing pre-commit hook is how this actually happens here: the real repo
+# runs lefthook, and gitleaks/receipts-ledger can and do refuse a commit.
+mkdir -p "$R_HOOK/skel/.git/hooks"
+printf '#!/bin/sh\nexit 1\n' > "$R_HOOK/skel/.git/hooks/pre-commit"
+chmod +x "$R_HOOK/skel/.git/hooks/pre-commit"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_HOOK" 909 "$S_HOOK" "$W2/conv-hookfail.out"
+
+grep -q "commit -m 'chore(receipt)" "$W2/pages.txt" "$W2/conv-hookfail.out" \
+  && fail "the page still hands the operator a bare \`git commit -- .prd-os/receipts.jsonl\`.
+      The rollback already removed that line, so their copy-paste dies with 'nothing to
+      commit' and the page reads as broken rather than the commit. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "kipi converge --issue ASK-909" "$W2/pages.txt" \
+  || fail "the commit was refused and the page names no remedy that can actually re-create the
+      receipt. Only another converge run writes that line: $(cat "$W2/pages.txt")"
+ok "a refused receipt commit pages a remedy that can actually be run"
+
 # --- S3. THE GATE AND THE PRODUCER, CHECKED AGAINST EACH OTHER ---------------
 # Not each against a fixture. pr-receipt-gate.py rides on PR #23's branch and is
 # NOT in this tree until that merges, so this arms itself the moment it lands.
