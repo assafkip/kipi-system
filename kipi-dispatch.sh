@@ -35,6 +35,10 @@
 # class this repo keeps finding. One source of truth, asked politely.
 set -uo pipefail
 
+# Resolved BEFORE the cd below, because $0 may be relative and the self-heal
+# re-execs this file by path after fast-forwarding it.
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+
 REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # HARDCODED OFF $REPO, DELIBERATELY NOT AN ENV VAR. Every other path in this file
 # takes a KIPI_* override for testability; this one must not. A variable here would
@@ -60,9 +64,49 @@ page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
 # which must not write a dedupe marker for a page that never arrived.
 page_ok() { bash "$NOTIFY" "$1" >/dev/null 2>&1; }
 
+# ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (founder, 2026-08-02).
+# Audited across this file: four guards -- missing repo, unusable `date`, gh off
+# PATH, Linear auth dead -- each name a PERMANENT condition and each had NO marker,
+# on a 900s timer. That is 96 identical Slack lines a day per guard. The founder's
+# own detect-act-learn rule already says one summary line, never one ping per
+# finding. The cost of the noise is not annoyance, it is that it trains him to skim
+# the channel, which is how the one page that matters gets missed.
+#
+# KEYED ON A HASH OF THE MESSAGE, not on the call site alone. A page whose CONTENT
+# changed (different repo path, a different auth error) is a different state and
+# must speak up; an unchanged state stays quiet until the re-ping window, so a
+# problem still standing a day later is surfaced once more rather than forgotten.
+# cksum, not md5/md5sum/shasum: it is POSIX and identical on both kernels this repo
+# runs on, and nothing here is adversarial -- it only has to notice a change.
+#
+# THE MARKER IS WRITTEN ONLY ON DELIVERY. Same lesson the stale-check marker
+# already carries: a failed page that still deduped would make the founder
+# permanently silent about a live fault, which is strictly worse than a storm.
+PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
+page_once() {
+  local key="$1" msg="$2" mark hash now prev stamp
+  mark="$(dirname "$LOG")/paged-$key"
+  hash="$(printf '%s' "$msg" | cksum | tr -d ' \n')"
+  now="$(date -u +%s)"
+  if [ -f "$mark" ]; then
+    prev="$(sed -n 1p "$mark" 2>/dev/null)"
+    stamp="$(sed -n 2p "$mark" 2>/dev/null)"
+    case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
+    if [ "$prev" = "$hash" ] && [ "$(( now - stamp ))" -lt "$PAGE_REPING_SECONDS" ]; then
+      say "page suppressed ($key unchanged for $(( (now - stamp) / 60 ))m; re-pings after $(( PAGE_REPING_SECONDS / 3600 ))h)"
+      return 0
+    fi
+  fi
+  if page_ok "$msg"; then
+    printf '%s\n%s\n' "$hash" "$now" > "$mark" 2>/dev/null || true
+  else
+    say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
+  fi
+}
+
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
-  page "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
+  page_once repo-missing "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
   exit 1
 }
 
@@ -74,10 +118,13 @@ cd "$REPO" 2>/dev/null || {
 # gate. It was fixed by hand twice in one session, which means every future merge
 # silently depended on someone remembering.
 #
-# A DETECTOR, NOT A PULL. Pulling under the founder mid-session is its own
-# hazard -- it can yank a working tree out from under an interactive session
-# (the parallel-session scar). So this refuses and pages instead, and the page
-# carries the exact command.
+# IT DETECTS *AND* REPAIRS, as of 2026-08-02. This block used to say "a detector,
+# not a pull", on the grounds that moving the tree under an interactive session is
+# the parallel-session scar. That reasoning was half right: it is a reason to be
+# careful about WHICH trees get moved, not a reason to move none of them. The
+# version that only detected printed the exact remedy every 15 minutes for a night
+# and nobody typed it. attempt_ff() below now applies the remedy where the tree
+# demonstrably belongs to nobody, and refuses (and pages) where it might not.
 #
 # REFUSE, not warn. This loop MERGES ITS OWN PRs and has no accepted-change
 # signal, so building on superseded code and auto-merging the result is worse
@@ -88,6 +135,75 @@ cd "$REPO" 2>/dev/null || {
 # we are behind; a network blip, an auth prompt or a missing remote logs and
 # proceeds. Two different safe directions, deliberately: fail closed on
 # staleness, fail open on not knowing.
+# THE DETECTOR COMPUTES THE REMEDY, SO IT MUST APPLY IT (founder, 2026-08-02).
+# For one night this printed `git merge --ff-only origin/main` every 15 minutes
+# while the gap grew 7 -> 10 commits. Measured from the log: 19 refusing cycles,
+# 9 Slack pages, ZERO automated action. Nobody read them; the founder fixed it by
+# hand in the morning. A detector that names a deterministic, non-destructive,
+# loudly-failing command and then waits for a human to type it is an alert with no
+# hands, and the founder's detect-act-learn rule already forbids that shape.
+#
+# Prints NOTHING and returns 0 when the checkout was fast-forwarded.
+# Prints ONE line naming what stopped it and returns 1 otherwise -- that line is
+# what the page carries, so it has to read as a reason, not a code.
+#
+# WHAT THIS REFUSES TO TOUCH, and why each one is a tree that belongs to somebody:
+attempt_ff() {
+  local branch out p
+  # 1. A NON-MAIN OR DETACHED HEAD IS SOMEONE ELSE'S WORK. This is the
+  # parallel-sessions scar directly: two sessions sharing one checkout yank each
+  # other's tree on a branch move. Moving a feature branch to main is never the
+  # remedy the detector computed, so it is never done here.
+  branch="$(git symbolic-ref --short HEAD 2>/dev/null)" || branch=""
+  if [ "$branch" != "main" ]; then
+    printf 'the checkout is on %s, not main, so its tree was left untouched' "${branch:-a detached HEAD}"
+    return 1
+  fi
+  # 2. A HALF-FINISHED GIT OPERATION. Moving HEAD out from under a merge, rebase,
+  # cherry-pick or bisect destroys in-flight state that has no other copy.
+  # --git-path, not a literal .git/, because this also runs inside worktrees where
+  # .git is a FILE and these markers live somewhere else entirely.
+  for p in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
+    if [ -e "$(git rev-parse --git-path "$p" 2>/dev/null)" ]; then
+      printf 'a git %s is in progress, so the tree was left untouched' "$p"
+      return 1
+    fi
+  done
+  # 3. A STAGED INDEX IS A COMMIT SOMEONE IS COMPOSING. Fast-forwarding over it
+  # silently folds their staged hunks into a different base.
+  if ! git diff --cached --quiet 2>/dev/null; then
+    printf 'the index has staged changes (a commit in progress), so the tree was left untouched'
+    return 1
+  fi
+  # 4. MODIFIED TRACKED FILES ARE LEFT TO GIT, NOT PRE-JUDGED, AND THAT IS A
+  # DELIBERATE DEPARTURE FROM "refuse if the tree is dirty". Measured on the real
+  # checkout that produced this incident: 3 modified tracked files and 5488
+  # untracked ones, as its NORMAL resting state. A blanket dirty-tree refusal would
+  # make this self-heal permanently inert on the ONE checkout it exists for -- the
+  # wired-but-never-runs failure this repo has already eaten once. So the arbiter is
+  # git's own check: --ff-only aborts with "local changes would be overwritten" when
+  # the incoming commits actually touch a modified file, and otherwise carries the
+  # unrelated edits forward untouched. That is a per-file answer instead of a
+  # whole-tree guess, and it is the same command the page has been telling the
+  # founder to run by hand all along.
+  out="$(git merge --ff-only origin/main 2>&1)" || {
+    printf 'git merge --ff-only origin/main did not apply: %s' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+    return 1
+  }
+  return 0
+}
+
+# RE-EXEC RATHER THAN FALL THROUGH, and this is a correctness fix not a nicety.
+# bash reads a script lazily by byte offset. The fast-forward above can rewrite
+# kipi-dispatch.sh underneath the running interpreter, after which bash resumes at
+# the old offset in the NEW file and executes whatever bytes happen to land there.
+# Continuing in-process is the one thing we must not do. exec restarts cleanly on
+# the code we just pulled, which is also exactly what "run the current control
+# code" means. A non-interactive bash exits if exec fails, so there is no path
+# where a failed exec silently proceeds on the stale bytes.
+relaunch_self() { exec env KIPI_DISPATCH_SELFHEALED=1 bash "$SELF"; }
+
 stale_check() {
   local local_head remote_head base
   # Bounded by hand: macOS ships no `timeout`, and an unbounded fetch inside a
@@ -127,7 +243,32 @@ stale_check() {
   base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo 0)"
   case "$base" in ''|*[!0-9]*) return 0 ;; esac   # unparseable count = no answer = run
   [ "$base" -gt 0 ] || return 0
-  say "REFUSING: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded control code and auto-merge the result."
+  say "STALE: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded control code and auto-merge the result."
+
+  # --- SELF-HEAL BEFORE PAGING ---------------------------------------------
+  # The refusal above is CORRECT and is not weakened: nothing dispatches while the
+  # checkout is behind. What changes is that the fix is now attempted instead of
+  # printed. The page below is reserved for the case a human is genuinely needed.
+  # Declared separately from the assignment below: `local x="$(f)"` swallows f's
+  # exit status (local always succeeds), which would make every attempt look green.
+  local why="" attempt_ff_out=""
+  if [ "${KIPI_DISPATCH_SELFHEALED:-0}" = "1" ]; then
+    # ONE ATTEMPT PER LAUNCH. We already fast-forwarded and re-execed this cycle
+    # and the tree is STILL behind, which means something is racing the merge (a
+    # push landing between fetch and merge, most likely). Re-execing again would
+    # spin. Hand it to a human and let the next heartbeat start clean.
+    why="a fast-forward already ran this cycle and origin/main moved again underneath it"
+  elif attempt_ff_out="$(attempt_ff)"; then
+    say "self-heal: fast-forwarded this checkout to origin/main ${remote_head:0:7} ($base commit(s)); re-execing on the new control code"
+    relaunch_self
+    # Unreached in production: relaunch_self execs. The tests stub it, and for them
+    # returning 0 is the right answer -- the tree is current, so dispatch proceeds.
+    return 0
+  else
+    why="$attempt_ff_out"
+  fi
+
+  say "REFUSING: self-heal could not fix it -- $why (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7})"
   # PAGE ONCE PER REMOTE SHA, not once per heartbeat. Second major from the same
   # review: at a 900s interval an unrepaired checkout sent the identical Slack
   # message 96 times a day, which trains the founder to ignore the channel and
@@ -148,7 +289,12 @@ stale_check() {
     # page() ends in `|| true` so it cannot report, deliberately (a notifier must
     # never take the caller down). So call the notifier directly here and read its
     # status, rather than changing page()'s contract for every other caller.
-    if page_ok "kipi dispatch: refused to run -- origin/main has $base commit(s) this checkout lacks, so the loop would build on stale code and merge it. Do: cd $REPO && git merge --ff-only origin/main"; then
+    # NAMES THE ATTEMPT, NOT JUST THE SYMPTOM. This page now only fires when the
+    # automatic fix was tried and could not apply, so it has to say what was tried
+    # and what stopped it -- otherwise it reads like the old "type this command"
+    # ping the founder correctly stopped reading, and he would type the command
+    # that has ALREADY been tried and failed.
+    if page_ok "kipi dispatch: paused -- origin/main has $base commit(s) this checkout lacks. I tried the fast-forward myself and it did not apply: $why. This one needs you: cd $REPO. The loop resumes on its own once the checkout is current."; then
       : > "$paged_mark" 2>/dev/null || true
     else
       say "stale-check: the page did NOT go out; leaving the dedupe marker unset so the next heartbeat retries it"
@@ -211,7 +357,9 @@ turn_lock() {
     mtime=""
     probe="$(stat -c %Y "$LOCK" 2>/dev/null)"
     case "$probe" in ''|*[!0-9]*) probe="" ;; esac
-    [ -n "$probe" ] || { probe="$(stat -f %m "$LOCK" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; }
+    # The BSD arm OF the two-kernel branch described above, reached only after the GNU
+    # form returned no digits. Deliberate, not an oversight, hence: portability-lint-skip
+    [ -n "$probe" ] || { probe="$(stat -f %m "$LOCK" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; } # portability-lint-skip
     mtime="$probe"
     if [ -n "$mtime" ]; then
       age=$(( now - mtime ))
@@ -430,7 +578,7 @@ BUDGET_DAY="$(date -v-"${RESET_HOUR}"H +%Y-%m-%d 2>/dev/null \
               || date -d "-${RESET_HOUR} hours" +%Y-%m-%d 2>/dev/null)"
 if [ -z "$BUDGET_DAY" ]; then
   say "FATAL: could not compute the budget day (neither BSD nor GNU date worked)"
-  page "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
+  page_once budget-day "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
   exit 1
 fi
 # --- TWO LANES: production and verification -------------------------------
@@ -483,9 +631,24 @@ fi
 
 # gh is what every downstream step needs; failing here with a clear page beats
 # dispatching an agent that dies opening its PR.
+#
+# LOOK FOR IT BEFORE PAGING ABOUT IT. launchd hands a job the bare
+# /usr/bin:/bin:/usr/sbin:/sbin, so a gh installed by homebrew is not "missing", it
+# is one directory off a minimal PATH -- and "fix PATH in the plist" is a search
+# this script can perform itself. Prepending a directory to this process's own PATH
+# is scoped to this run and touches nothing on disk, so there is no state to undo.
+if ! command -v gh >/dev/null 2>&1; then
+  for _ghdir in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
+    if [ -x "$_ghdir/gh" ]; then
+      PATH="$_ghdir:$PATH"; export PATH
+      say "self-heal: gh was not on the launchd PATH; found $_ghdir/gh and prepended $_ghdir for this run"
+      break
+    fi
+  done
+fi
 if ! command -v gh >/dev/null 2>&1; then
   say "FATAL: gh not on PATH ($PATH)"
-  page "kipi dispatch: gh CLI not on PATH under launchd, so no PR can be opened. The Linear loop is stalled. Do: fix PATH in com.kipi.dispatch.plist."
+  page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist."
   exit 1
 fi
 
@@ -573,7 +736,7 @@ WORK_RC=$?
 # every 15 minutes forever. self-healing-retry.md rule 5.
 if printf '%s' "$WORK_OUT" | grep -qi "infra_error\|authentication\|unauthorized"; then
   say "infra error from kipi work: $(printf '%s' "$WORK_OUT" | head -3 | tr '\n' ' ')"
-  page "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
+  page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
   exit 1
 fi
 
