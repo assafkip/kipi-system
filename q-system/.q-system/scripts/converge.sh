@@ -302,6 +302,47 @@ receipt_only_ahead() {
 # RECEIPT_FIX is the command that fixes it. Both are read by the terminal page.
 RECEIPT_MISS=""; RECEIPT_FIX=""
 
+# THE RECEIPT COMMIT NEEDS AN IDENTITY OF ITS OWN, BECAUSE HEADLESS IT HAS NONE
+# (ASK-218). This commit inherited whatever identity was ambient. A developer
+# machine always has one -- git falls back to the passwd gecos field -- so every
+# local run passed and the gap was invisible here for seven CI runs. Anywhere
+# gecos is empty and $HOME carries no .gitconfig (a CI runner, a container, any
+# sandboxed HOME), git resolves nothing and refuses:
+#   fatal: empty ident name (for <runner@host.(none)>) not allowed
+# converge then rolled the ledger line back and reported a receipt miss, so the
+# PR could never satisfy PR #23's gate -- a live failure mode, not a test artifact.
+# `validate.yml` already carries this exact scar for kipi-update.sh, and its fix
+# (`git config --global` on the runner) cannot reach here: the suite redirects
+# HOME, which is where --global writes.
+#
+# ONLY WHEN GIT HAS NOTHING. Gated on the probe rather than set unconditionally,
+# so a receipt written on the founder's machine still carries the founder's name
+# instead of being silently re-attributed to a bot.
+#
+# ENV, NOT `git -c`. Config loses to the environment: with GIT_COMMITTER_NAME
+# exported empty, `git -c user.name=x commit` still dies with the same
+# `empty ident name`. A config-level fallback would fix the runner and leave the
+# exported-empty case broken, and that is the case a fixture can actually create.
+RECEIPT_IDENT_NAME="kipi-converge"
+RECEIPT_IDENT_EMAIL="converge@kipi.invalid"
+
+# receipt_commit <tree> <message>
+# The one place a receipt commit is authored. No --no-verify: the pre-commit
+# ledger check (receipts-ledger-check.py) is what keeps this public repo's one
+# allowed .jsonl to a closed key allowlist, and a receipt that has to bypass its
+# own content gate is not a receipt.
+receipt_commit() {
+  local tree="$1" msg="$2"
+  if git -C "$tree" var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+    git -C "$tree" commit -q -m "$msg" -- .prd-os/receipts.jsonl 2>>"$LOG"
+    return $?
+  fi
+  say "receipt: git resolves no committer identity in $tree (no user.name/user.email, nothing to guess from), so the receipt is authored as $RECEIPT_IDENT_NAME <$RECEIPT_IDENT_EMAIL> rather than dropping a review that did happen"
+  GIT_AUTHOR_NAME="$RECEIPT_IDENT_NAME" GIT_AUTHOR_EMAIL="$RECEIPT_IDENT_EMAIL" \
+  GIT_COMMITTER_NAME="$RECEIPT_IDENT_NAME" GIT_COMMITTER_EMAIL="$RECEIPT_IDENT_EMAIL" \
+    git -C "$tree" commit -q -m "$msg" -- .prd-os/receipts.jsonl 2>>"$LOG"
+}
+
 # receipt_ensure <sha> <verdict-record> <reviewed-sha> <pr>
 # Best-effort by design and NEVER touches this run's exit code, exactly like the
 # worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
@@ -377,13 +418,12 @@ receipt_ensure() {
   fi
 
   if [ "$rc" = "0" ]; then
-    # No --no-verify: the pre-commit ledger check (receipts-ledger-check.py) is
-    # what keeps this public repo's one allowed .jsonl to a closed key allowlist.
-    # A receipt that has to bypass its own content gate is not a receipt.
     # $ISSUE in the message is what clears the commit-msg linear-issue-ref-check.
+    # The commit itself goes through receipt_commit, which owns the identity
+    # question -- see the scar above it.
     if git -C "$tree" add -- .prd-os/receipts.jsonl 2>>"$LOG" \
-       && git -C "$tree" commit -q -m "chore(receipt): prd-os receipt for $ISSUE at $(printf '%.12s' "$sha")" \
-            -- .prd-os/receipts.jsonl 2>>"$LOG"; then
+       && receipt_commit "$tree" \
+            "chore(receipt): prd-os receipt for $ISSUE at $(printf '%.12s' "$sha")"; then
       say "receipt: committed onto $BRANCH in $tree"
       receipted=1
     else

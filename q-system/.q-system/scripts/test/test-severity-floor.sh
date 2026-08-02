@@ -1119,7 +1119,23 @@ ok "no comment URL means no target_url (omitted, not invented)"
 #
 # So both drivers are run FOR REAL below, with `gh` stubbed. Re-testing the lib
 # would pass on exactly the code that shipped broken.
-CONV="$ROOT/q-system/.q-system/scripts/converge.sh"
+# KIPI_TEST_CONVERGE is a ref hatch, not a feature: it points this suite at a
+# converge.sh materialized from a pre-fix git ref, so a case added AFTER its own
+# fix can still be watched FAIL. Every case below was written green against code
+# that already worked; the no-identity case (S2b) is the only one whose defect is
+# invisible on a developer machine, so it is the one that most needs proving.
+#
+# THE COPY MUST SIT IN THE REAL scripts/ DIR. converge.sh sources
+# pr-verdict-lib.sh from its own $SCRIPT_DIR, so a copy in /tmp loses the lib and
+# every gate call becomes `command not found` -- which fails an EARLIER case and
+# never reaches the one being proved. A hatch that lands somewhere else is not
+# testing the code, it is testing the path:
+#   cd <repo>
+#   git show <pre-fix-sha>:q-system/.q-system/scripts/converge.sh \
+#     > q-system/.q-system/scripts/.converge-prefix.sh
+#   KIPI_TEST_CONVERGE="$PWD/q-system/.q-system/scripts/.converge-prefix.sh" \
+#     bash q-system/.q-system/scripts/test/test-severity-floor.sh
+CONV="${KIPI_TEST_CONVERGE:-$ROOT/q-system/.q-system/scripts/converge.sh}"
 [ -f "$CONV" ] || fail "converge.sh does not exist at $CONV"
 
 # The fake worker. converge dispatches a round, THEN gates on the verdict record,
@@ -1187,6 +1203,27 @@ run_converge_receipt() {
   ( cd "$1/skel" \
     && HOME="$W2/home" KIPI_SKEL="$1/skel" KIPI_STATE_DIR="$3" \
        KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+       bash "$CONV" --issue "ASK-$2" --max-rounds 1 ) >"$4" 2>&1
+  RRC=$?
+}
+
+# run_converge_receipt_noident <world> <issue-suffix> <state-dir> <out>
+# Identical, except git can resolve NO committer identity -- the state a CI
+# runner is in and a developer machine never is (git falls back to the passwd
+# gecos name locally, so every case above passes on a laptop regardless).
+#
+# The empty exports reproduce the runner's exact refusal, `fatal: empty ident
+# name`, and they are strictly HARDER than the runner: an exported empty ident
+# also beats `git -c user.name=...`, so a config-level fallback would leave this
+# case red. That is deliberate -- it pins the fix at the env level rather than
+# letting a weaker one look sufficient. HOME is already redirected to an empty
+# dir by every runner here, which is what hides validate.yml's `--global`
+# identity from the code under test.
+run_converge_receipt_noident() {
+  ( cd "$1/skel" \
+    && HOME="$W2/home" KIPI_SKEL="$1/skel" KIPI_STATE_DIR="$3" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+       GIT_AUTHOR_NAME="" GIT_COMMITTER_NAME="" \
        bash "$CONV" --issue "ASK-$2" --max-rounds 1 ) >"$4" 2>&1
   RRC=$?
 }
@@ -3017,6 +3054,55 @@ RDIFF="$(git -C "$RTREE" diff --name-only "$SHA_901" "$PUSHED_901")"
   || fail "the receipt commit carried more than the ledger: '$RDIFF'. Anything outside .prd-os/
       is code the review never read, and PR #23's coverage check refuses it -- correctly."
 ok "the receipt is committed and pushed, and carries nothing but the ledger"
+
+# --- S2b. AND IT LANDS WHERE GIT KNOWS NOBODY (ASK-218) ----------------------
+# Every case above ran on a machine whose git could guess an identity from the
+# passwd gecos field, so the receipt commit's identity was never a variable and
+# this suite never asked the question. On a CI runner gecos is empty and the
+# redirected HOME hides validate.yml's `git config --global`, so git refused
+# every receipt commit with `fatal: empty ident name` -- converge rolled the
+# ledger line back and reported a miss, 100% of the time, on the one path the
+# whole PR exists to make work.
+#
+# It failed FIRST at the armed-page case (R4), and `fail()` exits on first
+# failure, so all twenty receipt assertions below it never executed in CI at all
+# and were green only on laptops. This case is the one that would have caught it.
+R_NOID="$W2/world-noident"; receipt_world "$R_NOID" 904
+SHA_NOID="$(git -C "$R_NOID/tree" rev-parse HEAD)"
+S_NOID="$W2/state-noident"; mkdir -p "$S_NOID/pr-reviews"
+seed_record "$S_NOID" 904 "APPROVE" "$SHA_NOID"
+gh_says 904 CLEAN "$SHA_NOID"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge_receipt_noident "$R_NOID" 904 "$S_NOID" "$W2/conv-noident.out"
+
+PUSHED_NOID="$(git -C "$R_NOID/origin" rev-parse sana/ask-904 2>/dev/null)"
+[ -n "$PUSHED_NOID" ] && [ "$PUSHED_NOID" != "$SHA_NOID" ] \
+  || fail "THE DEFECT: with no ambient git identity -- a CI runner, a container, any sandboxed
+      HOME -- converge wrote NO receipt onto origin/sana/ask-904. This is not a harness
+      artifact: the identity is ambient in production too, so any headless converge run
+      leaves a PR that PR #23's gate refuses forever. converge said:
+$(sed 's/^/        /' "$W2/conv-noident.out")
+      and git said, in converge's own log:
+$(sed 's/^/        /' "$S_NOID/linear-worker.log" 2>/dev/null || echo '        (no log written)')"
+
+# It has to be the RECEIPT that landed, not merely a commit. Same allowance PR
+# #23's gate makes: converge may add exactly one file to a reviewed head.
+NOID_DIFF="$(git -C "$R_NOID/tree" diff --name-only "$SHA_NOID" "$PUSHED_NOID")"
+[ "$NOID_DIFF" = ".prd-os/receipts.jsonl" ] \
+  || fail "the no-identity path pushed '$NOID_DIFF' rather than the ledger alone"
+
+# AND THE SUBSTITUTION IS AUDITABLE. A fallback identity that installs itself
+# silently is a commit whose author is a lie by omission; the run log has to
+# carry that converge, not a person, signed this.
+NOID_COMMITTER="$(git -C "$R_NOID/tree" log -1 --format='%cn <%ce>' "$PUSHED_NOID")"
+[ "$NOID_COMMITTER" = "kipi-converge <converge@kipi.invalid>" ] \
+  || fail "the receipt landed but is signed '$NOID_COMMITTER'. With no resolvable identity the
+      only honest author is converge itself -- anything else means the fallback did not fire
+      and this case is passing for a reason it was not written to test."
+grep -qi "resolves no committer identity" "$W2/conv-noident.out" \
+  || fail "converge substituted its own identity onto a commit and said nothing about it. It said:
+$(sed 's/^/        /' "$W2/conv-noident.out")"
+ok "a receipt lands with no ambient git identity, signed by converge and said out loud"
 
 # --- S3. THE GATE AND THE PRODUCER, CHECKED AGAINST EACH OTHER ---------------
 # Not each against a fixture. pr-receipt-gate.py rides on PR #23's branch and is
