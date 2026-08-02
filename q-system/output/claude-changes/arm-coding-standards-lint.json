@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "slug": "arm-coding-standards-lint",
+  "reason": "Arm coding-standards-lint (sp-19387a70, sp-994363e8). Built and tested on PR #50; blocked only on .claude/ write access. Blast radius measured at 0 of 400 tracked files after narrowing the shell rule to new files.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/coding-standards-lint.py"
+    ],
+    "template_pairs": [
+      "scripts/coding-standards-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "          {\n            \"type\": \"command\",\n            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/batch-uniformity-lint.py\\\"\",\n            \"timeout\": 5\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/coding-standards-lint.py\\\"\",\n            \"timeout\": 5\n          },",
+      "reason": "Wire the lint as a PostToolUse hook in the runtime settings, next to the other lints."
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/batch-uniformity-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/batch-uniformity-lint.py\\\"\"\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/coding-standards-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/coding-standards-lint.py\\\"\"\n          },",
+      "reason": "Same hook in the template so kipi update propagates the SWITCH, not just the script. Guarded with test -f so an instance without the script no-ops instead of erroring."
+    },
+    {
+      "file": ".claude/rules/coding-standards.md",
+      "op": "append",
+      "insert": "\n## Enforcement (ARMED)\n\n`coding-standards-lint.py` enforces the deterministic rules above as a\nPostToolUse hook on Write/Edit: `set -euo pipefail` on new shell scripts,\nand script naming. Interpretive rules (error handling, PEP 8 judgment) stay\nprose - a hook cannot read them.\n\nBypass one file with `# coding-standards-lint-skip` plus a one-line reason.\n\nScope note: the shell rule applies to NEW files only. Measured on 400 tracked\nfiles, the unnarrowed rule would have blocked edits to 36 of them, including\nlinear-worker.sh, kipi-dispatch.sh, converge.sh, slack-notify.sh and\nrepo-preflight.sh - the autonomous loop's own hot path. After narrowing:\n0 of 400. Arming a gate that blocks the loop that arms gates is how a system\nwedges itself, so the blast radius was measured before the switch, not after.\n",
+      "reason": "Record that the rule is now enforced, what it covers, the bypass marker, and the measured scope."
+    }
+  ]
+}

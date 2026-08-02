@@ -1205,8 +1205,28 @@ def _verify_resolution_ref(cfg: Config, ref: str) -> dict:
     }
 
 
+def _spillover_group_counts(items: list, field: str) -> list:
+    """(value, count) pairs for one field, biggest group first, ties by name.
+
+    Deterministic order matters more than it looks: this report is read to
+    decide which producer to open an issue against, and a set-iteration order
+    would reshuffle the priorities between two runs over the same ledger.
+    """
+    counts: dict = {}
+    for record in items:
+        value = record.get(field) or "(unset)"
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+
+
+def _print_spillover_groups(items: list, field: str, heading: str) -> None:
+    print(f"\nby {heading} ({len(_spillover_group_counts(items, field))} group(s)):")
+    for value, count in _spillover_group_counts(items, field):
+        print(f"  {count:5d}  {value}")
+
+
 def cmd_spillover(cfg: Config, args) -> int:
-    """add | list | check | resolve — the out-of-scope finding ledger."""
+    """add | list | check | resolve | triage — the out-of-scope finding ledger."""
     import hashlib as _hashlib
     sub = args.spillover_cmd
     if sub == "add":
@@ -1238,6 +1258,20 @@ def cmd_spillover(cfg: Config, args) -> int:
                 f"(--void <reason>). They cannot be silently dropped.\n")
             return 1
         print("no open spillover items")
+        return 0
+    if sub == "triage":
+        # Read-only by construction: no _spillover_append call reachable from
+        # here. A ledger this size (350+ open, ~50/day arriving from a handful
+        # of producers) is unworkable as a flat list, but the fix is a better
+        # LENS, never a bulk exit. The only two ways out of the ledger stay
+        # `resolve --resolution-ref <closed-issue>` and `resolve --void`.
+        openv = _spillover_open(cfg)
+        if not openv:
+            print("no open spillover items")
+            return 0
+        print(f"{len(openv)} open spillover item(s)")
+        _print_spillover_groups(openv, "severity", "severity")
+        _print_spillover_groups(openv, "source", "source")
         return 0
     if sub == "resolve":
         rec = _read_spillover(cfg).get(args.id)
@@ -1392,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
     spill_sub.add_parser("check")
+    spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
     sp_res = spill_sub.add_parser("resolve")
     sp_res.add_argument("id")
     sp_res.add_argument("--resolution-ref", dest="resolution_ref",

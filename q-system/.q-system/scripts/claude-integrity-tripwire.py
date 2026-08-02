@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""claude-integrity-tripwire.py -- Layer 2 of the .claude/ write protection (ASK-282).
+
+WHY THIS EXISTS (scar, 2026-08-01):
+`.claude/` holds settings.json (which wires EVERY hook), rules/, agents/ and
+output-styles/. An agent that writes there can disable its own safety gates and
+then report success. The Write/Edit tools are refused on those paths by the auto
+mode classifier -- but Bash was NOT. Measured twice that night:
+
+    touch .claude/_probe.txt   ->  BASH WRITE SUCCEEDED
+
+So the protection was a heuristic on TOOL CHOICE, not a rule about the PATH.
+Every agent that reported "blocked" had merely used the front door. (This also
+corrects sp-19387a70, which claimed both Bash and Edit were refused.)
+
+WHY A TRIPWIRE AND NOT A BIGGER DENYLIST:
+The sibling guard (claude-path-write-guard.py, Layer 1) blocks command shapes at
+PreToolUse. It cannot be complete. A command-string denylist loses to touch, >,
+>>, tee, cp, mv, install, rsync, sed -i, python -c open(w), `cd .claude && ...`,
+a path held in a variable, $HOME/.claude, a relative path from a subdirectory,
+and to forms nobody enumerated. That is the exact defect class this repo hit six
+times in one file: matching a phrase where the intent is a structure.
+
+This layer does not look at commands at all. It baselines the CONTENT of the
+tree and detects any change to the RESULT. An unlisted command form is therefore
+not an evasion -- the write still lands, and the hash still moves.
+
+MODES
+  --baseline            (re)record the whole watch set as sanctioned
+  --check               report drift; exit 1 if drift, 0 if clean (read-only)
+  --enforce             drift -> quarantine + restore + page; exit 2 if it acted
+  --register PATH...    re-record only these paths (the sanctioned-apply hook)
+  --root DIR            repo root to operate on (default: derived from THIS file)
+
+--root exists so the test suite runs against a temp copy of a tree, never the
+live one. The default is derived from __file__, not from cwd: a guard whose root
+follows the caller's working directory answers a question about the wrong tree.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+# Volatile by design: these change constantly during normal work and carry no
+# hook/rule/agent wiring. Watching them would produce an alarm nobody reads,
+# and an alarm nobody reads is the same as no alarm.
+#   state/, plans/, worktrees/  -- gitignored scratch
+#   settings.local.json         -- gitignored; local permission approvals churn
+#                                  every session. NAMED GAP, not an oversight:
+#                                  it carries `permissions`, so it is genuinely
+#                                  security-relevant. Captured as spillover
+#                                  rather than silently folded into scope.
+EXCLUDED_DIRS = {"state", "plans", "worktrees", "backups", "__pycache__"}
+EXCLUDED_FILES = {"settings.local.json", ".DS_Store"}
+
+BASELINE_REL = os.path.join("q-system", ".q-system", "claude-integrity-baseline.json")
+QUARANTINE_REL = os.path.join("q-system", "output", "claude-integrity", "quarantine")
+
+
+def default_root():
+    # <root>/q-system/.q-system/scripts/this-file.py -> up 3.
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(here, "..", "..", ".."))
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def watch_set(root):
+    """Every file under <root>/.claude/ that is not volatile, as repo-relative paths."""
+    base = os.path.join(root, ".claude")
+    found = []
+    if not os.path.isdir(base):
+        return found
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Prune the volatile names ONLY at the top of .claude/. Pruning at every
+        # depth made loadable artifacts invisible: `.claude/skills/plans/` and
+        # `.claude/commands/state/` are real content, not scratch, and a watcher
+        # that cannot see them is a hole shaped like a convenience.
+        # (Review finding, round 2.) __pycache__ stays pruned everywhere.
+        at_top = os.path.abspath(dirpath) == os.path.abspath(base)
+        if at_top:
+            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+        else:
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            if at_top and name in EXCLUDED_FILES:
+                continue
+            if name == ".DS_Store":
+                continue
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            found.append(os.path.relpath(full, root))
+    return sorted(found)
+
+
+def git_blob_id(root, path_rel, write=True):
+    """Content id for restore. `-w` puts the blob in the object store so a
+    restore is possible even for a file that was never committed."""
+    cmd = ["git", "-C", root, "hash-object"]
+    if write:
+        cmd.append("-w")
+    cmd.append(path_rel)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def blob_content(root, blob):
+    if not blob:
+        return None
+    try:
+        out = subprocess.run(["git", "-C", root, "cat-file", "blob", blob],
+                             capture_output=True, timeout=20)
+        if out.returncode == 0:
+            return out.stdout
+    except Exception:
+        pass
+    return None
+
+
+def load_baseline(root):
+    path = os.path.join(root, BASELINE_REL)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        # A corrupt baseline is itself a tamper signal. Never silently treat it
+        # as "no drift" -- that is how a guard fails open.
+        return {"schema_version": 1, "corrupt": True, "entries": {}}
+
+
+def save_baseline(root, entries, last_alarm=""):
+    path = os.path.join(root, BASELINE_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    doc = {
+        "schema_version": 1,
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "note": "Sanctioned content of .claude/. See claude-integrity-tripwire.py (ASK-282).",
+        # Fingerprint of the last drift state we PAGED for. Identical drift must
+        # not re-page every session: a repeating alert for an unchanged fact is
+        # the thing the founder asked us to stop building (finding, round 3).
+        "last_alarm": last_alarm,
+        "entries": entries,
+    }
+    # Unique temp in the SAME directory, so os.replace stays atomic.
+    #
+    # SCAR (review finding, round 3): this used a fixed `path + ".tmp"` while the
+    # comment claimed "single-writer". Two concurrent first-run --check calls
+    # raced on that one name and crashed one of them (15/15 trials) -- and
+    # session-start then mistranslated the traceback into a SECURITY banner,
+    # Slack-paging the literal text "Traceback (most recent call last):".
+    # A comment asserting an invariant the code does not hold is the same defect
+    # shape as a header warning about phrase-matching above a phrase match.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".baseline-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(doc, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)  # atomic swap, never a half-written baseline
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    return path
+
+
+def save_and_reload(root, entries, baseline):
+    """Persist entries while preserving the alarm-dedupe marker."""
+    last = baseline.get("last_alarm", "")
+    save_baseline(root, entries, last)
+    return {"schema_version": 1, "last_alarm": last, "entries": entries}
+
+
+def measure(root, paths):
+    entries = {}
+    for rel in paths:
+        full = os.path.join(root, rel)
+        entries[rel] = {"sha256": sha256_file(full), "blob": git_blob_id(root, rel)}
+    return entries
+
+
+def diff(root, baseline):
+    """Return (modified, added, removed) against the recorded sanctioned state."""
+    recorded = (baseline or {}).get("entries", {})
+    current = watch_set(root)
+    modified, added = [], []
+    for rel in current:
+        full = os.path.join(root, rel)
+        now = sha256_file(full)
+        if rel not in recorded:
+            added.append(rel)
+        elif recorded[rel].get("sha256") != now:
+            modified.append(rel)
+    removed = [r for r in recorded if r not in set(current)]
+    return sorted(modified), sorted(added), sorted(removed)
+
+
+def git_head_blob(root, rel):
+    """The blob id git HEAD records for `rel`, or "" if untracked at HEAD."""
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "HEAD:%s" % rel],
+                             capture_output=True, text=True, timeout=20)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def attributable(root, rel):
+    """True when the file's CURRENT content is exactly what git HEAD records.
+
+    THE RE-BASELINE PATH (review finding, round 3 -- the one that decided the
+    design). Round 2 had no way for a legitimate change to update the baseline.
+    So a `git pull` that touched any rule left the tree permanently drifted and
+    paged an identical SECURITY line every session, forever. That is the
+    founder's own complaint -- an alert that fires for a fact nobody can act on
+    -- manufactured by the fix for it. Blind or crying wolf are both ignored,
+    and ignored is the same as absent.
+
+    All 41 watched files are git-tracked, so git is the provenance oracle: if
+    the working content equals the HEAD blob, the change arrived through
+    pull / checkout / merge -- a reviewed path -- not through a shell write.
+
+    HONEST BOUND: "attributable" means VISIBLE IN VERSION CONTROL, not "safe".
+    An attacker who commits their tamper makes it attributable. That is a real
+    bar (it is now in history, diffable and blamed) but it is not a wall, which
+    is why this is never applied in --enforce mode; see main().
+    """
+    full = os.path.join(root, rel)
+    if not os.path.isfile(full) or os.path.islink(full):
+        return False
+    head = git_head_blob(root, rel)
+    return bool(head) and head == git_blob_id(root, rel, write=False)
+
+
+def drift_fingerprint(root, rels):
+    """Stable id for one drift state, so an unchanged situation pages once."""
+    h = hashlib.sha256()
+    for rel in sorted(rels):
+        full = os.path.join(root, rel)
+        h.update(rel.encode())
+        h.update(b":")
+        try:
+            h.update(sha256_file(full).encode() if os.path.isfile(full) and
+                     not os.path.islink(full) else b"absent")
+        except OSError:
+            h.update(b"unreadable")
+    return h.hexdigest()
+
+
+def notify(root, message):
+    """Single sink for founder pings (founder-notifications rule). osascript is
+    banned: it is silently dropped from a sandboxed/background process."""
+    notifier = os.environ.get("KIPI_NOTIFY") or os.path.join(
+        root, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    try:
+        subprocess.run([notifier, message], capture_output=True, timeout=20)
+    except Exception:
+        pass  # a dead notifier must never stop the revert
+
+
+def quarantine(root, rels, stamp):
+    """Copy drifted content aside BEFORE restoring it. Never silently delete:
+    a reverted change stays readable so a false positive costs nothing."""
+    qdir = os.path.join(root, QUARANTINE_REL, stamp)
+    os.makedirs(qdir, exist_ok=True)
+    for rel in rels:
+        full = os.path.join(root, rel)
+        dest = os.path.join(qdir, rel.replace(os.sep, "__"))
+        if os.path.islink(full):
+            # Record where it pointed WITHOUT following it. A watched file
+            # replaced by a symlink is the tamper shape that turned the restore
+            # path into an arbitrary write (review finding, round 2), so the
+            # evidence is the target, not the target's contents.
+            with open(dest + ".SYMLINK", "w") as fh:
+                fh.write(os.readlink(full) + "\n")
+        elif os.path.isfile(full):
+            shutil.copy2(full, dest)
+    return qdir
+
+
+def _inside_claude(root, full):
+    """True only if `full` sits inside <root>/.claude, WITHOUT resolving the
+    leaf through a symlink. Compares the resolved PARENT so a symlinked leaf
+    cannot smuggle the target outside the tree."""
+    base = os.path.realpath(os.path.join(root, ".claude"))
+    parent = os.path.realpath(os.path.dirname(full))
+    return parent == base or parent.startswith(base + os.sep)
+
+
+def restore(root, baseline, modified, added, removed):
+    """Put the sanctioned content back.
+
+    SCAR (review finding, round 2 -- the worst defect in round 1): this function
+    used to `open(full, "wb")` directly. If an attacker replaced a watched file
+    with a SYMLINK pointing outside .claude/, watch_set skipped it (it skips
+    symlinks), so it registered as `removed`, and the restore wrote THROUGH the
+    link -- silently overwriting an arbitrary file anywhere on disk, leaving the
+    link in place, and reporting "reverted 1". The repair path was itself an
+    arbitrary-write primitive, which is strictly worse than the hole it closes.
+
+    Two invariants now, both tested:
+      1. Never write through a symlink. Unlink it first (removing the LINK, not
+         its target), after quarantining it.
+      2. Never write to a path whose parent resolves outside <root>/.claude.
+         Refuse and report instead. A restore that cannot be done safely is a
+         page, not a best effort.
+    """
+    recorded = baseline.get("entries", {})
+    restored, failed = [], []
+
+    for rel in modified + removed:
+        full = os.path.join(root, rel)
+        if not _inside_claude(root, full):
+            failed.append("%s (parent resolves outside .claude/)" % rel)
+            continue
+        content = blob_content(root, recorded.get(rel, {}).get("blob", ""))
+        if content is None:
+            failed.append("%s (no stored blob)" % rel)  # fail loud, never guess
+            continue
+        if os.path.islink(full):
+            # Unlinks the symlink itself. The file it pointed at is untouched.
+            os.remove(full)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as fh:
+            fh.write(content)
+        restored.append(rel)
+
+    for rel in added:
+        full = os.path.join(root, rel)
+        if not _inside_claude(root, full):
+            failed.append("%s (parent resolves outside .claude/)" % rel)
+            continue
+        if os.path.islink(full) or os.path.isfile(full):
+            os.remove(full)  # content is already in quarantine
+            restored.append(rel)
+    return restored, failed
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=default_root())
+    ap.add_argument("--baseline", action="store_true")
+    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--enforce", action="store_true")
+    ap.add_argument("--register", nargs="*")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args(argv)
+    root = os.path.abspath(args.root)
+
+    if args.baseline:
+        entries = measure(root, watch_set(root))
+        path = save_baseline(root, entries)
+        if not args.quiet:
+            print("baselined %d file(s) -> %s" % (len(entries), os.path.relpath(path, root)))
+        return 0
+
+    if args.register is not None:
+        base = load_baseline(root) or {"entries": {}}
+        entries = dict(base.get("entries", {}))
+        current = set(watch_set(root))
+        for rel in args.register:
+            rel = os.path.relpath(os.path.abspath(os.path.join(root, rel)), root)
+            if rel in current:
+                entries.update(measure(root, [rel]))
+            else:
+                entries.pop(rel, None)
+        save_baseline(root, entries)
+        if not args.quiet:
+            print("registered %d sanctioned path(s)" % len(args.register))
+        return 0
+
+    baseline = load_baseline(root)
+    if baseline is None:
+        # FIRST RUN IN THIS INSTANCE -> arm silently, do not alarm.
+        #
+        # SCAR (review finding, round 2, the one that would have hurt most):
+        # round 1 COMMITTED the baseline. `kipi update` propagates it fleet-wide,
+        # but every instance regenerates .claude/settings.json from
+        # settings-template.json -- so the shared baseline could never match, and
+        # --check would have paged Slack DAILY ON EVERY INSTANCE. A security fix
+        # whose main observable effect is an unactionable daily alarm on every
+        # repo the founder owns is a worse defect than the hole it closes.
+        #
+        # The baseline is therefore INSTANCE-LOCAL and gitignored. That is also
+        # the correct semantics: this tripwire answers "did THIS tree change
+        # since we last sanctioned it", not "does it match the skeleton".
+        entries = measure(root, watch_set(root))
+        save_baseline(root, entries)
+        # Page once, on the arming transition only. This is deliberate: an
+        # attacker who DELETES the baseline to force a clean re-arm produces
+        # this same ping in a repo that was already armed, which is the signal.
+        notify(root, "armed .claude/ integrity tripwire: %d file(s) baselined" % len(entries))
+        if not args.quiet:
+            print("armed: baselined %d file(s) (first run)" % len(entries))
+        return 0
+    if baseline.get("corrupt"):
+        notify(root, "SECURITY: .claude integrity baseline is unreadable/corrupt. Tripwire cannot verify.")
+        print("BASELINE CORRUPT -- cannot verify .claude/", file=sys.stderr)
+        return 2
+
+    modified, added, removed = diff(root, baseline)
+
+    # THE RE-BASELINE PATH. In report mode, absorb every drifted file whose
+    # content equals its git HEAD blob: that change came through pull/checkout/
+    # merge, which is reviewed, so it is sanctioned and the baseline moves with
+    # it. Never in --enforce mode: there the actor is provably the agent, and an
+    # agent that writes then commits is precisely the attack this would wave
+    # through. (Review finding, round 3.)
+    absorbed = []
+    if not args.enforce:
+        for rel in list(modified) + list(added):
+            if attributable(root, rel):
+                absorbed.append(rel)
+        if absorbed:
+            entries = dict(baseline.get("entries", {}))
+            entries.update(measure(root, absorbed))
+            baseline = save_and_reload(root, entries, baseline)
+            modified = [r for r in modified if r not in set(absorbed)]
+            added = [r for r in added if r not in set(absorbed)]
+        # A file deleted in HEAD is a sanctioned removal, not a tamper.
+        still_removed = [r for r in removed if git_head_blob(root, r)]
+        if len(still_removed) != len(removed):
+            entries = dict(baseline.get("entries", {}))
+            for rel in [r for r in removed if r not in set(still_removed)]:
+                entries.pop(rel, None)
+                absorbed.append(rel)
+            baseline = save_and_reload(root, entries, baseline)
+            removed = still_removed
+
+    if not (modified or added or removed):
+        if not args.quiet:
+            msg = "clean: %d file(s) match baseline" % len(baseline.get("entries", {}))
+            if absorbed:
+                msg += " (re-baselined %d git-attributable change(s))" % len(absorbed)
+            print(msg)
+        return 0
+
+    summary = "SECURITY: unsanctioned .claude/ change -- %d modified, %d added, %d removed: %s" % (
+        len(modified), len(added), len(removed),
+        ", ".join((modified + added + removed)[:6]))
+
+    if args.check:
+        # Page only when the drift STATE changes. Persisting drift still shows
+        # in the session banner and the exit code; it just stops re-paging an
+        # identical line forever (finding, round 3). Single writer for alarms:
+        # the tripwire decides, session-start only displays.
+        fp = drift_fingerprint(root, modified + added + removed)
+        if fp != baseline.get("last_alarm", ""):
+            notify(root, summary)
+            save_baseline(root, baseline.get("entries", {}), fp)
+        print(summary, file=sys.stderr)
+        print("re-baseline if this was sanctioned: python3 %s --baseline"
+              % os.path.relpath(os.path.abspath(__file__), root), file=sys.stderr)
+        for rel in modified:
+            print("  modified: %s" % rel, file=sys.stderr)
+        for rel in added:
+            print("  added:    %s" % rel, file=sys.stderr)
+        for rel in removed:
+            print("  removed:  %s" % rel, file=sys.stderr)
+        return 1
+
+    if args.enforce:
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        # `removed` is quarantined too: the symlink-swap tamper shows up as a
+        # removal, and its target is the evidence (review finding, round 2).
+        qdir = quarantine(root, modified + added + removed, stamp)
+        restored, failed = restore(root, baseline, modified, added, removed)
+        msg = summary + (" | reverted %d, quarantined at %s" % (len(restored), os.path.relpath(qdir, root)))
+        if failed:
+            msg += " | COULD NOT RESTORE: " + ", ".join(failed)
+        notify(root, msg)
+        print(msg, file=sys.stderr)
+        return 2
+
+    print(summary, file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    # A crash must exit 3 and say TRIPWIRE-ERROR, never leak a traceback into
+    # the drift channel. Round 2 let an exception exit 1 -- the same code as
+    # "drift found" -- so session-start paged the founder a Python traceback
+    # under a SECURITY headline (finding, round 3). A false security alarm is
+    # worse than a missed one: it teaches him to dismiss the banner that counts.
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        sys.stderr.write("TRIPWIRE-ERROR: %s: %s\n" % (type(exc).__name__, exc))
+        sys.exit(3)

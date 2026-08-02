@@ -174,12 +174,68 @@ def format_output(handoff, cards, yesterday, morning_status, loops_result=None):
     return "\n".join(lines)
 
 
+def check_claude_integrity(project_dir):
+    """Run the .claude/ integrity tripwire in report mode (ASK-282).
+
+    Returns a banner string when the tree drifted from its sanctioned baseline,
+    else "". Never raises: a session must still start if the tripwire is absent
+    or broken. It DOES page, because a drift nobody sees is the same as no
+    tripwire at all.
+    """
+    import subprocess
+    tw = os.path.join(project_dir, "q-system", ".q-system", "scripts",
+                      "claude-integrity-tripwire.py")
+    if not os.path.isfile(tw):
+        return ""
+    try:
+        res = subprocess.run(["python3", tw, "--root", project_dir, "--check"],
+                             capture_output=True, text=True, timeout=25)
+    except Exception:
+        return ""
+    detail = (res.stderr or "").strip()
+
+    # A CRASH IS NOT A SECURITY EVENT (finding, round 3). Round 2 accepted any
+    # rc in (1,2) as drift, but an uncaught exception also exits 1, so a Python
+    # traceback got Slack-paged under a SECURITY headline. Drift is now
+    # identified positively: exit 1/2 AND the tripwire's own SECURITY: marker.
+    # Anything else with a nonzero code is reported as a malfunction, quietly.
+    if res.returncode in (1, 2) and detail.startswith("SECURITY:"):
+        # The tripwire already paged (and dedupes). Do NOT page again here:
+        # two writers to one alarm channel is how an alert becomes noise.
+        return (".claude/ drifted from its sanctioned baseline:\n" + detail)
+    if res.returncode != 0:
+        return ("NOTE: .claude/ integrity tripwire could not complete "
+                "(exit %d). This is a tool malfunction, NOT a security finding.\n%s"
+                % (res.returncode, detail.split("\n")[0][:300]))
+    return ""
+
+
 def main():
-    # Only run once per day
+    project_dir = get_project_dir()
+
+    # .claude/ integrity tripwire (ASK-282). Runs BEFORE the daily sentinel,
+    # deliberately.
+    #
+    # SCAR (review finding, round 2): round 1 put this call after the
+    # already_ran_today() gate. That gate keys on /tmp/q-session-<date>, which is
+    # machine-wide and NOT repo-scoped -- so the tripwire ran at most once per
+    # calendar day, and whichever repo opened a session first that day consumed
+    # the sentinel for every other repo. In this repo it could have run never.
+    # A security check gated behind a briefing's noise-suppression sentinel is
+    # not armed; it is decorative. The briefing is what should be rate-limited,
+    # not the tripwire.
+    #
+    # --check, NOT --enforce: a change found at session start has no attribution
+    # and could be the founder's own editor between sessions. Auto-reverting an
+    # unattributed change would eat his work. The PostToolUse entry (proposal,
+    # PR #63) is the one that enforces, because there the actor IS the agent.
+    integrity_warning = check_claude_integrity(project_dir)
+    if integrity_warning:
+        print(integrity_warning)
+
+    # Only run the briefing once per day
     if already_ran_today():
         sys.exit(0)
-
-    project_dir = get_project_dir()
 
     # Gather context
     handoff = load_handoff(project_dir)

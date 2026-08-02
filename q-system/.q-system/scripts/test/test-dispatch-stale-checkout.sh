@@ -2,25 +2,42 @@
 # Reproducer for sp-c775b116: the dispatcher ran the founder's working tree with
 # no freshness check, so a merge alone never reached the running loop.
 #
-# Pairs with: stale_check() in kipi-dispatch.sh.
+# And for ASK-283: the check WORKED and then paged about it repeatedly. Measured
+# from ~/.config/kipi/dispatch.log on 2026-08-01 -- 19 refusing cycles, 9 Slack
+# pages, gap growing 7 -> 10 commits, zero automated action. The 9 came from a
+# dedupe keyed on the REMOTE SHA, so every new commit on main counted as a fresh
+# fault. The fault is one unchanged thing: this checkout is behind and cannot
+# dispatch. One episode, one page.
 #
-# The four states that matter, and only ONE of them may refuse:
-#   behind  -> REFUSE (would build on superseded code and auto-merge it)
-#   ahead   -> RUN    (an agent commits locally before opening a PR)
-#   equal   -> RUN
-#   no answer (fetch fails / offline) -> RUN, because a network blip must not
-#             wedge the loop. Fail closed on staleness, fail open on not knowing.
+# WHY THERE IS NO AUTO-MERGE HERE. One was built and removed the same night after
+# three review rounds each found a new way for it to lose data (ASK-284 owns the
+# redesign). The measurement that killed it, reproduced in a scratch repo:
+#   untracked + NOT ignored, upstream starts tracking the path
+#     -> "would be overwritten by merge ... Aborting", exit 1, file intact.
+#   IGNORED, upstream starts tracking the same path
+#     -> "Fast-forward ... create mode", exit 0, LOCAL CONTENT GONE, no reflog.
+# `git ls-files --others --exclude-standard` cannot see the second class at all,
+# which is why the 5488 that made it look safe was the wrong number; the ignored
+# count on that checkout is 3982.
 #
-# The ahead and offline cases are the point. A check that refuses whenever HEAD
-# differs from origin/main passes a naive behind-test and wedges the loop on its
-# own unpushed work, which is a worse bug than the one being fixed.
+# The states that matter, and only SOME may refuse:
+#   behind   -> REFUSE + page once per episode
+#   diverged -> REFUSE (origin/main holds commits this tree lacks)
+#   ahead    -> RUN (an agent commits locally before opening a PR)
+#   equal    -> RUN, and clear the page state so the next episode is heard at once
+#   no answer (fetch fails / offline) -> RUN. Fail closed on staleness, fail open
+#             on not knowing. Offline is NOT proof of recovery, so it clears nothing.
 set -uo pipefail
+
+# The founder was paged by tests three times on 2026-08-01. The harness stubs the
+# notifier outright; this is the second belt for anything that shells the real script.
+export KIPI_NOTIFY=/usr/bin/true
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Derive the repo from the SCRIPT, never from $PWD -- a test that asks the
 # checkout it happens to run in proves nothing about the caller.
 REPO="$(cd "$HERE" && git rev-parse --show-toplevel)"
-DISPATCH="$REPO/kipi-dispatch.sh"
+DISPATCH="${KIPI_TEST_DISPATCH:-$REPO/kipi-dispatch.sh}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -29,59 +46,81 @@ ok()  { PASS=$((PASS+1)); echo "  PASS: $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
 [ -f "$DISPATCH" ] || { echo "no kipi-dispatch.sh at $DISPATCH"; exit 1; }
+for fn in stale_check page_once page_clear; do
+  grep -q "^$fn() {" "$DISPATCH" || {
+    echo "  FAIL: THE DEFECT: kipi-dispatch.sh has no $fn"
+    echo "-------- 0 passed, 1 failed --------"; exit 1; }
+done
 
-if ! grep -q 'stale_check' "$DISPATCH"; then
-  echo "  FAIL: THE DEFECT: kipi-dispatch.sh has no stale_check, so a merge never reaches the running loop"
-  echo "-------- 0 passed, 1 failed --------"
-  exit 1
-fi
-
-# Extract stale_check and drive it directly. Running the whole dispatcher would
-# reach Linear and could dispatch REAL work -- never let a test touch a live
-# data path (fable-discipline lint blocks it, and this is why).
+# Extract the REAL functions and drive them directly. Running the whole dispatcher
+# would reach Linear and could dispatch REAL work -- never let a test touch a live
+# data path (fable-discipline lint blocks it, and this is why). page_once and
+# page_clear are the code under test, so only the notifier itself is stubbed.
 HARNESS="$WORK/stale_check.sh"
 {
   echo 'set -uo pipefail'
   echo 'REPO="$PWD"'
-  echo 'say()  { printf "SAY %s\n"  "$*"; }'
-  echo 'page() { printf "PAGE %s\n" "$*"; }'
-  # page_ok reports delivery, and its exit code is the thing under test in case 7:
-  # KIPI_TEST_PAGE_FAILS=1 makes the notifier fail so the dedupe marker must NOT
-  # be written. Without a failure knob the "failed page still dedupes" defect
-  # cannot be reproduced at all.
-  echo 'page_ok() { printf "PAGE %s\n" "$*"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
+  # say() goes to STDERR, matching production where it appends to $LOG. On stdout it
+  # would be swallowed by any command substitution around the code under test.
+  echo 'say()  { printf "SAY %s\n"  "$*" >&2; }'
+  # KIPI_TEST_PAGE_FAILS=1 makes delivery fail, so "a failed page must not dedupe"
+  # can be reproduced at all.
+  echo 'page_ok() { printf "PAGE %s\n" "$1"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
+  echo 'PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"'
+  awk '/^page_lock\(\) \{/,/^\}/'   "$DISPATCH"
+  awk '/^page_clear\(\) \{/,/^\}/'  "$DISPATCH"
+  awk '/^page_once\(\) \{/,/^\}/'   "$DISPATCH"
   awk '/^stale_check\(\) \{/,/^\}/' "$DISPATCH"
   echo 'stale_check && echo "VERDICT=RUN" || echo "VERDICT=REFUSE"'
 } > "$HARNESS"
+# Guard the extraction. An awk range that silently matched nothing would make every
+# case below pass against an empty function.
+for fn in page_lock page_clear page_once stale_check; do
+  grep -q "^$fn() {" "$HARNESS" || { echo "harness did not extract $fn"; exit 1; }
+done
 
-# --- a real origin + clone, because stale_check asks git real questions ------
-ORIGIN="$WORK/origin.git"; CLONE="$WORK/clone"
+ORIGIN="$WORK/origin.git"
 git init -q --bare -b main "$ORIGIN"
 git init -q -b main "$WORK/seed"
 ( cd "$WORK/seed"
   git config user.email t@e.com; git config user.name t
   echo one > f.txt; git add -A; git commit -qm one
   git remote add origin "$ORIGIN"; git push -q origin main ) >/dev/null 2>&1
-git clone -q "$ORIGIN" "$CLONE" >/dev/null 2>&1
-( cd "$CLONE"; git config user.email t@e.com; git config user.name t )
 
-run_check() { ( cd "$1" && bash "$HARNESS" 2>&1 ); }
+advance_origin() { ( cd "$WORK/seed"; echo "$1" >> f.txt; git commit -qam "$1"; git push -q origin main ) >/dev/null 2>&1; }
+fresh_clone() {
+  local d="$WORK/$1"
+  git clone -q "$ORIGIN" "$d" >/dev/null 2>&1
+  ( cd "$d"; git config user.email t@e.com; git config user.name t )
+  echo "$d"
+}
+# LOG is set even though say() is stubbed: page_once derives its marker dir from
+# $(dirname "$LOG"), so an unset LOG trips `set -u` inside the code under test.
+CHECKSTATE="$WORK/checkstate"; mkdir -p "$CHECKSTATE"
+run_check() { ( cd "$1" && LOG="${2:-$CHECKSTATE}/dispatch.log" bash "$HARNESS" 2>&1 ); }
 
 echo "== 1. equal: HEAD == origin/main -> RUN =="
-OUT="$(run_check "$CLONE")"
+C1="$(fresh_clone c-equal)"
+OUT="$(run_check "$C1")"
 echo "$OUT" | grep -q 'VERDICT=RUN' \
   && ok "an up-to-date checkout runs" \
   || bad "an up-to-date checkout was refused: $(echo "$OUT" | tr '\n' ' ')"
 
 echo
-echo "== 2. THE DEFECT: behind -> REFUSE and PAGE =="
-( cd "$WORK/seed"; echo two >> f.txt; git commit -qam two; git push -q origin main ) >/dev/null 2>&1
-OUT="$(run_check "$CLONE")"
-if echo "$OUT" | grep -q 'VERDICT=REFUSE'; then
-  ok "a checkout behind origin/main refuses to dispatch"
-else
-  bad "THE DEFECT: a checkout 1 commit behind origin/main still dispatched"
-fi
+echo "== 2. behind -> REFUSE, and the page carries the remedy =="
+C2="$(fresh_clone c-behind)"
+B2="$(git -C "$C2" rev-parse HEAD)"
+advance_origin two
+S2="$WORK/s2"; mkdir -p "$S2"
+OUT="$(run_check "$C2" "$S2")"
+echo "$OUT" | grep -q 'VERDICT=REFUSE' \
+  && ok "a checkout behind origin/main refuses to dispatch" \
+  || bad "THE DEFECT: a stale checkout dispatched, running superseded control code"
+# THE GUARD MUST NOT GROW HANDS. The auto-merge was removed for losing data; if a
+# future edit puts one back, this catches it.
+[ "$(git -C "$C2" rev-parse HEAD)" = "$B2" ] \
+  && ok "the working tree was NOT touched (no auto-merge; ASK-284 owns that)" \
+  || bad "THE DEFECT: something rewrote the founder's working tree"
 echo "$OUT" | grep -q '^PAGE ' \
   && ok "the refusal pages the founder" \
   || bad "refused silently: an unattended refusal nobody is told about is a dead loop"
@@ -91,102 +130,294 @@ echo "$OUT" | grep -q 'git merge --ff-only' \
 
 echo
 echo "== 3. ahead: local commits not yet pushed -> RUN (must not wedge) =="
-( cd "$CLONE"; git merge -q --ff-only origin/main; echo three >> f.txt; git commit -qam three ) >/dev/null 2>&1
-OUT="$(run_check "$CLONE")"
+C3="$(fresh_clone c-ahead)"
+( cd "$C3"; echo three >> f.txt; git commit -qam three ) >/dev/null 2>&1
+OUT="$(run_check "$C3")"
 echo "$OUT" | grep -q 'VERDICT=RUN' \
   && ok "a checkout AHEAD of origin/main still runs" \
   || bad "being ahead was treated as stale, which wedges the loop on its own unpushed work"
 
 echo
 echo "== 4. no answer: fetch fails -> RUN (fail open on not knowing) =="
-# A repo with no reachable remote is the offline case without needing the network.
 BROKEN="$WORK/broken"
 git init -q -b main "$BROKEN"
 ( cd "$BROKEN"; git config user.email t@e.com; git config user.name t
   echo x > f.txt; git add -A; git commit -qm x
   git remote add origin "$WORK/does-not-exist.git" ) >/dev/null 2>&1
 OUT="$(run_check "$BROKEN")"
-if echo "$OUT" | grep -q 'VERDICT=RUN'; then
-  ok "an unanswerable freshness check proceeds instead of wedging"
-else
-  bad "a failed fetch refused to dispatch, so an offline machine kills the loop"
-fi
+echo "$OUT" | grep -q 'VERDICT=RUN' \
+  && ok "an unanswerable freshness check proceeds instead of wedging" \
+  || bad "a failed fetch refused to dispatch, so an offline machine kills the loop"
 echo "$OUT" | grep -q 'SAY stale-check' \
   && ok "the unanswered check is logged, not silent" \
   || bad "the check failed with no log line, so the blind spot is invisible"
 
 echo
 echo "== 5. DIVERGED must REFUSE (codex round 2, major 1) =="
-# The case the first cut got wrong, and the one a merge of this very branch
-# produces: origin/main gains a commit while this tree keeps local commits of its
-# own. --is-ancestor is FALSE here, so an ancestry test runs on a checkout missing
-# origin/main's newest control code. This is the LIKELY divergence, not an edge.
-DIV="$WORK/diverged"
-git clone -q "$ORIGIN" "$DIV" >/dev/null 2>&1
-( cd "$DIV"; git config user.email t@e.com; git config user.name t
-  echo local-only >> f.txt; git commit -qam "local only" ) >/dev/null 2>&1
-( cd "$WORK/seed"; echo remote-only >> f.txt; git commit -qam "remote only"; git push -q origin main ) >/dev/null 2>&1
-OUT="$(run_check "$DIV")"
-if echo "$OUT" | grep -q 'VERDICT=REFUSE'; then
-  ok "a DIVERGED checkout refuses (origin/main holds commits it lacks)"
-else
-  bad "THE DEFECT: a diverged checkout dispatched, so superseded control code runs after a concurrent merge"
-fi
+# The case a merge of this very branch produces: origin/main gains a commit while
+# this tree keeps local commits. --is-ancestor is FALSE here, so an ancestry test
+# would run on a checkout missing origin/main's newest control code.
+DIV="$(fresh_clone c-diverged)"
+( cd "$DIV"; echo local-only >> f.txt; git commit -qam "local only" ) >/dev/null 2>&1
+advance_origin remote-only
+DB="$(git -C "$DIV" rev-parse HEAD)"
+S5="$WORK/s5"; mkdir -p "$S5"
+OUT="$(run_check "$DIV" "$S5")"
+echo "$OUT" | grep -q 'VERDICT=REFUSE' \
+  && ok "a DIVERGED checkout refuses" \
+  || bad "THE DEFECT: a diverged checkout dispatched after a concurrent merge"
+[ "$(git -C "$DIV" rev-parse HEAD)" = "$DB" ] \
+  && ok "the diverged tree was not moved" \
+  || bad "THE DEFECT: it rewrote a diverged tree"
 
 echo
-echo "== 6. the page is deduped per remote sha (codex round 2, major 2) =="
-# At a 900s interval an unrepaired checkout paged 96 times a day with the
-# identical message, which trains the founder to ignore the channel.
-STATE="$WORK/pagestate"; mkdir -p "$STATE"
-# Point the function's state dir at a scratch dir by overriding $LOG, which is
-# what the marker path is derived from.
-run_dedupe() { ( cd "$1" && LOG="$STATE/dispatch.log" bash "$HARNESS" 2>&1 ); }
-P1="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
-P2="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
-if [ "${P1:-0}" -ge 1 ] && [ "${P2:-0}" -eq 0 ]; then
-  ok "pages once for a given origin/main sha, silent on the repeat ($P1 then $P2)"
+echo "== 6. THE ASK-283 REGRESSION: one page per EPISODE, not one per commit =="
+# The measured complaint. A per-sha key sent 9 pages for one unchanged problem
+# because main kept moving. Four heartbeats across four different remote shas must
+# produce exactly ONE page.
+C6="$(fresh_clone c-episode)"
+S6="$WORK/s6"; mkdir -p "$S6"
+advance_origin ep-1
+P_TOTAL=0
+for extra in ep-2 ep-3 ep-4; do
+  N="$(run_check "$C6" "$S6" | grep -c '^PAGE ' || true)"
+  P_TOTAL=$(( P_TOTAL + N ))
+  advance_origin "$extra"
+done
+N="$(run_check "$C6" "$S6" | grep -c '^PAGE ' || true)"
+P_TOTAL=$(( P_TOTAL + N ))
+if [ "$P_TOTAL" -eq 1 ]; then
+  ok "four heartbeats across four different origin/main shas sent 1 page, not 4"
 else
-  bad "THE DEFECT: paged $P1 then $P2 for the same remote sha -- 96 identical pages a day"
+  bad "THE DEFECT (ASK-283): $P_TOTAL pages for one unchanged problem -- this is the 9-a-night shape"
 fi
-# A NEW divergence must page again, or a second, different staleness goes unreported.
-( cd "$WORK/seed"; echo remote-two >> f.txt; git commit -qam "remote two"; git push -q origin main ) >/dev/null 2>&1
-P3="$(run_dedupe "$DIV" | grep -c '^PAGE ' || true)"
-if [ "${P3:-0}" -ge 1 ]; then
-  ok "a NEW origin/main sha pages again (dedupe is per-sha, not permanent)"
-else
-  bad "dedupe is permanent: a second, different divergence would never be reported"
-fi
-# The refusal itself must still be logged every time, even when the page is muted.
-echo "$(run_dedupe "$DIV")" | grep -q 'SAY REFUSING' \
+# The refusal must still be logged every cycle even while the page is muted.
+# CAPTURED, NOT PIPED. `run_check | grep -q` fails for a reason unrelated to the
+# code: grep -q exits on first match, the writing subshell takes SIGPIPE (141), and
+# `set -o pipefail` reports 141 for the pipeline. The assertion then inverts and
+# blames the dispatcher. Written twice in this file's history; hence this note.
+MUTED_OUT="$(run_check "$C6" "$S6")"
+echo "$MUTED_OUT" | grep -q 'SAY STALE' \
   && ok "the refusal is logged on every heartbeat even when the page is deduped" \
   || bad "a deduped page also silenced the log line, so the refusal is invisible"
 
 echo
-echo "== 7. a FAILED page must not create the dedupe marker (codex round 4, major 2) =="
-# Writing the marker for a page that never went out permanently silences the
-# founder about a refusing loop. A storm is annoying; silence is invisible, and
-# strictly worse than the bug the dedupe was added to fix.
-STATE2="$WORK/pagefail"; mkdir -p "$STATE2"
-run_failing() { ( cd "$1" && KIPI_TEST_PAGE_FAILS=1 LOG="$STATE2/dispatch.log" bash "$HARNESS" 2>&1 ); }
-run_ok2()     { ( cd "$1" && LOG="$STATE2/dispatch.log" bash "$HARNESS" 2>&1 ); }
-F1="$(run_failing "$DIV" | grep -c '^PAGE ' || true)"
-# Now let the notifier succeed. If the failed attempt wrote a marker, this is muted.
-F2="$(run_ok2 "$DIV" | grep -c '^PAGE ' || true)"
+echo "== 7. recovery clears the page state, so the NEXT episode is heard at once =="
+C7="$(fresh_clone c-recover)"
+S7="$WORK/s7"; mkdir -p "$S7"
+advance_origin rec-1
+R1="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"
+R2="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"          # unchanged -> muted
+( cd "$C7"; git merge -q --ff-only origin/main ) >/dev/null 2>&1  # a human fixes it
+RCLR="$(run_check "$C7" "$S7" 2>&1)"                              # healthy -> clears
+advance_origin rec-2                                              # a NEW episode
+R3="$(run_check "$C7" "$S7" | grep -c '^PAGE ' || true)"
+if [ "${R1:-0}" -eq 1 ] && [ "${R2:-0}" -eq 0 ] && [ "${R3:-0}" -eq 1 ]; then
+  ok "pages, mutes the repeat, and pages again on a new episode ($R1/$R2/$R3)"
+else
+  bad "THE DEFECT: page state survived recovery ($R1/$R2/$R3) -- the next outage is swallowed"
+fi
+echo "$RCLR" | grep -q 'SAY page state cleared' \
+  && ok "the recovery is logged" \
+  || bad "recovery cleared state with no trace"
+
+echo
+echo "== 8. offline is NOT recovery: an unanswerable check must clear nothing =="
+# Clearing on a failed fetch would re-page a still-broken checkout every cycle the
+# network flapped, which is the storm this whole change exists to stop.
+C8="$(fresh_clone c-offline)"
+S8="$WORK/s8"; mkdir -p "$S8"
+advance_origin off-1
+run_check "$C8" "$S8" >/dev/null 2>&1                        # page + marker
+git -C "$C8" remote set-url origin "$WORK/gone.git"          # now unreachable
+run_check "$C8" "$S8" >/dev/null 2>&1                        # no answer
+git -C "$C8" remote set-url origin "$ORIGIN"                 # back online, still behind
+N8="$(run_check "$C8" "$S8" | grep -c '^PAGE ' || true)"
+[ "${N8:-0}" -eq 0 ] \
+  && ok "a network blip did not reset the dedupe (still muted)" \
+  || bad "THE DEFECT: an offline cycle cleared the marker, so a flapping network re-pages forever"
+
+echo
+echo "== 9. a FAILED page must not create the dedupe marker (codex round 4, major 2) =="
+# Writing the marker for a page that never went out permanently silences the founder
+# about a refusing loop. A storm is annoying; silence is invisible, and worse.
+C9="$(fresh_clone c-pagefail)"
+S9="$WORK/s9"; mkdir -p "$S9"
+advance_origin pf-1
+F1="$( cd "$C9" && KIPI_TEST_PAGE_FAILS=1 LOG="$S9/dispatch.log" bash "$HARNESS" 2>/dev/null | grep -c '^PAGE ' || true )"
+F2="$( cd "$C9" && LOG="$S9/dispatch.log" bash "$HARNESS" 2>/dev/null | grep -c '^PAGE ' || true )"
 if [ "${F1:-0}" -ge 1 ] && [ "${F2:-0}" -ge 1 ]; then
   ok "a failed page leaves the marker unset, so the next heartbeat retries it ($F1 then $F2)"
 else
   bad "THE DEFECT: failed page still deduped -- founder goes permanently silent ($F1 then $F2)"
 fi
-# FRESH state dir. The successful page above wrote a marker, so re-running against
-# the same dir skips the whole block and emits nothing -- which is correct
-# behaviour and a broken assertion. Caught by this case failing on its first run.
-STATE3="$WORK/pagefail-log"; mkdir -p "$STATE3"
-LOGLINE="$( cd "$DIV" && KIPI_TEST_PAGE_FAILS=1 LOG="$STATE3/dispatch.log" bash "$HARNESS" 2>&1 )"
-echo "$LOGLINE" | grep -q 'did NOT go out' \
+S9B="$WORK/s9b"; mkdir -p "$S9B"
+( cd "$C9" && KIPI_TEST_PAGE_FAILS=1 LOG="$S9B/dispatch.log" bash "$HARNESS" 2>&1 >/dev/null ) | grep -q 'did NOT go out' \
   && ok "the undelivered page is logged" \
   || bad "an undelivered page is not logged, so the silence has no trace"
 
 echo
+echo "== 10. MAJOR: an ORPHANED page lock must age out, not mute the key forever =="
+# A notifier killed between the mkdir and its cleanup (launchd reaping the job, a
+# reboot, SIGKILL) left a lock dir behind. Reproduced before the fix: the next three
+# runs paged 0, 0, 0 while the log reported "another dispatcher is already deciding
+# it" with nobody there. This was introduced BY the lock added to fix duplicate
+# pages -- a guard that can never fire, born from the fix for the previous one.
+PL="$WORK/plock"; mkdir -p "$PL"
+PH="$WORK/prim.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  echo 'page_ok() { printf "PAGE %s\n" "$1"; return 0; }'
+  echo 'PAGE_REPING_SECONDS=86400'
+  awk '/^page_lock\(\) \{/,/^\}/'  "$DISPATCH"
+  awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH"
+  awk '/^page_once\(\) \{/,/^\}/'  "$DISPATCH"
+  echo 'page_once "$@"'
+} > "$PH"
+grep -q '^page_lock() {' "$PH" && grep -q '^page_once() {' "$PH" || { echo "primitive harness did not extract page_once"; exit 1; }
+# A FRESH lock is respected (the duplicate-page fix must still hold).
+mkdir -p "$PL/paged-korph.lock"
+FRESH="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+[ "${FRESH:-0}" -eq 0 ] \
+  && ok "a FRESH lock is respected, so concurrent dispatchers still do not duplicate" \
+  || bad "the lock is ignored outright, which reintroduces duplicate pages"
+# An OLD lock is reaped. Backdate it well past the 300s bound.
+touch -t 202501010000 "$PL/paged-korph.lock" 2>/dev/null
+AGED="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+[ "${AGED:-0}" -ge 1 ] \
+  && ok "an ORPHANED lock is reaped and the alert gets through ($AGED page)" \
+  || bad "THE DEFECT: an orphaned lock mutes this key forever -- a dedupe that became a permanent silence"
+
+echo
+echo "== 11. concurrent page_once must not duplicate the same alert =="
+PC="$WORK/pconc"; mkdir -p "$PC"
+( LOG="$PC/dispatch.log" bash "$PH" kconc "same line" 2>/dev/null > "$WORK/c1.out" ) &
+( LOG="$PC/dispatch.log" bash "$PH" kconc "same line" 2>/dev/null > "$WORK/c2.out" ) &
+wait
+TOTAL=$(( $(grep -c '^PAGE ' "$WORK/c1.out" || true) + $(grep -c '^PAGE ' "$WORK/c2.out" || true) ))
+[ "$TOTAL" -le 1 ] \
+  && ok "two dispatchers deciding the same key produced $TOTAL page(s), not 2" \
+  || bad "THE DEFECT: unlocked marker check let concurrent dispatchers send $TOTAL duplicate pages"
+
+echo
+echo "== 12. the Linear outage guard vs the PRODUCER'S REAL OUTPUT =="
+# FIXTURES COME FROM PRODUCERS. The previous pattern was
+# (infra_error|authentication|unauthorized) and matched NONE of the loop-stopping
+# lines linear-worker.sh actually prints, so a real outage fell through to
+# page_clear and ERASED the state that would have paged. Silence dressed as health.
+#
+# Every string below is copied from linear-worker.sh, not invented, and case 13
+# re-derives them from the file so this cannot drift.
+GUARD="$WORK/guard.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  echo 'page_once() { printf "PAGE %s\n" "$1"; }'
+  echo 'page_clear() { printf "CLEAR %s\n" "$1"; }'
+  echo 'WORK_OUT="$1"'
+  # Sliced on STABLE marker comments, never on the matcher line itself. Anchoring
+  # the range to the text under test meant a mutant that reworded the matcher made
+  # the range match nothing: the harness bailed rather than asserting, and two
+  # mutants restoring the round-3 defect were scored SURVIVED. Caught by mutation,
+  # not review.
+  awk '/^# --- LINEAR-OUTAGE-GUARD:BEGIN ---$/,/^# --- LINEAR-OUTAGE-GUARD:END ---$/' "$DISPATCH"
+} > "$GUARD"
+grep -q 'page_clear linear-down' "$GUARD" \
+  || bad "the outage guard block is missing its BEGIN/END markers or its page_clear"
+guard() { bash "$GUARD" "$1" 2>&1; }
+
+# The exact line linear-worker.sh:417 emits, and the one that was missed.
+G="$(guard 'INFRA: linear unreachable (HTTPSConnectionPool: Max retries exceeded). Not counted against any issue.')"
+echo "$G" | grep -q '^PAGE linear-down' \
+  && ok "a real 'INFRA: linear unreachable' outage PAGES" \
+  || bad "THE DEFECT: the producer's real outage line does not match the guard"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a live outage also CLEARED the outage state -- silence dressed as health" \
+  || ok "a live outage does not clear the state that would page later"
+
+# linear-worker.sh:251 -- stops the run BEFORE Linear, and self-pages. Must not
+# double-page, and must not clear (a run that never reached Linear proves nothing).
+G="$(guard 'INFRA: git fetch failed in /Users/x/repo. Stopping before any worktree is cut from a stale base.')"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: linear-worker.sh:251 already notifies the founder itself" \
+  || ok "a pre-Linear environment failure does not double-page"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a run that never reached Linear cleared the outage state" \
+  || ok "a run that never reached Linear does not count as recovery"
+
+# linear-worker.sh:989 / :1049 -- these print INFRA: and then `continue`. The worker
+# is still working, so paging "the loop is stopped" would be a false alarm. This is
+# why the matcher is not a bare `INFRA:` prefix.
+for line in 'INFRA: could not create worktree for ASK-1 (not counted against the issue)' \
+            'INFRA: claim failed rc=1 on ASK-1 (not counted against the issue)'; do
+  G="$(guard "$line")"
+  echo "$G" | grep -q '^PAGE ' \
+    && bad "false alarm: '${line:0:34}...' does not stop the worker but paged an outage" \
+    || ok "a non-stopping INFRA line does not page an outage (${line:0:28}...)"
+done
+
+# A healthy run must still clear.
+G="$(guard '3 ready issues; dispatching ASK-9')"
+echo "$G" | grep -q '^CLEAR linear-down' \
+  && ok "a healthy run clears the outage state" \
+  || bad "a healthy run no longer clears, so the outage page is stuck on"
+
+echo
+echo "== 13. the guard's strings still exist in linear-worker.sh (anti-drift) =="
+# A fixture copied from a producer rots when the producer is reworded. This
+# re-derives the claim from the file itself, so a rename breaks the test instead of
+# silently restoring the round-3 defect.
+WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
+if [ -f "$WORKER" ]; then
+  grep -q 'INFRA: linear unreachable' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: linear unreachable'" \
+    || bad "the producer was reworded: the outage guard now matches nothing again"
+  grep -q 'INFRA: git fetch failed' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
+    || bad "the producer was reworded: the pre-Linear guard now matches nothing"
+  # say() must reach stdout, or none of this text ever arrives in WORK_OUT.
+  grep -qE '^say\(\).*tee' "$WORKER" \
+    && ok "the worker's say() still tees to stdout, so the dispatcher can see it" \
+    || bad "the worker's say() no longer writes to stdout -- WORK_OUT gets nothing to match"
+else
+  ok "linear-worker.sh not present in this checkout; producer anti-drift skipped"
+fi
+
+echo
+echo "== 14. MINOR: a clear cannot interleave with an in-flight page decision =="
+# page_clear used to run while page_once was mid-decision: the clear found no
+# marker, page_once wrote one a moment later, and that marker then described an
+# already-recovered condition -- muting the next real episode for up to 24h.
+PR="$WORK/prace"; mkdir -p "$PR"
+# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand.
+mkdir -p "$PR/paged-krace.lock"
+printf 'oldhash\n1\n' > "$PR/paged-krace"
+CL="$( LOG="$PR/dispatch.log" bash -c '
+  set -uo pipefail
+  say() { printf "SAY %s\n" "$*" >&2; }
+  '"$(awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH")"'
+  '"$(awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH")"'
+  page_clear krace' 2>&1 )"
+[ -f "$PR/paged-krace" ] \
+  && ok "a clear held off while a notifier is mid-decision (no interleave)" \
+  || bad "THE DEFECT: page_clear removed a marker while page_once was still deciding"
+echo "$CL" | grep -q 'NOT cleared' \
+  && ok "the deferred clear is logged, so the <=15m window is visible" \
+  || bad "the clear was skipped with no log line"
+# Once the holder is gone (orphan aged out), the clear must actually happen.
+touch -t 202501010000 "$PR/paged-krace.lock" 2>/dev/null
+LOG="$PR/dispatch.log" bash -c '
+  set -uo pipefail
+  say() { printf "SAY %s\n" "$*" >&2; }
+  '"$(awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH")"'
+  '"$(awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH")"'
+  page_clear krace' >/dev/null 2>&1
+[ -f "$PR/paged-krace" ] \
+  && bad "THE DEFECT: the marker survived an uncontended clear, so recovery never resets" \
+  || ok "an uncontended clear removes the marker"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: stale_check refuses whenever origin/main holds commits this tree lacks, and pages once per sha"
+echo "PASS: stale_check refuses without touching the tree, and pages once per episode"
