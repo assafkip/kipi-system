@@ -98,6 +98,31 @@ else bad "receipt IS recorded to the machine ledger" "receipts.jsonl empty/missi
 [ "$(cat "$D/rc")" = "0" ] && ok "receipt exits 0 (a receipt is not a failure)" \
   || bad "receipt exits 0" "rc=$(cat "$D/rc")"
 
+# --- 1b. THE MESSAGE MUST STAY IN $1 -----------------------------------------
+# Not a style preference; it is a fleet compatibility contract. Notify stubs
+# across this repo record "$1" (test-dispatch-liveness, test-severity-floor,
+# test-linear-dor-failure-reporting all do), and so do stubs in repos not
+# checked out here. The first cut of this gate took `--kind receipt "$msg"`,
+# which moved the message out of $1 and turned three untouched suites red at
+# once. The parser accepts flags in ANY position so that call sites can keep the
+# message first; this case is what stops someone "tidying" that back into a
+# flags-only-first parser and breaking every such stub silently.
+D="$WORK/c1b"; run_notify "$D" "message first, flags after" --kind receipt
+if delivered "$D"; then bad "message-first receipt is NOT delivered" "curl was called"
+else ok "message-first receipt parses (not delivered)"; fi
+[ "$(field "$D" message)" = "[testinst] message first, flags after" ] \
+  && ok "message-first: the MESSAGE is recorded, not the flag" \
+  || bad "message-first records the message" "got '$(field "$D" message)'"
+
+D="$WORK/c1c"; run_notify "$D" --kind receipt "flags first, message after"
+[ "$(field "$D" message)" = "[testinst] flags first, message after" ] \
+  && ok "flags-first still parses identically (both orders supported)" \
+  || bad "flags-first records the message" "got '$(field "$D" message)'"
+
+D="$WORK/c1d"; run_notify "$D" "a decision, message first" --kind decision --class spend
+delivered "$D" && ok "message-first decision+class IS delivered" \
+  || bad "message-first decision delivered" "curl never called; err=$(cat "$D/err")"
+
 # --- 2. an allowlisted founder decision DOES get through ---------------------
 # This is the half that matters most. A gate that silences a real alert is a
 # worse outage than the noise it was built to stop, so this case is asserted
