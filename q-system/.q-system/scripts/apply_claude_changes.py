@@ -24,17 +24,18 @@ WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 
 THE THREE LAYERS
 
-  L1 additive-only  : the only ops that EXIST are insert_after, insert_before,
-                      append, create_file. There is no replace and no delete, so
-                      "remove a hook entry" is not expressible. Unknown ops and
-                      unknown proposal keys are refused, so a proposal cannot
-                      smuggle in a flag like disables_enforcement.
+  L1 op vocabulary  : insert_after, insert_before, append, create_file, replace.
+                      There is no delete, so "remove a rule file" is not
+                      expressible. Unknown ops and unknown proposal keys are
+                      refused, so a proposal cannot smuggle in a flag like
+                      disables_enforcement.
   L2 ratchet        : census the live enforcement points before and after. Every
                       pre-existing member must still be present and no category
                       may shrink. This catches the technically-additive edit that
                       removes something as a side effect -- e.g. inserting
                       " || true" after a hook command, which deletes nothing but
                       makes the old exact command string vanish from the census.
+                      It ALSO reads rule bodies, which is what makes replace safe.
   L3 verify+revert  : run the gate suite before and after. Any gate that goes
                       pass -> fail auto-restores the backup. The founder must
                       never be the one who notices a regression.
@@ -43,13 +44,29 @@ Everything runs against a COPY of .claude/ first. The live tree is touched only
 after all of L1, L2 and the preconditions pass on that copy, so a refusal never
 half-writes.
 
+WHY `replace` EXISTS (2026-08-02). L1 was additive-only, and that had a cost
+nobody had priced: a whole class of rule work had NO path. Correcting a false
+claim, fixing wrong text, editing a stale line -- all of them are replaces. On
+2026-08-01 three separate PRs each found a rule carrying a FALSE enforcement
+claim, which is the sharp version of the problem: the system could detect the lie
+and could not correct it. The safety property was never "additive"; it is "an
+agent cannot WEAKEN enforcement", and that is L2's job, not L1's.
+
+Admitting replace required L2 to grow FIRST. Until that day the census counted
+rule FILE NAMES and never read a rule body, so a replace that swapped a whole
+rule for "Advisory only. Nothing runs." kept the filename and passed clean --
+observed, `OK applied gut-rule: ... gates held`, before the fix. The census now
+also holds each rule's ENFORCED claim and the executables it names.
+
 OUT OF REACH BY DESIGN (say so, do not pretend otherwise): removing a hook,
-deleting a rule, narrowing a matcher, and widening permissions.allow or
-defaultMode cannot be done through this path at all. Those need a different
-tool and a real conversation. See REFUSED_SURFACES.
+deleting a rule file, narrowing a matcher, dropping a rule's ENFORCED claim,
+dropping the name of an executable that really exists, and widening
+permissions.allow or defaultMode cannot be done through this path at all. Those
+need a different tool and a real conversation. See REFUSED_SURFACES.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,9 +75,19 @@ import time
 
 SCHEMA_VERSION = 1
 
-# L1: the entire op vocabulary. Additive only. There is deliberately no
-# "replace" and no "delete" -- a removal is not expressible, not merely gated.
-ADDITIVE_OPS = ("insert_after", "insert_before", "append", "create_file")
+# L1: the entire op vocabulary. There is deliberately no "delete" -- deleting a
+# file is not expressible, not merely gated.
+#
+# `replace` WAS absent here, and its absence was itself a defect (2026-08-02).
+# Additive-only meant a whole class of rule work had no path at all: correcting a
+# false claim, fixing wrong text, editing a stale line. Three PRs in one night
+# found rules carrying FALSE enforcement claims, and fixing a false claim is
+# exactly a replace -- the system could detect the lie and could not correct it.
+# The safety property was never "additive"; it is "an agent cannot WEAKEN
+# enforcement", which is L2's job. So replace is admitted and L2 was widened to
+# see rule CONTENT (see census), because until that day the ratchet counted rule
+# FILE NAMES only and would have waved through a replace that gutted a rule body.
+ALLOWED_OPS = ("insert_after", "insert_before", "append", "create_file", "replace")
 
 ALLOWED_PROPOSAL_KEYS = {"schema_version", "slug", "reason", "requires", "edits"}
 ALLOWED_EDIT_KEYS = {"file", "op", "anchor", "insert", "reason"}
@@ -172,9 +199,9 @@ def load_proposal(path):
         if unknown_e:
             raise Refusal("edit %d has unknown key(s): %s" % (idx, ", ".join(sorted(unknown_e))))
         op = edit.get("op")
-        if op not in ADDITIVE_OPS:
+        if op not in ALLOWED_OPS:
             raise Refusal(
-                "edit %d op %r is not additive (allowed: %s)" % (idx, op, ", ".join(ADDITIVE_OPS))
+                "edit %d op %r is not an allowed op (allowed: %s)" % (idx, op, ", ".join(ALLOWED_OPS))
             )
         for field in ("file", "insert", "reason"):
             if not isinstance(edit.get(field), str) or not edit[field].strip():
@@ -182,7 +209,7 @@ def load_proposal(path):
         # THE boundary. After this line the proposal holds exactly one spelling
         # of each path and no other reader normalizes anything.
         edit["file"] = canonical_rel(edit["file"])
-        if op in ("insert_after", "insert_before"):
+        if op in ("insert_after", "insert_before", "replace"):
             if not isinstance(edit.get("anchor"), str) or not edit["anchor"].strip():
                 raise Refusal("edit %d needs a non-empty anchor for op %s" % (idx, op))
         elif "anchor" in edit:
@@ -335,6 +362,24 @@ def apply_edit(content, edit, rel):
         raise Refusal("create_file target already exists with different content: %s" % rel)
 
     anchor = edit["anchor"]
+
+    if op == "replace":
+        # IDEMPOTENCE IS GUARANTEED HERE, NOT HOPED FOR. Every other op re-runs
+        # safely because it can detect its own output; replace cannot when the
+        # anchor survives inside the replacement (anchor "ENFORCED" -> insert
+        # "ENFORCED by x.py" re-fires on the next run and yields "ENFORCED by
+        # x.py by x.py"). Rather than half-detect that, the overlapping case is
+        # refused outright and the author is pointed at the op that already does
+        # it correctly. Ambiguity gets a refusal here, same as a >1 anchor.
+        if anchor in ins:
+            raise Refusal(
+                "replace anchor appears inside its own replacement in %s (not "
+                "idempotent -- use insert_after/insert_before to extend text): %r"
+                % (rel, _snip(anchor))
+            )
+        if anchor not in content and content.count(ins) == 1:
+            return content, True
+
     hits = content.count(anchor)
     if hits == 0:
         raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
@@ -342,6 +387,13 @@ def apply_edit(content, edit, rel):
         raise Refusal("anchor matches %d times (must be exactly 1) in %s: %r" % (hits, rel, _snip(anchor)))
 
     pos = content.index(anchor)
+    if op == "replace":
+        # `insert` is validated non-empty upstream, so replace-with-nothing is
+        # not expressible through this path. That is not the safety property
+        # though -- replacing a hook command with "x" deletes it just as well.
+        # The census is what actually holds the line; see L2.
+        return content[:pos] + ins + content[pos + len(anchor):], False
+
     if op == "insert_after":
         cut = pos + len(anchor)
         if content[cut:cut + len(ins)] == ins:
@@ -385,9 +437,100 @@ def _dir_names(path):
     return {n for n in os.listdir(path) if not n.startswith(".")}
 
 
-def census(root):
-    """Count the live enforcement points. Enforcement may only grow."""
+# A leading alphanumeric is REQUIRED. Without it the pattern also matches the
+# literal "<skill>-lint.py" that skill-hook-pairing.md writes as a naming
+# convention, and a template placeholder is not an executable.
+_SCRIPT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:py|sh)\b")
+
+_REPO_SCRIPTS_CACHE = {}
+
+
+def _repo_script_names(root):
+    """Every .py/.sh basename that actually exists anywhere in the repo.
+
+    Walks dot-directories deliberately: the enforcement scripts live in
+    `q-system/.q-system/scripts/`, and Python's glob `**` silently skips
+    dot-dirs. Measured 2026-08-02 -- a glob-based version of this scan reported
+    38 rule-named scripts as missing when only 4 really were, which would have
+    made the ratchet wave through the removal of 34 live enforcement claims.
+
+    Pruning is deliberately minimal (.git, node_modules). Every directory left in
+    can only make MORE names resolve, and a name that resolves is a name the
+    ratchet protects -- so an over-broad scan errs toward more protection, while
+    an over-narrow one errs toward letting a real claim be deleted.
+    """
+    key = os.path.abspath(root)
+    if key in _REPO_SCRIPTS_CACHE:
+        return _REPO_SCRIPTS_CACHE[key]
+    names = set()
+    for dirpath, dirnames, filenames in os.walk(key):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules")]
+        for name in filenames:
+            if name.endswith(".py") or name.endswith(".sh"):
+                names.add(name)
+    _REPO_SCRIPTS_CACHE[key] = names
+    return names
+
+
+def _rule_content_claims(root, repo_scripts):
+    """(enforced_claims, named_executables) read from .claude/rules/*.md bodies.
+
+    WHY THIS EXISTS (2026-08-02). The census counted rule FILE NAMES and nothing
+    else, so it could not see inside a rule at all. That was survivable while the
+    op vocabulary was additive-only. The moment `replace` was admitted it stopped
+    being survivable: a replace that swapped a rule's whole body for "Advisory
+    only. Nothing runs." kept the filename, passed the ratchet, and the engine
+    reported `OK applied ... gates held`. That run is the reproducer for this
+    function, and it was watched green-when-it-should-have-been-red first.
+
+    named_executables holds only scripts that RESOLVE to a real file. That
+    qualifier is what keeps `replace` useful rather than merely safe: a rule
+    naming a script that does not exist is a false claim, not enforcement, and
+    correcting it is the exact job replace was added for. A rule naming a script
+    that does exist is a live claim, and dropping the name weakens it.
+
+    KNOWN LIMIT, stated rather than hidden: resolution is repo-only. A hook that
+    lives outside the repo (destructive-op-deny.sh sits in ~/.claude/hooks/) is
+    therefore unprotected prose here. That is acceptable because the enforcement
+    for those is the hook WIRING in settings.json, which the hooks census already
+    holds; the mention in a rule is documentation of it.
+    """
+    enforced = set()
+    named = set()
+    rules_dir = os.path.join(root, ".claude", "rules")
+    if not os.path.isdir(rules_dir):
+        return enforced, named
+    for name in sorted(os.listdir(rules_dir)):
+        if not name.endswith(".md") or name.startswith("."):
+            continue
+        try:
+            with open(os.path.join(rules_dir, name)) as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            # Unreadable is not "makes no claims". Skipping it silently would let
+            # a rule be emptied behind an encoding error, so it is left out of
+            # BOTH censuses identically and the file-name census still covers it.
+            continue
+        if "ENFORCED" in text:
+            enforced.add(name)
+        for script in _SCRIPT_NAME_RE.findall(text):
+            if script in repo_scripts:
+                named.add("%s|%s" % (name, script))
+    return enforced, named
+
+
+def census(root, resolve_root=None):
+    """Count the live enforcement points. Enforcement may only grow.
+
+    `resolve_root` is where script names are checked for existence, and it is
+    NOT `root`. The "after" census runs against a copy tree that holds only
+    .claude/ and the capability manifest, so resolving there would find zero
+    scripts, every named_executables entry would vanish, and the ratchet would
+    refuse every apply. Existence is a fact about the REPO, identical before and
+    after -- no op in this vocabulary can create a script outside .claude/.
+    """
     c = {}
+    repo_scripts = _repo_script_names(resolve_root or root)
     settings_path = os.path.join(root, ".claude", "settings.json")
     settings = {}
     if os.path.isfile(settings_path):
@@ -415,6 +558,7 @@ def census(root):
         except ValueError:
             pass
     c["manifest_tests"] = tests
+    c["enforced_claims"], c["named_executables"] = _rule_content_claims(root, repo_scripts)
     return c
 
 
@@ -709,8 +853,8 @@ def main(argv):
             with open(dest, "w") as fh:
                 fh.write(content)
 
-        before_census = census(root)
-        after_census = census(copy_root)
+        before_census = census(root, resolve_root=root)
+        after_census = census(copy_root, resolve_root=root)
         ratchet_check(before_census, after_census)
         log.append("ratchet ok: hooks %d->%d, rules %d->%d, deny %d->%d" % (
             len(before_census["hooks"]), len(after_census["hooks"]),
