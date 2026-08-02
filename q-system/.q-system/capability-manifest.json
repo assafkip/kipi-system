@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
       "runner": "python3"
     },
@@ -30,7 +34,15 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -162,6 +174,18 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -195,6 +219,14 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
       "runner": "bash"
     },
     {

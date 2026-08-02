@@ -119,6 +119,22 @@ done
 #   and claude's record moves down into $OUT_DIR/claude to get out of its way.
 #   Exactly one engine writes the gating record: single writer, preserved.
 PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-codex}"
+
+# WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
+# REVIEW RAN; it could not prove THE DISPATCHER RAN ONE UNATTENDED, which is the
+# only thing that actually closes the loop. A hand-run review and a scheduled one
+# wrote byte-identical evidence, so no number of green checks answered the
+# question -- every proof shown to the founder had this hole in it.
+#
+# DEFAULT IS `manual`, AND THAT IS THE WHOLE SAFETY PROPERTY. An unlabelled run
+# must never pass as dispatcher-driven, or the field manufactures exactly the
+# evidence it exists to supply. Same posture as the commit status: absent is not
+# approved. Records written before this field existed carry no key at all, and the
+# verifier treats a missing key as not-dispatcher for the same reason.
+#
+# Set by linear-worker.sh at its single reviewer call site, so the label follows
+# the real invocation path rather than being something a human remembers to pass.
+INVOKER="${KIPI_REVIEW_INVOKER:-manual}"
 case "$ENGINE" in
   claude) ENGINE_DIR="$OUT_DIR" ;;
   codex)  ENGINE_DIR="$OUT_DIR/codex" ;;
@@ -177,6 +193,36 @@ PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .ti
   || { echo "no PR #$PR" >&2; exit 1; }
 HEAD_SHA="${PR_META%%$'\t'*}"
 PR_TITLE="${PR_META#*$'\t'}"
+
+# CONFIRM THE HEAD HAS SETTLED (sp-f8edcdeb). The comment above reasons that
+# pinning an OLDER sha is the safe direction because it reads as drift and routes
+# to a re-review. That is true of the GATE, and it was still wrong in practice:
+# on 2026-07-30 a push and a review ran in the same command, `gh pr view` returned
+# the PRE-PUSH sha, and the run posted kipi/reviewer-approved=SUCCESS on it. The
+# newest commits went unreviewed while a green required check sat on the branch.
+# Drift catches it on the next worker pass; a human reading the PR in between sees
+# a green codex check that does not cover the top commits.
+#
+# A second read a few seconds later is enough, because the failure is propagation
+# delay, not a persistent disagreement. Refuse rather than adopt the newer value:
+# if the head is moving RIGHT NOW, whatever we pick may be stale again by the time
+# the model finishes, and a review nobody ran is cheaper than a green check on the
+# wrong code. Also catches a concurrent push by anyone, which the caller cannot.
+#
+# The confirm read uses the IDENTICAL query and the IDENTICAL extraction as the
+# first one. A differently-shaped second query is a second reader of one fact:
+# my first cut asked for `--json headRefOid -q .headRefOid` while the first read
+# asked for the sha+title tuple, so the two strings never matched and the check
+# refused every review. Caught by test-review-tree-guard going 1/23.
+sleep 3
+PR_META_CONFIRM="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null || true)"
+HEAD_SHA_CONFIRM="${PR_META_CONFIRM%%$'\t'*}"
+if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
+  echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
+  echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
+  echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
@@ -220,7 +266,70 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
 # still must never be reviewed.
 REVIEW_ROOT="$SKEL"
-if [ -n "$HEAD_SHA" ]; then
+
+# REVIEW IN A DEDICATED DETACHED WORKTREE, NEVER IN A CHECKOUT SOMEONE IS USING
+# (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
+# but when the live checkout happens to sit at that sha, "a tree that holds it"
+# IS the founder's working directory, and that is where the review ran. Both
+# PR #47 rounds recorded `workdir: <the founder's live checkout>` with
+# `sandbox: workspace-write`.
+#
+# Two failures at once, and the second is the worse one:
+#   READ  -- an edit during a 7-13 minute review means the reviewer judged a tree
+#            state that never existed as a commit, while the verdict is stamped on
+#            a head_sha whose content it did not read. The provenance is false in
+#            exactly the way the tree guard exists to prevent.
+#   WRITE -- workspace-write lets the reviewer modify the founder's live checkout.
+#
+# The workaround was "everyone holds still for 13 minutes", which is not a control.
+# A detached worktree pinned to the exact sha is: it cannot drift while the review
+# runs, nobody else is editing it, and the tree/PR match becomes true by
+# construction rather than by search.
+#
+# One tree per PR, reused across rounds by re-detaching rather than removing --
+# removal is a destructive op on a path this script does not own, and re-checkout
+# reaches the same state.
+review_worktree() {  # review_worktree <sha> -> prints path, or nothing
+  local sha="$1" wt="$HOME/.config/kipi/review-trees/pr-$PR"
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
+    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
+  else
+    git -C "$SKEL" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+  fi
+  # Prove it landed where we asked. A worktree silently sitting at the wrong sha
+  # is the same false-provenance bug in a new costume.
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+  printf '%s' "$wt"
+}
+
+if [ -n "$HEAD_SHA" ] && git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+  ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
+  if [ -n "$ISOLATED" ]; then
+    REVIEW_ROOT="$ISOLATED"
+    echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
+    HEAD_SHA_ISOLATED=1
+  else
+    # Say it out loud rather than quietly reviewing the live tree. A degraded run
+    # that nobody knows is degraded is how the original defect stayed invisible.
+    echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2
+    HEAD_SHA_ISOLATED=0
+  fi
+elif [ -n "$HEAD_SHA" ]; then
+  # OBJECT ABSENT -> fall through to the ORIGINAL tier-1 path (warn, proceed).
+  # I briefly made this refuse, on the reasoning that no tree can be built at a
+  # missing object so the provenance must be false. The tree-guard suite refused
+  # the change and was right: a stale or partial clone cannot prove ancestry
+  # EITHER WAY, so refusing wedges the loop on a fetch problem, and every reviewer
+  # case in test-severity-floor.sh reports a fabricated sha and takes exactly this
+  # branch. Isolation raises the floor for the case that actually occurs (the
+  # object is present); it does not get to redefine the case it cannot serve.
+  HEAD_SHA_ISOLATED=0
+else
+  HEAD_SHA_ISOLATED=0
+fi
+
+if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
   if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
   elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
@@ -537,14 +646,15 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine = sys.argv[1:12]
+pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
+           "invoker": invoker,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
@@ -622,9 +732,58 @@ post_reviewer_status() {
 
 if [ "$POST" = "1" ]; then
   COMMENT_URL=""
-  COMMENT_URL="$(gh pr comment "$PR" --body-file "$REVIEW" 2>/dev/null)" \
-    && echo "  posted to PR #$PR" \
-    || { COMMENT_URL=""; echo "  WARN: could not comment on PR" >&2; }
+  # POST THE RENDERED REVIEW, NEVER THE RAW FILE (sp-48688b24). `--body-file
+  # "$REVIEW"` sent the codex agent's entire stdout. Measured on disk 2026-07-30,
+  # four real rounds: 435,280 / 519,377 / 278,439 / 197,279 bytes. Three were
+  # rejected; only the 197,279-byte round landed (as a 197,208-character comment
+  # on PR #46). So the old failure was SIZE-DEPENDENT, not universal -- worth
+  # stating because the first two write-ups of this defect, mine included, both
+  # claimed it failed every time and were wrong.
+  #
+  # THE CAP IS DELIBERATELY CONSERVATIVE, NOT TUNED. The observed ceiling sits
+  # somewhere between 197,279 and 278,439 bytes, while a reproduced rejection
+  # reported `Body is too long (maximum is 65536 characters) (addComment)`. Those
+  # two facts do not agree, so the limit is path-dependent and I do not know which
+  # path a future gh version takes. 60,000 is under BOTH, which makes the comment
+  # succeed regardless of which limit applies. Tuning it upward would trade a
+  # guaranteed delivery for a longer transcript nobody reads.
+  # EXPLICIT XXXXXX TEMPLATE, because `mktemp -t name` is not portable. BSD
+  # mktemp (macOS) appends the random suffix itself; GNU mktemp (the Linux CI
+  # runner) rejects a template with fewer than three X's. My first cut used the
+  # BSD form, passed 14/14 locally, and turned `validate` red on the PR -- the
+  # body file was never created, so --body-file got an empty path. Nothing on
+  # this machine could have caught it; the runner is the other OS.
+  # NEVER FALL BACK TO $REVIEW ITSELF (codex round 4, minor). My first fallback was
+  # `|| REVIEW_BODY="$REVIEW"`, which then ran
+  # `review_comment_body "$REVIEW" > "$REVIEW_BODY"` -- the same path as input and
+  # output. The `>` truncates the review before the renderer reads it, so a mktemp
+  # failure would DESTROY the only copy of a review that cost 8-13 minutes of codex
+  # time, and post a self-copy of the wreckage. A degraded path may post something
+  # worse; it may never eat the artifact.
+  REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX" 2>/dev/null)" || REVIEW_BODY=""
+  # POST_FILE is what gh sends; REVIEW_BODY is only ever a file WE created. Keeping
+  # them separate is what makes the degraded path safe: with no temp file we post
+  # the raw review unchanged and write nothing, instead of redirecting into the
+  # artifact we are trying to read.
+  if [ -n "$REVIEW_BODY" ]; then
+    review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
+    POST_FILE="$REVIEW_BODY"
+  else
+    POST_FILE="$REVIEW"
+    echo "  WARN: could not create a temp file; posting the RAW review, which GitHub may reject on size" >&2
+  fi
+  # Keep the reason. A bare "could not comment" sent the maintainer to guess
+  # between a size rejection, an auth failure and a closed PR -- the same
+  # discard-the-reason defect PR #46 fixed one call lower down.
+  COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
+  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+    echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
+  else
+    COMMENT_URL=""
+    echo "  WARN: could not comment on PR #$PR: $(tr '\n' ' ' <"$COMMENT_ERR" | cut -c1-300)" >&2
+    echo "  WARN: the review is on disk at $REVIEW but NO human-readable copy reached the PR" >&2
+  fi
+  rm -f "$REVIEW_BODY" "$COMMENT_ERR"
   # No sha, no status. A status on a guessed commit is worse than none because
   # it looks authoritative -- the same reason ASK-216 captured the sha before
   # dispatch instead of looking it up afterwards.

@@ -1,4 +1,5 @@
 #!/bin/bash
+# portability-lint-skip-file: this script is macOS-only BY DESIGN (launchd/plutil).
 # Materialize a committed plist TEMPLATE and load it into launchd.
 #
 # Why this exists (ASK-191): three committed plists in this directory used two

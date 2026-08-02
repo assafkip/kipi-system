@@ -42,6 +42,9 @@ print(json.dumps({"id": sys.argv[1], "status": sys.argv[2], "note": sys.argv[3] 
 }
 
 command -v claude >/dev/null 2>&1 || { echo "$(TS) heartbeat: no claude CLI -> skip" >> "$LOG"; exit 0; }
+# Founder decision 2026-08-01: pin the per-instance agents' model; unpinned they
+# ride the interactive default (Fable on 2026-08-01) and burn quota unattended.
+export ANTHROPIC_MODEL="claude-opus-5"
 if command -v timeout >/dev/null 2>&1; then TO="timeout 1800"
 elif command -v gtimeout >/dev/null 2>&1; then TO="gtimeout 1800"
 else TO=""; fi
