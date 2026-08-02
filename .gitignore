@@ -101,3 +101,10 @@ q-system/output/.update-check-*
 # on every run). The committed artifact is the digest the overlap pass emits.
 q-system/output/capability-maps/
 .runs/
+
+# .claude/ integrity baseline is INSTANCE-LOCAL (ASK-282). Never commit it:
+# kipi update propagates the skeleton, but each instance regenerates
+# .claude/settings.json from settings-template.json, so a shared baseline can
+# never match and would Slack-page every instance daily.
+q-system/.q-system/claude-integrity-baseline.json
+q-system/output/claude-integrity/

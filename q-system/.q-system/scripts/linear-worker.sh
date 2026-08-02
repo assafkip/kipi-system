@@ -70,6 +70,22 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 # adversarial review's model spend per case, so the branch would stay untested --
 # which is how it shipped wrong. Default is always the real reviewer.
 REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
+# THE SECOND RUNNER (ASK-281). `blocked:capability` used to be terminal: its
+# Linear comment named exactly one actor who could clear it, whoever owns the
+# config, and the founder declined -- "Blocked is not a state that makes sense
+# because it has no continuation. I'm not going to unblock it, Sana or Codex need
+# to do that." Ten issues parked while the loop logged `nothing ready` every 15
+# minutes. The unstated assumption was that "not Sana" means "the founder"; it
+# skipped the third runner. Sana runs inside Claude Code, whose sensitive-path
+# guard refuses Edit/Write under `.claude/**` and is NOT liftable by
+# `permissions.allow`. Codex is a different binary and does not inherit it
+# (probed live 2026-08-01: `codex exec -s workspace-write` created
+# `.claude/rules/probe.md` from nothing). A capability SANA lacks is not
+# automatically a capability the FLEET lacks -- so ask the other runner before
+# parking. Injectable for the same reason REVIEWER_CMD is: otherwise every test
+# case of "what if the second runner is also refused" bills a real model run, so
+# the branch stays untested, which is how the single-runner assumption shipped.
+CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-write}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 # THE one writer of that ledger. Six functions here used to each do their own
@@ -1353,7 +1369,117 @@ Anything real you find and are not fixing: capture it, never just mention it:
     else
       say "$ISSUE REFUSED as unexecutable: $SCOPE_WHY"
     fi
-    if python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
+    # HAND TO THE SECOND RUNNER BEFORE PARKING (ASK-281).
+    #
+    # Capability class ONLY. A scope refusal says the SPEC is wrong, and a second
+    # runner reading the same wrong spec reaches the same wall -- that one really
+    # does belong to the drafter. This branch is for "the spec is fine, THIS
+    # runner is not equipped", which is a claim about a runner, not about the
+    # fleet.
+    #
+    # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
+    # iterations, so a $CODEX_WHY that survived would attach the previous issue's
+    # Codex refusal to the next issue's Linear comment.
+    CODEX_WHY=""; CODEX_CONTINUED=""
+    if [ "$REFUSE_KIND" = "capability" ]; then
+      # A stale sentinel from a previous run would be read as this run's refusal,
+      # which is the same defect the Sana sentinel already has a comment about.
+      rm -f "$TREE/.codex-blocked-capability"
+      CODEX_HEAD_BEFORE="$(git -C "$TREE" rev-parse HEAD 2>/dev/null || true)"
+      say "$ISSUE handing to the Codex runner before parking (ONE attempt, never a loop)"
+      CODEX_PROMPT="You are Codex, the SECOND runner on Linear issue $ISSUE.
+
+Sana (Claude Code) already worked this issue in the git worktree $TREE, on branch
+$BRANCH, and stopped. She did NOT judge the spec unworkable -- she judged her own
+runner unequipped, and wrote this:
+
+  $SCOPE_WHY
+
+You are a different binary with a different harness. Claude Code's sensitive-path
+guard over \`.claude/**\` is not yours. So the question is only: can YOU finish
+what she could not?
+
+1. Read the issue's Definition of Ready (Outcome, Files, Check, Blast radius, Not
+   doing) and read what is already committed on $BRANCH. Sana's work stands --
+   you are continuing it, not restarting it.
+2. Work ONLY the part she was blocked on, and only what the DoR scopes. The
+   'Not doing' line is binding on you exactly as it was on her.
+3. Reproducer first: observe it RED, then make it green, then paste the real
+   command output. A fix with no check that could have caught the bug is a patch.
+4. Commit on $BRANCH with $ISSUE in the message (the commit-msg gate requires it).
+   A COMMIT IS HOW THIS RUN IS SCORED. Exiting 0 having changed nothing reads as
+   a refusal, and the issue gets parked -- which is the correct outcome if you
+   genuinely cannot proceed, and the wrong one if you simply did not commit.
+5. If you are ALSO not equipped -- the capability is missing for you too, not
+   merely awkward -- say so in a file and stop:
+     printf '%s' \"<the exact capability YOU lack, and what refused it>\" > $TREE/.codex-blocked-capability
+   Both refusals then go on the Linear issue together, naming what each runner
+   lacked, and the issue parks. That is a correct outcome, not a failure.
+
+NEVER route around a refused permission by another route (writing through a shell
+to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
+its job -- if the guard is the blocker, that is exactly what step 5 is for."
+      # run_bounded, not a bare call: an unbounded second runner at 3am is the
+      # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
+      # a dead Codex must cost one timeout, not a spend loop.
+      if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$CODEX_PROMPT"; then
+        crc=0
+      else
+        crc=$?
+      fi
+      if [ -f "$TREE/.codex-blocked-capability" ]; then
+        CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
+        [ -n "$CODEX_WHY" ] || CODEX_WHY="the Codex run refused but recorded no reason"
+        # Consumed for the same reason Sana's is: it is untracked, and the
+        # position guard refuses to reposition a dirty tree.
+        rm -f "$TREE/.codex-blocked-capability"
+      fi
+      CODEX_HEAD_AFTER="$(git -C "$TREE" rev-parse HEAD 2>/dev/null || true)"
+      # A NEW COMMIT IS THE BAR, not exit 0. "Exited 0 having done nothing" is the
+      # exact shape that stayed invisible to the attempt counter until ASK-221,
+      # and here it would be worse: it would un-park an issue nobody worked, with
+      # the label gone and nothing on the branch to show for it.
+      #
+      # AND THE COMMIT MUST HAVE CHANGED FILES. A moved HEAD is not work: an empty
+      # commit, an `--amend` that re-points at the same tree, or a rebase that
+      # dropped its only hunk all move HEAD while leaving the branch byte-identical.
+      # That is the ASK-221 shape one layer deeper -- a runner that believes it
+      # worked and did not -- so the tree, not the pointer, is what gets compared.
+      #
+      # FAIL CLOSED: any git failure here yields an empty diff list and the issue
+      # parks. Parking work that WAS done is recoverable (the label names the
+      # capability and a human clears it); un-parking work that was NOT done is
+      # not, because the label is gone and the picker never offers the issue again.
+      CODEX_CHANGED_FILES=""
+      if [ -n "$CODEX_HEAD_BEFORE" ] && [ -n "$CODEX_HEAD_AFTER" ] \
+         && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
+        CODEX_CHANGED_FILES="$(git -C "$TREE" diff --name-only "$CODEX_HEAD_BEFORE" "$CODEX_HEAD_AFTER" 2>/dev/null || true)"
+      fi
+      if [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
+        CODEX_CONTINUED="$CODEX_HEAD_AFTER"
+        say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
+        # Clearing the label is the whole point: with it applied the picker never
+        # offers the issue again, so a continuation that still parked would be a
+        # continuation nobody could act on.
+        REFUSE_LABEL=""
+      elif [ -n "$CODEX_WHY" ]; then
+        say "$ISSUE Codex is ALSO not equipped: $CODEX_WHY -- parking with both refusals recorded"
+      else
+        # Named precisely, because "no commit" and "a commit that changed nothing"
+        # send a reader to different places: the first says Codex never got that
+        # far, the second says it committed and the branch is unchanged anyway.
+        if [ -n "$CODEX_HEAD_AFTER" ] && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
+          CODEX_WHY="the Codex run committed but changed no files (rc=$crc) and left no reason"
+          say "$ISSUE Codex committed but changed no files (rc=$crc) -- parking"
+        else
+          CODEX_WHY="the Codex run produced no commit (rc=$crc) and left no reason"
+          say "$ISSUE Codex left no commit (rc=$crc) -- parking"
+        fi
+      fi
+    fi
+    if [ -z "$REFUSE_LABEL" ]; then
+      : # Codex continued it; there is nothing to park and no label to apply.
+    elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
       say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
       # The label is the ONLY thing that makes this stick. If it did not land, the
@@ -1363,12 +1489,25 @@ Anything real you find and are not fixing: capture it, never just mention it:
     fi
     # Different next action per class. A capability block that says "re-scope this"
     # sends the drafter to rewrite a spec that was already right.
-    if [ "$REFUSE_KIND" = "capability" ]; then
-      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
+    if [ -n "$CODEX_CONTINUED" ]; then
+      REFUSE_NOTE="**Sana was not equipped; Codex was.** Not labelled \`blocked:capability\` -- the issue stays in the pool.
+
+Sana stopped here:
 
 $SCOPE_WHY
 
-**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, the runner is not equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
+The Codex runner was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
+
+**Next:** review the branch/PR as normal. No capability grant is needed and no founder decision is pending."
+    elif [ "$REFUSE_KIND" = "capability" ]; then
+      REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
+
+BOTH runners were tried. Neither is equipped:
+
+- **Sana (Claude Code):** $SCOPE_WHY
+- **Codex:** $CODEX_WHY
+
+**The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, neither runner is equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
 
 **Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up."
     else
@@ -1411,7 +1550,23 @@ $SCOPE_WHY
     # spend the work budget. Both are enforced below at their own sites. The
     # claim release moves to step 6, which already owns it -- releasing here and
     # then falling through would release the same claim twice from two places.
-    REFUSED="$REFUSE_KIND"
+    #
+    # EXCEPT WHEN CODEX CONTINUED IT. $REFUSED is read at three sites below and
+    # every one of them is wrong for a continuation, because the issue did not
+    # refuse -- a second runner worked it and committed:
+    #   - the budget (`[ -n "$REFUSED" ] || DONE=$((DONE+1))`): a continuation is
+    #     real work by a real runner, so it spends a dispatch. Carried as a
+    #     refusal it costs nothing and an unattended run overruns its own --limit,
+    #     which is exactly the silent budget burn ASK-221 was about.
+    #   - the closing line: it reports the issue "held at $REFUSE_LABEL", and the
+    #     handoff has just deliberately EMPTIED that variable -- so a completed
+    #     issue was announced as held at nothing at all.
+    #   - the no-PR branch: "a refusal is not a failed attempt" is true of a
+    #     refusal. A run that produced commits and left no PR is the ASK-221 shape
+    #     and does belong to the counter, whichever runner produced them.
+    # The label was already cleared above; this is the same fact reaching the rest
+    # of the loop instead of stopping at the label.
+    [ -n "$CODEX_CONTINUED" ] || REFUSED="$REFUSE_KIND"
   fi
 
   # 5. REVIEW. Every PR this worker opens gets the adversarial reviewer, with no
@@ -1432,12 +1587,44 @@ $SCOPE_WHY
   # Only fires when there is something to open a PR FOR: commits ahead of
   # origin/main. A branch with no commits still yields no PR, which is a real
   # failure the driver should still see.
+  AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+
+  # PUSH BEFORE THE REVIEW, ON BOTH PATHS -- not only when this worker opens the
+  # PR. The push used to live inside the `[ -z "$PR_NUM" ]` branch below, so it
+  # ran only when there was no PR yet. Every commit made AFTER a PR already
+  # existed stayed local, and the Codex handoff (step 4b) is exactly that case:
+  # a capability block is usually PARTIAL, so Sana ships a half and opens a PR,
+  # and only then does the second runner commit. The reviewer was handed that
+  # PR, read a remote head that was still Sana's half, and the run reported the
+  # issue CONTINUED -- an approval for a diff the continuation is absent from.
+  # That is worse than skipping the review: the label is cleared, the issue
+  # leaves the parked pool, and the only copy of the work is a worktree on one
+  # machine that the next round's position guard will refuse to move.
+  #
+  # Guarded on the two conditions that make a push meaningful, so a run that
+  # produced nothing does not fire a no-op: there are commits past origin/main,
+  # and the local tip differs from what the remote already has. A MISSING
+  # origin/$BRANCH reads as "differs", which is correct -- nothing is there yet.
+  #
+  # A failed push is SAID, not swallowed. The review still runs (a stale review
+  # beats none), but the operator has to be able to tell an approval of the real
+  # head from an approval of an old one, and silence cannot carry that.
+  if [ "${AHEAD:-0}" -gt 0 ]; then
+    LOCAL_TIP="$(cd "$TREE" && git rev-parse HEAD 2>/dev/null || true)"
+    REMOTE_TIP="$(cd "$TREE" && git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
+    if [ "$LOCAL_TIP" != "$REMOTE_TIP" ]; then
+      if (cd "$TREE" && git push -u origin "$BRANCH" >/dev/null 2>&1); then
+        say "$ISSUE: pushed $BRANCH to origin ($LOCAL_TIP) -- the reviewer reads the remote, not the worktree"
+      else
+        say "WARN: $ISSUE could not push $BRANCH; any review below reads the remote's older head"
+      fi
+    fi
+  fi
+
   if [ -z "$PR_NUM" ]; then
-    AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
     if [ "${AHEAD:-0}" -gt 0 ]; then
       say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
-      (cd "$TREE" && git push -u origin "$BRANCH" >/dev/null 2>&1
-       gh pr create --head "$BRANCH" --base main \
+      (cd "$TREE" && gh pr create --head "$BRANCH" --base main \
          --title "$(git log -1 --pretty=%s)" \
          --body "Autonomous worker (Sana) on $ISSUE. Opened by the worker because the run ended without opening it.
 
