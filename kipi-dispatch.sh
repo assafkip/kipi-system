@@ -89,11 +89,62 @@ PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
 # the same shape as launchd-health's 6h TTL on a 12h job, which this same audit
 # flagged. linear-worker.sh already does clear-on-recovery and is the reference.
 # Every page_once key below has a matching page_clear on its healthy path.
+# ONE LOCK PRIMITIVE, used by BOTH page_once and page_clear, so a clear cannot
+# interleave with a decision. mkdir is the atomic claim.
+#
+# AN ORPHANED LOCK MUST AGE OUT. Treating any existing lock dir as a live holder
+# meant a notifier killed between the mkdir and its cleanup -- launchd reaping the
+# job, a reboot, a SIGKILL -- silenced that key PERMANENTLY. Reproduced: leave the
+# dir behind and the next three runs page 0, 0, 0 while the log cheerfully reports
+# "another dispatcher is already deciding it" with nobody there.
+#
+# The critical section is a stat, a notifier call and a small write, so anything
+# still holding this after 300s is dead. That is well under the 900s heartbeat, so
+# an orphan always self-clears before the next beat rather than needing a human.
+page_lock() {
+  local lock="$1" now lock_mtime lock_probe
+  mkdir "$lock" 2>/dev/null && return 0
+  now="$(date -u +%s)"
+  lock_probe="$(stat -c %Y "$lock" 2>/dev/null)"
+  case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac
+  [ -n "$lock_probe" ] || { lock_probe="$(stat -f %m "$lock" 2>/dev/null)"; case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac; } # portability-lint-skip
+  lock_mtime="$lock_probe"
+  # An unreadable mtime means DO NOT REAP: skipping one page is recoverable,
+  # stealing a live lock and double-paging is the bug this exists to prevent.
+  if [ -n "$lock_mtime" ] && [ "$(( now - lock_mtime ))" -gt 300 ]; then
+    say "page lock: reaping an orphaned lock at $lock ($(( now - lock_mtime ))s old; a notifier was killed mid-decision)"
+    rmdir "$lock" 2>/dev/null || true
+    mkdir "$lock" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# CLEARS UNDER THE SAME LOCK. Unlocked, page_clear could run between page_once
+# deciding to page and page_once WRITING its marker: the clear finds nothing to
+# remove, the write lands a moment later, and a marker now describes a condition
+# that has already recovered -- suppressing the next real episode for up to 24h.
+# A marker outliving its condition, which is the orphaned-lock shape again.
+#
+# Taking the lock makes the two strictly ordered. If the lock is held we do NOT
+# block a heartbeat waiting: log it and leave it, and the next healthy beat clears
+# it. That bounds the stale-marker window to one heartbeat (<=15m) instead of the
+# full 24h re-ping. That residual is deliberate and stated rather than hidden.
 page_clear() {
-  local mark="$(dirname "$LOG")/paged-$1"
-  [ -f "$mark" ] || return 0
-  rm -f "$mark" 2>/dev/null || true
-  say "page state cleared: $1 recovered, so a recurrence pages again immediately"
+  local key="$1" mark lock
+  mark="$(dirname "$LOG")/paged-$key"
+  lock="$mark.lock"
+  # Nothing to clear and nobody mid-decision: stay cheap on the healthy path, which
+  # is every single beat.
+  [ -f "$mark" ] || [ -d "$lock" ] || return 0
+  if ! page_lock "$lock"; then
+    say "page state NOT cleared ($key): a notifier is mid-decision; the next healthy beat clears it"
+    return 0
+  fi
+  if [ -f "$mark" ]; then
+    rm -f "$mark" 2>/dev/null || true
+    say "page state cleared: $key recovered, so a recurrence pages again immediately"
+  fi
+  rmdir "$lock" 2>/dev/null || true
 }
 
 page_once() {
@@ -123,22 +174,9 @@ page_once() {
   # after 300s is dead. That is far below the 900s heartbeat, so an orphan always
   # self-clears before the next beat rather than needing a human.
   lock="$mark.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    local lock_mtime lock_probe
-    lock_probe="$(stat -c %Y "$lock" 2>/dev/null)"
-    case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac
-    [ -n "$lock_probe" ] || { lock_probe="$(stat -f %m "$lock" 2>/dev/null)"; case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac; } # portability-lint-skip
-    lock_mtime="$lock_probe"
-    # An unreadable mtime means DO NOT REAP: skipping one page is recoverable, two
-    # dispatchers both paging because we stole a live lock is the bug we are fixing.
-    if [ -n "$lock_mtime" ] && [ "$(( now - lock_mtime ))" -gt 300 ]; then
-      say "page lock: reaping an orphaned lock for $key ($(( now - lock_mtime ))s old; a notifier was killed mid-decision)"
-      rmdir "$lock" 2>/dev/null || true
-      mkdir "$lock" 2>/dev/null || { say "page skipped ($key): lost the race to reap"; return 0; }
-    else
-      say "page skipped ($key): another dispatcher is already deciding it"
-      return 0
-    fi
+  if ! page_lock "$lock"; then
+    say "page skipped ($key): another dispatcher is already deciding it"
+    return 0
   fi
   # RELEASED EXPLICITLY AT EVERY EXIT, NOT BY A `trap ... RETURN`.
   # The trap form looked tidier and was broken: bash tears down the function's
@@ -699,12 +737,48 @@ WORK_RC=$?
 # An infra error (Linear down, auth expired) is environmental: it will not
 # self-heal on the next heartbeat, so say so once rather than fail silently
 # every 15 minutes forever. self-healing-retry.md rule 5.
-if printf '%s' "$WORK_OUT" | grep -qi "infra_error\|authentication\|unauthorized"; then
+# MATCHED AGAINST WHAT THE PRODUCER ACTUALLY PRINTS, verified 2026-08-02 by
+# grepping linear-worker.sh rather than assuming a format. The previous pattern
+# (infra_error|authentication|unauthorized) matched NONE of the real loop-stopping
+# output, so a genuine Linear outage fell straight through to page_clear below --
+# it did not merely fail to page, it ERASED the state that would have paged. That
+# is silence dressed as health, and it is the same defect class this whole issue
+# has been unpicking. A pattern I invent tests my assumption, not the system.
+#
+# The producer's real shapes, and whether each stops the run:
+#   linear-worker.sh:417  "INFRA: linear unreachable (<exc>)."     exit 0  <- MISSED
+#   linear-worker.sh:320  {"infra_error": ...} (python helper)     internal
+#   linear-worker.sh:251  "INFRA: git fetch failed in <repo>."     exit 9
+#   linear-worker.sh:989  "INFRA: could not create worktree ..."   continue
+#   linear-worker.sh:1049 "INFRA: claim failed rc=<n> ..."         continue
+# These reach us because the worker's say() is `tee -a "$LOG"`, so it writes to
+# stdout as well as its log, and WORK_OUT is captured with 2>&1.
+#
+# DELIBERATELY NOT a bare `INFRA:` match. :989 and :1049 print an INFRA: line and
+# then `continue` -- the worker keeps working -- so a prefix match would page "the
+# loop is stopped" while it is demonstrably still running. Precision here is the
+# difference between a real alarm and the noise this issue exists to remove.
+# --- LINEAR-OUTAGE-GUARD:BEGIN ---
+# A STABLE EXTRACTION ANCHOR, and it earns its keep. The test used to slice this
+# block with an awk range keyed on the matcher line itself, so a mutant that
+# reworded the matcher made the range match nothing: the harness bailed instead of
+# asserting, and two mutants that restore the round-3 defect were reported as
+# SURVIVED. A fixture must not be anchored to the text it is testing.
+if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: linear unreachable|infra_error|authentication|unauthorized'; then
   say "infra error from kipi work: $(printf '%s' "$WORK_OUT" | head -3 | tr '\n' ' ')"
   page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
   exit 1
 fi
+# A RUN THAT NEVER REACHED LINEAR IS NOT EVIDENCE LINEAR RECOVERED -- the same rule
+# stale_check applies to a failed fetch. linear-worker.sh:251 exits BEFORE any
+# Linear call and already pages the founder itself, so this must not double-page;
+# it must only refrain from clearing.
+if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed'; then
+  say "worker stopped on an environment failure before reaching Linear; leaving linear-down state untouched (the worker pages this one itself)"
+  exit 1
+fi
 page_clear linear-down
+# --- LINEAR-OUTAGE-GUARD:END ---
 
 NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
 if [ -z "$NEXT" ]; then

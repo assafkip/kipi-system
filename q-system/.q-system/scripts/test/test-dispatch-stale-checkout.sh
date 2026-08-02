@@ -67,6 +67,7 @@ HARNESS="$WORK/stale_check.sh"
   # can be reproduced at all.
   echo 'page_ok() { printf "PAGE %s\n" "$1"; [ "${KIPI_TEST_PAGE_FAILS:-0}" = "1" ] && return 1; return 0; }'
   echo 'PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"'
+  awk '/^page_lock\(\) \{/,/^\}/'   "$DISPATCH"
   awk '/^page_clear\(\) \{/,/^\}/'  "$DISPATCH"
   awk '/^page_once\(\) \{/,/^\}/'   "$DISPATCH"
   awk '/^stale_check\(\) \{/,/^\}/' "$DISPATCH"
@@ -74,7 +75,7 @@ HARNESS="$WORK/stale_check.sh"
 } > "$HARNESS"
 # Guard the extraction. An awk range that silently matched nothing would make every
 # case below pass against an empty function.
-for fn in page_clear page_once stale_check; do
+for fn in page_lock page_clear page_once stale_check; do
   grep -q "^$fn() {" "$HARNESS" || { echo "harness did not extract $fn"; exit 1; }
 done
 
@@ -269,11 +270,12 @@ PH="$WORK/prim.sh"
   echo 'say() { printf "SAY %s\n" "$*" >&2; }'
   echo 'page_ok() { printf "PAGE %s\n" "$1"; return 0; }'
   echo 'PAGE_REPING_SECONDS=86400'
+  awk '/^page_lock\(\) \{/,/^\}/'  "$DISPATCH"
   awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH"
   awk '/^page_once\(\) \{/,/^\}/'  "$DISPATCH"
   echo 'page_once "$@"'
 } > "$PH"
-grep -q '^page_once() {' "$PH" || { echo "primitive harness did not extract page_once"; exit 1; }
+grep -q '^page_lock() {' "$PH" && grep -q '^page_once() {' "$PH" || { echo "primitive harness did not extract page_once"; exit 1; }
 # A FRESH lock is respected (the duplicate-page fix must still hold).
 mkdir -p "$PL/paged-korph.lock"
 FRESH="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
@@ -297,6 +299,123 @@ TOTAL=$(( $(grep -c '^PAGE ' "$WORK/c1.out" || true) + $(grep -c '^PAGE ' "$WORK
 [ "$TOTAL" -le 1 ] \
   && ok "two dispatchers deciding the same key produced $TOTAL page(s), not 2" \
   || bad "THE DEFECT: unlocked marker check let concurrent dispatchers send $TOTAL duplicate pages"
+
+echo
+echo "== 12. the Linear outage guard vs the PRODUCER'S REAL OUTPUT =="
+# FIXTURES COME FROM PRODUCERS. The previous pattern was
+# (infra_error|authentication|unauthorized) and matched NONE of the loop-stopping
+# lines linear-worker.sh actually prints, so a real outage fell through to
+# page_clear and ERASED the state that would have paged. Silence dressed as health.
+#
+# Every string below is copied from linear-worker.sh, not invented, and case 13
+# re-derives them from the file so this cannot drift.
+GUARD="$WORK/guard.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  echo 'page_once() { printf "PAGE %s\n" "$1"; }'
+  echo 'page_clear() { printf "CLEAR %s\n" "$1"; }'
+  echo 'WORK_OUT="$1"'
+  # Sliced on STABLE marker comments, never on the matcher line itself. Anchoring
+  # the range to the text under test meant a mutant that reworded the matcher made
+  # the range match nothing: the harness bailed rather than asserting, and two
+  # mutants restoring the round-3 defect were scored SURVIVED. Caught by mutation,
+  # not review.
+  awk '/^# --- LINEAR-OUTAGE-GUARD:BEGIN ---$/,/^# --- LINEAR-OUTAGE-GUARD:END ---$/' "$DISPATCH"
+} > "$GUARD"
+grep -q 'page_clear linear-down' "$GUARD" \
+  || bad "the outage guard block is missing its BEGIN/END markers or its page_clear"
+guard() { bash "$GUARD" "$1" 2>&1; }
+
+# The exact line linear-worker.sh:417 emits, and the one that was missed.
+G="$(guard 'INFRA: linear unreachable (HTTPSConnectionPool: Max retries exceeded). Not counted against any issue.')"
+echo "$G" | grep -q '^PAGE linear-down' \
+  && ok "a real 'INFRA: linear unreachable' outage PAGES" \
+  || bad "THE DEFECT: the producer's real outage line does not match the guard"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a live outage also CLEARED the outage state -- silence dressed as health" \
+  || ok "a live outage does not clear the state that would page later"
+
+# linear-worker.sh:251 -- stops the run BEFORE Linear, and self-pages. Must not
+# double-page, and must not clear (a run that never reached Linear proves nothing).
+G="$(guard 'INFRA: git fetch failed in /Users/x/repo. Stopping before any worktree is cut from a stale base.')"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: linear-worker.sh:251 already notifies the founder itself" \
+  || ok "a pre-Linear environment failure does not double-page"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a run that never reached Linear cleared the outage state" \
+  || ok "a run that never reached Linear does not count as recovery"
+
+# linear-worker.sh:989 / :1049 -- these print INFRA: and then `continue`. The worker
+# is still working, so paging "the loop is stopped" would be a false alarm. This is
+# why the matcher is not a bare `INFRA:` prefix.
+for line in 'INFRA: could not create worktree for ASK-1 (not counted against the issue)' \
+            'INFRA: claim failed rc=1 on ASK-1 (not counted against the issue)'; do
+  G="$(guard "$line")"
+  echo "$G" | grep -q '^PAGE ' \
+    && bad "false alarm: '${line:0:34}...' does not stop the worker but paged an outage" \
+    || ok "a non-stopping INFRA line does not page an outage (${line:0:28}...)"
+done
+
+# A healthy run must still clear.
+G="$(guard '3 ready issues; dispatching ASK-9')"
+echo "$G" | grep -q '^CLEAR linear-down' \
+  && ok "a healthy run clears the outage state" \
+  || bad "a healthy run no longer clears, so the outage page is stuck on"
+
+echo
+echo "== 13. the guard's strings still exist in linear-worker.sh (anti-drift) =="
+# A fixture copied from a producer rots when the producer is reworded. This
+# re-derives the claim from the file itself, so a rename breaks the test instead of
+# silently restoring the round-3 defect.
+WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
+if [ -f "$WORKER" ]; then
+  grep -q 'INFRA: linear unreachable' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: linear unreachable'" \
+    || bad "the producer was reworded: the outage guard now matches nothing again"
+  grep -q 'INFRA: git fetch failed' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
+    || bad "the producer was reworded: the pre-Linear guard now matches nothing"
+  # say() must reach stdout, or none of this text ever arrives in WORK_OUT.
+  grep -qE '^say\(\).*tee' "$WORKER" \
+    && ok "the worker's say() still tees to stdout, so the dispatcher can see it" \
+    || bad "the worker's say() no longer writes to stdout -- WORK_OUT gets nothing to match"
+else
+  ok "linear-worker.sh not present in this checkout; producer anti-drift skipped"
+fi
+
+echo
+echo "== 14. MINOR: a clear cannot interleave with an in-flight page decision =="
+# page_clear used to run while page_once was mid-decision: the clear found no
+# marker, page_once wrote one a moment later, and that marker then described an
+# already-recovered condition -- muting the next real episode for up to 24h.
+PR="$WORK/prace"; mkdir -p "$PR"
+# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand.
+mkdir -p "$PR/paged-krace.lock"
+printf 'oldhash\n1\n' > "$PR/paged-krace"
+CL="$( LOG="$PR/dispatch.log" bash -c '
+  set -uo pipefail
+  say() { printf "SAY %s\n" "$*" >&2; }
+  '"$(awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH")"'
+  '"$(awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH")"'
+  page_clear krace' 2>&1 )"
+[ -f "$PR/paged-krace" ] \
+  && ok "a clear held off while a notifier is mid-decision (no interleave)" \
+  || bad "THE DEFECT: page_clear removed a marker while page_once was still deciding"
+echo "$CL" | grep -q 'NOT cleared' \
+  && ok "the deferred clear is logged, so the <=15m window is visible" \
+  || bad "the clear was skipped with no log line"
+# Once the holder is gone (orphan aged out), the clear must actually happen.
+touch -t 202501010000 "$PR/paged-krace.lock" 2>/dev/null
+LOG="$PR/dispatch.log" bash -c '
+  set -uo pipefail
+  say() { printf "SAY %s\n" "$*" >&2; }
+  '"$(awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH")"'
+  '"$(awk '/^page_clear\(\) \{/,/^\}/' "$DISPATCH")"'
+  page_clear krace' >/dev/null 2>&1
+[ -f "$PR/paged-krace" ] \
+  && bad "THE DEFECT: the marker survived an uncontended clear, so recovery never resets" \
+  || ok "an uncontended clear removes the marker"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
