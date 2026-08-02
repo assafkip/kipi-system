@@ -24,17 +24,31 @@ WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 
 THE THREE LAYERS
 
-  L1 additive-only  : the only ops that EXIST are insert_after, insert_before,
-                      append, create_file. There is no replace and no delete, so
-                      "remove a hook entry" is not expressible. Unknown ops and
-                      unknown proposal keys are refused, so a proposal cannot
-                      smuggle in a flag like disables_enforcement.
+  L1 op vocabulary  : insert_after, insert_before, append, create_file reach
+                      anything under .claude/. `replace` reaches RULE TEXT ONLY
+                      (.claude/rules/*.md) -- see rule_text_only. There is still
+                      no delete: insert must be a non-empty string, so "replace
+                      this paragraph with nothing" is refused, and "remove a hook
+                      entry" is not expressible at all because the config surface
+                      is out of replace's reach. Unknown ops and unknown proposal
+                      keys are refused, so a proposal cannot smuggle in a flag
+                      like disables_enforcement.
   L2 ratchet        : census the live enforcement points before and after. Every
                       pre-existing member must still be present and no category
                       may shrink. This catches the technically-additive edit that
                       removes something as a side effect -- e.g. inserting
                       " || true" after a hook command, which deletes nothing but
                       makes the old exact command string vanish from the census.
+                      The census reads rule CONTENT at any depth under rules/,
+                      not just the rules/ listing (_rule_marks): an (ENFORCED
+                      marker may not lose an occurrence NOR leave the heading it
+                      sits on, a pointer to a named enforcer may not vanish or be
+                      rerouted, and a rule's count of substantive lines may not
+                      shrink. Filenames alone were
+                      blind to everything a replace does inside a file, which is
+                      exactly why replace could not exist before that census; the
+                      line floor is there because 5 of 34 rules carry no token at
+                      all, so tokens alone left them free to be gutted.
   L3 verify+revert  : run the gate suite before and after. Any gate that goes
                       pass -> fail auto-restores the backup. The founder must
                       never be the one who notices a regression.
@@ -44,12 +58,26 @@ after all of L1, L2 and the preconditions pass on that copy, so a refusal never
 half-writes.
 
 OUT OF REACH BY DESIGN (say so, do not pretend otherwise): removing a hook,
-deleting a rule, narrowing a matcher, and widening permissions.allow or
-defaultMode cannot be done through this path at all. Those need a different
-tool and a real conversation. See REFUSED_SURFACES.
+deleting a rule, narrowing a matcher, widening permissions.allow or defaultMode,
+dropping an occurrence of a rule's (ENFORCED marker or moving it off the heading
+it sits on, dropping or rerouting a rule's pointer to a named enforcer, changing
+a rule's frontmatter (the keys that decide whether it loads at all) by ANY op
+including the additive ones, and shortening a rule's body, cannot be done through
+this path at all. Those need a different tool and a real conversation. See
+REFUSED_SURFACES.
+
+WHAT STILL GETS THROUGH (the honest residue, do not read the list above as
+wider than it is): the census counts markers, the routes to executables, and
+line COUNT -- never meaning. A replace that rewrites a rule into something vaguer
+while keeping its (ENFORCED marker on the same heading, every script route and
+its line count passes. Marker placement is checked at heading granularity only:
+moving it between two headings of the same file is invisible here. That is the
+deliberate trade: a ratchet that judged prose would refuse the honest
+corrections this op exists to enable.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,9 +86,54 @@ import time
 
 SCHEMA_VERSION = 1
 
-# L1: the entire op vocabulary. Additive only. There is deliberately no
-# "replace" and no "delete" -- a removal is not expressible, not merely gated.
+# L1: the op vocabulary. Additive ops reach anything under .claude/.
 ADDITIVE_OPS = ("insert_after", "insert_before", "append", "create_file")
+# The one non-additive op. ASK-289: additive-only meant a wrong sentence in a
+# rule could be BURIED but never corrected -- design-auto-invoke.md still carries
+# its narrowing paragraph wedged ABOVE its own H1 because insert_before was the
+# only thing expressible. replace is pinned to rule text (rule_text_only) and
+# watched by the rule-content census, so it cannot reach the config surface.
+REPLACE_OPS = ("replace",)
+ALL_OPS = ADDITIVE_OPS + REPLACE_OPS
+ANCHOR_OPS = ("insert_after", "insert_before", "replace")
+
+RULES_DIR = os.path.join(".claude", "rules")
+
+# A rule's pointer to the thing that actually enforces it. Census member, so a
+# replace cannot quietly cut a reader's route to the enforcer.
+#
+# The DIRECTORY PREFIX is part of the mark, not decoration. Matching the
+# basename alone let a replace keep `existing-lint.py` while moving its route to
+# `q-system/retired/hooks/existing-lint.py` -- the census saw the same member and
+# the reader's route pointed at nothing (PR #70 round 4, minor). The route as the
+# rule WRITES it is the census member, so moving it is a removal. The leading
+# lookbehind stops the match from starting mid-token, which is what keeps a
+# prefixed route from also registering as its own bare basename.
+#
+# The trailing boundary is load-bearing and is NOT a plain \b. Without it,
+# rewriting `voice-lint.py` to `voice-lint.py.retired` left the mark
+# `voice-lint.py` intact -- the pattern simply matched the prefix -- while the
+# reader's route to the enforcer was dead (PR #70 round 3, minor). But a plain
+# boundary over-corrects the other way: rules routinely end a sentence with
+# "... is voice-lint.py.", and rejecting a following "." would quietly drop
+# every one of those from the census. So the lookaheads reject exactly two
+# things: more filename characters, and a dot that STARTS another extension.
+_EXEC_REF = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_])")
+
+# A markdown heading line. Used only to ask WHERE an (ENFORCED marker sits; see
+# _rule_marks for why the location and not just the presence has to be counted.
+_HEADING = re.compile(r"[ ]{0,3}#{1,6}[ \t]")
+
+# A rule's frontmatter decides whether the rule LOADS. Narrowing paths:/globs:
+# leaves the body, the tokens and the line count all identical while switching
+# the rule off, so no content census can see it (PR #70 round 3, major).
+# NO op may move this block -- same standing as removing a hook: a different tool
+# and a real conversation. Pinning it to `replace` alone was itself a hole:
+# insert_before wedged a never-matching paths: block ABOVE the H1 of any rule
+# that had no frontmatter yet, which deletes nothing and switches the rule off
+# just the same (PR #70 round 4, major). "Additive" is a claim about the text,
+# not about the effect.
+_FRONTMATTER = re.compile(r"\A---\n.*?\n---(?:\n|\Z)", re.S)
 
 ALLOWED_PROPOSAL_KEYS = {"schema_version", "slug", "reason", "requires", "edits"}
 ALLOWED_EDIT_KEYS = {"file", "op", "anchor", "insert", "reason"}
@@ -172,17 +245,21 @@ def load_proposal(path):
         if unknown_e:
             raise Refusal("edit %d has unknown key(s): %s" % (idx, ", ".join(sorted(unknown_e))))
         op = edit.get("op")
-        if op not in ADDITIVE_OPS:
+        if op not in ALL_OPS:
             raise Refusal(
-                "edit %d op %r is not additive (allowed: %s)" % (idx, op, ", ".join(ADDITIVE_OPS))
+                "edit %d op %r is not a permitted op (allowed: %s)" % (idx, op, ", ".join(ALL_OPS))
             )
+        # insert must be non-empty AND non-blank for every op including replace.
+        # That is what keeps "delete this paragraph" inexpressible now that a
+        # non-additive op exists: a replace with an empty (or whitespace-only)
+        # insert IS a delete, and it is refused here rather than downstream.
         for field in ("file", "insert", "reason"):
             if not isinstance(edit.get(field), str) or not edit[field].strip():
                 raise Refusal("edit %d.%s must be a non-empty string" % (idx, field))
         # THE boundary. After this line the proposal holds exactly one spelling
         # of each path and no other reader normalizes anything.
         edit["file"] = canonical_rel(edit["file"])
-        if op in ("insert_after", "insert_before"):
+        if op in ANCHOR_OPS:
             if not isinstance(edit.get("anchor"), str) or not edit["anchor"].strip():
                 raise Refusal("edit %d needs a non-empty anchor for op %s" % (idx, op))
         elif "anchor" in edit:
@@ -236,6 +313,52 @@ def _same_file(root, rel, target):
         return False
 
 
+def refuse_duplicate_spellings(root, prop):
+    """One name per file in the proposal, or no run.
+
+    canonical_rel collapses the spellings a STRING can collapse ("./", "..",
+    doubled slashes). It cannot see the two normpath is blind to: a case variant
+    on a case-insensitive filesystem, and a symlinked parent directory. Those
+    arrive as two distinct keys naming one inode, and two keys means two readers:
+    each is read from disk independently, each is written back to the same inode
+    in sorted() order, so the LAST spelling's content lands while an earlier
+    spelling is what a single-key guard inspected.
+
+    PR #70 round 5 found the live consequence. `.claude/Settings.json` became
+    settings_key (resolve_special_keys picks the FIRST match), so
+    permission_surface_check read that copy while `.claude/settings.json` sorted
+    last and its content is what hit disk. A proposal widening permissions.allow
+    exited `0 OK applied` with the ratchet and the gates reporting clean, and it
+    reported "2 edit(s)" for one edit's worth of surviving content.
+
+    The fix belongs HERE and not in another guard, because the defect is not that
+    some particular guard read the wrong key -- it is that two keys existed at
+    all. Every guard downstream is correct once the input holds one name per file.
+
+    HONEST BOUNDARY: identity comes from st_dev/st_ino for a file that exists,
+    and from realpath for one that does not. So two case-variant spellings of a
+    path that exists under NEITHER case (two create_file edits racing to make one
+    new file) are not caught. That is a reporting defect, not an enforcement one:
+    nothing pre-existing can be weakened by it, and every guarded file this
+    engine knows about already exists.
+    """
+    seen = {}
+    for edit in prop["edits"]:
+        rel = edit["file"]
+        full = os.path.join(root, rel)
+        try:
+            st = os.stat(full)
+            identity = ("inode", st.st_dev, st.st_ino)
+        except OSError:
+            identity = ("path", os.path.realpath(full))
+        first = seen.setdefault(identity, rel)
+        if first != rel:
+            raise Refusal(
+                "edits name one file under two spellings (%s and %s resolve to the "
+                "same file); use one spelling per file" % (first, rel)
+            )
+
+
 def resolve_special_keys(root, prop):
     """Resolve, ONCE, which canonical edit keys are the guarded files.
 
@@ -253,6 +376,53 @@ def resolve_special_keys(root, prop):
         if template_key is None and _same_file(root, rel, template_target):
             template_key = rel
     return settings_key, template_key
+
+
+def is_rule_text(rel):
+    """The SHAPE half of "is this rule text", in one place.
+
+    Two callers ask it -- the `replace` scope pin and the frontmatter pin -- and
+    two spellings of one question is the drift class round 2 found in the path
+    normalization and round 3 found again between the token census and the
+    frontmatter nobody was reading.
+
+    Depth-permissive on purpose, and that is now safe: _rule_marks walks the
+    whole rules/ tree, so a rule in a subdirectory is inside the content census
+    and inside these pins together. It used to be inside replace's reach and
+    outside the census at the same time (PR #70 round 4, minor).
+    """
+    return rel.startswith(RULES_DIR + os.sep) and rel.endswith(".md")
+
+
+def rule_text_only(root, rel, settings_key, template_key):
+    """`replace` is the only non-additive op, so its reach is pinned to rule TEXT.
+
+    Three checks, because each alone has a hole the other two cover:
+
+      identity : rel IS .claude/settings.json or settings-template.json under
+                 some spelling. resolve_special_keys matches by inode, not by
+                 string, so a case variant or a ./ spelling of a guarded file is
+                 recognised here. It does NOT merge two keys into one -- that is
+                 refuse_duplicate_spellings' job, upstream, and round 5 found the
+                 hole left when this docstring claimed otherwise.
+      shape    : anything that is not .claude/rules/<name>.md is out. agents/ and
+                 output-styles/ keep the additive-only guarantee they had before
+                 this op existed; widening to them is a separate decision with a
+                 separate blast radius, not a side effect of ASK-289.
+      realpath : a symlink parked at .claude/rules/x.md pointing somewhere else.
+                 scoped_path permits that today -- it only asks that the target
+                 stay under .claude/ -- so a string-shape check alone waves it
+                 through. Same class as settings.local.json (round 1) and the
+                 "./" spelling (round 2): a second name only some guards see.
+    """
+    if rel == settings_key or rel == template_key:
+        raise Refusal("replace may not target %s (rule text only)" % rel)
+    if not is_rule_text(rel):
+        raise Refusal("replace is only permitted on %s%s*.md, got %s" % (RULES_DIR, os.sep, rel))
+    rules_dir = os.path.realpath(os.path.join(root, RULES_DIR))
+    real = os.path.realpath(os.path.join(root, rel))
+    if not real.startswith(rules_dir + os.sep):
+        raise Refusal("replace target resolves outside %s%s: %s" % (RULES_DIR, os.sep, rel))
 
 
 def scoped_path(root, rel, paired_ok=False):
@@ -317,41 +487,102 @@ def scoped_path(root, rel, paired_ok=False):
 
 # ------------------------------------------------------------------- editing
 
+def _unique_anchor_hits(content, anchor, rel):
+    """Anchor arithmetic, shared by every anchored op.
+
+    One copy on purpose: when `replace` arrived it grew a second ambiguity check
+    beside this one, and the mutation case that proves the check is load-bearing
+    then matched two lines and aborted the suite. Two copies of a guard is also
+    two chances for them to drift apart -- the same two-readers defect round 2
+    found in the path normalization.
+    """
+    hits = content.count(anchor)
+    if hits > 1:
+        raise Refusal("anchor matches %d times (must be exactly 1) in %s: %r" % (hits, rel, _snip(anchor)))
+    return hits
+
+
+def _guard_frontmatter(rel, before, after):
+    """A rule's frontmatter block may not move, whatever op moved it.
+
+    Compared before/after rather than "is the anchor inside the block": that
+    also catches an insert that ADDS or CLOSES a --- fence, which moves the
+    frontmatter boundary without the anchor ever sitting in it. Equality is
+    transitive, so checking each edit holds across a whole proposal.
+
+    Called for EVERY op with prior content, not just `replace`. The round-3 fix
+    lived inside the replace branch, which left insert_before free to wedge a
+    never-matching paths: block above the H1 of a rule that had no frontmatter
+    yet -- additive text, dead rule, rc=0 (PR #70 round 4, major).
+    """
+    if not is_rule_text(rel):
+        return
+    if _frontmatter(after) != _frontmatter(before):
+        raise Refusal(
+            "edit may not change the frontmatter of %s; the scoping keys "
+            "decide whether the rule loads at all" % rel)
+
+
 def apply_edit(content, edit, rel):
-    """Return (new_content, already_satisfied). Pure; never touches disk."""
+    """Return (new_content, already_satisfied). Pure; never touches disk.
+
+    Every op that has prior content leaves through the single _guard_frontmatter
+    call at the bottom. One exit on purpose: a per-branch guard is what round 4
+    found missing on three of the four branches.
+    """
     op = edit["op"]
     ins = edit["insert"]
 
-    if op == "append":
-        if content.endswith(ins):
-            return content, True
-        return content + ins, False
-
     if op == "create_file":
+        # No prior content, so there is no frontmatter to preserve. A brand-new
+        # rule declaring its own scope is an addition, not a narrowing.
         if content is None:
             return ins, False
         if content == ins:
             return content, True
         raise Refusal("create_file target already exists with different content: %s" % rel)
 
-    anchor = edit["anchor"]
-    hits = content.count(anchor)
-    if hits == 0:
-        raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
-    if hits > 1:
-        raise Refusal("anchor matches %d times (must be exactly 1) in %s: %r" % (hits, rel, _snip(anchor)))
-
-    pos = content.index(anchor)
-    if op == "insert_after":
-        cut = pos + len(anchor)
-        if content[cut:cut + len(ins)] == ins:
+    if op == "append":
+        if content.endswith(ins):
             return content, True
-        return content[:cut] + ins + content[cut:], False
+        new = content + ins
 
-    # insert_before
-    if content[max(0, pos - len(ins)):pos] == ins:
-        return content, True
-    return content[:pos] + ins + content[pos:], False
+    elif op == "replace":
+        anchor = edit["anchor"]
+        # An anchor that survives into its own replacement never converges: the
+        # next run finds it again, inserts again, and the file grows forever
+        # while "already applied" stays undetectable. Refused, not tolerated --
+        # extending text is what the additive ops are for.
+        if anchor in ins:
+            raise Refusal(
+                "replace anchor is contained in the insert, so it never converges in %s; "
+                "use insert_after/insert_before to extend text" % rel)
+        if _unique_anchor_hits(content, anchor, rel) == 0:
+            # Anchor gone AND the replacement sitting there exactly once is the
+            # signature of a completed earlier run, not of a bad proposal. Same
+            # already-satisfied contract the insert ops report.
+            if content.count(ins) == 1:
+                return content, True
+            raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
+        new = content.replace(anchor, ins, 1)
+
+    else:
+        anchor = edit["anchor"]
+        if _unique_anchor_hits(content, anchor, rel) == 0:
+            raise Refusal("anchor not found in %s: %r" % (rel, _snip(anchor)))
+        pos = content.index(anchor)
+        if op == "insert_after":
+            cut = pos + len(anchor)
+            if content[cut:cut + len(ins)] == ins:
+                return content, True
+            new = content[:cut] + ins + content[cut:]
+        else:  # insert_before
+            if content[max(0, pos - len(ins)):pos] == ins:
+                return content, True
+            new = content[:pos] + ins + content[pos:]
+
+    _guard_frontmatter(rel, content, new)
+    return new, False
 
 
 def _snip(text, n=60):
@@ -385,6 +616,105 @@ def _dir_names(path):
     return {n for n in os.listdir(path) if not n.startswith(".")}
 
 
+def _frontmatter(text):
+    """The leading --- block, or "" when the file has none. See _FRONTMATTER."""
+    match = _FRONTMATTER.match(text or "")
+    return match.group(0) if match else ""
+
+
+def _rule_marks(rules_dir):
+    """Read every rule ONCE and return (token_marks, line_marks).
+
+    One walk and one read per file on purpose. Two functions each opening the
+    same rules is two readers free to drift -- the defect class round 2 found in
+    the path normalization and round 3 found again between the token census and
+    the frontmatter it never looked at.
+
+    The rules census used to be _dir_names -- a directory listing, which is
+    blind to everything that happens inside a file. That was fine while every op
+    was additive. It is not fine now that `replace` exists: a replace keeps the
+    filename and can gut what the file says, and the listing would report clean.
+
+    Two token classes are countable without judgement, which is the bar for a
+    ratchet member:
+
+      enforced : the file claims (ENFORCED anywhere. Demoting a rule to advisory
+                 is enforcement-weakening whether or not the prose is honest. If
+                 the claim is genuinely false, the fix is to correct the SCOPE
+                 (which replace now allows) or to take the marker off through a
+                 different tool and a real conversation -- same standing as
+                 removing a hook.
+      exec     : a named .py/.sh the rule routes a reader to. A rule whose
+                 pointer to its enforcer vanishes is a rule nobody can act on.
+
+    Deliberately NOT counted: prose meaning and tone. A ratchet that tried to
+    judge those would refuse the honest corrections this op exists to enable.
+
+    LINE MARKS are the second half, and they exist because tokens alone are not
+    enough: 5 of this repo's 34 rules carry NEITHER token class (security.md has
+    no (ENFORCED marker and names no script), so a replace swapped the whole
+    475-char body of one for a single sentence while the token census reported
+    rule_marks 113 -> 113 and the tool exited OK applied. Measured 2026-08-02,
+    PR #70 round 3 major.
+
+    A count only becomes visible to ratchet_check's set-difference when it is
+    encoded as a SET, hence one mark per substantive line INDEX. Dropping a line
+    drops the highest index, which is exactly the refusal wanted.
+
+    Lines, not words or characters: rewording a line has to stay free, because
+    that IS the correction this op exists for, while deleting lines must not. So
+    a replace may reword a rule and may grow it; it may never shorten it. The
+    residue is named in the module docstring rather than papered over: a rewrite
+    that keeps the shape and hollows out the meaning still passes.
+    """
+    token_marks = set()
+    line_marks = set()
+    if not os.path.isdir(rules_dir):
+        return token_marks, line_marks
+    # os.walk, not os.listdir. rule_text_only permits a rule at any depth under
+    # rules/, so a one-level census left a subdirectory rule inside replace's
+    # reach and outside every content check at once (PR #70 round 4, minor). The
+    # mark key is the path relative to rules/, which is identical to the old
+    # filename for every top-level rule, so nothing that was censused stops being.
+    for dirpath, dirnames, filenames in os.walk(rules_dir):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for filename in sorted(filenames):
+            if filename.startswith(".") or not filename.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, filename)
+            name = os.path.relpath(full, rules_dir)
+            try:
+                with open(full) as fh:
+                    text = fh.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for ref in set(_EXEC_REF.findall(text)):
+                token_marks.add("%s|exec|%s" % (name, ref))
+            # (ENFORCED is counted twice, and the second count is the one that
+            # closes the hole. A whole-file presence boolean let a replace lift
+            # the marker off the heading that DECLARES the rule enforced and park
+            # the token in a sentence saying the rule is advisory -- the token was
+            # still in the file, so the census reported clean (PR #70 round 4).
+            #   occurrences      : total, so losing one anywhere is visible.
+            #   enforced-heading : how many HEADING lines carry it, so moving it
+            #                      out of a heading and into prose drops a mark.
+            # Counts encoded as sets, never positions: rewording a heading and
+            # adding a section above it both have to stay free, and only a count
+            # survives both. Same encode-a-count-as-a-set trick as line marks,
+            # for the same reason -- ratchet_check compares sets.
+            for index in range(text.count("(ENFORCED")):
+                token_marks.add("%s|enforced|%d" % (name, index))
+            lines = text.splitlines()
+            headings = sum(1 for line in lines
+                           if _HEADING.match(line) and "(ENFORCED" in line)
+            for index in range(headings):
+                token_marks.add("%s|enforced-heading|%d" % (name, index))
+            substantive = sum(1 for line in lines if line.strip())
+            for index in range(substantive):
+                line_marks.add("%s|line|%d" % (name, index))
+    return token_marks, line_marks
+
+
 def census(root):
     """Count the live enforcement points. Enforcement may only grow."""
     c = {}
@@ -400,6 +730,7 @@ def census(root):
     perms = settings.get("permissions") or {}
     c["deny"] = set(perms.get("deny") or [])
     c["rules"] = _dir_names(os.path.join(root, ".claude", "rules"))
+    c["rule_marks"], c["rule_lines"] = _rule_marks(os.path.join(root, ".claude", "rules"))
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
@@ -462,7 +793,6 @@ def permission_surface_check(root, staged_settings_text):
 
 def _hook_script_paths(settings):
     """Every $CLAUDE_PROJECT_DIR-relative script a hook command references."""
-    import re
     found = set()
     pat = re.compile(r'\$CLAUDE_PROJECT_DIR/([A-Za-z0-9_./-]+\.(?:py|sh))')
     for entry in _hook_entries(settings):
@@ -651,6 +981,10 @@ def main(argv):
     check_requires(root, prop, log)
 
     # ---- stage every edit against an in-memory COPY. Nothing on disk yet.
+    # One name per file FIRST: every check below assumes a key it resolves is the
+    # key whose content lands, and that is only true when no second spelling of
+    # the same file is still in the proposal (round 5).
+    refuse_duplicate_spellings(root, prop)
     # Resolved ONCE by inode; every check below reads these, never a string.
     settings_key, template_key = resolve_special_keys(root, prop)
     touches_settings = settings_key is not None
@@ -667,6 +1001,8 @@ def main(argv):
     for idx, edit in enumerate(prop["edits"]):
         rel = edit["file"]
         full = scoped_path(root, rel, paired_ok=touches_settings)
+        if edit["op"] in REPLACE_OPS:
+            rule_text_only(root, rel, settings_key, template_key)
         if rel in staged:
             current = staged[rel]
         elif os.path.isfile(full):
@@ -712,9 +1048,10 @@ def main(argv):
         before_census = census(root)
         after_census = census(copy_root)
         ratchet_check(before_census, after_census)
-        log.append("ratchet ok: hooks %d->%d, rules %d->%d, deny %d->%d" % (
+        log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
             len(before_census["hooks"]), len(after_census["hooks"]),
             len(before_census["rules"]), len(after_census["rules"]),
+            len(before_census["rule_marks"]), len(after_census["rule_marks"]),
             len(before_census["deny"]), len(after_census["deny"])))
 
         if settings_key is not None:
