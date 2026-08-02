@@ -220,6 +220,15 @@ note = cbe.expire_note("every recorded probe now passes: file:x", ["file:x"])
 tokens, _ = cbe.parse_probes([{"body": note, "createdAt": "2026-08-02T13:00:00Z"}])
 assert tokens == [], "expire_note must not emit a re-readable probe fence, got %r" % tokens
 print("PASS  an expiry note never re-posts a passing probe fence")
+
+# THE STALENESS BACKSTOP KEYS ON PRODUCER PROSE. If linear-worker.sh reworders
+# its capability refusal note, REFUSAL_MARKER stops matching and the backstop
+# silently stops working -- a guard that fails open with no symptom. Asserting
+# the marker against the worker's real text is the only thing that notices.
+assert cbe.REFUSAL_MARKER in worker, (
+    "REFUSAL_MARKER %r no longer appears in linear-worker.sh; the staleness "
+    "backstop is dead text" % cbe.REFUSAL_MARKER)
+print("PASS  REFUSAL_MARKER still matches the worker's refusal note")
 PY
 [ $? -eq 0 ] && PASS=$((PASS+1)) || bad "producer/consumer agree on no-probe" "see above"
 
