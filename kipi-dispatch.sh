@@ -35,10 +35,6 @@
 # class this repo keeps finding. One source of truth, asked politely.
 set -uo pipefail
 
-# Resolved BEFORE the cd below, because $0 may be relative and the self-heal
-# re-execs this file by path after fast-forwarding it.
-SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
-
 REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # HARDCODED OFF $REPO, DELIBERATELY NOT AN ENV VAR. Every other path in this file
 # takes a KIPI_* override for testability; this one must not. A variable here would
@@ -114,18 +110,49 @@ page_once() {
   # rather than loosening a client-repo safety gate to suit my own prose. sp-cc67d834.)
   # mkdir is the atomic primitive; a lock we cannot take means another process is
   # already handling this exact key, so staying quiet is the correct answer.
+  # AN ORPHANED LOCK MUST AGE OUT. The first cut treated any existing lock dir as a
+  # live holder forever, so a notifier killed between the mkdir and its cleanup --
+  # launchd reaping the job, a reboot, a SIGKILL -- silenced that key PERMANENTLY.
+  # Reproduced: leave the dir behind and the next three runs page 0, 0, 0, while the
+  # log cheerfully reports "another dispatcher is already deciding it" with nobody
+  # there. A dedupe that becomes a permanent mute is worse than no dedupe, and it is
+  # the same guard-that-can-never-fire shape this very audit flagged elsewhere --
+  # introduced by the fix for the previous one.
+  #
+  # The critical section is a stat and a small write, so anything still holding this
+  # after 300s is dead. That is far below the 900s heartbeat, so an orphan always
+  # self-clears before the next beat rather than needing a human.
   lock="$mark.lock"
   if ! mkdir "$lock" 2>/dev/null; then
-    say "page skipped ($key): another dispatcher is already deciding it"
-    return 0
+    local lock_mtime lock_probe
+    lock_probe="$(stat -c %Y "$lock" 2>/dev/null)"
+    case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac
+    [ -n "$lock_probe" ] || { lock_probe="$(stat -f %m "$lock" 2>/dev/null)"; case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac; } # portability-lint-skip
+    lock_mtime="$lock_probe"
+    # An unreadable mtime means DO NOT REAP: skipping one page is recoverable, two
+    # dispatchers both paging because we stole a live lock is the bug we are fixing.
+    if [ -n "$lock_mtime" ] && [ "$(( now - lock_mtime ))" -gt 300 ]; then
+      say "page lock: reaping an orphaned lock for $key ($(( now - lock_mtime ))s old; a notifier was killed mid-decision)"
+      rmdir "$lock" 2>/dev/null || true
+      mkdir "$lock" 2>/dev/null || { say "page skipped ($key): lost the race to reap"; return 0; }
+    else
+      say "page skipped ($key): another dispatcher is already deciding it"
+      return 0
+    fi
   fi
-  trap 'rmdir "$lock" 2>/dev/null || true' RETURN
+  # RELEASED EXPLICITLY AT EVERY EXIT, NOT BY A `trap ... RETURN`.
+  # The trap form looked tidier and was broken: bash tears down the function's
+  # locals before running the RETURN trap, so `rmdir "$lock"` hit an unset variable
+  # and `set -u` killed the whole dispatcher mid-page. It surfaced as four unrelated
+  # test failures at once (a missing verdict, two missing log lines) because the
+  # script simply stopped. Three exits, three rmdirs, no cleverness.
   if [ -f "$mark" ]; then
     prev="$(sed -n 1p "$mark" 2>/dev/null)"
     stamp="$(sed -n 2p "$mark" 2>/dev/null)"
     case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
     if [ "$prev" = "$hash" ] && [ "$(( now - stamp ))" -lt "$PAGE_REPING_SECONDS" ]; then
       say "page suppressed ($key unchanged for $(( (now - stamp) / 60 ))m; re-pings after $(( PAGE_REPING_SECONDS / 3600 ))h)"
+      rmdir "$lock" 2>/dev/null || true
       return 0
     fi
   fi
@@ -134,6 +161,7 @@ page_once() {
   else
     say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
   fi
+  rmdir "$lock" 2>/dev/null || true
 }
 
 cd "$REPO" 2>/dev/null || {
@@ -151,13 +179,23 @@ page_clear repo-missing
 # gate. It was fixed by hand twice in one session, which means every future merge
 # silently depended on someone remembering.
 #
-# IT DETECTS *AND* REPAIRS, as of 2026-08-02. This block used to say "a detector,
-# not a pull", on the grounds that moving the tree under an interactive session is
-# the parallel-session scar. That reasoning was half right: it is a reason to be
-# careful about WHICH trees get moved, not a reason to move none of them. The
-# version that only detected printed the exact remedy every 15 minutes for a night
-# and nobody typed it. attempt_ff() below now applies the remedy where the tree
-# demonstrably belongs to nobody, and refuses (and pages) where it might not.
+# A DETECTOR, NOT A PULL -- and that is now a MEASURED position, not a default.
+# An automatic `git merge --ff-only` was built here on 2026-08-02 and REMOVED the
+# same night after three review rounds, each of which found a new way for it to
+# lose data (ASK-284 carries the design and everything learned):
+#   r1  ignored files are silently overwritten by a fast-forward. Measured: an
+#       untracked-not-ignored collision ABORTS, an IGNORED one fast-forwards with
+#       exit 0 and no reflog, and `ls-files --others --exclude-standard` cannot
+#       see that class at all (3982 of them on this checkout).
+#   r2  the backup added to fix r1 continued the merge when a copy FAILED, and the
+#       lock added alongside it could silence an alert key forever.
+# Each round was smaller and each still produced a new instance of the same class.
+# That is a statement about the surface, not about care taken. Writing to a live
+# working tree with no recovery path for an untracked file is not something to
+# converge on at 3am; it gets designed on its own.
+#
+# What survives is the half with no write surface outside ~/.config/kipi: refuse,
+# and page ONCE per episode instead of once per commit.
 #
 # REFUSE, not warn. This loop MERGES ITS OWN PRs and has no accepted-change
 # signal, so building on superseded code and auto-merging the result is worse
@@ -168,133 +206,6 @@ page_clear repo-missing
 # we are behind; a network blip, an auth prompt or a missing remote logs and
 # proceeds. Two different safe directions, deliberately: fail closed on
 # staleness, fail open on not knowing.
-# THE DETECTOR COMPUTES THE REMEDY, SO IT MUST APPLY IT (ASK-283, 2026-08-02).
-# For one night this printed `git merge --ff-only origin/main` every 15 minutes
-# while the gap grew 7 -> 10 commits. Measured from the log: 19 refusing cycles,
-# 9 Slack pages, ZERO automated action. Nobody read them; the founder fixed it by
-# hand in the morning. A detector that names a deterministic, non-destructive,
-# loudly-failing command and then waits for a human to type it is an alert with no
-# hands, and the founder's detect-act-learn rule already forbids that shape.
-#
-# Prints NOTHING and returns 0 when the checkout was fast-forwarded.
-# Prints ONE line naming what stopped it and returns 1 otherwise -- that line is
-# what the page carries, so it has to read as a reason, not a code.
-#
-# WHAT THIS REFUSES TO TOUCH, and why each one is a tree that belongs to somebody:
-# Set by attempt_ff when it had to copy something out of the merge's way. Declared
-# here so `set -u` cannot trip on them at a call site that never entered that path.
-FF_PRESERVE_DIR=""
-FF_PRESERVED_COUNT=0
-# REASON RETURNED VIA A GLOBAL, NOT STDOUT, and that is a correctness fix.
-# The first cut printed the reason and the caller did `out="$(attempt_ff)"`. A
-# command substitution is a SUBSHELL, so FF_PRESERVE_DIR and FF_PRESERVED_COUNT --
-# set inside it -- were discarded on return, and the "I preserved your files" receipt
-# could never fire. A guard that cannot fire, one day after writing that memory.
-ATTEMPT_FF_REASON=""
-attempt_ff() {
-  local branch out p
-  ATTEMPT_FF_REASON=""
-  FF_PRESERVE_DIR=""
-  FF_PRESERVED_COUNT=0
-  # 1. A NON-MAIN OR DETACHED HEAD IS SOMEONE ELSE'S WORK. This is the
-  # parallel-sessions scar directly: two sessions sharing one checkout yank each
-  # other's tree on a branch move. Moving a feature branch to main is never the
-  # remedy the detector computed, so it is never done here.
-  branch="$(git symbolic-ref --short HEAD 2>/dev/null)" || branch=""
-  if [ "$branch" != "main" ]; then
-    ATTEMPT_FF_REASON="the checkout is on ${branch:-a detached HEAD}, not main, so its tree was left untouched"
-    return 1
-  fi
-  # 2. A HALF-FINISHED GIT OPERATION. Moving HEAD out from under a merge, rebase,
-  # cherry-pick or bisect destroys in-flight state that has no other copy.
-  # --git-path, not a literal .git/, because this also runs inside worktrees where
-  # .git is a FILE and these markers live somewhere else entirely.
-  for p in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
-    if [ -e "$(git rev-parse --git-path "$p" 2>/dev/null)" ]; then
-      ATTEMPT_FF_REASON="a git $p is in progress, so the tree was left untouched"
-      return 1
-    fi
-  done
-  # 3. A STAGED INDEX IS A COMMIT SOMEONE IS COMPOSING. Fast-forwarding over it
-  # silently folds their staged hunks into a different base.
-  if ! git diff --cached --quiet 2>/dev/null; then
-    ATTEMPT_FF_REASON="the index has staged changes (a commit in progress), so the tree was left untouched"
-    return 1
-  fi
-  # 4. MODIFIED TRACKED FILES ARE LEFT TO GIT, NOT PRE-JUDGED, AND THAT IS A
-  # DELIBERATE DEPARTURE FROM "refuse if the tree is dirty". Measured on the real
-  # checkout that produced this incident: 3 modified tracked files and 5488
-  # untracked ones, as its NORMAL resting state. A blanket dirty-tree refusal would
-  # make this self-heal permanently inert on the ONE checkout it exists for -- the
-  # wired-but-never-runs failure this repo has already eaten once. So the arbiter is
-  # git's own check: --ff-only aborts with "local changes would be overwritten" when
-  # the incoming commits actually touch a modified file, and otherwise carries the
-  # unrelated edits forward untouched. That is a per-file answer instead of a
-  # whole-tree guess, and it is the same command the page has been telling the
-  # founder to run by hand all along.
-  # 5. IGNORED FILES ARE THE ONE THING GIT WILL DESTROY WITHOUT ASKING, and this is
-  # the blocker that nearly shipped. Measured 2026-08-02 in a scratch repo:
-  #   untracked + NOT ignored, upstream starts tracking the path
-  #     -> "would be overwritten by merge ... Aborting", exit 1, file intact. SAFE.
-  #   IGNORED, upstream starts tracking the same path
-  #     -> "Fast-forward ... create mode 100644", exit 0, LOCAL CONTENT GONE.
-  #        No warning, no abort, and no reflog entry either -- an untracked file
-  #        has no object in the database, so there is nothing to recover from.
-  #
-  # "Let git be the arbiter" was right for the untracked class and WRONG for this
-  # one, and the measurement that reassured me hid it: `git ls-files --others
-  # --exclude-standard` counts 5488 on the founder's checkout and EXCLUDES ignored
-  # files entirely. The real ignored count there is 3982, none of which that number
-  # could see. Not hypothetical either -- this repo has already started tracking
-  # .prd-os/receipts.jsonl and q-system/memory/graph.jsonl upstream while `*.jsonl`
-  # sits in .gitignore, which is exactly the collision.
-  #
-  # So: copy anything the incoming commits would land on top of, BEFORE trying the
-  # merge. The merge itself stays a plain --ff-only with no -f, no reset --hard, no
-  # clean and no stash, so an abort is still an abort and still pages.
-  local risk="" p preserved=0
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    # Only paths that exist here and are NOT tracked at HEAD. A tracked+modified
-    # file is already git's own abort case and must stay that way.
-    [ -e "$p" ] || continue
-    git ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && continue
-    risk="$risk$p
-"
-  done <<EOF
-$(git diff --name-only --diff-filter=ACMRT HEAD origin/main 2>/dev/null)
-EOF
-  if [ -n "$risk" ]; then
-    FF_PRESERVE_DIR="$(dirname "$LOG")/ff-preserved/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short origin/main 2>/dev/null)"
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      mkdir -p "$FF_PRESERVE_DIR/$(dirname "$p")" 2>/dev/null || continue
-      # cp, never mv: moving it would itself change the tree the founder is using.
-      cp -R "$p" "$FF_PRESERVE_DIR/$p" 2>/dev/null && preserved=$((preserved + 1))
-    done <<EOF
-$risk
-EOF
-    FF_PRESERVED_COUNT="$preserved"
-    say "self-heal: $preserved untracked/ignored path(s) sit where origin/main adds files; copied to $FF_PRESERVE_DIR before touching anything"
-  fi
-
-  out="$(git merge --ff-only origin/main 2>&1)" || {
-    ATTEMPT_FF_REASON="git merge --ff-only origin/main did not apply: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
-    return 1
-  }
-  return 0
-}
-
-# RE-EXEC RATHER THAN FALL THROUGH, and this is a correctness fix not a nicety.
-# bash reads a script lazily by byte offset. The fast-forward above can rewrite
-# kipi-dispatch.sh underneath the running interpreter, after which bash resumes at
-# the old offset in the NEW file and executes whatever bytes happen to land there.
-# Continuing in-process is the one thing we must not do. exec restarts cleanly on
-# the code we just pulled, which is also exactly what "run the current control
-# code" means. A non-interactive bash exits if exec fails, so there is no path
-# where a failed exec silently proceeds on the stale bytes.
-relaunch_self() { exec env KIPI_DISPATCH_SELFHEALED=1 bash "$SELF"; }
-
 stale_check() {
   local local_head remote_head base
   # Bounded by hand: macOS ships no `timeout`, and an unbounded fetch inside a
@@ -316,7 +227,9 @@ stale_check() {
   local_head="$(git rev-parse HEAD 2>/dev/null)" || return 0
   remote_head="$(git rev-parse origin/main 2>/dev/null)" || return 0
   [ -n "$local_head" ] && [ -n "$remote_head" ] || return 0
-  [ "$local_head" != "$remote_head" ] || return 0
+  # Recovery is a DEFINITIVE not-behind answer, so the next episode pages at once.
+  # Deliberately not on the fetch-failed paths above: offline is not proof of health.
+  [ "$local_head" != "$remote_head" ] || { page_clear stale-checkout; return 0; }
   # THE PREDICATE IS "does origin/main hold commits this tree lacks", NOT "is HEAD
   # an ancestor of origin/main". Codex round 2 on PR #47 called the ancestor form a
   # major, and it was right: --is-ancestor is FALSE for a DIVERGED tree, so the
@@ -333,121 +246,24 @@ stale_check() {
   # before it opens a PR, and refusing there would wedge the loop on its own work.
   base="$(git rev-list --count "$local_head..$remote_head" 2>/dev/null || echo 0)"
   case "$base" in ''|*[!0-9]*) return 0 ;; esac   # unparseable count = no answer = run
-  [ "$base" -gt 0 ] || return 0
+  [ "$base" -gt 0 ] || { page_clear stale-checkout; return 0; }
   say "STALE: origin/main holds $base commit(s) this checkout lacks (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7}). Dispatching would run superseded control code and auto-merge the result."
 
-  # --- SELF-HEAL BEFORE PAGING ---------------------------------------------
-  # The refusal above is CORRECT and is not weakened: nothing dispatches while the
-  # checkout is behind. What changes is that the fix is now attempted instead of
-  # printed. The page below is reserved for the case a human is genuinely needed.
-  # Declared separately from the assignment below: `local x="$(f)"` swallows f's
-  # exit status (local always succeeds), which would make every attempt look green.
-  local why=""
-  if [ "${KIPI_DISPATCH_SELFHEALED:-0}" = "1" ]; then
-    # ONE ATTEMPT PER LAUNCH. We already fast-forwarded and re-execed this cycle
-    # and the tree is STILL behind, which means something is racing the merge (a
-    # push landing between fetch and merge, most likely). Re-execing again would
-    # spin. Hand it to a human and let the next heartbeat start clean.
-    why="a fast-forward already ran this cycle and origin/main moved again underneath it"
-  elif attempt_ff; then
-    say "self-heal: fast-forwarded this checkout to origin/main ${remote_head:0:7} ($base commit(s)); re-execing on the new control code"
-    # A PAGE THAT IS A RECEIPT, NOT AN ALARM. Only fires when the merge landed on
-    # top of untracked or ignored local files, which git would otherwise have
-    # replaced with no warning and no way back. The founder needs the restore path
-    # exactly once; the heal itself stays silent, as a working fix should.
-    if [ "${FF_PRESERVED_COUNT:-0}" -gt 0 ]; then
-      page_once "ff-preserved-$remote_head" "kipi dispatch: fast-forwarded the checkout myself, and $FF_PRESERVED_COUNT untracked/ignored file(s) sat where the incoming commits add files. I copied them first, nothing was lost. Originals: $FF_PRESERVE_DIR"
-    fi
-    # Released before exec, because exec replaces this process and no trap runs.
-    checkout_unlock
-    relaunch_self
-    # Unreached in production: relaunch_self execs. The tests stub it, and for them
-    # returning 0 is the right answer -- the tree is current, so dispatch proceeds.
-    return 0
-  else
-    why="$ATTEMPT_FF_REASON"
-  fi
-
-  say "REFUSING: self-heal could not fix it -- $why (HEAD ${local_head:0:7}, origin/main ${remote_head:0:7})"
-  # PAGE ONCE PER REMOTE SHA, not once per heartbeat. Second major from the same
-  # review: at a 900s interval an unrepaired checkout sent the identical Slack
-  # message 96 times a day, which trains the founder to ignore the channel and
-  # buries the one line that matters. Same fix the daily cap already uses (a
-  # `.paged` marker), keyed on the remote sha so a NEW divergence pages again.
-  # Beside the dispatch log and the daily-cap counters, which is where this
-  # script's other state already lives. Derived from $LOG so there is one
-  # definition of "the state dir" rather than a second literal path.
-  local paged_mark="$(dirname "$LOG")/stale-paged-$remote_head"
-  if [ ! -f "$paged_mark" ]; then
-    # MARK ONLY WHAT WAS ACTUALLY DELIVERED (codex round 4, major 2). The first cut
-    # wrote the marker unconditionally, so a page that FAILED -- webhook down, no
-    # network, slack-notify missing -- still suppressed every later notification for
-    # that sha. The founder would then be permanently silent about a refusing loop,
-    # which is strictly worse than the 96-a-day storm this dedupe was added to stop:
-    # a storm is annoying, silence is invisible.
-    #
-    # page() ends in `|| true` so it cannot report, deliberately (a notifier must
-    # never take the caller down). So call the notifier directly here and read its
-    # status, rather than changing page()'s contract for every other caller.
-    # NAMES THE ATTEMPT, NOT JUST THE SYMPTOM. This page now only fires when the
-    # automatic fix was tried and could not apply, so it has to say what was tried
-    # and what stopped it -- otherwise it reads like the old "type this command"
-    # ping the founder correctly stopped reading, and he would type the command
-    # that has ALREADY been tried and failed.
-    if page_ok "kipi dispatch: paused -- origin/main has $base commit(s) this checkout lacks. I tried the fast-forward myself and it did not apply: $why. This one needs you: cd $REPO. The loop resumes on its own once the checkout is current."; then
-      : > "$paged_mark" 2>/dev/null || true
-    else
-      say "stale-check: the page did NOT go out; leaving the dedupe marker unset so the next heartbeat retries it"
-    fi
-  fi
+  # ONE PAGE PER STALE EPISODE, NOT ONE PER COMMIT.
+  # The measured complaint: 19 refusing cycles overnight sent 9 Slack pages, one
+  # for every new commit that landed on main while the checkout sat behind. The
+  # per-sha dedupe that produced those 9 was working exactly as written -- the key
+  # was simply wrong. It treated "origin/main moved again" as a new fault, when the
+  # fault is one unchanged thing: THIS CHECKOUT IS BEHIND AND CANNOT DISPATCH.
+  #
+  # So the key is a constant and the MESSAGE carries no volatile detail. Counts and
+  # shas go to the log, which is free, not to the founder's phone, which is not.
+  # page_clear on the healthy path below turns a recovery into silence and makes the
+  # NEXT episode page immediately, which is what a per-sha key was reaching for.
+  page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main, so it will not dispatch (it would run superseded control code and auto-merge the result). Do: cd $REPO && git merge --ff-only origin/main. The loop resumes by itself once the checkout is current."
   return 1
 }
-# ONE WRITER TO THE WORKING TREE, ACROSS THE WHOLE CHECK-THEN-MERGE.
-# stale_check reads HEAD, decides, and then REWRITES the checkout. Unlocked, two
-# dispatchers (a launchd beat overlapping a hand-run one, or two instances after a
-# reload) can both pass the freshness gate against the same HEAD and both merge --
-# the parallel-sessions scar with a machine on both ends instead of a person. The
-# turn lock further down only covers repo SELECTION, which is far too late: by then
-# the tree has already moved. So the lock has to span read + decide + write, not
-# just the write.
-#
-# Same mkdir primitive and same stale-reaping posture as turn_lock: mkdir is atomic
-# on every filesystem this runs on, and a dispatcher killed mid-merge must not wedge
-# the loop forever. Reap at 1h, which is far longer than any merge and far shorter
-# than a night.
-CHECKOUT_LOCK="${KIPI_DISPATCH_CHECKOUT_LOCK:-$HOME/.config/kipi/dispatch-checkout.lock}"
-checkout_unlock() { rmdir "$CHECKOUT_LOCK" 2>/dev/null || true; }
-checkout_lock() {
-  mkdir -p "$(dirname "$CHECKOUT_LOCK")" 2>/dev/null || true
-  if mkdir "$CHECKOUT_LOCK" 2>/dev/null; then return 0; fi
-  local now mtime probe
-  now="$(date -u +%s)"
-  probe="$(stat -c %Y "$CHECKOUT_LOCK" 2>/dev/null)"
-  case "$probe" in ''|*[!0-9]*) probe="" ;; esac
-  [ -n "$probe" ] || { probe="$(stat -f %m "$CHECKOUT_LOCK" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; } # portability-lint-skip
-  mtime="$probe"
-  # An unreadable mtime means DO NOT REAP. Skipping one beat is safe; stealing a
-  # lock we cannot age and then merging under the holder is not.
-  if [ -n "$mtime" ] && [ "$(( now - mtime ))" -gt 3600 ]; then
-    say "checkout-lock: reaping a stale lock ($(( now - mtime ))s old)"
-    rmdir "$CHECKOUT_LOCK" 2>/dev/null || true
-    mkdir "$CHECKOUT_LOCK" 2>/dev/null && return 0
-  fi
-  return 1
-}
-
-if ! checkout_lock; then
-  say "skip: another dispatcher holds the checkout lock (freshness check and merge are one transaction)"
-  exit 0
-fi
-# Covers every later exit, including the FATAL paths below. exec is the one case a
-# trap cannot cover, so relaunch_self's caller releases explicitly before it.
-trap 'checkout_unlock' EXIT
 stale_check || exit 0
-# The tree is current and nobody else is mid-merge. Everything past this point only
-# READS the checkout, so the lock is handed back rather than held for the whole run.
-checkout_unlock
-trap - EXIT
 
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
