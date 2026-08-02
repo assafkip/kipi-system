@@ -87,6 +87,17 @@ class H(BaseHTTPRequestHandler):
             refused = os.path.exists(os.path.join(WORK, "update-fails"))
             data = {"issueUpdate": {"success": not refused,
                                     "issue": {"identifier": "fixture"}}}
+        # The single-issue re-read the drafter does immediately before a write.
+        # Serves live.json when a case has written one, which is how a case moves
+        # the board BETWEEN selection and the write -- the only way to exercise the
+        # concurrent-writer guard without real threads. Matched on description
+        # because ISSUE_STATE_Q and the comments lookup also say `issue(id:`.
+        elif "issue(id:" in query and "description" in query:
+            nodes = load("live.json", None)
+            if nodes is None:
+                nodes = load("board.json", [])
+            data = {"issue": next((n for n in nodes
+                                   if n.get("identifier") == variables.get("id")), None)}
         elif "comments(" in query:
             data = {"issue": {"comments": {"nodes": load("comments.json", [])}}}
         elif "teams(" in query:
@@ -149,6 +160,21 @@ export CALLS_LOG="$WORK/calls.log"
 reset() {
   : > "$WORK/requests.log"; : > "$WORK/updates.jsonl"; : > "$WORK/calls.log"
   echo '[]' > "$WORK/comments.json"
+  # Absent by default: with no live.json the write-time re-read sees the same
+  # board the selection saw, which is the uncontended case every other check wants.
+  rm -f "$WORK/live.json"
+}
+
+# The description of the first update the fixture server recorded, or "" if the
+# drafter never wrote. Every write-side assertion goes through this rather than
+# through stdout, so a check cannot pass on a printed claim alone.
+written_desc() {
+  python3 - "$WORK/updates.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(next((r["input"]["description"] for r in rows
+            if "description" in (r.get("input") or {})), ""), end="")
+PY
 }
 
 run_drafter() {  # run_drafter <args...>  -> stdout+stderr in $WORK/out.txt
@@ -493,6 +519,174 @@ if grep -q 'redrafted ASK-970 (attempt 1/' "$WORK/out.txt"; then
 else
   bad "a marker in founder prose does not forge the counter" \
       "run said: $(grep -E '^  (redrafted|marked)' "$WORK/out.txt" | tr '\n' '|')"
+fi
+
+echo "== case 10: founder prose ABOVE the DoR survives a redraft byte-for-byte =="
+reset
+# codex round 1, finding 1 (rebuild_description). redraft_state() reads the counter
+# from ONE slot -- the line directly above the heading -- but rebuild_description()
+# stripped the marker PATTERN from the whole prefix. Read narrow, delete wide.
+# A founder who pastes a marker into their own prose (documenting the mechanism,
+# quoting a past terminal) had that line deleted from a permanent Linear object on
+# every redraft. Case 9 pins the READ half of that slot; this pins the WRITE half.
+# Both halves must agree on "one owned line" or the asymmetry comes straight back.
+FOUNDER_WITH_MARKER='Here is how the drafter records its attempts, for reference:
+
+<!-- kipi-dor: redrafts=3 terminal -->
+
+Anyway. The DoR below is too big, please cut it down.'
+python3 - "$WORK/board.json" "$FOUNDER_WITH_MARKER" "$BAD_DOR" <<'PY'
+import json, sys
+path, founder, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-910", "identifier": "ASK-910", "title": "ASK-910",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}], open(path, "w"))
+PY
+run_drafter --limit 5 --apply
+DESC10="$(written_desc)"
+if [ -n "$DESC10" ] && [ "${DESC10#*"$FOUNDER_WITH_MARKER"}" != "$DESC10" ]; then
+  ok "founder prose containing a marker survives the redraft byte-for-byte"
+else
+  bad "founder prose containing a marker survives the redraft byte-for-byte" \
+      "written description was: $(printf '%s' "$DESC10" | tr '\n' '|' | cut -c1-240)"
+fi
+# The counter this job DOES own still has to land, or the fix above would pass by
+# simply never writing a marker at all.
+if printf '%s' "$DESC10" | grep -q '<!-- kipi-dor: redrafts=1 -->'; then
+  ok "the owned counter slot is still written on the redraft"
+else
+  bad "the owned counter slot is still written on the redraft" \
+      "no redrafts=1 marker in: $(printf '%s' "$DESC10" | tr '\n' '|' | cut -c1-240)"
+fi
+
+echo "== case 11: a redraft that another writer beat to the issue is not written =="
+reset
+# codex round 1, finding 2 (update_issue). The description is read at selection and
+# written up to `--timeout` seconds later, with a `claude` call in between. A second
+# drafter that finished first has already bumped the counter and dropped the label;
+# writing the stale text over it overwrites a NEWER DoR, re-removes a label the
+# worker may have re-applied, and counts a redraft that added nothing.
+# The counter is this job's own single-writer token, so it doubles as the compare-
+# and-swap: if it moved, someone else owns this issue tonight.
+python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+board, live, founder, dor = sys.argv[1:5]
+issue = {
+    "id": "u-911", "identifier": "ASK-911", "title": "ASK-911",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+# What the board actually holds by the time the write goes out: a rival drafter
+# landed attempt 1 and took the label off with it.
+moved = dict(issue,
+             description=(founder + "\n\n<!-- kipi-dor: redrafts=1 -->\n"
+                          "## Definition of Ready\n\n- **Outcome:** already rewritten."),
+             labels={"nodes": []})
+json.dump([moved], open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+if [ -z "$(written_desc)" ]; then
+  ok "the stale redraft is NOT written over the newer one"
+else
+  bad "the stale redraft is NOT written over the newer one" \
+      "it wrote: $(written_desc | tr '\n' '|' | cut -c1-240)"
+fi
+if ! grep -q 'redrafted ASK-911' "$WORK/out.txt"; then
+  ok "a skipped redraft is not counted as one"
+else
+  bad "a skipped redraft is not counted as one" \
+      "run claimed: $(grep 'ASK-911' "$WORK/out.txt" | tr '\n' '|')"
+fi
+
+echo "== case 12: a redraft is rebuilt from the description as it stands NOW =="
+reset
+# The other half of finding 2. Skipping is only correct when a RIVAL DRAFTER moved
+# the issue. A human adding a note during the same window has not taken ownership,
+# so the redraft proceeds -- but it must be rebuilt from the CURRENT description,
+# not the copy read before the `claude` call, or the note is overwritten by text
+# that predates it. Same class as case 3, except the edit lands mid-run.
+LATE_NOTE='## Notes
+
+Chris added this while the drafter was still thinking. Do not drop it.'
+python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" "$LATE_NOTE" <<'PY'
+import json, sys
+board, live, founder, dor, note = sys.argv[1:6]
+issue = {
+    "id": "u-912", "identifier": "ASK-912", "title": "ASK-912",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}
+json.dump([issue], open(board, "w"))
+json.dump([dict(issue, description=issue["description"] + "\n\n" + note)],
+          open(live, "w"))
+PY
+run_drafter --limit 5 --apply
+DESC12="$(written_desc)"
+if [ -n "$DESC12" ] && printf '%s' "$DESC12" | grep -q 'Chris added this while the drafter'; then
+  ok "a note added mid-run survives the redraft that lands after it"
+else
+  bad "a note added mid-run survives the redraft that lands after it" \
+      "written description was: $(printf '%s' "$DESC12" | tr '\n' '|' | cut -c1-240)"
+fi
+if printf '%s' "$DESC12" | grep -q 'triage all 304 spillover items'; then
+  bad "the stale DoR is gone, not carried through" \
+      "the refused DoR text is still in the written description"
+else
+  ok "the stale DoR is gone, not carried through"
+fi
+
+echo "== case 13: the status line does not say a redrive issue lacks a DoR =="
+reset
+# codex round 1, finding 3. Cosmetic, but it is the line an operator reads: every
+# redrive candidate HAS a Definition of Ready -- having a bad one is the entire
+# reason it is here -- so folding them into "N issue(s) need a Definition of Ready"
+# reports the opposite of the state the run is acting on.
+python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" <<'PY'
+import json, sys
+path, founder, dor = sys.argv[1:4]
+json.dump([{
+    "id": "u-913", "identifier": "ASK-913", "title": "ASK-913",
+    "description": founder + "\n\n" + dor,
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": [{"id": "L-needs", "name": "needs-scope"}]},
+}, {
+    "id": "u-914", "identifier": "ASK-914", "title": "ASK-914",
+    # Must not contain the words "Definition of Ready" even in prose: selection_mode
+    # excludes on that substring, so the obvious wording for "this issue has no DoR"
+    # deletes the issue from the batch and leaves the count-splitting assertion below
+    # passing against a one-issue board, which it would do on unfixed code too.
+    "description": "A plain backlog issue, nothing scoped on it yet.",
+    "project": {"name": "kipi-system"},
+    "state": {"name": "Todo", "type": "unstarted"},
+    "labels": {"nodes": []},
+}], open(path, "w"))
+PY
+run_drafter --limit 5
+STATUS="$(grep '^dor-drafter 2' "$WORK/out.txt" || true)"
+if printf '%s' "$STATUS" | grep -qE '2 issue\(s\) need a Definition of Ready'; then
+  bad "the status line counts only the issues that actually lack a DoR" \
+      "claimed all 2 need one, but ASK-913 already has one: $STATUS"
+else
+  ok "the status line counts only the issues that actually lack a DoR"
+fi
+# Positive on BOTH numbers, so the check cannot be satisfied by dropping the
+# claim instead of correcting it: 1 of the 2 genuinely lacks a DoR, 1 is a redrive.
+if printf '%s' "$STATUS" | grep -q '1 lacking a Definition of Ready' &&
+   printf '%s' "$STATUS" | grep -q '1 needs-scope redrive'; then
+  ok "the redrive candidates are still counted, separately"
+else
+  bad "the redrive candidates are still counted, separately" \
+      "status line was: $STATUS"
 fi
 
 echo

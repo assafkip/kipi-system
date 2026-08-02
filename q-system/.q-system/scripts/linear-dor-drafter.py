@@ -291,9 +291,14 @@ def _linear():
 
 # `labels` is new (needs-scope-redrive). Before it this query selected no labels
 # at all, so a label-driven selection was not merely unimplemented, it had no data
-# to run on. The IDs come with the names because dropping the label is an
-# issueUpdate with the FULL replacement labelIds set -- Linear has no remove-one
-# mutation, so the survivors have to be known at write time.
+# to run on. The IDs come with the names because the write needs the id of the one
+# label it drops.
+#
+# These are SELECTION-time labels. The write re-reads them (ISSUE_WRITE_Q) rather
+# than reusing what it found here -- see reread_before_write(). An earlier comment
+# in this slot claimed Linear has no remove-one mutation and that the full labelIds
+# set therefore had to be replaced. That was false; removedLabelIds exists and is
+# what this script sends. See needs_scope_label_ids().
 ISSUES_Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
   nodes{id identifier title description project{name} state{name type}
         labels{nodes{id name}}}
@@ -310,6 +315,11 @@ UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
   issueUpdate(id:$id,input:$input){success issue{identifier}}}"""
 
 ISSUE_STATE_Q = """query($id:String!){issue(id:$id){id identifier state{name type}}}"""
+
+# Re-read one issue immediately before writing it. Same fields the redraft write
+# depends on, and nothing else. See reread_before_write().
+ISSUE_WRITE_Q = """query($id:String!){issue(id:$id){
+  id identifier description labels{nodes{id name}}}}"""
 
 TEAM_STATES_Q = """query($t:String!){team(id:$t){
   states(first:50){nodes{id name type position}}}}"""
@@ -366,6 +376,29 @@ def redraft_state(desc: str) -> tuple:
     if not match:
         return 0, False
     return int(match.group(1)), bool(match.group(2))
+
+
+def strip_owned_marker(before: str) -> str:
+    """`before` with this job's counter marker removed from the ONE slot it owns.
+
+    The slot is the last line above the DoR heading, and this is deliberately the
+    same slot, same regex and same `search` semantics that redraft_state() reads.
+    They have to agree: the previous cut read narrow (one line) but deleted wide
+    (`REDRAFT_MARKER_RE.sub("", before)` over the whole prefix), so a marker a
+    founder had written into their own prose -- documenting the mechanism, quoting
+    a terminal note from another issue -- was silently deleted on every redraft
+    while being ignored for counting (codex round 1, finding 1). Deleting a human's
+    words off a permanent Linear object is the worst failure this script has, and
+    an asymmetry between the read slot and the write slot is how it got there.
+
+    Only the marker leaves; any other text sharing that last line is kept.
+    """
+    body = (before or "").rstrip()
+    lines = body.splitlines()
+    if not lines or not REDRAFT_MARKER_RE.search(lines[-1]):
+        return body
+    last = REDRAFT_MARKER_RE.sub("", lines[-1]).rstrip()
+    return "\n".join(lines[:-1] + ([last] if last.strip() else [])).rstrip()
 
 
 def selection_mode(issue: dict) -> str | None:
@@ -604,7 +637,7 @@ def rebuild_description(desc: str, body: str, count: int,
     human's text, and a duplicate section is a recoverable mistake where that is not.
     """
     before, _old, after = split_dor_section(desc)
-    prefix = REDRAFT_MARKER_RE.sub("", before).rstrip()
+    prefix = strip_owned_marker(before)
     marker = f"<!-- kipi-dor: redrafts={count}{' terminal' if terminal else ''} -->"
     out = f"{prefix}\n\n{marker}\n{DOR_HEADING}\n\n{body.strip()}\n"
     if terminal:
@@ -627,6 +660,57 @@ def needs_scope_label_ids(issue: dict) -> list:
     """
     return [lab["id"] for lab in issue_labels(issue)
             if lab.get("name") == NEEDS_SCOPE_LABEL and lab.get("id")]
+
+
+def reread_before_write(ls, issue: dict) -> dict | None:
+    """The issue as Linear holds it NOW. None when it could not be read.
+
+    A redraft's description is read during selection and written up to --timeout
+    (default 300s) later, with a `claude` call in between. Everything the write
+    depends on can move inside that window, and the write was built entirely from
+    the pre-call copy (codex round 1, finding 2).
+
+    None is a refusal to write, not an empty issue: writing the stale copy because
+    the freshness check itself failed is the exact overwrite the check exists to
+    stop, and a skipped redraft costs one slot while a clobbered description is
+    gone from a permanent object.
+    """
+    try:
+        return (ls.graphql(ISSUE_WRITE_Q, {"id": issue["identifier"]}) or {}).get("issue")
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"  {issue['identifier']}: could not re-read before write: {str(exc)[:100]}",
+              file=sys.stderr)
+        return None
+
+
+def rival_writer_moved(selected_desc: str, fresh: dict) -> bool:
+    """True when another DRAFTER already redrove this issue since it was selected.
+
+    The counter marker is this job's own single-writer token, so it doubles as a
+    compare-and-swap version: this job is the only thing that writes it, therefore
+    a changed count means a second drafter finished first. A missing needs-scope
+    label says the same thing from the other side.
+
+    Deliberately NOT a lock, and deliberately not a counter kept in a shared file.
+    Nothing is claimed before the work; the write is simply abandoned if the state
+    it was computed against is gone. That is why this does not recreate the
+    read-then-write race attempts-ledger.py exists to prevent (sp-626e9452, out of
+    scope): a lost update here loses one night's redraft of one issue, which the
+    next run redoes, rather than losing an increment nothing will ever redo.
+
+    A HUMAN edit is not a rival writer. It leaves the counter alone, so the redraft
+    proceeds and rebuild_description carries the human's new text through -- which
+    is the point of rebuilding from the fresh description rather than skipping on
+    any change at all.
+
+    HONEST BOUNDARY: this narrows the window from the whole `claude` call to the
+    gap between this read and the mutation. It does not close it. Linear's
+    issueUpdate takes no expected-version argument, so a true CAS is not available
+    to ask for; two drafters colliding inside that gap still resolve last-write-wins.
+    """
+    if NEEDS_SCOPE_LABEL not in label_names(fresh):
+        return True
+    return redraft_state(fresh.get("description") or "") != redraft_state(selected_desc)
 
 
 def update_issue(ls, issue: dict, payload: dict) -> None:
@@ -819,8 +903,13 @@ def main() -> int:
 
     plan = prioritise(todo)
     redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
-    print(f"dor-drafter {_now()}: {len(todo)} issue(s) need a Definition of Ready "
-          f"({redrives} of them {NEEDS_SCOPE_LABEL} redrive)")
+    # Counted apart, never folded into one number. Every redrive candidate HAS a
+    # Definition of Ready -- having one the worker refused is the entire reason it
+    # is here -- so counting it under "need a Definition of Ready" told the operator
+    # the opposite of the state the run was acting on (codex round 1, finding 3).
+    print(f"dor-drafter {_now()}: {len(todo)} issue(s) queued: "
+          f"{len(todo) - redrives} lacking a Definition of Ready, "
+          f"{redrives} {NEEDS_SCOPE_LABEL} redrive (DoR present, being rewritten)")
     batch = plan[: args.limit]
     if not args.apply:
         for mode, i in batch:
@@ -867,12 +956,35 @@ def main() -> int:
             continue
 
         if mode == "redraft":
+            # Re-read HERE, after the `claude` call and immediately before the
+            # write, so the description being rewritten is the one Linear holds
+            # now rather than the copy selection saw up to --timeout ago.
+            fresh = reread_before_write(ls, issue)
+            if fresh is None:
+                failed.append(f"{issue['identifier']}: could not re-read before "
+                              f"write, redraft not applied")
+                continue
+            if rival_writer_moved(desc, fresh):
+                # Not a failure: the issue got what it needed, from someone else.
+                # Counting it as drafted would overstate the run, and reporting it
+                # as failed would file a noise issue about work that got done.
+                print(f"  skipped {issue['identifier']}: another writer redrove it "
+                      f"while this attempt was drafting")
+                continue
+            fresh_desc = fresh.get("description") or ""
+
             # Description and label drop go in ONE mutation on purpose. As two
             # calls, a failure between them leaves a rewritten DoR still wearing
             # needs-scope: the picker keeps ignoring it and the next night spends
             # another capped attempt rewriting work already done.
-            payload = {"description": rebuild_description(desc, body, attempt),
-                       "removedLabelIds": needs_scope_label_ids(issue)}
+            #
+            # removedLabelIds, not a full labelIds replacement: Linear applies it
+            # as a delta against the label set as it stands at write time, so a
+            # label added while this redraft was drafting survives. That is the
+            # label half of finding 2, and it needs no version check because the
+            # server-side semantics already give the atomicity.
+            payload = {"description": rebuild_description(fresh_desc, body, attempt),
+                       "removedLabelIds": needs_scope_label_ids(fresh)}
         else:
             payload = {"description": desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
 
