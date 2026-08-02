@@ -303,7 +303,7 @@ cat > "$T/unpaired.json" <<'JSON'
 }
 JSON
 run_engine "$ENGINE" "$T/unpaired.json" "$T"
-check "unpaired template refused" 2 "does not yet carry" "$RC" "$OUT"
+check "unpaired template refused" 2 "does not carry" "$RC" "$OUT"
 rm -r "$T"
 
 # ------------------------------- 8b. settings/template both-or-neither

@@ -396,8 +396,28 @@ def _external_gate(root, rel, args):
     return proc.returncode == 0
 
 
+def gate_template_parses(root):
+    """settings-template.json must still parse.
+
+    This gate was missing on the first real run and the tool happily reported
+    "gates held" after writing a template that no longer parsed -- the anchor had
+    ended on an opening brace. Every file this tool can write needs a validity
+    gate, not just the ones under .claude/.
+    """
+    p = os.path.join(root, "settings-template.json")
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p) as fh:
+            json.load(fh)
+        return True
+    except ValueError:
+        return False
+
+
 GATES = (
     ("settings-json-parses", gate_settings_parses),
+    ("settings-template-parses", gate_template_parses),
     ("hook-scripts-exist", gate_hook_scripts_exist),
     ("settings-template-sync",
      lambda root: _external_gate(root, "q-system/.q-system/scripts/settings-template-sync-check.py", ["--check"])),
@@ -427,20 +447,37 @@ def check_requires(root, prop, log):
             raise Refusal("required file missing: %s" % rel)
         log.append("require ok: %s present" % rel)
 
-    # settings.json and settings-template.json are both-or-neither. kipi update
-    # rebuilds every instance's settings.json from the TEMPLATE only, so a hook
-    # wired in one and not the other runs dead somewhere. The agent can write the
-    # template directly (it is outside .claude/), so by the time this runs the
-    # template must ALREADY carry the same command -- otherwise arming the runtime
-    # side would strand the fleet. Refuse rather than write half the pair.
-    for command in req.get("template_pairs") or []:
-        tpl = os.path.join(root, "settings-template.json")
+def check_template_pairs(root, prop, staged, log):
+    """settings.json and settings-template.json are both-or-neither.
+
+    kipi update rebuilds every instance's settings.json from the TEMPLATE only,
+    so a hook wired in one and not the other runs dead somewhere, and
+    settings-template-sync-check fails in BOTH directions.
+
+    Checked against the STAGED template, not the on-disk one: the proposal that
+    arms a hook is usually the same proposal that adds it to the template, so an
+    on-disk-only check refused the very shape this exists to support. Caught by
+    running the first real proposal against a copy of the live tree.
+    """
+    req = prop.get("requires") or {}
+    commands = req.get("template_pairs") or []
+    if not commands:
+        return
+    tpl_rel = "settings-template.json"
+    if tpl_rel in staged:
+        content = staged[tpl_rel]
+        origin = "this proposal"
+    else:
+        tpl = os.path.join(root, tpl_rel)
         if not os.path.isfile(tpl):
             raise Refusal("settings-template.json missing; cannot verify the pair")
         with open(tpl) as fh:
-            if command not in fh.read():
-                raise Refusal("settings-template.json does not yet carry: %s" % _snip(command))
-        log.append("require ok: template carries %s" % _snip(command))
+            content = fh.read()
+        origin = "the existing template"
+    for command in commands:
+        if command not in content:
+            raise Refusal("settings-template.json does not carry: %s" % _snip(command))
+        log.append("pair ok: %s carries %s" % (origin, _snip(command)))
 
 
 # ----------------------------------------------------------------- the run
@@ -509,6 +546,8 @@ def main(argv):
         satisfied.append(already)
         log.append("edit %d %s %s: %s (%s)" % (
             idx, edit["op"], rel, "already-applied" if already else "staged", edit["reason"]))
+
+    check_template_pairs(root, prop, staged, log)
 
     # ---- idempotency. All satisfied = nothing to do. Mixed = a half-applied
     # tree from some earlier run; refuse rather than guess which half is right.
