@@ -53,14 +53,15 @@ build "$TMP/no_claim.jsonl" "[
  {'role':'assistant','content':[{'type':'tool_use','input':{'command':'ls'}}]},
  {'role':'assistant','content':[{'type':'text','text':'Read it. It does what you said.'}]}]"
 
+ANSWER='OBSERVED 2026-08-02T11:32:16  lane=production  cap=3  spent=2  budget_day=2026-08-02\\nASK-287: TODAY'
 build "$TMP/claim_checked.jsonl" "[
  {'role':'assistant','content':[{'type':'tool_use','input':{'command':'python3 will-it-run.py ASK-287'}}]},
- {'role':'user','content':[{'type':'tool_result','content':'ASK-287: TODAY'}]},
+ {'role':'user','content':[{'type':'tool_result','content':'$ANSWER'}]},
  {'role':'assistant','content':[{'type':'text','text':'ASK-287 is queued for today.'}]}]"
 
 build "$TMP/contradiction.jsonl" "[
  {'role':'assistant','content':[{'type':'tool_use','input':{'command':'python3 will-it-run.py ASK-291'}}]},
- {'role':'user','content':[{'type':'tool_result','content':'ASK-291: NEVER'}]},
+ {'role':'user','content':[{'type':'tool_result','content':'OBSERVED 2026-08-02T11:32:16  lane=production  cap=3  spent=3  budget_day=2026-08-02\\nASK-291: NEVER'}]},
  {'role':'assistant','content':[{'type':'text','text':'ASK-291 is queued, the dispatcher will run it tonight.'}]}]"
 
 build "$TMP/prose_only.jsonl" "[
@@ -83,6 +84,15 @@ case_rc "no claim at all -> exit 0 (ALLOW)"             "$TMP/no_claim.jsonl"   
 case_rc "claim + checker agreed -> exit 0"              "$TMP/claim_checked.jsonl"  0
 case_rc "claim contradicting the checker -> exit 2"     "$TMP/contradiction.jsonl"  2
 case_rc "naming the checker in PROSE only -> exit 2"    "$TMP/prose_only.jsonl"     2
+
+# codex round 1, major 2: an `ls` that merely LISTS the filename must not arm the
+# gate. Artifact presence accepted as proof of behaviour is the substitution this
+# whole PR exists to stop, and the gate committed it.
+build "$TMP/ls_only.jsonl" "[
+ {'role':'assistant','content':[{'type':'tool_use','input':{'command':'ls q-system/.q-system/scripts'}}]},
+ {'role':'user','content':[{'type':'tool_result','content':'linear_pick.py\\nwill-it-run.py\\ncapability-gate.py'}]},
+ {'role':'assistant','content':[{'type':'text','text':'ASK-291 is queued and the loop will pick it up on the next run.'}]}]"
+case_rc "an ls listing the filename does NOT arm the gate" "$TMP/ls_only.jsonl"       2
 
 # The blocked turn must TEACH, not just fail: the stderr is what Claude reads back.
 run_gate "$TMP/claim_nocheck.jsonl" >/dev/null

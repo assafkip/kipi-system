@@ -155,6 +155,14 @@ def resolve_config(job, plist_vars):
     """
     if job["loaded"] and job["env"]:
         env, source = job["env"], "launchd (running job)"
+    elif job["loaded"]:
+        # LOADED BUT UNREADABLE IS NOT UNLOADED (codex round 1, minor 2). The
+        # environment block is scraped with a regex; if launchctl's format shifts,
+        # env comes back empty and the old text said "job NOT loaded", which is a
+        # false statement about running state made by the state-reporting tool.
+        env = plist_vars
+        source = ("launchd job IS loaded but its environment block could not be "
+                  "parsed; falling back to the plist file for values")
     elif plist_vars:
         env, source = plist_vars, "plist file (job NOT loaded -- config, not state)"
     else:
@@ -337,9 +345,16 @@ def schedule_for(position, cap, spent, day):
     An item 11th in a 3/day queue is four budget days out, and calling that
     "tomorrow" is the same class of error as calling a spent budget "queued".
     """
-    if cap is None or spent is None or day is None:
-        return {"when": "UNKNOWN", "days_out": None,
-                "detail": "the dispatcher's cap or budget day could not be observed"}
+    # cap <= 0, not just None (codex round 1, minor 3). A cap of 0 is a REAL
+    # configured state -- the founder can set KIPI_DISPATCH_DAILY_MAX=0 to park
+    # the loop -- and it reached the `// cap` below as a ZeroDivisionError, i.e.
+    # a crash instead of an answer from the one tool that exists to answer.
+    if cap is None or spent is None or day is None or cap <= 0:
+        why = ("the dispatcher's cap is 0, so nothing dispatches on any day"
+               if cap == 0 else
+               "the dispatcher's cap or budget day could not be observed")
+        return {"when": "NEVER" if cap == 0 else "UNKNOWN", "days_out": None,
+                "detail": why}
     remaining = max(0, cap - spent)
     if position < remaining:
         return {"when": "today", "days_out": 0,
@@ -402,8 +417,14 @@ def build_report(target, issues, rp, lp, att, job, cfg, day, spent_n, stale, liv
                     "position": None}
         sched = schedule_for(order[ident], cfg["cap"], spent_n, day)
         verdict = sched["when"]
+        # BLOCKED BELONGS HERE (codex round 1, major 3). It used to be omitted,
+        # so a stale checkout printed `ASK-N: TODAY` in the same report whose own
+        # header said GATE [BLOCKED]. stale_check() ends with `|| exit 0` at
+        # kipi-dispatch.sh:304 -- it aborts the WHOLE run, so nothing dispatches
+        # today. Printing TODAY there is precisely the false scheduling claim
+        # this file exists to prevent, emitted by the file itself.
         for kind, why in gates:
-            if kind in ("NEVER", "UNKNOWN"):
+            if kind in ("NEVER", "UNKNOWN", "BLOCKED"):
                 return {"issue": ident, "title": title, "verdict": kind,
                         "reason": why, "position": order[ident], **sched}
         return {"issue": ident, "title": title, "verdict": verdict,
