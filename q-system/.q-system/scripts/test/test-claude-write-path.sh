@@ -348,6 +348,103 @@ else
   fail "session-start runs the tripwire BEFORE the daily sentinel (L$L_INT vs L$L_SENT)"
 fi
 
+echo "== G. Round-3 findings: the re-baseline path =="
+# A notifier that RECORDS, so "did it page?" is an assertion and not a vibe.
+PAGES="$WORK/pages.log"
+cat > "$WORK/fake-notify.sh" <<'PY'
+#!/bin/bash
+printf '%s\n' "$1" >> "$PAGES_FILE"
+PY
+chmod +x "$WORK/fake-notify.sh"
+tw() { PAGES_FILE="$PAGES" KIPI_NOTIFY="$WORK/fake-notify.sh" python3 "$TRIPWIRE" "$@"; }
+pagecount() { [ -f "$PAGES" ] && wc -l < "$PAGES" | tr -d ' ' || echo 0; }
+
+# G1: a legitimate change that landed through git (pull / checkout / merge, and
+# `kipi update`, which commits into each instance) must RE-BASELINE ITSELF.
+FIX="$(new_fixture)"; : > "$PAGES"
+tw --root "$FIX" --baseline --quiet
+printf 'legitimately updated rule\n' > "$FIX/.claude/rules/alpha.md"
+git -C "$FIX" add -A >/dev/null 2>&1
+git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm "pull" >/dev/null 2>&1
+tw --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "0" ] && pass "git-landed change re-baselines itself (no alarm)" \
+                || fail "git-landed change re-baselines itself (no alarm)"
+[ "$(pagecount)" = "0" ] && pass "git-landed change pages ZERO times" \
+                         || fail "git-landed change pages ZERO times (got $(pagecount))"
+tw --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "0" ] && pass "and stays clean on the next session (not permanent drift)" \
+                || fail "and stays clean on the next session (not permanent drift)"
+
+# G2: unattributed drift still alarms -- but ONCE, not every session forever.
+FIX="$(new_fixture)"; : > "$PAGES"
+tw --root "$FIX" --baseline --quiet
+printf 'pwned\n' > "$FIX/.claude/rules/alpha.md"
+tw --root "$FIX" --check >/dev/null 2>&1
+[ "$?" = "1" ] && pass "uncommitted tamper still detected" || fail "uncommitted tamper still detected"
+[ "$(pagecount)" = "1" ] && pass "tamper pages once" || fail "tamper pages once (got $(pagecount))"
+tw --root "$FIX" --check >/dev/null 2>&1
+tw --root "$FIX" --check >/dev/null 2>&1
+[ "$(pagecount)" = "1" ] && pass "identical drift does NOT re-page (3 sessions, 1 page)" \
+                         || fail "identical drift does NOT re-page (got $(pagecount))"
+printf 'pwned differently\n' > "$FIX/.claude/rules/alpha.md"
+tw --root "$FIX" --check >/dev/null 2>&1
+[ "$(pagecount)" = "2" ] && pass "NEW drift does page again" || fail "NEW drift does page again (got $(pagecount))"
+
+# G3: --enforce must NOT honour git-attribution. An agent that writes AND
+# commits is the attack; absorbing that would hand it the keys.
+FIX="$(new_fixture)"; : > "$PAGES"
+tw --root "$FIX" --baseline --quiet
+printf 'agent tampered then committed\n' > "$FIX/.claude/rules/alpha.md"
+git -C "$FIX" add -A >/dev/null 2>&1
+git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm "agent commit" >/dev/null 2>&1
+tw --root "$FIX" --enforce >/dev/null 2>&1
+[ "$?" = "2" ] && pass "--enforce ignores git-attribution (still reverts)" \
+                || fail "--enforce ignores git-attribution (still reverts)"
+grep -q 'rule alpha' "$FIX/.claude/rules/alpha.md" && pass "--enforce restored despite the commit" \
+                                                   || fail "--enforce restored despite the commit"
+
+# G4: concurrent first-run --check must not crash on a shared temp path.
+FIX="$(new_fixture)"
+for i in 1 2 3 4 5 6 7 8; do tw --root "$FIX" --check --quiet >/dev/null 2>>"$WORK/conc.err" & done
+wait
+if grep -q 'Traceback' "$WORK/conc.err" 2>/dev/null; then
+  fail "8 concurrent first-run checks, no crash"
+else
+  pass "8 concurrent first-run checks, no crash"
+fi
+
+# G5: a crash must be reported as a crash, never as a security event.
+CRASHER="$WORK/crasher.py"
+printf 'import sys\nsys.stderr.write("Traceback (most recent call last):\\n")\nsys.exit(1)\n' > "$CRASHER"
+FIX="$(new_fixture)"
+mkdir -p "$FIX/q-system/.q-system/scripts" "$FIX/q-system/hooks"
+cp "$CRASHER" "$FIX/q-system/.q-system/scripts/claude-integrity-tripwire.py"
+cp "$SCRIPTS/../../hooks/session-start.py" "$FIX/q-system/hooks/"
+BANNER="$(PAGES_FILE="$PAGES" KIPI_NOTIFY="$WORK/fake-notify.sh" python3 - \
+  "$FIX/q-system/hooks/session-start.py" "$FIX" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ss", sys.argv[1])
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+print(mod.check_claude_integrity(sys.argv[2]))
+PY
+)"
+case "$BANNER" in
+  *"NOT a security finding"*) pass "a crashing tripwire reports a malfunction, not SECURITY" ;;
+  *) fail "a crashing tripwire reports a malfunction, not SECURITY (got: ${BANNER:0:60})" ;;
+esac
+case "$BANNER" in
+  *SECURITY*) fail "crash banner must not contain the word SECURITY" ;;
+  *) pass "crash banner must not contain the word SECURITY" ;;
+esac
+
+echo "== H. Round-3 Layer 1 minors =="
+FIX="$(new_fixture)"
+assert_block "quoted redirect target"      'echo pwned > ".claude/settings.json"'
+assert_block "single-quoted redirect"      "echo pwned > '.claude/settings.json'"
+assert_block "git config -f writes"        'git config -f .claude/settings.json user.x y'
+assert_block "git worktree add writes"     'git worktree add .claude/wt'
+assert_allow "git status still allowed"    'git status .claude/'
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

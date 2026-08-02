@@ -192,19 +192,22 @@ def check_claude_integrity(project_dir):
                              capture_output=True, text=True, timeout=25)
     except Exception:
         return ""
-    if res.returncode not in (1, 2):
-        return ""
     detail = (res.stderr or "").strip()
-    notifier = os.environ.get("KIPI_NOTIFY") or os.path.join(
-        project_dir, "q-system", ".q-system", "scripts", "slack-notify.sh")
-    try:
-        subprocess.run([notifier, detail.split("\n")[0][:400]],
-                       capture_output=True, timeout=20)
-    except Exception:
-        pass
-    return ("SECURITY -- .claude/ drifted from its sanctioned baseline:\n" + detail +
-            "\nIf this was you, re-baseline: python3 q-system/.q-system/scripts/"
-            "claude-integrity-tripwire.py --baseline")
+
+    # A CRASH IS NOT A SECURITY EVENT (finding, round 3). Round 2 accepted any
+    # rc in (1,2) as drift, but an uncaught exception also exits 1, so a Python
+    # traceback got Slack-paged under a SECURITY headline. Drift is now
+    # identified positively: exit 1/2 AND the tripwire's own SECURITY: marker.
+    # Anything else with a nonzero code is reported as a malfunction, quietly.
+    if res.returncode in (1, 2) and detail.startswith("SECURITY:"):
+        # The tripwire already paged (and dedupes). Do NOT page again here:
+        # two writers to one alarm channel is how an alert becomes noise.
+        return (".claude/ drifted from its sanctioned baseline:\n" + detail)
+    if res.returncode != 0:
+        return ("NOTE: .claude/ integrity tripwire could not complete "
+                "(exit %d). This is a tool malfunction, NOT a security finding.\n%s"
+                % (res.returncode, detail.split("\n")[0][:300]))
+    return ""
 
 
 def main():

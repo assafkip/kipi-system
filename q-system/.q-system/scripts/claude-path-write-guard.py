@@ -60,10 +60,16 @@ READER_WRITE_FLAGS = {
 
 # git subcommands that only read. Any other git subcommand touching .claude/ is
 # treated as write-capable (checkout, restore, apply, clean, mv, rm...).
+# `config` and `worktree` were here in rounds 1-2 and both WRITE:
+#   git config -f .claude/settings.json user.x y   -> rewrites the file
+#   git worktree add .claude/wt                    -> creates a tree inside it
+# A subcommand is not read-only independent of its arguments (finding, round 3).
+# Dropped rather than special-cased: their read forms on a .claude/ path are
+# rare, and a false block is the safe direction here.
 GIT_READ_ONLY = {
     "status", "log", "diff", "show", "ls-files", "ls-tree", "cat-file",
     "blame", "grep", "rev-parse", "describe", "shortlog", "hash-object",
-    "worktree", "branch", "remote", "config", "count-objects", "check-ignore",
+    "branch", "remote", "count-objects", "check-ignore",
 }
 
 # Piping into an interpreter re-enters the shell with content this parser never
@@ -84,6 +90,22 @@ SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
 # in stage 2, and neither stage alone looks dangerous. Caught by its own test.
 STATEMENT_SPLIT = re.compile(r"&&|\|\||;|\n")
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def unquote(token):
+    """Strip shell quoting before any path comparison.
+
+    SCAR (review finding, round 3): the redirect target is captured by regex,
+    not by shlex, so `echo pwned > ".claude/settings.json"` kept its quote
+    characters. The first path component became `".claude` instead of `.claude`,
+    the component test missed, and the write landed. That is comparing a
+    REPRESENTATION instead of the thing -- the same root cause as matching a
+    phrase where the intent is a structure.
+    """
+    t = token.strip()
+    while len(t) >= 2 and t[0] == t[-1] and t[0] in ("'", '"'):
+        t = t[1:-1].strip()
+    return t.replace('"', "").replace("'", "")
 
 
 def expand(token, cwd, assigns):
@@ -183,7 +205,7 @@ def _stage(seg, assigns, cwd_box):
     # (review finding, round 2). Excluding & and < from the target keeps `2>&1`
     # and here-strings from matching as paths.
     for redir in re.finditer(r">>?\s*([^\s;&|<>]+)", seg):
-        if hits_claude(expand(redir.group(1), effective_cwd, assigns)):
+        if hits_claude(expand(unquote(redir.group(1)), effective_cwd, assigns)):
             return "redirects output into .claude/: %s" % redir.group(1)
 
     # Leading VAR=value assignments, so a path in a variable still resolves.

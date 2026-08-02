@@ -44,6 +44,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 # Volatile by design: these change constantly during normal work and carry no
@@ -147,21 +148,46 @@ def load_baseline(root):
         return {"schema_version": 1, "corrupt": True, "entries": {}}
 
 
-def save_baseline(root, entries):
+def save_baseline(root, entries, last_alarm=""):
     path = os.path.join(root, BASELINE_REL)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     doc = {
         "schema_version": 1,
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "note": "Sanctioned content of .claude/. See claude-integrity-tripwire.py (ASK-282).",
+        # Fingerprint of the last drift state we PAGED for. Identical drift must
+        # not re-page every session: a repeating alert for an unchanged fact is
+        # the thing the founder asked us to stop building (finding, round 3).
+        "last_alarm": last_alarm,
         "entries": entries,
     }
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(doc, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    os.replace(tmp, path)  # single-writer: atomic swap, never a half-written baseline
+    # Unique temp in the SAME directory, so os.replace stays atomic.
+    #
+    # SCAR (review finding, round 3): this used a fixed `path + ".tmp"` while the
+    # comment claimed "single-writer". Two concurrent first-run --check calls
+    # raced on that one name and crashed one of them (15/15 trials) -- and
+    # session-start then mistranslated the traceback into a SECURITY banner,
+    # Slack-paging the literal text "Traceback (most recent call last):".
+    # A comment asserting an invariant the code does not hold is the same defect
+    # shape as a header warning about phrase-matching above a phrase match.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".baseline-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(doc, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)  # atomic swap, never a half-written baseline
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return path
+
+
+def save_and_reload(root, entries, baseline):
+    """Persist entries while preserving the alarm-dedupe marker."""
+    last = baseline.get("last_alarm", "")
+    save_baseline(root, entries, last)
+    return {"schema_version": 1, "last_alarm": last, "entries": entries}
 
 
 def measure(root, paths):
@@ -186,6 +212,60 @@ def diff(root, baseline):
             modified.append(rel)
     removed = [r for r in recorded if r not in set(current)]
     return sorted(modified), sorted(added), sorted(removed)
+
+
+def git_head_blob(root, rel):
+    """The blob id git HEAD records for `rel`, or "" if untracked at HEAD."""
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "HEAD:%s" % rel],
+                             capture_output=True, text=True, timeout=20)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def attributable(root, rel):
+    """True when the file's CURRENT content is exactly what git HEAD records.
+
+    THE RE-BASELINE PATH (review finding, round 3 -- the one that decided the
+    design). Round 2 had no way for a legitimate change to update the baseline.
+    So a `git pull` that touched any rule left the tree permanently drifted and
+    paged an identical SECURITY line every session, forever. That is the
+    founder's own complaint -- an alert that fires for a fact nobody can act on
+    -- manufactured by the fix for it. Blind or crying wolf are both ignored,
+    and ignored is the same as absent.
+
+    All 41 watched files are git-tracked, so git is the provenance oracle: if
+    the working content equals the HEAD blob, the change arrived through
+    pull / checkout / merge -- a reviewed path -- not through a shell write.
+
+    HONEST BOUND: "attributable" means VISIBLE IN VERSION CONTROL, not "safe".
+    An attacker who commits their tamper makes it attributable. That is a real
+    bar (it is now in history, diffable and blamed) but it is not a wall, which
+    is why this is never applied in --enforce mode; see main().
+    """
+    full = os.path.join(root, rel)
+    if not os.path.isfile(full) or os.path.islink(full):
+        return False
+    head = git_head_blob(root, rel)
+    return bool(head) and head == git_blob_id(root, rel, write=False)
+
+
+def drift_fingerprint(root, rels):
+    """Stable id for one drift state, so an unchanged situation pages once."""
+    h = hashlib.sha256()
+    for rel in sorted(rels):
+        full = os.path.join(root, rel)
+        h.update(rel.encode())
+        h.update(b":")
+        try:
+            h.update(sha256_file(full).encode() if os.path.isfile(full) and
+                     not os.path.islink(full) else b"absent")
+        except OSError:
+            h.update(b"unreadable")
+    return h.hexdigest()
 
 
 def notify(root, message):
@@ -340,9 +420,40 @@ def main(argv=None):
         return 2
 
     modified, added, removed = diff(root, baseline)
+
+    # THE RE-BASELINE PATH. In report mode, absorb every drifted file whose
+    # content equals its git HEAD blob: that change came through pull/checkout/
+    # merge, which is reviewed, so it is sanctioned and the baseline moves with
+    # it. Never in --enforce mode: there the actor is provably the agent, and an
+    # agent that writes then commits is precisely the attack this would wave
+    # through. (Review finding, round 3.)
+    absorbed = []
+    if not args.enforce:
+        for rel in list(modified) + list(added):
+            if attributable(root, rel):
+                absorbed.append(rel)
+        if absorbed:
+            entries = dict(baseline.get("entries", {}))
+            entries.update(measure(root, absorbed))
+            baseline = save_and_reload(root, entries, baseline)
+            modified = [r for r in modified if r not in set(absorbed)]
+            added = [r for r in added if r not in set(absorbed)]
+        # A file deleted in HEAD is a sanctioned removal, not a tamper.
+        still_removed = [r for r in removed if git_head_blob(root, r)]
+        if len(still_removed) != len(removed):
+            entries = dict(baseline.get("entries", {}))
+            for rel in [r for r in removed if r not in set(still_removed)]:
+                entries.pop(rel, None)
+                absorbed.append(rel)
+            baseline = save_and_reload(root, entries, baseline)
+            removed = still_removed
+
     if not (modified or added or removed):
         if not args.quiet:
-            print("clean: %d file(s) match baseline" % len(baseline.get("entries", {})))
+            msg = "clean: %d file(s) match baseline" % len(baseline.get("entries", {}))
+            if absorbed:
+                msg += " (re-baselined %d git-attributable change(s))" % len(absorbed)
+            print(msg)
         return 0
 
     summary = "SECURITY: unsanctioned .claude/ change -- %d modified, %d added, %d removed: %s" % (
@@ -350,7 +461,17 @@ def main(argv=None):
         ", ".join((modified + added + removed)[:6]))
 
     if args.check:
+        # Page only when the drift STATE changes. Persisting drift still shows
+        # in the session banner and the exit code; it just stops re-paging an
+        # identical line forever (finding, round 3). Single writer for alarms:
+        # the tripwire decides, session-start only displays.
+        fp = drift_fingerprint(root, modified + added + removed)
+        if fp != baseline.get("last_alarm", ""):
+            notify(root, summary)
+            save_baseline(root, baseline.get("entries", {}), fp)
         print(summary, file=sys.stderr)
+        print("re-baseline if this was sanctioned: python3 %s --baseline"
+              % os.path.relpath(os.path.abspath(__file__), root), file=sys.stderr)
         for rel in modified:
             print("  modified: %s" % rel, file=sys.stderr)
         for rel in added:
@@ -377,4 +498,15 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # A crash must exit 3 and say TRIPWIRE-ERROR, never leak a traceback into
+    # the drift channel. Round 2 let an exception exit 1 -- the same code as
+    # "drift found" -- so session-start paged the founder a Python traceback
+    # under a SECURITY headline (finding, round 3). A false security alarm is
+    # worse than a missed one: it teaches him to dismiss the banner that counts.
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        sys.stderr.write("TRIPWIRE-ERROR: %s: %s\n" % (type(exc).__name__, exc))
+        sys.exit(3)
