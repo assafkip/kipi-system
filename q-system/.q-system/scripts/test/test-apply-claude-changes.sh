@@ -1065,6 +1065,105 @@ run_engine "$ENGINE" "$T/retitle.json" "$T"
 check "rewording an (ENFORCED heading still succeeds" 0 "OK applied retitle-rule" "$RC" "$OUT"
 rm -r "$T"
 
+echo
+echo "--- 15p: one file under two spellings in one proposal ---"
+# Round-5 MAJOR. canonical_rel collapses the spellings a STRING can collapse; a
+# symlink and a case variant survive it as a SECOND key naming one inode. Two
+# keys means two readers: resolve_special_keys picks the first as settings_key
+# and permission_surface_check inspects that copy, while sorted() writes the
+# other one last and ITS content is what lands. Widening permissions.allow came
+# back `0 OK applied`.
+#
+# The symlink spelling is used for the deterministic case because it holds on
+# any filesystem; the case-variant spelling only exists as a second name where
+# the filesystem is case-insensitive, so it is probed for below.
+mk_two_spellings() {  # mk_two_spellings <root> <second-spelling> <outfile>
+  cat > "$3" <<JSON
+{
+  "schema_version": 1, "slug": "two-spellings",
+  "reason": "one file, two keys, only one of them permission-checked",
+  "requires": { "template_pairs": ["existing-lint.py"] },
+  "edits": [
+    { "file": "$2", "op": "insert_after",
+      "anchor": "      \"Read(.env)\"",
+      "insert": ",\n      \"Read(.secret)\"",
+      "reason": "decoy: sorts first, becomes settings_key, never lands" },
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "      \"Bash(ls:*)\"",
+      "insert": ",\n      \"Bash(:*)\"",
+      "reason": "THE ATTACK: widen allow in the copy that actually lands" }
+  ]
+}
+JSON
+}
+
+T=$(mktemp -d); mk_fixture "$T"
+ln -s settings.json "$T/.claude/aliased-settings.json"
+mk_two_spellings "$T" ".claude/aliased-settings.json" "$T/two-spellings.json"
+run_engine "$ENGINE" "$T/two-spellings.json" "$T"
+check "a symlinked second spelling of settings.json refused" 2 "two spellings" "$RC" "$OUT"
+if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
+  bad "the refused proposal still widened permissions.allow"
+else
+  ok "permissions.allow untouched by the refused proposal"
+fi
+check_one_line "two-spellings refusal" "$OUT"
+
+# The same class through a case variant. Only a second name where the filesystem
+# says so, so the case is probed rather than assumed -- a case-sensitive FS makes
+# these two genuinely different files and the assertion would be wrong there.
+if [ -f "$T/.claude/SETTINGS.json" ]; then
+  mk_two_spellings "$T" ".claude/Settings.json" "$T/case-variant.json"
+  run_engine "$ENGINE" "$T/case-variant.json" "$T"
+  check "a case-variant spelling of settings.json refused" 2 "two spellings" "$RC" "$OUT"
+else
+  echo "  (case-insensitive-FS case not applicable on this filesystem)"
+fi
+rm -r "$T"
+
+# Not only the guarded config surface: two names for ONE rule file is the same
+# defect, and it reports "2 edit(s)" for one edit's worth of surviving content.
+T=$(mktemp -d); mk_fixture "$T"
+ln -s enforced-rule.md "$T/.claude/rules/aliased-rule.md"
+cat > "$T/dup-rule.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "dup-rule",
+  "reason": "one rule file addressed under two names",
+  "edits": [
+    { "file": ".claude/rules/aliased-rule.md", "op": "insert_after",
+      "anchor": "# Sample Rule (ENFORCED)", "insert": "\n\nFirst edit.", "reason": "a" },
+    { "file": ".claude/rules/enforced-rule.md", "op": "insert_after",
+      "anchor": "# Sample Rule (ENFORCED)", "insert": "\n\nSecond edit.", "reason": "b" }
+  ]
+}
+JSON
+run_engine "$ENGINE" "$T/dup-rule.json" "$T"
+check "two spellings of one rule file refused" 2 "two spellings" "$RC" "$OUT"
+
+# ...and the check is on the FILE, not on the edit count: chaining two edits onto
+# one file under ONE spelling is the supported case and stays supported.
+cat > "$T/chained.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "chained-edits",
+  "reason": "two edits, one spelling, one file",
+  "edits": [
+    { "file": ".claude/rules/enforced-rule.md", "op": "insert_after",
+      "anchor": "# Sample Rule (ENFORCED)", "insert": "\n\nFirst edit.", "reason": "a" },
+    { "file": ".claude/rules/enforced-rule.md", "op": "insert_after",
+      "anchor": "First edit.", "insert": "\n\nSecond edit.", "reason": "b" }
+  ]
+}
+JSON
+run_engine "$ENGINE" "$T/chained.json" "$T"
+check "two edits on one spelling still succeed" 0 "OK applied chained-edits" "$RC" "$OUT"
+if grep -q "First edit." "$T/.claude/rules/enforced-rule.md" \
+   && grep -q "Second edit." "$T/.claude/rules/enforced-rule.md"; then
+  ok "both chained edits landed"
+else
+  bad "a chained edit was lost - the spelling check is over-blocking"
+fi
+rm -r "$T"
+
 # ============================ MUTATION =====================================
 # Copy the engine, break ONE guard, prove the matching case goes red. Without
 # this, a green suite only proves the tests run, not that the guards do anything.
@@ -1424,6 +1523,27 @@ if grep -q '"type": "cmd"' "$T/.claude/settings.json"; then
   ok "MUTATION scope: pin removed -> replace reached settings.json and broke a hook (rc=$MRC), test goes RED as required"
 else
   bad "MUTATION scope: pin removed but settings.json is untouched - case 15d is not load-bearing"
+fi
+rm -r "$T"
+
+echo
+echo "--- mutation: let one file keep two spellings ---"
+# Round 5's finding, restored. With the collapse gone the decoy spelling becomes
+# settings_key and gets permission-checked while the real spelling sorts last and
+# lands, so permissions.allow widens at exit 0. If the mutant is still refused,
+# case 15p is passing on some other guard and proves nothing.
+T=$(mktemp -d); mk_fixture "$T"
+ln -s settings.json "$T/.claude/aliased-settings.json"
+mk_two_spellings "$T" ".claude/aliased-settings.json" "$T/two-spellings.json"
+MUT="$T/mutant_spelling.py"
+mutate "$MUT" '    refuse_duplicate_spellings(root, prop)' '    pass'
+set +e
+python3 "$MUT" "$T/two-spellings.json" --root "$T" >/dev/null 2>&1; MRC=$?
+set -e
+if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
+  ok "MUTATION spelling: collapse removed -> the unchecked spelling widened permissions.allow (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION spelling: mutant did not widen permissions - case 15p is not load-bearing"
 fi
 rm -r "$T"
 

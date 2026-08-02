@@ -313,6 +313,52 @@ def _same_file(root, rel, target):
         return False
 
 
+def refuse_duplicate_spellings(root, prop):
+    """One name per file in the proposal, or no run.
+
+    canonical_rel collapses the spellings a STRING can collapse ("./", "..",
+    doubled slashes). It cannot see the two normpath is blind to: a case variant
+    on a case-insensitive filesystem, and a symlinked parent directory. Those
+    arrive as two distinct keys naming one inode, and two keys means two readers:
+    each is read from disk independently, each is written back to the same inode
+    in sorted() order, so the LAST spelling's content lands while an earlier
+    spelling is what a single-key guard inspected.
+
+    PR #70 round 5 found the live consequence. `.claude/Settings.json` became
+    settings_key (resolve_special_keys picks the FIRST match), so
+    permission_surface_check read that copy while `.claude/settings.json` sorted
+    last and its content is what hit disk. A proposal widening permissions.allow
+    exited `0 OK applied` with the ratchet and the gates reporting clean, and it
+    reported "2 edit(s)" for one edit's worth of surviving content.
+
+    The fix belongs HERE and not in another guard, because the defect is not that
+    some particular guard read the wrong key -- it is that two keys existed at
+    all. Every guard downstream is correct once the input holds one name per file.
+
+    HONEST BOUNDARY: identity comes from st_dev/st_ino for a file that exists,
+    and from realpath for one that does not. So two case-variant spellings of a
+    path that exists under NEITHER case (two create_file edits racing to make one
+    new file) are not caught. That is a reporting defect, not an enforcement one:
+    nothing pre-existing can be weakened by it, and every guarded file this
+    engine knows about already exists.
+    """
+    seen = {}
+    for edit in prop["edits"]:
+        rel = edit["file"]
+        full = os.path.join(root, rel)
+        try:
+            st = os.stat(full)
+            identity = ("inode", st.st_dev, st.st_ino)
+        except OSError:
+            identity = ("path", os.path.realpath(full))
+        first = seen.setdefault(identity, rel)
+        if first != rel:
+            raise Refusal(
+                "edits name one file under two spellings (%s and %s resolve to the "
+                "same file); use one spelling per file" % (first, rel)
+            )
+
+
 def resolve_special_keys(root, prop):
     """Resolve, ONCE, which canonical edit keys are the guarded files.
 
@@ -354,9 +400,11 @@ def rule_text_only(root, rel, settings_key, template_key):
     Three checks, because each alone has a hole the other two cover:
 
       identity : rel IS .claude/settings.json or settings-template.json under
-                 some spelling. Already collapsed to one key by inode upstream
-                 (resolve_special_keys), so a case variant or a ./ spelling
-                 arrives here as the same key rather than as a new name.
+                 some spelling. resolve_special_keys matches by inode, not by
+                 string, so a case variant or a ./ spelling of a guarded file is
+                 recognised here. It does NOT merge two keys into one -- that is
+                 refuse_duplicate_spellings' job, upstream, and round 5 found the
+                 hole left when this docstring claimed otherwise.
       shape    : anything that is not .claude/rules/<name>.md is out. agents/ and
                  output-styles/ keep the additive-only guarantee they had before
                  this op existed; widening to them is a separate decision with a
@@ -933,6 +981,10 @@ def main(argv):
     check_requires(root, prop, log)
 
     # ---- stage every edit against an in-memory COPY. Nothing on disk yet.
+    # One name per file FIRST: every check below assumes a key it resolves is the
+    # key whose content lands, and that is only true when no second spelling of
+    # the same file is still in the proposal (round 5).
+    refuse_duplicate_spellings(root, prop)
     # Resolved ONCE by inode; every check below reads these, never a string.
     settings_key, template_key = resolve_special_keys(root, prop)
     touches_settings = settings_key is not None
