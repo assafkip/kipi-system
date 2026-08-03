@@ -1,3 +1,23 @@
 {
-  "total_always_on": 512
+  "cap": 512,
+  "total_always_on": 512,
+  "always_on_files": {
+    "audhd-interaction.md": 16,
+    "auto-detection.md": 26,
+    "dogfood-gate.md": 38,
+    "fable-discipline-auto-invoke.md": 23,
+    "founder-notifications.md": 30,
+    "model-allocation.md": 27,
+    "no-orphan-findings.md": 37,
+    "quick-plan.md": 14,
+    "rca-mode.md": 27,
+    "security.md": 13,
+    "self-healing-retry.md": 40,
+    "skill-hook-pairing.md": 23,
+    "social-reaction-gate.md": 13,
+    "sycophancy-core.md": 35,
+    "token-discipline.md": 37,
+    "voice-enforcement.md": 20,
+    "wiring-check.md": 44
+  }
 }

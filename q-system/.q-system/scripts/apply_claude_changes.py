@@ -877,6 +877,16 @@ GATES = (
      lambda root: _external_gate(root, "q-system/.q-system/scripts/settings-template-sync-check.py", ["--check"])),
     ("validate-separation",
      lambda root: _external_gate(root, "validate-separation.py", [])),
+    # ASK-285. Without this the engine happily applied an edit that grew the
+    # always-on instruction total, printed "OK applied", and the founder found
+    # out at `git commit` when the pre-commit ratchet refused -- a landed change
+    # that cannot be committed is worse than a refusal, because everything
+    # downstream believes it shipped. --no-write because a gate must not mutate
+    # the baseline it is reading; --root because the audit otherwise derives its
+    # tree from __file__ and would grade the real repo during a --root'ed run.
+    ("instruction-budget",
+     lambda root: _external_gate(root, "q-system/.q-system/scripts/instruction-budget-audit.py",
+                                 ["--ratchet", "--no-write", "--root", root])),
 )
 
 
