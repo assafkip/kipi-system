@@ -298,12 +298,12 @@
           "why": "APPROVE stops being terminal, which is the unsatisfiable gate ASK-113 closed: nothing can ever stop reworking"
         },
         {
-          "id": "floor-blocker-strip-removed",
+          "id": "floor-verdict-takes-more-than-the-first-token",
           "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
           "kind": "logic",
-          "find": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n",
-          "replace": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null \\\n",
-          "why": "a real review ending 'Fix first: **BLOCKER 1**' reads as verdict BLOCK; the strip is why the round-2 fixture parses correctly"
+          "find": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)\"\n",
+          "replace": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK')\"\n",
+          "why": "the real PR #11 round-4 verdict QUALIFIES itself on one line -- `**REQUEST CHANGES** (not BLOCK -- nothing here writes an unrecoverable object)` -- so the anchored window yields two tokens and only head -1 makes the stated verdict win. Without it the record reads BLOCK for a review that said the opposite in the same breath"
         },
         {
           "id": "floor-worker-stops-sourcing-the-lib",
