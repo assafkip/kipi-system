@@ -57,6 +57,7 @@ red, a mutant that would not apply, a bad declaration).
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -212,6 +213,28 @@ def apply_mutant(tree: Path, mutant: dict) -> tuple[str, str]:
 # running a suite
 # --------------------------------------------------------------------------
 
+def _load_run_contained():
+    """Borrow the gate's contained runner instead of writing a second one.
+
+    OBSERVED HERE, NOT REASONED ABOUT (ASK-316): the first version of this file
+    used subprocess.run(capture_output=True, timeout=...). Two suites hung for
+    ~40 minutes past their deadline, because run() waits on pipe EOF rather than
+    on child exit and, on timeout, kills only the direct child --
+    test-review-invoker-provenance.sh's verify-codex-review-live.sh grandchild
+    survived holding the pipe. capability-gate.py already closed exactly this
+    (its ASK-190 scar), so the fix is to use that one rather than to grow a
+    second copy that will drift.
+    """
+    gate = Path(__file__).resolve().parent / "capability-gate.py"
+    spec = importlib.util.spec_from_file_location("capability_gate", gate)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.run_contained
+
+
+run_contained = _load_run_contained()
+
+
 def run_suite(tree: Path, entry: dict) -> tuple[int, str]:
     full = tree / entry["path"]
     if not full.is_file():
@@ -220,14 +243,16 @@ def run_suite(tree: Path, entry: dict) -> tuple[int, str]:
     timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
     env = dict(os.environ)
     env["KIPI_MUTATION_CHECK"] = "1"
-    try:
-        proc = subprocess.run(
-            cmd, cwd=str(tree), capture_output=True, timeout=timeout,
-            check=False, env=env)
-    except subprocess.TimeoutExpired:
-        return 124, "timeout"
-    tail = (proc.stdout + proc.stderr).decode("utf-8", "replace")
-    return proc.returncode, tail[-600:]
+    res = run_contained(cmd, str(tree), env, timeout)
+    tail = (res.stdout + res.stderr)[-600:]
+    if res.timed_out:
+        # A timeout is NOT a kill. The suite may be slow, wedged, or genuinely
+        # failing, and treating "it did not finish" as "the mutant was caught"
+        # is the flattering wrong answer this whole file exists to refuse.
+        raise Refusal(
+            f"{entry['path']}: suite hit its {timeout}s deadline, so nothing about "
+            f"this mutant is known. Raise timeout_s or fix the hang.\n{tail}")
+    return res.returncode, tail
 
 
 # --------------------------------------------------------------------------

@@ -177,6 +177,29 @@ class TestRunVerdicts(unittest.TestCase):
                          (self.tree / "target.py").read_text(encoding="utf-8"),
                          "the tree must be restored so later mutants run clean")
 
+    def test_timeout_is_refused_not_counted_as_a_kill(self):
+        """A deadline says nothing about the mutant, and "did not finish" must
+        never be read as "the suite caught it".
+
+        Observed, not imagined: the first version of run_suite used
+        subprocess.run(capture_output=True, timeout=...), which waits on pipe EOF
+        rather than child exit and, on timeout, kills only the direct child. Two
+        real gate suites hung ~40 minutes past their deadline holding an orphaned
+        grandchild's pipe. The runner is now capability-gate.py's run_contained.
+        """
+        (self.tree / "suite.py").write_text(
+            "import time\ntime.sleep(30)\n", encoding="utf-8")
+        entry = dict(self.entry, timeout_s=5)
+        with self.assertRaises(MC.Refusal) as ctx:
+            MC.check_entry(self.tree, entry)
+        self.assertIn("deadline", str(ctx.exception))
+
+    def test_the_runner_is_the_gates_contained_one(self):
+        """One runner, not two. A second copy of the process-group handling would
+        drift from the gate's, and this is the half that hangs when it does."""
+        self.assertEqual("run_contained", MC.run_contained.__name__)
+        self.assertIn("capability_gate", MC.run_contained.__module__)
+
     def test_uncovered_mutant_is_reported_survived(self):
         (self.tree / "suite.py").write_text("import sys\nsys.exit(0)\n",
                                             encoding="utf-8")
