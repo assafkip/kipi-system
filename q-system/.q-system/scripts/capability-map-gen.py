@@ -326,48 +326,149 @@ def _docstring_line(text: str) -> str:
     return lines[0][:180] if lines else ""
 
 
+# Files whose CONTENT can wire an engine. A mention anywhere in one of these is a
+# reference; markdown is handled separately below because prose is not wiring.
+SURFACE_CODE_EXT = {
+    ".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".toml", ".json",
+    ".cfg", ".ini", ".mk", ".txt",
+}
+SURFACE_DOC_EXT = {".md"}
+# Extensionless wiring surfaces (the kipi CLI, Makefiles, lefthook's shell blocks).
+SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "justfile"}
+
+# A markdown line only counts as wiring if it INVOKES something. A findings doc
+# saying "engine_x.py left the template unfilled" names a script without keeping it
+# alive; a runbook line `python3 engine_x.py` does. Without this split, widening the
+# scan repo-wide just trades false-dead for false-alive (ASK-122).
+MD_INVOCATION_RE = re.compile(r"(?:python3?\s|bash\s|\bsh\s|\./|source\s|-m\s)")
+
+# Module tokens an engine can be reached by WITHOUT its .py suffix. `import x`,
+# `from x import y`, `python -m x`, and importlib's spec_from_file_location("x", ...)
+# are all real callers that a filename-only scan reads as silence. Scar: ASK-230,
+# where provenance_vocabulary.py had two live importers and was reported inert
+# because both wrote `import provenance_vocabulary` with no extension.
+MODULE_REF_RE = re.compile(
+    r"^\s*from\s+([\w.]+)\s+import\b"
+    r"|^\s*import\s+([\w.]+)"
+    r"|spec_from_file_location\(\s*[\"']([\w.\-]+)[\"']"
+    r"|-m\s+([\w.]+)\b",
+    re.M,
+)
+
+
+# `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
+# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
+# (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
+# on failure, so it is live DATA on a rollback path. No static scan can ever match
+# it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
+# the only way to "fix" it is to delete a rollback artifact (ASK-122).
+DATED_SNAPSHOT_RE = re.compile(r"\.\d{4}-\d{2}-\d{2}$")
+
+
+def _is_test_file(p: Path) -> bool:
+    return p.name.startswith(("test_", "test-")) or "test" in p.parts or "tests" in p.parts
+
+
+def _iter_surface_files(root: Path):
+    """Every file in the repo whose content can constitute wiring.
+
+    WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
+    q-system/, so an instance whose code lives anywhere else reported its own
+    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
+    four of them by path and `pipeline.py` imported two more. The scan has to
+    follow the repo, not a layout the skeleton happens to use.
+    """
+    for p in root.rglob("*"):
+        if not p.is_file() or is_vendored(p):
+            continue
+        if p.suffix.lower() in SURFACE_CODE_EXT or p.suffix.lower() in SURFACE_DOC_EXT:
+            yield p
+        elif p.name in SURFACE_NAMES:
+            yield p
+
+
+def _build_reference_index(root: Path, engines: list) -> dict:
+    """Map each engine path -> the set of OTHER files that reference it.
+
+    Two ways to match: the file name (`foo.py`, seen in shell/CLI invocations and
+    config) and the bare module name, but the bare name ONLY inside an import or
+    loader construct. A generic stem like `pipeline` appears in ordinary prose all
+    over this fleet; counting bare-word hits would mark half the repo live.
+    """
+    by_filename = {}
+    by_module = {}
+    for p in engines:
+        by_filename.setdefault(p.name, []).append(p)
+        by_module.setdefault(p.stem, []).append(p)
+    if not by_filename:
+        return {}
+
+    # One alternation, one pass per file: a per-engine regex would be
+    # len(engines) x len(files) scans, which is minutes on a large instance.
+    # The lookbehind must NOT exclude "/": the common form is path-qualified
+    # (`python3 "$G/fill_sheet.py"`), and blocking it hid every shell caller.
+    filename_re = re.compile(
+        r"(?<![\w.\-])(" + "|".join(re.escape(n) for n in sorted(by_filename)) + r")(?![\w\-])"
+    )
+
+    refs: dict = {}
+    for src in _iter_surface_files(root):
+        text = read_text(src)
+        if not text:
+            continue
+        if src.suffix.lower() in SURFACE_DOC_EXT:
+            text = "\n".join(ln for ln in text.splitlines() if MD_INVOCATION_RE.search(ln))
+            if not text:
+                continue
+        for match in filename_re.finditer(text):
+            for engine in by_filename[match.group(1)]:
+                if engine != src:
+                    refs.setdefault(engine, set()).add(src)
+        for match in MODULE_REF_RE.finditer(text):
+            token = next((g for g in match.groups() if g), None)
+            if not token:
+                continue
+            for part in (token, token.rsplit(".", 1)[-1]):
+                for engine in by_module.get(part, ()):
+                    if engine != src:
+                        refs.setdefault(engine, set()).add(src)
+    return refs
+
+
 def collect_engines(root: Path) -> list:
     """Scripts that have a paired test, or that are referenced from a wiring
     surface. An engine with neither is reported UNWIRED rather than assumed fine."""
     caps = []
     tests = {p.name for p in root.rglob("test*") if p.is_file() and not is_vendored(p)}
 
-    # Wiring surfaces mirror capability-gate.py's WIRING_SURFACE_GLOBS. A narrower
-    # list reports UNWIRED for engines that are in fact called by another engine or
-    # by the kipi CLI: the first run of this generator flagged 60 UNWIRED in
-    # 4_points_consulting purely because python-calls-python was never read.
-    surfaces = ""
-    for pat in (".claude/settings.json", "settings-template.json", "lefthook.yml",
-                "Makefile", "*.sh", "kipi*", "validate-separation.py",
-                ".github/workflows/*.yml", "*/hooks/hooks.json", "*/*/hooks.json"):
-        for p in root.glob(pat):
-            if p.is_file() and not is_vendored(p):
-                surfaces += read_text(p)
-    for sub in (root / ".claude", root / "plugins", root / "q-system"):
-        if not sub.is_dir():
-            continue
-        for pattern in ("*.md", "*.py", "*.sh", "*.json"):
-            for p in sub.rglob(pattern):
-                if is_vendored(p) or p.name.startswith(("test_", "test-")):
-                    continue
-                surfaces += read_text(p)
-
+    engines = []
     for p in root.rglob("*.py"):
         if is_vendored(p):
             continue
         if p.name.startswith(("test_", "test-")) or "test" in p.parts:
             continue
-        text = read_text(p)
-        if len(text.splitlines()) < 40:
+        if DATED_SNAPSHOT_RE.search(p.stem):
             continue
-        has_test = any(p.stem in t for t in tests)
-        referenced = p.name in surfaces
+        if len(read_text(p).splitlines()) < 40:
+            continue
+        engines.append(p)
+
+    refs = _build_reference_index(root, engines)
+
+    for p in engines:
+        text = read_text(p)
+        sources = refs.get(p, set())
+        test_sources = sorted(s for s in sources if _is_test_file(s))
+        wiring_sources = sorted(s for s in sources if not _is_test_file(s))
+        has_test = any(p.stem in t for t in tests) or bool(test_sources)
+        referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
         bits = []
         if has_test:
-            bits.append("has a paired test")
+            witness = rel(root, test_sources[0]) if test_sources else "name-matched test file"
+            bits.append(f"has a paired test ({witness})")
         if referenced:
-            bits.append("referenced on a wiring surface")
+            bits.append(f"referenced on a wiring surface ({rel(root, wiring_sources[0])})")
         if not bits:
             bits.append("NO test and NO wiring reference found")
         caps.append({
