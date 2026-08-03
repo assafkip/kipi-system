@@ -881,6 +881,44 @@ if [ -f "$REDRIVE" ]; then
   fi
 fi
 
+# --- REVIEWER REDRIVE (ASK-352) ----------------------------------------------
+# The OTHER half of a failing status check. ci-redrive.py above deliberately
+# EXCLUDES the reviewer's own verdict slots from what it calls red CI, and that
+# exclusion stays -- including them re-dispatched PRs whose build was passing
+# (PR #73, live). But its docstring justified the exclusion by asserting the
+# reviewer's Linear comment already caused a re-dispatch, and no such selector
+# existed. Six PRs sat parked ~29 hours. This is that selector: one consumer per
+# event, neither reading the other's slot.
+#
+# AFTER ci-redrive AND ONLY IF IT PASSED. Red CI outranks a reviewer refusal --
+# a build that does not compile makes any review of it moot, and re-reviewing a
+# broken tree spends a codex call to be told the build is broken.
+#
+# TWO ACTIONS, NOT ONE, and this is the whole reason the selector exists. A
+# `failure` on the reviewer slot means either "someone objected" (rework: the
+# review is the spec) or "nobody read the code" (re-review: there is no spec).
+# The verdict does not separate them -- PR #80 recorded REQUEST CHANGES from the
+# prompt's own echoed grading rule. review-redrive.py reads the `usable` key
+# pr-review-agent.sh now persists, and answers with the action.
+#
+# rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
+REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""
+if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
+  REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
+  REVIEW_RC=$?
+  if [ "$REVIEW_RC" = "0" ] && [ -n "$REVIEW_LINE" ]; then
+    REVIEW_ACTION="$(printf '%s' "$REVIEW_LINE" | cut -f1)"
+    REVIEW_NEXT="$(printf '%s' "$REVIEW_LINE" | cut -f2)"
+    REVIEW_PR="$(printf '%s' "$REVIEW_LINE" | cut -f3)"
+    REVIEW_SHA="$(printf '%s' "$REVIEW_LINE" | cut -f4)"
+    say "reviewer redrive: $REVIEW_NEXT PR #$REVIEW_PR needs $REVIEW_ACTION${NEXT:+ ($NEXT waits)}"
+    NEXT="$REVIEW_NEXT"
+  elif [ "$REVIEW_RC" = "2" ]; then
+    say "reviewer redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
+  fi
+fi
+
 if [ -z "$NEXT" ]; then
   say "nothing ready ($(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1))"
   exit 0
@@ -927,6 +965,21 @@ if [ -n "$REDRIVE_SIG" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
   fi
 fi
 
+# Same contract for the reviewer redrive (ASK-352): the OFFER above wrote
+# nothing, and THIS is the atomic claim. rc non-zero means another run owns it,
+# or the ledger could not be written -- the same answer either way, because
+# nothing was recorded so nothing may act as though it was. The cap is one
+# attempt per PR per action per HEAD SHA, so a PR that pushes a real fix is
+# eligible again while a re-review that keeps coming back phantom at the same sha
+# is not retried.
+if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+  if ! python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
+       --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"; then
+    say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
+    exit 0
+  fi
+fi
+
 # Count BEFORE launching. Counting after would let a crash between the two
 # hand out a free dispatch every heartbeat -- the budget must fail closed.
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
@@ -962,8 +1015,30 @@ CONVERGE_LOG="$HOME/.config/kipi/converge-$NEXT.log"
 printf '\n===== dispatch %s  %s  rounds=%s =====\n' \
   "$NEXT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MAX_ROUNDS" >> "$CONVERGE_LOG"
 
+# WHAT THIS DISPATCH ACTUALLY RUNS (ASK-352). Converge for everything except a
+# reviewer redrive that asked for a RE-REVIEW, where the right action is another
+# review and not another rework round: the PR is parked because nobody read the
+# code, so there are no findings for a converge to work from and it would come
+# back to this same failing slot having spent a full round.
+#
+# --post is required and is the point. Without it the reviewer writes a verdict
+# record and never touches the commit status, so the slot that parked the PR
+# stays failing and the next heartbeat picks the same PR again -- a loop that
+# looks like progress. --invoker labels it dispatcher-driven (sp-53aad86f), so a
+# hand-run review can never pass as evidence the loop closed itself.
+#
+# ONE ARRAY, EXPANDED ONCE BELOW. The launch machinery underneath (setsid, the
+# pid capture, the liveness assert) is proven and is not duplicated per action;
+# only the argv differs.
+DISPATCH_ARGV=(./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS")
+if [ "$REVIEW_ACTION" = "re-review" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+  DISPATCH_ARGV=(bash "$REPO/q-system/.q-system/scripts/pr-review-agent.sh" \
+                 "$REVIEW_PR" --issue "$NEXT" --post)
+  export KIPI_REVIEW_INVOKER="dispatcher"
+fi
+
 CHILD_PID="$(python3 - "$CONVERGE_LOG" \
-         ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" <<'PY'
+         "${DISPATCH_ARGV[@]}" <<'PY'
 import subprocess, sys
 log_path, argv = sys.argv[1], sys.argv[2:]
 # Append, never truncate: a re-dispatch of the same issue must not erase the
