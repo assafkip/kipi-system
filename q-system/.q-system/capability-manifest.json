@@ -502,6 +502,10 @@
     {
       "path": "q-system/.q-system/tests/test_fable_escalation.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
