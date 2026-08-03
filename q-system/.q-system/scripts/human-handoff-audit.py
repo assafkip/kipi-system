@@ -69,7 +69,18 @@ SKIP_DIR_PREFIXES = (".pr", ".review-")
 SKIP_FILES = ("human-handoff-audit.py",)
 
 
+def is_test_file(rel: str) -> bool:
+    """A fixture that QUOTES a handoff is exercising the detector, not committing
+    the defect. Same exclusion and same reasoning as notify-callsite-audit.py."""
+    base = os.path.basename(rel)
+    return (base.startswith(("test-", "test_")) or base.endswith(("_test.py", "_test.sh"))
+            or "/test/" in rel or rel.startswith("test/")
+            or "/tests/" in rel or rel.startswith("tests/"))
+
+
 def is_skipped(rel: str) -> bool:
+    if is_test_file(rel):
+        return True
     parts = rel.split(os.sep)
     if any(p in SKIP_DIR_PARTS for p in parts):
         return True
@@ -84,6 +95,25 @@ def tracked(repo: str):
     for rel in out.stdout.splitlines():
         if rel.endswith((".sh", ".py")) and not is_skipped(rel):
             yield rel
+
+
+# A line that NEGATES the handoff is the cure, not the disease. Measured on the
+# first full sweep: converge.sh:10 reads "Sana is a robot. She does not need a
+# human to tell her to keep going" and was reported as a defect. A detector that
+# flags its own fix trains the operator to skim it, which is root cause #3 of
+# rca-work-routed-to-the-founder.
+NEGATED = re.compile(
+    r"(?:does\s+not|doesn't|never|no longer|without|must\s+not|cannot|can't|"
+    r"nobody|not)\s+(?:\w+\s+){0,3}(?:needs?|requires?|waits?|asks?)"
+    r"|no\s+human\s+(?:merge\s+)?(?:needed|required)"
+    r"|not\s+a\s+human", re.I)
+
+# Text that QUOTES a handoff in order to record that it was removed. The scar
+# comments written while removing these all say "used to", "the old text read",
+# or sit inside quotes -- documentation of history, not a live handoff.
+HISTORICAL = re.compile(
+    r"used\s+to\b|the\s+old\s+text|previously\s+read|this\s+argued"
+    r"|was\s+the\s+point|why\s+a\s+\d+|REGRESSION|scar\b", re.I)
 
 
 def explained(line: str, window: str) -> bool:
@@ -109,6 +139,8 @@ def findings(repo: str):
         for i, line in enumerate(lines):
             for label, pat in HANDOFF_PATTERNS:
                 if not pat.search(line):
+                    continue
+                if NEGATED.search(line) or HISTORICAL.search(line):
                     continue
                 window = "\n".join(lines[max(0, i - 3):i + 4])
                 if explained(line, window):

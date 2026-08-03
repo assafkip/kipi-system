@@ -2525,7 +2525,7 @@ grep -qi "gh pr merge --auto --squash 832" "$W2/pages.txt" \
   && fail "REGRESSION: the page hands over a command again (ASK-310): $(cat "$W2/pages.txt")"
 grep -qiE "retr(y|ies)|next dispatch|second runner" "$W2/pages.txt" \
   || fail "the page names no continuation, so an unarmed PR still reads as a dead end: $(cat "$W2/pages.txt")"
-ok "a refused arm PAGES the founder, naming the PR and the command that fixes it"
+ok "a refused arm PAGES, naming the PR and what happens next"
 
 grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
   || fail "a failed arm killed the review. The PR must still stand and still be reviewed. Log:
@@ -2819,9 +2819,16 @@ grep -qi "no human merge needed" "$W2/pages.txt" \
       that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
       fine -- the silent stall relocated into the alert channel. It said:
 $(cat "$W2/pages.txt")"
+# ASK-310, same inversion as the worker-side assertion above: converge knowing a
+# PR is unarmed is a retry it owes, not an errand it delegates. The page must
+# still be actionable -- it names the PR and what happens next -- but "actionable"
+# stopped meaning "contains something for a person to type".
 grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
-  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
-      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
+  && fail "REGRESSION (ASK-310): converge hands over a command again instead of arming
+      the PR itself. Nothing blocks a merge, so this page is an unbuilt retry: $(cat "$W2/pages.txt")"
+grep -qiE "retr(y|ies)|next dispatch|arms it|second runner" "$W2/pages.txt" \
+  || fail "converge says PR #903 is unarmed but names no continuation, so it reads as a dead
+      end: $(cat "$W2/pages.txt")"
 ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
 
 S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"
