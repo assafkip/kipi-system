@@ -509,23 +509,67 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
-# A codex answer is usable only if it carries a COMPLETE machine-readable block.
-# A truncated review that green-lights a PR nobody read is the worst outcome
-# available in this script.
+# --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
+# Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
+# The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
+# audhd-executive-function, and fable-discipline skills", firing SessionStart and
+# UserPromptSubmit hooks, and then applying the founder's own "state your planned
+# approach and wait for OK before executing" rule TO ITS OWN REVIEW. It answered
+# with a plan in 12 seconds and reviewed nothing. sp-df1a458f is what that did to
+# the gate downstream: the echoed prompt template became the findings block.
 #
-# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# THE REVIEWER'S WHOLE VALUE IS THAT IT IS NOT US. A reviewer wearing the author's
+# skills, voice rules and hooks is not the independent second opinion this engine
+# exists to buy -- it is the same mental model with a different model id, which is
+# the correlated-blind-spot problem the codex engine was chosen to escape.
+#
+# THE CWD ISOLATION DOES NOT COVER IT. `-C $REVIEW_ROOT` already runs the review in
+# a detached worktree and the round-1 artifact shows the same config loading anyway:
+# it resolves from the USER HOME, not from the project directory, so no amount of
+# cwd isolation reaches it.
+#
+# WHAT THIS FLAG ACTUALLY BUYS, MEASURED, NOT ASSUMED (2026-08-03, same prompt run
+# twice against codex v0.146.0 from a neutral cwd):
+#     without the flag:  12 `hook: ` lines   -- SessionStart/UserPromptSubmit/Stop
+#     with the flag:      0 `hook: ` lines
+# The hooks are the layer that injected the plan-and-await instruction, and they
+# are gone. It is NOT total isolation: the "Skill descriptions were shortened to
+# fit the 2% skills context budget" warning appears in BOTH runs, so codex can
+# still SEE the skill catalogue with the flag set. Claiming this severs skills
+# would be an overclaim; captured separately rather than asserted here.
+#
+# NOT `--disable skills`: that flag does not exist on this codex build and errors
+# with "Unknown feature flag: skills", which would send every review down the Opus
+# fallback and mark the gate DEGRADED fleet-wide.
+#
+# sp-df1a458f's guard is the backstop either way: if a future codex build finds a
+# new road to the same behaviour, review_is_usable refuses the stream instead of
+# letting it fill a required check.
+
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block
+# AND is actually a review. A truncated -- or unstarted -- stream that green-lights
+# a PR nobody read is the worst outcome available in this script.
+#
+# THE PREDICATE LIVES IN THE LIB, next to the reader that defines it
 # (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
 # "complete": both markers, anywhere, in any order. That passes a review whose
 # only complete block is a quoted prior round while the real trailing block is
 # truncated -- unusable stays off, the gate goes green, and the verdict comes from
 # findings the review itself withdrew. One definition, one reader.
-review_has_complete_findings_block() {
-  has_complete_findings_block "$1"
-}
+#
+# IT NOW ASKS review_is_usable, WHICH IS A WIDER QUESTION (sp-df1a458f). Block
+# completeness alone said YES to a stream where the model answered "Reply `OK`
+# and I'll execute exactly that plan" and the only complete block was the
+# PROMPT'S OWN echoed template. Both dispatch sites below call this, and the
+# second one -- the Opus fallback -- is where this exact class hid last time.
+# No local wrapper: both sites call review_is_usable directly. The wrapper existed
+# only to forward to the lib, and a forwarder is one more place the two dispatch
+# paths can be made to disagree about the same file.
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
 # cry-wolf failure: it trains the operator to skim, which costs the real alert
@@ -557,7 +601,7 @@ if [ "$ENGINE" != "codex" ]; then
     exit "$rc"
   fi
 elif run_engine codex "$REVIEW"; then
-  if review_has_complete_findings_block "$REVIEW"; then
+  if review_is_usable "$REVIEW"; then
     note_degraded_transition 0
     echo "$(TS) review written: $REVIEW"
   else
@@ -589,7 +633,7 @@ else
     # block, which derives APPROVE and would post state=success on the REQUIRED
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
-    if review_has_complete_findings_block "$REVIEW"; then
+    if review_is_usable "$REVIEW"; then
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
       REVIEW_UNUSABLE=1

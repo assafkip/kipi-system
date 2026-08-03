@@ -408,9 +408,178 @@ def check_time_stall(cache):
     return None
 
 
-def block(message):
-    """Exit with code 2 to block the tool call."""
-    print(message, file=sys.stderr)
+# --- Cross-model escalation on a stuck block (ASK-311) -----------------------
+# The executable is scripts/fable-escalate.py; the test that pins this branch is
+# tests/test_fable_escalation.py. Every check in this file terminates in exactly
+# two outcomes, block() or warn(), and neither changes the REASONING
+# DISTRIBUTION — so a pattern that deadlocks Opus deadlocks it again on the next
+# attempt. This is the third outcome: the script above hands the situation to a
+# different model in a fresh session, gets a triage back, and staples it to the
+# refusal. Opus keeps the work; Fable never implements.
+#
+# ONLY ON A STUCK BLOCK, NEVER ON A WARN. A warn means "you may be drifting" and
+# most runs recover unaided (the time-stall detector fires on any legitimate
+# read-only audit stretch). A block means the run has already stopped, so the
+# few seconds a triage costs were lost anyway. Which blocks count is declared at
+# the call site, not inferred from the message text: a sensitive-file refusal is
+# policy and an MCP rate limit is environmental-trigger class
+# (self-healing-retry.md rule 5), and no amount of cross-model triage fixes
+# either one.
+FABLE_ESCALATE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "scripts", "fable-escalate.py")
+
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# WHY THE CALL IS SPAWNED AND NEVER AWAITED (decision D1, revised on PR #75
+# round 1 after Codex flagged the synchronous call as a major).
+#
+# This hook's entry in BOTH .claude/settings.json and settings-template.json
+# carries `timeout: 5`, on all three events, fleet-wide. The synchronous design
+# allowed KIPI_FABLE_TIMEOUT (45) + 15 = 60s inside that 5s budget.
+#
+# What blowing a hook timeout actually costs, MEASURED live 2026-08-03 against
+# `claude -p` with a PreToolUse hook pinned at `timeout: 5`
+# (scratchpad repro, two arms so the probe can distinguish):
+#     hook sleeps 0s then exits 2  ->  tool BLOCKED (marker file absent)
+#     hook sleeps 8s then exits 2  ->  tool RAN     (marker file created)
+# The runner kills the slow hook and DISCARDS its exit 2. So waiting on the
+# model does not delay the refusal, it SPENDS it: a stuck session would get
+# neither the block nor the triage, which is worse than before this feature.
+#
+# Raising the timeout was the obvious alternative and it is worse. It is a
+# fleet-wide edit to the hottest hook in the repo, it makes every tool call wait
+# up to the new bound whenever the guard wedges, and any instance that pins its
+# own timeout silently reverts to the broken shape. Spawning is correct at every
+# timeout value, so the number stops being load-bearing.
+#
+# The refusal is therefore printed immediately and unchanged, and the model call
+# runs DETACHED. Its answer is picked up by whichever later hook fire finds it.
+FABLE_PENDING_TEMPLATE = "/tmp/claude-fable-pending-%s.json"
+
+FABLE_BANNER = (
+    "--- FABLE TRIAGE (fresh session, claude-fable-5) ---\n%s\n"
+    "--- end triage. It is a proposal, not a measurement: run its REFUTE "
+    "command before acting on it. ---")
+
+
+def pending_path(actor):
+    return os.environ.get("KIPI_FABLE_PENDING") or (
+        FABLE_PENDING_TEMPLATE % actor)
+
+
+def take_pending_triage(actor):
+    """The triage from an earlier escalation, consumed exactly once.
+
+    The child writes tmp+rename, so a read here sees either the whole file or no
+    file; there is no partial-JSON window. Removing it on read is what makes it
+    deliver once instead of on every later tool call.
+    """
+    path = pending_path(actor)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if isinstance(data, dict) and data.get("triage"):
+        return data["triage"]
+    return None
+
+
+def request_escalation(cache, hook_input, trigger, reason, actor):
+    """Spawn the triage DETACHED and return a one-line note, or None.
+
+    Returns in milliseconds. It never waits on the model, so it cannot blow this
+    hook's budget and cannot cost the refusal (see the block comment above).
+
+    EVERY failure path returns None so the caller emits today's plain refusal.
+    The lesson this is built against is
+    `a-hook-that-fails-closed-on-a-missing-script-blocks-the-fix-too`: a
+    fail-closed hook whose own dependency is missing blocks the repair too. A
+    missing script and an unspawnable child are both a no-op here. The
+    escalation can only ADD to a refusal, never withhold one.
+    """
+    if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
+        return None
+    if not os.path.exists(FABLE_ESCALATE_SCRIPT):
+        return None
+    import subprocess
+
+    count = cache.get("fable_escalations", 0)
+    capped = count >= _int_env("KIPI_FABLE_CAP", 2)
+    args = [
+        sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
+        "--trigger", trigger,
+        "--reason", (reason or "")[:500],
+        "--transcript", hook_input.get("transcript_path", "") or "",
+        "--count", str(count),
+        "--pending-file", pending_path(actor),
+    ]
+    if cache.get("fable_capped_notified"):
+        args.append("--capped-notified")
+    try:
+        # start_new_session detaches the child from this hook's process group,
+        # so the runner killing the hook on timeout does not take it down too.
+        # DEVNULL on all three streams matters: a child holding an inherited
+        # pipe can wedge a later read of it long after the parent is gone.
+        subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+
+    if capped:
+        # Asserts NOTHING about the founder having been reached. The page is
+        # best-effort and its real outcome lands in the ledger; the reliable
+        # route to a human is the agent's own reply, so that is what is asked
+        # for. Scar (PR #75 round 1, Codex major): the previous text claimed
+        # "the founder has been paged" off a notifier exit code, and
+        # slack-notify.sh exits 0 having sent nothing when no webhook resolves.
+        cache["fable_capped_notified"] = True
+        return ("[Fable escalation cap spent for this actor. Cross-model triage "
+                "did not unstick this. Whether a page actually reached the "
+                "founder is recorded per-row in the ledger; the script "
+                "`fable-escalate.py --report` is what answers that, and nothing "
+                "here should be read as a claim that anyone was reached.]")
+
+    cache["fable_escalations"] = count + 1
+    return ("[Cross-model triage requested (trigger: %s). It arrives on a later "
+            "tool call in this session, or read it with `fable-escalate.py "
+            "--report`.]" % trigger)
+
+
+def block(message, cache=None, hook_input=None, trigger=None, actor=None,
+          triage=None):
+    """Exit with code 2 to block the tool call.
+
+    `trigger` is what opts a refusal into cross-model escalation, and it is set
+    per call site rather than sniffed from the text. `triage` is the answer to an
+    EARLIER escalation that happened to land before this call; it rides along on
+    whatever the guard was going to say anyway.
+
+    The refusal itself is never delayed and never conditional: the escalation
+    only appends. Untagged call sites with nothing pending keep the exact
+    behaviour they had before ASK-311, byte for byte, and
+    tests/test_fable_escalation.py asserts that against a literal.
+    """
+    parts = [message]
+    if triage:
+        parts.append(FABLE_BANNER % triage)
+    if trigger and cache is not None and hook_input is not None:
+        note = request_escalation(cache, hook_input, trigger, message, actor)
+        if note:
+            parts.append(note)
+        save_cache(actor, cache)
+    print("\n\n".join(parts), file=sys.stderr)
     sys.exit(2)
 
 
@@ -970,6 +1139,13 @@ def main():
     cache = update_counters(tool_name, tool_input, cache)
     cache = reset_volume_if_committed(cache)
 
+    # A triage from an earlier stuck refusal, if the detached call has landed.
+    # One cheap open() on the common path (the file is absent almost always).
+    # Consumed HERE rather than only on the next refusal: the point is to reach
+    # the agent while it is still deciding, and waiting for another block would
+    # deliver the advice after the decision it was meant to inform.
+    pending_triage = take_pending_triage(actor)
+
     # --- Run checks in priority order ---
 
     # 1. Sensitive file blocking (highest priority)
@@ -977,14 +1153,15 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 2. Exact retry detection
     msg = check_exact_retry(tool_name, tool_input, cache)
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="exact-retry", actor=actor, triage=pending_triage)
 
     # 3. Volume ceiling/warning — EXEMPT a git commit. A commit is the checkpoint the
     # ceiling is asking for; blocking it deadlocks the run (the PostToolUse commit-reset
@@ -1002,6 +1179,8 @@ def main():
     def emit_warning(message):
         if pending_warning and message != pending_warning:
             message = pending_warning + "\n\n" + message
+        if pending_triage and (FABLE_BANNER % pending_triage) != message:
+            message = (FABLE_BANNER % pending_triage) + "\n\n" + message
         warn(message)
 
     if not _is_commit_command(tool_name, tool_input):
@@ -1011,7 +1190,9 @@ def main():
             if level == "block":
                 cache = uncount_blocked_attempt(cache, tool_name, tool_input)
                 save_cache(actor, cache)
-                block(msg)
+                block(msg, cache=cache, hook_input=hook_input,
+                      trigger="volume-ceiling", actor=actor,
+                      triage=pending_triage)
             pending_warning = msg
 
     # 4. Subagent ceiling
@@ -1019,14 +1200,14 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 5. MCP rate limit
     msg = check_mcp_rate(tool_name, cache)
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 6. Read spiral warning
     msg = check_read_spiral(tool_name, cache)
@@ -1051,7 +1232,8 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="edit-spiral", actor=actor, triage=pending_triage)
 
     # 10. Agent no-output warning
     msg = check_agent_no_output(tool_name, cache)
@@ -1065,8 +1247,11 @@ def main():
         save_cache(actor, cache)
         emit_warning(msg)
 
-    # All clear
+    # All clear. A triage that landed since the last call is delivered here —
+    # the ordinary case, because the agent is usually working when it arrives.
     save_cache(actor, cache)
+    if pending_triage:
+        emit_warning(FABLE_BANNER % pending_triage)
     if pending_warning:
         warn(pending_warning)
     sys.exit(0)
