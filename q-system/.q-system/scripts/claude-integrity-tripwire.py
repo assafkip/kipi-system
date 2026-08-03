@@ -216,28 +216,95 @@ def save_baseline(root, entries, last_alarm=""):
     return path
 
 
+LOCK_WAIT_DEFAULT = 10.0
+LOCK_HELD_ENV = "KIPI_TRIPWIRE_LOCK_HELD"
+
+
+def lock_wait_seconds():
+    """How long a VERIFIER waits for an in-flight sanctioned apply. Operational
+    knob, not a test hook: it has to stay under the hook timeout declared in
+    settings.json, and that timeout is per-instance."""
+    raw = os.environ.get("KIPI_TRIPWIRE_LOCK_WAIT", "")
+    if not raw:
+        return LOCK_WAIT_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return LOCK_WAIT_DEFAULT
+
+
+def _flock_wait(fh, timeout):
+    """Poll for the exclusive lock until `timeout` elapses. True if acquired."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
 @contextlib.contextmanager
-def baseline_lock(root):
-    """Serialize read-modify-write cycles on the baseline across processes.
+def baseline_lock(root, timeout=None):
+    """Serialize the baseline against writers AND readers. Yields True while the
+    lock is held, False when `timeout` elapsed with another process holding it.
 
     The lock is a SEPARATE file, never the baseline itself: save_baseline
     os.replace()s a new inode into place, so a lock held on the old inode would
-    protect nothing after the first write. Best-effort by design -- a tree where
-    the lock cannot be created still registers rather than refusing, because a
-    failed sanctioned-apply is reverted one tool call later.
+    protect nothing after the first write.
+
+    SCAR (review finding, PR #85 round 3): round 3 wrapped --register in this and
+    called the race closed. It excluded other registers and nothing else --
+    --enforce took no lock at all. But the applier's write and its register are
+    two separate steps, so a PostToolUse enforcement landing between them saw the
+    write as unsanctioned drift and reverted it while the applier printed OK: the
+    sanctioned path losing its own change, silently. Measured 3/3 losses before
+    this, 0/3 after (probe_round4_findings phase 3). Register-against-register
+    was never the race. Register-against-ENFORCE was.
+
+    Two callers, two contracts:
+      writers (--baseline, --register)  timeout=None -> block until acquired.
+      verifiers (--check, --enforce)    timeout=N    -> bounded wait, then report
+                                        WITHOUT acting. Acting unserialized is
+                                        what ate the applier's write; waiting
+                                        forever would hand any process a silent
+                                        off-switch for enforcement.
+
+    LOCK_HELD_ENV is the parent-holds-it handoff: the applier takes this lock
+    around its whole write+register sequence, and `--register` runs as its CHILD,
+    which would otherwise block forever on a lock its own parent owns. It is NOT
+    a security control. Setting it skips serialization, never detection, and the
+    worst it buys an attacker is enforcement running DURING a legitimate apply,
+    which is noisy rather than quiet.
     """
+    if os.environ.get(LOCK_HELD_ENV) == "1":
+        yield True
+        return
     path = os.path.join(root, BASELINE_REL) + ".lock"
     fh = None
+    held = True
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fh = open(path, "a+")
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        if timeout is None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        elif not _flock_wait(fh, timeout):
+            held = False
+            fh.close()
+            fh = None
     except OSError:
+        # The lock file cannot be created AT ALL (read-only tree, no perms).
+        # That is not contention, so proceed unlocked rather than refuse: a
+        # sanctioned apply that cannot register is reverted one tool call later,
+        # and a verifier that refuses to look is worse than one that looks alone.
         if fh is not None:
             fh.close()
         fh = None
+        held = True
     try:
-        yield
+        yield held
     finally:
         if fh is not None:
             try:
@@ -329,32 +396,63 @@ def attributable(root, rel):
     return bool(head) and head == git_blob_id(root, rel, write=False)
 
 
-def head_is_pushed(root):
-    """True when HEAD is contained in some remote-tracking ref.
+def _git_line(root, argv):
+    """One trimmed line of git stdout, or "" on any failure."""
+    try:
+        out = subprocess.run(["git", "-C", root] + argv,
+                             capture_output=True, text=True, timeout=20)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def remote_default_refs(root):
+    """The remote-tracking refs that stand for REVIEWED content: each remote's
+    DEFAULT branch. Prefers the recorded `<remote>/HEAD`, falls back to main then
+    master, and returns nothing when a remote publishes neither -- an unknown
+    default is not a reviewed one."""
+    refs = []
+    for remote in _git_line(root, ["remote"]).split():
+        head = _git_line(root, ["symbolic-ref", "--quiet",
+                                "refs/remotes/%s/HEAD" % remote])
+        if head:
+            refs.append(head)
+            continue
+        for name in ("main", "master"):
+            ref = "refs/remotes/%s/%s" % (remote, name)
+            if _git_line(root, ["rev-parse", "--verify", "--quiet", ref]):
+                refs.append(ref)
+                break
+    return refs
+
+
+def head_is_reviewed(root):
+    """True when HEAD is contained in some remote's DEFAULT branch.
 
     This is the discriminator round 3 lacked. `attributable()` alone cannot tell
     `git pull` from an agent that wrote a file and committed it -- both leave
     content equal to the HEAD blob -- which is why round 3 refused it in
     --enforce entirely. But that refusal was decided against a surface that did
     not exist yet: this PR wires --enforce PostToolUse on Bash, where the actor
-    of a `git pull` is git delivering REVIEWED REMOTE content. Measured by the
-    reviewer, single tree: a pull silently un-applied itself, left the worktree
-    disagreeing with HEAD three ways, and Slack-paged SECURITY for a reviewed
-    commit. On 23 machines, at 3am.
+    of a `git pull` is git delivering REVIEWED REMOTE content.
 
-    Being on a commit that already exists on a remote is the reviewed-provenance
-    signal `attributable()` is missing. An agent that writes then commits sits on
-    an UNPUSHED HEAD, so it gets no absorption and is still reverted -- the exact
-    attack round 3 protected, still closed. One git call per run, not per file.
+    SCAR (review finding, round 3): the first version of this asked "is HEAD on
+    ANY remote-tracking ref", and called that reviewed. Every agent in this fleet
+    pushes its own branch -- this PR sits on `sana/ask-291` -- so an agent could
+    write .claude/, commit, `git push origin its-own-branch`, and the next
+    --enforce ABSORBED the tamper into the baseline and exited 0. Pushing is
+    self-service; the reviewed artifact is the DEFAULT branch, which is reached
+    through a PR. Narrowing to it only ever downgrades a case from "absorbed
+    silently" to "held and paged", never the reverse, so the round-3 invariant
+    (--enforce never leaves the worktree inconsistent with HEAD) is untouched.
+
+    One git call per remote per run, not per file.
     """
-    try:
-        out = subprocess.run(
-            ["git", "-C", root, "for-each-ref", "--contains", "HEAD",
-             "--format=%(refname)", "refs/remotes/"],
-            capture_output=True, text=True, timeout=20)
-        return out.returncode == 0 and bool(out.stdout.strip())
-    except Exception:
+    refs = remote_default_refs(root)
+    if not refs:
         return False  # cannot prove reviewed provenance -> do not sanction
+    return bool(_git_line(root, ["for-each-ref", "--contains", "HEAD",
+                                 "--format=%(refname)"] + refs))
 
 
 def matches_head(root, rel):
@@ -521,8 +619,9 @@ def main(argv=None):
     root = os.path.abspath(args.root)
 
     if args.baseline:
-        entries = measure(root, watch_set(root))
-        path = save_baseline(root, entries)
+        with baseline_lock(root):
+            entries = measure(root, watch_set(root))
+            path = save_baseline(root, entries)
         if not args.quiet:
             print("baselined %d file(s) -> %s" % (len(entries), os.path.relpath(path, root)))
         return 0
@@ -561,6 +660,23 @@ def main(argv=None):
             print("registered %d sanctioned path(s)" % len(args.register))
         return 0
 
+    # Verification runs under the SAME lock as registration (review finding,
+    # round 3): otherwise an enforcement landing between the applier's write and
+    # its register reverts a sanctioned change the applier then reports as OK.
+    # Bounded, because a lock nobody releases must not become a silent
+    # off-switch -- a timeout reports and exits non-zero instead of acting.
+    with baseline_lock(root, timeout=lock_wait_seconds()) as held:
+        if not held:
+            print("TRIPWIRE-DEFERRED: the .claude/ baseline lock is held "
+                  "(sanctioned apply in flight?); did not verify or act this pass",
+                  file=sys.stderr)
+            return 1
+        return verify(root, args)
+
+
+def verify(root, args):
+    """Diff the tree against its sanctioned baseline, then report (--check) or
+    act (--enforce). Always called with the baseline lock held."""
     baseline = load_baseline(root)
     if baseline is None:
         # FIRST RUN IN THIS INSTANCE -> arm silently, do not alarm.
@@ -599,7 +715,7 @@ def main(argv=None):
     # agent that writes then commits is precisely the attack this would wave
     # through. (Review finding, round 3.)
     absorbed = []
-    sanction_git = (not args.enforce) or head_is_pushed(root)
+    sanction_git = (not args.enforce) or head_is_reviewed(root)
     if sanction_git:
         for rel in list(modified) + list(added):
             if attributable(root, rel):

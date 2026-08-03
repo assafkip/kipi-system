@@ -75,6 +75,8 @@ moving it between two headings of the same file is invisible here. That is the
 deliberate trade: a ratchet that judged prose would refuse the honest
 corrections this op exists to enable.
 """
+import contextlib
+import importlib.util
 import json
 import os
 import re
@@ -1089,43 +1091,99 @@ def main(argv):
     #             observed half-written (replace is atomic within a filesystem).
     #   per-run:  ANY exception restores every target that has a backup, not just
     #             the ones already written, since the in-flight file may be torn.
-    try:
-        for rel in sorted(staged):
-            full = os.path.join(root, rel)
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            tmp_path = full + ".claude-changes.tmp"
-            with open(tmp_path, "w") as fh:
-                fh.write(staged[rel])
-            os.replace(tmp_path, full)
-            written.append(rel)
-    except (OSError, IOError) as exc:
-        for rel in sorted(staged):
-            leftover = os.path.join(root, rel) + ".claude-changes.tmp"
-            if os.path.isfile(leftover):
-                os.remove(leftover)
-        restore(root, backup_dir, sorted(staged))
-        log.append("write failed after %d of %d file(s): %s" % (len(written), len(staged), exc))
-        log.append("AUTO-REVERTED from %s" % backup_dir)
-        return emit("REVERTED %s: write failed on %s, %d file(s) restored, no partial apply"
-                    % (slug, _snip(str(exc)), len(staged)), log, root, 3)
-    log.append("wrote: %s" % ", ".join(written))
+    # THE WHOLE WRITE->REGISTER SEQUENCE HOLDS THE TRIPWIRE'S BASELINE LOCK
+    # (review finding, PR #85 round 3). Writing and registering are two steps, so
+    # a PostToolUse `--enforce` firing between them saw this applier's write as
+    # unsanctioned drift and reverted it -- while this function went on to print
+    # OK. The sanctioned write path silently losing its own change is the same
+    # outage class as the round-1 scar below, one race narrower. Measured 3/3
+    # losses before this lock, 0/3 after (probe_round4_findings phase 3).
+    with tripwire_lock(root, log):
+        try:
+            for rel in sorted(staged):
+                full = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                tmp_path = full + ".claude-changes.tmp"
+                with open(tmp_path, "w") as fh:
+                    fh.write(staged[rel])
+                os.replace(tmp_path, full)
+                written.append(rel)
+        except (OSError, IOError) as exc:
+            for rel in sorted(staged):
+                leftover = os.path.join(root, rel) + ".claude-changes.tmp"
+                if os.path.isfile(leftover):
+                    os.remove(leftover)
+            restore(root, backup_dir, sorted(staged))
+            log.append("write failed after %d of %d file(s): %s" % (len(written), len(staged), exc))
+            log.append("AUTO-REVERTED from %s" % backup_dir)
+            return emit("REVERTED %s: write failed on %s, %d file(s) restored, no partial apply"
+                        % (slug, _snip(str(exc)), len(staged)), log, root, 3)
+        log.append("wrote: %s" % ", ".join(written))
 
-    # ---- L3 gates AFTER, auto-revert on any regression.
-    gates_after = run_gates(root)
-    log.append("gates after: %s" % _fmt_gates(gates_after))
-    bad = gate_regression(gates_before, gates_after)
-    if bad:
-        restore(root, backup_dir, written)
-        log.append("AUTO-REVERTED from %s" % backup_dir)
-        return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
-                    % (slug, bad, len(written)), log, root, 3)
+        # ---- L3 gates AFTER, auto-revert on any regression.
+        gates_after = run_gates(root)
+        log.append("gates after: %s" % _fmt_gates(gates_after))
+        bad = gate_regression(gates_before, gates_after)
+        if bad:
+            restore(root, backup_dir, written)
+            log.append("AUTO-REVERTED from %s" % backup_dir)
+            return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
+                        % (slug, bad, len(written)), log, root, 3)
 
-    registered = register_with_tripwire(root, written, log)
+        registered = register_with_tripwire(root, written, log)
 
     return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held%s"
                 % (slug, len(prop["edits"]), len(written),
                    len(before_census["hooks"]), len(after_census["hooks"]), registered),
                 log, root, 0)
+
+
+def _tripwire_module(root):
+    """Import the tripwire as a module so the lock has exactly ONE definition.
+    A second copy of the flock dance here would drift from the original, and two
+    locks that disagree about their file name are no lock at all."""
+    path = os.path.join(root, "q-system", ".q-system", "scripts",
+                        "claude-integrity-tripwire.py")
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("claude_integrity_tripwire", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod if hasattr(mod, "baseline_lock") else None
+    except Exception:
+        return None
+
+
+@contextlib.contextmanager
+def tripwire_lock(root, log):
+    """Hold the tripwire's baseline lock across this apply's write AND register.
+
+    Without it the two steps are separately serialized and the gap between them
+    is the race: a PostToolUse `--enforce` firing there reverts the write this
+    applier is about to sanction, and the applier still reports OK.
+
+    The child `--register` process cannot inherit a flock (it is per open file
+    description), so it would block forever on a lock its own parent owns. The
+    handoff is therefore explicit: set the tripwire's own LOCK_HELD_ENV for the
+    duration, restore the prior value after. A tree with no tripwire adopted
+    proceeds unserialized rather than refusing to apply.
+    """
+    mod = _tripwire_module(root)
+    if mod is None:
+        log.append("tripwire lock unavailable; apply proceeds unserialized")
+        yield
+        return
+    prior = os.environ.get(mod.LOCK_HELD_ENV)
+    with mod.baseline_lock(root):
+        os.environ[mod.LOCK_HELD_ENV] = "1"
+        try:
+            yield
+        finally:
+            if prior is None:
+                os.environ.pop(mod.LOCK_HELD_ENV, None)
+            else:
+                os.environ[mod.LOCK_HELD_ENV] = prior
 
 
 def register_with_tripwire(root, written, log):
