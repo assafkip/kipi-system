@@ -83,6 +83,43 @@ SKIP_DIRS = (".pr", ".review-", "node_modules", ".prd-os/")
 SKIP_FILES = ("slack-notify.sh", "notify-callsite-audit.py")
 
 
+# A wrapper that forwards "$@" to the notifier cannot declare a --kind of its
+# own -- its callers do. The audit reads a 4-line window and cannot follow that
+# transitively (its HONEST BOUNDARY says so). Rather than widen the analysis or
+# leave a permanent false positive, the wrapper DECLARES itself with this marker
+# on the same line, which is greppable and reviewable. Same convention as
+# `# spillover-skip` and `<!-- voice-lint-skip -->`.
+#
+# The marker is NOT a blanket mute: it asserts "the kind arrives from my caller",
+# and every caller is then subject to the audit normally. kipi-dispatch.sh's
+# page_ok carries it, and all five of its transitive call sites were verified to
+# pass --kind on 2026-08-02 (ASK-310) -- one of them, stale-checkout, was bare
+# until that same change.
+FORWARD_MARKER = "notify-kind-forwarded"
+
+
+def is_test_file(rel: str) -> bool:
+    """A test that drives a BARE call is exercising the fail-open path on purpose,
+    which is the behaviour the runtime gate is specified to have. Counting those
+    as violations makes this audit permanently red.
+
+    WHY THAT MATTERS MORE THAN IT SOUNDS (ASK-310). This gate was wired into
+    `kipi check` on 2026-08-02 and, unfiltered, reported 6 call sites of which 5
+    were its own and neighbouring test fixtures -- e.g.
+    test-notify-decision-gate.sh:177 `bash "$NOTIFY" "a bare page with no kind at
+    all"`, which exists precisely to prove the bare path still warns. A gate that
+    can never go green teaches the operator to skim RED, and "a fleet-wide RED
+    with no severity ranking is a silence" is root cause #3 of the RCA this gate
+    was built to close. Shipping a permanently-red gate would have reproduced the
+    exact defect being fixed.
+    """
+    base = os.path.basename(rel)
+    return (base.startswith(("test-", "test_"))
+            or base.endswith(("_test.py", "_test.sh"))
+            or "/test/" in rel or rel.startswith("test/")
+            or "/tests/" in rel or rel.startswith("tests/"))
+
+
 def tracked_files(repo):
     """git ls-files, so the walk matches what actually ships."""
     out = subprocess.run(
@@ -95,6 +132,8 @@ def tracked_files(repo):
         if any(rel.startswith(d) or ("/" + d) in rel for d in SKIP_DIRS):
             continue
         if os.path.basename(rel) in SKIP_FILES:
+            continue
+        if is_test_file(rel):
             continue
         yield rel
 
@@ -113,6 +152,8 @@ def offending_sites(repo):
             if not INVOKE.search(line) or NOT_A_CALL.search(line):
                 continue
             window = "\n".join(lines[i:i + WINDOW])
+            if FORWARD_MARKER in window:
+                continue
             if not KIND.search(window):
                 found.append((rel, i + 1, line.strip()[:110]))
     return found
