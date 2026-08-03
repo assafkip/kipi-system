@@ -30,6 +30,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-claim-page-once-routing.sh",
       "runner": "bash"
     },
