@@ -377,6 +377,103 @@ a review that never happened — the mirror image of the defect it fixes, and th
 sharpest possible demonstration that a posted status is not evidence of a
 review. That is stated here rather than worked around.
 
+## Investigating the decline: a named suspect, refuted by measurement
+
+A hypothesis was raised that the decline is the 2026-06-30 shape — an unguarded
+`UserPromptSubmit` hook firing inside codex's session — with
+`voice-dna-loader.py` (an injector, no `CLAUDECODE` guard) as the concrete
+suspect, wired in `.claude/settings.json`. Prior art: `sp-28bf75a4`,
+`sp-a2aaaf41`, `sp-40d892d9`.
+
+**The suspect is refuted. The decline cause remains unidentified.**
+
+### What was measured
+
+**Codex does not read `.claude/settings.json` at all.** It loads three separate
+hook sources, each trust-keyed by ABSOLUTE PATH in `~/.codex/config.toml`:
+
+| source | UserPromptSubmit hooks |
+|---|---|
+| `~/.codex/hooks.json` (global) | `v2-channel-write.sh`, `v2-channel-inject.sh` |
+| `<repo>/.codex/hooks.json` (tracked) | `token-guard.py`, `voice-dna-loader.py` |
+| plugin `hooks.json` (kipi-core etc.) | none (PostToolUse only) |
+
+Two corrections fall out, and one of them is mine:
+
+- The hypothesis named the wrong file. `.claude/settings.json` is never read by
+  codex.
+- My first answer — "voice-dna-loader never runs under codex" — was also wrong.
+  It IS wired for codex, in the repo's own tracked `.codex/hooks.json`. I had
+  checked one config and generalised, which is the class this document is about.
+
+**But it does not fire on a review, for two independent reasons, each measured:**
+
+1. *It emits nothing on this prompt.* Fed the exact 123-line review prompt:
+   ```
+   voice-dna-loader.py  -> rc 0, 0 bytes   (looks_like_writing_request False)
+   token-guard.py       -> rc 0, 0 bytes
+   ```
+2. *It is not even loaded in a review.* Reviews run in
+   `~/.config/kipi/review-trees/pr-NN`, and the repo's `.codex/hooks.json` is
+   trusted against the REPO's absolute path, so it is not active there. Every
+   review output carries exactly 4 `hook: UserPromptSubmit` lines = the two
+   GLOBAL hooks, and `v2-channel-inject.sh` opens with a cwd filter for
+   `~/projects/ktlyst-hub/product*` — paths retired 2026-07-07 — so it exits 0
+   immediately.
+
+**So no kipi hook injects anything into any codex review.** The associated worry
+— that founder-voice instructions have been polluting every codex review ever
+run in this repo, including PR #75's — is cleared by measurement, not by
+argument.
+
+### Two more candidates, both refuted
+
+- **The `AGENTS.md` "wait for OK" rule.** codex NAMED this rule as its reason
+  ("Per the repo's multi-file review rule"), so it was the strongest candidate.
+  Removed it from `AGENTS.md` and `CLAUDE.md` in an isolated worktree and re-ran
+  the identical prompt: **it declined anyway.** A stated reason is not a cause.
+- **`CLAUDE_PROJECT_DIR` unset under codex.** In a bash simulation, both repo
+  hooks resolve to `/q-system/...` and exit **rc 2** — the BLOCK code — which
+  would be exactly `sp-28bf75a4`. But running codex from inside the repo for
+  real returns rc 0 and answers normally, with no hook error. **The simulation
+  was not the running system**, so this is not claimed as a live defect, and
+  `sp-28bf75a4`'s scenario does not reproduce today.
+
+### The discriminator I intended did not work, and that is reported, not hidden
+
+The plan was hooks-on versus hooks-off. Emptying `UserPromptSubmit` in the
+worktree's `.codex/hooks.json` changed nothing, because that file is untrusted
+at a `/tmp` path and was never loaded; **all four runs show the same 4 hook
+lines.** So there is no clean on/off comparison here and the one run that looked
+different proves nothing — it was also read off a file that was still being
+written. Both errors are recorded rather than the conclusion kept.
+
+**The discriminator stays open. No second guess is substituted.** `sp-9e6c8196`
+carries it.
+
+## Was `sp-a2aaaf41` falsely resolved?
+
+Checked, because a hand-cleared gate would be another instance of the class.
+**It was not hand-cleared.** Its ledger entry carries a `void_reason` recording
+an empirical test — "empirically tested all 13 PostToolUse hooks on a real
+code-file edit ... NONE block; they self-scope by file type" — which is the
+sanctioned second exit in `no-orphan-findings.md` ("if it turns out not to be a
+real item ... the reason is recorded; the item is not deleted").
+
+**Its enumeration was incomplete, though, and that part is a real instance.** It
+scoped to 13 PostToolUse hooks plus `token-guard`, and never named
+`voice-dna-loader` — the OTHER `UserPromptSubmit` hook, unguarded and an
+injector — nor the `.codex/hooks.json` load path through which codex actually
+gets these hooks. A claim of the form "token-guard was the only hook that
+blocked a foreign runtime" rests on an enumeration that did not cover the event
+it generalises over.
+
+The conclusion nevertheless holds, for a reason the void_reason did not give:
+`voice-dna-loader` is intent-gated and silent on any non-writing prompt
+(measured above). So this is an enumeration gap whose effect is not
+load-bearing — recorded here as an instance of the class, not as a false
+resolution to reverse.
+
 ## What is deliberately left open
 
 - **The producer is still local-only.** A launchd job on one Mac is the sole
