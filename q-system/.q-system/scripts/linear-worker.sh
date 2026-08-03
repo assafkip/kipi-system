@@ -1534,9 +1534,14 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # nobody knew; validating on the way in means the park either carries a
     # probe the expiry script can actually run, or honestly records `none`.
     CAP_PROBE="none"
+    # An `if` rather than `[ -f ... ] || continue` ON PURPOSE. test-terminal-states.sh
+    # enumerates EVERY `continue` inside the issue loop as an exit site and attributes
+    # it to the nearest marker above -- which here is REFUSE_LABEL="needs-scope". A
+    # `continue` that only skips one probe source is not an exit from the run, and
+    # reconciling the registry to 3 sites would record a non-exit as a terminal state.
     for probe_src in "$TREE/.sana-blocked-capability.probe" "$TREE/.codex-blocked-capability.probe"; do
-      [ -f "$probe_src" ] || continue
-      CAP_PROBE="$(head -c 300 "$probe_src" 2>/dev/null | python3 -c '
+      if [ -f "$probe_src" ]; then
+        CAP_PROBE="$(head -c 300 "$probe_src" 2>/dev/null | python3 -c '
 import sys, pathlib
 sys.path.insert(0, sys.argv[1])
 import capability_block_expiry as cbe
@@ -1549,8 +1554,9 @@ kind, sep, value = spec.partition(":")
 ok = sep and kind.strip().lower() in cbe.PROBES and value.strip() and "-->" not in spec
 print(spec if ok else "none")
 ' "$SCRIPT_DIR" 2>/dev/null)"
-      [ -n "$CAP_PROBE" ] || CAP_PROBE="none"
-      [ "$CAP_PROBE" != "none" ] && break
+        [ -n "$CAP_PROBE" ] || CAP_PROBE="none"
+        [ "$CAP_PROBE" != "none" ] && break
+      fi
     done
     rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability" \
           "$TREE/.sana-blocked-capability.probe" "$TREE/.codex-blocked-capability.probe"
