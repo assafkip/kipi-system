@@ -330,9 +330,16 @@ def _docstring_line(text: str) -> str:
 # reference; markdown is handled separately below because prose is not wiring.
 SURFACE_CODE_EXT = {
     ".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".toml", ".json",
-    ".cfg", ".ini", ".mk", ".txt",
+    ".cfg", ".ini", ".mk",
 }
-SURFACE_DOC_EXT = {".md"}
+# .txt IS PROSE, NOT CODE (codex round 5, major). It sat in SURFACE_CODE_EXT,
+# where every mention counts with no invocation filter at all, so any note,
+# report or log ANYWHERE outside q-system/output/ silently marked a named engine
+# LIVE. Excluding the generated tree fixed one instance of this and left the
+# class open: the same defect shape as the B1 prose leak, on a different
+# extension. A .txt is a runbook far less often than it is somebody's notes, so
+# it belongs with .md where a line must actually invoke something.
+SURFACE_DOC_EXT = {".md", ".txt"}
 # Extensionless wiring surfaces (the kipi CLI, Makefiles, lefthook's shell blocks).
 SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "justfile"}
 

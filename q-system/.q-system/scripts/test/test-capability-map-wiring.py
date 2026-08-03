@@ -268,6 +268,26 @@ class TestMutantKills(unittest.TestCase):
             self.assertFalse(self.mod.is_excluded_tree(root / rel, root),
                              f"{rel} is real wiring and must stay on the surface")
 
+    def test_txt_notes_outside_generated_tree_are_prose_not_wiring(self):
+        """A .txt anywhere must be invocation-filtered, not counted wholesale.
+
+        .txt lived in SURFACE_CODE_EXT, so any note or report naming a script
+        wired it. Excluding q-system/output/ closed one instance and left the
+        class open -- the B1 prose leak on a different extension.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "lib").mkdir(parents=True)
+            (root / "notes").mkdir(parents=True)
+            (root / "lib/engine_txt_prose.py").write_text(
+                engine_body("engine_txt_prose"))
+            (root / "notes/handoff.txt").write_text(
+                "We never finished engine_txt_prose.py and nobody runs it.\n")
+            caps = {c["entry"]: c for c in self.mod.collect_engines(root)}
+            self.assertEqual(
+                "UNWIRED", caps["lib/engine_txt_prose.py"]["status"],
+                "a note saying nobody runs a script must not mark it running")
+
     def test_scratch_tree_test_file_does_not_grant_has_test(self):
         """The has_test walk is a FOURTH consumer of is_excluded_tree.
 
