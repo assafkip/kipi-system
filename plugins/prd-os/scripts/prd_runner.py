@@ -41,6 +41,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1074,6 +1075,130 @@ def _spillover_open(cfg: Config) -> list:
     return [r for r in _read_spillover(cfg).values() if r.get("status") == "open"]
 
 
+# --- the anchor bar (PRD prd-finding-quality-bar-2026-08-03) ----------------
+# why (measured 2026-08-03): `spillover add` accepted any string. The
+# kipi-system ledger reached 476 open findings at ~50/day, 82 of which named no
+# file, no test and no command. An unverifiable finding cannot be acted on by
+# anyone, including its author, so it is indistinguishable from noise. The
+# June 2026 spillover PRD made capture frictionless and left resolution costly;
+# this is the missing half.
+_ANCHOR_PATH_RE = re.compile(r"[\w./-]+\.(?:py|sh|js|ts|json|jsonl|md|yml|yaml|toml)\b")
+# A bare test SYMBOL (no extension) is greppable, so it anchors without
+# resolving as a path. A token WITH an extension is a path claim and must
+# resolve, or `test_anything.py` becomes a universal bypass.
+_ANCHOR_TEST_RE = re.compile(r"\btest[_-][A-Za-z0-9_-]{3,}\b")
+# A command plus what it actually printed. "ran X and got Y" is the shape the
+# verification-loops rule already demands of a claim.
+_ANCHOR_CMD_RE = re.compile(
+    r"`[^`\n]{3,}`|\bran\b[^.\n]{0,80}\b(?:and )?got\b|\$ \S+|\bexit(?:s|ed)? (?:code )?[1-9]")
+# A module, function or dotted symbol: greppable, so it anchors like a filename.
+_ANCHOR_SYMBOL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{2,}(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*(?:\(\)|\.[a-z_]+)")
+# A directory path (no extension), e.g. "plugins/memory-lifecycle".
+_ANCHOR_DIR_RE = re.compile(r"\b((?:[\w.-]+/){1,}[\w.-]+)\b")
+
+
+def _tracked_stems(root: Path) -> set:
+    """Basenames AND extension-less stems of tracked files.
+
+    A finding naming the MODULE `memory_reflect` anchors just as well as one
+    naming `memory_reflect.py`; both are one grep away from the code.
+    """
+    cached = _tracked_stems._cache.get(str(root))
+    if cached is not None:
+        return cached
+    stems = set()
+    for name in _tracked_basenames(root):
+        stems.add(name)
+        stems.add(os.path.splitext(name)[0])
+    _tracked_stems._cache[str(root)] = stems
+    return stems
+
+
+_tracked_stems._cache = {}
+
+
+def _tracked_basenames(root: Path) -> set:
+    """Basenames of every git-tracked file, cached per root.
+
+    why (caught on the first live run 2026-08-03): findings overwhelmingly name
+    a BARE filename ("capability-gate.py reports a timeout as RED"), not a path
+    from the repo root. Checking `root / token` alone returned None for those,
+    which would have refused most legitimate captures and made the bar useless
+    at exactly the moment it started blocking real work. `git ls-files` is one
+    call and covers the tracked tree; an untracked file still resolves through
+    the direct-path branch below.
+    """
+    cached = _tracked_basenames._cache.get(str(root))
+    if cached is not None:
+        return cached
+    names = set()
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=str(root), capture_output=True,
+                             text=True, timeout=30)
+        if out.returncode == 0:
+            names = {os.path.basename(l) for l in out.stdout.splitlines() if l.strip()}
+    except (OSError, subprocess.TimeoutExpired):
+        names = set()
+    _tracked_basenames._cache[str(root)] = names
+    return names
+
+
+_tracked_basenames._cache = {}
+
+
+def _anchor_for(desc: str, repo_root) -> str | None:
+    """Which verifiable anchor this description carries, or None.
+
+    Order matters: a resolving path is the strongest claim, so it wins. The
+    filesystem check is the whole point -- a regex that only matched the SHAPE
+    of a filename would be a spell-checker, not a gate (negative self-test:
+    test_named_file_that_does_not_exist_is_refused).
+    """
+    text = desc or ""
+    root = Path(repo_root)
+    tokens = _ANCHOR_PATH_RE.findall(text)
+    for token in tokens:
+        cand = Path(token)
+        if cand.is_absolute():
+            if cand.exists():
+                return "file"
+            continue
+        # the token as-is, then progressively from the right, so
+        # "q-system/.q-system/scripts/x.py" resolves from a root holding
+        # only "scripts/x.py"
+        parts = cand.parts
+        for i in range(len(parts)):
+            if (root / Path(*parts[i:])).exists():
+                return "file"
+    # bare-filename fallback, against the tracked tree
+    if tokens:
+        tracked = _tracked_basenames(root)
+        for token in tokens:
+            if os.path.basename(token) in tracked:
+                return "file"
+    # why (measured 2026-08-03, before any void): the extension-only rule failed
+    # 107 of 476 rows, and reading them showed most were REAL findings naming a
+    # directory ("plugins/memory-lifecycle is a symlink"), a module
+    # ("memory_reflect.load_sidecar raises AttributeError"), or a function
+    # ("bootstrap_notion main() rewrites config.json"). Voiding those would have
+    # destroyed exactly the signal the ledger exists to keep -- the Skeptic Q1
+    # in this PRD. A directory, a module and a function are all greppable, so
+    # they anchor as well as a filename does.
+    stems = _tracked_stems(root)
+    for token in _ANCHOR_SYMBOL_RE.findall(text):
+        head = token.split(".")[0].split("(")[0]
+        if head in stems:
+            return "file"
+    for token in _ANCHOR_DIR_RE.findall(text):
+        if (root / token).exists():
+            return "file"
+    if _ANCHOR_TEST_RE.search(text):
+        return "test"
+    if _ANCHOR_CMD_RE.search(text):
+        return "command"
+    return None
+
+
 def _spillover_append(cfg: Config, record: dict) -> None:
     path = _spillover_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1231,9 +1356,23 @@ def cmd_spillover(cfg: Config, args) -> int:
     sub = args.spillover_cmd
     if sub == "add":
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
+        anchor = _anchor_for(args.desc, cfg.repo_root)
+        if anchor is None and not getattr(args, "force", False):
+            sys.stderr.write(
+                "refused: this capture carries no verifiable ANCHOR.\n"
+                "A finding nobody can check is indistinguishable from noise, and\n"
+                "82 of the 476 open items on 2026-08-03 were exactly this shape.\n\n"
+                "Supply at least one of:\n"
+                "  - a FILE path that resolves (e.g. scripts/foo.py:212)\n"
+                "  - a COMMAND and what it printed (e.g. ran `pytest -q` and got: 3 failed)\n"
+                "  - a named TEST (e.g. test_retry_cap_is_honored)\n\n"
+                "If it genuinely has none, re-run with --force. That records\n"
+                "anchor:none on the row so forced captures stay countable.\n")
+            return 2
         _spillover_append(cfg, {
             "id": sid, "source": args.source, "description": args.desc,
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
+            "anchor": anchor or "none",
         })
         print(json.dumps({"id": sid, "status": "open"}))
         return 0
@@ -1422,6 +1561,12 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--desc", required=True, help="what the out-of-scope finding is")
     sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
     sp_add.add_argument("--severity", default="minor")
+    # Countable hatch, not a silent skip. Same shape as linear-issue-ref-check.py's
+    # `[no-issue: reason]`, which appends to linear-bypass.jsonl: a bar with no
+    # hatch gets deleted the first time it blocks real work, and a hatch nobody
+    # can count is the same as no bar.
+    sp_add.add_argument("--force", action="store_true",
+                        help="record despite no verifiable anchor (writes anchor:none)")
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
