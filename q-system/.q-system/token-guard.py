@@ -389,8 +389,103 @@ def check_time_stall(cache):
     return None
 
 
-def block(message):
-    """Exit with code 2 to block the tool call."""
+# --- Cross-model escalation on a stuck block (ASK-311) -----------------------
+# The executable is scripts/fable-escalate.py; the test that pins this branch is
+# tests/test_fable_escalation.py. Every check in this file terminates in exactly
+# two outcomes, block() or warn(), and neither changes the REASONING
+# DISTRIBUTION — so a pattern that deadlocks Opus deadlocks it again on the next
+# attempt. This is the third outcome: the script above hands the situation to a
+# different model in a fresh session, gets a triage back, and staples it to the
+# refusal. Opus keeps the work; Fable never implements.
+#
+# ONLY ON A STUCK BLOCK, NEVER ON A WARN. A warn means "you may be drifting" and
+# most runs recover unaided (the time-stall detector fires on any legitimate
+# read-only audit stretch). A block means the run has already stopped, so the
+# few seconds a triage costs were lost anyway. Which blocks count is declared at
+# the call site, not inferred from the message text: a sensitive-file refusal is
+# policy and an MCP rate limit is environmental-trigger class
+# (self-healing-retry.md rule 5), and no amount of cross-model triage fixes
+# either one.
+FABLE_ESCALATE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "scripts", "fable-escalate.py")
+
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def maybe_escalate(cache, hook_input, trigger, reason):
+    """Fable's triage for this stuck block, or None. Never raises, never hangs.
+
+    EVERY failure path returns None so the caller emits today's plain block. The
+    lesson this is built against is
+    `a-hook-that-fails-closed-on-a-missing-script-blocks-the-fix-too`: a
+    fail-closed hook whose own dependency is missing blocks the repair too. So a
+    missing script, a dead model, a timeout and a malformed reply are all a
+    no-op here — the escalation can only ADD to a block, never withhold one.
+
+    The outer timeout is deliberately larger than the inner one in
+    fable-escalate.py. Two nested caps, because the inner one protects against a
+    slow model and the outer one protects against fable-escalate.py itself
+    wedging; a single cap would leave the hook hanging on the case it cannot see.
+    """
+    if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
+        return None
+    if not os.path.exists(FABLE_ESCALATE_SCRIPT):
+        return None
+    import subprocess
+    args = [
+        sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
+        "--trigger", trigger,
+        "--reason", (reason or "")[:500],
+        "--transcript", hook_input.get("transcript_path", "") or "",
+        "--count", str(cache.get("fable_escalations", 0)),
+    ]
+    if cache.get("fable_capped_notified"):
+        args.append("--capped-notified")
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True,
+            timeout=_int_env("KIPI_FABLE_TIMEOUT", 45) + 15)
+        result = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        return None
+    if not isinstance(result, dict):
+        return None
+    if result.get("notified"):
+        cache["fable_capped_notified"] = True
+    if result.get("capped"):
+        cache["fable_capped"] = True
+        return None
+    if result.get("escalated") and result.get("triage"):
+        cache["fable_escalations"] = cache.get("fable_escalations", 0) + 1
+        return result["triage"]
+    return None
+
+
+def block(message, cache=None, hook_input=None, trigger=None, actor=None):
+    """Exit with code 2 to block the tool call.
+
+    `trigger` is what opts a refusal into cross-model escalation, and it is set
+    per call site rather than sniffed from the text. Untagged call sites keep
+    the exact behaviour they had before ASK-311, byte for byte — the test
+    tests/test_fable_escalation.py asserts that equality against a baseline.
+    """
+    if trigger and cache is not None and hook_input is not None:
+        triage = maybe_escalate(cache, hook_input, trigger, message)
+        if triage:
+            message = ("%s\n\n--- FABLE TRIAGE (fresh session, %s) ---\n%s\n"
+                       "--- end triage. It is a proposal, not a measurement: "
+                       "run its REFUTE command before acting on it. ---"
+                       % (message, "claude-fable-5", triage))
+        elif cache.get("fable_capped"):
+            message = ("%s\n\n[Fable escalation cap spent for this actor. The "
+                       "founder has been paged. Stop and report what you tried.]"
+                       % message)
+        save_cache(actor, cache)
     print(message, file=sys.stderr)
     sys.exit(2)
 
@@ -965,7 +1060,8 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="exact-retry", actor=actor)
 
     # 3. Volume ceiling/warning — EXEMPT a git commit. A commit is the checkpoint the
     # ceiling is asking for; blocking it deadlocks the run (the PostToolUse commit-reset
@@ -992,7 +1088,8 @@ def main():
             if level == "block":
                 cache = uncount_blocked_attempt(cache, tool_name, tool_input)
                 save_cache(actor, cache)
-                block(msg)
+                block(msg, cache=cache, hook_input=hook_input,
+                      trigger="volume-ceiling", actor=actor)
             pending_warning = msg
 
     # 4. Subagent ceiling
@@ -1032,7 +1129,8 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="edit-spiral", actor=actor)
 
     # 10. Agent no-output warning
     msg = check_agent_no_output(tool_name, cache)
