@@ -509,9 +509,46 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
+
+# --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
+# Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
+# The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
+# audhd-executive-function, and fable-discipline skills", firing SessionStart and
+# UserPromptSubmit hooks, and then applying the founder's own "state your planned
+# approach and wait for OK before executing" rule TO ITS OWN REVIEW. It answered
+# with a plan in 12 seconds and reviewed nothing. sp-df1a458f is what that did to
+# the gate downstream: the echoed prompt template became the findings block.
+#
+# THE REVIEWER'S WHOLE VALUE IS THAT IT IS NOT US. A reviewer wearing the author's
+# skills, voice rules and hooks is not the independent second opinion this engine
+# exists to buy -- it is the same mental model with a different model id, which is
+# the correlated-blind-spot problem the codex engine was chosen to escape.
+#
+# THE CWD ISOLATION DOES NOT COVER IT. `-C $REVIEW_ROOT` already runs the review in
+# a detached worktree and the round-1 artifact shows the same config loading anyway:
+# it resolves from the USER HOME, not from the project directory, so no amount of
+# cwd isolation reaches it.
+#
+# WHAT THIS FLAG ACTUALLY BUYS, MEASURED, NOT ASSUMED (2026-08-03, same prompt run
+# twice against codex v0.146.0 from a neutral cwd):
+#     without the flag:  12 `hook: ` lines   -- SessionStart/UserPromptSubmit/Stop
+#     with the flag:      0 `hook: ` lines
+# The hooks are the layer that injected the plan-and-await instruction, and they
+# are gone. It is NOT total isolation: the "Skill descriptions were shortened to
+# fit the 2% skills context budget" warning appears in BOTH runs, so codex can
+# still SEE the skill catalogue with the flag set. Claiming this severs skills
+# would be an overclaim; captured separately rather than asserted here.
+#
+# NOT `--disable skills`: that flag does not exist on this codex build and errors
+# with "Unknown feature flag: skills", which would send every review down the Opus
+# fallback and mark the gate DEGRADED fleet-wide.
+#
+# sp-df1a458f's guard is the backstop either way: if a future codex build finds a
+# new road to the same behaviour, review_is_usable refuses the stream instead of
+# letting it fill a required check.
 
 
 # A codex answer is usable only if it carries a COMPLETE machine-readable block
