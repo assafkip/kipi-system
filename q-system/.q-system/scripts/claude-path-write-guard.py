@@ -85,6 +85,11 @@ GIT_READ_ONLY = {
 
 # Piping into an interpreter re-enters the shell with content this parser never
 # inspected. Treat as write-capable regardless of the visible program.
+# Flags that hand an interpreter CODE on the command line rather than a script
+# path. A sink carrying one of these is executing the text next to it, so a
+# .claude/ mention there is a payload, not an argument to some other program.
+INLINE_CODE_FLAGS = {"-c", "-e", "-E", "--command", "--eval", "-exec"}
+
 SHELL_SINKS = {"bash", "sh", "zsh", "dash", "ksh", "eval", "source", "xargs",
                "python", "python3", "perl", "ruby", "node", "tee", "install"}
 
@@ -297,9 +302,25 @@ def analyse(command, cwd):
         # Same program-position rule as _is_sanctioned: a mention of a
         # sanctioned script must never disarm a pipeline (review finding, r2).
         if ".claude" in stmt and not any(_is_sanctioned(s.split()) for s in stages):
-            for stage in stages:
+            for idx, stage in enumerate(stages):
                 head = stage.split()
-                if head and os.path.basename(head[0]) in SHELL_SINKS:
+                if not head or os.path.basename(head[0]) not in SHELL_SINKS:
+                    continue
+                # The rule is what its message says: the interpreter must be
+                # RECEIVING the .claude/ text, as piped stdin or as inline code.
+                #
+                # SCAR (2026-08-03, third false block in a row on the legitimate
+                # path -- it refused the `prd_runner.py spillover add` that was
+                # capturing findings from this same review): `idx` was not
+                # checked, so ANY `python3 some-script.py --arg "...text
+                # mentioning .claude/..."` was read as an interpreter being fed a
+                # path. The interpreter was the FIRST stage; nothing was piped
+                # into it and the mention was a script argument, not code.
+                #
+                # Both attack shapes survive: `python3 -c "open('.claude/x','w')"`
+                # carries an inline-code flag, and `echo .claude/x | xargs touch`
+                # puts the sink at idx > 0. probe_guard.py pins all three.
+                if idx > 0 or any(t in INLINE_CODE_FLAGS for t in head[1:]):
                     return "pipeline feeds a .claude/ path into %r" % os.path.basename(head[0])
 
         for seg in stages:
@@ -404,7 +425,14 @@ def _stage(seg, assigns, cwd_box):
     # component-wise path resolution cannot see it:
     #   python3 -c "open('.claude/settings.json','w')"
     # Found while writing the tests for this guard, not from the brief.
-    if prog in SHELL_SINKS and ".claude" in seg:
+    # SCAR (2026-08-03, same false block as the pipeline rule, second site): this
+    # matched ANY `.claude` text in the raw segment, so `python3 some-script.py
+    # --desc "...mentions .claude/..."` was refused. An interpreter running a
+    # SCRIPT FILE passes its remaining args to that script; those args are
+    # already resolved component-wise above, and this rule is only needed for the
+    # inline-code shape the comment names, where no path token exists to resolve.
+    if prog in SHELL_SINKS and ".claude" in seg and \
+            any(t in INLINE_CODE_FLAGS for t in args):
         return "%r carries a .claude/ path inside its code/argument string" % prog
 
     if not touches:

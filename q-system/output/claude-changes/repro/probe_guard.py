@@ -118,6 +118,18 @@ CASES = [
     # The negative half: dropping the BODY must not drop the REDIRECT. A heredoc
     # aimed INTO .claude/ is still the write the guard exists to stop.
     ("ATTACK", "cat > .claude/settings.json <<'EOF'\n{\"hooks\":{}}\nEOF", REPO, BLOCK),
+    # THE INTERPRETER MUST BE RECEIVING THE TEXT (2026-08-03, third false block
+    # in a row). This is the real command the guard refused: capturing a review
+    # finding whose description mentions .claude/. python3 is the FIRST stage and
+    # the mention is a script ARGUMENT, not code -- nothing is fed into anything.
+    ("BENIGN",
+     "python3 plugins/prd-os/scripts/prd_runner.py spillover add --source ASK-291 "
+     "--desc \"watch_set does not follow symlinked .claude/ directories\"",
+     REPO, ALLOW),
+    # Both attack shapes the idx/inline-code split has to keep: inline code at
+    # idx 0, and a sink downstream of a pipe.
+    ("ATTACK", "python3 -c \"open('.claude/rules/x','w')\"", REPO, BLOCK),
+    ("ATTACK", "echo .claude/settings.json | xargs -I{} cp /tmp/evil {}", REPO, BLOCK),
     ("BENIGN",
      "bash q-system/.q-system/scripts/apply-claude-changes.sh "
      "q-system/output/claude-changes/arm-claude-write-path-guards.json",
