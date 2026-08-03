@@ -115,14 +115,33 @@ def validate_mutant(entry_path: str, mutant: dict) -> None:
             f"{entry_path}: mutant {mutant['id']} find == replace, so it mutates nothing")
 
 
-def select_entries(entries: list, only: str | None) -> list:
-    picked = [e for e in entries if e.get("mutants")]
+def select_entries(entries: list, only: str | None) -> tuple[list, list]:
+    """Split registered suites into (has mutants, emptied) -- never drop either.
+
+    An entry carrying `"mutants": []` is REGISTERED for mutation and has lost its
+    declarations. Filtering it out here is how the documented exit-1 contract
+    became unreachable: `report`'s unmutated branch existed but nothing ever fed
+    it, so a run with one healthy suite and one emptied one exited 0 and read as
+    coverage. That is the silent-absence shape this checker exists to refuse,
+    one level up (PR #81 review, minor).
+
+    An entry with no `mutants` key at all was never registered and is not this
+    checker's business -- a different state, kept distinct on purpose.
+    """
+    candidates = [e for e in entries if "mutants" in e]
+    for entry in candidates:
+        if not isinstance(entry["mutants"], list):
+            raise Refusal(
+                f"{entry['path']}: `mutants` must be a list, got "
+                f"{type(entry['mutants']).__name__}")
     if only:
-        picked = [e for e in picked if only in e["path"]]
+        candidates = [e for e in candidates if only in e["path"]]
+    picked = [e for e in candidates if e["mutants"]]
+    unmutated = [e["path"] for e in candidates if not e["mutants"]]
     for entry in picked:
         for mutant in entry["mutants"]:
             validate_mutant(entry["path"], mutant)
-    return picked
+    return picked, unmutated
 
 
 # --------------------------------------------------------------------------
@@ -351,33 +370,38 @@ def main() -> int:
 
     try:
         entries = load_entries(Path(args.manifest))
-        picked = select_entries(entries, args.only)
+        picked, unmutated = select_entries(entries, args.only)
         missing = [r for r in args.require
                    if not any(r in e["path"] for e in picked)]
         if missing:
             raise Refusal(
                 "no mutants declared for required suite(s): " + ", ".join(missing))
-        if not picked:
+        # Emptied declarations are a finding (exit 1), not an untrustworthy run
+        # (exit 2). Only a manifest where NOTHING is registered is a refusal.
+        if not picked and not unmutated:
             raise Refusal("no expected_tests entry declares a `mutants` list")
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 
     results, rc = [], 0
-    with tempfile.TemporaryDirectory(prefix="kipi-mutation-") as td:
-        tree = Path(td) / "tree"
-        try:
-            materialize_tree(tree, args.at)
-            for entry in picked:
-                print(f"-- mutating {entry['path']} "
-                      f"({len(entry['mutants'])} mutant(s))", flush=True)
-                results.append(check_entry(tree, entry))
-        except Refusal as exc:
-            print(f"REFUSED: {exc}", file=sys.stderr)
-            rc = 2
+    # No tree work when nothing is left to mutate: copying the repo to report an
+    # emptied declaration list would cost minutes to say what selection knows.
+    if picked:
+        with tempfile.TemporaryDirectory(prefix="kipi-mutation-") as td:
+            tree = Path(td) / "tree"
+            try:
+                materialize_tree(tree, args.at)
+                for entry in picked:
+                    print(f"-- mutating {entry['path']} "
+                          f"({len(entry['mutants'])} mutant(s))", flush=True)
+                    results.append(check_entry(tree, entry))
+            except Refusal as exc:
+                print(f"REFUSED: {exc}", file=sys.stderr)
+                rc = 2
 
     if rc == 0:
-        rc = report(results, [])
+        rc = report(results, unmutated)
     if args.json:
         Path(args.json).write_text(
             json.dumps({"ref": args.at or "worktree", "results": results}, indent=2),

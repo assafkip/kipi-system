@@ -255,6 +255,66 @@ class TestCliContract(unittest.TestCase):
         self.assertEqual(2, proc.returncode)
         self.assertIn("test-severity-floor", proc.stderr)
 
+    def test_emptied_mutants_list_exits_1_not_0(self):
+        """`"mutants": []` is a suite REGISTERED for mutation whose declarations
+        were emptied. Dropping it before the report is how the documented exit-1
+        contract becomes unreachable: the run says clean while checking nothing.
+        """
+        manifest = ('{"expected_tests": [{"path": "emptied.py", "runner": "python3",'
+                    ' "mutants": []}]}')
+        proc = self.run_cli(manifest)
+        self.assertEqual(1, proc.returncode)
+        self.assertIn("emptied.py", proc.stderr)
+
+    def test_absent_mutants_key_is_still_refused(self):
+        """No `mutants` key at all = never registered, which is a different
+        state from registered-and-emptied and keeps its exit-2 refusal."""
+        proc = self.run_cli('{"expected_tests": [{"path": "a.py", "runner": "python3"}]}')
+        self.assertEqual(2, proc.returncode)
+        self.assertIn("no expected_tests entry declares", proc.stderr)
+
+
+class TestEmptiedDeclarations(unittest.TestCase):
+    """An entry whose `mutants` list was emptied must reach the report.
+
+    Filtering it out at selection time deletes the only evidence that a gate
+    suite lost its declarations -- the exact silent-absence shape this checker
+    exists to refuse, one level up.
+    """
+
+    def test_select_entries_separates_emptied_from_absent(self):
+        entries = [
+            {"path": "has.py", "mutants": [
+                {"id": "m", "target": "t.py", "find": "x", "replace": "", "why": "w"}]},
+            {"path": "emptied.py", "mutants": []},
+            {"path": "unregistered.py"},
+        ]
+        picked, unmutated = MC.select_entries(entries, None)
+        self.assertEqual(["has.py"], [e["path"] for e in picked])
+        self.assertEqual(["emptied.py"], unmutated)
+
+    def test_only_filter_applies_to_emptied_entries_too(self):
+        entries = [
+            {"path": "keep/emptied.py", "mutants": []},
+            {"path": "drop/emptied.py", "mutants": []},
+        ]
+        picked, unmutated = MC.select_entries(entries, "keep/")
+        self.assertEqual([], picked)
+        self.assertEqual(["keep/emptied.py"], unmutated)
+
+    def test_non_list_mutants_is_refused(self):
+        with self.assertRaises(MC.Refusal) as ctx:
+            MC.select_entries([{"path": "x.py", "mutants": "nope"}], None)
+        self.assertIn("must be a list", str(ctx.exception))
+
+    def test_report_exits_1_on_an_emptied_suite_even_with_all_kills(self):
+        """A mixed run -- one suite fully killed, one emptied -- is not clean."""
+        results = [{"path": "has.py", "baseline": 0, "mutants": [
+            {"id": "m", "kind": "logic", "target": "t.py", "why": "w",
+             "verdict": "KILLED", "exit": 1, "detail": ""}]}]
+        self.assertEqual(1, MC.report(results, ["emptied.py"]))
+        self.assertEqual(0, MC.report(results, []))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
