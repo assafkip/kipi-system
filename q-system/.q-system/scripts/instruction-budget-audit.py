@@ -67,7 +67,11 @@ partial `git add` the tree this run measured is not the tree the commit carries,
 the run RECORDS NOTHING when any audited path differs from the index (see
 index_divergence). Judging is unchanged -- the cap check still runs against the tree
 and still fails closed on growth; only the accounting transition waits for a commit
-that carries the rules it was computed from (PR #88 round 2, major).
+that carries the rules it was computed from (PR #88 round 2, major). That guard is
+asked ONCE, above every arm that records, INCLUDING the first-ever bootstrap: a
+bootstrap is a cap written and staged like any other, and it sat above the guard
+until PR #88 round 5, so the first ratchet run in a repo could mint a cap from an
+unstaged deletion and the next clone was born RED.
 
 THIRD HONEST BOUNDARY: deletion is accounted PER FILE, at the granularity the
 baseline snapshot stores. Three lines deleted from one rule and three added to
@@ -625,8 +629,27 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         )
         return 1
 
+    # Asked BEFORE the baseline is read, because the bootstrap arm below writes and
+    # stages accounting of its own and used to do it with no guard at all (PR #88
+    # round 5). One call, one judgement, every arm that records -- two spellings of
+    # "may this run record" is the drift class that opened the nested-rules hole in
+    # round 1. It costs one `git status` on the over-cap path, which returns 1
+    # either way.
+    records = git_status(project_root, audited)
+    blocked = recording_block(records)
+
     baseline = read_baseline(project_root)
     if baseline is None:
+        if blocked:
+            # Nothing recorded and nothing staged, so the commit carries no cap at
+            # all and the next checkout bootstraps against its own committed tree.
+            # Minting one here was the same defect section 20 fixed for every later
+            # run: a cap computed from an unstaged deletion is one the committed
+            # rules already violate, and the clone is born RED.
+            print(f"RATCHET PASS: total {total}, no baseline yet. "
+                  f"Target {BUDGET_TOTAL_ALWAYS_ON}.")
+            print("RATCHET: not recording. " + blocked)
+            return 0
         print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
         if write:
             write_baseline(project_root, total, total, always_on)
@@ -645,8 +668,6 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         print(ratchet_fail_text(cap, total, always_on))
         return 1
 
-    records = git_status(project_root, audited)
-    blocked = recording_block(records)
     if blocked:
         print(f"RATCHET PASS: total {total}, cap {cap}, headroom {cap - total}. "
               f"Target {BUDGET_TOTAL_ALWAYS_ON}.")

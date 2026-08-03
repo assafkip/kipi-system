@@ -802,6 +802,106 @@ audit_with_path "$SHIM_STATUS" "$RM4"
 check "mutant commits a cap from an unstaged deletion" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
 AUDIT="$AUDIT_SAVE"
 
+echo "== 27. bootstrap obeys the same recording guard every later run does"
+# PR #88 round 5, minor. Sections 20 and 24 made a RUN refuse to record accounting
+# it could not prove the commit would carry -- but both guards sat AFTER the
+# `baseline is None` arm, which writes and stages a fresh baseline of its own. So
+# the very first ratchet run in a repo, behind an unstaged rule deletion, minted a
+# cap from the tree and staged it into a commit carrying the longer rules: the next
+# fresh clone audits RED with only a hand edit of the baseline to get back. That is
+# section 20's defect verbatim, on the one path that had no guard.
+R22=$(mktemp -d); mk_fixture "$R22"     # deliberately NO bootstrap audit yet
+git -C "$R22" init -q
+git -C "$R22" add -A
+git -C "$R22" -c user.email=t@t -c user.name=t commit -qm "fixture, no baseline (ASK-285)"
+python3 - "$R22/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+audit_rc "$R22"                         # first run ever, deletion in the tree only
+check "the bootstrap run still exits 0" 0 "RATCHET" "$AUDIT_RC" "$AUDIT_OUT"
+check "it says why it recorded nothing" 0 "not recording" "$AUDIT_RC" "$AUDIT_OUT"
+check "it names the diverging path" 0 "alpha.md" "$AUDIT_RC" "$AUDIT_OUT"
+if [ -f "$R22/$BASE_REL" ]; then
+  bad "bootstrap wrote a baseline from a tree the commit does not carry"
+else
+  ok "no baseline is minted from an unstaged deletion"
+fi
+if git -C "$R22" show ":$BASE_REL" >/dev/null 2>&1; then
+  bad "bootstrap staged that baseline into the commit"
+else
+  ok "nothing was staged either"
+fi
+# The disaster this prevents, proved end to end: commit RIGHT HERE, with the
+# deletion still unstaged. Pre-fix that commit carries a cap of 30 alongside rules
+# that still total 33, and the clone below is where a human first finds out.
+# --allow-empty because the two behaviours differ in exactly what is staged: the
+# pre-fix run staged the baseline it minted, the fixed run staged nothing at all.
+git -C "$R22" -c user.email=t@t -c user.name=t commit -q --allow-empty \
+  -m "commit the index, not the tree (ASK-285)"
+R23=$(mktemp -d); rmdir "$R23"
+git clone -q "$R22" "$R23"
+cp "$AUDIT" "$R23/q-system/.q-system/scripts/instruction-budget-audit.py"
+audit_rc "$R23" --no-write --no-stage
+check "a fresh clone of that commit is not born RED" 0 "RATCHET" "$AUDIT_RC" "$AUDIT_OUT"
+case "$AUDIT_OUT" in
+  *"RATCHET FAIL"*) bad "the clone inherited a cap its own rules already violate" ;;
+  *) ok "the clone bootstraps against its own committed tree" ;;
+esac
+# The commit that carries the rules is the one allowed to bootstrap.
+git -C "$R22" add -A
+audit_rc "$R22"
+check "staged, the bootstrap lands" 0 "baseline created at 30" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "the bootstrapped cap is the staged total" 30 "$(cap_of "$R22")"
+# Negative control: a clean tree with no baseline must still bootstrap. The guard
+# is "the commit does not carry this", never "there is a git repo here".
+R24=$(mktemp -d); mk_fixture "$R24"
+git -C "$R24" init -q
+git -C "$R24" add -A
+audit_rc "$R24"
+check "a clean tree bootstraps as before" 0 "baseline created at 33" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "clean bootstrap records the full total" 33 "$(cap_of "$R24")"
+
+echo "== 28. mutation: put the bootstrap back ahead of the guard -> section 27 goes RED"
+# A regression case never watched fail is not known to catch anything, and the ref
+# hatch only reaches the previous commit. This drops the guard from the bootstrap
+# arm in place, which is exactly the pre-fix ordering.
+MUTB=$(mktemp -d)/mutant-bootstrap.py
+mkdir -p "$(dirname "$MUTB")"
+python3 - "$AUDIT" "$MUTB" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "    if baseline is None:\n        if blocked:\n"
+assert needle in src, "the bootstrap guard moved; update the mutation"
+open(sys.argv[2], "w").write(
+    src.replace(needle, "    if baseline is None:\n        if False:\n", 1))
+PY
+RM5=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTB"; mk_fixture "$RM5"
+git -C "$RM5" init -q
+git -C "$RM5" add -A
+git -C "$RM5" -c user.email=t@t -c user.name=t commit -qm "fixture, no baseline (ASK-285)"
+python3 - "$RM5/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+audit_rc "$RM5"
+check "mutant mints a cap from an unstaged deletion" 0 "baseline created at 30" "$AUDIT_RC" "$AUDIT_OUT"
+AUDIT="$AUDIT_SAVE"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]
