@@ -89,8 +89,8 @@ How to move through complex work without shipping a confident wrong answer.
    consumers from the source, never from your recollection of them. Migrate existing
    call-sites one small, independently revertible edit at a time, not one bulk
    rewrite. For a module that declares an exclusion predicate, that gate is
-   `q-system/.q-system/scripts/consumer-parity-check.py` (PostToolUse), which walks
-   the AST and reports every walker that skips the predicate. Retired 2026-08-03
+   `q-system/.q-system/scripts/consumer-parity-check.py`, a PostToolUse hook that
+   walks the AST and reports every walker that skips the predicate. Retired 2026-08-03
    (ASK-315): this line used to say "write a test that greps the tree", which is
    prose naming no executable. Under it, a commit whose message read "one predicate
    for all three consumers" shipped with a fourth, and six instances of that shape
