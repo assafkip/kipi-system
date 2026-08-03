@@ -40,8 +40,19 @@ new gate: one call site tag, one subprocess, one test file.
 
 ## Tier A — automatic (no action required from you)
 
-`token-guard.py` calls the script above on three stuck refusals and staples the
-triage to the exit-2 message. You will simply see a `FABLE TRIAGE` section.
+`token-guard.py` requests the triage on three stuck refusals. The refusal goes
+out immediately and unchanged, carrying a one-line note that a triage was
+requested; the answer arrives on a LATER tool call as a `FABLE TRIAGE` section
+(on the next refusal, the next warning, or the next ordinary call, whichever
+comes first). No action required from you either way.
+
+**The call is never awaited.** token-guard is wired at `timeout: 5` on all three
+events in both `.claude/settings.json` and `settings-template.json`. Measured
+live 2026-08-03: a hook that overruns its configured timeout is killed and its
+exit 2 is **discarded**, so the tool call it meant to refuse simply proceeds
+(0s hook exits 2 -> blocked; 8s hook exits 2 -> ran). Waiting on a model inside
+the hook would therefore not delay the refusal, it would spend it. Hence the
+detached spawn: the block can never be traded for the triage.
 
 | Trigger id | Detector |
 |---|---|
@@ -106,15 +117,23 @@ python3 q-system/.q-system/scripts/fable-escalate.py --report
 
 | Limit | Where |
 |---|---|
-| 2 escalations per actor per session, then `slack-notify.sh` pages once | `FABLE_CAP`, `notify_cap()` |
-| 45s cap on the call, plus a wider outer cap in `token-guard.py` | `FABLE_TIMEOUT`, nested `maybe_escalate` |
+| 2 escalations per actor per session, then `slack-notify.sh` is asked to page once | `FABLE_CAP`, `notify_cap()` |
+| 45s cap on the call, in the detached child only — the hook never waits | `FABLE_TIMEOUT`, `request_escalation` |
 | Any failure degrades to the plain refusal, byte for byte | `test_broken_fable_degrades_to_plain_block` |
 | A suite can never spend a real call | `PYTEST_CURRENT_TEST` chokepoint in `call_fable` |
 | Off switch | `KIPI_FABLE_ESCALATION=0` |
 
 Cross-model is a step before the human, never instead of one. At the cap the
-script hands off: no further calls, and one page to the founder. The test
-`test_escalations_stop_at_the_cap_and_page_once` pins both halves.
+script hands off: no further calls, and one attempt to page the founder. The
+test `test_escalations_stop_at_the_cap_and_page_once` pins both halves.
+
+**A page is attempted, not guaranteed, and the row says which.** `slack-notify.sh`
+is a silent no-op that still exits 0 when no webhook resolves, so the cap row
+records `notify_attempted`, `notify_exit`, `notify_channel_configured`,
+`notify_delivered` and `notify_note` separately rather than one `notified` flag.
+`--report` prints that line for every capped row. Treat an escalation cap as
+"nobody may know yet" and say so in your own reply; do not read the cap as
+evidence that a human was reached.
 
 ## Honest boundary
 

@@ -470,7 +470,12 @@ def test_child_sees_exactly_the_logged_packet(actor, env, tmp_path):
 
     c = settled_calls(env["_dump"])[0]
     seen = "".join(a for a in c["argv"] if a not in ("-p", "--model", "claude-fable-5")) + c["stdin"]
-    row = ledger_rows(env)[0]
+    # settled_rows, NOT ledger_rows: the stub records its call BEFORE
+    # fable-escalate writes the row (the row is written after call_fable
+    # returns), so a call record on disk does not imply a ledger row yet.
+    # Caught by running this file the way the capability gate does rather than
+    # under `-m pytest`, where the window happened to close first.
+    row = settled_rows(env)[0]
     assert hashlib.sha256(seen.encode()).hexdigest() == row["packet_sha256"], (
         "the child received something other than the logged packet")
 
