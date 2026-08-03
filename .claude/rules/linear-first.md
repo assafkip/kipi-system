@@ -18,6 +18,7 @@ test `test-linear-issue-ref-check.sh`, 17 cases, in the capability manifest. Add
 appended to `q-system/output/linear-bypass.jsonl` so bypasses stay countable. The
 gate's own stderr carries the full fix, so it teaches on failure. Holes:
 `--no-verify` skips all lefthook hooks; presence of an id is checked, not its
-existence or status; uncommitted work is outside the gate. `auto-commit.py`
-declares the hatch by design (unattended, cannot know the issue). kipi-system only
-for now; fleet needs the lefthook stage in the instance template.
+existence or status; uncommitted work is outside the gate. `auto-commit.py` no
+longer declares the hatch: it writes to `refs/kipi/wip/`, never to a branch
+(ASK-314). kipi-system only for now; fleet needs the lefthook stage in the
+instance template.

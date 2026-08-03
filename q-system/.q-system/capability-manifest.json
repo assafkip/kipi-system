@@ -438,6 +438,14 @@
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-autocommit-wip-ref.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-autocommit-replay-2026-08-02.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],
