@@ -237,7 +237,7 @@ page_clear repo-missing
 #
 # REFUSE, not warn. This loop MERGES ITS OWN PRs and has no accepted-change
 # signal, so building on superseded code and auto-merging the result is worse
-# than resting until someone fast-forwards. Same posture as the reviewer's
+# than resting until the next run fast-forwards. Same posture as the reviewer's
 # commit status: absent is not approved, and unstated HOLDS.
 #
 # A FAILED LOOKUP MUST NOT WEDGE THE LOOP. Refusal needs a POSITIVE answer that

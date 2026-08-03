@@ -491,7 +491,7 @@ PY
 # The single give-up path. Every one of the 24 sites routes through here, so
 # restore-before-teardown is structural rather than 24 chances to forget it.
 # Two sites record a failure and deliberately FALL THROUGH: a direct-clone
-# whose merge needs manual resolve, and a failed archive export. Both still let
+# whose merge conflicts, and a failed archive export. Both still let
 # the .claude/ and plugins/ config sync run, so the instance keeps receiving
 # config updates even though its repo pull did not land. They must NOT abandon
 # the instance -- doing so also tears down the dry-run model the config sync is
@@ -1179,6 +1179,8 @@ PY
           echo "  OK (merged)"
           PASS=$((PASS + 1))
         else
+      # human-required: irreversible-git -- a conflicted merge needs a choice
+      # about which side survives, and guessing loses work.
           echo "  WARN: merge failed (needs manual resolve)"
           git merge --abort 2>/dev/null || true
           # No abandon: fall through so the config sync still runs.
