@@ -179,7 +179,7 @@ REDRAFT_CAP = 3
 
 # The redraft counter lives in the ISSUE DESCRIPTION, not in the state file and
 # not in attempts-ledger.py.
-#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a
+#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a  # spillover-skip
 #     read-then-write from a second process is the race that file exists to stop.
 #   - not ~/.config/kipi/linear-dor-state.json: that is one machine's scratch. A
 #     cap whose count evaporates on a new laptop is not a cap, and the terminal
@@ -319,11 +319,22 @@ ISSUE_STATE_Q = """query($id:String!){issue(id:$id){id identifier state{name typ
 
 # Re-read one issue immediately before writing it. Same fields the redraft write
 # depends on, and nothing else. See reread_before_write().
+# `team{id}` and `estimate` are for the ready-label / estimate write (ASK-308).
+# The team id is needed to resolve the `ready` label, and the estimate is read so
+# an existing one is never clobbered -- see apply_write().
 ISSUE_WRITE_Q = """query($id:String!){issue(id:$id){
-  id identifier description state{name type} labels{nodes{id name}}}}"""
+  id identifier description estimate state{name type} team{id}
+  labels{nodes{id name}}}}"""
 
 TEAM_STATES_Q = """query($t:String!){team(id:$t){
   states(first:50){nodes{id name type position}}}}"""
+
+# For the `ready` label (ASK-308). Resolved per team by name, created on first use.
+TEAM_LABELS_Q = """query($t:String!){team(id:$t){
+  labels(first:250){nodes{id name}}}}"""
+
+LABEL_CREATE_M = """mutation($input:IssueLabelCreateInput!){
+  issueLabelCreate(input:$input){success issueLabel{id}}}"""
 
 REOPEN_M = """mutation($id:String!,$s:String!){
   issueUpdate(id:$id,input:{stateId:$s}){success}}"""
@@ -565,7 +576,7 @@ def notify(message: str) -> bool:
     if not NOTIFY_SCRIPT.exists():
         return False
     try:
-        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+        subprocess.run(["bash", str(NOTIFY_SCRIPT), "--kind", "receipt", message], timeout=20)
         return True
     except Exception:  # noqa: BLE001 - a failed ping must not fail the run
         return False
@@ -710,6 +721,42 @@ def prioritise(issues: list) -> list:
     """
     paired = [(selection_mode(i) or "draft", i) for i in issues]
     return sorted(paired, key=lambda pair: MODE_RANK.get(pair[0], 9))
+
+
+def rotate_for_fairness(plan: list, cursor_id, limit: int) -> list:
+    """The batch to run tonight, rotated so the tail is reachable.
+
+    why (sp-e7f907a4, ASK-338): selection was `plan[:limit]` with no cursor, and
+    prioritise() is deliberately STABLE within a mode. So the same head was
+    picked every night; a persistently-failing head was retried forever and the
+    tail was never reached. The live board went 80 -> 87 -> 93 -> 137 lacking a
+    DoR against --limit 8. Inflow beat throughput, but the tail would have
+    starved even at parity, because nothing rotated.
+
+    Terminals and redrafts keep ABSOLUTE priority and are never rotated away: a
+    terminal costs no `claude` call at all, and a redraft IS the redrive. Only
+    the first-draft backlog rotates. Rotating the redrive would rebuild this
+    same starvation one layer up.
+
+    An unknown cursor (the issue closed since last night) starts from the top
+    rather than wedging the run.
+    """
+    if limit <= 0 or not plan:
+        return []
+    head = [p for p in plan if p[0] != "draft"]
+    drafts = [p for p in plan if p[0] == "draft"]
+    batch = head[:limit]
+    room = limit - len(batch)
+    if room <= 0 or not drafts:
+        return batch
+    start = 0
+    if cursor_id:
+        ids = [i.get("identifier") for _, i in drafts]
+        if cursor_id in ids:
+            start = (ids.index(cursor_id) + 1) % len(drafts)
+    # wrap once, and never return the same issue twice in one batch
+    ordered = drafts[start:] + drafts[:start]
+    return batch + ordered[:room]
 
 
 def refusal_reason(ls, issue: dict) -> str:
@@ -898,6 +945,109 @@ class Skipped(NamedTuple):
     still_queued: bool
 
 
+READY_LABEL = "ready"
+
+# `1 h`, `30 min`, `2h`, `half day`, `1.5 hrs`. The DoR template asks for exactly
+# this field, so the value is drafted prose and the parser has to tolerate it.
+TIME_EST_RE = re.compile(
+    r"\*\*Time\s*Est\.?:?\*\*[:\s]*([^\n·|]+)", re.IGNORECASE)
+_HOURS_RE = re.compile(r"([\d.]+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b",
+                       re.IGNORECASE)
+_READY_LABEL_CACHE: dict = {}
+
+
+def parse_time_est_hours(body: str) -> float | None:
+    """Hours from the DoR's Time Est field, or None when it cannot be read.
+
+    None is a real answer and the caller must treat it as one: guessing an
+    estimate is worse than leaving the field empty, because a wrong number in a
+    cycle's estimate sum silently misreports the week's load -- and the whole
+    point of turning estimates on was to make that sum trustworthy (ASK-308).
+    """
+    field = TIME_EST_RE.search(body or "")
+    if not field:
+        return None
+    text = field.group(1).strip().lower()
+    if "half day" in text:
+        return 4.0
+    if "full day" in text or "all day" in text:
+        return 8.0
+    match = _HOURS_RE.search(text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value / 60.0 if match.group(2).lower().startswith("m") else value
+
+
+def hours_to_points(hours: float) -> int:
+    """Hours onto the team's fibonacci scale (1, 2, 3, 5, 8), rounding UP.
+
+    Up, not nearest: a 15-hour week filled by round-down estimates overruns, and
+    an overrun week is the failure mode the estimate field exists to prevent.
+    """
+    for point in (1, 2, 3, 5):
+        if hours <= point:
+            return point
+    return 8
+
+
+def ready_label_id(ls, team_id: str) -> str | None:
+    """The `ready` label's id for one team, created on first use, then cached.
+
+    Resolved by NAME rather than pinned as a uuid because this script is fanned
+    to every instance by `kipi update` and each team mints its own label ids -- a
+    hardcoded uuid would be correct in exactly one repo and silently wrong in the
+    rest. Returns None rather than raising: failing to add a label must not cost
+    the founder the DoR that was just drafted.
+    """
+    if not team_id:
+        return None
+    if team_id in _READY_LABEL_CACHE:
+        return _READY_LABEL_CACHE[team_id]
+    try:
+        nodes = (((ls.graphql(TEAM_LABELS_Q, {"t": team_id}) or {}).get("team") or {})
+                 .get("labels") or {}).get("nodes") or []
+        found = next((n["id"] for n in nodes if n.get("name") == READY_LABEL), None)
+        if not found:
+            made = (ls.graphql(LABEL_CREATE_M, {"input": {
+                "name": READY_LABEL, "teamId": team_id, "color": "#0F7B6C",
+                "description": "Has an executable Definition of Ready. The autonomous "
+                               "worker may pick this up."}}) or {}).get("issueLabelCreate") or {}
+            found = ((made.get("issueLabel") or {}).get("id")) if made.get("success") else None
+    except Exception as exc:  # noqa: BLE001 - a label lookup must never lose a draft
+        print(f"  could not resolve the {READY_LABEL} label: {str(exc)[:100]}",
+              file=sys.stderr)
+        return None
+    _READY_LABEL_CACHE[team_id] = found
+    return found
+
+
+def ready_payload(ls, fresh: dict, body: str) -> dict:
+    """The `ready` label and the estimate, as issueUpdate fields.
+
+    WHY THIS EXISTS (ASK-308). Linear cannot filter on "description contains
+    Definition of Ready", so until the DoR is also a LABEL the board cannot show
+    which issues an agent may pick up -- and 116 of 184 open issues were in that
+    blind spot. This script is the only thing that knows a DoR was just written,
+    so it is the only correct writer of the label.
+
+    addedLabelIds, not a labelIds replacement: a delta cannot clobber a label
+    applied while this run was drafting. Same reasoning as needs_scope_label_ids.
+    """
+    payload: dict = {}
+    label = ready_label_id(ls, (fresh.get("team") or {}).get("id"))
+    if label and label not in {lab.get("id") for lab in
+                               ((fresh.get("labels") or {}).get("nodes") or [])}:
+        payload["addedLabelIds"] = [label]
+    # Never overwrite an estimate already on the issue: a human who sized it knows
+    # something the drafted prose does not.
+    if not fresh.get("estimate"):
+        hours = parse_time_est_hours(body)
+        if hours:
+            payload["estimate"] = hours_to_points(hours)
+    return payload
+
+
 def apply_write(ls, issue: dict, mode: str, body: str,
                 attempt: int = 0) -> Skipped | None:
     """THE path from a drafted body to a description write. Every mode goes here.
@@ -940,6 +1090,10 @@ def apply_write(ls, issue: dict, mode: str, body: str,
         # semantics already give the atomicity.
         payload = {"description": rebuild_description(fresh_desc, body, attempt),
                    "removedLabelIds": needs_scope_label_ids(fresh)}
+        # A redraft REPLACES a refused DoR with a workable one, so the issue
+        # becomes machine-ready in the same write that drops needs-scope. Two
+        # writes would leave a window where it is neither refused nor ready.
+        payload.update(ready_payload(ls, fresh, body))
     elif mode == "terminal":
         # The needs-scope label is deliberately NOT removed: the issue really is
         # unscoped, and dropping it would feed the issue back to a picker that has
@@ -960,6 +1114,10 @@ def apply_write(ls, issue: dict, mode: str, body: str,
                            "attempt was drafting",
                            selection_mode(fresh) is not None)
         payload = {"description": fresh_desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
+        # `terminal` deliberately does NOT get this: the cap was exhausted because
+        # the issue is still unscoped, and labelling it ready would hand the picker
+        # back the exact work it already refused REDRAFT_CAP times.
+        payload.update(ready_payload(ls, fresh, body))
 
     update_issue(ls, issue, payload)
     return None
@@ -1144,7 +1302,9 @@ def main() -> int:
     redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
     print(f"dor-drafter {_now()}: {len(todo)} issue(s) queued: "
           f"{queue_breakdown(len(todo), redrives)}")
-    batch = plan[: args.limit]
+    # Rotated, not plan[:limit]: see rotate_for_fairness. Without the cursor the
+    # stable sort hands back the same head every night and the tail never runs.
+    batch = rotate_for_fairness(plan, prior.get("cursor"), args.limit)
     if not args.apply:
         for mode, i in batch:
             print(f"  would {VERBS[mode]} {i['identifier']}  {i['title'][:66]}")
@@ -1243,10 +1403,17 @@ def main() -> int:
     # the two cannot disagree about what is left.
     remaining = len(todo) - drafted - elsewhere
     remaining_redrives = redrives - done_redrives - elsewhere_redrives
+    # The rotation cursor is the LAST first-draft issue this run touched, so the
+    # next night resumes after it instead of re-picking the same head. Recorded
+    # regardless of whether that issue succeeded: a failing issue must not be
+    # able to pin the cursor and starve the tail, which is the whole defect
+    # (sp-e7f907a4). Terminals/redrafts never set it -- they are not rotated.
+    drafted_ids = [i.get("identifier") for mode, i in batch if mode == "draft"]
+    cursor = drafted_ids[-1] if drafted_ids else prior.get("cursor")
     write_state(ran_at=_now(), drafted=drafted, failed=len(failed),
                 carried_in=len(pending), failures_reported=reported,
                 pending_failures=unfiled[-PENDING_CAP:],
-                remaining=remaining)
+                remaining=remaining, cursor=cursor)
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
     elsewhere_note = (f", {elsewhere} completed by another writer"

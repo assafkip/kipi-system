@@ -74,7 +74,7 @@ def _write_issue(repo: Path, issue_id: str, status: str) -> None:
 
 
 def test_add_appends_open_item(repo):
-    r = run(repo, "spillover", "add", "--source", "prd-x", "--desc", "obsidian export skips archived", "--id", "sp1")
+    r = run(repo, "spillover", "add", "--force", "--source", "prd-x", "--desc", "obsidian export skips archived", "--id", "sp1")
     assert r.returncode == 0, r.stderr
     lines = _ledger(repo).read_text().splitlines()
     assert len(lines) == 1
@@ -83,8 +83,8 @@ def test_add_appends_open_item(repo):
 
 
 def test_add_is_idempotent_by_id(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "d", "--id", "sp1")
     # last-write-wins read collapses to one effective item, still open
     r = run(repo, "spillover", "list", "--json")
     items = json.loads(r.stdout)
@@ -93,21 +93,21 @@ def test_add_is_idempotent_by_id(repo):
 
 def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 0  # empty ledger = green
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
 def test_gates_run_red_while_spillover_open(repo):
     # No registered gates at all, but an open spillover item must still make the
     # STANDING re-proof fail. This is the can't-be-forgotten property.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     g = run(repo, "gates", "run")
     assert g.returncode != 0, "gates run stayed green with an open spillover item"
     assert "sp1" in (g.stdout + g.stderr)
 
 
 def test_resolve_refuses_unless_issue_closed(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     _write_issue(repo, "iss-1", status="in-progress")
     bad = run(repo, "spillover", "resolve", "sp1", "--resolution-ref", "iss-1")
     assert bad.returncode != 0, "resolve accepted a non-closed issue"
@@ -121,13 +121,13 @@ def test_resolve_refuses_unless_issue_closed(repo):
 
 
 def test_resolve_refuses_unknown_issue(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1", "--resolution-ref", "nope")
     assert bad.returncode != 0
 
 
 def test_void_resolves_with_recorded_reason(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "not real", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "not real", "--id", "sp1")
     ok = run(repo, "spillover", "resolve", "sp1", "--void", "duplicate of sp0")
     assert ok.returncode == 0, ok.stderr
     assert run(repo, "spillover", "check").returncode == 0
@@ -136,7 +136,7 @@ def test_void_resolves_with_recorded_reason(repo):
 
 
 def test_resolve_requires_a_target(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "x", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "x", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1")  # neither --resolution-ref nor --void
     assert bad.returncode != 0
 
@@ -172,7 +172,7 @@ def _stub_linear(monkeypatch, module, table: dict):
 
 
 def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-204": {"type": "completed", "name": "Done"}})
 
     code = _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-204",
@@ -194,7 +194,7 @@ def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-999": {"type": "started", "name": "In Progress"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-999") != 0
@@ -206,7 +206,7 @@ def test_resolve_refuses_canceled_linear_issue(repo, runner, monkeypatch):
     # Canceled is not fixed. A canceled issue shipped no fix, so letting it
     # resolve an item would clear the gate on work that never happened. The
     # honest exit for a non-item is --void, which records a reason.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-998": {"type": "canceled", "name": "Canceled"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-998") != 0
@@ -214,7 +214,7 @@ def test_resolve_refuses_canceled_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_unknown_linear_identifier(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {})  # Linear knows nothing
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-4242") != 0
@@ -224,7 +224,7 @@ def test_resolve_refuses_unknown_linear_identifier(repo, runner, monkeypatch):
 def test_resolve_refuses_malformed_ref_without_calling_linear(repo, runner, monkeypatch):
     # A ref that is neither a local spec nor a well-formed Linear identifier is
     # refused before any network call, so a typo cannot become a live lookup.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     called = []
     monkeypatch.setattr(runner, "_linear_issue_state",
                         lambda ident: called.append(ident) or {"type": "completed", "name": "Done"})
@@ -242,7 +242,7 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
     and a clean ledger, which is exactly the hand-clear this command exists to
     prevent. Refusing keeps the item visible until someone can actually prove it.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     env = dict(os.environ)
     env.pop("KIPI_LINEAR_API_KEY", None)
     env["HOME"] = str(tmp_path / "empty-home")  # no ~/.config/kipi/linear-api-key
@@ -262,7 +262,7 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
 def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
     # A repo that tracks issues locally under a Linear-shaped id keeps working
     # offline: the local spec is checked first and Linear is never consulted.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
     _write_issue(repo, "ASK-204", status="closed")
     monkeypatch.setattr(runner, "_linear_issue_state",
                         lambda ident: pytest.fail("local spec should have answered"))
@@ -281,7 +281,7 @@ def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
 
 
 def _add(repo: Path, sid: str, source: str, severity: str) -> None:
-    run(repo, "spillover", "add", "--source", source, "--desc", f"finding {sid}",
+    run(repo, "spillover", "add", "--force", "--source", source, "--desc", f"finding {sid}",
         "--id", sid, "--severity", severity)
 
 

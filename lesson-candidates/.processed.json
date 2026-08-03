@@ -418,5 +418,30 @@
     "instance": "gtm-partner",
     "status": "published",
     "date": "2026-07-27"
+  },
+  "21adae04175692b9": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-03"
+  },
+  "82829085275a9678": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-03"
+  },
+  "03b27124e8d82fd8": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-03"
+  },
+  "90490fa76fead715": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-08-03"
+  },
+  "4c063c17572c568a": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-08-03"
   }
 }

@@ -4,7 +4,7 @@ set -euo pipefail
 # StatusLine script - outputs a compact status string
 # Format: [MODE] | Nloops(Mhot) | phaseX | todo:K
 #   todo:K = K open parked items in q-system/memory/open-loops.json (the AUDHD
-#   anti-drop registry: PRs/decisions waiting on the founder). Always visible so
+#   anti-drop registry: decisions genuinely reserved to the founder). Always visible so
 #   nothing falls. Distinct from the pre-existing session "loops" badge.
 
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-.}"

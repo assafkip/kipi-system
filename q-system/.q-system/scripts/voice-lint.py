@@ -32,6 +32,7 @@ Scope:
 import json
 import os
 import re
+import pathlib
 import sys
 from pathlib import Path
 
@@ -602,6 +603,30 @@ def _sentence_start_offsets(text):
     return offsets
 
 
+# LEGITIMATELY LOWERCASE SENTENCE STARTS (2026-08-03). The rule flagged any
+# sentence beginning with a lowercase letter, with no notion that some tokens are
+# CORRECTLY lowercase. Measured cost: the daily social drafts failed this gate
+# three times in a row on 'reverse-skill', 'claude-video' and 'https' -- a tool
+# name, a tool name, and a URL -- and were never published. The Stop hook then
+# blocked an assistant message whose first token was an email address.
+#
+# A gate that fires on correct content is not strict, it is broken: the operator
+# either bypasses it every time or stops reading it.
+EMAIL_START_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+URL_START_RE = re.compile(r"^(?:https?|ftp|mailto)\b")
+# A hyphenated all-lowercase slug is an identifier, not a sentence: reverse-skill,
+# claude-video, kipi-system, notify-receipts-surface.
+SLUG_START_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b")
+# Filenames and dotted paths: run_daily.sh, voice-lint.py, foo.bar.baz
+FILENAME_START_RE = re.compile(r"^[a-z][\w-]*\.(?:py|sh|md|json|jsonl|txt|yml|yaml|html|js|ts)\b")
+
+
+def _legitimately_lowercase(rest: str) -> bool:
+    """True when the token opening this sentence is correctly lowercase."""
+    return bool(EMAIL_START_RE.match(rest) or URL_START_RE.match(rest)
+                or SLUG_START_RE.match(rest) or FILENAME_START_RE.match(rest))
+
+
 def check_capitalization(text, file_path=""):
     """Published prose uses real capitalization. Three deterministic checks."""
     violations = []
@@ -614,6 +639,8 @@ def check_capitalization(text, file_path=""):
             continue
         word = token.group()
         if word[0].isupper():
+            continue
+        if _legitimately_lowercase(rest):
             continue
         violations.append({
             "rule": "capitalization",
@@ -815,6 +842,57 @@ def hook_mode():
     sys.exit(0)
 
 
+def fix_capitalization(text):
+    """Capitalize genuine lowercase sentence starts. Returns (new_text, n_fixed).
+
+    WHY A FIXER AND NOT JUST A GATE (founder 2026-08-03: "we need to fix that
+    earlier in the loop so things get capitalized and not blocked ... and not
+    continuously blocked because the capitalization doesn't work").
+
+    Casing is the one voice rule with a single correct answer: a sentence starts
+    with a capital. Every other rule in this file judges word CHOICE, where only a
+    writer can decide. Blocking on the one thing a machine can repair is how the
+    daily social drafts failed the same gate three times and were never published.
+
+    It repairs only what is unambiguous, and it applies the same exemptions the
+    check does -- an email, URL, slug or filename is left exactly as written.
+    """
+    prose_map = strip_code_preserving_lines(text)
+    edits = []
+    for offset in _sentence_start_offsets(prose_map):
+        rest = prose_map[offset:]
+        token = re.match(r"[A-Za-z][\w'-]*", rest)
+        if not token or token.group() == "__CODE__":
+            continue
+        if token.group()[0].isupper() or _legitimately_lowercase(rest):
+            continue
+        # Offsets hold because strip_code_preserving_lines preserves length.
+        if offset < len(text) and text[offset].islower():
+            edits.append(offset)
+    for offset in reversed(edits):
+        text = text[:offset] + text[offset].upper() + text[offset + 1:]
+    # Bare "i" -> "I" is equally unambiguous.
+    fixed_i = 0
+    def _up_i(m):
+        nonlocal fixed_i
+        fixed_i += 1
+        return "I"
+    text = BARE_I_RE.sub(_up_i, text)
+    return text, len(edits) + fixed_i
+
+
+def fix_mode(file_path):
+    """Repair what is repairable, then report only what a writer must decide."""
+    original = pathlib.Path(file_path).read_text(encoding="utf-8")
+    fixed, n = fix_capitalization(original)
+    if n:
+        pathlib.Path(file_path).write_text(fixed, encoding="utf-8")
+        print(f"voice-lint --fix: corrected {n} casing issue(s) in {file_path}")
+    else:
+        print(f"voice-lint --fix: nothing to correct in {file_path}")
+    cli_mode(file_path)
+
+
 def cli_mode(file_path):
     violations = lint_file(file_path)
     blocking, warnings = _partition(violations)
@@ -836,6 +914,8 @@ if __name__ == "__main__":
         hook_mode()
     elif len(sys.argv) == 2:
         cli_mode(sys.argv[1])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--fix":
+        fix_mode(sys.argv[2])
     else:
-        print("Usage: voice-lint.py <file_path>", file=sys.stderr)
+        print("Usage: voice-lint.py [--fix] <file_path>", file=sys.stderr)
         sys.exit(1)

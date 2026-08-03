@@ -730,7 +730,12 @@ def cmd_label(args) -> int:
         return EXIT_USAGE
 
     current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
-    if args.name in current:
+    # `--remove` (ASK-308): the worker's refusal path has to apply `needs-scope`
+    # AND strip `ready` together. As two calls, a failure between them leaves an
+    # issue that is refused-as-unscoped while still advertised in the machine-ready
+    # view -- the one combination that hands the picker back work it just refused.
+    remove = [n for n in (getattr(args, "remove", None) or []) if n in current]
+    if args.name in current and not remove:
         # Idempotent on purpose: the worker may refuse the same issue twice before
         # the picker next runs, and a second call must not be an error.
         print(f"{issue['identifier']}: already labelled {args.name}")
@@ -749,9 +754,10 @@ def cmd_label(args) -> int:
             return EXIT_USAGE
         label_id = created["issueLabel"]["id"]
 
+    final = (set(current.values()) | {label_id}) - {current[n] for n in remove}
     result = graphql(ISSUE_UPDATE, {
         "id": issue["id"],
-        "input": {"labelIds": sorted(set(current.values()) | {label_id})},
+        "input": {"labelIds": sorted(final)},
     })
     updated = (result or {}).get("issueUpdate") or {}
     # CHECK THE MUTATION RESULT, same reason cmd_progress does (codex 2026-07-29):
@@ -1167,6 +1173,8 @@ def main() -> int:
     p.set_defaults(func=cmd_progress)
 
     p = sub.add_parser("label", help="add one label to an issue, keeping the rest")
+    p.add_argument("--remove", action="append", metavar="NAME",
+                   help="also drop this label in the SAME write (repeatable)")
     p.add_argument("issue", help="issue identifier, e.g. ASK-148")
     p.add_argument("name", help="label to add, e.g. needs-scope")
     p.set_defaults(func=cmd_label)

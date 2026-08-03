@@ -120,6 +120,10 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" 2>/dev/null || true",
             "timeout": 35
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/notify-receipts-surface.py\" 2>/dev/null || true"
           }
         ]
       }
@@ -266,6 +270,16 @@
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostCompact": [
@@ -296,6 +310,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/founder-actor-gate.py\"",
+            "timeout": 15
           },
           {
             "type": "command",

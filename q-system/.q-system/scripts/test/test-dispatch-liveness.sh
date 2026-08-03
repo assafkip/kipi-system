@@ -72,7 +72,12 @@ printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/gh"; chmod +x "$ROOT/bin/gh"
 
 # The page sink, so an alert is asserted on a file rather than on prose.
 PAGES="$ROOT/pages.txt"
-printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$PAGES" > "$ROOT/notify.sh"
+# RECORDS THE WHOLE ARGV, NOT $1 (ASK-310). The stub used to capture "$1" back
+# when every producer called the notifier as `NOTIFY "message"`. ASK-283 gave the
+# real sink a --kind flag, so the message moved out of $1 and this fixture started
+# recording the literal string "--kind" while asserting on message text. The
+# production code is correct; the harness assumption was stale.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$PAGES" > "$ROOT/notify.sh"
 chmod +x "$ROOT/notify.sh"
 
 # A stand-in for the real converge.sh. Named so `pgrep -f "converge.sh --issue"`

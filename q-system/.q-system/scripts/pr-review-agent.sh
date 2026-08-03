@@ -544,7 +544,7 @@ note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
   else
     msg="reviewer: codex is BACK (PR #$PR) -- $STATUS_CONTEXT is an independent second opinion again."
   fi
-  bash "$NOTIFY" "$msg" 2>/dev/null || true
+  bash "$NOTIFY" --kind receipt "$msg" 2>/dev/null || true
 }
 
 echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
@@ -621,9 +621,16 @@ if [ "$REVIEW_UNUSABLE" = "1" ]; then
   VERDICT=""
   echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
 elif [ -n "$DERIVED_VERDICT" ]; then
-  VERDICT="$DERIVED_VERDICT"
+  # A DISAGREEMENT MAY NEVER RESOLVE TOWARD APPROVAL (ASK-312). This used to read
+  # VERDICT="$DERIVED_VERDICT" unconditionally, printing a NOTE and proceeding --
+  # which twice turned a reviewer's own "REQUEST CHANGES" into APPROVE and posted
+  # kipi/reviewer-approved=success on a PR nobody had read. resolve_verdict takes
+  # the harsher of the two, so the severity floor still overrides a reviewer that
+  # logged a blocker and then said APPROVE, while silence can no longer overrule a
+  # reviewer that said stop.
+  VERDICT="$(resolve_verdict "$STATED_VERDICT" "$DERIVED_VERDICT")"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
-    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
+    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; taking the harsher: '$VERDICT'"
   fi
 else
   VERDICT="$STATED_VERDICT"
@@ -842,7 +849,7 @@ Sana: reply to this comment on THIS issue. For each finding, either the file:lin
       # the same overclaim this commit is removing one layer down. So: attempt it,
       # record what came back, and leave the stderr WARN above as the one record
       # that is always written.
-      NOTIFY_OUT="$(bash "$NOTIFY" "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." 2>&1)"
+      NOTIFY_OUT="$(bash "$NOTIFY" --kind receipt "reviewer: PR #$PR review did NOT reach $ISSUE ($ENGINE engine, verdict ${VERDICT:-unstated}). The gate moved but the findings are not on the issue, so the rework conversation cannot start." 2>&1)"
       NOTIFY_RC=$?
       if [ "$NOTIFY_RC" -ne 0 ]; then
         echo "  WARN: the page about that loss ALSO failed (rc=$NOTIFY_RC${NOTIFY_OUT:+: $NOTIFY_OUT}). This loss is recorded ONLY in this log." >&2

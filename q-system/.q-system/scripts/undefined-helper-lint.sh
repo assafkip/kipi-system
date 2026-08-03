@@ -25,20 +25,50 @@ set -uo pipefail
 ROOT="${1:-.}"
 # Helpers whose silent absence changes behaviour rather than just erroring loudly.
 HELPERS="page page_ok say notify warn fail ok info die"
+# A HEREDOC BODY IS DATA, NOT CODE (2026-08-03). This grepped the raw file, so a
+# helper name appearing inside `cat > out.sh <<'EOF' ... EOF` was reported as an
+# undefined call -- even though those lines are written to ANOTHER file and never
+# executed here. It blocked a test whose fixture deliberately contains producer
+# code. Same blindness the human-handoff audit had, found the same day.
+#
+# Line numbers are preserved: body lines are BLANKED, not removed, so every
+# reported line still points at the right place in the real file.
+strip_heredocs() {
+  awk '
+    inside {
+      sub(/[ \t]+$/, "", $0)
+      if ($0 == marker) { inside = 0 }
+      print ""; next
+    }
+    {
+      line = $0
+      if (match(line, /<<-?[ \t]*['"'"'"]?[A-Za-z_][A-Za-z0-9_]*['"'"'"]?/)) {
+        m = substr(line, RSTART, RLENGTH)
+        gsub(/^<<-?[ \t]*['"'"'"]?/, "", m)
+        gsub(/['"'"'"]?$/, "", m)
+        marker = m; inside = 1
+      }
+      print line
+    }
+  ' "$1"
+}
+
 FOUND=0
 
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   case "$(basename "$f")" in undefined-helper-lint.sh) continue ;; esac
+  scan="$(mktemp)"
+  strip_heredocs "$f" > "$scan" 2>/dev/null || cp "$f" "$scan"
   for h in $HELPERS; do
     # Called: the name at the start of a command position. Not `foo_page`, not
     # `--page`, not inside a longer word.
-    calls="$(grep -nE "(^|[;&|(]|then |else |do |\{ )[[:space:]]*${h}[[:space:]]+[\"'\$-]" "$f" 2>/dev/null \
+    calls="$(grep -nE "(^|[;&|(]|then |else |do |\{ )[[:space:]]*${h}[[:space:]]+[\"'\$-]" "$scan" 2>/dev/null \
              | grep -v "^[0-9]*:[[:space:]]*#" || true)"
     [ -n "$calls" ] || continue
     # Defined here, or inherited by being sourced into a file that defines it.
     # Both `h() {` and `function h` count.
-    if grep -qE "^[[:space:]]*(function[[:space:]]+)?${h}[[:space:]]*\(\)" "$f" 2>/dev/null; then
+    if grep -qE "^[[:space:]]*(function[[:space:]]+)?${h}[[:space:]]*\(\)" "$scan" 2>/dev/null; then
       continue
     fi
     # A file that sources another may legitimately inherit the helper. Only flag

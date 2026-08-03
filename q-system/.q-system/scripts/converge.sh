@@ -503,7 +503,7 @@ receipt_confirm_origin() {
 
 # receipt_ensure <sha> <verdict-record> <reviewed-sha> <pr>
 # Best-effort by design and NEVER touches this run's exit code, exactly like the
-# worker's auto-merge arm: a ledger that cannot be written is a PR a human has to
+# worker's auto-merge arm: a ledger that cannot be written is a PR the next run has to
 # push a receipt onto, not a converge run that should report a different outcome.
 # It DOES change what the report says, which is a different thing: the exit code
 # is a contract other code reads, the page is what a human reads.
@@ -704,7 +704,7 @@ receipt_transaction() {
   if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
     say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
   else
-    say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so the receipt reaches nothing. By hand: git -C $tree push origin $BRANCH"
+    say "receipt: the push to origin/$BRANCH FAILED (see $LOG). CI reads the pushed head, so the receipt reaches nothing. The next converge run re-pushes this branch."
     RECEIPT_MISS="the receipt is committed in $tree but the push to origin/$BRANCH FAILED (see $LOG), and CI reads the pushed head"
     RECEIPT_FIX="git -C $tree push origin $BRANCH"
   fi
@@ -725,7 +725,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
-    bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
     exit 7
   fi
 
@@ -792,7 +792,10 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;
       unarmed)
         MERGE_LOG="Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" ;;
+        # ASK-310: named the founder as the actor and handed him the command.
+        # Nothing blocks a merge (measured, with controls), so an unarmed PR
+        # is a retry the loop owes, not an errand.
+        MERGE_PAGE="PR #$PR approved but NOT armed -- the next dispatch arms it. If it is still unarmed after that, the arm path is broken, not the PR." ;;
       *)
         MERGE_LOG="Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
         MERGE_PAGE="PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" ;;
@@ -816,17 +819,20 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     if [ -n "$RECEIPT_MISS" ]; then
       MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. Nothing proves it was reviewed. By hand: $RECEIPT_FIX"
       case "$AUTOMERGE" in
+        # human-required: self-certification -- nothing proves this head was
+        # reviewed. The loop writing that receipt itself would be the loop
+        # certifying its own review, which is worse than the page.
         armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Needs a human: $RECEIPT_FIX" ;;
         *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so nothing proves it was reviewed: $RECEIPT_FIX" ;;
       esac
     fi
     say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"
-    bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
     say "STOP exit-7: PR #$PR has no verdict after round $ROUND -- the review died or timed out. Re-run: kipi review $PR --issue $ISSUE --post"
-    bash "$NOTIFY" "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
     exit 7
   fi
 
@@ -852,7 +858,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # THE PAGE HAS TO CARRY THE DRIFT, because it is the only thing that reaches
     # the founder's phone (PR #30 review round 2, minor 4). Gate 40 falls through
     # to this guard on purpose, so a stuck drift -- a held claim, a tree that
-    # needs a human, a reviewer that is down -- exits here. The generic text read
+    # exhausts this runner, a reviewer that is down -- exits here. The generic text read
     # "stalled at 'APPROVE WITH NITS', no code change in round N", which is a
     # benign stall on an approved PR. The gate-40 line above is in the run log;
     # the log is not what wakes anyone.
@@ -860,10 +866,12 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
     if [ "$GATE" = "40" ]; then
       STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
+    # human-required: self-certification -- the reviewed sha and the head
+    # disagree, so no verdict on record covers what would merge.
       STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
     fi
     say "$STALL_LOG"
-    bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
+    bash "$NOTIFY" --kind receipt "$STALL_PAGE" 2>/dev/null || true
     exit 5
   fi
   LAST_VERDICT="$VERDICT"; LAST_SHA="$SHA"
@@ -871,5 +879,5 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 done
 
 say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+bash "$NOTIFY" --kind receipt "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
 exit 2

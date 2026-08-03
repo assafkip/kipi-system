@@ -2510,9 +2510,22 @@ ok "a refused arm is said out loud, naming the PR"
 $(sed 's/^/        /' "$W2/arm3.out")"
 grep -q "832" "$W2/pages.txt" \
   || fail "the page does not name the PR, so the operator cannot act on it: $(cat "$W2/pages.txt")"
+# THE CONTRACT CHANGED (ASK-310). This required the page to CARRY the fix
+# command, i.e. to hand the operator something to type. Measured 2026-08-02:
+# nothing blocks a merge -- `gh pr merge` is allowlisted in every settings file
+# and passes every PreToolUse hook clean, against positive controls the same
+# hooks do deny. So that command was always one the loop could run, and a page
+# carrying it is an unbuilt retry. This is the THIRD test file that encoded
+# "hand the operator a command" as correct behaviour, which is why the shape
+# survived a week.
+#
+# What the page still owes: naming the PR (asserted above) and saying what
+# happens next without requiring a person.
 grep -qi "gh pr merge --auto --squash 832" "$W2/pages.txt" \
-  || fail "the page does not carry the one command that fixes it: $(cat "$W2/pages.txt")"
-ok "a refused arm PAGES the founder, naming the PR and the command that fixes it"
+  && fail "REGRESSION: the page hands over a command again (ASK-310): $(cat "$W2/pages.txt")"
+grep -qiE "retr(y|ies)|next dispatch|second runner" "$W2/pages.txt" \
+  || fail "the page names no continuation, so an unarmed PR still reads as a dead end: $(cat "$W2/pages.txt")"
+ok "a refused arm PAGES, naming the PR and what happens next"
 
 grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
   || fail "a failed arm killed the review. The PR must still stand and still be reviewed. Log:
@@ -2790,7 +2803,12 @@ ok "converge says no human owes the merge when the worker RECORDED the PR armed"
 # AND THE RECEIPT SENTENCE STAYS OFF THE HEALTHY PAGE. A fix that makes the page
 # louder on every run is the cry-wolf failure this fleet keeps killing: the
 # receipt landed here, so there is nothing to say about it.
-grep -qi "receipt" "$W2/pages.txt" \
+# MATCHES THE PROSE, NOT THE FLAG (ASK-310). This grepped the bare word
+# "receipt", which was unambiguous until ASK-283 gave slack-notify.sh a
+# `--kind receipt` argument -- after that EVERY page contains the word and this
+# assertion failed on the healthy case it was written to protect. The thing it
+# actually guards is the prd-os receipt SENTENCE, so it now matches that.
+grep -qi "prd-os receipt" "$W2/pages.txt" \
   && fail "the healthy page now carries receipt prose on a run where the receipt LANDED. Every
       converged PR would page about a problem that is not there: $(cat "$W2/pages.txt")"
 ok "an armed PR whose receipt landed pages exactly what it did before"
@@ -2806,9 +2824,16 @@ grep -qi "no human merge needed" "$W2/pages.txt" \
       that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
       fine -- the silent stall relocated into the alert channel. It said:
 $(cat "$W2/pages.txt")"
+# ASK-310, same inversion as the worker-side assertion above: converge knowing a
+# PR is unarmed is a retry it owes, not an errand it delegates. The page must
+# still be actionable -- it names the PR and what happens next -- but "actionable"
+# stopped meaning "contains something for a person to type".
 grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
-  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
-      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
+  && fail "REGRESSION (ASK-310): converge hands over a command again instead of arming
+      the PR itself. Nothing blocks a merge, so this page is an unbuilt retry: $(cat "$W2/pages.txt")"
+grep -qiE "retr(y|ies)|next dispatch|arms it|second runner" "$W2/pages.txt" \
+  || fail "converge says PR #903 is unarmed but names no continuation, so it reads as a dead
+      end: $(cat "$W2/pages.txt")"
 ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
 
 S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"

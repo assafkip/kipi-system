@@ -20,10 +20,11 @@
 # 4. Redrafts are capped per issue. At the cap the issue gets an honest terminal
 #    with a written rationale and NO further claude calls -- and once marked, it
 #    stops consuming a slot at all. No new escalation tier (PRD non-goal).
-# 5. STARVATION PIN (codex finding-13). `batch = todo[:limit]` is unsorted, has
-#    no cursor, and a failed draft leaves the issue in `todo`. Two runs over a
-#    board whose head always fails attempt the IDENTICAL head both times and
-#    never reach the issue behind it.
+# 5. STARVATION, now FIXED (codex finding-13, sp-e7f907a4, ASK-338). Selection
+#    was `plan[:limit]` with no cursor over a stable sort, so two runs over a
+#    board whose head always fails attempted the IDENTICAL head both times and
+#    never reached the issue behind it. rotate_for_fairness added a persisted
+#    cursor; this case now asserts run 2 rotates past run 1 and the tail runs.
 # 6. Redraft candidates sort AHEAD of the no-DoR backlog. Without this, 5 is not
 #    a theoretical property: the live board had 93 issues lacking a DoR against a
 #    limit of 8, so a redraft appended to the tail would never be reached.
@@ -351,7 +352,7 @@ else
   ok "an already-terminal issue is not selected again"
 fi
 
-echo "== case 5: STARVATION PIN -- a failing head is re-attempted, the tail never is =="
+echo "== case 5: STARVATION FIXED -- run 2 rotates past run 1, the tail is reached =="
 reset
 python3 - "$WORK/board.json" <<'PY'
 import json, sys
@@ -367,16 +368,22 @@ STUB_MODE=fail run_drafter --limit 2 --apply
 cp "$WORK/calls.log" "$WORK/calls-run1.log"
 : > "$WORK/calls.log"
 STUB_MODE=fail run_drafter --limit 2 --apply
-if diff -q "$WORK/calls-run1.log" "$WORK/calls.log" >/dev/null 2>&1 && [ -s "$WORK/calls.log" ]; then
-  ok "run 2 attempts the IDENTICAL head as run 1 (no cursor, no rotation)"
+# INVERTED 2026-08-03 (ASK-338). This pair used to PIN the starvation defect:
+# it asserted run 2 attempted the identical head and that the tail was never
+# reached. rotate_for_fairness fixed that, so the pin now asserts the fix.
+# A characterization test that keeps passing after its bug is fixed is a test
+# that has stopped measuring anything.
+if [ -s "$WORK/calls.log" ] && ! diff -q "$WORK/calls-run1.log" "$WORK/calls.log" >/dev/null 2>&1; then
+  ok "run 2 rotates past run 1's head instead of re-attempting it"
 else
-  bad "run 2 attempts the IDENTICAL head as run 1 (no cursor, no rotation)" \
+  bad "run 2 rotates past run 1's head instead of re-attempting it" \
       "run1=$(tr '\n' ' ' < "$WORK/calls-run1.log") run2=$(tr '\n' ' ' < "$WORK/calls.log")"
 fi
 if grep -q 'ASK-912' "$WORK/calls-run1.log" "$WORK/calls.log"; then
-  bad "the issue behind the failing head is never reached" "ASK-912 was attempted"
+  ok "the issue behind the failing head IS reached"
 else
-  ok "the issue behind the failing head is never reached"
+  bad "the issue behind the failing head IS reached" \
+      "ASK-912 still never attempted across two runs"
 fi
 
 echo "== case 6: a redraft outranks the no-DoR backlog, so it is reachable at all =="

@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
       "runner": "python3"
     },
@@ -26,8 +30,16 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-autocommit-wip-ref.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
@@ -50,6 +62,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-diagnosed-not-built.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
       "runner": "bash"
     },
@@ -58,11 +74,15 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
+      "path": "q-system/.q-system/scripts/test/test-fable-escalation.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-ff-merge-if-safe.sh",
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
       "runner": "bash"
     },
     {
@@ -74,8 +94,16 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-founder-actor-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-human-handoff-audit.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
@@ -198,16 +226,20 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-callsite-audit.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-notify-decision-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
+      "path": "q-system/.q-system/scripts/test/test-notify-receipts-surface.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
@@ -224,10 +256,6 @@
     {
       "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
       "runner": "bash"
-    },
-    {
-      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
-      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
@@ -250,7 +278,15 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
       "runner": "bash"
     },
     {
@@ -315,11 +351,23 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test_autocapture_wiring.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
     },
     {
@@ -396,6 +444,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -405,10 +457,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -432,11 +480,15 @@
       "runner": "python3"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "path": "q-system/.q-system/scripts/test_spillover_validate.py",
       "runner": "python3"
     },
     {
-      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
+      "path": "q-system/.q-system/scripts/test_dor_rotation.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
       "runner": "python3"
     }
   ],
@@ -540,6 +592,16 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/spillover-validate.py",
+      "reason": "hand-run ledger-triage tool for ASK-337: read-only by default and --apply voids only confirmed-gone rows. Its one-shot sweep already ran (2026-08-03T14:45Z). Auto-wiring a bulk void is the exact hazard its own docstring names, so the call site is a founder decision, not a hook",
+      "spillover_id": "sp-8a89b0e0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/spillover-merge-orphans.py",
+      "reason": "completed one-shot migration: folds pre-fix per-worktree spillover ledgers into the shared one. A dry run 2026-08-03 reports 0 orphan ids and 'nothing to merge', so there is no second run. Same shape as linear-collapse-jobmigration.py. Retire-or-keep tracked on ASK-345",
+      "spillover_id": "sp-b7f5bb97"
     }
   ],
   "uncovered_known": [

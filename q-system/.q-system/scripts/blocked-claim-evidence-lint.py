@@ -17,6 +17,8 @@ THE THREE SUB-SHAPES, each with its own remediation (generic stderr teaches noth
 
   1. rollup-as-config          a computed roll-up read as a policy statement.
                                `mergeStateStatus: BLOCKED` is derived from several
+                               # human-handoff-audit: definitional -- this quotes a MISREADING being
+                               # corrected, not a handoff this code performs.
                                inputs; it was read as "a human must approve".
   2. my-denial-as-object-property   a refusal aimed at MY tool layer reported as a
                                property of the object. "I can't" became "it can't".
