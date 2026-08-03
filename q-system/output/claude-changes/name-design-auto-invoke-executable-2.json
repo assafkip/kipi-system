@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "name-design-auto-invoke-executable-2",
+  "reason": "Follow-up to name-design-auto-invoke-executable. That proposal took the guard from 3 findings to 1: the finding on the 'Invoke design skills ONLY' line survived because prompt-only-enforcement-guard.py clears a finding only when a deterministic term sits within TWO lines of it, and the previous insert put 'hook' on its second line, one line out of range. This adds the lead-in sentence that carries the term into the window. The route is additive-only by design, so the correction is another insert rather than a reword.",
+  "requires": {
+    "files_present": [
+      "plugins/kipi-design/hooks/dogfood_gate.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/design-auto-invoke.md",
+      "op": "insert_after",
+      "anchor": "Invoke design skills ONLY when building output that will be published or seen by the founder's audience (prospects, investors, users, public web).",
+      "insert": "\n\nThe hook does not leave that to judgement:",
+      "reason": "Lead-in naming the hook, placed directly after the rule sentence so the deterministic term lands inside that line's two-line window."
+    }
+  ]
+}

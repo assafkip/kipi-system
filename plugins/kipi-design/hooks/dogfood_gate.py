@@ -273,6 +273,56 @@ def scan_html(content, fp):
     return findings
 
 
+# Paths that are HTML but nobody outside the founder ever sees: dashboards, schedules,
+# logs, templates, test fixtures, build output, internal harvest tooling.
+#
+# The list errs toward INTERNAL on purpose. The two failure directions are not
+# symmetric: a missed scan on a public page costs one advisory pass, but a false
+# BLOCK on a page the founder edits often costs the whole gate, because the first
+# thing a gate that refuses legitimate work gets is switched off. So a surface is
+# added here as soon as it is known to be founder-only, not once it is proven never
+# to be public.
+#
+# "/cockpit/" is here because the classifier called the GTM cockpit
+# (cole-gtm/gtm/cockpit/index.html + content.html) PUBLIC, and that page is
+# token-gated founder-only -- its own bypass check, gtm/cockpit/checks/
+# verify_auth_required.py, FAILS if the production URL ever answers an
+# unauthenticated request with a 200. So every edit to it was a blocking false
+# positive (ASK-134, Codex major on PR #49). Measured at the time of the fix: 465
+# of the fleet's registered HTML files classified PUBLIC, and this was the
+# founder-only one among them.
+#
+# Do not infer the editor from the job name. An earlier draft of this comment said
+# the com.cole.cockpit launchd job edits these files; it does not. Read against the
+# plist (cole-gtm/gtm/dashboard/com.cole.cockpit.plist), that job runs
+# gtm/dashboard/server.py with WorkingDirectory gtm/dashboard -- it SERVES a
+# different surface and never writes gtm/cockpit/*.html. The label and the directory
+# disagree, which is exactly why the name was not evidence (Codex minor, round 3).
+INTERNAL_PATH_MARKERS = (
+    "/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
+    "fixture", "dashboard", "/cockpit/", "schedule", "morning", "-log", "/logs/",
+    "/output/", "/build/", "/dist/", "debug", "/.git/", "storybook",
+    "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
+
+
+def is_public_facing_page(path):
+    """True when `path` is an HTML page an audience outside the founder will see.
+
+    This is the deterministic half of the question .claude/rules/design-auto-invoke.md
+    asks ("will someone other than the founder see this?"). It lived inline in main()
+    where no test could reach it, so that rule named no executable and was prompt-only
+    (ASK-134). One chokepoint now: this hook's main() and test_dogfood_gate.py both
+    read the same answer, so the scoping decision cannot drift between them.
+
+    Non-HTML paths are False — out of this gate's scope, not a judgement that a .css
+    or .tsx file is internal.
+    """
+    if not path or not path.lower().endswith(".html"):
+        return False
+    low = path.lower()
+    return not any(marker in low for marker in INTERNAL_PATH_MARKERS)
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -281,15 +331,7 @@ def main():
 
     ti = data.get("tool_input", {}) or {}
     path = ti.get("file_path") or ti.get("path") or ""
-    if not path or not path.lower().endswith(".html"):
-        sys.exit(0)
-
-    low = path.lower()
-    SKIP = ("/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
-            "fixture", "dashboard", "schedule", "morning", "-log", "/logs/", "/output/",
-            "/build/", "/dist/", "debug", "/.git/", "storybook",
-            "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
-    if any(s in low for s in SKIP):
+    if not is_public_facing_page(path):
         sys.exit(0)
 
     content = ""
