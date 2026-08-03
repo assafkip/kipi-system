@@ -79,7 +79,7 @@ SKIP_DIR_PARTS = (".git", "node_modules", "worktrees", "template-repo",
                   ".prd-os", "__pycache__")
 SKIP_DIR_PREFIXES = (".pr", ".review-")
 # This file necessarily quotes every pattern it hunts.
-SKIP_FILES = ("human-handoff-audit.py",)
+SKIP_FILES = ("human-handoff-audit.py", "founder-actor-gate.py")
 
 
 def is_generated_output(rel: str) -> bool:
@@ -193,7 +193,11 @@ def findings(repo: str):
                 # "The founder must / never be the one who notices a regression"
                 # across two lines, and a per-line check calls the cure a defect.
                 pair = line + " " + (lines[i + 1] if i + 1 < len(lines) else "")
-                if NEGATED.search(pair) or HISTORICAL.search(line):
+                # HISTORICAL needs a LOOK-BACK, not just the line: the "used
+                # to" that marks a quote as history routinely sits one or two
+                # lines above the command being quoted.
+                back = "\n".join(lines[max(0, i - 3):i + 1])
+                if NEGATED.search(pair) or HISTORICAL.search(back):
                     continue
                 window = "\n".join(lines[max(0, i - 3):i + 4])
                 if DEFINITIONAL in window or explained(line, window):
