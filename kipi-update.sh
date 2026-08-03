@@ -1403,7 +1403,7 @@ PY
       fi
     done
 
-    # Re-baseline the instance's .claude/ integrity tripwire (ASK-291).
+    # Sanction the .claude/ writes THIS update just made (ASK-291).
     #
     # SCAR, measured before rollout by probe_update_interaction.sh: Layer 2
     # (claude-integrity-tripwire.py --enforce) is wired PostToolUse on every
@@ -1413,19 +1413,36 @@ PY
     # the updated instance sees all of it as drift, quarantines it, and rolls the
     # update BACK. The updater already printed OK. Silent, and on 23 machines.
     #
-    # A re-baseline and not an exclusion: `kipi update` propagates the skeleton's
+    # A sanction and not an exclusion: `kipi update` propagates the skeleton's
     # git HEAD, which is the same reviewed provenance the tripwire's own
     # attributable() already treats as sanctioned. Excluding settings.json from
     # the watch set would hand back the whole hole. Phase 3 of the probe holds
-    # the other end: a tamper AFTER the re-baseline is still caught.
+    # the other end: a tamper AFTER this call is still caught.
+    #
+    # --register, NOT a blanket --baseline (review finding, PR #85). A blanket
+    # re-baseline re-measures the WHOLE watch set, so any unrelated tamper that
+    # happened to be sitting in .claude/ at that moment became sanctioned
+    # content, fleet-wide, on every update. The applier's own docstring already
+    # named that "the blinding version of this fix"; the updater was doing it.
+    # The path list below is exactly what the block above writes -- settings.json
+    # plus every .md this run copied -- so an unrelated file cannot ride along.
     #
     # Best-effort by design: an instance that has not adopted the tripwire has no
-    # script here, and a re-baseline failure must never abandon a good update.
+    # script here, and a sanction failure must never abandon a good update.
     if [ -f "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" ]; then
+      TRIPWIRE_WROTE=()
+      [ -f "$path/.claude/settings.json" ] && TRIPWIRE_WROTE+=(".claude/settings.json")
+      for config_kind in agents output-styles rules; do
+        if compgen -G "$SCRIPT_DIR/.claude/$config_kind/*.md" >/dev/null; then
+          for src in "$SCRIPT_DIR"/.claude/"$config_kind"/*.md; do
+            TRIPWIRE_WROTE+=(".claude/$config_kind/$(basename "$src")")
+          done
+        fi
+      done
       KIPI_NOTIFY=/usr/bin/true python3 \
         "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
-        --root "$path" --baseline --quiet >/dev/null 2>&1 ||
-        echo "    WARN: could not re-baseline .claude/ tripwire (next tool call may revert this update)"
+        --root "$path" --quiet --register "${TRIPWIRE_WROTE[@]}" >/dev/null 2>&1 ||
+        echo "    WARN: could not sanction .claude/ tripwire writes (next tool call may revert this update)"
     fi
 
     # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).

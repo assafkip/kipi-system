@@ -38,6 +38,8 @@ follows the caller's working directory answers a question about the wrong tree.
 """
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -100,7 +102,18 @@ def watch_set(root):
             if name == ".DS_Store":
                 continue
             full = os.path.join(dirpath, name)
-            if os.path.islink(full) or not os.path.isfile(full):
+            # SYMLINKS ARE WATCHED (review finding, PR #85). They used to be
+            # skipped here, so `ln -s /elsewhere/evil.md .claude/agents/x.md`
+            # read as CLEAN on the layer this PR armed and advertised as the
+            # backstop for Layer 1's command-substitution misses. A watched
+            # symlink is measured by WHERE IT POINTS, never by its target's
+            # contents -- following the link is how the round-2 restore became
+            # an arbitrary-write primitive.
+            #
+            # HONEST BOUND, still open: os.walk does not follow symlinked
+            # DIRECTORIES, so a symlinked subdir under .claude/ hides whatever
+            # is beneath it. Captured as spillover, not fixed here.
+            if not os.path.islink(full) and not os.path.isfile(full):
                 continue
             found.append(os.path.relpath(full, root))
     return sorted(found)
@@ -183,6 +196,36 @@ def save_baseline(root, entries, last_alarm=""):
     return path
 
 
+@contextlib.contextmanager
+def baseline_lock(root):
+    """Serialize read-modify-write cycles on the baseline across processes.
+
+    The lock is a SEPARATE file, never the baseline itself: save_baseline
+    os.replace()s a new inode into place, so a lock held on the old inode would
+    protect nothing after the first write. Best-effort by design -- a tree where
+    the lock cannot be created still registers rather than refusing, because a
+    failed sanctioned-apply is reverted one tool call later.
+    """
+    path = os.path.join(root, BASELINE_REL) + ".lock"
+    fh = None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fh = open(path, "a+")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if fh is not None:
+            fh.close()
+        fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
+
 def save_and_reload(root, entries, baseline):
     """Persist entries while preserving the alarm-dedupe marker."""
     last = baseline.get("last_alarm", "")
@@ -191,10 +234,15 @@ def save_and_reload(root, entries, baseline):
 
 
 def measure(root, paths):
+    """Record each path's sanctioned identity: link TARGET for a symlink,
+    content hash + git blob for a regular file. Never the target's contents."""
     entries = {}
     for rel in paths:
         full = os.path.join(root, rel)
-        entries[rel] = {"sha256": sha256_file(full), "blob": git_blob_id(root, rel)}
+        if os.path.islink(full):
+            entries[rel] = {"symlink": os.readlink(full), "sha256": "", "blob": ""}
+        else:
+            entries[rel] = {"sha256": sha256_file(full), "blob": git_blob_id(root, rel)}
     return entries
 
 
@@ -205,10 +253,18 @@ def diff(root, baseline):
     modified, added = [], []
     for rel in current:
         full = os.path.join(root, rel)
-        now = sha256_file(full)
         if rel not in recorded:
             added.append(rel)
-        elif recorded[rel].get("sha256") != now:
+            continue
+        rec = recorded[rel]
+        if os.path.islink(full):
+            # Retargeted, or a regular file swapped for a link. Either way the
+            # sanctioned identity moved.
+            if rec.get("symlink", "") != os.readlink(full):
+                modified.append(rel)
+        elif rec.get("symlink"):
+            modified.append(rel)  # sanctioned as a link, now a regular file
+        elif rec.get("sha256") != sha256_file(full):
             modified.append(rel)
     removed = [r for r in recorded if r not in set(current)]
     return sorted(modified), sorted(added), sorted(removed)
@@ -261,8 +317,14 @@ def drift_fingerprint(root, rels):
         h.update(rel.encode())
         h.update(b":")
         try:
-            h.update(sha256_file(full).encode() if os.path.isfile(full) and
-                     not os.path.islink(full) else b"absent")
+            if os.path.islink(full):
+                # Two different link targets are two different drift states, so
+                # the second one must not be deduped away as "already paged".
+                h.update(b"symlink:" + os.readlink(full).encode())
+            elif os.path.isfile(full):
+                h.update(sha256_file(full).encode())
+            else:
+                h.update(b"absent")
         except OSError:
             h.update(b"unreadable")
     return h.hexdigest()
@@ -334,7 +396,19 @@ def restore(root, baseline, modified, added, removed):
         if not _inside_claude(root, full):
             failed.append("%s (parent resolves outside .claude/)" % rel)
             continue
-        content = blob_content(root, recorded.get(rel, {}).get("blob", ""))
+        rec = recorded.get(rel, {})
+        if rec.get("symlink"):
+            # This path is sanctioned AS a link. Put the link back pointing where
+            # the baseline says, rather than writing bytes into it: recreating a
+            # link never writes through one, so the round-2 arbitrary-write shape
+            # cannot come back through the repair path.
+            if os.path.islink(full) or os.path.exists(full):
+                os.remove(full)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            os.symlink(rec["symlink"], full)
+            restored.append(rel)
+            continue
+        content = blob_content(root, rec.get("blob", ""))
         if content is None:
             failed.append("%s (no stored blob)" % rel)  # fail loud, never guess
             continue
@@ -376,16 +450,35 @@ def main(argv=None):
         return 0
 
     if args.register is not None:
-        base = load_baseline(root) or {"entries": {}}
-        entries = dict(base.get("entries", {}))
-        current = set(watch_set(root))
-        for rel in args.register:
-            rel = os.path.relpath(os.path.abspath(os.path.join(root, rel)), root)
-            if rel in current:
-                entries.update(measure(root, [rel]))
-            else:
-                entries.pop(rel, None)
-        save_baseline(root, entries)
+        # Read-modify-write under an exclusive lock (review finding, PR #85).
+        # save_baseline's os.replace is atomic per WRITE, which the round-3
+        # comment mistook for single-writer. Two sanctioned appliers registering
+        # different paths concurrently both read the same `entries`, both printed
+        # success, and the last writer silently dropped the other's path -- so
+        # the next --enforce reverted a legitimate, already-reported change.
+        # Measured 5/5 losses before this lock, 0/5 after (probe_review_findings
+        # phase 4).
+        with baseline_lock(root):
+            base = load_baseline(root)
+            if base is None:
+                # NO BASELINE ON THIS TREE (review finding, PR #85). Registering
+                # into an empty dict produced a baseline holding only the paths
+                # this run wrote, so the very next --enforce saw every OTHER
+                # watched file as `added` and DELETED it -- the sanctioned write
+                # path wiping .claude/ is a worse outage than the hole it closes.
+                # An unarmed tree has no prior sanctioned state to protect, so
+                # arm it exactly the way a first --check would (full watch set),
+                # then register on top.
+                base = {"entries": measure(root, watch_set(root))}
+            entries = dict(base.get("entries", {}))
+            current = set(watch_set(root))
+            for rel in args.register:
+                rel = os.path.relpath(os.path.abspath(os.path.join(root, rel)), root)
+                if rel in current:
+                    entries.update(measure(root, [rel]))
+                else:
+                    entries.pop(rel, None)
+            save_baseline(root, entries, base.get("last_alarm", ""))
         if not args.quiet:
             print("registered %d sanctioned path(s)" % len(args.register))
         return 0

@@ -107,4 +107,5 @@ q-system/output/capability-maps/
 # .claude/settings.json from settings-template.json, so a shared baseline can
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
+q-system/.q-system/claude-integrity-baseline.json.lock
 q-system/output/claude-integrity/

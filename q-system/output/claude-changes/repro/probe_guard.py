@@ -107,6 +107,17 @@ CASES = [
     ("ATTACK", "git checkout -- .claude/settings.json", REPO, BLOCK),
     ("ATTACK", "git restore .claude/rules/security.md", REPO, BLOCK),
     ("BENIGN", "ls -la /tmp", REPO, ALLOW),
+    # HEREDOC BODIES ARE DATA, NOT STATEMENTS (2026-08-03, the second false block
+    # in a row on the legitimate path). This exact shape -- a commit message
+    # describing the guard, quoting its own stderr -- was shredded line by line
+    # and a prose line became a bare command with `.claude` in argument position.
+    ("BENIGN",
+     "git commit -F - <<'MSG'\nfix(guard): arm it\n\n.claude/ wires every hook;\n"
+     "the run would write inside .claude/ and touch .claude/rules/x\nMSG",
+     REPO, ALLOW),
+    # The negative half: dropping the BODY must not drop the REDIRECT. A heredoc
+    # aimed INTO .claude/ is still the write the guard exists to stop.
+    ("ATTACK", "cat > .claude/settings.json <<'EOF'\n{\"hooks\":{}}\nEOF", REPO, BLOCK),
     ("BENIGN",
      "bash q-system/.q-system/scripts/apply-claude-changes.sh "
      "q-system/output/claude-changes/arm-claude-write-path-guards.json",

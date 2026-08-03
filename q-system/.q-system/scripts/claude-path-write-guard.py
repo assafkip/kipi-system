@@ -235,10 +235,51 @@ def hits_claude(path):
     return False
 
 
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredocs(text):
+    """Remove heredoc BODIES before the text is parsed as shell statements.
+
+    SCAR (ASK-291, measured 2026-08-03, second false block in a row on the
+    legitimate path): the quote-aware splitter fixed quoted arguments but a
+    heredoc body is not quoted. `git commit -F - <<'MSG' ... MSG` describing this
+    very change was shredded line by line into fake statements, and a prose line
+    became a bare command with `.claude` in argument position:
+
+        BLOCKED: 'run' would write inside .claude/: /Users/.../ask-291/.claude
+
+    A heredoc body is stdin DATA, never commands. The delimiter line and the
+    redirect itself stay in the text, so `cat <<EOF > .claude/settings.json` is
+    still judged on its `> .claude/...` redirect -- what is dropped is only the
+    payload between the delimiters. Pinned by two cases in probe_guard.py: a
+    benign heredoc whose body mentions .claude/, and an ATTACK heredoc that
+    redirects INTO .claude/.
+    """
+    out, pos = [], 0
+    for m in HEREDOC_RE.finditer(text):
+        if m.start() < pos:
+            continue  # inside a body already consumed
+        delim = m.group(2)
+        nl = text.find("\n", m.end())
+        if nl == -1:
+            continue  # no body in this payload; nothing to strip
+        out.append(text[pos:nl + 1])
+        body_end = len(text)
+        for line in re.finditer(r"^[\t ]*%s[\t ]*$" % re.escape(delim),
+                                text[nl + 1:], re.M):
+            body_end = nl + 1 + line.start()
+            break
+        pos = body_end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def analyse(command, cwd):
     """Return a blocking reason, or None."""
     assigns = {}
     effective_cwd = cwd
+    command = strip_heredocs(command)
 
     for raw_stmt in split_outside_quotes(command, STATEMENT_OPS):
         stmt = raw_stmt.strip()

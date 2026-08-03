@@ -30,10 +30,42 @@ cp -R "$ROOT/q-system/.q-system/scripts" "$D/q-system/.q-system/scripts"
 cp "$ROOT/q-system/.q-system/capability-manifest.json" "$D/q-system/.q-system/" 2>/dev/null
 git -C "$D" init -q
 
+# DISARM the copy before applying to it (review finding, PR #85). The copy is
+# taken from the PR head, where the proposal is ALREADY applied, so phase 1 was
+# exercising the no-op path and its "applied (exit 0)" proved nothing about the
+# apply it claimed to test. Stripping both hooks puts the copy back in the state
+# a real instance is in before arming. Merge-proof: it edits the copy's own JSON
+# rather than reaching for a pre-merge git ref that stops existing after merge.
+disarm() {
+  python3 - "$1" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+GUARDS = ("claude-path-write-guard.py", "claude-integrity-tripwire.py")
+for rel in (".claude/settings.json", "settings-template.json"):
+    p = os.path.join(d, rel)
+    s = json.load(open(p))
+    for event, groups in list(s.get("hooks", {}).items()):
+        kept = []
+        for g in groups:
+            g["hooks"] = [h for h in g.get("hooks", [])
+                          if not any(x in h.get("command", "") for x in GUARDS)]
+            if g["hooks"]:
+                kept.append(g)
+        s["hooks"][event] = kept
+    json.dump(s, open(p, "w"), indent=2)
+    open(p, "a").write("\n")
+PY
+}
+disarm "$D"
+
 echo "== Phase 1. Apply on the copy =="
 OUT="$(bash "$APPLY" "$PROPOSAL" --root "$D" 2>&1)"; RC=$?
 echo "     $OUT"
 [ "$RC" -eq 0 ] && pass "applied (exit 0)" || fail "applier refused (exit $RC)"
+case "$OUT" in
+  *already-applied*) fail "phase 1 was a NO-OP -- the copy arrived already armed, so this harness tested nothing" ;;
+  *) pass "phase 1 performed a real apply (not already-applied)" ;;
+esac
 
 echo "== Phase 2. Negative self-test: a second apply must be a no-op =="
 OUT2="$(bash "$APPLY" "$PROPOSAL" --root "$D" 2>&1)"; RC2=$?
@@ -89,6 +121,7 @@ rm -rf "$D2/.claude/worktrees" "$D2/.claude/state" "$D2/.claude/plans"
 cp "$ROOT/settings-template.json" "$D2/"
 cp -R "$ROOT/q-system/.q-system/scripts" "$D2/q-system/.q-system/scripts"
 cp "$ROOT/q-system/.q-system/capability-manifest.json" "$D2/q-system/.q-system/" 2>/dev/null
+disarm "$D2"   # same reason as phase 1: an armed copy makes this phase a no-op
 git -C "$D2" init -q
 git -C "$D2" add -A >/dev/null 2>&1
 git -C "$D2" -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1
