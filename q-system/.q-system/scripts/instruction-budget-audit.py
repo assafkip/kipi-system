@@ -76,6 +76,15 @@ rule net to zero and tighten nothing -- separating them needs a line-level diff 
 rule bodies, which this baseline does not carry. The direction of that residual is
 a cap that stays up to N lines looser than ideal; it never raises the ceiling and
 never banks headroom (sp-cdd3f338).
+
+FOURTH HONEST BOUNDARY: a rename is recognised only where git recorded one -- an
+`R` record for a staged rename under .claude/rules. Outside a git work tree (a
+--root'ed fixture, apply_claude_changes.py's gate suite) there are no records, and
+git's own similarity detection can miss a rename that also rewrote most of the
+file. Both fall back to the pre-fix reading: the old path is charged as a deletion
+and the new one as a fresh file. That direction only ever TIGHTENS the cap (and is
+clamped at the total that just passed), so it costs banked headroom and never
+mints any. Recovering it is a founder edit of the baseline, same as before.
 """
 import json
 import os
@@ -270,22 +279,22 @@ def stage_baseline(project_root):
     return os.path.relpath(path, project_root)
 
 
-def index_divergence(project_root, audited):
-    """Audited paths whose WORKING TREE content differs from the index.
+def git_status(project_root, audited):
+    """Parsed `git status --porcelain -z` records for the audited paths.
 
-    Returns [] when the tree and the index agree, and None when there is no index
-    to compare against (a --root'ed fixture, a non-git tree) -- callers treat None
-    as "not applicable", never as "clean", so a missing git is not silently a pass
-    for a check that never ran.
+    Returns [(index_state, tree_state, path, source_path), ...] with source_path
+    set only on a rename/copy, or None when there is no index to read (a --root'ed
+    fixture, a non-git tree). Callers treat None as "not applicable", never as
+    "clean", so a missing git is not silently a pass for a check that never ran.
 
-    WHY THIS EXISTS (PR #88 round 2, major). The ratchet reads the tree and stages
-    the baseline it wrote. Under a partial `git add`, a deletion that lives only in
-    the tree tightened the cap, and that tightened cap got committed while the
-    rules it was computed from did not -- so the very next fresh clone audited RED
-    against a cap no committed rule text could satisfy, and only a hand edit of the
-    baseline got it back. Recording a transition therefore waits for a tree that
-    matches the index. Judging does not wait: the cap check upstream still runs
-    against the tree, so growth still fails closed.
+    ONE call with TWO readers on purpose: index_divergence wants the
+    worktree-vs-index column and rule_renames wants the rename records, and they
+    have to be describing the same tree at the same instant. Two subprocess calls
+    could disagree across an edit landing between them.
+
+    In -z format the rename fields are reversed and un-arrowed: the record carries
+    the DESTINATION path and the source follows as its own NUL-terminated field
+    with no XY prefix.
     """
     rel = []
     for path in audited:
@@ -304,23 +313,96 @@ def index_divergence(project_root, audited):
     if proc.returncode != 0:
         return None
 
-    diverged = []
-    records = [r for r in proc.stdout.decode("utf-8", "replace").split("\0") if r]
-    skip_next = False
-    for record in records:
-        if skip_next:
-            skip_next = False
+    fields = [f for f in proc.stdout.decode("utf-8", "replace").split("\0") if f]
+    records = []
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        i += 1
+        if len(field) < 4:
             continue
-        if len(record) < 4:
+        index_state, tree_state, name = field[0], field[1], field[3:]
+        source = None
+        if index_state in ("R", "C") and i < len(fields):
+            source = fields[i]
+            i += 1
+        records.append((index_state, tree_state, name, source))
+    return records
+
+
+def index_divergence(records):
+    """Audited paths whose WORKING TREE content differs from the index.
+
+    Returns [] when the tree and the index agree, and None when `records` is None
+    (no index to compare against).
+
+    WHY THIS EXISTS (PR #88 round 2, major). The ratchet reads the tree and stages
+    the baseline it wrote. Under a partial `git add`, a deletion that lives only in
+    the tree tightened the cap, and that tightened cap got committed while the
+    rules it was computed from did not -- so the very next fresh clone audited RED
+    against a cap no committed rule text could satisfy, and only a hand edit of the
+    baseline got it back. Recording a transition therefore waits for a tree that
+    matches the index. Judging does not wait: the cap check upstream still runs
+    against the tree, so growth still fails closed.
+    """
+    if records is None:
+        return None
+    # Second column is the worktree-vs-index state. ' ' means they agree; a
+    # staged-only change (e.g. "M ") is exactly what we want to let through.
+    return sorted({name for _, tree_state, name, _ in records if tree_state != " "})
+
+
+def rule_renames(records, project_root, rules_dir):
+    """{old snapshot key: new snapshot key} for rules git recorded as renamed.
+
+    Only `R` records, never `C`: a copy leaves its source in place, so rekeying
+    the snapshot onto the destination would lose the source's own accounting and
+    diff a brand-new file against an entry it never owned.
+
+    Returns {} when there is no index to read, which is the pre-fix behaviour:
+    a rename nobody recorded is still charged as a deletion (see the FOURTH
+    HONEST BOUNDARY).
+    """
+    if not records:
+        return {}
+    prefix = os.path.relpath(rules_dir, project_root) + os.sep
+    renames = {}
+    for index_state, _, name, source in records:
+        if index_state != "R" or not source:
             continue
-        index_state, tree_state, name = record[0], record[1], record[3:]
-        if index_state in ("R", "C"):
-            skip_next = True  # the rename/copy source follows as its own record
-        # Second column is the worktree-vs-index state. ' ' means they agree; a
-        # staged-only change (e.g. "M ") is exactly what we want to let through.
-        if tree_state != " ":
-            diverged.append(name)
-    return sorted(set(diverged))
+        if not name.startswith(prefix) or not source.startswith(prefix):
+            continue
+        renames[source[len(prefix):]] = name[len(prefix):]
+    return renames
+
+
+def apply_renames(snapshot, renames, always_on, conditional):
+    """Rekey the snapshot onto the paths the rules live at NOW.
+
+    A rename moves no instruction line: the lines are still loaded every turn and
+    still counted in `total`. Diffing the old key against a file that no longer
+    answers to that name read the whole rule as deleted, so `git mv` on an
+    untouched rule charged the cap for every one of its lines and permanently
+    spent headroom the founder had banked by scoping (PR #88 round 3, major).
+
+    Rekeying happens ONCE, here, before either deleted_lines or scoping_freed sees
+    the snapshot -- two spellings of "resolve a snapshot key" is the drift class
+    that opened the nested-rules hole in round 1.
+
+    The source is followed only when it is genuinely gone from the current scan,
+    so a mis-detected rename can never make a still-present rule stop being
+    accounted. Colliding keys sum, which keeps sum(snapshot.values()) exact for
+    the CLAUDE.md subtraction downstream.
+    """
+    if not renames:
+        return snapshot
+    out = {}
+    for name, lines in snapshot.items():
+        key = name
+        if name not in always_on and name not in conditional:
+            key = renames.get(name, name)
+        out[key] = out.get(key, 0) + lines
+    return out
 
 
 def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_lines):
@@ -420,7 +502,7 @@ def report_baseline_written(project_root, stage):
 
 
 def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
-                audited=(), write=True, stage=True):
+                rules_dir, audited=(), write=True, stage=True):
     """Regression gate: block growth past the cap; tighten the cap on deletion."""
     if claude_md_lines > BUDGET_CLAUDE_MD:
         print(
@@ -447,7 +529,8 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         print(ratchet_fail_text(cap, total, always_on))
         return 1
 
-    diverged = index_divergence(project_root, audited)
+    records = git_status(project_root, audited)
+    diverged = index_divergence(records)
     if diverged:
         print(f"RATCHET PASS: total {total}, cap {cap}, headroom {cap - total}. "
               f"Target {BUDGET_TOTAL_ALWAYS_ON}.")
@@ -465,9 +548,15 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         moved = []
         deletion_delta = max(0, prev_total - total)
     else:
-        _, moved = scoping_freed(snapshot, always_on, conditional)
-        prev_claude_md = prev_total - sum(snapshot.values())
-        deletion_delta = deleted_lines(snapshot, always_on, conditional,
+        # `snapshot` stays as recorded; `prev_files` is the same entries rekeyed
+        # onto today's paths. Keeping them apart is what lets the changed-compare
+        # below still see the rename that the rekey deliberately smooths over.
+        prev_files = apply_renames(snapshot,
+                                   rule_renames(records, project_root, rules_dir),
+                                   always_on, conditional)
+        _, moved = scoping_freed(prev_files, always_on, conditional)
+        prev_claude_md = prev_total - sum(prev_files.values())
+        deletion_delta = deleted_lines(prev_files, always_on, conditional,
                                        prev_claude_md, claude_md_lines)
 
     # Never below the current total: moving lines between two always-on rules is a
@@ -476,7 +565,13 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
     # with no reachable move. Still monotone non-increasing -- both arms are <= cap.
     new_cap = max(total, cap - deletion_delta)
 
-    changed = (new_cap != cap or total != prev_total or snapshot is None)
+    # The snapshot compare is load-bearing, not belt-and-braces. A pure rename
+    # moves neither the cap nor the total, and git reports the rename ONLY in the
+    # commit that makes it -- so a run that declined to record would leave the old
+    # key in the baseline and the NEXT run would see a rule vanish with nothing
+    # left to explain it, charging the deletion one commit late. `snapshot is
+    # None` is subsumed: None never equals a scan.
+    changed = (new_cap != cap or total != prev_total or snapshot != always_on)
     if changed and write:
         write_baseline(project_root, new_cap, total, always_on)
 
@@ -530,7 +625,7 @@ def main():
 
     if "--ratchet" in argv:
         sys.exit(run_ratchet(project_root, claude_md_lines, total,
-                             always_on, conditional, audited=audited,
+                             always_on, conditional, rules_dir, audited=audited,
                              write=write, stage=stage))
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")

@@ -590,6 +590,89 @@ audit_rc "$R16"
 check "staged, the deletion tightens the cap" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
 check_num "cap follows a staged deletion down" 30 "$(cap_of "$R16")"
 
+echo "== 21. renaming an unchanged always-on rule spends no headroom"
+# PR #88 round 3, major. deleted_lines diffs each snapshot entry against a file of
+# the SAME NAME, so `git mv alpha.md gamma.md` read as "all 10 of alpha.md's lines
+# are gone" and charged the cap for every one of them. Headroom the founder banked
+# by scoping was consumed by a step that moved no instruction line anywhere, and
+# only a hand edit of the baseline got it back. The rename git already recorded is
+# now what rekeys the snapshot, before anything is diffed against it.
+R18=$(mktemp -d); mk_fixture "$R18"
+audit_rc "$R18"                       # bootstrap: cap 33, total 33
+git -C "$R18" init -q
+git -C "$R18" add -A
+git -C "$R18" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+scope_rule "$R18" beta.md "q-system/output/**"    # banks 20 lines of headroom
+git -C "$R18" add -A
+audit_rc "$R18"
+check "scoping banks the headroom" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap holds while the total drops" 33 "$(cap_of "$R18")"
+git -C "$R18" -c user.email=t@t -c user.name=t commit -qm "scope beta (ASK-285)"
+git -C "$R18" mv .claude/rules/alpha.md .claude/rules/gamma.md
+audit_rc "$R18"
+check "the rename run exits 0" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap survives a pure rename" 33 "$(cap_of "$R18")"
+check_num "total is unmoved by a rename" 13 "$(total_of "$R18")"
+check "headroom survives a pure rename" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+snap_keys() { python3 -c 'import json,sys; print(",".join(sorted(json.load(open(sys.argv[1]))["always_on_files"])))' "$1/q-system/.q-system/instruction-budget-baseline.json"; }
+check_num "the snapshot follows the rename" "gamma.md" "$(snap_keys "$R18")"
+# The load-bearing half: git reports the rename only in the commit that makes it.
+# If the snapshot kept the old key, the NEXT run would see alpha.md gone with no
+# rename record to explain it and charge the 10 lines one commit late.
+git -C "$R18" -c user.email=t@t -c user.name=t commit -qm "rename alpha (ASK-285)"
+audit_rc "$R18"
+check "the run after the rename commit still holds" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap held once the rename is history" 33 "$(cap_of "$R18")"
+
+echo "== 22. rename + shortening: the shortening half still tightens the cap"
+# The negative control on section 21. Carrying the snapshot entry across the
+# rename is exactly what lets max(0, before - after) see a shrink at all, so a
+# rename must never launder a deletion: gutting 3 lines in the same step as the
+# rename charges the cap 3, no more and no less.
+git -C "$R18" mv .claude/rules/gamma.md .claude/rules/delta.md
+python3 - "$R18/.claude/rules/delta.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+git -C "$R18" add -A                  # section 20: record only a tree the commit carries
+audit_rc "$R18"                       # CLAUDE.md 3 + delta 7 = 10
+check "rename+shortening charges the shortening" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap follows the deleted lines down" 30 "$(cap_of "$R18")"
+check_num "total after rename+shortening" 10 "$(total_of "$R18")"
+check_num "the snapshot follows this rename too" "delta.md" "$(snap_keys "$R18")"
+
+echo "== 23. mutation: drop the rename lookup -> section 21 goes RED"
+# A regression case never watched fail is not known to catch anything, and the
+# ref hatch only reaches the previous commit. This blinds the rekey in place.
+MUTR=$(mktemp -d)/mutant-rename.py
+mkdir -p "$(dirname "$MUTR")"
+python3 - "$AUDIT" "$MUTR" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "        key = renames.get(name, name)\n"
+assert needle in src, "apply_renames moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(needle, "        key = name\n", 1))
+PY
+RM3=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTR"; mk_fixture "$RM3"
+audit_rc "$RM3"
+git -C "$RM3" init -q
+git -C "$RM3" add -A
+git -C "$RM3" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+scope_rule "$RM3" beta.md "q-system/output/**"
+git -C "$RM3" add -A
+audit_rc "$RM3"
+git -C "$RM3" -c user.email=t@t -c user.name=t commit -qm "scope beta (ASK-285)"
+git -C "$RM3" mv .claude/rules/alpha.md .claude/rules/gamma.md
+audit_rc "$RM3"
+check "mutant charges the rename as a deletion" 0 "tightened cap 33 -> 23" "$AUDIT_RC" "$AUDIT_OUT"
+AUDIT="$AUDIT_SAVE"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
