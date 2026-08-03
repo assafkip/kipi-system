@@ -354,12 +354,28 @@ The interaction with this change is the part worth writing down:
 So the honest scope of the fix is: absence becomes a visible state with a
 machine consumer. It is not: the verdict on that state is trustworthy.
 
-It is intermittent, not deterministic. PR #68's review the same hour was real:
-1.47 MB of output, three majors and a minor, each with an executed reproducer.
-That is why this is captured rather than treated as a blocker on this change.
+**Correction, after re-running it: this is REPRODUCIBLE, not intermittent.** The
+first write-up of this section called it a flake on the strength of PR #68
+succeeding. A second run on #78 declined identically — *"Reply `OK` and I'll
+execute."* / *"Waiting for `OK` to begin the read-only review."* Two of two.
 
-Evidence: `~/.config/kipi/pr-reviews/codex/pr-78-20260802-211816.md` (7597 bytes)
-versus `pr-68-20260802-210908.md` (1474493 bytes).
+So it is PR-dependent, not random, and the discriminator is NOT identified.
+PR #68's review the same hour was genuinely real (1.47 MB, three majors and a
+minor, each with an executed reproducer), so the producer is not simply broken.
+Naming the difference would be a guess, and guessing is the thing this whole
+document is about; it is left as an open question in `sp-9e6c8196`.
+
+| run | file | bytes | outcome |
+|---|---|---|---|
+| #68 | `pr-68-20260802-210908.md` | 1,474,493 | real review, 3 major + 1 minor |
+| #78 r1 | `pr-78-20260802-211816.md` | 7,597 | declined to start |
+| #78 r2 | `pr-78-20260802-212132.md` | 8,424 | declined to start |
+
+**Consequence for this change: ASK-313 cannot merge on a real verdict until the
+decline is fixed or a review actually runs.** Its own required check is red from
+a review that never happened — the mirror image of the defect it fixes, and the
+sharpest possible demonstration that a posted status is not evidence of a
+review. That is stated here rather than worked around.
 
 ## What is deliberately left open
 
