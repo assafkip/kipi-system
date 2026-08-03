@@ -1,0 +1,26 @@
+Reading additional input from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /Users/assafkipnis/.config/kipi/worktrees/ask-287
+model: gpt-5.6-bogus-model-xyz
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019fc8be-d5bb-75e2-b04d-10c16b375bfe
+--------
+user
+Reply with exactly: ALIVE
+warning: Model metadata for `gpt-5.6-bogus-model-xyz` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+warning: Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.6-bogus-model-xyz' model is not supported when using Codex with a ChatGPT account."}}
+ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.6-bogus-model-xyz' model is not supported when using Codex with a ChatGPT account."}}

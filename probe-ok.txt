@@ -1,0 +1,32 @@
+Reading additional input from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /Users/assafkipnis/.config/kipi/worktrees/ask-287
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
+--------
+user
+Reply with exactly: ALIVE
+warning: Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+codex
+ALIVE
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+tokens used
+14,296
+ALIVE
