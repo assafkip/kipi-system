@@ -697,15 +697,48 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
+# DID A REVIEW ACTUALLY HAPPEN, PERSISTED (sp-2a832233, ASK-352). The record used
+# to store only a PATH to the review, and the review files rotate, so every
+# consumer downstream had to re-derive usability from a file it does not own --
+# or, in practice, guess from the verdict.
+#
+# THE VERDICT DOES NOT ANSWER IT. Measured across all 79 records on 2026-08-03:
+# 13 were unusable and they carry the whole range of verdicts. `APPROVE` on 11 of
+# them (all merged); `REQUEST CHANGES` on #80 and #83; empty on #89. The
+# REQUEST CHANGES pair is the expensive one: the reviewer's `stated` verdict was
+# read out of the PROMPT'S OWN echoed grading rule, so a record that says an
+# objection was raised is indistinguishable from one where nobody read the code.
+# Both post `state: failure`, and a selector that sees only `failure` sends a
+# never-reviewed PR to REWORK with no findings to work from.
+#
+# ASKED HERE, NOT REUSED FROM $REVIEW_UNUSABLE. That flag is set on the codex and
+# fallback paths only -- the `ENGINE != codex` primary path never evaluates
+# usability at all -- so reading it would record `usable: true` for a path that
+# never checked, which is the fabricated-evidence direction. One call, the same
+# predicate on the same file the verdict came from, covering all three paths.
+#
+# RECORD-ONLY, DELIBERATELY. This changes no gate. $VERDICT is computed above and
+# is not touched here, so no PR's outcome moves on this commit; the consumer that
+# acts on the key is the selector (review-redrive.py), which is a separate change
+# with its own cap. Widening a gate as a side effect of adding a field is how a
+# fleet-wide refusal ships unannounced.
+if review_is_usable "$REVIEW"; then REVIEW_USABLE=1; else REVIEW_USABLE=0; fi
+
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
+(pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
+ engine, invoker, usable) = sys.argv[1:14]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
            "invoker": invoker,
+           # A real boolean, not "1"/"0". A JSON string "0" is TRUTHY in every
+           # consumer language here, so a truthiness read of the wrong shape
+           # would call every phantom review usable -- the exact inversion this
+           # key exists to prevent.
+           "usable": usable == "1",
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
