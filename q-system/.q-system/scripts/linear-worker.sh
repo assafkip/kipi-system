@@ -144,7 +144,7 @@ MAX_CONFLICT_ROUNDS=2
 # 2, matching the conflict cap: a drift clears the moment ANY review writes a
 # record pinned to the current head, so two rounds that both failed to produce
 # one means the reviewer is down or the head keeps moving under it. Neither is
-# fixed by a third round; both need a human.
+# fixed by a third round; both exhaust this runner and go to the second one.
 MAX_DRIFT_ROUNDS=2
 TIMEOUT_SECONDS=1800
 LIMIT=1
@@ -755,7 +755,7 @@ arm_automerge() {
       # The page stays -- an unarmed PR is invisible by construction
       # (everything green, nothing merges, no signal), so a log-only warning does
       # not kill the silent stall, it relocates it.
-      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
+      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE after a probe and an arm attempt -- the next dispatch retries it"
       if page_once "$ISSUE" automerge_unarmed_paged; then
         bash "$NOTIFY" --kind receipt "worker: $ISSUE PR #$pr could not be armed after a probe and an arm attempt. The next dispatch retries; a capability THIS runner lacks is not one the fleet lacks, so the second runner (ASK-281) is the next actor." 2>/dev/null || true
       fi
@@ -1020,6 +1020,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
         if page_once "$ISSUE" drift_paged; then
+      # human-required: self-certification -- approval is pinned to an older
+      # sha; re-approving the new head from inside the loop forges the review.
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
         continue
@@ -1042,6 +1044,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
         say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
         if page_once "$ISSUE" conflict_paged; then
+      # human-required: irreversible-git -- resolving a conflict picks which
+      # side of a diff survives. That is a content decision, not a permission.
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
         continue
@@ -1054,7 +1058,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # 2026-07-27 scar, a SIGKILL or a sleeping laptop leaving a lock nobody
       # reclaims -- burned the whole budget having dispatched ZERO rebases, then
       # paged the founder a round count that never happened and locked the issue
-      # out until someone hand-edited the ledger. The bump and the log line both
+      # out until the ledger was hand-edited. The bump and the log line both
       # live at the dispatch site below, where the round actually happens.
       CONFLICT_ROUND=$((CR + 1))
     fi
@@ -1175,6 +1179,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
       say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
       if page_once "$ISSUE" tree_paged; then
+      # human-required: irreversible-git -- the worktree carries local work not
+      # in the PR. Any automatic reconciliation discards someone's commits.
         bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
@@ -1418,7 +1424,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      # ESCALATE TO THE SECOND RUNNER, NOT TO A HUMAN (ASK-310). N failures mean
+      # THIS runner is stuck on THIS issue; ASK-281 already established that a
+      # capability Sana lacks is not one the fleet lacks. The founder is what
+      # comes after the second runner is also stuck, not after attempt 3.
+      bash "$NOTIFY" --kind receipt "worker: $ISSUE exhausted $MAX_ATTEMPTS attempts on this runner. Next actor is the second runner (ASK-281, \`$CODEX_CMD\`), not a person." 2>/dev/null || true
     fi
   fi
 

@@ -58,7 +58,7 @@ SKEPTIC_QUESTIONS = {
     "Q3": "What is the cheapest non-build alternative?",
 }
 
-# class -> Skeptic question the founder should have answered to catch it.
+# class -> the Skeptic question that would have caught it.
 CLASS_TO_QUESTION = {
     "vague-goal-class": "Q1",
     "empty-non-goals-class": "Q3",

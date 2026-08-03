@@ -41,8 +41,21 @@ import sys
 
 ALLOWED_CLASSES = (
     "irreversible-git", "out-of-tree-write", "spend", "publish", "credential",
+    # A runner may not certify its own work. Added 2026-08-02 while sweeping:
+    # converge.sh pages when no prd-os receipt covers the head, i.e. when nothing
+    # proves the code was reviewed. Automating that would let the loop write its
+    # own proof of review, which is worse than the page it replaces. None of the
+    # five original classes fit, and forcing one would have been a bad fit
+    # dressed as a good one.
+    "self-certification",
 )
 MARKER = "human-required:"
+# Distinct from MARKER on purpose. `human-required` says "the process stops here
+# and a person acts". `definitional` says "this sentence uses a human as the unit
+# of measure for severity" -- e.g. major = "wrong behaviour a human must clean
+# up". That is vocabulary, not routing, and conflating the two would either
+# license real handoffs or force a false class onto a definition.
+DEFINITIONAL = "human-handoff-audit: definitional"
 
 # Ordered roughly by how often each shape actually appeared in this repo.
 HANDOFF_PATTERNS = [
@@ -69,6 +82,14 @@ SKIP_DIR_PREFIXES = (".pr", ".review-")
 SKIP_FILES = ("human-handoff-audit.py",)
 
 
+def is_generated_output(rel: str) -> bool:
+    """`q-system/output/` holds generated artifacts. The docx builders there carry
+    essay prose ABOUT the system -- e.g. "the founder has to manually copy it
+    across" describing a limitation being argued -- which is content, not a
+    control path this audit governs."""
+    return rel.startswith("q-system/output/") or "/output/" in rel
+
+
 def is_test_file(rel: str) -> bool:
     """A fixture that QUOTES a handoff is exercising the detector, not committing
     the defect. Same exclusion and same reasoning as notify-callsite-audit.py."""
@@ -79,7 +100,7 @@ def is_test_file(rel: str) -> bool:
 
 
 def is_skipped(rel: str) -> bool:
-    if is_test_file(rel):
+    if is_test_file(rel) or is_generated_output(rel):
         return True
     parts = rel.split(os.sep)
     if any(p in SKIP_DIR_PARTS for p in parts):
@@ -103,9 +124,10 @@ def tracked(repo: str):
 # flags its own fix trains the operator to skim it, which is root cause #3 of
 # rca-work-routed-to-the-founder.
 NEGATED = re.compile(
-    r"(?:does\s+not|doesn't|never|no longer|without|must\s+not|cannot|can't|"
+    r"(?:does\s+not|doesn't|never|no longer|without|must\s+not|must\s+never|cannot|can't|"
     r"nobody|not)\s+(?:\w+\s+){0,3}(?:needs?|requires?|waits?|asks?)"
     r"|no\s+human\s+(?:merge\s+)?(?:needed|required)"
+    r"|(?:must|should)\s+never\s+be\s+the\s+(?:one|person)"
     r"|not\s+a\s+human", re.I)
 
 # Text that QUOTES a handoff in order to record that it was removed. The scar
@@ -128,6 +150,30 @@ def explained(line: str, window: str) -> bool:
     return any(c in tail for c in ALLOWED_CLASSES)
 
 
+HEREDOC_OPEN = re.compile(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
+
+
+def heredoc_lines(lines) -> set:
+    """Line indices inside a shell heredoc body.
+
+    Scar: acking a severity DEFINITION inside pr-review-agent.sh's reviewer
+    prompt inserted two `#` lines into the prompt itself, so the reviewer would
+    have read them as instructions. `bash -n` parses that happily -- it is valid
+    shell, just a corrupted prompt. Detected by eye, not by a gate.
+    """
+    inside, marker, out = False, None, set()
+    for i, line in enumerate(lines):
+        if inside:
+            out.add(i)
+            if line.strip() == marker:
+                inside, marker = False, None
+            continue
+        m = HEREDOC_OPEN.search(line)
+        if m and not line.lstrip().startswith("#"):
+            inside, marker = True, m.group(1)
+    return out
+
+
 def findings(repo: str):
     out = []
     for rel in tracked(repo):
@@ -136,14 +182,21 @@ def findings(repo: str):
                          errors="replace").read().splitlines()
         except OSError:
             continue
+        skip = heredoc_lines(lines) if rel.endswith(".sh") else set()
         for i, line in enumerate(lines):
+            if i in skip:
+                continue
             for label, pat in HANDOFF_PATTERNS:
                 if not pat.search(line):
                     continue
-                if NEGATED.search(line) or HISTORICAL.search(line):
+                # A negation can straddle a wrap: apply_claude_changes.py reads
+                # "The founder must / never be the one who notices a regression"
+                # across two lines, and a per-line check calls the cure a defect.
+                pair = line + " " + (lines[i + 1] if i + 1 < len(lines) else "")
+                if NEGATED.search(pair) or HISTORICAL.search(line):
                     continue
                 window = "\n".join(lines[max(0, i - 3):i + 4])
-                if explained(line, window):
+                if DEFINITIONAL in window or explained(line, window):
                     continue
                 out.append((rel, i + 1, label, line.strip()[:104]))
                 break
