@@ -268,6 +268,26 @@ class TestMutantKills(unittest.TestCase):
             self.assertFalse(self.mod.is_excluded_tree(root / rel, root),
                              f"{rel} is real wiring and must stay on the surface")
 
+    def test_scratch_tree_test_file_does_not_grant_has_test(self):
+        """The has_test walk is a FOURTH consumer of is_excluded_tree.
+
+        Missed when the predicate was introduced, so a test filename inside a
+        review tree still marked a dead engine LIVE -- the same one-sided
+        exclusion the predicate exists to prevent, surviving inside its own fix.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "lib").mkdir(parents=True)
+            (root / ".pr36rev" / "tree" / "tests").mkdir(parents=True)
+            (root / "lib/engine_only_scratch_test.py").write_text(
+                engine_body("engine_only_scratch_test"))
+            (root / ".pr36rev/tree/tests/test_engine_only_scratch_test.py").write_text(
+                "def test_x():\n    assert True\n")
+            caps = {c["entry"]: c for c in self.mod.collect_engines(root)}
+            self.assertEqual(
+                "UNWIRED", caps["lib/engine_only_scratch_test.py"]["status"],
+                "a test file inside a review tree is not coverage of real code")
+
     def test_generated_prefix_is_anchored_not_substring(self):
         root = Path("/repo")
         self.assertFalse(

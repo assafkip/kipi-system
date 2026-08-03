@@ -540,7 +540,15 @@ def collect_engines(root: Path) -> list:
     """Scripts that have a paired test, or that are referenced from a wiring
     surface. An engine with neither is reported UNWIRED rather than assumed fine."""
     caps = []
-    tests = {p.name for p in root.rglob("test*") if p.is_file() and not is_vendored(p)}
+    # FOURTH consumer of the exclusion predicate, and the one I missed when
+    # claiming "one predicate for all three" in the commit that introduced it
+    # (codex round 3, major). Without this, a test filename inside a review tree
+    # or a generated dir still grants has_test, so the same one-sided-exclusion
+    # shape survived inside the very change written to eliminate it. The count
+    # of consumers is not fixed at three; grep is_excluded_tree before adding a
+    # new walk over the repo.
+    tests = {p.name for p in root.rglob("test*")
+             if p.is_file() and not is_vendored(p) and not is_excluded_tree(p, root)}
 
     engines = []
     for p in root.rglob("*.py"):
