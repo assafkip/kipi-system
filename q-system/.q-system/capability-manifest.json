@@ -255,7 +255,25 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "mutants": [
+        {
+          "id": "invoker-defaults-to-dispatcher",
+          "target": "q-system/.q-system/scripts/pr-review-agent.sh",
+          "kind": "logic",
+          "find": "INVOKER=\"${KIPI_REVIEW_INVOKER:-manual}\"\n",
+          "replace": "INVOKER=\"${KIPI_REVIEW_INVOKER:-dispatcher}\"\n",
+          "why": "an unlabelled review would read as dispatcher-driven; absent must mean hand-run, the fail-safe direction the design rests on"
+        },
+        {
+          "id": "invoker-worker-stops-labelling-itself",
+          "target": "q-system/.q-system/scripts/linear-worker.sh",
+          "kind": "call-site",
+          "find": "    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD ",
+          "replace": "    $REVIEWER_CMD ",
+          "why": "the reviewer can record an invoker perfectly and still never be told one; provenance exists only if the dispatcher's call site sets it"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
@@ -268,7 +286,33 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash",
-      "timeout_s": 420
+      "timeout_s": 420,
+      "mutants": [
+        {
+          "id": "floor-approve-becomes-rework",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "        *)                                return 10 ;;\n",
+          "replace": "        *)                                return 0 ;;\n",
+          "why": "APPROVE stops being terminal, which is the unsatisfiable gate ASK-113 closed: nothing can ever stop reworking"
+        },
+        {
+          "id": "floor-blocker-strip-removed",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n",
+          "replace": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null \\\n",
+          "why": "a real review ending 'Fix first: **BLOCKER 1**' reads as verdict BLOCK; the strip is why the round-2 fixture parses correctly"
+        },
+        {
+          "id": "floor-worker-stops-sourcing-the-lib",
+          "target": "q-system/.q-system/scripts/linear-worker.sh",
+          "kind": "call-site",
+          "find": ". \"$SCRIPT_DIR/pr-verdict-lib.sh\"\n",
+          "replace": "true # . \"$SCRIPT_DIR/pr-verdict-lib.sh\"\n",
+          "why": "a correct verdict library nobody loads is the ASK-312 defect one layer up; the suite must see the call site disappear"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
@@ -433,7 +477,57 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
-      "runner": "python3"
+      "runner": "python3",
+      "mutants": [
+        {
+          "id": "map-module-ref-drop-loader-arms",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    r\"|spec_from_file_location\\(\\s*[\\\"']([\\w.\\-]+)[\\\"']\"\n    r\"|-m\\s+([\\w.]+)\\b\",\n",
+          "replace": "    \"\",\n",
+          "why": "importlib and `python -m` callers are real wiring; dropping those arms reports live engines as inert (the ASK-230 scar)"
+        },
+        {
+          "id": "map-filename-re-drop-lookarounds",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "        r\"(?<![\\w.\\-])(\" + \"|\".join(re.escape(n) for n in sorted(by_filename)) + r\")(?![\\w\\-])\"\n",
+          "replace": "        r\"(\" + \"|\".join(re.escape(n) for n in sorted(by_filename)) + r\")\"\n",
+          "why": "without the boundaries a longer name containing an engine's name counts as a reference, so a dead engine reads LIVE"
+        },
+        {
+          "id": "map-surface-names-dropped",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "SURFACE_NAMES = {\"Makefile\", \"makefile\", \"kipi\", \"Dockerfile\", \"Justfile\", \"justfile\"}\n",
+          "replace": "SURFACE_NAMES = set()\n",
+          "why": "the extensionless wiring surfaces (the kipi CLI, Makefiles) stop being scanned, so a script called only from `kipi` reads UNWIRED"
+        },
+        {
+          "id": "map-is-test-file-always-true",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "def _is_test_file(p: Path) -> bool:\n    return p.name.startswith((\"test_\", \"test-\")) or \"test\" in p.parts or \"tests\" in p.parts\n",
+          "replace": "def _is_test_file(p: Path) -> bool:\n    return True\n",
+          "why": "every witness becomes a test witness, so wiring_sources empties and no engine can cite a real caller"
+        },
+        {
+          "id": "map-md-invocation-one-arm",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    r\"(?:^|[|&;(`]|\\$\\()\\s*(?:(?:python3?|bash|sh|source)\\s|\\./)\"\n",
+          "replace": "    r\"(?:^|[|&;(`]|\\$\\()\\s*(?:python3\\s)\"\n",
+          "why": "five of six invocation arms removed; a runbook calling bash/sh/source/./ stops counting as a trigger"
+        },
+        {
+          "id": "map-generated-prefix-unanchored",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    if rel.as_posix().startswith(GENERATED_SURFACE_PREFIXES):\n",
+          "replace": "    if any(g in rel.as_posix() for g in GENERATED_SURFACE_PREFIXES):\n",
+          "why": "un-anchoring the generated-tree prefix darkens any nested q-system/output/ path, which is real source in an instance layout"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
