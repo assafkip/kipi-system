@@ -70,14 +70,26 @@ done
 # "Reviewed, found nothing" and "never started" are byte-identical INSIDE the
 # block. The discriminator is outside it: what the reviewer itself said. So the
 # assertions below are on resolve_verdict, where the two signals meet.
+
+# UPSTREAM MOVED UNDER THIS LOOP. These two fixtures no longer reproduce the
+# original shape, and that is a fix landing, not a regression. ASK-274 (6fe7a3c)
+# added review_is_usable, which classifies a declined-to-start transcript as
+# UNUSABLE, so verdict_from_findings now returns EMPTY for both instead of the
+# historical APPROVE. Measured on this base:
+#   declined-to-start-short.md -> usable NO, stated 'REQUEST CHANGES', derived ''
+# The old assertion demanded derived = APPROVE and went red for exactly that
+# reason. Weakening it to "derived is whatever it is" would have made it vacuous,
+# so the fidelity burden MOVED to the fixture below, which still reproduces a live
+# disagreement. These two stay as defence in depth: if review_is_usable is ever
+# loosened, resolve_verdict is still the thing standing between a decline and a
+# green, and these assert it holds.
 for f in declined-to-start-short.md declined-to-start-long.md; do
   stated="$(extract_verdict "$FX/$f")"
   derived="$(verdict_from_findings "$FX/$f")"
   final="$(resolve_verdict "$stated" "$derived")"
 
-  # The exact shape of the defect: the reviewer said stop, the ladder said go.
-  check "$f: still reproduces the shape (stated '$stated' vs derived '$derived')" \
-        "$([ "$stated" = "REQUEST CHANGES" ] && [ "$derived" = "APPROVE" ] && echo 0 || echo 1)"
+  check "$f: reviewer stated a non-approving verdict (got '$stated')" \
+        "$([ "$stated" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
 
   case "$final" in
     APPROVE|"APPROVE WITH NITS")
@@ -86,6 +98,33 @@ for f in declined-to-start-short.md declined-to-start-long.md; do
       check "$f resolves to a non-approving verdict (got '$final')" 0 ;;
   esac
 done
+
+# --- the shape that IS still live on this base --------------------------------
+#
+# A review that PASSES review_is_usable, files only nits, and whose author still
+# said stop. ASK-274 cannot catch this one: the review is real, so the usability
+# gate correctly lets it through, and the severity ladder correctly derives an
+# APPROVING verdict from nits alone. resolve_verdict is the ONLY thing left
+# between that and kipi/reviewer-approved=success on a PR the reviewer rejected.
+#
+# Without this case the suite would pass on a base where every remaining fixture
+# is intercepted upstream, and the fix under test would ship never having been
+# exercised end to end. That is the failure this file exists to prevent.
+LIVE=usable-review-states-changes-derives-nits.md
+stated="$(extract_verdict "$FX/$LIVE")"
+derived="$(verdict_from_findings "$FX/$LIVE")"
+final="$(resolve_verdict "$stated" "$derived")"
+
+check "$LIVE: passes the usability gate (ASK-274 does not catch it)" \
+      "$(review_is_usable "$FX/$LIVE" >/dev/null 2>&1 && echo 0 || echo 1)"
+
+# The precondition. If this goes red the fixture stopped reproducing and every
+# assertion under it is worthless, so it is checked explicitly rather than assumed.
+check "$LIVE: still reproduces a LIVE disagreement (stated '$stated' vs derived '$derived')" \
+      "$([ "$stated" = "REQUEST CHANGES" ] && { [ "$derived" = "APPROVE" ] || [ "$derived" = "APPROVE WITH NITS" ]; } && echo 0 || echo 1)"
+
+check "$LIVE: resolves to the harsher stated verdict, not the derived green (got '$final')" \
+      "$([ "$final" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
 
 # --- the floor still overrides a reviewer that is too soft on itself ----------
 #
