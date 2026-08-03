@@ -902,6 +902,120 @@ audit_rc "$RM5"
 check "mutant mints a cap from an unstaged deletion" 0 "baseline created at 30" "$AUDIT_RC" "$AUDIT_OUT"
 AUDIT="$AUDIT_SAVE"
 
+echo "== 29. a baseline the index does not carry is staged on the NEXT run too"
+# PR #88 round 5, major. Section 25 made the first attempt fail, and stopped there.
+# The rewrite had already landed in the WORKING TREE, so the retry read its own
+# advanced baseline, computed `changed` = False, and exited 0 having staged
+# nothing: the commit went out carrying the rules without the accounting they
+# moved, which is section 25's defect surviving one `git commit` later. Staging is
+# now decided by what the INDEX holds, not by whether this particular run rewrote
+# the file, so every run after the failure keeps trying until the index agrees.
+R23=$(mktemp -d); mk_fixture "$R23"
+audit_rc "$R23"                       # bootstrap: cap 33, total 33
+git -C "$R23" init -q
+git -C "$R23" add -A
+git -C "$R23" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+STALE_BASE=$(git -C "$R23" show ":$BASE_REL")
+scope_rule "$R23" beta.md "q-system/output/**"
+git -C "$R23" add -A                  # tree matches the index, so recording is allowed
+audit_with_path "$SHIM_ADD" "$R23"    # attempt 1: rewritten, unstageable, run fails
+check "attempt 1 still fails the run" 1 "could not stage" "$AUDIT_RC" "$AUDIT_OUT"
+audit_rc "$R23"                       # attempt 2, git working again, nothing left to rewrite
+check "the retry stages the baseline it did not rewrite" 0 "staged $BASE_REL" "$AUDIT_RC" "$AUDIT_OUT"
+if [ "$(git -C "$R23" show ":$BASE_REL")" = "$(cat "$R23/$BASE_REL")" ]; then
+  ok "the index carries the accounting after the retry"
+else
+  bad "the retry exited 0 with the index still holding the pre-failure baseline"
+fi
+if [ "$(git -C "$R23" show ":$BASE_REL")" = "$STALE_BASE" ]; then
+  bad "the index baseline never moved off the pre-failure copy"
+else
+  ok "the staged baseline is the rewritten one, not the stale one"
+fi
+# The consequence the founder feels: the COMMIT carries the accounting, so a fresh
+# clone reads it instead of re-deriving one. Cap 33 held through the scoping.
+git -C "$R23" -c user.email=t@t -c user.name=t commit -qm "scoping (ASK-285)"
+if [ "$(git -C "$R23" show "HEAD:$BASE_REL")" = "$(cat "$R23/$BASE_REL")" ]; then
+  ok "the commit carries the rewritten baseline"
+else
+  bad "the commit went out with the pre-failure baseline"
+fi
+R23C=$(mktemp -d)/clone
+git clone -q "$R23" "$R23C"
+audit_rc "$R23C"
+check "the clone of that commit audits green" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "the clone reads the banked cap" 33 "$(cap_of "$R23C")"
+# Negative controls. A run with the baseline already in the index must not claim a
+# staging it did not do, and --no-stage keeps addressing the reader who asked for it.
+audit_rc "$R23"
+case "$AUDIT_OUT" in
+  *staged*) bad "a settled baseline still reported a staging" ;;
+  *) ok "a baseline already in the index is left alone" ;;
+esac
+scope_rule "$R23" alpha.md "q-system/output/**"
+git -C "$R23" add -A
+audit_rc "$R23" --no-stage
+check "--no-stage still asks the reader, it does not stage" 0 "stage $R23/$BASE_REL" "$AUDIT_RC" "$AUDIT_OUT"
+if [ "$(git -C "$R23" show ":$BASE_REL")" = "$(cat "$R23/$BASE_REL")" ]; then
+  bad "--no-stage staged the baseline anyway"
+else
+  ok "--no-stage left the index alone"
+fi
+
+# The expensive shape, end to end: a rename behind a failed `git add`. Git reports
+# a rename only in the commit that makes it, so a baseline left behind charges the
+# whole rule as a deletion on the next run -- and here that run is a FRESH CLONE,
+# where no hand edit is available and the founder's banked headroom is simply gone.
+R24=$(mktemp -d); mk_fixture "$R24"
+audit_rc "$R24"                       # bootstrap: cap 33, total 33
+git -C "$R24" init -q
+git -C "$R24" add -A
+git -C "$R24" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+scope_rule "$R24" beta.md "q-system/output/**"
+git -C "$R24" add -A
+audit_rc "$R24"                       # the founder banks 20 lines of headroom
+check_num "headroom banked before the rename" 33 "$(cap_of "$R24")"
+git -C "$R24" -c user.email=t@t -c user.name=t commit -qm "scoping (ASK-285)"
+git -C "$R24" mv .claude/rules/alpha.md .claude/rules/gamma.md
+audit_with_path "$SHIM_ADD" "$R24"    # attempt 1: rewritten, unstageable, run fails
+check "the rename attempt fails on the unstageable baseline" 1 "could not stage" "$AUDIT_RC" "$AUDIT_OUT"
+audit_rc "$R24"                       # attempt 2 must still get it into the commit
+git -C "$R24" -c user.email=t@t -c user.name=t commit -qm "rename (ASK-285)"
+R24C=$(mktemp -d)/clone
+git clone -q "$R24" "$R24C"
+audit_rc "$R24C"
+check_num "the clone keeps the banked cap through the rename" 33 "$(cap_of "$R24C")"
+check "the clone still has its headroom" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+
+echo '== 30. mutation: decide staging from "changed" alone -> section 29 goes RED'
+# A regression case never watched fail is not known to catch anything, and the ref
+# hatch only reaches the previous commit. This restores the pre-fix condition in
+# place: stage only when THIS run rewrote the file.
+MUTS=$(mktemp -d)/mutant-staging.py
+mkdir -p "$(dirname "$MUTS")"
+python3 - "$AUDIT" "$MUTS" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "    if write and (changed or baseline_unstaged(project_root)):\n"
+assert needle in src, "the staging condition moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(needle, "    if write and changed:\n", 1))
+PY
+RM6=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTS"; mk_fixture "$RM6"
+audit_rc "$RM6"
+git -C "$RM6" init -q
+git -C "$RM6" add -A
+git -C "$RM6" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+scope_rule "$RM6" beta.md "q-system/output/**"
+git -C "$RM6" add -A
+audit_with_path "$SHIM_ADD" "$RM6"
+audit_rc "$RM6"
+if [ "$(git -C "$RM6" show ":$BASE_REL")" = "$(cat "$RM6/$BASE_REL")" ]; then
+  bad "mutant staged the baseline; the mutation does not reach the fix"
+else
+  ok "mutant retry exits $AUDIT_RC with the index still stale"
+fi
+AUDIT="$AUDIT_SAVE"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]

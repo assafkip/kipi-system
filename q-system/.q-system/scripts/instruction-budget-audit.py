@@ -398,6 +398,39 @@ def git_status(project_root, audited):
     return records
 
 
+def baseline_unstaged(project_root):
+    """True when the index does not hold the baseline that is on disk.
+
+    WHY THIS EXISTS (PR #88 round 5, major). Staging used to be decided by
+    `changed` -- did THIS run rewrite the file -- and that answer is wrong for
+    every run after the first. When `git add` failed, the rewrite had already
+    landed in the working tree, so the retry read its own advanced baseline,
+    computed `changed` = False and exited 0 having staged nothing: the commit went
+    out carrying the rules without the accounting they moved, which is exactly the
+    defect report_baseline_written was added to stop, surviving one `git commit`
+    later. `--no-stage` followed by a forgotten `git add` is the same hole through
+    a sanctioned door.
+
+    The durable question is about the INDEX, not about this run's bookkeeping: does
+    the commit being built carry the accounting on disk? Asking it every run makes
+    the staging idempotent -- it keeps trying until the index agrees, and says
+    nothing once it does.
+
+    False when there is no index to carry anything (a --root'ed fixture, a non-git
+    tree). GIT_UNREADABLE fails closed as True: a git that would not answer is
+    never read as "already staged", and the `git add` that follows either settles
+    it or fails the run.
+    """
+    records = git_status(project_root, [baseline_path(project_root)])
+    if records is None:
+        return False
+    if records is GIT_UNREADABLE:
+        return True
+    # The worktree-vs-index column: ' ' means the index already matches the file,
+    # 'M'/'D'/'?' mean it does not. Untracked reads as '??', which needs staging too.
+    return any(tree_state != " " for _, tree_state, _, _ in records)
+
+
 def index_divergence(records):
     """Audited paths whose WORKING TREE content differs from the index.
 
@@ -598,6 +631,11 @@ def report_baseline_written(project_root, stage):
     commit that makes it, so a baseline left behind charges the whole rule as a
     deletion on the very next run and eats banked headroom.
 
+    Says nothing about WHY it was called. The caller reaches it when this run
+    rewrote the baseline OR when baseline_unstaged() found the index does not hold
+    the one on disk, and failing the first attempt only helps if every later
+    attempt keeps trying (PR #88 round 5, major).
+
     Failing is gated on inside_work_tree(), so the fixtures and the engine's gate
     suite -- neither of which has an index -- keep passing exactly as before.
     """
@@ -612,7 +650,7 @@ def report_baseline_written(project_root, stage):
     if inside_work_tree(project_root) is False:
         print(f"RATCHET: stage {path} with this commit.")
         return True
-    print(f"RATCHET FAIL: rewrote {path} but could not stage it: {error}\n"
+    print(f"RATCHET FAIL: could not stage {path}: {error}\n"
           "  The commit would carry the rules without the accounting they moved, "
           "so the next run reads a baseline that disagrees with the tree.\n"
           "  Fix git, or re-run with --no-stage and `git add` the baseline "
@@ -718,7 +756,13 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
     else:
         print(f"RATCHET PASS: total {total}, cap {new_cap}, headroom "
               f"{new_cap - total}.{scoped_note} Target {BUDGET_TOTAL_ALWAYS_ON}.")
-    if changed and write:
+    # `changed` says whether THIS run rewrote the file; staging is decided by what
+    # the INDEX holds. Those came apart the moment a `git add` failed: the rewrite
+    # was already on disk, so the retry saw changed=False and exited 0 having staged
+    # nothing, and the commit carried the rules without the accounting they moved
+    # (PR #88 round 5, major). Asking the index every run makes the staging
+    # idempotent -- it keeps trying until they agree, and is silent once they do.
+    if write and (changed or baseline_unstaged(project_root)):
         if not report_baseline_written(project_root, stage):
             return 1
     return 0
