@@ -779,6 +779,42 @@ def phase_1():
             print("\n".join(("    " + l) for l in
                             (gate_run.stdout + gate_run.stderr).splitlines()[-15:]))
 
+    # Gate 1.2b: no founder page may be written bare (ASK-310).
+    #
+    # WHY THIS IS HERE AND NOT ONLY IN slack-notify.sh. The runtime gate fails
+    # OPEN for a caller with no --kind, deliberately: `kipi update` ships that
+    # script to instances carrying producers this repo has never seen, and
+    # refusing those would silence an instance-local alert nobody has migrated.
+    # That hole is exactly wide enough for a new bare producer HERE to go
+    # unnoticed, so it is closed statically where the code lives.
+    #
+    # THE SCAR THIS CLOSES. notify-callsite-audit.py was written for ASK-294,
+    # works, exits 1 correctly, and had ZERO callers -- measured 2026-08-02 by
+    # grepping every wiring surface (validate-separation.py, kipi, kipi-update.sh,
+    # lefthook.yml, .github/workflows) and getting no output. Meanwhile 46 of the
+    # 49 rows in ~/.config/kipi/notify-receipts.jsonl were `unclassified` and all
+    # 46 were delivered to the founder. The gate was 100% built and 0% wired, and
+    # so was ff-merge-if-safe.sh, and so were both of their tests. Built is not
+    # wired, and reviewed is not wired. See
+    # q-system/output/rca/rca-work-routed-to-the-founder-2026-08-02.md.
+    notify_audit = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
+                                "notify-callsite-audit.py")
+    if file_exists(notify_audit):
+        # `--repo`, not `--repo-root`. The first draft of this wiring passed
+        # --repo-root and argparse would have exited 2, failing the gate for the
+        # wrong reason -- a wired-but-wrong gate, which is the same family of
+        # defect as the unwired one it replaces. Verified against the script's
+        # own add_argument before shipping.
+        audit_run = subprocess.run([sys.executable, notify_audit, "--repo", SCRIPT_DIR],
+                                   capture_output=True, text=True)
+        check("Gate 1.2b: every founder-notification call site declares a --kind",
+              audit_run.returncode == 0)
+        if audit_run.returncode != 0:
+            print("\n".join(("    " + l) for l in
+                            (audit_run.stdout + audit_run.stderr).splitlines()[-18:]))
+    else:
+        check("Gate 1.2b: notify-callsite-audit.py exists", False)
+
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
 
