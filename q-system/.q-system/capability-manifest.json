@@ -246,10 +246,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
@@ -450,6 +446,10 @@
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

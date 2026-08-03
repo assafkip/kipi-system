@@ -665,9 +665,16 @@ if [ "$REVIEW_UNUSABLE" = "1" ]; then
   VERDICT=""
   echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
 elif [ -n "$DERIVED_VERDICT" ]; then
-  VERDICT="$DERIVED_VERDICT"
+  # A DISAGREEMENT MAY NEVER RESOLVE TOWARD APPROVAL (ASK-312). This used to read
+  # VERDICT="$DERIVED_VERDICT" unconditionally, printing a NOTE and proceeding --
+  # which twice turned a reviewer's own "REQUEST CHANGES" into APPROVE and posted
+  # kipi/reviewer-approved=success on a PR nobody had read. resolve_verdict takes
+  # the harsher of the two, so the severity floor still overrides a reviewer that
+  # logged a blocker and then said APPROVE, while silence can no longer overrule a
+  # reviewer that said stop.
+  VERDICT="$(resolve_verdict "$STATED_VERDICT" "$DERIVED_VERDICT")"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
-    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
+    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; taking the harsher: '$VERDICT'"
   fi
 else
   VERDICT="$STATED_VERDICT"
