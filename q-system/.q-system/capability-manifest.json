@@ -363,6 +363,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_capability_gate.py",
       "runner": "python3",
       "timeout_s": 180
