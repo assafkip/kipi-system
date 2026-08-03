@@ -62,10 +62,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
       "runner": "bash"
     },
@@ -202,14 +198,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -247,6 +235,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -315,6 +307,14 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
@@ -330,6 +330,15 @@
     {
       "path": "q-system/.q-system/scripts/test_client_output_evidence_gate.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_coding_standards_lint.py",
+      "runner": "python3",
+      "quarantine": {
+        "reason": "2 of 39 cases assert wiring in .claude/settings.json and .claude/rules/coding-standards.md. Both are under .claude/, which this session cannot write. The blast-radius objection is GONE (narrow-to-new measures 0 of 400 blocked); only the permission grant is left.",
+        "spillover_id": "sp-994363e8",
+        "expires": "2026-09-01"
+      }
     },
     {
       "path": "q-system/.q-system/scripts/test_correction_outcome.py",
@@ -465,6 +474,11 @@
       "path": "q-system/.q-system/scripts/accept-rate.py",
       "reason": "sycophancy pi metric script with no caller on any wiring surface",
       "spillover_id": "sp-cc33bdb0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/coding-standards-lint.py",
+      "reason": "narrowed to NEW files only (grandfathers anything present at merge-base) and MEASURED at 0 of 400 tracked files blocked, down from 36. It is still unarmed for one reason only: wiring it requires .claude/settings.json, and write access to .claude/ is refused by the harness permission layer -- the same wall the ASK-133 sentinel hit. settings-template.json alone is refused by settings-template-sync-check as skeleton-dead, so both files must move together. Not a design problem and not a blast-radius problem; a permission grant.",
+      "spillover_id": "sp-994363e8"
     },
     {
       "path": "q-system/.q-system/scripts/granola-voice-synthesize.py",
