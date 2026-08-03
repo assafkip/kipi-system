@@ -963,22 +963,63 @@ def detect_cron_shells_claude(ctx, cron_text=None) -> list:
     }]
 
 
+def _spillover_roots() -> list:
+    """Every repo holding a ledger, not just this one.
+
+    why (ASK-339, measured 2026-08-03): this detector ran with cwd=REPO_ROOT, so
+    it only ever saw kipi-system. The consulting repo's 29 open findings were
+    structurally invisible to the one consumer that files them anywhere. A
+    health check that cannot see a ledger reports it as healthy.
+    """
+    roots = [REPO_ROOT]
+    reg = REPO_ROOT / "instance-registry.json"
+    if reg.is_file():
+        try:
+            data = json.loads(reg.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {}
+        entries = data.get("instances", data) if isinstance(data, dict) else data
+        if isinstance(entries, dict):
+            entries = list(entries.values())
+        for e in entries or []:
+            p = e.get("path") if isinstance(e, dict) else e
+            if not p:
+                continue
+            q = Path(os.path.expanduser(str(p)))
+            if q.is_dir() and (q / ".prd-os" / "spillover.jsonl").is_file() and q not in roots:
+                roots.append(q)
+    return roots
+
+
 def detect_open_spillover(_ctx) -> list:
     """Open spillover items — real findings someone decided not to fix yet."""
     runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
     if not runner.is_file():
         return []
-    try:
-        # `--open` is load-bearing. Without it the command lists RESOLVED items too,
-        # and the ledger is append-only so an id appears once per state change --
-        # scraping the unfiltered output reported 115 when the truth was 81. A
-        # health check that files a wrong number into a permanent issue is worse
-        # than one that files nothing.
-        res = subprocess.run(["python3", str(runner), "spillover", "list", "--open"],
-                             capture_output=True, text=True, timeout=60, cwd=REPO_ROOT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    open_ids = sorted(set(re.findall(r"\[open\]\s+(sp-[0-9a-f]{8})", res.stdout or "")))
+    open_ids = []
+    for root in _spillover_roots():
+        # Read the JSONL rather than scraping stdout. why (ASK-339): the old
+        # regex was r"\[open\]\s+(sp-[0-9a-f]{8})", which NEVER matched the
+        # `defer-*` ids that findings_writer auto-creates when a review finding
+        # is deferred. Those are precisely the items most at risk of being
+        # forgotten, and they were invisible by construction. Parsing the file
+        # has no id-shape assumption at all.
+        ledger = root / ".prd-os" / "spillover.jsonl"
+        if not ledger.is_file():
+            continue
+        rows = {}
+        try:
+            for line in ledger.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    r = json.loads(line)
+                    rows[r["id"]] = r          # append-only: last state wins
+        except (OSError, json.JSONDecodeError, KeyError):
+            continue
+        label = "" if root == REPO_ROOT else f" ({root.name})"
+        open_ids += [f"{rid}{label}" for rid, r in rows.items()
+                     if r.get("status") == "open"]
+    open_ids = sorted(set(open_ids))
     if not open_ids:
         return []
     shown = open_ids[:25]
