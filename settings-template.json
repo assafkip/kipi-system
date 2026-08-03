@@ -292,6 +292,11 @@
           },
           {
             "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/founder-actor-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/founder-actor-gate.py\"; fi",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" 2>/dev/null || true",
             "async": true
           },
