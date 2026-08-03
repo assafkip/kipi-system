@@ -524,6 +524,41 @@ _LESSONS = Path(__file__).resolve().parents[3] / "lessons"
 check("cron-shells-claude's lesson slug is a real file",
       (_LESSONS / f"{_by_id['cron-shells-claude']['lesson']}.md").is_file(), True)
 
+# --- a committed plist template nobody installed (ASK-316) ------------------
+# Both existing launchd detectors start from ~/Library/LaunchAgents. A plist
+# committed to the repo and never installed is in NEITHER watchdog's field of
+# view: it has no file there to be dark, and no loaded job to exit non-zero. It
+# is a scheduled job that was merged and then never ran, with nothing saying so.
+check("launchd-uninstalled is registered", "launchd-uninstalled" in _by_id, True)
+check("launchd-uninstalled files an issue",
+      _by_id.get("launchd-uninstalled", {}).get("action"), "file_issue")
+check("launchd-uninstalled's lesson slug is a real file",
+      (_LESSONS / f"{_by_id.get('launchd-uninstalled', {}).get('lesson')}.md").is_file(),
+      True)
+
+# Pure set logic, so this never depends on THIS machine's LaunchAgents dir.
+check("a committed template with no installed counterpart is a finding",
+      fh.uninstalled_templates(["com.kipi.a", "com.kipi.b"], {"com.kipi.a"}, set()),
+      ["com.kipi.b"])
+check("an installed template is not a finding",
+      fh.uninstalled_templates(["com.kipi.a"], {"com.kipi.a"}, set()), [])
+check("a paused label is never reported as uninstalled",
+      fh.uninstalled_templates(["com.kipi.b"], set(), {"com.kipi.b"}), [])
+
+_uninstalled = fh.launchd_finding("launchd-uninstalled", "com.kipi.mutation-check")
+check("the uninstalled finding keys on the label",
+      _uninstalled["subject"], "com.kipi.mutation-check")
+check("the uninstalled finding names the installer command",
+      "install-plist.sh com.kipi.mutation-check" in _uninstalled["body"], True)
+check("uninstalled and dark are separate dedup keys for one label",
+      fh.finding_key("launchd-uninstalled", "com.kipi.mutation-check")
+      != fh.finding_key("launchd-dark", "com.kipi.mutation-check"), True)
+
+# The detector must read the directory the templates actually live in. A glob
+# pointed one level off finds nothing and reports a permanently clean fleet.
+check("the real repo's templates are discovered",
+      "com.kipi.mutation-check" in fh.committed_template_labels(), True)
+
 if failures:
     print("FAIL:")
     for line in failures:

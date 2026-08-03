@@ -14,7 +14,16 @@
 
      TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
      by install-plist.sh (the openloops-heartbeat placeholder convention, ASK-191).
-     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.mutation-check -->
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.mutation-check
+
+     MERGING THIS FILE INSTALLS NOTHING, and nothing self-installs it: the
+     renderer pins KIPI_REPO to whatever checkout it runs from, so an automatic
+     install from a throwaway worktree would schedule a job against a path that
+     is about to be deleted. What is wired instead is the NOTICING:
+     fleet-health-daily.py's `launchd-uninstalled` detector compares committed
+     templates against ~/Library/LaunchAgents and files a permanent Linear issue
+     while this one is missing. Run install-plist.sh from the main checkout.
+     (PR #81 review, major.) -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
