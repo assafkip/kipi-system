@@ -1,8 +1,8 @@
 Reading additional input from stdin...
-2026-08-03T02:03:18.158131Z ERROR codex_core::session::session: failed to load skill /Users/assafkipnis/.agents/skills/audhd-executive-function/SKILL.md: missing YAML frontmatter delimited by ---
+2026-08-03T02:03:18.158131Z ERROR codex_core::session::session: failed to load skill /Users/founder/.agents/skills/audhd-executive-function/SKILL.md: missing YAML frontmatter delimited by ---
 OpenAI Codex v0.146.0
 --------
-workdir: /Users/assafkipnis/.config/kipi/review-trees/pr-74
+workdir: /Users/founder/.config/kipi/review-trees/pr-74
 model: gpt-5.6-sol
 provider: openai
 approval: never
@@ -13,7 +13,7 @@ session id: 019fc55c-7237-7e91-a583-177c32eef7c3
 --------
 user
 You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
-You were asked to review pull request #74 in /Users/assafkipnis/.config/kipi/review-trees/pr-74, and you are ADVERSARIAL by default:
+You were asked to review pull request #74 in /Users/founder/.config/kipi/review-trees/pr-74, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.
 
 ## THIS IS REVIEW ROUND 3 OF THIS PR
