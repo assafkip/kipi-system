@@ -159,9 +159,18 @@ SANDBOX = Path(tempfile.mkdtemp(prefix="linear-dor-test-"))
 # drafter makes -- a stub on dor.notify would prove the drafter has a function,
 # not that the ping leaves the process. This script stands in for
 # slack-notify.sh and records what it was handed.
+#
+# "$*", not "$1": notify() calls the notifier as
+# `slack-notify.sh --kind receipt <message>` (ASK-294), so $1 is the literal
+# string "--kind" and the message is $3. Recording only $1 made every content
+# assertion here read "--kind" instead of the ping text -- the count check below
+# went False while the ping COUNT still incremented, so the fixture failed
+# silently in the one direction a stale fixture can: it kept passing the cheap
+# check and lied about the expensive one. Record the whole argv so a future
+# change to the flag order cannot hide the message again.
 PINGS = SANDBOX / "pings.txt"
 _ping_script = SANDBOX / "fake-slack-notify.sh"
-_ping_script.write_text(f'printf "%s\\n" "$1" >> {PINGS}\n')
+_ping_script.write_text(f'printf "%s\\n" "$*" >> {PINGS}\n')
 _ping_script.chmod(0o755)
 dor.NOTIFY_SCRIPT = _ping_script
 

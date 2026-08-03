@@ -478,6 +478,10 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_validate.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],
@@ -580,6 +584,11 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/spillover-validate.py",
+      "reason": "hand-run ledger-triage tool for ASK-337: read-only by default and --apply voids only confirmed-gone rows. Its one-shot sweep already ran (2026-08-03T14:45Z). Auto-wiring a bulk void is the exact hazard its own docstring names, so the call site is a founder decision, not a hook",
+      "spillover_id": "sp-8a89b0e0"
     }
   ],
   "uncovered_known": [

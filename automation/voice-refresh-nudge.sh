@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NOTIFY="$ROOT/q-system/.q-system/scripts/slack-notify.sh"
 MSG="Voice refresh due. Run /voice-refresh in a session to pull this month's Granola meetings and refresh your voice DNA."
 if [ -x "$NOTIFY" ]; then
-  bash "$NOTIFY" "$MSG"
+  bash "$NOTIFY" --kind decision --class publish "$MSG"
 else
   # slack-notify is a silent no-op when unconfigured; log so a dead nudge is visible.
   echo "[voice-refresh-nudge] slack-notify.sh not executable at $NOTIFY" >&2
