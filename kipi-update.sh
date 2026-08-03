@@ -1403,6 +1403,31 @@ PY
       fi
     done
 
+    # Re-baseline the instance's .claude/ integrity tripwire (ASK-291).
+    #
+    # SCAR, measured before rollout by probe_update_interaction.sh: Layer 2
+    # (claude-integrity-tripwire.py --enforce) is wired PostToolUse on every
+    # instance and AUTO-REVERTS unsanctioned .claude/ content. Everything above
+    # this line rewrites .claude/ -- settings.json from the template, then
+    # rules/, agents/, output-styles/. Without this call the next tool call in
+    # the updated instance sees all of it as drift, quarantines it, and rolls the
+    # update BACK. The updater already printed OK. Silent, and on 23 machines.
+    #
+    # A re-baseline and not an exclusion: `kipi update` propagates the skeleton's
+    # git HEAD, which is the same reviewed provenance the tripwire's own
+    # attributable() already treats as sanctioned. Excluding settings.json from
+    # the watch set would hand back the whole hole. Phase 3 of the probe holds
+    # the other end: a tamper AFTER the re-baseline is still caught.
+    #
+    # Best-effort by design: an instance that has not adopted the tripwire has no
+    # script here, and a re-baseline failure must never abandon a good update.
+    if [ -f "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" ]; then
+      KIPI_NOTIFY=/usr/bin/true python3 \
+        "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
+        --root "$path" --baseline --quiet >/dev/null 2>&1 ||
+        echo "    WARN: could not re-baseline .claude/ tripwire (next tool call may revert this update)"
+    fi
+
     # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).
     # rsync instead of rm -rf + cp -R: --delete-excluded strips embedded .git dirs
     # and bytecode from the instance copy. A symlinked skeleton plugin (e.g.
