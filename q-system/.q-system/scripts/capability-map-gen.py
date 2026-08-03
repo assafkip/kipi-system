@@ -356,6 +356,17 @@ SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "just
 GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
 
 
+def _witness_rank(p: Path):
+    """Sort key that prefers a REAL caller over a scratch/hidden copy of one.
+
+    Any path component starting with "." is a review tree, a worktree or a tool
+    cache, never the wiring a reader should be sent to look at.
+    """
+    parts = p.parts
+    hidden = any(part.startswith(".") for part in parts)
+    return (hidden, len(parts), str(p))
+
+
 def is_generated_surface(p: Path, root: Path) -> bool:
     """True when p is a generated artifact, so its content must not count as wiring."""
     try:
@@ -477,6 +488,16 @@ def collect_engines(root: Path) -> list:
             continue
         if p.name.startswith(("test_", "test-")) or "test" in p.parts:
             continue
+        # A generated tree is not a wiring surface (see is_generated_surface), so
+        # it must not be an ENGINE source either. Excluding it from only one of
+        # the two makes its contents permanently dark: still collected, but with
+        # every file that could reference them now off-surface, so they report
+        # UNWIRED with no way to ever clear it (review finding, PR #74 major;
+        # would have compounded sp-3761d2d9). An artifact is not an engine, so
+        # the coherent move is to stop reporting it at all rather than to report
+        # it as dead. Measured: drops 12 phantom engines in kipi-investigations.
+        if is_generated_surface(p, root):
+            continue
         if DATED_SNAPSHOT_RE.search(p.stem):
             continue
         if len(read_text(p).splitlines()) < 40:
@@ -488,8 +509,14 @@ def collect_engines(root: Path) -> list:
     for p in engines:
         text = read_text(p)
         sources = refs.get(p, set())
-        test_sources = sorted(s for s in sources if _is_test_file(s))
-        wiring_sources = sorted(s for s in sources if not _is_test_file(s))
+        # WITNESS ORDER IS NOT ALPHABETICAL (review finding, PR #74 minor).
+        # Plain sorted()[0] puts dot-prefixed paths first, so the evidence named
+        # a review scratch tree (.pr42rev/, .claude/worktrees/) instead of the
+        # real caller in 163 of 785 witnesses measured across five repos. The
+        # verdict was right and the citation was useless, which is worse than it
+        # sounds: the citation is the only part a human re-checks.
+        test_sources = sorted((s for s in sources if _is_test_file(s)), key=_witness_rank)
+        wiring_sources = sorted((s for s in sources if not _is_test_file(s)), key=_witness_rank)
         has_test = any(p.stem in t for t in tests) or bool(test_sources)
         referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
