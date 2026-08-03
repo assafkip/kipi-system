@@ -340,9 +340,17 @@ SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "just
 #
 # Widening the scan repo-wide swept in q-system/output/, which holds codex
 # transcripts, run logs, plans and RCAs. Those name scripts constantly and run
-# nothing. Measured on kipi-investigations: _sync_all.py flipped to LIVE on the
+# nothing. Measured on kipi-investigations: the `_sync_all` design-system script
+# flipped to LIVE on the
 # strength of `q-system/output/codex-sfactivity-prd-out.txt` line 738, a bare
-# `find`-style listing `./plugins/.../_sync_all.py`.
+# `find`-style listing of that script's path.
+#
+# NOTE the extension is omitted deliberately everywhere in these comments. A
+# bare module name only counts inside import/loader syntax (MODULE_REF_RE), but
+# the FILENAME regex matches anywhere in any code file, comments included. The
+# first draft of this scar named the file outright and thereby marked it LIVE --
+# a comment explaining that a script is dead resurrected it, which is the very
+# shape documented just below. Do not add the suffix back.
 #
 # The invocation filter cannot save this: that line starts with "./" and so
 # matches MD_INVOCATION_RE. A log of a command that ENUMERATED files is
@@ -355,31 +363,75 @@ SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "just
 # fleet-wide as an instance's own output rather than source.
 GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
 
+# Review scratch: a detached copy of the repo, or a dump ABOUT the repo. Neither
+# is wiring. `.pr36rev/all-dors.json` is a Linear DoR dump whose own text says
+# `_sync_all` has "no test, no wiring reference" -- a document asserting a
+# script is DEAD was the thing marking it alive (Fable B2). Matched on the path
+# component so a nested `.pr42rev-r2/tree/...` counts too.
+#
+# NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
+# PRIMARY wiring locations; treating every dotted component as scratch is what
+# made _witness_rank cite the wrong file (Fable A1).
+SCRATCH_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
 
-def _witness_rank(p: Path):
-    """Sort key that prefers a REAL caller over a scratch/hidden copy of one.
 
-    Any path component starting with "." is a review tree, a worktree or a tool
-    cache, never the wiring a reader should be sent to look at.
+def _is_excluded_part(part: str) -> bool:
+    return bool(SCRATCH_DIR_RE.match(part))
+
+
+def is_excluded_tree(p: Path, root: Path) -> bool:
+    """Generated artifact or review scratch: not an engine, not a wiring surface,
+    not a witness.
+
+    ONE predicate for all three consumers ON PURPOSE. Excluding a tree from only
+    some of them is the defect shape that has now recurred three times in this
+    file: engines excluded but still voting as surfaces (Fable B3), trees off the
+    surface but still collected as engines (review round 1 major), snapshots
+    skipped one way only. If a tree is not real, it is not real for any of the
+    three questions.
     """
-    parts = p.parts
-    hidden = any(part.startswith(".") for part in parts)
-    return (hidden, len(parts), str(p))
-
-
-def is_generated_surface(p: Path, root: Path) -> bool:
-    """True when p is a generated artifact, so its content must not count as wiring."""
     try:
-        rel = p.relative_to(root).as_posix()
+        rel = p.relative_to(root)
     except ValueError:
         return False
-    return rel.startswith(GENERATED_SURFACE_PREFIXES)
+    if rel.as_posix().startswith(GENERATED_SURFACE_PREFIXES):
+        return True
+    return any(_is_excluded_part(part) for part in rel.parts)
+
+
+def _witness_rank(p: Path):
+    """Sort key preferring a REAL caller over a scratch copy of one.
+
+    Ranks on KNOWN scratch markers, not on a leading dot. The dot rule demoted
+    `.claude/` and `.q-system/` -- where most of this fleet's wiring actually
+    lives -- so any non-hidden file out-cited the true caller (Fable A1).
+    """
+    scratch = any(_is_excluded_part(part) for part in p.parts)
+    return (scratch, len(p.parts), str(p))
 
 # A markdown line only counts as wiring if it INVOKES something. A findings doc
 # saying "engine_x.py left the template unfilled" names a script without keeping it
 # alive; a runbook line `python3 engine_x.py` does. Without this split, widening the
 # scan repo-wide just trades false-dead for false-alive (ASK-122).
-MD_INVOCATION_RE = re.compile(r"(?:python3?\s|bash\s|\bsh\s|\./|source\s|-m\s)")
+# ANCHORED TO INVOCATION POSITION (Fable B1). The unanchored version matched
+# ordinary English, and this filter is the SOLE evidence for 9.2% of fleet LIVE
+# verdicts:
+#   "The source of the bug is engine_x.py"          -> hit on `source `
+#   "run-sweep.sh used to call engine_x.py"         -> hit on `sh `
+#   "this old python script engine_x.py is dead"    -> hit on `python `
+#   "see ../notes for why engine_x.py was dropped"  -> hit on `./`
+# All four assert the script is DEAD and all four marked it LIVE. The suite's
+# prose-negative fixture passed only because its wording happened to dodge those
+# tokens: green for a reason unrelated to correctness.
+# A command starts a line or follows a pipe / && / ; / backtick / $( -- never
+# mid-sentence. `-m` is dropped as a standalone arm: it cannot start a command,
+# and `python -m x` is already covered by the python arm.
+# The interpreter arms need trailing whitespace (`python3 x.py`); `./` does not,
+# because the path follows it directly (`./x.py`). Requiring a separator for both
+# silently dropped every `./script` caller -- caught by the kill-test, not by eye.
+MD_INVOCATION_RE = re.compile(
+    r"(?:^|[|&;(`]|\$\()\s*(?:(?:python3?|bash|sh|source)\s|\./)"
+)
 
 # Module tokens an engine can be reached by WITHOUT its .py suffix. `import x`,
 # `from x import y`, `python -m x`, and importlib's spec_from_file_location("x", ...)
@@ -420,7 +472,15 @@ def _iter_surface_files(root: Path):
     for p in root.rglob("*"):
         if not p.is_file() or is_vendored(p):
             continue
-        if is_generated_surface(p, root):
+        if is_excluded_tree(p, root):
+            continue
+        # A dated snapshot is DATA, and this file already says so by refusing to
+        # collect it as an engine. It must not VOTE either: a rollback copy's
+        # `import geo_clues` kept geo_clues.py LIVE after every real caller was
+        # gone, and Alice writes one snapshot per sweep so the phantom votes
+        # accumulate forever (Fable B3). Excluding it on one side only was the
+        # same half-exclusion this file keeps repeating.
+        if DATED_SNAPSHOT_RE.search(p.stem):
             continue
         if p.suffix.lower() in SURFACE_CODE_EXT or p.suffix.lower() in SURFACE_DOC_EXT:
             yield p
@@ -488,7 +548,7 @@ def collect_engines(root: Path) -> list:
             continue
         if p.name.startswith(("test_", "test-")) or "test" in p.parts:
             continue
-        # A generated tree is not a wiring surface (see is_generated_surface), so
+        # A generated tree is not a wiring surface (see is_excluded_tree), so
         # it must not be an ENGINE source either. Excluding it from only one of
         # the two makes its contents permanently dark: still collected, but with
         # every file that could reference them now off-surface, so they report
@@ -496,7 +556,7 @@ def collect_engines(root: Path) -> list:
         # would have compounded sp-3761d2d9). An artifact is not an engine, so
         # the coherent move is to stop reporting it at all rather than to report
         # it as dead. Measured: drops 12 phantom engines in kipi-investigations.
-        if is_generated_surface(p, root):
+        if is_excluded_tree(p, root):
             continue
         if DATED_SNAPSHOT_RE.search(p.stem):
             continue

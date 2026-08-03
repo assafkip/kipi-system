@@ -100,7 +100,7 @@ def build_fixture(root: Path) -> None:
     # 7. NEGATIVE: named only inside q-system/output/, the generated-artifacts
     #    tree. A codex transcript or run log that ENUMERATES files reads exactly
     #    like a runbook that INVOKES one, so the fixture is a `find`-style
-    #    listing -- the real shape that flipped _sync_all.py to LIVE in
+    #    listing -- the real shape that flipped the `_sync_all` script to LIVE in
     #    kipi-investigations. Note both lines below satisfy MD_INVOCATION_RE
     #    ("./" and "python3 "), which is the point: the invocation filter cannot
     #    catch this, only dropping the generated tree can.
@@ -192,6 +192,88 @@ class TestWiringDetection(unittest.TestCase):
         ev = self.by_entry["q-investigate/tools/engine_shell_called.py"]["evidence"]
         self.assertIn("run.sh", ev,
                       f"evidence must point at the caller so the map is auditable: {ev}")
+
+
+class TestMutantKills(unittest.TestCase):
+    """Kill-tests for mutants that SURVIVED the 9-case suite (Fable mutation table).
+
+    Reverting either 73a8870 fix left every test green: the witness ranking and
+    the engine-side generated exclusion shipped with zero coverage. A fix nothing
+    pins is a fix that silently un-ships on the next edit. These assert the unit
+    behaviour directly so no fixture wiring can mask them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_generator()
+
+    # --- MD_INVOCATION_RE: prose must not read as invocation (Fable B1) -------
+
+    def test_prose_does_not_match_invocation_re(self):
+        for line in [
+            "The source of the bug is engine_x.py",
+            "run-sweep.sh used to call engine_x.py",
+            "this old python script engine_x.py is dead",
+            "see ../notes for why engine_x.py was dropped",
+            "we removed the bash wrapper around engine_x.py",
+        ]:
+            self.assertIsNone(
+                self.mod.MD_INVOCATION_RE.search(line),
+                f"prose asserting a script is dead must not mark it live: {line!r}")
+
+    def test_real_invocations_still_match(self):
+        for line in [
+            "python3 engine_x.py --once",
+            "  ./engine_x.py",
+            "bash scripts/run.sh",
+            "cat x | python3 tools/y.py",
+            "$(python3 gen.py)",
+            "sh ./deploy.sh",
+        ]:
+            self.assertIsNotNone(
+                self.mod.MD_INVOCATION_RE.search(line),
+                f"a real invocation must still count as wiring: {line!r}")
+
+    # --- witness ranking: .claude/ and .q-system/ are NOT scratch (Fable A1) --
+
+    def test_witness_prefers_real_caller_over_review_scratch(self):
+        real = Path("q-system/.q-system/scripts/linear-worker.sh")
+        scratch = Path(".pr36rev/tree/q-system/.q-system/scripts/linear-worker.sh")
+        self.assertEqual(
+            real, sorted([scratch, real], key=self.mod._witness_rank)[0],
+            "a review tree copy must never out-cite the real caller")
+
+    def test_dotted_wiring_dirs_are_not_treated_as_scratch(self):
+        for real in (Path(".claude/settings.json"),
+                     Path("q-system/.q-system/scripts/x.sh")):
+            plain = Path("docs/some/deep/nested/note.md")
+            self.assertEqual(
+                real, sorted([plain, real], key=self.mod._witness_rank)[0],
+                f"{real} is primary wiring in this fleet, not hidden scratch")
+
+    # --- the exclusion predicate is used for ALL THREE questions -------------
+
+    def test_excluded_tree_covers_generated_and_scratch(self):
+        root = Path("/repo")
+        for rel in ("q-system/output/log.txt", ".pr36rev/all-dors.json",
+                    ".pr42rev-r2/tree/q-system/x.py", ".prd-os/spillover.jsonl",
+                    ".claude/worktrees/w/q-system/x.py"):
+            self.assertTrue(self.mod.is_excluded_tree(root / rel, root),
+                            f"{rel} is generated or review scratch")
+
+    def test_excluded_tree_does_not_swallow_real_wiring(self):
+        root = Path("/repo")
+        for rel in (".claude/settings.json", "q-system/.q-system/scripts/x.sh",
+                    "plugins/prd-os/hooks.json", "scripts/daily-sweep/run.sh"):
+            self.assertFalse(self.mod.is_excluded_tree(root / rel, root),
+                             f"{rel} is real wiring and must stay on the surface")
+
+    def test_generated_prefix_is_anchored_not_substring(self):
+        root = Path("/repo")
+        self.assertFalse(
+            self.mod.is_excluded_tree(root / "q-investigate/output/gen.py", root),
+            "a case-level output/ dir is not q-system/output/; un-anchoring this "
+            "darkens Alice's fill_sheet.py, which is LIVE and in ASK-122's table")
 
 
 if __name__ == "__main__":
