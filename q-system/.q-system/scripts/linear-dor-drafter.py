@@ -723,6 +723,42 @@ def prioritise(issues: list) -> list:
     return sorted(paired, key=lambda pair: MODE_RANK.get(pair[0], 9))
 
 
+def rotate_for_fairness(plan: list, cursor_id, limit: int) -> list:
+    """The batch to run tonight, rotated so the tail is reachable.
+
+    why (sp-e7f907a4, ASK-338): selection was `plan[:limit]` with no cursor, and
+    prioritise() is deliberately STABLE within a mode. So the same head was
+    picked every night; a persistently-failing head was retried forever and the
+    tail was never reached. The live board went 80 -> 87 -> 93 -> 137 lacking a
+    DoR against --limit 8. Inflow beat throughput, but the tail would have
+    starved even at parity, because nothing rotated.
+
+    Terminals and redrafts keep ABSOLUTE priority and are never rotated away: a
+    terminal costs no `claude` call at all, and a redraft IS the redrive. Only
+    the first-draft backlog rotates. Rotating the redrive would rebuild this
+    same starvation one layer up.
+
+    An unknown cursor (the issue closed since last night) starts from the top
+    rather than wedging the run.
+    """
+    if limit <= 0 or not plan:
+        return []
+    head = [p for p in plan if p[0] != "draft"]
+    drafts = [p for p in plan if p[0] == "draft"]
+    batch = head[:limit]
+    room = limit - len(batch)
+    if room <= 0 or not drafts:
+        return batch
+    start = 0
+    if cursor_id:
+        ids = [i.get("identifier") for _, i in drafts]
+        if cursor_id in ids:
+            start = (ids.index(cursor_id) + 1) % len(drafts)
+    # wrap once, and never return the same issue twice in one batch
+    ordered = drafts[start:] + drafts[:start]
+    return batch + ordered[:room]
+
+
 def refusal_reason(ls, issue: dict) -> str:
     """The worker's most recent written refusal, or a stated absence.
 
@@ -1266,7 +1302,9 @@ def main() -> int:
     redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
     print(f"dor-drafter {_now()}: {len(todo)} issue(s) queued: "
           f"{queue_breakdown(len(todo), redrives)}")
-    batch = plan[: args.limit]
+    # Rotated, not plan[:limit]: see rotate_for_fairness. Without the cursor the
+    # stable sort hands back the same head every night and the tail never runs.
+    batch = rotate_for_fairness(plan, prior.get("cursor"), args.limit)
     if not args.apply:
         for mode, i in batch:
             print(f"  would {VERBS[mode]} {i['identifier']}  {i['title'][:66]}")
@@ -1365,10 +1403,17 @@ def main() -> int:
     # the two cannot disagree about what is left.
     remaining = len(todo) - drafted - elsewhere
     remaining_redrives = redrives - done_redrives - elsewhere_redrives
+    # The rotation cursor is the LAST first-draft issue this run touched, so the
+    # next night resumes after it instead of re-picking the same head. Recorded
+    # regardless of whether that issue succeeded: a failing issue must not be
+    # able to pin the cursor and starve the tail, which is the whole defect
+    # (sp-e7f907a4). Terminals/redrafts never set it -- they are not rotated.
+    drafted_ids = [i.get("identifier") for mode, i in batch if mode == "draft"]
+    cursor = drafted_ids[-1] if drafted_ids else prior.get("cursor")
     write_state(ran_at=_now(), drafted=drafted, failed=len(failed),
                 carried_in=len(pending), failures_reported=reported,
                 pending_failures=unfiled[-PENDING_CAP:],
-                remaining=remaining)
+                remaining=remaining, cursor=cursor)
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
     elsewhere_note = (f", {elsewhere} completed by another writer"
