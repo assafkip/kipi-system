@@ -1048,6 +1048,11 @@ def _ledger_root(repo_root):
     return root
 
 
+# Severities that turn `gates run` RED. A finding written as `minor` is tracked
+# and reported but does not block a closeout: see the gate body for why.
+BLOCKING_SEVERITIES = {"blocker", "critical", "major", "high", "medium"}
+
+
 def _spillover_path(cfg: Config):
     return _ledger_root(cfg.repo_root) / ".prd-os" / "spillover.jsonl"
 
@@ -1509,20 +1514,34 @@ def cmd_gates(cfg: Config, args) -> int:
         if result.returncode != 0:
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
             failures.append((rec["gate_id"], "\n".join(tail)))
-    # Out-of-scope findings are part of the standing re-proof: an open spillover
-    # item turns the gate RED until it is resolved against a closed issue.
+    # Out-of-scope findings are part of the standing re-proof, but only the ones
+    # that actually block. why (ASK-341, measured 2026-08-03): this gate went RED
+    # on ANY open item. With 532 open across the fleet -- 510 of them `minor` --
+    # it could never go green, so it stopped carrying information and everyone
+    # learned to run past it. That is the identical failure this whole PRD
+    # started from: a permanently red gate is a green gate.
+    #
+    # Blocking severities are the ones a human called significant when writing
+    # the finding. `minor` items stay OPEN, stay counted, and stay visible in
+    # every report -- they are a backlog, not a gate condition. The gate is now
+    # a thing that CAN be cleared, which is the only kind worth having.
     openv = _spillover_open(cfg)
-    if openv:
-        names = ", ".join(r["id"] for r in openv)
-        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
-        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
-        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
+    blocking = [r for r in openv if (r.get("severity") or "minor").lower() in BLOCKING_SEVERITIES]
+    minor = len(openv) - len(blocking)
+    if blocking:
+        names = ", ".join(r["id"] for r in blocking)
+        detail = "\n".join(f"  {r['id']} [{r.get('severity')}]: {r.get('description', '')[:90]} (src {r.get('source')})" for r in blocking)
+        print(f"[RED] spillover: {len(blocking)} blocking out-of-scope item(s): {names}")
+        failures.append(("spillover", f"{len(blocking)} blocking spillover item(s):\n{detail}\n"
                                       f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    if minor:
+        print(f"[note] spillover: {minor} minor item(s) open, not blocking. "
+              f"`prd_runner.py spillover triage` to review them.")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} regression gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; no blocking spillover")
     return 0
 
 

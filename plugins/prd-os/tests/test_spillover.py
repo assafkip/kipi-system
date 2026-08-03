@@ -100,7 +100,7 @@ def test_check_red_while_open_green_when_none(repo):
 def test_gates_run_red_while_spillover_open(repo):
     # No registered gates at all, but an open spillover item must still make the
     # STANDING re-proof fail. This is the can't-be-forgotten property.
-    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     g = run(repo, "gates", "run")
     assert g.returncode != 0, "gates run stayed green with an open spillover item"
     assert "sp1" in (g.stdout + g.stderr)
@@ -194,7 +194,7 @@ def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-999": {"type": "started", "name": "In Progress"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-999") != 0
@@ -242,7 +242,7 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
     and a clean ledger, which is exactly the hand-clear this command exists to
     prevent. Refusing keeps the item visible until someone can actually prove it.
     """
-    run(repo, "spillover", "add", "--force", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--force", "--severity", "major", "--source", "s", "--desc", "leak", "--id", "sp1")
     env = dict(os.environ)
     env.pop("KIPI_LINEAR_API_KEY", None)
     env["HOME"] = str(tmp_path / "empty-home")  # no ~/.config/kipi/linear-api-key
