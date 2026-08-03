@@ -294,6 +294,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/founder-actor-gate.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\"",
             "async": true
           },
