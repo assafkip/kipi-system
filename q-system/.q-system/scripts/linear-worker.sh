@@ -303,6 +303,39 @@ fi
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
 
+# --- re-test the parked blocks BEFORE picking (ASK-288) ---------------------
+# `blocked:capability` used to be a one-way door: the label removes the issue
+# from ready() below and nothing ever put it back. The park comment says "once
+# it exists, remove this label" and named a human as the only actor who could,
+# so 10 issues sat parked on 2026-08-01 while this loop reported a healthy empty
+# queue every 15 minutes.
+#
+# BEFORE the pick, not after: a capability that arrived since the last run must
+# put its issue back into THIS run's pool, not the next one. Running it after
+# would mean every recovery costs an extra 15-minute cycle for no reason.
+#
+# NON-FATAL BY DESIGN. A failed re-test must never stop the run from doing the
+# work it CAN do -- the parked set is the recovery path, the ready set is the
+# job. The expiry script fails closed on its own (an ambiguous probe leaves the
+# block alone), so the worst case here is that a parked issue stays parked one
+# more cycle, which is exactly where it already was.
+EXPIRY="$SCRIPT_DIR/capability_block_expiry.py"
+if [ -f "$EXPIRY" ]; then
+  EXPIRY_ARGS=(--repo-project "$REPO_PROJECT")
+  # Dry when the worker is dry, for the same reason every other write here is:
+  # `linear-worker.sh` with no --apply is a preview, and a preview that silently
+  # mutated the board would make the dry run untrustworthy.
+  [ "$APPLY" = "1" ] && EXPIRY_ARGS+=(--apply)
+  EXPIRY_OUT="$(python3 "$EXPIRY" "${EXPIRY_ARGS[@]}" 2>&1)"
+  EXPIRY_RC=$?
+  # Every line, not a summary. Six issues each naming a different missing
+  # capability is six different facts, and this is the only place they surface.
+  [ -n "$EXPIRY_OUT" ] && printf '%s\n' "$EXPIRY_OUT" | while IFS= read -r line; do
+    say "$line"
+  done
+  [ "$EXPIRY_RC" -ne 0 ] && say "worker: the capability re-test exited $EXPIRY_RC -- parked blocks were NOT re-tested this run (the pick continues)"
+fi
+
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
 import importlib.util, json, os, sys, pathlib
@@ -1380,6 +1413,19 @@ Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founde
       This does NOT go to the drafter. Re-scoping a correct spec burns a pass and
       returns the same blocked issue. It routes to whoever owns the config.
 
+      ALSO WRITE A PROBE if the capability is one a plain process can test. This is
+      what lets the block expire on its own instead of waiting for a human to notice:
+        printf '%s' \"bin:<name>\"   > $TREE/.sana-blocked-capability.probe   # a binary on PATH
+        printf '%s' \"env:<VAR>\"    > $TREE/.sana-blocked-capability.probe   # a credential in the environment
+        printf '%s' \"path:</abs/path>\" > $TREE/.sana-blocked-capability.probe  # a file or dir that must exist
+        printf '%s' \"write:</abs/dir>\" > $TREE/.sana-blocked-capability.probe  # a directory that must be writable
+      Those four kinds are the whole allowlist; anything else is refused and the block
+      becomes hand-clear-only. Write NO probe when nothing a plain process runs could
+      tell the difference -- a Claude Code harness guard is the standing example, since
+      a probe run outside the harness would pass and un-park an issue still blocked.
+      A wrong probe is worse than no probe: it un-parks the issue, spends a dispatch,
+      and blocks again.
+
    Choosing (a) when it is really (b) is the costly mistake: it throws away a good
    spec and hides the real constraint. Ask yourself: would a perfectly written DoR
    still fail here? If yes, it is (b).
@@ -1472,7 +1518,38 @@ Anything real you find and are not fixing: capture it, never just mention it:
     #   2. an untracked file makes the tree dirty, and the position guard above
     #      refuses to reposition a dirty tree, wedging this issue permanently.
     # The durable record is the label plus the Linear comment, not this file.
-    rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
+    # THE PROBE THAT MAKES THE PARK EXPIRABLE (ASK-288).
+    #
+    # Read BEFORE the sentinels are consumed, because it lives beside them and
+    # is deleted with them. A capability block with no probe can never expire:
+    # capability_block_expiry.py has nothing to re-test, so it reports the issue
+    # as unprobeable every run and leaves it parked. That is the honest outcome
+    # for the classes that genuinely cannot be probed from an unattended process
+    # (the Claude Code sensitive-path guard is the standing example), and it is
+    # pure loss for the ones that can -- a missing binary, an unset credential,
+    # a directory that does not exist yet.
+    #
+    # VALIDATED HERE, at record time, not at re-test time. An unrunnable probe
+    # discovered three weeks later is a block that was never expirable and
+    # nobody knew; validating on the way in means the park either carries a
+    # probe the expiry script can actually run, or honestly records `none`.
+    # VALIDATION LIVES IN capability_block_expiry.py, not in a second copy here.
+    # The writer and the reader of a probe drifting apart is a block that reads
+    # as expirable and is not, discovered weeks later by nobody.
+    read_capability_probe() { # <probe-file> -> a probe spec, or `none`
+      local recorded=""
+      [ -f "$1" ] || { printf 'none'; return 0; }
+      recorded="$(head -c 300 "$1" 2>/dev/null | python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import capability_block_expiry as cbe
+print(cbe.validate_recorded_probe(sys.stdin.read()))
+' "$SCRIPT_DIR" 2>/dev/null)"
+      printf '%s' "${recorded:-none}"
+    }
+    CAP_PROBE="$(read_capability_probe "$TREE/.sana-blocked-capability.probe")"
+    rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability" \
+          "$TREE/.sana-blocked-capability.probe"
     if [ "$REFUSE_KIND" = "capability" ]; then
       say "$ISSUE BLOCKED on a missing capability (the spec is fine, the runner is not): $SCOPE_WHY"
     else
@@ -1524,6 +1601,12 @@ what she could not?
      printf '%s' \"<the exact capability YOU lack, and what refused it>\" > $TREE/.codex-blocked-capability
    Both refusals then go on the Linear issue together, naming what each runner
    lacked, and the issue parks. That is a correct outcome, not a failure.
+   If a plain process could TEST for that capability, also record how, so the park
+   expires on its own instead of waiting for a human:
+     printf '%s' \"bin:<name>\" > $TREE/.codex-blocked-capability.probe
+   Kinds: bin:<name> | env:<VAR> | path:</abs/path> | write:</abs/dir>. Nothing else.
+   Write no probe if no plain process could tell the difference -- a wrong probe
+   un-parks the issue, spends a dispatch, and blocks again.
 
 NEVER route around a refused permission by another route (writing through a shell
 to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
@@ -1536,6 +1619,22 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       else
         crc=$?
       fi
+      # READ CODEX'S PROBE **AFTER** CODEX RAN (codex, PR #77). The first cut
+      # read both runners' probe files in one loop up above -- before the
+      # handoff -- so the file Codex is told to write, four paragraphs earlier
+      # in its own prompt, was read before it could exist and deleted a line
+      # later. Every Codex-recorded probe was dropped and its park stored
+      # `none`: hand-clear-only, which is the state this issue exists to
+      # remove. The deletion also stopped covering it, leaving an untracked
+      # `.probe` behind, and the position guard refuses to reposition a dirty
+      # tree.
+      #
+      # Sana's probe wins when both wrote one: hers is the refusal the park's
+      # prose is about, so a reader comparing the two sees one story.
+      if [ "$CAP_PROBE" = "none" ]; then
+        CAP_PROBE="$(read_capability_probe "$TREE/.codex-blocked-capability.probe")"
+      fi
+      rm -f "$TREE/.codex-blocked-capability.probe"
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
         [ -n "$CODEX_WHY" ] || CODEX_WHY="the Codex run refused but recorded no reason"
@@ -1618,7 +1717,22 @@ BOTH runners were tried. Neither is equipped:
 
 **The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, neither runner is equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
 
-**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, remove this label and the loop picks the issue straight back up."
+**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, THE LOOP CLEARS THIS ITSELF -- capability_block_expiry.py re-tests the probe below before every pick and removes the label the run after it passes. Nobody has to remember to come back.
+
+<!-- capability-probe: $CAP_PROBE -->"
+      # The marker is machine-readable and deliberately invisible in the
+      # rendered comment: it is addressed to capability_block_expiry.py, not to
+      # the reader, and a park note that spent a paragraph explaining its own
+      # bookkeeping would bury the two sentences a human actually needs.
+      # \`none\` is written explicitly rather than omitted so the re-test can
+      # tell "this park considered a probe and had none" from "this issue was
+      # parked before probes existed" -- same distinction, different evidence
+      # about whether the record step ran.
+      if [ "$CAP_PROBE" = "none" ]; then
+        say "$ISSUE parked with NO probe -- it can only be cleared by hand (the runner recorded no way to re-test)"
+      else
+        say "$ISSUE parked with probe '$CAP_PROBE' -- the loop re-tests it before every pick and un-parks itself"
+      fi
     else
       REFUSE_NOTE="**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
 
