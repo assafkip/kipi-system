@@ -43,6 +43,7 @@ RETRY_LIMIT = 3
 VOLUME_CEILING = 50
 
 TRIAGE_TEXT = "DIAGNOSIS: the edit target moved. NEXT: re-read the file."
+REQUEST_NOTE = "Cross-model triage requested"
 
 
 # --------------------------------------------------------------------------
@@ -139,10 +140,11 @@ def seed(actor, **overrides):
 def actor():
     key = "fable-test-" + uuid.uuid4().hex[:10]
     yield key
-    try:
-        os.remove(cache_path(key))
-    except OSError:
-        pass
+    for path in (cache_path(key), "/tmp/claude-fable-pending-%s.json" % key):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 @pytest.fixture
@@ -177,29 +179,100 @@ def ledger_rows(env):
     return rows
 
 
+
+
+# --------------------------------------------------------------------------
+# the detached contract
+# --------------------------------------------------------------------------
+#
+# The guard no longer waits on the model (see token-guard's spawn comment: a
+# hook that outruns its configured timeout has its exit 2 DISCARDED, so waiting
+# spends the refusal). It spawns the call and exits. Every consequence -- the
+# ledger row, the stub's call record, the page at the cap -- therefore lands
+# slightly AFTER run_guard() has already returned. Asserting immediately would
+# race the child and flake, so the suite polls for the effect instead.
+
+SETTLE_TIMEOUT = 25.0
+
+
+def settle(predicate, timeout=SETTLE_TIMEOUT):
+    """Poll until `predicate` is truthy, then return it. Bounded, never sleeps
+    the full timeout on success."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    return predicate()
+
+
+def settled_rows(env, n=1):
+    settle(lambda: len(ledger_rows(env)) >= n)
+    return ledger_rows(env)
+
+
+def settled_calls(dump, n=1):
+    settle(lambda: len(calls(dump)) >= n)
+    return calls(dump)
+
+
+def quiet(dump, grace=2.0):
+    """True when NOTHING was called after waiting out the spawn window.
+
+    The negative assertions need this: `calls(dump) == []` immediately after
+    run_guard would pass even if a child were on its way, which is the one
+    result those tests must not be able to fake.
+    """
+    settle(lambda: calls(dump), timeout=grace)
+    return calls(dump) == []
+
+
+def deliver(actor, env, extra=None):
+    """One ordinary, non-blocking guard call -- the path a landed triage now
+    takes to reach the agent. Returns the CompletedProcess; the triage arrives
+    on stdout as PreToolUse additionalContext, not on stderr."""
+    e = guard_env(env)
+    e.update(extra or {})
+    seed(actor)
+    return run_guard({"session_id": actor, "hook_event_name": "PreToolUse",
+                      "tool_name": "Read", "tool_input": {"file_path": "/tmp/x"},
+                      "transcript_path": ""}, e)
+
+
+
 # --------------------------------------------------------------------------
 # reproducer: the Tier-A stuck block escalates
 # --------------------------------------------------------------------------
 
-def test_edit_spiral_block_carries_fable_triage(actor, env):
-    """THE REPRODUCER. An edit spiral is a Tier-A stuck state. Before the
-    escalation branch the block message was the guard's own sentence and
-    nothing else; now it also carries Fable's triage and leaves a ledger row."""
+def test_edit_spiral_escalates_and_the_triage_lands_on_a_later_call(actor, env):
+    """THE REPRODUCER, end to end on the detached contract.
+
+    An edit spiral is a Tier-A stuck state. The refusal goes out immediately and
+    unchanged, the escalation is requested, and Fable's answer reaches the agent
+    on a LATER tool call rather than by making the refusal wait for it.
+    """
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
     r = run_guard(edit_payload(actor), guard_env(env))
 
     assert r.returncode == 2, f"expected a block, got {r.returncode}: {r.stderr}"
     assert "edit attempts on" in r.stderr, "the original block reason must survive"
-    assert TRIAGE_TEXT in r.stderr, (
-        "the block did not carry a Fable triage — escalation did not fire.\n"
-        + r.stderr)
+    assert REQUEST_NOTE in r.stderr, "the escalation was never requested"
+    assert TRIAGE_TEXT not in r.stderr, (
+        "the guard waited for the model inline again -- that is the defect this "
+        "test exists to keep out")
 
-    rows = ledger_rows(env)
+    rows = settled_rows(env)
     assert len(rows) == 1, f"expected exactly one ledger row, got {rows}"
     assert rows[0]["trigger"] == "edit-spiral"
     assert rows[0]["fable_ok"] is True
     assert rows[0]["packet_sha256"]
     assert rows[0]["duration_s"] >= 0
+
+    # DELIVERY. Without this the feature would be a ledger nobody reads.
+    d = deliver(actor, env)
+    assert TRIAGE_TEXT in d.stdout, (
+        "the triage landed but never reached the agent:\n" + d.stdout)
 
 
 def configured_hook_timeout():
@@ -262,8 +335,8 @@ def test_exact_retry_block_escalates(actor, env):
     r = run_guard(payload, guard_env(env))
     assert r.returncode == 2
     assert "exact call" in r.stderr
-    assert TRIAGE_TEXT in r.stderr
-    assert ledger_rows(env)[0]["trigger"] == "exact-retry"
+    assert REQUEST_NOTE in r.stderr
+    assert settled_rows(env)[0]["trigger"] == "exact-retry"
 
 
 def test_volume_ceiling_block_escalates(actor, env):
@@ -275,8 +348,8 @@ def test_volume_ceiling_block_escalates(actor, env):
          "transcript_path": ""},
         guard_env(env))
     assert r.returncode == 2
-    assert TRIAGE_TEXT in r.stderr
-    assert ledger_rows(env)[0]["trigger"] == "volume-ceiling"
+    assert REQUEST_NOTE in r.stderr
+    assert settled_rows(env)[0]["trigger"] == "volume-ceiling"
 
 
 # --------------------------------------------------------------------------
@@ -329,13 +402,18 @@ def test_broken_fable_degrades_to_plain_block(actor, env, tmp_path, name, body):
     elapsed = time.time() - start
 
     assert r.returncode == 2, "the block must survive a broken escalation"
-    assert elapsed < 20, f"escalation hung for {elapsed:.1f}s"
-    assert r.stderr.strip() == baseline.strip(), (
-        "a failed escalation must leave the block byte-identical to today's")
-    assert r.stderr.strip() == PLAIN_EDIT_SPIRAL, (
-        "the literal check: 'same as the baseline' cannot see a change that "
-        "moves the baseline too")
-    rows = ledger_rows(env)
+    assert elapsed < 5, (
+        "the guard waited on the escalation for %.1fs; the hook budget is "
+        "smaller than that and a late exit 2 is discarded" % elapsed)
+    # The REFUSAL ITSELF is what must be untouched. It is the first paragraph;
+    # the appended note only ever says a triage was requested, never what it
+    # said. Asserted against the literal, not against `baseline`: a baseline
+    # computed through the same code cannot see a change that moves both sides.
+    assert r.stderr.split("\n\n")[0].strip() == PLAIN_EDIT_SPIRAL, (
+        "a failed escalation changed the block reason itself")
+    assert baseline.strip() == PLAIN_EDIT_SPIRAL
+    assert TRIAGE_TEXT not in r.stderr
+    rows = settled_rows(env)
     assert len(rows) == 1 and rows[0]["fable_ok"] is False, (
         "a failed call must still be logged — a silent failure is invisible")
     assert rows[0]["failure"], "the ledger row must name why it failed"
@@ -370,7 +448,7 @@ def test_child_gets_no_session_continuation(actor, env, tmp_path):
     payload["transcript_path"] = _transcript(tmp_path, "CANARY-HEAD", "TAIL-MARK")
     run_guard(payload, guard_env(env))
 
-    c = calls(env["_dump"])
+    c = settled_calls(env["_dump"])
     assert len(c) == 1, "exactly one Fable call per escalation"
     argv = c[0]["argv"]
     joined = " ".join(argv)
@@ -390,7 +468,7 @@ def test_child_sees_exactly_the_logged_packet(actor, env, tmp_path):
     payload["transcript_path"] = _transcript(tmp_path, "CANARY-HEAD", "TAIL-MARK")
     run_guard(payload, guard_env(env))
 
-    c = calls(env["_dump"])[0]
+    c = settled_calls(env["_dump"])[0]
     seen = "".join(a for a in c["argv"] if a not in ("-p", "--model", "claude-fable-5")) + c["stdin"]
     row = ledger_rows(env)[0]
     assert hashlib.sha256(seen.encode()).hexdigest() == row["packet_sha256"], (
@@ -406,7 +484,7 @@ def test_canary_outside_the_window_never_reaches_the_child(actor, env, tmp_path)
     payload["transcript_path"] = _transcript(tmp_path, "CANARY-HEAD", "TAIL-MARK")
     run_guard(payload, guard_env(env))
 
-    c = calls(env["_dump"])[0]
+    c = settled_calls(env["_dump"])[0]
     blob = " ".join(c["argv"]) + c["stdin"]
     assert "TAIL-MARK" in blob, "the packet carried no transcript content at all"
     assert "CANARY-HEAD" not in blob, "an unbounded window leaked the whole session"
@@ -418,7 +496,7 @@ def test_child_runs_outside_the_project(actor, env, tmp_path):
     nor free."""
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
     run_guard(edit_payload(actor), guard_env(env))
-    cwd = calls(env["_dump"])[0]["cwd"]
+    cwd = settled_calls(env["_dump"])[0]["cwd"]
     repo = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
     assert not cwd.startswith(repo), f"child ran inside the project: {cwd}"
 
@@ -428,7 +506,7 @@ def test_child_cannot_escalate_again(actor, env):
     own token-guard could escalate, and each escalation would spawn another."""
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
     run_guard(edit_payload(actor), guard_env(env))
-    child_env = calls(env["_dump"])[0]["env"]
+    child_env = settled_calls(env["_dump"])[0]["env"]
     assert child_env.get("KIPI_FABLE_ESCALATION") == "0", (
         "the child was not marked, so a nested guard would escalate again")
 
@@ -446,7 +524,7 @@ def test_sensitive_file_block_does_not_escalate(actor, env):
         guard_env(env))
     assert r.returncode == 2
     assert TRIAGE_TEXT not in r.stderr
-    assert calls(env["_dump"]) == []
+    assert quiet(env["_dump"]), "a policy refusal spawned an escalation"
 
 
 def test_mcp_rate_block_does_not_escalate(actor, env):
@@ -460,7 +538,7 @@ def test_mcp_rate_block_does_not_escalate(actor, env):
         guard_env(env))
     assert r.returncode == 2
     assert TRIAGE_TEXT not in r.stderr
-    assert calls(env["_dump"]) == []
+    assert quiet(env["_dump"]), "an environmental refusal spawned an escalation"
 
 
 def test_warn_tier_does_not_escalate(actor, env):
@@ -473,7 +551,7 @@ def test_warn_tier_does_not_escalate(actor, env):
          "tool_input": {"file_path": "/tmp/x"}, "transcript_path": ""},
         guard_env(env))
     assert r.returncode == 0
-    assert calls(env["_dump"]) == []
+    assert quiet(env["_dump"]), "a warn tier spawned an escalation"
 
 
 # --------------------------------------------------------------------------
@@ -485,29 +563,42 @@ def test_escalations_stop_at_the_cap_and_page_once(actor, env):
     e = guard_env(env)
     e["KIPI_FABLE_CAP"] = "2"
 
-    for _ in range(2):
+    for n in range(2):
         seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
              fable_escalations=_count(env))
         r = run_guard(edit_payload(actor), e)
-        assert TRIAGE_TEXT in r.stderr
+        assert REQUEST_NOTE in r.stderr
+        settled_calls(env["_dump"], n + 1)
 
     # third stuck block: cap reached
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
          fable_escalations=2)
     r = run_guard(edit_payload(actor), e)
     assert r.returncode == 2
-    assert TRIAGE_TEXT not in r.stderr, "escalated past the cap"
+    assert REQUEST_NOTE not in r.stderr, "escalated past the cap"
     assert "cap" in r.stderr.lower()
-    assert len(calls(env["_dump"])) == 2, "the model was called past the cap"
 
-    log = open(env["_notify_log"]).read() if os.path.exists(env["_notify_log"]) else ""
+    log = settle(lambda: open(env["_notify_log"]).read()
+                 if os.path.exists(env["_notify_log"]) else "")
     assert "stuck" in log.lower(), f"the founder was not paged at the cap: {log!r}"
+    assert quiet_after_cap(env), "the model was called past the cap"
 
     # a fourth block must not page again — one page per episode, not per call
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
          fable_escalations=2, fable_capped_notified=True)
     run_guard(edit_payload(actor), e)
+    settle(lambda: None, timeout=2.0)
     assert open(env["_notify_log"]).read().count("\n") == 1, "paged twice"
+
+
+def quiet_after_cap(env, grace=2.0):
+    """The cap must stop the MODEL call, not merely the message.
+
+    Counts stub invocations after waiting out the spawn window, so a third call
+    that is merely slow to land still fails this rather than passing by timing.
+    """
+    settle(lambda: len(calls(env["_dump"])) > 2, timeout=grace)
+    return len(calls(env["_dump"])) == 2
 
 
 def _count(env):
@@ -545,8 +636,8 @@ def test_a_fixture_run_without_a_stub_refuses_the_real_model(actor, env):
 
     assert r.returncode == 2
     assert TRIAGE_TEXT not in r.stderr
-    assert elapsed < 15, f"a real model call was made ({elapsed:.1f}s)"
-    row = ledger_rows(env)[0]
+    assert elapsed < 5, f"the guard waited on the escalation ({elapsed:.1f}s)"
+    row = settled_rows(env)[0]
     assert row["fable_ok"] is False
     assert "fixture run" in row["failure"], (
         f"refused for the wrong reason: {row['failure']!r}")
@@ -558,5 +649,6 @@ def test_the_chokepoint_still_lets_a_stub_through(actor, env):
     feature in production."""
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
     r = run_guard(edit_payload(actor), guard_env(env))
-    assert TRIAGE_TEXT in r.stderr
-    assert ledger_rows(env)[0]["fable_ok"] is True
+    assert REQUEST_NOTE in r.stderr
+    assert settled_rows(env)[0]["fable_ok"] is True
+    assert TRIAGE_TEXT in deliver(actor, env).stdout
