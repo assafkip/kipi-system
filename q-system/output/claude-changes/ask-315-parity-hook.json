@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "slug": "ask-315-consumer-parity-hook",
+  "reason": "ASK-315: wire consumer-parity-check.py as a PostToolUse gate in both settings files, so a walker that bypasses its module's exclusion predicate is caught at write time rather than in the next review round.",
+  "requires": {
+    "files_present": ["q-system/.q-system/scripts/consumer-parity-check.py"],
+    "template_pairs": ["consumer-parity-check.py"]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py\\\"\",\n            \"timeout\": 5\n          }",
+      "insert": ",\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\"\",\n            \"timeout\": 10\n          }",
+      "reason": "arm the parity gate in the skeleton runtime"
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\\\"\"\n          }",
+      "insert": ",\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\"\",\n            \"timeout\": 10\n          }",
+      "reason": "ship the switch to the fleet, not only the script"
+    }
+  ]
+}

@@ -42,6 +42,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-consumer-parity-check.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-containment-gitlink.py",
       "runner": "python3"
     },
