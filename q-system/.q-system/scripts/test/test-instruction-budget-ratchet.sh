@@ -398,6 +398,127 @@ check "mutant engine applies an uncommittable change" 0 "OK applied" "$APPLY_RC"
 audit_rc "$RE1"
 check "and the commit gate is the one that finds out" 1 "RATCHET FAIL" "$AUDIT_RC" "$AUDIT_OUT"
 
+echo "== 14. a rule in a rules/ SUBDIRECTORY is counted, not invisible"
+# apply_claude_changes.py is depth-permissive for rule text (is_rule_text) and its
+# own content census walks the whole rules/ tree, so the sanctioned route can
+# create .claude/rules/team/nested.md and Claude loads it always-on like any other
+# unscoped rule. A one-level os.listdir here left those lines uncounted: the engine
+# printed "gates held" on instructions the ratchet could not see (PR #88, major).
+# nested.md is 1 heading + 4 body = 5 substantive lines, so total 33 -> 38.
+R10=$(mktemp -d); mk_fixture "$R10"
+audit_rc "$R10"                      # cap 33, total 33
+mkdir -p "$R10/.claude/rules/team"
+{ echo "# Nested Rule"; echo
+  for i in $(seq 1 4); do echo "Nested line $i."; echo; done
+} > "$R10/.claude/rules/team/nested.md"
+check_num "fixture nested.md lines" 5 "$(grep -c '[^[:space:]]' "$R10/.claude/rules/team/nested.md" || true)"
+audit_rc "$R10"
+check "nested always-on lines hit the cap" 1 "RATCHET FAIL: always-on total 33 -> 38" "$AUDIT_RC" "$AUDIT_OUT"
+LISTING=$(python3 "$AUDIT" --root "$R10" 2>&1 || true)
+case "$LISTING" in
+  *"team/nested.md: 5"*) ok "listing names the nested rule by its path under rules/" ;;
+  *) bad "listing hides the nested rule :: $LISTING" ;;
+esac
+
+echo "== 15. the sanctioned route cannot land an uncounted nested rule either"
+# Same hole seen from the write path: create_file at depth is permitted, so the
+# gate has to grade it. Pre-fix the engine reported OK applied and the always-on
+# total it printed was unchanged.
+R11=$(mktemp -d); mk_fixture "$R11"
+audit_rc "$R11"                      # cap 33, total 33, headroom 0
+cat > "$R11/prop.json" <<'JSON'
+{
+  "schema_version": 1,
+  "slug": "nested-always-on",
+  "reason": "PR #88 reproducer: an always-on rule created at depth under rules/",
+  "edits": [
+    {
+      "file": ".claude/rules/team/nested.md",
+      "op": "create_file",
+      "insert": "# Nested Rule\n\nNested line 1.\n\nNested line 2.\n",
+      "reason": "five always-on lines the one-level scanner never saw"
+    }
+  ]
+}
+JSON
+apply "$R11/prop.json" "$R11"
+check "nested create_file reverts with no headroom" 3 "gate 'instruction-budget' regressed pass->fail" "$APPLY_RC" "$APPLY_OUT"
+if [ -f "$R11/.claude/rules/team/nested.md" ]; then
+  bad "reverted apply left the nested rule on disk"
+else
+  ok "reverted apply removed the nested rule"
+fi
+
+echo "== 16. the ratchet stages the baseline it rewrote, so the commit records it"
+# The pre-commit hook rewrites the baseline in the WORKING TREE. Unstaged, the
+# commit that caused the accounting transition does not carry it: a tightened cap
+# is one `git checkout` from gone, and the committed baseline disagrees with the
+# tree every gate reads (PR #88, major).
+R12=$(mktemp -d); mk_fixture "$R12"
+audit_rc "$R12"                      # bootstrap writes the baseline
+git -C "$R12" init -q
+git -C "$R12" add -A
+BASE_REL="q-system/.q-system/instruction-budget-baseline.json"
+scope_rule "$R12" beta.md "q-system/output/**"
+audit_rc "$R12"                      # rewrites the baseline: total 33 -> 13
+check "staging run exits 0" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+STAGED=$(git -C "$R12" show ":$BASE_REL")
+ONDISK=$(cat "$R12/$BASE_REL")
+if [ "$STAGED" = "$ONDISK" ]; then
+  ok "rewritten baseline is in the index"
+else
+  bad "baseline rewritten in the tree only; the commit would not carry it"
+fi
+check "the run says it staged, not that the reader should" 0 "staged $BASE_REL" "$AUDIT_RC" "$AUDIT_OUT"
+
+echo "== 17. --no-stage and a non-git tree: staging is never load-bearing"
+# The audit runs against throwaway fixtures and inside apply_claude_changes.py's
+# gate suite, neither of which is a git work tree. Failing to stage must never be
+# what fails a run.
+R13=$(mktemp -d); mk_fixture "$R13"
+audit_rc "$R13"
+scope_rule "$R13" beta.md "q-system/output/**"
+audit_rc "$R13"
+check "non-git tree still passes" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+case "$AUDIT_OUT" in
+  *"staged "*) bad "claimed to stage in a tree with no git index" ;;
+  *) ok "no staging claim outside a git work tree" ;;
+esac
+R14=$(mktemp -d); mk_fixture "$R14"
+audit_rc "$R14"
+git -C "$R14" init -q
+git -C "$R14" add -A
+scope_rule "$R14" beta.md "q-system/output/**"
+audit_rc "$R14" --no-stage
+STAGED=$(git -C "$R14" show ":$BASE_REL")
+ONDISK=$(cat "$R14/$BASE_REL")
+if [ "$STAGED" = "$ONDISK" ]; then
+  bad "--no-stage staged the baseline anyway"
+else
+  ok "--no-stage left the index alone"
+fi
+
+echo "== 18. mutation: blind the walk to subdirectories -> section 14 goes RED"
+MUTW=$(mktemp -d)/mutant-walk.py
+mkdir -p "$(dirname "$MUTW")"
+python3 - "$AUDIT" "$MUTW" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "    for dirpath, dirnames, filenames in os.walk(rules_dir):\n"
+assert needle in src, "scan_rules walk moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(
+    needle, needle + "        dirnames[:] = []\n", 1))
+PY
+RM2=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTW"; mk_fixture "$RM2"
+audit_rc "$RM2"
+mkdir -p "$RM2/.claude/rules/team"
+{ echo "# Nested Rule"; echo
+  for i in $(seq 1 4); do echo "Nested line $i."; echo; done
+} > "$RM2/.claude/rules/team/nested.md"
+audit_rc "$RM2"
+check "mutant reports the nested rule as free" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+AUDIT="$AUDIT_SAVE"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]

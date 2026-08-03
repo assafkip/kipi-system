@@ -58,10 +58,17 @@ ordinary tools can write it and nothing here stops a fabricated cap. The
 protection is that the file is tracked and any change to it lands in the commit
 diff. That was equally true before this change; it is not a regression, and it is
 not a claim this script makes good on.
+
+SECOND HONEST BOUNDARY: every count here reads the WORKING TREE, not the index, so
+under a partial `git add` the staged baseline can describe rule text that is not in
+the commit. That was true before the baseline was staged at all; staging makes the
+recorded number match the tree the next run will read, which is the property that
+was missing, and does not make it match the commit.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
 QROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -185,21 +192,65 @@ def write_baseline(project_root, cap, total, always_on):
 
 
 def scan_rules(rules_dir):
-    """Return (always_on, conditional) as {filename: substantive line count}."""
+    """Return (always_on, conditional) as {path-under-rules: substantive lines}.
+
+    os.walk, not os.listdir. A rule at .claude/rules/team/nested.md loads always-on
+    exactly like a top-level one, and apply_claude_changes.py is depth-permissive
+    for rule text (is_rule_text) with a content census that already walks the whole
+    tree, so the sanctioned write path can create one. A one-level listing left
+    those lines uncounted: the engine reported "gates held" and the ratchet reported
+    headroom on instructions neither could see (PR #88, major).
+
+    The key is the path relative to rules/, which is identical to the old bare
+    filename for every top-level rule -- so a pre-existing baseline snapshot keeps
+    matching and no rule that was already counted stops being. Same keying as
+    _rule_marks in apply_claude_changes.py, deliberately: two spellings of "name a
+    rule" is the drift class that opened this hole in the first place.
+    """
     always_on = {}
     conditional = {}
     if not os.path.isdir(rules_dir):
         return always_on, conditional
-    for name in sorted(os.listdir(rules_dir)):
-        if not name.endswith(".md"):
-            continue
-        full = os.path.join(rules_dir, name)
-        lines = count_lines(full)
-        if is_effectively_always_on(full):
-            always_on[name] = lines
-        else:
-            conditional[name] = lines
+    for dirpath, dirnames, filenames in os.walk(rules_dir):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for filename in sorted(filenames):
+            if filename.startswith(".") or not filename.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, filename)
+            name = os.path.relpath(full, rules_dir)
+            lines = count_lines(full)
+            if is_effectively_always_on(full):
+                always_on[name] = lines
+            else:
+                conditional[name] = lines
     return always_on, conditional
+
+
+def stage_baseline(project_root):
+    """git add the baseline the ratchet just rewrote. Returns the staged
+    repo-relative path, or None when there is no index to stage into.
+
+    The ratchet runs from lefthook pre-commit and rewrites the baseline in the
+    WORKING TREE. Left unstaged, the commit that CAUSED the accounting transition
+    does not carry it: a tightened cap is one `git checkout` from gone, and the
+    committed baseline disagrees with the tree every later run reads (PR #88,
+    major). The old behaviour was to print "stage this file with the commit",
+    which addresses a reader who is not there -- the hook runs unattended, and an
+    instruction nobody executes is not a mechanism.
+
+    Never raises and never fails the run. The fixtures and apply_claude_changes.py's
+    gate suite both run this against a --root'ed tree that is not a git work tree;
+    where the audit was run from must not be what fails it.
+    """
+    path = baseline_path(project_root)
+    try:
+        proc = subprocess.run(["git", "-C", project_root, "add", "--", path],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return os.path.relpath(path, project_root)
 
 
 def scoping_freed(snapshot, always_on, conditional):
@@ -257,7 +308,17 @@ def ratchet_fail_text(cap, total, always_on):
              target=BUDGET_TOTAL_ALWAYS_ON)
 
 
-def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, write=True):
+def report_baseline_written(project_root, stage):
+    """One line saying where the rewritten baseline went, staged or not."""
+    staged = stage_baseline(project_root) if stage else None
+    if staged:
+        print(f"RATCHET: staged {staged} with this commit.")
+    else:
+        print(f"RATCHET: stage {baseline_path(project_root)} with this commit.")
+
+
+def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
+                write=True, stage=True):
     """Regression gate: block growth past the cap; tighten the cap on deletion."""
     if claude_md_lines > BUDGET_CLAUDE_MD:
         print(
@@ -267,9 +328,10 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, wr
 
     baseline = read_baseline(project_root)
     if baseline is None:
+        print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
         if write:
             write_baseline(project_root, total, total, always_on)
-        print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
+            report_baseline_written(project_root, stage)
         return 0
 
     # A pre-ASK-285 baseline carries one number that meant both cap and total.
@@ -309,7 +371,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, wr
         print(f"RATCHET PASS: total {total}, cap {new_cap}, headroom "
               f"{new_cap - total}.{scoped_note} Target {BUDGET_TOTAL_ALWAYS_ON}.")
     if changed and write:
-        print(f"RATCHET: stage {baseline_path(project_root)} with this commit.")
+        report_baseline_written(project_root, stage)
     return 0
 
 
@@ -336,6 +398,7 @@ def main():
     argv = sys.argv[1:]
     project_root = parse_root(argv)
     write = "--no-write" not in argv
+    stage = "--no-stage" not in argv
 
     claude_md = os.path.join(project_root, "CLAUDE.md")
     rules_dir = os.path.join(project_root, ".claude", "rules")
@@ -346,7 +409,7 @@ def main():
 
     if "--ratchet" in argv:
         sys.exit(run_ratchet(project_root, claude_md_lines, total,
-                             always_on, conditional, write=write))
+                             always_on, conditional, write=write, stage=stage))
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")
     print(f"Always-on rules ({len(always_on)} files):")
