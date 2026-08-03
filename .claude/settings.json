@@ -124,10 +124,6 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/notify-receipts-surface.py\" 2>/dev/null || true"
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/diagnosed-not-built.py\" --quiet 2>/dev/null || true"
           }
         ]
       }

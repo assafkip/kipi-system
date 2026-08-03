@@ -1066,7 +1066,63 @@ def detect_untracked_unwired(_ctx) -> list:
     return out
 
 
+def detect_diagnosed_not_built(_ctx) -> list:
+    """Code diagnosed two or more times since anyone last changed it.
+
+    WHY IT FILES INSTEAD OF PRINTING (ASK-310). This shipped first as a
+    SessionStart surface, and the founder named the defect immediately: "why is
+    it calling to me? that's against the system design". A surface that tells the
+    founder about work is still routing work to the founder. ASK-283 already says
+    an alert must act or state why it cannot -- and this one can act, because a
+    finding with two independent diagnoses behind it is better specified than
+    most issues on the board.
+
+    So it files, deduped by kipi-key like every other detector here, and the
+    autonomous worker picks it up. The diagnoses themselves become the Definition
+    of Ready.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "dnb", HERE / "diagnosed-not-built.py")
+    dnb = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(dnb)
+        rows = dnb.findings(str(REPO_ROOT))
+    except Exception:  # noqa: BLE001 - a detector must never take the sweep down
+        return []
+    out = []
+    for target, path, earliest, touched, sources in rows:
+        listed = "\n".join(f"- `{s}`" for s in sources)
+        out.append({
+            "subject": f"diagnosed-not-built-{slug(target)}",
+            "title": f"{path} has {len(sources)} diagnoses since it was last changed",
+            "body": (
+                f"`{path}` was last changed **{(touched or 'never')[:10]}**, and "
+                f"**{len(sources)} separate diagnoses** have been recorded since:\n\n"
+                f"{listed}\n\n"
+                "That is a class being re-discovered rather than fixed. The scar this "
+                "detector was built from: `auto-commit.py` carried five diagnoses across "
+                "a month in four different places, was never built, and then split a "
+                "session across two branches.\n\n"
+                "## Action\n"
+                "Read the diagnoses above. Either build the fix, or close them as "
+                "won't-do with a reason. Writing it down once more is the failure this "
+                "detects.\n\n"
+                "Nothing here needs a founder decision: the diagnoses are the spec."
+            ),
+        })
+    return out
+
+
 DETECTORS = [
+    {
+        "id": "diagnosed-not-built",
+        "description": "a file re-diagnosed 2+ times with no change since",
+        "detect": detect_diagnosed_not_built,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "unwired-untracked",
         "description": "a repo has unwired engines but no audit issue tracking them",
