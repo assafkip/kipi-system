@@ -34,6 +34,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
       "runner": "bash"
     },
@@ -218,6 +222,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-receipts-surface.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -259,6 +267,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
       "runner": "bash"
     },
     {
@@ -446,14 +458,6 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
-      "runner": "bash"
     }
   ],
   "required_data": [],
