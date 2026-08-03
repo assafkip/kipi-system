@@ -536,7 +536,41 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-mutation-check.py",
-      "runner": "python3"
+      "runner": "python3",
+      "mutants": [
+        {
+          "id": "checker-absent-find-becomes-a-noop",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if occurrences == 0:\n        raise Refusal(\n            f\"mutant {mutant['id']}: find text is absent from {mutant['target']}, \"\n            \"so the mutation would silently not apply\")\n",
+          "replace": "    if occurrences == 0:\n        pass\n",
+          "why": "a mutation that never applied would report the suite green, which is the false-coverage defect this checker exists to remove, one level up"
+        },
+        {
+          "id": "checker-red-baseline-accepted",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if code != 0:\n        raise Refusal(\n            f\"{entry['path']}: baseline is RED (exit {code}) before any mutation. \"\n            f\"Every mutant would 'kill' it for free.\\n{tail}\")\n",
+          "replace": "    if False:\n        raise Refusal(\"unreachable\")\n",
+          "why": "an already-failing suite kills every mutant for free, so a red baseline would be reported as perfect coverage"
+        },
+        {
+          "id": "checker-error-swallowed-by-killed",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if errored:\n        for path, m in errored:\n",
+          "replace": "    if False:\n        for path, m in errored:\n",
+          "why": "an un-appliable declaration would exit 0 alongside the killed ones, so the run would claim to prove more than it did"
+        },
+        {
+          "id": "checker-mutant-not-restored-between-runs",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "call-site",
+          "find": "        finally:\n            target.write_text(original, encoding=\"utf-8\")\n",
+          "replace": "        finally:\n            pass\n",
+          "why": "without the restore the first mutant stays applied, so every later mutant in the same suite is measured against an already-broken tree"
+        }
+      ]
     }
   ],
   "required_data": [],
