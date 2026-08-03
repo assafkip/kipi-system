@@ -124,9 +124,57 @@ echo "$OUT" | grep -q 'VERDICT=REFUSE' \
 echo "$OUT" | grep -q '^PAGE ' \
   && ok "the refusal pages the founder" \
   || bad "refused silently: an unattended refusal nobody is told about is a dead loop"
+# THE CONTRACT CHANGED (ASK-310). This used to assert the page CARRIED
+# `git merge --ff-only` -- i.e. that it handed the founder a command to run.
+# That is the defect ASK-310 exists to remove: "a notification containing a
+# runnable command is an unbuilt feature". stale_check now calls
+# ff-merge-if-safe.sh, which proves the fast-forward clobbers nothing or declines
+# with a named path. Only a genuine REFUSAL reaches the founder, and it must say
+# what stopped it, never what he should type.
 echo "$OUT" | grep -q 'git merge --ff-only' \
-  && ok "the page carries the fix command" \
-  || bad "the page does not say what to do"
+  && bad "REGRESSION: the page hands the founder a command again (ASK-310)" \
+  || ok "the page does not hand the founder a command"
+echo "$OUT" | grep -qE 'behind origin/main' \
+  && ok "the page still names the condition" \
+  || bad "the page no longer says why it refused"
+
+echo
+echo "== 2b. the ff-merge branches actually run (ASK-310) =="
+# The old fixture never exercised these: \$REPO is a temp clone, so the real
+# ff-merge-if-safe.sh path does not exist there and stale_check silently took its
+# missing-script branch. A change shipped untested is worse than one that fails,
+# so KIPI_FFMERGE injects a stub and each exit code is pinned.
+mk_ffmerge() { printf '#!/bin/bash\necho "%s"\nexit %s\n' "$2" "$3" > "$1"; chmod +x "$1"; }
+
+FF0="$WORK/ff0.sh"; mk_ffmerge "$FF0" "fast-forwarded 2 commit(s), nothing clobbered" 0
+C2A="$(fresh_clone c-ff-ok)"; advance_origin ff_ok
+S2A="$WORK/s2a"; mkdir -p "$S2A"
+OUT2A="$( cd "$C2A" && KIPI_FFMERGE="$FF0" LOG="$S2A/dispatch.log" bash "$HARNESS" 2>&1 )"
+echo "$OUT2A" | grep -q 'VERDICT=RUN' \
+  && ok "rc 0: the loop brings itself current and dispatches, with no founder involved" \
+  || bad "rc 0 did not resume the loop: $(echo "$OUT2A" | tr '\n' ' ' | head -c 160)"
+echo "$OUT2A" | grep -q '^PAGE ' \
+  && bad "rc 0 paged the founder about work the loop already did" \
+  || ok "rc 0 pages nobody"
+
+FF1="$WORK/ff1.sh"; mk_ffmerge "$FF1" "refused: docs/notes.md would be overwritten" 1
+C2B="$(fresh_clone c-ff-refuse)"; advance_origin ff_refuse
+S2B="$WORK/s2b"; mkdir -p "$S2B"
+OUT2B="$( cd "$C2B" && KIPI_FFMERGE="$FF1" LOG="$S2B/dispatch.log" bash "$HARNESS" 2>&1 )"
+echo "$OUT2B" | grep -q 'VERDICT=REFUSE' \
+  && ok "rc 1: a genuine refusal still stops the dispatch" \
+  || bad "rc 1 did not refuse"
+echo "$OUT2B" | grep -q 'docs/notes.md' \
+  && ok "rc 1: the page names the path that stopped it, not a command" \
+  || bad "rc 1 lost the refusal reason"
+
+FF2="$WORK/ff2.sh"; mk_ffmerge "$FF2" "fetch failed" 2
+C2C="$(fresh_clone c-ff-noanswer)"; advance_origin ff_noanswer
+S2C="$WORK/s2c"; mkdir -p "$S2C"
+OUT2C="$( cd "$C2C" && KIPI_FFMERGE="$FF2" LOG="$S2C/dispatch.log" bash "$HARNESS" 2>&1 )"
+echo "$OUT2C" | grep -q 'VERDICT=RUN' \
+  && ok "rc 2: no answer fails OPEN, running one cycle behind rather than wedging" \
+  || bad "rc 2 wedged the loop on a network blip"
 
 echo
 echo "== 3. ahead: local commits not yet pushed -> RUN (must not wedge) =="
