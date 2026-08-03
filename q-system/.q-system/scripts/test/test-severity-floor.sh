@@ -2510,8 +2510,21 @@ ok "a refused arm is said out loud, naming the PR"
 $(sed 's/^/        /' "$W2/arm3.out")"
 grep -q "832" "$W2/pages.txt" \
   || fail "the page does not name the PR, so the operator cannot act on it: $(cat "$W2/pages.txt")"
+# THE CONTRACT CHANGED (ASK-310). This required the page to CARRY the fix
+# command, i.e. to hand the operator something to type. Measured 2026-08-02:
+# nothing blocks a merge -- `gh pr merge` is allowlisted in every settings file
+# and passes every PreToolUse hook clean, against positive controls the same
+# hooks do deny. So that command was always one the loop could run, and a page
+# carrying it is an unbuilt retry. This is the THIRD test file that encoded
+# "hand the operator a command" as correct behaviour, which is why the shape
+# survived a week.
+#
+# What the page still owes: naming the PR (asserted above) and saying what
+# happens next without requiring a person.
 grep -qi "gh pr merge --auto --squash 832" "$W2/pages.txt" \
-  || fail "the page does not carry the one command that fixes it: $(cat "$W2/pages.txt")"
+  && fail "REGRESSION: the page hands over a command again (ASK-310): $(cat "$W2/pages.txt")"
+grep -qiE "retr(y|ies)|next dispatch|second runner" "$W2/pages.txt" \
+  || fail "the page names no continuation, so an unarmed PR still reads as a dead end: $(cat "$W2/pages.txt")"
 ok "a refused arm PAGES the founder, naming the PR and the command that fixes it"
 
 grep -q "^REVIEWER RAN on 832$" "$ARMLOG" \
