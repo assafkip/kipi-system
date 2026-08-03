@@ -817,6 +817,19 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # with a message asserting a re-dispatch and a second CI failure, neither of
 # which had occurred. The claim now happens at MARK-DISPATCHED below, past every
 # guard that can still abort.
+#
+# AND AN OFFER MUST NOT COST THE FRESH PICK ITS SLOT (PR #73 review r2, finding
+# 2). NEXT is overwritten below, and the duplicate-dispatch guard ~40 lines down
+# exits 0 without launching anything when a converge for that issue is already
+# live. So a red PR whose converge was still running discarded the ready issue
+# that WAS dispatchable -- every heartbeat, for the whole run.
+#
+# Fixed where the decision is made, not here: ci-redrive.py's converge_live()
+# reads the same `ps -Ao args=` command line the guard below matches and does not
+# OFFER a candidate that is already in flight, so NEXT keeps the fresh pick. A
+# second liveness rule spelled out in this file is the drift this repo keeps
+# paying for, and only the Python side can also suppress the founder page (that
+# page is finding 1). Its stderr lands in this log, so the skip is visible here.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
 REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
 if [ -f "$REDRIVE" ]; then

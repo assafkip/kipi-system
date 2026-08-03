@@ -82,7 +82,17 @@ printf '%s\n' "$*" >> "$NOTIFY_LOG"
 SH
 chmod +x "$TMP/notify.sh"
 
+# --- the process-table seam --------------------------------------------------
+# ci-redrive.py asks the process table whether a converge for the candidate issue
+# is already running. The default stub prints an EMPTY table, so every case above
+# is decided by its fixture and not by whatever happens to be running on the box
+# -- the flakiness test-dispatch-liveness.sh already paid for once (17/17 alone,
+# 15/17 alongside the fleet). Cases that need a live converge say so explicitly.
+printf '#!/bin/sh\ncat "${PS_FIXTURE:-/dev/null}"\n' > "$TMP/ps"; chmod +x "$TMP/ps"
+: > "$TMP/ps-empty"
+
 fixture() { printf '%s' "$1" > "$TMP/prs.json"; }
+ps_fixture() { printf '%s\n' "$1" > "$TMP/ps-table"; PS_FIXTURE="$TMP/ps-table"; }
 
 # Real shapes, 2026-08-03, `gh pr list --state open --json ...` on this repo:
 #   PR 73 sana/ask-295          validate SUCCESS + kipi/reviewer-approved FAILURE
@@ -116,10 +126,12 @@ WORLD='[
 
 run() {  # run <op> [args...]
   KIPI_GH="$TMP/gh" \
+  KIPI_PS="$TMP/ps" \
   KIPI_NOTIFY="$TMP/notify.sh" \
   KIPI_ATTEMPTS="$LEDGER" \
   GH_FIXTURE="$TMP/prs.json" \
   GH_RC="${GH_RC:-0}" \
+  PS_FIXTURE="${PS_FIXTURE:-$TMP/ps-empty}" \
   NOTIFY_LOG="$NOTIFY_LOG" \
   python3 "$REDRIVE" --repo-dir "$TMP" "$@" 2>"$TMP/err"
 }
@@ -129,6 +141,7 @@ fresh_state() {
   NOTIFY_LOG="$TMP/notify-$1.log"
   : > "$NOTIFY_LOG"
   rm -f "$LEDGER"
+  PS_FIXTURE="$TMP/ps-empty"
 }
 
 pages() { wc -l < "$NOTIFY_LOG" | tr -d ' '; }
@@ -330,6 +343,221 @@ fixture '[{"number":71,"headRefName":"sana/ask-292","isDraft":false,
   "url":"https://x/71","title":"t (ASK-292)","statusCheckRollup":[]}]'
 run redrive >/dev/null; RC=$?
 check "no checks reported is not red" "$RC" "1"
+
+# --- 13. work already in flight is not a dead end (PR #73 review r2, finding 1)
+# The dispatcher's heartbeat is 900s and a converge run is minutes to tens of
+# minutes. So the heartbeat AFTER a redrive dispatch finds the same PR still red
+# -- the agent has not pushed yet -- with the attempt flag already set. Round 2
+# went straight to escalate() there and paged the founder "it stopped rather than
+# hand back an unchanged tree" about a run that was at that moment still running.
+#
+# The second half is the worse half: escalate() CLAIMS `ci_escalated_<sig>` on
+# the way out, so when the converge really did finish and leave the PR red, the
+# one true page was already spent on the false one. A wrong page that also
+# silences the right page is strictly worse than no page at all.
+# The offer half, with the attempt UNSPENT so a passing rc 1 can only come from
+# the liveness guard. Asserting this against a spent attempt would pass for the
+# wrong reason -- a spent attempt exits 1 anyway, and the case would grade
+# nothing (the same vacuous shape the round-1 fixture was caught on).
+fresh_state inflight_offer
+fixture "$WORLD"
+ps_fixture "bash /x/q-system/.q-system/scripts/converge.sh --issue ASK-288 --max-rounds 3"
+run redrive >/dev/null; RC=$?
+check "a candidate whose converge is live is not offered" "$RC" "1"
+contains "the log says why it was skipped" "$(cat "$TMP/err")" "converge for it is already live"
+PS_FIXTURE="$TMP/ps-empty"
+run redrive >/dev/null; RC=$?
+check "control: with no converge live the same candidate IS offered" "$RC" "0"
+
+# The escalation half.
+fresh_state inflight
+fixture "$WORLD"
+OUT="$(run redrive)"; SIG="$(printf '%s' "$OUT" | cut -f2)"
+run mark-dispatched --issue ASK-288 --signature "$SIG" \
+  --head-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null
+ps_fixture "bash /x/q-system/.q-system/scripts/converge.sh --issue ASK-288 --max-rounds 3"
+
+run redrive >/dev/null; RC=$?
+check "a spent attempt whose converge is live still exits 1" "$RC" "1"
+check "and the founder is NOT paged that it stopped" "$(pages)" "0"
+
+# THE SILENCING HALF. Once the converge is gone and the PR is still red, the page
+# the founder was owed must still be available -- a run that fired nothing must
+# not have consumed the once-per-signature budget.
+PS_FIXTURE="$TMP/ps-empty"
+run redrive >/dev/null; RC=$?
+check "with the converge gone the attempt is still spent" "$RC" "1"
+check "and the true page fires, not swallowed by the false one" "$(pages)" "1"
+contains "the true page names the issue" "$(cat "$NOTIFY_LOG")" "ASK-288"
+
+# A converge for a DIFFERENT issue says nothing about this one.
+fresh_state otherissue
+fixture "$WORLD"
+ps_fixture "bash /x/converge.sh --issue ASK-999 --max-rounds 3"
+run redrive >/dev/null; RC=$?
+check "a converge on another issue does not block this one" "$RC" "0"
+
+# An UNREADABLE process table is not evidence that nothing is running. Erring the
+# other way pages the founder about a run that may be live and burns the flag
+# doing it; erring this way costs one quiet heartbeat, which is what happens
+# today anyway.
+fresh_state psdown
+fixture "$WORLD"
+PS_FIXTURE="/nonexistent/ps-table-that-cannot-be-read"
+printf '#!/bin/sh\nexit 3\n' > "$TMP/ps-broken"; chmod +x "$TMP/ps-broken"
+OLD_PS="$TMP/ps"
+cp "$TMP/ps-broken" "$TMP/ps"
+run redrive >/dev/null; RC=$?
+check "an unreadable process table offers nothing rather than guessing" "$RC" "1"
+check "an unreadable process table pages nobody" "$(pages)" "0"
+printf '#!/bin/sh\ncat "${PS_FIXTURE:-/dev/null}"\n' > "$OLD_PS"; chmod +x "$OLD_PS"
+
+# --- 14. the shell integration, driven for real (PR #73 review r2, finding 3) --
+# Round 2 shipped the entire kipi-dispatch.sh wiring covered by `bash -n` alone:
+# syntax, not behaviour. `bash -n` cannot tell whether the offer is adopted,
+# whether mark-dispatched actually gates the launch, or whether an rc 2 leaves
+# the fresh pick standing. Every one of those is a live decision on a 900s timer.
+#
+# So this section runs the REAL kipi-dispatch.sh against the REAL ci-redrive.py
+# and the REAL attempts-ledger.py. Only the two edges are stubbed: `gh` (the PR
+# world) and `kipi` (the pick + the converge). What is asserted is which issue
+# the dispatcher actually handed to converge, read off a file the stub writes.
+echo
+echo "== ci-redrive x kipi-dispatch =="
+
+DISPATCH="$REPO_ROOT/kipi-dispatch.sh"
+if [ ! -f "$DISPATCH" ]; then
+  bad "14 kipi-dispatch.sh is present" "not found at $DISPATCH"
+else
+
+# UNIQUE IDS PER RUN. Case 14e puts a decoy converge in the GLOBAL process table,
+# so a hardcoded id lets two concurrent runs of this suite (the capability gate
+# runs the fleet's tests together) satisfy each other's guards. Same lesson
+# test-dispatch-liveness.sh learned at 17/17 alone, 15/17 under the gate.
+RED_ISS="ASK-8$$"          # the red PR the redrive should hand back
+FRESH_ISS="ASK-7$$"        # what `kipi work` offers as the ordinary fresh pick
+RED_BRANCH="sana/$(printf '%s' "$RED_ISS" | tr 'A-Z' 'a-z')"
+
+DROOT="$TMP/dispatch"
+FAKE_REPO="$DROOT/repo"
+SCRIPTS="$FAKE_REPO/q-system/.q-system/scripts"
+mkdir -p "$SCRIPTS" "$DROOT/home/.config/kipi" "$DROOT/bin"
+
+# The dispatcher resolves ci-redrive.py off $REPO, and ci-redrive.py resolves
+# attempts-ledger.py off its own directory. Both real, both copied.
+cp "$REDRIVE" "$SCRIPTS/ci-redrive.py"
+cp "$REPO_ROOT/q-system/.q-system/scripts/attempts-ledger.py" "$SCRIPTS/attempts-ledger.py"
+
+cp "$TMP/gh" "$DROOT/bin/gh"
+cp "$TMP/ps" "$DROOT/bin/ps-stub"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$DROOT/converge.sh"; chmod +x "$DROOT/converge.sh"
+
+# `kipi work` offers FRESH_ISS. `kipi converge` records the issue it was actually
+# given and then stays alive, so the dispatcher's own liveness assert passes and
+# the assertion below reads a fact rather than a log line.
+cat > "$FAKE_REPO/kipi" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  work) printf '1 ready issue\n[dry] would work $FRESH_ISS\n' ;;
+  converge)
+    printf '%s\n' "\$3" >> "$DROOT/dispatched"
+    exec bash "$DROOT/converge.sh" --issue "\$3" --max-rounds 3
+    ;;
+esac
+SH
+chmod +x "$FAKE_REPO/kipi"
+
+D_LEDGER="$DROOT/attempts.json"
+D_PAGES="$DROOT/pages.txt"
+D_PRS="$DROOT/prs.json"
+
+RED_WORLD="[{\"number\":91,\"headRefName\":\"$RED_BRANCH\",\"isDraft\":false,
+  \"headRefOid\":\"9999999999999999999999999999999999999999\",
+  \"url\":\"https://x/91\",\"title\":\"t ($RED_ISS)\",
+  \"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"validate\",
+   \"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\",
+   \"workflowName\":\"Skeleton Validation\"}]}]"
+
+run_dispatch() {  # run_dispatch [GH_RC]
+  ( cd "$FAKE_REPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \
+      KIPI_REPO="$FAKE_REPO" KIPI_NOTIFY="$TMP/notify.sh" \
+      KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
+      KIPI_ATTEMPTS="$D_LEDGER" KIPI_GH="$DROOT/bin/gh" KIPI_PS="$DROOT/bin/ps-stub" \
+      GH_FIXTURE="$D_PRS" GH_RC="${1:-0}" PS_FIXTURE="${PS_FIXTURE:-$TMP/ps-empty}" \
+      NOTIFY_LOG="$D_PAGES" \
+      bash "$DISPATCH" >/dev/null 2>&1 )
+}
+dlog() { cat "$DROOT/home/.config/kipi/dispatch.log" 2>/dev/null; }
+dispatched() { tail -1 "$DROOT/dispatched" 2>/dev/null; }
+
+d_reset() {
+  rm -rf "$DROOT/home/.config/kipi"; mkdir -p "$DROOT/home/.config/kipi"
+  # Seed the beacon so the one-off "heartbeat STARTED" page is not mistaken for
+  # a fault page by the assertions below.
+  date -u +%s > "$DROOT/home/.config/kipi/dispatch-lastbeat"
+  : > "$D_PAGES"; : > "$DROOT/dispatched"
+  rm -f "$D_LEDGER"
+  PS_FIXTURE="$TMP/ps-empty"
+  pkill -f "$DROOT/converge.sh" 2>/dev/null
+}
+
+# 14a. the red PR is preferred over the fresh pick, and the attempt is claimed.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+run_dispatch
+check "14a the dispatcher hands the RED issue back, ahead of the fresh pick" \
+  "$(dispatched)" "$RED_ISS"
+contains "14b the log names the hand-back" "$(dlog)" "handing $RED_ISS back"
+if grep -q "ci_redrive" "$D_LEDGER" 2>/dev/null; then
+  ok "14c the attempt is claimed in the ledger by the DISPATCHER"
+else
+  bad "14c the attempt is claimed in the ledger by the DISPATCHER" "$(cat "$D_LEDGER" 2>/dev/null)"
+fi
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 14d. gh could not answer -> the fresh pick stands and nothing is claimed.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+run_dispatch 7
+check "14d a gh failure leaves the fresh pick standing" "$(dispatched)" "$FRESH_ISS"
+contains "14e the log says gh could not read PR state" "$(dlog)" "gh could not read PR state"
+check "14f a gh failure claims nothing" \
+  "$([ -f "$D_LEDGER" ] && echo yes || echo no)" "no"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 14g. THE FINDING-2 CASE, driven for real. A converge for the red issue is
+# already live. Round 2 still offered it, NEXT was overwritten with it, and the
+# duplicate guard 40 lines later exited 0 -- so the ready issue that WAS
+# dispatchable was thrown away, every heartbeat, for the whole converge.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+bash "$DROOT/converge.sh" --issue "$RED_ISS" --max-rounds 3 >/dev/null 2>&1 &
+DECOY=$!
+disown "$DECOY" 2>/dev/null || true
+sleep 1
+# The real process table, not the stub: the point is that the guard sees what the
+# dispatcher's own duplicate guard sees.
+cp "$DROOT/bin/ps-stub" "$DROOT/ps-stub.bak"
+printf '#!/bin/sh\nexec /bin/ps -Ao args=\n' > "$DROOT/bin/ps-stub"; chmod +x "$DROOT/bin/ps-stub"
+run_dispatch
+check "14g a live converge does not cost the fresh pick its slot" \
+  "$(dispatched)" "$FRESH_ISS"
+check "14h and no founder page is sent about a run that is still running" \
+  "$([ -s "$D_PAGES" ] && cat "$D_PAGES" || echo silent)" "silent"
+cp "$DROOT/ps-stub.bak" "$DROOT/bin/ps-stub"
+kill "$DECOY" 2>/dev/null
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 14i. nothing red -> the ordinary path is untouched.
+d_reset
+printf '[]' > "$D_PRS"
+run_dispatch
+check "14i with nothing red the fresh pick is dispatched as before" \
+  "$(dispatched)" "$FRESH_ISS"
+lacks "14j and no redrive line is logged" "$(dlog)" "handing"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

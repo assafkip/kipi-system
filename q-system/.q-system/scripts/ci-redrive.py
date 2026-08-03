@@ -102,6 +102,41 @@ dispatch time and compares it with the head sha now: the head moved (the agent
 pushed and the same check failed again) and the head did not move (it was handed
 back and nothing landed) are DIFFERENT facts and get different sentences.
 
+A RUN STILL IN FLIGHT IS NOT A DEAD END (round 2, findings 1 and 2)
+-------------------------------------------------------------------
+The dispatcher's heartbeat is 900s; a converge run is minutes to tens of minutes.
+So the heartbeat AFTER a redrive dispatch finds the same PR still red -- the
+agent has not pushed yet -- with the attempt flag already set. Round 2 went
+straight to `escalate()` there and paged the founder that the machine tier was
+spent and the branch "stopped rather than hand back an unchanged tree", about a
+converge that was at that moment still running.
+
+The second half is the worse half. `escalate()` claims `ci_escalated_<sig>` on
+its way out, so when the converge really did end and leave the PR red, the one
+true page had already been spent on the false one. A wrong page that also
+silences the right page is strictly worse than no page.
+
+The same blindness cost the fresh pick too. `redrive` offered the live issue,
+kipi-dispatch.sh overwrote NEXT with it, and the duplicate-dispatch guard 40
+lines later exited 0 -- so a ready issue that WAS dispatchable was discarded,
+every heartbeat, for as long as that converge ran.
+
+Both are one missing fact: is a converge for this issue running right now.
+`converge_live()` answers it from the process table, the same source and the same
+command line kipi-dispatch.sh's own duplicate guard reads (`ps -Ao args=`, no
+pipe -- see that guard's comment for why a pipe into `grep -q` under pipefail is
+load-dependent). A live candidate is neither offered nor escalated.
+
+ONE reader, not two. The shell could have grown its own copy of this check, but
+two liveness rules drifting apart is the defect class this repo keeps paying for,
+and only the Python side can suppress the escalation. So the guard lives here and
+the dispatcher inherits it by not being offered the pick.
+
+AN UNREADABLE PROCESS TABLE COUNTS AS LIVE. It is the cheap direction of the
+error: erring the other way pages the founder about a run that may be in flight
+and burns the once-per-signature flag doing it, while erring this way costs one
+quiet heartbeat -- which is exactly the behaviour before this file existed.
+
 THE SIGNATURE IS THE CHECK SET, AND TODAY THAT IS ONE CHECK (review finding 4)
 -----------------------------------------------------------------------------
 The signature is the set of failing check NAMES, deliberately NOT the head sha:
@@ -139,6 +174,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -273,6 +309,46 @@ def failing_checks(pr):
         if (check.get("conclusion") or "").upper() in FAILED_CONCLUSIONS:
             names.add(name)
     return sorted(names)
+
+
+# --- is work on this issue already in flight ---------------------------------
+# `kipi converge --issue ASK-n` execs converge.sh with those same arguments, so
+# the process table holds `... converge.sh --issue ASK-n --max-rounds N`. Same
+# command line kipi-dispatch.sh's duplicate-dispatch guard matches, on purpose:
+# one shape, read in one place, so the two cannot drift.
+
+def process_table():
+    """Every running command line, or None if the table could not be read.
+
+    None is a THIRD answer and callers must not fold it into "nothing running" --
+    same rule as GhUnavailable above. No shell pipe: `ps | grep -q` dies to
+    SIGPIPE under pipefail often enough to look correct in testing and fail in
+    production, which is what kipi-dispatch.sh's own guard was fixed for.
+    """
+    try:
+        proc = subprocess.run(shlex.split(os.environ.get("KIPI_PS", "ps -Ao args=")),
+                              capture_output=True, text=True)
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def converge_live(issue):
+    """True if a converge run for this issue is in the process table right now.
+
+    An unreadable table answers True: see the module docstring. Skipping one
+    heartbeat is recoverable; a false page that also burns the once-per-signature
+    flag is not.
+    """
+    table = process_table()
+    if table is None:
+        sys.stderr.write("ci-redrive: could not read the process table -- treating "
+                         "every candidate as already in flight, offering nothing.\n")
+        return True
+    # `(?:\s|$)` with MULTILINE so `--issue ASK-29` does not match `ASK-295`.
+    pattern = re.compile(r"converge\.sh\s+--issue\s+%s(?:\s|$)" % re.escape(issue),
+                         re.MULTILINE)
+    return bool(pattern.search(table))
 
 
 def signature(names):
@@ -424,6 +500,17 @@ def cmd_redrive(cands):
     path = attempts_path()
     chosen = None
     for cand in cands:
+        # BEFORE both the offer and the escalation, because a live converge
+        # invalidates both: the dispatcher would discard its fresh pick for a
+        # candidate it cannot launch, and the founder would be paged that a
+        # still-running attempt had stopped -- burning the one page owed to him
+        # when it really does. Round 2 did both. See the module docstring.
+        if converge_live(cand["issue"]):
+            sys.stderr.write(
+                "ci-redrive: %s PR #%s is red but a converge for it is already "
+                "live -- not offering it and not escalating it this run\n"
+                % (cand["issue"], cand["pr"]))
+            continue
         if ledger_get(path, cand["issue"], redrive_flag(cand)):
             escalate(path, cand)           # machine tier already spent on this
             continue
