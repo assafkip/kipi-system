@@ -559,6 +559,33 @@ check("uninstalled and dark are separate dedup keys for one label",
 check("the real repo's templates are discovered",
       "com.kipi.mutation-check" in fh.committed_template_labels(), True)
 
+# --- run the REGISTERED callback, not just its parts (PR #81 round 2, minor) -
+# Every assertion above tests a helper. The thing the sweep actually invokes is
+# DETECTORS[...]["detect"], and replacing that function body with `return []`
+# left all of them green -- a detector that reports a permanently clean fleet,
+# which is the exact silence this whole file exists to end. So call the
+# registered callback itself, with its three collaborators pinned to fixtures so
+# the result never depends on THIS machine's LaunchAgents dir.
+_detect_uninstalled = _by_id["launchd-uninstalled"]["detect"]
+_saved = (fh.committed_template_labels, fh._launchd_labels, fh._paused_labels)
+try:
+    fh.committed_template_labels = lambda: ["com.kipi.fixture-on", "com.kipi.fixture-off"]
+    fh._launchd_labels = lambda: ["com.kipi.fixture-on"]
+    fh._paused_labels = lambda: set()
+    _found = _detect_uninstalled(None)
+    check("the registered callback reports the uninstalled template",
+          [f["subject"] for f in _found], ["com.kipi.fixture-off"])
+    check("and renders it through its own branch of launchd_finding",
+          [f["title"] for f in _found],
+          ["launchd job never installed: com.kipi.fixture-off"])
+
+    # Everything installed => silence. Without this a callback that ignored its
+    # inputs and always emitted a finding would pass the assertion above.
+    fh._launchd_labels = lambda: ["com.kipi.fixture-on", "com.kipi.fixture-off"]
+    check("a fully installed fleet yields no finding", _detect_uninstalled(None), [])
+finally:
+    fh.committed_template_labels, fh._launchd_labels, fh._paused_labels = _saved
+
 if failures:
     print("FAIL:")
     for line in failures:

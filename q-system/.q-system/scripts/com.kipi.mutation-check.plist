@@ -8,9 +8,15 @@
      off protects nothing. The property it checks -- can this test still fail --
      decays over weeks of edits, not between two commits.
 
-     --require pins the three gate suites by name: a suite quietly losing its
+     --require pins the gate suites by name: a suite quietly losing its
      `mutants` list would otherwise read as a clean run, because absence is
      invisible to an exit code unless something asks for it.
+
+     THE CHECKER'S OWN SUITE IS PINNED TOO (PR #81 review round 2, minor).
+     It was the one suite left off the list, so deleting every mutant
+     declaration from test-mutation-check kept the scheduled run green -- the
+     tool that exists to notice a safety test going toothless could go
+     toothless itself, unwatched, in the job that watches everything else.
 
      TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
      by install-plist.sh (the openloops-heartbeat placeholder convention, ASK-191).
@@ -39,6 +45,8 @@
     <string>test-review-invoker-provenance</string>
     <string>--require</string>
     <string>test-capability-map-wiring</string>
+    <string>--require</string>
+    <string>test-mutation-check</string>
     <string>--json</string>
     <string>__HOME__/.config/kipi/mutation-check.json</string>
   </array>
