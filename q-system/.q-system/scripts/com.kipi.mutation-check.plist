@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Weekly mutation check of the gate suites (ASK-316).
+
+     WEEKLY, NOT PER-COMMIT, ON PURPOSE. Every mutant is a full suite run and
+     test-severity-floor alone is budgeted 420s, so the whole pass is minutes.
+     A per-commit cost of that size gets a gate switched off, and a gate that is
+     off protects nothing. The property it checks -- can this test still fail --
+     decays over weeks of edits, not between two commits.
+
+     --require pins the three gate suites by name: a suite quietly losing its
+     `mutants` list would otherwise read as a clean run, because absence is
+     invisible to an exit code unless something asks for it.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
+     by install-plist.sh (the openloops-heartbeat placeholder convention, ASK-191).
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.mutation-check -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kipi.mutation-check</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/mutation-check.py</string>
+    <string>--require</string>
+    <string>test-severity-floor</string>
+    <string>--require</string>
+    <string>test-review-invoker-provenance</string>
+    <string>--require</string>
+    <string>test-capability-map-wiring</string>
+    <string>--json</string>
+    <string>__HOME__/.config/kipi/mutation-check.json</string>
+  </array>
+
+  <!-- Sunday 03:10. Nothing else runs then, and a red result is on the board
+       before Monday's first dispatch picks up an issue. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>10</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.config/kipi/mutation-check.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.config/kipi/mutation-check.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>__KIPI_REPO__</string>
+</dict>
+</plist>

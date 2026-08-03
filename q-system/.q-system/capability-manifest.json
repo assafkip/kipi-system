@@ -256,6 +256,7 @@
     {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
       "runner": "bash",
+      "timeout_s": 180,
       "mutants": [
         {
           "id": "invoker-defaults-to-dispatcher",
@@ -531,6 +532,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-mutation-check.py",
       "runner": "python3"
     }
   ],
