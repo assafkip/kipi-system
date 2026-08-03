@@ -212,7 +212,8 @@ FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE",
 # The legacy commit-status half of the same rollup speaks a different vocabulary.
 FAILED_STATES = {"FAILURE", "ERROR"}
 
-PR_FIELDS = "number,headRefName,headRefOid,url,title,statusCheckRollup,isDraft"
+PR_FIELDS = ("number,headRefName,headRefOid,url,title,statusCheckRollup,isDraft,"
+             "baseRefName")
 
 
 class GhUnavailable(Exception):
@@ -309,6 +310,151 @@ def failing_checks(pr):
         if (check.get("conclusion") or "").upper() in FAILED_CONCLUSIONS:
             names.add(name)
     return sorted(names)
+
+
+# --- a REQUIRED context nobody posted (ASK-313) ------------------------------
+# failing_checks() above can only see contexts that were POSTED. An ABSENT
+# required context contributes zero rollup entries, so every reader built on the
+# rollup reads a wedged PR as healthy. On 2026-08-02 PR #75 sat BLOCKED with
+# `validate` green, `kipi/reviewer-approved` absent, auto-merge armed, and zero
+# alerts; `gh pr checks` said the checks had passed (cli/cli#6448 -- the CLI does
+# not surface expected-but-unreported contexts, still open). The only way to see
+# absence is to DIFF what protection DECLARES against what the head has actual.
+#
+# WHY NOT THE STANDARD GITHUB FIX. The documented remedy for a never-reported
+# required check is a job that always posts it green (GHES 3.2 troubleshooting,
+# "Handling skipped but required checks"; re-actors/alls-green; Mergify ci-gate).
+# It is wrong here twice over:
+#   1. Absence of `kipi/reviewer-approved` is a CORRECT refusal, not a
+#      misconfiguration. linear-worker.sh:687 -- "Remove kipi/reviewer-approved
+#      from that set and this becomes an unreviewed-merge machine."
+#   2. GitHub requires BOTH when a check run and a commit status share a name
+#      ("If a check and a commit status have the same name, both must pass when
+#      that name is required"). An Actions job named `kipi/reviewer-approved`
+#      would ADD a second thing to satisfy, deepening the deadlock it meant to
+#      fix.
+# So this does not fake the status. It finds the wedge and hands the PR to the
+# REAL producer, pr-review-agent.sh, which is the only thing allowed to post it.
+
+def required_contexts(repo_dir, branch, _cache={}):
+    """Contexts branch protection REQUIRES on `branch`. Raises GhUnavailable.
+
+    Both halves are read. GitHub populates `contexts` (legacy) and `checks` (the
+    app-pinned form) and a reader that trusts one of them stops working the day
+    the other is the only one written.
+
+    404 AND EVERY OTHER FAILURE ARE DIFFERENT ANSWERS, and conflating them was
+    a real bug in this function's first version. Round 1 raised on any non-zero
+    rc, reasoning that repo-preflight.sh already refuses to dispatch against an
+    unprotected repo so 404 could never legitimately arrive. That is a claim
+    about the DEFAULT branch, and this is asked about a PR's BASE branch. The
+    very first live run hit it:
+
+        $ ci-redrive.py --repo-dir . wedged
+        could not read branch protection for sana/block-expiry
+          (rc 1): gh: Branch not protected (HTTP 404)   -- rc 2, whole sweep dead
+
+    A stacked PR based on another agent's branch is ordinary here, and one
+    unprotected base blinded the sweep for every other PR -- the exact silence
+    this detector exists to end, reintroduced by the detector.
+
+    So: 404 is DEFINITE ("no protection, therefore nothing required, therefore
+    this PR cannot wedge") and yields the empty set. Anything else -- notably
+    the 403 a token without admin gets -- stays INDEFINITE and raises, because
+    reading "I am not allowed to look" as "nothing is required" would report
+    every wedged PR healthy at the moment the tool lost the ability to tell.
+    """
+    if branch in _cache:
+        return _cache[branch]
+    gh = os.environ.get("KIPI_GH", "gh")
+    cmd = [gh, "api", "repos/{owner}/{repo}/branches/%s/protection" % branch]
+    try:
+        proc = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+    except OSError as exc:
+        raise GhUnavailable("could not run %s: %s" % (gh, exc))
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        # gh's own format is `gh: <message> (HTTP <code>)`, and 404 here is the
+        # documented body for "Branch not protected". Matched on the code, not
+        # on the message text, so a wording change does not silently turn a
+        # definite answer into an indefinite one.
+        if "(HTTP 404)" in stderr:
+            _cache[branch] = set()
+            return _cache[branch]
+        raise GhUnavailable(
+            "could not read branch protection for %s (rc %d): %s"
+            % (branch, proc.returncode, stderr[:200]))
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except ValueError as exc:
+        raise GhUnavailable("branch protection for %s is unparseable: %s"
+                            % (branch, exc))
+    rsc = data.get("required_status_checks") or {}
+    names = set(rsc.get("contexts") or [])
+    for entry in rsc.get("checks") or []:
+        if isinstance(entry, dict) and entry.get("context"):
+            names.add(entry["context"])
+    _cache[branch] = names
+    return names
+
+
+def posted_contexts(pr):
+    """Every context name the head commit carries, WHATEVER its state.
+
+    State is deliberately ignored. A required context posted and FAILING is a
+    PR that was reviewed and rejected -- a visible state with its own consumer
+    (the reviewer comments on the Linear issue and the worker re-dispatches).
+    Folding red into absent would re-review every rejected PR forever.
+    """
+    names = set()
+    for check in pr.get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("__typename") == "StatusContext":
+            if check.get("context"):
+                names.add(check["context"])
+            continue
+        if check.get("name"):
+            names.add(check["name"])
+    return names
+
+
+def wedged_candidates(repo_dir):
+    """Open PRs carrying a required context that nothing has posted.
+
+    NOT filtered by attribute(): redrive hands a red PR back to the agent that
+    owns the branch, so it only speaks for agent branches. Branch protection
+    does not care who pushed. The founder's own hand-opened PR wedges
+    identically, and it is the one class with no agent to hand it back to -- so
+    excluding it would leave exactly the population that cannot self-heal.
+    """
+    out = []
+    for pr in list_prs(repo_dir):
+        if pr.get("isDraft"):
+            continue          # not asking to merge; a review would be spend nobody asked for
+        # RED CI OUTRANKS A WEDGE, and this is a spend rule learned from real
+        # data. PR #76 on 2026-08-02 was BOTH: `validate` FAILURE and
+        # `kipi/reviewer-approved` absent. Reviewing a PR whose build is broken
+        # buys a codex review of a tree that is about to change, and the redrive
+        # tier already owns that PR. It becomes this tier's business the moment
+        # CI is green -- nothing is dropped, only ordered.
+        if failing_checks(pr):
+            continue
+        base = pr.get("baseRefName") or "main"
+        missing = sorted(required_contexts(repo_dir, base) - posted_contexts(pr))
+        if not missing:
+            continue
+        attributed = attribute(pr)
+        out.append({
+            "pr": pr.get("number"),
+            "url": pr.get("url"),
+            "branch": pr.get("headRefName"),
+            "head_sha": pr.get("headRefOid") or "",
+            "issue": attributed[0] if attributed else None,
+            "missing": missing,
+            "signature": signature(missing),
+        })
+    return out
 
 
 # --- is work on this issue already in flight ---------------------------------
@@ -544,17 +690,94 @@ def cmd_mark_dispatched(issue, sig, head_sha):
     return 0
 
 
+# --- the wedged tier (ASK-313) -----------------------------------------------
+# Keyed by PR, not by issue. A wedge is a property of the PULL REQUEST -- the
+# founder's hand-opened PR has no issue at all, and two PRs for one issue can
+# wedge independently. `PR-<n>` is a plain dict key to attempts-ledger.py, the
+# same single writer the redrive tier goes through, so the two tiers cannot
+# race each other into exceeding a cap.
+
+def wedged_key(cand):
+    return "PR-%s" % cand["pr"]
+
+
+def wedged_flag(cand):
+    return "wedged_review_%s" % cand["signature"]
+
+
+def escalate_wedged(path, cand):
+    """One page, AFTER the machine tier is spent. Every clause an observation."""
+    if not ledger_claim(path, wedged_key(cand),
+                        "wedged_escalated_%s" % cand["signature"]):
+        return False
+    notify(
+        "ci-redrive: PR #%s is BLOCKED on a required check nothing posted (%s) "
+        "and the machine tier is spent -- the reviewer was run once for this "
+        "and the context is still absent. %s"
+        % (cand["pr"], ", ".join(cand["missing"]), cand["url"]))
+    return True
+
+
+def cmd_wedged(cands):
+    """READ-ONLY. Offers one PR; the dispatcher spends it via mark-reviewed."""
+    path = attempts_path()
+    chosen = None
+    for cand in cands:
+        # A live converge for this issue reaches the reviewer at its own step 5,
+        # so offering it here would buy a second codex review of the same head.
+        # Only askable when the PR HAS an issue; a founder PR never does.
+        if cand["issue"] and converge_live(cand["issue"]):
+            sys.stderr.write(
+                "ci-redrive: PR #%s is wedged but a converge for %s is live -- "
+                "its own review will post the context\n"
+                % (cand["pr"], cand["issue"]))
+            continue
+        if ledger_get(path, wedged_key(cand), wedged_flag(cand)):
+            escalate_wedged(path, cand)    # machine tier already spent
+            continue
+        if chosen is None:
+            chosen = cand
+    if chosen is None:
+        return 1
+    sys.stderr.write(
+        "ci-redrive: PR #%s is BLOCKED on required context(s) nothing posted: "
+        "%s -- offering it to the reviewer\n"
+        % (chosen["pr"], ", ".join(chosen["missing"])))
+    print("%s\t%s\t%s" % (chosen["pr"], chosen["signature"], chosen["head_sha"]))
+    return 0
+
+
+def cmd_mark_reviewed(pr, sig):
+    """The atomic claim. 0 = it is yours to review, 1 = it is not."""
+    path = attempts_path()
+    if not ledger_claim(path, "PR-%s" % pr, "wedged_review_%s" % sig):
+        sys.stderr.write(
+            "ci-redrive: the wedged-review attempt for PR #%s signature %s was "
+            "already claimed (or the ledger could not be written) -- not "
+            "running the reviewer.\n" % (pr, sig))
+        return 1
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(
-        description="Machine consumer for red CI on agent-opened PRs (ASK-295).")
-    ap.add_argument("op", choices=("scan", "redrive", "mark-dispatched"))
+        description="Machine consumer for red CI on agent-opened PRs (ASK-295) "
+                    "and for PRs wedged on an unposted required check (ASK-313).")
+    ap.add_argument("op", choices=("scan", "redrive", "mark-dispatched",
+                                   "wedged", "mark-reviewed"))
     ap.add_argument("--repo-dir", default=".",
                     help="checkout whose open PRs are read (gh runs here)")
     ap.add_argument("--issue", help="mark-dispatched: the issue being dispatched")
     ap.add_argument("--signature", help="mark-dispatched: signature from redrive")
     ap.add_argument("--head-sha", default="",
                     help="mark-dispatched: head sha from redrive")
+    ap.add_argument("--pr", help="mark-reviewed: the PR being handed to the reviewer")
     args = ap.parse_args(argv[1:])
+
+    if args.op == "mark-reviewed":
+        if not args.pr or not args.signature:
+            ap.error("mark-reviewed needs --pr and --signature")
+        return cmd_mark_reviewed(args.pr, args.signature)
 
     # No gh call: mark-dispatched commits the offer the dispatcher is holding.
     # Re-probing here would decide against a world that may have moved between
@@ -564,6 +787,16 @@ def main(argv):
         if not args.issue or not args.signature:
             ap.error("mark-dispatched needs --issue and --signature")
         return cmd_mark_dispatched(args.issue, args.signature, args.head_sha)
+
+    if args.op == "wedged":
+        try:
+            return cmd_wedged(wedged_candidates(args.repo_dir))
+        except GhUnavailable as exc:
+            # 2, same contract as below: a claim about the PROBE, never about
+            # the PRs. Folding an unreadable protection response into "nothing
+            # is wedged" is the original defect wearing the detector's coat.
+            sys.stderr.write("ci-redrive: %s -- nothing was claimed.\n" % exc)
+            return 2
 
     try:
         cands = candidates(args.repo_dir)

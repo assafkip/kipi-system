@@ -847,6 +847,71 @@ if [ -f "$REDRIVE" ]; then
   fi
 fi
 
+# --- WEDGED PR: A REQUIRED CHECK NOBODY POSTED (ASK-313) ---------------------
+# ABOVE the `nothing ready` exit, deliberately. A wedged PR is most likely
+# EXACTLY when no issue is ready: the issue is done, the PR is open, and the
+# board is quiet. Putting this after the early exit would make the detector go
+# silent in the one state it exists for -- the same shape as the ASK-222 scar,
+# where the arm lived past a `continue` that skipped the finished PRs.
+#
+# THE SCAR (2026-08-02). PR #75 sat BLOCKED with `validate` green,
+# `kipi/reviewer-approved` ABSENT, auto-merge armed and correctly refusing, and
+# nothing anywhere said so. `kipi/reviewer-approved` has one producer,
+# pr-review-agent.sh, whose only automated caller is linear-worker.sh step 5 --
+# reachable only for a DoR-ready issue the dispatcher picked. A PR opened by
+# hand therefore carries a required check with no producer, forever.
+#
+# THIS RUNS THE REAL PRODUCER; IT DOES NOT FAKE THE STATUS. The context stays
+# required and stays honest. See ci-redrive.py's `wedged` docstring for why the
+# textbook "always post it green" fix is the wrong one here (twice over).
+#
+# THE SPEND IS BOUNDED BY TWO INDEPENDENT CAPS: `wedged` offers at most one PR
+# per heartbeat, and the attempts ledger allows one review per PR per
+# missing-context set. So the ceiling is the number of open PRs, once each, not
+# one review every 15 minutes.
+if [ -f "$REDRIVE" ]; then
+  WEDGED_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
+                   --repo-dir "$TARGET_PATH" wedged 2>>"$LOG")"
+  WEDGED_RC=$?
+  if [ "$WEDGED_RC" = "2" ]; then
+    say "wedged-PR sweep: gh could not read PR or protection state in $TARGET_NAME -- nothing claimed"
+  elif [ "$WEDGED_RC" = "0" ] && [ -n "$WEDGED_LINE" ]; then
+    WEDGED_PR="$(printf '%s' "$WEDGED_LINE" | cut -f1)"
+    WEDGED_SIG="$(printf '%s' "$WEDGED_LINE" | cut -f2)"
+    # Same snapshot-and-=~ form as the converge guard above, and for the same
+    # reason: `ps | grep -q` under pipefail dies to SIGPIPE load-dependently.
+    # A reviewer already live on this PR would otherwise get a second one.
+    # Its OWN snapshot: the converge guard's PS_SNAPSHOT is taken ~50 lines
+    # below this, past the `nothing ready` exit, so reading it here would be an
+    # unbound variable under `set -u` on every quiet heartbeat. A second `ps` is
+    # cheaper than reordering code that is load-bearing and proven.
+    WEDGED_PS="$(ps -Ao args= 2>/dev/null || true)"
+    if [[ "$WEDGED_PS" =~ pr-review-agent\.sh\ ${WEDGED_PR}([[:space:]]|$) ]]; then
+      say "wedged-PR sweep: a reviewer is already live on PR #$WEDGED_PR -- leaving it"
+    elif ! python3 "$REDRIVE" mark-reviewed --pr "$WEDGED_PR" \
+           --signature "$WEDGED_SIG" 2>>"$LOG"; then
+      say "wedged-PR sweep: the attempt for PR #$WEDGED_PR is already claimed -- not reviewing"
+    else
+      # Detached, for the reason the converge child below is detached: launchd
+      # reaps this job's whole process group on exit, and a codex review takes
+      # minutes. `nohup ... &` is NOT enough here -- that was proven, see the
+      # comment on the converge launch.
+      WEDGED_LOG="$HOME/.config/kipi/wedged-review-pr$WEDGED_PR.log"
+      printf '\n===== wedged review PR #%s  %s =====\n' \
+        "$WEDGED_PR" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$WEDGED_LOG"
+      python3 - "$WEDGED_LOG" \
+        bash "$REPO/q-system/.q-system/scripts/pr-review-agent.sh" \
+        "$WEDGED_PR" --post --engine codex <<'PY'
+import subprocess, sys
+log_path, argv = sys.argv[1], sys.argv[2:]
+log = open(log_path, "ab", buffering=0)
+subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+PY
+      say "wedged-PR sweep: PR #$WEDGED_PR is blocked on a required check nothing posted -- ran the reviewer (log: $WEDGED_LOG)"
+    fi
+  fi
+fi
+
 if [ -z "$NEXT" ]; then
   say "nothing ready ($(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1))"
   exit 0
