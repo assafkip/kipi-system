@@ -22,12 +22,42 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 OUT = os.path.join(ROOT, "q-system", "output", "claude-changes",
                    "arm-claude-write-path-guards.json")
+OUT_PRESENCE = os.path.join(ROOT, "q-system", "output", "claude-changes",
+                            "arm-guard-presence-recovery.json")
 
 GUARD1 = "q-system/.q-system/scripts/claude-path-write-guard.py"
 GUARD2 = "q-system/.q-system/scripts/claude-integrity-tripwire.py"
 CMD1 = 'test -f "$CLAUDE_PROJECT_DIR/%s" && python3 "$CLAUDE_PROJECT_DIR/%s"' % (GUARD1, GUARD1)
 CMD2 = ('test -f "$CLAUDE_PROJECT_DIR/%s" && python3 "$CLAUDE_PROJECT_DIR/%s" --enforce --quiet'
         % (GUARD2, GUARD2))
+
+# LAYER 0: the presence check for the other two.
+#
+# SCAR (review finding, PR #85 round 3): round 2 closed "delete Layer 1" by
+# having Layer 2 WATCH Layer 1. Nothing closed "delete Layer 2". Its self-watch
+# runs inside the file being deleted, and every configured invocation of it is
+# `test -f X && python3 X` -- so the delete takes the detector and its own
+# recovery with it, and the layer stays down until somebody notices by hand.
+#
+# The recovery therefore cannot live in either script. It lives HERE, in the hook
+# command string, i.e. in settings.json -- the one artifact both layers exist to
+# protect and the only file whose edit is refused by both. Deleting a guard now
+# costs a page and a restore on the very next tool call; disarming the recovery
+# means editing the guarded config. It also closes "delete BOTH in one command",
+# which mutual watching structurally cannot: each hook repairs its own scripts.
+#
+# Fails LOUD, never silently: a script git cannot restore pages AND exits 2.
+# KIPI_NOTIFY is honoured for the same reason the tripwire honours it -- a page
+# path that cannot be exercised in a test is a page path nobody has proven.
+CMD0 = (
+    'for R in %s %s; do [ -f "$CLAUDE_PROJECT_DIR/$R" ] && continue; '
+    'git -C "$CLAUDE_PROJECT_DIR" checkout -- "$R" >/dev/null 2>&1; '
+    'N="${KIPI_NOTIFY:-$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/slack-notify.sh}"; '
+    'if [ -f "$CLAUDE_PROJECT_DIR/$R" ]; then '
+    '"$N" "SECURITY: $R was deleted; restored from git" >/dev/null 2>&1; else '
+    '"$N" "SECURITY: $R was deleted and git could not restore it -- that layer is DOWN" '
+    '>/dev/null 2>&1; echo "SECURITY: $R is missing and could not be restored" >&2; '
+    'exit 2; fi; done' % (GUARD1, GUARD2))
 
 
 def slice_between(text, start, end_after, label):
@@ -74,6 +104,10 @@ def main():
     l1_insert = ('\n        ]\n      },\n      {\n        "matcher": "Bash",\n'
                  '        "hooks": [\n          ' + hook_entry(CMD1, 10))
     l2_insert = ",\n          " + hook_entry(CMD2, 20)
+    # Anchored on the same token-guard entry as Layer 2, so it lands BETWEEN the
+    # anchor and Layer 2: a guard restored by this entry is then exercised by the
+    # tripwire entry in the SAME tool call, not one call later.
+    l0_insert = ",\n          " + hook_entry(CMD0, 15)
 
     why1 = ("Layer 1. PreToolUse on Bash. Closes the measured hole: `touch "
             ".claude/_probe.txt` succeeded via Bash while Write/Edit were refused on "
@@ -87,6 +121,17 @@ def main():
             "here: on this path the actor is provably the agent, because the "
             "founder's own editor is not a tool call. Drift is quarantined before it "
             "is reverted, so a false positive costs nothing.")
+    why0 = ("Layer 0, the presence check for the other two. Both layers are wired "
+            "as `test -f X && python3 X`, so deleting a guard SCRIPT disarms that "
+            "layer with no page and no repair. Round 2 closed that for Layer 1 by "
+            "having Layer 2 watch it; nothing closed it for Layer 2, whose self-watch "
+            "runs inside the very file being deleted. The recovery therefore cannot "
+            "live in either script -- it lives in this command string, i.e. in the "
+            "config both layers exist to protect. Deleting a guard now costs a page "
+            "and a git restore on the next tool call; disarming the recovery means "
+            "editing the guarded file. Ordered before Layer 2 in the same group, so a "
+            "restored tripwire is exercised in the same tool call. A script git "
+            "cannot restore pages AND exits 2 -- never a silent pass.")
     tail = (" Paired into settings-template.json in the same proposal: kipi update "
             "rebuilds every instance's settings.json from the template only, so a "
             "skeleton-only arming protects one repo and ships a dead switch to the "
@@ -154,10 +199,34 @@ def main():
         ],
     }
 
-    with open(OUT, "w") as fh:
-        json.dump(proposal, fh, indent=2)
-        fh.write("\n")
-    print("wrote %s (%d edits)" % (os.path.relpath(OUT, ROOT), len(proposal["edits"])))
+    # A SECOND proposal, not two more edits on the first. The applier refuses a
+    # partially-applied proposal ("4 of 6 edits already present"), which is the
+    # correct behaviour and the reason this is split: the arming proposal is
+    # already applied on the skeleton and on every instance that ran it, so
+    # growing it would strand exactly those trees. Each proposal stays a unit
+    # that is either wholly applied or wholly absent.
+    presence = {
+        "schema_version": 1,
+        "slug": "arm-guard-presence-recovery",
+        "reason": why0 + tail,
+        "requires": {
+            "files_present": [GUARD1, GUARD2],
+            "template_pairs": [json.dumps(CMD0)[1:-1]],
+        },
+        "edits": [
+            {"file": ".claude/settings.json", "op": "insert_after",
+             "anchor": l2_anchor_s, "insert": l0_insert, "reason": why0},
+            {"file": "settings-template.json", "op": "insert_after",
+             "anchor": l2_anchor_t, "insert": l0_insert,
+             "reason": "Layer 0, fleet surface." + tail},
+        ],
+    }
+
+    for path, doc in ((OUT, proposal), (OUT_PRESENCE, presence)):
+        with open(path, "w") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        print("wrote %s (%d edits)" % (os.path.relpath(path, ROOT), len(doc["edits"])))
     return 0
 
 

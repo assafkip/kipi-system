@@ -26,11 +26,13 @@ ok()  { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; }
 check() { if [ "$2" = "$3" ]; then ok "$1 (rc=$3)"; else bad "$1 (want rc=$2, got rc=$3)"; fi; }
 
-# The hook command EXACTLY as Claude Code will run it. Lifted from the live
-# settings.json rather than retyped here: a harness that tests a transcribed copy
-# of the wiring proves nothing about the wiring (both v1 anchor defects on this
-# issue were transcription).
-hook_command() { # hook_command <settings.json> <script basename>
+# EVERY hook command that mentions the script, in configured order, exactly as
+# Claude Code runs them. Lifted from the live settings.json rather than retyped:
+# a harness that tests a transcribed copy of the wiring proves nothing about the
+# wiring (both v1 anchor defects on this issue were transcription). Newline-
+# separated, and the recovery entry and the enforcement entry are BOTH matched --
+# taking only the first would test half the group.
+hook_commands() { # hook_commands <settings.json> <script basename>
   python3 - "$1" "$2" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -38,9 +40,21 @@ for groups in doc.get("hooks", {}).values():
     for g in groups:
         for h in g.get("hooks", []):
             if sys.argv[2] in h.get("command", ""):
-                print(h["command"]); sys.exit(0)
-sys.exit(1)
+                print(h["command"].replace("\n", " "))
 PY
+}
+
+# Run them all and return the WORST rc, the way a hook group's failure surfaces.
+run_hooks() { # run_hooks <project_dir> <commands...>
+  local dir="$1"; shift
+  local worst=0 rc=0
+  while IFS= read -r c; do
+    [ -z "$c" ] && continue
+    CLAUDE_PROJECT_DIR="$dir" bash -c "$c" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -gt "$worst" ] && worst=$rc
+  done <<< "$*"
+  return "$worst"
 }
 
 # A minimal armed tree: real git repo, real remote, both guard scripts committed,
@@ -83,14 +97,14 @@ echo "    finding 1 (major) .claude/settings.json:186"
 # so the detector cannot restore itself. Round 2 closed this for Layer 1 by having
 # Layer 2 watch it. Nothing watches Layer 2.
 W1="$(make_tree p1)"
-CMD1="$(hook_command "$W1/.claude/settings.json" claude-integrity-tripwire.py)"
+CMD1="$(hook_commands "$W1/.claude/settings.json" claude-integrity-tripwire.py)"
 if [ -z "$CMD1" ]; then bad "phase 1: no tripwire hook found in settings.json"; fi
 export KIPI_NOTIFY="$W1/q-system/.q-system/scripts/slack-notify.sh"
-CLAUDE_PROJECT_DIR="$W1" bash -c "$CMD1" >/dev/null 2>&1   # arms the tree
+run_hooks "$W1" "$CMD1"   # arms the tree
 
 BEFORE="$(pages "$W1")"
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$W1/q-system/.q-system/scripts/claude-integrity-tripwire.py"
-CLAUDE_PROJECT_DIR="$W1" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1" "$CMD1"
 RC1=$?
 [ -f "$W1/q-system/.q-system/scripts/claude-integrity-tripwire.py" ] \
   && ok "1a deleting Layer 2 self-restores it from git" \
@@ -100,19 +114,19 @@ RC1=$?
   || bad "1b Layer 2 was deleted with no page"
 
 # The restored file has to be the real thing, not a placeholder: it must run.
-CLAUDE_PROJECT_DIR="$W1" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1" "$CMD1"
 check "1c the restored Layer 2 runs clean on an unchanged tree" 0 $?
 
 # NEGATIVE SELF-TEST: a fix that always exits 0 would pass 1a-1c. Here git cannot
 # restore the file, so the hook must fail LOUDLY rather than report success.
 W1B="$(make_tree p1b)"
 export KIPI_NOTIFY="$W1B/q-system/.q-system/scripts/slack-notify.sh"
-CLAUDE_PROJECT_DIR="$W1B" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1B" "$CMD1"
 git -C "$W1B" rm -q --cached q-system/.q-system/scripts/claude-integrity-tripwire.py >/dev/null 2>&1
 git -C "$W1B" commit -q -m "untrack the tripwire" >/dev/null 2>&1
 B4="$(pages "$W1B")"
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$W1B/q-system/.q-system/scripts/claude-integrity-tripwire.py"
-CLAUDE_PROJECT_DIR="$W1B" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1B" "$CMD1"
 RC1B=$?
 [ "$RC1B" -ne 0 ] \
   && ok "1d an unrestorable Layer 2 exits non-zero (rc=$RC1B), never a silent success" \
@@ -124,9 +138,9 @@ RC1B=$?
 # NEGATIVE SELF-TEST: the wrapper must not swallow the tripwire's own verdict.
 W1C="$(make_tree p1c)"
 export KIPI_NOTIFY="$W1C/q-system/.q-system/scripts/slack-notify.sh"
-CLAUDE_PROJECT_DIR="$W1C" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1C" "$CMD1"
 printf 'pwned\n' >> "$W1C/.claude/rules/keep.md"
-CLAUDE_PROJECT_DIR="$W1C" bash -c "$CMD1" >/dev/null 2>&1
+run_hooks "$W1C" "$CMD1"
 check "1f a real tamper is still reverted through the wrapper" 2 $?
 grep -q pwned "$W1C/.claude/rules/keep.md" \
   && bad "1g the tamper survived -- the wrapper broke enforcement" \

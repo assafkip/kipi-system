@@ -67,16 +67,23 @@ echo "    finding 1 (major) .claude/settings.json:186"
 W="$(make_tree p1)"
 python3 "$W/q-system/.q-system/scripts/claude-integrity-tripwire.py" --root "$W" --baseline --quiet
 
-# Author the change the way a reviewed remote change arrives: commit it, push it
-# to origin, then bring it into the worktree. This is byte-identical to what a
-# `git pull` leaves behind.
-git -C "$W" checkout -q -b upstream
+# Author the change the way a reviewed remote change arrives: commit it, land it
+# on the remote's DEFAULT branch, then bring it into the worktree. This is
+# byte-identical to what a `git pull` leaves behind.
+#
+# The default branch specifically, not just any pushed branch (round-4 finding).
+# This phase used to push a side branch `upstream` and assert absorption, which
+# encoded the too-broad rule head_is_pushed implemented: every agent here pushes
+# its own branch, so "pushed" sanctioned the agent's own tamper. Reviewed content
+# arrives on the default branch, through a PR. probe_round4_findings phase 2 holds
+# the other side: a pushed AGENT branch must NOT be absorbed.
 printf 'v2 reviewed\n' > "$W/.claude/rules/keep.md"
 printf 'new\n'         > "$W/.claude/rules/newrule.md"
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$W/.claude/rules/dropme.md"
 git -C "$W" add -A -f >/dev/null 2>&1
 git -C "$W" commit -q -m "reviewed .claude change" >/dev/null 2>&1
-git -C "$W" push -q origin upstream >/dev/null 2>&1
+git -C "$W" push -q origin main >/dev/null 2>&1
+git -C "$W" remote set-head origin main >/dev/null 2>&1
 
 RC="$(python3 "$W/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
         --root "$W" --enforce --quiet >/dev/null 2>&1; echo $?)"
