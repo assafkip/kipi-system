@@ -91,6 +91,27 @@ SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
 STATEMENT_SPLIT = re.compile(r"&&|\|\||;|\n")
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
+# Gitignored scratch at the TOP of a `.claude/` tree. Layer 2
+# (claude-integrity-tripwire.py) already refuses to watch these -- they churn
+# constantly and carry no hook/rule/agent wiring -- so a path Layer 2 does not
+# protect is not a path Layer 1 should block on. THIS SET MUST EQUAL LAYER 2's
+# EXCLUDED_DIRS; `test_claude_path_write_guard.py` asserts the two are identical,
+# because two layers disagreeing about what the protected set IS is worse than
+# either bound alone.
+#
+# SCAR (sp-2b9372f6, measured 2026-08-02): without this, Layer 1 wedged any
+# session whose cwd was `.claude/worktrees/<name>/`. `expand()` resolves every
+# bare argv token against cwd, so in `git commit` the literal word `commit`
+# became `<cwd>/commit`, "inside .claude", and BLOCKED. git commit / git push /
+# gh pr create / running the tests all died. Two live registered worktrees sit
+# under that path right now. A guard that stops the work it is guarding gets
+# switched off, and a gate that is off protects nothing.
+#
+# This does NOT widen the write route: everything Layer 2 watches -- settings,
+# rules/, agents/, skills/, commands/, output-styles/ -- is still protected, and
+# `.claude/worktrees` itself (with nothing under it) stays protected too.
+EXCLUDED_DIRS = {"state", "plans", "worktrees", "backups", "__pycache__"}
+
 
 def unquote(token):
     """Strip shell quoting before any path comparison.
@@ -124,10 +145,28 @@ def expand(token, cwd, assigns):
 
 
 def hits_claude(path):
-    """True if the resolved path is inside (or is) a `.claude` directory.
-    Component-wise, so `my.claude-notes` and `claude/` do not false-positive."""
+    """True if the resolved path is inside (or is) a PROTECTED `.claude` tree.
+
+    Component-wise, so `my.claude-notes` and `claude/` do not false-positive.
+
+    A path whose first component under `.claude/` is in EXCLUDED_DIRS is
+    gitignored scratch: Layer 2 does not watch it, so Layer 1 does not block on
+    it. The exclusion needs something UNDER the scratch dir -- `.claude/worktrees`
+    itself is still a protected path, so `rm -rf .claude/worktrees` stays blocked
+    while `touch .claude/worktrees/wt/scratch.txt` is allowed.
+
+    Fails closed on ambiguity: with more than one `.claude` component, the path
+    is protected if ANY of them resolves to a protected position.
+    """
     parts = os.path.normpath(path).split(os.sep)
-    return ".claude" in parts
+    for i, part in enumerate(parts):
+        if part != ".claude":
+            continue
+        tail = parts[i + 1:]
+        if len(tail) >= 2 and tail[0] in EXCLUDED_DIRS:
+            continue  # scratch under this .claude -- unwatched by Layer 2
+        return True
+    return False
 
 
 def analyse(command, cwd):

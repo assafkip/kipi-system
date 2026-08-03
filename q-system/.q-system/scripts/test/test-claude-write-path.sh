@@ -445,6 +445,40 @@ assert_block "git config -f writes"        'git config -f .claude/settings.json 
 assert_block "git worktree add writes"     'git worktree add .claude/wt'
 assert_allow "git status still allowed"    'git status .claude/'
 
+echo "== I. ASK-291: one watch set across both layers =="
+# The two layers must agree on WHICH paths are protected. Layer 1 blocking a
+# path Layer 2 refuses to watch is the wedge that killed git commit from an
+# agent worktree (sp-2b9372f6); Layer 1 allowing a path Layer 2 DOES watch would
+# be a hole. Both directions are the same defect: two definitions of one set.
+# This is the single-writer enforcement -- the constant is duplicated for hook
+# speed, so the equality is pinned by a test rather than by a comment.
+SETS_EQ="$(python3 - "$SCRIPTS" <<'PY'
+import importlib.util, sys, os
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+d = sys.argv[1]
+l1 = load("l1", os.path.join(d, "claude-path-write-guard.py")).EXCLUDED_DIRS
+l2 = load("l2", os.path.join(d, "claude-integrity-tripwire.py")).EXCLUDED_DIRS
+print("EQUAL" if l1 == l2 else "DIVERGED l1=%s l2=%s" % (sorted(l1), sorted(l2)))
+PY
+)"
+case "$SETS_EQ" in
+  EQUAL) pass "L1 EXCLUDED_DIRS == L2 EXCLUDED_DIRS" ;;
+  *)     fail "L1/L2 watch sets diverged: $SETS_EQ" ;;
+esac
+
+# The exclusion is for scratch UNDER a volatile dir, not for the dir itself.
+assert_allow "scratch under .claude/worktrees/ is allowed" \
+  'touch .claude/worktrees/opus-fallback/scratch.txt'
+assert_allow "scratch under .claude/state/ is allowed" \
+  'echo x > .claude/state/run.json'
+assert_block ".claude/worktrees itself is still protected" \
+  'rm -rf .claude/worktrees'
+assert_block "watched subtree still protected under a scratch NAME" \
+  'touch .claude/rules/worktrees.md'
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
