@@ -792,7 +792,10 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;
       unarmed)
         MERGE_LOG="Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" ;;
+        # ASK-310: named the founder as the actor and handed him the command.
+        # Nothing blocks a merge (measured, with controls), so an unarmed PR
+        # is a retry the loop owes, not an errand.
+        MERGE_PAGE="PR #$PR approved but NOT armed -- the next dispatch arms it. If it is still unarmed after that, the arm path is broken, not the PR." ;;
       *)
         MERGE_LOG="Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
         MERGE_PAGE="PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" ;;
