@@ -1016,6 +1016,66 @@ else
 fi
 AUDIT="$AUDIT_SAVE"
 
+echo "== 31. the over-cap refusal names the total the tree actually had"
+# PR #88 round 6, minor. The refusal printed the CAP as the left-hand number of
+# "always-on total X -> Y". Before any headroom is banked cap == prev_total and the
+# two readings coincide, which is why section 5 never caught it. After scoping,
+# they come apart: the tree last recorded 13 always-on lines under a cap of 33, so
+# "33 -> 34" states a growth that never happened and hides both the real +21 and
+# the fact that 20 banked lines were spent getting there. An agent reading it looks
+# for one line to trim.
+R25=$(mktemp -d); mk_fixture "$R25"
+audit_rc "$R25"                                   # bootstrap: cap 33, total 33
+scope_rule "$R25" beta.md "q-system/output/**"
+audit_rc "$R25"                                   # cap 33, total 13, headroom 20
+check "headroom banked before the over-cap append" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+for i in $(seq 1 21); do printf '\nAlpha overflow line %s.\n' "$i" >> "$R25/.claude/rules/alpha.md"; done
+audit_rc "$R25"                                   # total 13 + 21 = 34, cap 33
+check "over-cap exits 1 behind banked headroom" 1 "RATCHET FAIL" "$AUDIT_RC" "$AUDIT_OUT"
+check "names the total the tree actually had" 1 "always-on total 13 -> 34" "$AUDIT_RC" "$AUDIT_OUT"
+check "names the cap it broke" 1 "cap 33 exceeded by 1" "$AUDIT_RC" "$AUDIT_OUT"
+check "names the headroom that got spent" 1 "banked headroom was 20" "$AUDIT_RC" "$AUDIT_OUT"
+case "$AUDIT_OUT" in
+  *"total 33 -> 34"*) bad "the refusal still reports the cap as the previous total" ;;
+  *) ok "the cap is not passed off as a total the tree ever had" ;;
+esac
+check_num "a failing run still does not move the cap" 33 "$(cap_of "$R25")"
+# Negative control: with nothing banked, cap == prev_total and the sentence is the
+# one section 5 pins. The fix must read the baseline, not rename the numbers.
+R26=$(mktemp -d); mk_fixture "$R26"
+audit_rc "$R26"                                   # cap 33, total 33, nothing banked
+printf '\nAn eleventh always-on line.\n' >> "$R26/.claude/rules/alpha.md"
+audit_rc "$R26"
+check "no headroom banked: the transition is unchanged" 1 "always-on total 33 -> 34" "$AUDIT_RC" "$AUDIT_OUT"
+check "and it says the headroom was zero" 1 "banked headroom was 0" "$AUDIT_RC" "$AUDIT_OUT"
+
+echo "== 32. mutation: report the cap as the previous total -> section 31 goes RED"
+# A regression case never watched fail is not known to catch anything, and the ref
+# hatch only reaches the previous commit. This puts the pre-fix reading back in
+# place: the left-hand number is the cap again.
+MUTT=$(mktemp -d)/mutant-failtext.py
+mkdir -p "$(dirname "$MUTT")"
+python3 - "$AUDIT" "$MUTT" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "    ).format(cap=cap, total=total, over=total - cap, prev=prev_total,\n"
+assert needle in src, "the fail-text format call moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(
+    needle,
+    "    ).format(cap=cap, total=total, over=total - cap, prev=cap,\n", 1))
+PY
+RM7=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTT"; mk_fixture "$RM7"
+audit_rc "$RM7"
+scope_rule "$RM7" beta.md "q-system/output/**"
+audit_rc "$RM7"
+for i in $(seq 1 21); do printf '\nAlpha overflow line %s.\n' "$i" >> "$RM7/.claude/rules/alpha.md"; done
+audit_rc "$RM7"
+case "$AUDIT_OUT" in
+  *"always-on total 13 -> 34"*) bad "mutant still names the real total; the mutation does not reach the fix" ;;
+  *) ok "mutant reports the cap as the previous total" ;;
+esac
+AUDIT="$AUDIT_SAVE"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]

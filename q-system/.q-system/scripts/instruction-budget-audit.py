@@ -595,18 +595,27 @@ def scoping_freed(snapshot, always_on, conditional):
     return freed, moved
 
 
-def ratchet_fail_text(cap, total, always_on):
+def ratchet_fail_text(cap, prev_total, total, always_on):
     """The message an agent reads when it is over the cap.
 
     It names the moves that are actually REACHABLE from where the reader stands,
     because the old text ("Trim what you added, or move a rule to paths-scoped")
     named two moves the sanctioned write path cannot make and cost a full agent
     pass to discover (ASK-285).
+
+    Cap and previous total are TWO numbers since this issue split them, so the
+    sentence has to say which is which. Reporting the cap as the left-hand side of
+    "total X -> Y" was only ever right before any headroom was banked, where
+    cap == prev_total and the two readings coincide -- which is why section 5 never
+    caught it. After scoping they come apart, and "33 -> 34" describes a tree that
+    never existed: it hides the real growth (13 -> 34) and the 20 banked lines the
+    run just spent, so the reader hunts for one line to trim (PR #88 round 6).
     """
     candidates = sorted(always_on.items(), key=lambda kv: -kv[1])[:3]
     named = ", ".join("%s (%d)" % (n, c) for n, c in candidates) or "none"
     return (
-        "RATCHET FAIL: always-on total {cap} -> {total} (+{over}); headroom 0.\n"
+        "RATCHET FAIL: always-on total {prev} -> {total}, cap {cap} exceeded by "
+        "{over}; banked headroom was {banked} and is spent.\n"
         "  Reachable with no deletion anywhere: put the new lines in a rule that "
         "declares paths:/globs: frontmatter. A paths-scoped rule costs 0 always-on "
         "lines, create_file through apply-claude-changes.sh can make one, and "
@@ -616,7 +625,8 @@ def ratchet_fail_text(cap, total, always_on):
         "  Scoping is a founder edit: apply_claude_changes.py refuses frontmatter "
         "changes on every op, because a narrowed paths: switches a rule off.\n"
         "  Target remains {target}."
-    ).format(cap=cap, total=total, over=total - cap, named=named,
+    ).format(cap=cap, total=total, over=total - cap, prev=prev_total,
+             banked=max(0, cap - prev_total), named=named,
              target=BUDGET_TOTAL_ALWAYS_ON)
 
 
@@ -703,7 +713,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
     snapshot = baseline.get(KEY_SNAPSHOT)
 
     if total > cap:
-        print(ratchet_fail_text(cap, total, always_on))
+        print(ratchet_fail_text(cap, prev_total, total, always_on))
         return 1
 
     if blocked:
