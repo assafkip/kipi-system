@@ -200,11 +200,14 @@ def findings(repo: str) -> list:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    ap.add_argument("--quiet", action="store_true",
+                    help="say nothing when clean (for the SessionStart hook)")
     a = ap.parse_args()
     repo = os.path.abspath(a.repo)
     bad = findings(repo)
     if not bad:
-        print("diagnosed-not-built: OK -- nothing diagnosed twice and left untouched")
+        if not a.quiet:
+            print("diagnosed-not-built: OK -- nothing diagnosed twice and left untouched")
         return 0
     print(f"diagnosed-not-built: {len(bad)} file(s) diagnosed {MIN_SOURCES}+ times "
           f"and NOT changed since.\n")
@@ -217,7 +220,7 @@ def main() -> int:
     print("\nEach is a class being re-discovered instead of fixed. Build it, or "
           "close the findings as won't-do -- writing it down a sixth time is the "
           "failure this detects.")
-    return 1
+    return 0 if a.quiet else 1
 
 
 if __name__ == "__main__":
