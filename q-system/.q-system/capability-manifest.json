@@ -206,14 +206,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -251,6 +243,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -316,6 +312,14 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
       "runner": "bash"
     },
     {
@@ -400,6 +404,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -409,10 +417,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -433,6 +437,10 @@
     },
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fable_escalation.py",
       "runner": "python3"
     },
     {
