@@ -256,7 +256,7 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 # environment that is down from a worker that was invoked wrong.
 if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
-  bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
+  bash "$NOTIFY" --kind receipt "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
 fi
 
@@ -439,7 +439,7 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   say "MISCONFIG: repo identity '$REPO_PROJECT' (from $TARGET_REPO) matches NO Linear project on team ASK."
   say "MISCONFIG: every issue would be filtered out, so this run picked nothing for a config reason, not an empty board."
   say "MISCONFIG: fix by renaming the Linear project to match the checkout, or set KIPI_LINEAR_PROJECT."
-  bash "$NOTIFY" "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
+  bash "$NOTIFY" --kind receipt "kipi worker: repo identity '$REPO_PROJECT' matches no Linear project, so the queue reads empty and NO work can ever be picked. Do: set KIPI_LINEAR_PROJECT in the worker's environment, or rename the project to match the checkout." 2>/dev/null || true
   exit 9
 fi
 
@@ -644,7 +644,7 @@ ledger_fault() {
   say "WARN: the attempts ledger did not record the $flag flag for $issue (exit $rc) -- $detail"
   [ "$LEDGER_FAULT_ALERTED" -eq 0 ] || return 0
   LEDGER_FAULT_ALERTED=1
-  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
+  bash "$NOTIFY" --kind receipt "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
 }
 
 page_once() {
@@ -889,7 +889,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # no page() helper here -- calling one would have been a silent no-op under
       # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
       # pages nobody, which is the exact defect this block fixes.
-      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
+      bash "$NOTIFY" --kind receipt "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
     continue
   fi
@@ -1022,7 +1022,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" drift_paged; then
       # human-required: self-certification -- approval is pinned to an older
       # sha; re-approving the new head from inside the loop forges the review.
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+          bash "$NOTIFY" --kind receipt "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
         continue
       fi
@@ -1046,7 +1046,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" conflict_paged; then
       # human-required: irreversible-git -- resolving a conflict picks which
       # side of a diff survives. That is a content decision, not a permission.
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+          bash "$NOTIFY" --kind receipt "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
         continue
       fi
@@ -1181,7 +1181,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       if page_once "$ISSUE" tree_paged; then
       # human-required: irreversible-git -- the worktree carries local work not
       # in the PR. Any automatic reconciliation discards someone's commits.
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+        bash "$NOTIFY" --kind receipt "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -1606,7 +1606,10 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
     fi
     if [ -z "$REFUSE_LABEL" ]; then
       : # Codex continued it; there is nothing to park and no label to apply.
-    elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
+    # --remove ready (ASK-308): a refusal means the DoR is not executable, so the
+    # issue must leave the machine-ready view in the SAME write that marks it
+    # refused. Otherwise the board keeps advertising work the worker just declined.
+    elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" --remove ready >>"$LOG" 2>&1; then
       say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
       # The label is the ONLY thing that makes this stick. If it did not land, the

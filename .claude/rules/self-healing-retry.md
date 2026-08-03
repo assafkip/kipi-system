@@ -1,14 +1,25 @@
+---
+description: What a RUNNING job does when a step fails - capture, ground, targeted re-run, 3 attempts then escalate to a peer model, environmental failures stop at 1, log every attempt.
+paths:
+  - "**/*.py"
+  - "**/*.sh"
+  - "**/*.plist"
+  - "**/*.yml"
+---
+
 # Self-Healing Retry Contract
 
 The retry discipline for ANY phased or step-based job (pipelines, launchd jobs,
 heartbeat sweeps, harvest runs) — extracted 2026-07-01 from morning-pipeline.md,
 where it was encoded while every other job reinvented or omitted it.
 
-Naming note: AUTONOMOUS-SYSTEMS.md uses "self-healing" for launchd durability
-(jobs surviving updates and being noticed when they die). This rule owns the
-other sense: what a RUNNING job does when one of its steps fails.
+Naming note: AUTONOMOUS-SYSTEMS.md's "self-healing" is launchd durability; this
+rule owns the other sense, what a RUNNING job does when a step fails.
 
 ## The contract
+
+Steps 1-3 and 5 are judgment, not enforced; the coded blockers are
+`token-guard.py` and `run-step-audit.py` (see "Enforcement boundary").
 
 On step failure:
 
@@ -18,9 +29,11 @@ On step failure:
    error is real before acting on it.
 3. **Apply a targeted fix** (config, path, missing dependency), then re-run
    ONLY the failed step. Never restart the whole job to retry one step.
-4. **3 attempts max per step.** On the 3rd failure: STOP and surface the
-   diagnosis — error trace, fixes attempted, current artifact state. No
-   monolithic fallback.
+4. **3 attempts max, then escalate to a PEER, not the founder.** Hand the
+   diagnosis to another model — `Agent(subagent_type='general-purpose',
+   model='fable')`. Three failures mean THIS model is stuck, not that a human is
+   needed; the founder comes after Fable is too. Enforced by `FABLE_ESCALATION`
+   in `token-guard.py`, which carries the scar.
 5. **Environmental failures stop on attempt 1.** An authentication error, a
    server crash, or a hard-down external service is `environmental-trigger`
    class (the rca skill's cause taxonomy — shared vocabulary, one failure-class

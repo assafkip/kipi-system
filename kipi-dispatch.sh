@@ -52,13 +52,13 @@ export ANTHROPIC_MODEL="${KIPI_DISPATCH_MODEL:-claude-opus-5}"
 
 mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
-page() { bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
+page() { bash "$NOTIFY" --kind receipt "$1" >/dev/null 2>&1 || true; }
 # Same notifier, but REPORTS whether it went out. page() ends in `|| true` on
 # purpose -- a notifier must never take its caller down -- which makes it useless
 # to a caller that has to know. Kept as a sibling rather than changing page()'s
 # contract for the dozen sites that correctly do not care. Used by stale_check,
 # which must not write a dedupe marker for a page that never arrived.
-page_ok() { bash "$NOTIFY" "$1" >/dev/null 2>&1; }
+page_ok() { local m="$1"; shift; bash "$NOTIFY" "$@" "$m" >/dev/null 2>&1; }  # notify-kind-forwarded: the kind arrives from the caller; every page_once site declares one (ASK-310)
 
 # ONE PAGE PER STATE, NOT ONE PER HEARTBEAT (ASK-283, 2026-08-02).
 # Audited across this file: four guards -- missing repo, unusable `date`, gh off
@@ -149,6 +149,7 @@ page_clear() {
 
 page_once() {
   local key="$1" msg="$2" mark hash now prev stamp lock
+  shift 2   # remaining args = classification flags, passed through to the sink
   mark="$(dirname "$LOG")/paged-$key"
   hash="$(printf '%s' "$msg" | cksum | tr -d ' \n')"
   now="$(date -u +%s)"
@@ -194,7 +195,7 @@ page_once() {
       return 0
     fi
   fi
-  if page_ok "$msg"; then
+  if page_ok "$msg" "$@"; then
     printf '%s\n%s\n' "$hash" "$now" > "$mark" 2>/dev/null || true
   else
     say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
@@ -204,7 +205,7 @@ page_once() {
 
 cd "$REPO" 2>/dev/null || {
   say "FATAL: repo not found at $REPO"
-  page_once repo-missing "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist."
+  page_once repo-missing "kipi dispatch: repo not found at $REPO -- the Linear loop is DEAD. Do: check the path in com.kipi.dispatch.plist." --kind receipt
   exit 1
 }
 page_clear repo-missing
@@ -298,7 +299,40 @@ stale_check() {
   # shas go to the log, which is free, not to the founder's phone, which is not.
   # page_clear on the healthy path below turns a recovery into silence and makes the
   # NEXT episode page immediately, which is what a per-sha key was reaching for.
-  page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main, so it will not dispatch (it would run superseded control code and auto-merge the result). Do: cd $REPO && git merge --ff-only origin/main. The loop resumes by itself once the checkout is current."
+  # ACT, DO NOT PAGE (ASK-310). This block used to end here with a bare page_once
+  # carrying "Do: cd $REPO && git merge --ff-only origin/main" -- naming the
+  # founder as the actor and handing him the command. ff-merge-if-safe.sh was
+  # written for exactly this line; its header has said "Called by
+  # kipi-dispatch.sh's stale_check" since ASK-294 while having zero callers.
+  # Measured 2026-08-02: `grep -rn ff-merge-if-safe` returned only its own test.
+  # The script was built, reviewed, fanned to 19 instances, and never invoked, so
+  # the page it was meant to delete stayed live for a week.
+  #
+  # It merges only when it can PROVE the fast-forward clobbers nothing, and
+  # declines with a named path otherwise. Exit codes are its contract:
+  #   0 = current now (already current, or fast-forwarded here) -> dispatch
+  #   1 = refused, stdout names why -> that IS a founder decision, so it pages
+  #   2 = no answer (fetch failed) -> fail open, run one cycle behind
+  # $REPO, not $SCRIPT_DIR: this file has no SCRIPT_DIR, and the checkout being
+  # brought current IS $REPO -- the same root NOTIFY is resolved from (line 48).
+  # Overridable for the same test-isolation reason KIPI_NOTIFY is.
+  FFMERGE="${KIPI_FFMERGE:-$REPO/q-system/.q-system/scripts/ff-merge-if-safe.sh}"
+  if [ -x "$FFMERGE" ]; then
+    ff_out="$(bash "$FFMERGE" 2>&1)"; ff_rc=$?
+    case "$ff_rc" in
+      0) say "STALE: resolved without the founder -- $ff_out"
+         page_clear stale-checkout
+         return 0 ;;
+      2) say "STALE: ff-merge could not answer ($ff_out); running one cycle behind rather than wedging."
+         return 0 ;;
+    esac
+    # rc 1: it refused, and its stdout names the path that stopped it. THAT is
+    # something only a human can resolve, so this page is a real decision and
+    # says so with --kind rather than falling through the fail-open hole.
+    page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main and the safe fast-forward REFUSED: $ff_out" --kind decision --class irreversible-git
+    return 1
+  fi
+  page_once stale-checkout "kipi dispatch: paused -- this checkout is behind origin/main and ff-merge-if-safe.sh is missing at $FFMERGE, so nothing can bring it current unattended." --kind decision --class irreversible-git
   return 1
 }
 stale_check || exit 0
@@ -577,7 +611,7 @@ BUDGET_DAY="$(date -v-"${RESET_HOUR}"H +%Y-%m-%d 2>/dev/null \
               || date -d "-${RESET_HOUR} hours" +%Y-%m-%d 2>/dev/null)"
 if [ -z "$BUDGET_DAY" ]; then
   say "FATAL: could not compute the budget day (neither BSD nor GNU date worked)"
-  page_once budget-day "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine."
+  page_once budget-day "kipi dispatch: cannot compute its spend budget window, so it refused to dispatch rather than run uncapped. Do: check \`date -v-7H\` on this machine." --kind receipt
   exit 1
 fi
 page_clear budget-day
@@ -651,7 +685,7 @@ if command -v gh >/dev/null 2>&1; then
 fi
 if ! command -v gh >/dev/null 2>&1; then
   say "FATAL: gh not on PATH ($PATH)"
-  page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist."
+  page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist." --kind receipt
   exit 1
 fi
 
@@ -766,7 +800,7 @@ WORK_RC=$?
 # SURVIVED. A fixture must not be anchored to the text it is testing.
 if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: linear unreachable|infra_error|authentication|unauthorized'; then
   say "infra error from kipi work: $(printf '%s' "$WORK_OUT" | head -3 | tr '\n' ' ')"
-  page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token."
+  page_once linear-down "kipi dispatch: Linear is unreachable or auth expired, so NO issues can be picked up. The loop is stopped, not slow. Do: run \`bash kipi work\` by hand and check the Linear token." --kind decision --class credential
   exit 1
 fi
 # A RUN THAT NEVER REACHED LINEAR IS NOT EVIDENCE LINEAR RECOVERED -- the same rule
