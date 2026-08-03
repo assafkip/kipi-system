@@ -148,6 +148,13 @@ PATTERNS = (
             re.compile(r"\b(?:cannot|can'?t)\s+be\s+(?:run|invoked|called|used|"
                        r"executed)\b", re.I),
             re.compile(r"\bis\s+(?:un)?available\s+to\s+the\s+tool\s+layer\b", re.I),
+            # The repo's OWN status wording, and it was invisible to the first cut
+            # (PR #79 review, codex). The autonomous-board prompt tells agents to
+            # report when "Linear is unreachable" -- a stop claim about an external
+            # service, which is this sub-shape exactly: one failed call at my layer
+            # reported as a property of the service.
+            re.compile(r"\b(?:is|are|was|were)\s+(?:unreachable|unavailable|down|"
+                       r"offline|inaccessible)\b", re.I),
             re.compile(r"\bthe\s+tool\s+layer\s+(?:refuses|forbids|blocks)\b", re.I),
         ),
         settles=(
@@ -230,22 +237,11 @@ def _settling_fences(lines: list[str], spans: list[tuple[int, int]]) -> set[int]
     return out
 
 
-def evaluate(final_text: str) -> list[Finding]:
-    """Every unsettled blocked/denied/unavailable/non-existent claim in the answer."""
-    if not final_text or SKIP_MARKER in final_text:
-        return []
-    lines = final_text.splitlines()
-    spans = _fence_spans(lines)
-    interior = {i for start, end in spans for i in range(start, end + 1)}
-    settling = _settling_fences(lines, spans)
-
-    findings: list[Finding] = []
+def _claim_lines(lines: list[str], interior: set[int]) -> list[tuple[int, Pattern]]:
+    """(line index, matched pattern) for every unlabelled state claim, in order."""
+    claims = []
     for i, line in enumerate(lines):
         if i in interior or not line.strip() or _has_provenance(line):
-            continue
-        # Evidence must FOLLOW the claim. A fence that precedes it belongs to an
-        # earlier claim -- one settled claim must not launder the next one.
-        if any(i < f <= i + LOOKAHEAD for f in settling):
             continue
         for sentence in _SENTENCE_SPLIT_RE.split(line):
             sentence = sentence.strip()
@@ -253,10 +249,41 @@ def evaluate(final_text: str) -> list[Finding]:
                 continue  # a question is an open loop, not a claim
             hit = _first_match(sentence)
             if hit is not None:
-                findings.append(Finding(hit.pattern_id, i + 1, line.strip(),
-                                        hit.why, hit.settles))
+                claims.append((i, hit))
                 break  # one finding per line keeps the report readable
-    return findings
+    return claims
+
+
+def _settled_claims(claims: list[tuple[int, Pattern]], settling: set[int]) -> set[int]:
+    """Line indices a fence settles. ONE fence settles exactly ONE claim.
+
+    Evidence must FOLLOW the claim: a fence above it belongs to an earlier claim.
+    Scar (PR #79 review, codex): the first cut cleared EVERY claim within LOOKAHEAD
+    lines of any settling fence, so output answering one claim silently laundered an
+    unrelated false claim sitting next to it -- the exact laundering this gate exists
+    to stop. A fence is evidence for the nearest claim it follows, and it is spent
+    once, so two adjacent claims need two fences.
+    """
+    settled: set[int] = set()
+    for fence in sorted(settling):
+        owners = [i for i, _ in claims
+                  if i < fence <= i + LOOKAHEAD and i not in settled]
+        if owners:
+            settled.add(max(owners))  # the nearest claim above this fence
+    return settled
+
+
+def evaluate(final_text: str) -> list[Finding]:
+    """Every unsettled blocked/denied/unavailable/non-existent claim in the answer."""
+    if not final_text or SKIP_MARKER in final_text:
+        return []
+    lines = final_text.splitlines()
+    spans = _fence_spans(lines)
+    interior = {i for start, end in spans for i in range(start, end + 1)}
+    claims = _claim_lines(lines, interior)
+    settled = _settled_claims(claims, _settling_fences(lines, spans))
+    return [Finding(hit.pattern_id, i + 1, lines[i].strip(), hit.why, hit.settles)
+            for i, hit in claims if i not in settled]
 
 
 def _first_match(sentence: str):

@@ -173,6 +173,37 @@ def main() -> int:
     cases.append(("a settled claim does not launder an unsettled one",
                   len(found) == 1 and found[0].pattern == "my-denial-as-object-property"))
 
+    # === PR #79 review, minor 1: a fence binds to ONE claim, not to the window ===
+    # Codex reproduced this: two claims inside one lookahead window, one fence that
+    # answers only the SECOND. The window rule cleared both, so evidence for the
+    # Alice claim silently laundered the false merge claim next to it.
+    launder = (CLAIMS[0][1] + "\n" + CLAIMS[5][1] + "\n\n```\n"
+               "bash alice/run.sh --list\n"
+               "alice/collect.sh: never invoked, no run-log entry\n```\n")
+    found = mod.evaluate(launder)
+    cases.append(("one fence settles its own claim, not the claim above it",
+                  len(found) == 1 and found[0].pattern == "rollup-as-config"))
+
+    # Two claims, two fences: each still gets settled by its own evidence.
+    paired = SETTLED[0] + "\n" + SETTLED[5]
+    cases.append(("two claims each carrying their own fence both pass",
+                  mod.evaluate(paired) == []))
+
+    # === PR #79 review, minor 2: the repo's own "unreachable" status wording ===
+    # Not a fabricated phrase: the autonomous-board prompt tells agents to report
+    # when "Linear is unreachable". That is a stop claim, and it was invisible.
+    cases.append((
+        "a repo-produced 'X is unreachable' claim is flagged",
+        [f.pattern for f in mod.evaluate(
+            "- Linear is unreachable, so the board could not be refreshed.")]
+        == ["my-denial-as-object-property"]))
+    cases.append((
+        "'X is unreachable' settled by the probe that establishes it passes",
+        mod.evaluate(
+            "- Linear is unreachable, so the board could not be refreshed.\n\n```\n"
+            "python3 q-system/.q-system/scripts/linear-sync.py progress ASK-317\n"
+            "urllib.error.HTTPError: HTTP Error 401: Unauthorized\n```\n") == []))
+
     # === remediation text is per-pattern, not generic ===
     texts = {p.pattern_id: p.settles for p in mod.PATTERNS}
     cases.append(("three distinct sub-shapes are named",
