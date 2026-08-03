@@ -172,5 +172,64 @@ class RuleIsBlocking(unittest.TestCase):
         self.assertNotIn("capitalization", voice_lint.WARN_RULES)
 
 
+
+class LegitimatelyLowercase(unittest.TestCase):
+    """Tokens that are CORRECTLY lowercase must not be flagged (2026-08-03).
+
+    Every case here is real. The daily social drafts failed this gate three times
+    and shipped nothing, on 'reverse-skill', 'claude-video' and 'https'. The Stop
+    hook then blocked an assistant message opening with an email address. A gate
+    that fires on correct content gets bypassed or ignored.
+    """
+
+    def _caps(self, text):
+        return [v for v in voice_lint.check_capitalization(text)
+                if "starts lowercase" in v["detail"]]
+
+    def test_tool_name_slug_is_not_a_sentence(self):
+        self.assertEqual(self._caps("reverse-skill turns a repo into a skill."), [])
+
+    def test_second_tool_name(self):
+        self.assertEqual(self._caps("claude-video renders a clip."), [])
+
+    def test_url(self):
+        self.assertEqual(self._caps("https://example.com/x is the link."), [])
+
+    def test_email(self):
+        self.assertEqual(self._caps("assafkip@gmail.com received it."), [])
+
+    def test_filename(self):
+        self.assertEqual(self._caps("run_daily.sh builds the episode."), [])
+
+    def test_a_real_lowercase_sentence_is_STILL_caught(self):
+        # The exemptions must not blunt the rule they are narrowing.
+        self.assertEqual(len(self._caps("this is a real sentence.")), 1)
+
+
+class AutoFix(unittest.TestCase):
+    """Casing is the one voice rule with a single right answer, so it is repaired
+    rather than reported. Blocking on it is what burned the retry budget."""
+
+    def test_fixes_a_real_lowercase_start(self):
+        out, n = voice_lint.fix_capitalization("this needs a capital.")
+        self.assertEqual(out, "This needs a capital.")
+        self.assertEqual(n, 1)
+
+    def test_fixes_bare_i(self):
+        out, n = voice_lint.fix_capitalization("I know. i wrote it.")
+        self.assertIn("I wrote it.", out)
+
+    def test_leaves_exempt_tokens_untouched(self):
+        text = "reverse-skill ships. https://x.com/y links. a@b.com wrote."
+        out, n = voice_lint.fix_capitalization(text)
+        self.assertEqual(out, text)
+        self.assertEqual(n, 0)
+
+    def test_is_idempotent(self):
+        once, _ = voice_lint.fix_capitalization("this needs a capital.")
+        twice, n = voice_lint.fix_capitalization(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(n, 0)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
