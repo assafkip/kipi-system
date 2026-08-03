@@ -1905,14 +1905,60 @@ FINDINGS:
 major|the fallback fills the slot without marking it degraded|q-system/x.sh:40
 END FINDINGS
 '
+# THE REAL `codex exec` PREAMBLE, captured live 2026-08-03 by running
+#
+#   codex exec --skip-git-repo-check --model <m> -C <dir> "<prompt>" </dev/null >f 2>&1
+#
+# (the exact invocation run_engine uses). It is here because the invented
+# fixtures below were WRONG about the producer, and that is what let the ASK-287
+# fix ship half-done: every codex run -- success, garbage, or total outage --
+# writes this banner, the echoed prompt, and the hook chatter into the review
+# file BEFORE anything else. There is no such thing as a 0-byte codex artifact.
+CODEX_PREAMBLE='Reading additional input from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /tmp/review-tree
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
+--------
+user
+Review this PR.
+warning: Skill descriptions were shortened to fit the 2% skills context budget.
+hook: SessionStart
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed'
+
 # Truncated: the stream died after the block opened. `sed /FINDINGS:/,/END
 # FINDINGS/p` runs to EOF on this, so an empty range derives APPROVE unless the
 # closing line is REQUIRED. This is path 2 above, in its exact observed shape.
-CODEX_TRUNCATED='hook: Stop
+#
+# THE `codex` LINE IS LOAD-BEARING, not decoration. It is the assistant-turn
+# marker codex prints before the model's first token, and it is the whole reason
+# this case is a GARBAGE ANSWER rather than an outage: the model spoke and was
+# cut off. The old fixture omitted it, which made "codex answered" and "codex
+# never answered" look identical on disk and quietly certified the wrong rule.
+CODEX_TRUNCATED="$CODEX_PREAMBLE
+codex
 ## VERDICT: APPROVE
 
 FINDINGS:
-'
+"
+
+# THE ASK-287 OUTAGE, in the shape the producer really writes. Preamble captured
+# live (above); the terminating banner is the one measured 2026-08-02 with a real
+# billed call, which printed it and EXITED 0. Note what is NOT here: no `codex`
+# line anywhere, because the run died at the API before the model emitted a
+# single token. That absence is the evidence the classifier reads.
+CODEX_OUT_OF_CREDITS="$CODEX_PREAMBLE
+ERROR: Your workspace is out of credits. Add credits to continue.
+ERROR: Your workspace is out of credits. Add credits to continue.
+"
 
 # mk_engine_stubs <dir> <headRefOid> <codex-mode> <codex-body>
 #   codex-mode: ok | fail (non-zero exit) | empty (exit 0, no output)
@@ -2187,29 +2233,73 @@ Q4B_REC="$Q4B/home/.config/kipi/pr-reviews/pr-901.verdict.json"
       Record: $(cat "$Q4B_REC")"
 ok "the garbage case records NO verdict at all (nothing invented over an unreadable review)"
 
+# --- Q4D. THE REAL OUT-OF-CREDITS PAYLOAD -> still an outage, still falls back --
+# FOUND BY CODEX ON 2026-08-03 reviewing PR #86 (major, pr-review-agent.sh:599)
+# while Q4 above was green. Q4's `empty` stub was an INVENTED fixture: it assumed
+# an out-of-credits codex writes zero bytes. It does not. The production
+# artifacts for PRs #66 and #67 are 7,724 bytes each -- the banner, the echoed
+# prompt, the hook chatter, then the error -- so the emptiness predicate could
+# never fire on the very payload the issue was opened about, and the Opus
+# fallback STILL never ran. Q4 passed and the defect shipped.
+#
+# The lesson underneath is the one this repo keeps relearning: a fixture you
+# invent tests your assumption about the producer, not the producer. This case
+# uses the shape captured from a live `codex exec`.
+#
+# The discriminator that survives contact with the real artifact is not size, it
+# is whether the engine ever took an assistant turn:
+#   outage  -> preamble, then ERROR, and NO `codex` turn marker  -> fall back
+#   garbage -> preamble, `codex` turn marker, then unparseable   -> UNSTATED
+Q4D="$W2/eng-out-of-credits"
+mk_engine_stubs "$Q4D" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+run_engine_reviewer "$Q4D" --post --engine codex
+CALL="$(status_call "$Q4D")"
+
+[ -s "$Q4D/claude-calls.log" ] \
+  || fail "THE DEFECT CODEX FOUND ON PR #86: the REAL out-of-credits payload (non-empty: banner +
+      echoed prompt + hooks + the error, ~7.7KB on disk for PRs #66 and #67) did NOT trigger the
+      Opus fallback. The ASK-287 fix keyed on EMPTINESS, and this artifact is not empty, so the
+      outage still reads as a garbage answer and every PR in the loop keeps wedging on
+      $CODEX_CONTEXT=failure. claude saw: $(cat "$Q4D/claude-calls.log" 2>/dev/null)"
+ok "the REAL out-of-credits payload (non-empty, exit 0) is treated as an outage"
+
+printf '%s' "$CALL" | grep -q 'state=success' \
+  || fail "the fallback ran but $CODEX_CONTEXT did not go green, so the wedge survives. Call: $CALL"
+printf '%s' "$CALL" | grep -qi 'degraded' \
+  || fail "the out-of-credits fallback filled the slot with NO degraded marker. Call: $CALL"
+ok "the out-of-credits fallback fills $CODEX_CONTEXT=success and says DEGRADED out loud"
+
+grep -qi 'credit\|never actually reviewed\|no assistant turn\|produced no' "$Q4D/pages.txt" 2>/dev/null \
+  || fail "the page does not say WHY codex is down, so the operator reading it at 3am cannot tell
+      a billing outage from a crash. Page was: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+ok "the out-of-credits page names the outage, not just 'codex failed'"
+
 # --- Q4C. NEGATIVE SELF-TEST: break the fallback trigger, the outage goes red --
 # Q4 asserts a fallback fires. On its own that assertion could pass for reasons
 # unrelated to the fix, so the trigger is MUTATED and the same case is re-run:
 # with the emptiness discriminator neutered, the empty-codex run must fall back
 # to the pre-fix behaviour (no Opus call). If this case still shows a fallback,
 # Q4 is decoration and proves nothing about which branch it took.
-Q4C="$W2/eng-empty-mutant"
-mk_engine_stubs "$Q4C" "$SHA_A" empty ""
+# It is run against the REAL out-of-credits payload, not the empty one: an empty
+# stub would still die on the `[ -s ]` arm and the mutation would look lethal
+# without the arm that actually carries Q4D ever being exercised.
+Q4C="$W2/eng-outage-mutant"
+mk_engine_stubs "$Q4C" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
 MUTANT="$W2/pr-review-agent.mutant.sh"
-# The mutation is on the ONE predicate the fix introduces: make it answer "there
-# is content here" for every input, which is exactly the pre-ASK-287 reading.
-sed 's/^engine_produced_nothing() {.*$/engine_produced_nothing() { return 1; # MUTANT/' \
+# The mutation is on the ONE predicate the fix owns: make it answer "the engine
+# did answer" for every input, which is exactly the pre-fix reading.
+sed 's/^engine_never_answered() {.*$/engine_never_answered() { return 1; # MUTANT/' \
   "$REVIEWER" > "$MUTANT"
 grep -q 'MUTANT' "$MUTANT" \
-  || fail "the mutation did not apply: pr-review-agent.sh has no engine_produced_nothing()
-      predicate to neuter, so the emptiness discriminator this issue adds is not there at all."
+  || fail "the mutation did not apply: pr-review-agent.sh has no engine_never_answered()
+      predicate to neuter, so the outage discriminator this issue adds is not there at all."
 ( PATH="$Q4C/bin:$PATH" HOME="$Q4C/home" KIPI_NOTIFY="$Q4C/bin/notify" \
   bash "$MUTANT" 901 --post --engine codex ) >"$Q4C/out.txt" 2>"$Q4C/err.txt"
 [ ! -s "$Q4C/claude-calls.log" ] \
-  || fail "MUTATION SURVIVED: with engine_produced_nothing() forced to 'there is content', the
-      empty-codex run STILL fell back to Opus. Q4 is therefore not testing that predicate, and
+  || fail "MUTATION SURVIVED: with engine_never_answered() forced to 'it answered', the real
+      out-of-credits run STILL fell back to Opus. Q4D is therefore not testing that predicate, and
       something else is routing the fallback. claude saw: $(cat "$Q4C/claude-calls.log")"
-ok "mutation kills it: neuter the emptiness predicate and the outage case stops falling back"
+ok "mutation kills it: neuter the outage predicate and the real out-of-credits case stops falling back"
 
 # --- Q5. harness noise is not a finding and does not move the verdict ---------
 # Q1's fixture is the noisy one on purpose; this reads back what the parser

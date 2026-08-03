@@ -551,14 +551,49 @@ review_has_complete_findings_block() {
 # and filling the gate with an Opus approval over it invents a verdict for a
 # review that said nothing. A fabricated green is worse than a blocked merge.
 #
-# HONEST BOUNDARY: this reads EMPTINESS, which is the shape actually measured. An
-# outage that prints an error banner and exits 0 carries content, so it would
-# still take the garbage path and post UNSTATED. That direction is fail-closed --
-# the PR is held, no approval is fabricated -- so it is a wedge, not a green.
-# Captured as spillover rather than guessed at, because widening this predicate
-# on speculation is how the garbage rule gets swallowed.
-engine_produced_nothing() {   # engine_produced_nothing <review-file>
-  [ -z "$(tr -d '[:space:]' < "${1:-/dev/null}" 2>/dev/null)" ]
+# EMPTINESS WAS THE WRONG SHAPE, and a fixture nobody grounded is why (found by
+# codex reviewing PR #86, 2026-08-03). The first cut of this predicate read "zero
+# bytes", on the belief that an out-of-credits run leaves an empty file. It does
+# not. `codex exec ... > "$2" 2>&1` captures the WHOLE transcript, so every run --
+# success, garbage, or dead-at-the-API -- writes the version banner, the workdir
+# block, the echoed prompt and the hook chatter before anything else. The real
+# PR #66 / #67 outage artifacts are 7,724 bytes each. A zero-byte codex review is
+# not a thing that happens, so the predicate could never fire on the very payload
+# this issue was opened about, and the fallback still never ran.
+#
+# WHAT THE ARTIFACT ACTUALLY DISTINGUISHES. Captured live 2026-08-03 from the
+# same invocation run_engine makes, one failing run and one succeeding run:
+#
+#   ...hook: UserPromptSubmit Completed        ...hook: UserPromptSubmit Completed
+#   ERROR: <the 400 from the API>              codex            <- assistant turn
+#   ERROR: <repeated>                          ALIVE
+#                                              hook: Stop / tokens used
+#
+# `codex` alone on a line is the turn marker printed before the model's first
+# token. Its ABSENCE means no token was ever emitted: the engine never reviewed,
+# whatever the exit code said. That is the outage, and it is a structural
+# property of the producer rather than a list of error strings to keep chasing.
+#
+# The garbage rule is UNCHANGED and still must not move: a review that took its
+# turn and then said something unparseable has the marker, so it keeps the
+# no-fallback path. An outage leaves no review to trust; garbage IS a review
+# whose content cannot be trusted, and an Opus approval laid over it invents a
+# verdict for a review that said nothing.
+#
+# The terminal-ERROR arm is a second, independent proof for the same conclusion,
+# kept because the out-of-credits banner was measured (2026-08-02) while its
+# turn-marker absence is inferred from the sibling 400 above. It is anchored at
+# line start and only consulted at the END of the transcript, after the trailing
+# `hook:` / `tokens used` noise, so a review that merely QUOTES an error line
+# cannot trip it. Both arms sit behind "no complete FINDINGS block" in the caller,
+# so a parseable review is never routed to the fallback by either one.
+engine_never_answered() {   # engine_never_answered <review-file>
+  local f="${1:-/dev/null}"
+  [ -s "$f" ] || return 0
+  [ -z "$(tr -d '[:space:]' < "$f" 2>/dev/null)" ] && return 0
+  grep -q '^codex[[:space:]]*$' "$f" 2>/dev/null || return 0
+  grep -v -e '^hook: ' -e '^tokens used' -e '^[0-9,]*$' -e '^[[:space:]]*$' "$f" 2>/dev/null \
+    | tail -1 | grep -q '^ERROR: '
 }
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
@@ -596,11 +631,15 @@ else
   # The artifact decides now; the rc is only one of the two things that can prove
   # an outage, and it is the weaker one.
   run_engine codex "$REVIEW"; CODEX_RC=$?
-  if [ "$CODEX_RC" = "0" ] && ! engine_produced_nothing "$REVIEW"; then
-  if review_has_complete_findings_block "$REVIEW"; then
-    note_degraded_transition 0
-    echo "$(TS) review written: $REVIEW"
-  else
+  # A COMPLETE FINDINGS BLOCK IS TESTED FIRST, and that ordering is deliberate.
+  # It means no widening of the outage predicate can ever route a parseable
+  # review into the fallback: the only inputs the classifier below sees are ones
+  # that carry no usable verdict either way.
+  if [ "$CODEX_RC" = "0" ] && review_has_complete_findings_block "$REVIEW"; then
+  # A usable review. Nothing to classify.
+  note_degraded_transition 0
+  echo "$(TS) review written: $REVIEW"
+elif [ "$CODEX_RC" = "0" ] && ! engine_never_answered "$REVIEW"; then
     # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
     # path: an outage leaves no review to trust, but this is an attempted review
     # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
@@ -608,9 +647,8 @@ else
     # through UNSTATED, and unstated posts state=failure a few lines below.
     REVIEW_UNUSABLE=1
     note_degraded_transition 1 \
-      "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
-    echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
-  fi
+      "it took its turn and then emitted no complete FINDINGS block (truncated or unreadable), so the status is UNSTATED rather than a fabricated APPROVE"
+    echo "$(TS) codex answered with no complete FINDINGS block (truncated or unreadable); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
 else
   # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
   # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
@@ -622,7 +660,7 @@ else
   # are different outages to whoever reads this log at 3am -- the second one is
   # billing or auth, and telling them apart is the whole point of ASK-287.
   if [ "$CODEX_RC" = "0" ]; then
-    CODEX_DOWN_WHY="it exited 0 but produced no output at all, so it never actually reviewed (an out-of-credits or unauthenticated codex exits 0 -- ASK-287)"
+    CODEX_DOWN_WHY="it exited 0 but never took an assistant turn -- no output, or a transcript that ends on an ERROR banner -- so it never actually reviewed. That is out of credits, unauthenticated, or a rejected model; all three exit 0 (ASK-287)"
   else
     CODEX_DOWN_WHY="it exited $CODEX_RC"
   fi
@@ -647,7 +685,7 @@ else
     echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
     exit "$rc"
   fi
-  fi
+fi
 fi
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
