@@ -85,15 +85,105 @@ extract_verdict() {
 # awk, not sed, because the rule is stateful in two ways a range expression cannot
 # express: opening a new block discards an unclosed one, and the end-of-input state
 # decides whether any of it counts.
+# A BLOCK OF NOTHING BUT PLACEHOLDERS IS THE PROMPT, NOT THE REVIEW (sp-df1a458f).
+# The reviewer prompt ends with a literal template -- `severity|one-sentence
+# claim|file:line` between the two markers -- and `codex exec` echoes the whole
+# prompt to stdout. When the model answers with a PLAN instead of a review, that
+# echo is the ONLY complete block in the stream. Measured 2026-08-03 on Alice PR
+# #1 round 2: the block was accepted, `severity|` matched no severity, no
+# severities derived APPROVE, and kipi/reviewer-approved -- a REQUIRED context on
+# main -- went green on code nobody had read, 12 seconds after dispatch.
+#
+# The rule is NOT "reject a block with no severity rows": an EMPTY block is
+# legitimate and load-bearing (a round 2 that refutes everything closes with one;
+# test-severity-floor.sh and test-findings-block-reader.sh case 2 both pin it).
+# The discriminator is rows-that-are-not-findings:
+#
+#   zero rows                      -> legitimate empty block, kept
+#   >=1 row, >=1 a real severity   -> a real block, kept
+#   >=1 row, NONE a real severity  -> the template echo (or prose leaked into the
+#                                     block); not a findings block, skipped
+#
+# Skipped, not fatal: an earlier COMPLETE real block still stands, because the
+# echo arrives BEFORE the model's own answer. Truncation is unchanged -- a block
+# still open at EOF voids everything, which is the stricter case and stays.
+#
+# THE SEVERITY TOKENS HERE ARE THE SAME FOUR verdict_from_findings GRADES, and
+# they have to be: a row this function calls real but the derivation cannot grade
+# contributes nothing, so the block would count as usable and derive APPROVE --
+# the defect again, one layer down. Change the two together or not at all.
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
   awk '
-    /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }
-    open && /^END FINDINGS/ { last = buf $0 "\n"; open = 0; next }
-    open                    { buf = buf $0 "\n" }
+    /^FINDINGS:/            { buf = $0 "\n"; open = 1; rows = 0; sev = 0; next }
+    open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 "\n"
+                              open = 0; next }
+    open                    { buf = buf $0 "\n"
+                              if ($0 ~ /^[ \t]*$/) next
+                              rows++
+                              if ($0 ~ /^(blocker|major|minor|nit)[|]/) sev++
+                              next }
     END                     { if (open) exit 0; printf "%s", last }
   ' "$f" 2>/dev/null
+}
+
+# _text_after_last_findings_block <review-file>
+# Everything the stream said AFTER its last `END FINDINGS`, or the whole file when
+# there is no block at all. The prompt orders the block LAST ("Last, a
+# machine-readable findings block"), so this is the region a finished review has
+# nothing substantive in -- which is what makes it the right place to look for an
+# answer that never started. Internal to review_declined_to_start.
+_text_after_last_findings_block() {
+  awk '/^END FINDINGS/ { tail = ""; next } { tail = tail $0 "\n" }
+       END { printf "%s", tail }' "${1:-}" 2>/dev/null
+}
+
+# review_declined_to_start <review-file>
+# True when the reviewer answered with a PLAN and waited for confirmation instead
+# of reviewing. Exit 0 = it declined (the review is not a review).
+#
+# WHY THIS IS SEPARATE FROM THE BLOCK CHECK (sp-df1a458f, half b). Rejecting the
+# placeholder block is not enough on its own. From round 2 the stream carries the
+# PREVIOUS round's findings for the model to re-prove, so a decline can arrive
+# wrapped around a structurally perfect block full of REAL severity rows. Grading
+# those derives a verdict from findings the reviewer never examined: it wedges the
+# PR on a blocker the author may already have fixed, which is the false-BLOCK half
+# of this defect and costs as much as a false green.
+#
+# ANCHORED AFTER THE LAST BLOCK, NOT ANYWHERE IN THE FILE. A genuine review of
+# THIS script quotes plan-and-await prose in its findings -- that is a real review
+# and must land. Because the prompt puts the block last, decline language after it
+# is the model's own closing answer rather than something it was reading about.
+# Over-refusal here wedges PRs exactly as hard as under-refusal releases them,
+# so the window matters as much as the phrases.
+#
+# The phrases are the two shapes actually recorded ("Reply `OK` and I'll execute
+# exactly that plan." / "Waiting for `OK` to execute the review plan.") plus the
+# nearest generalisations. A herestring, not a pipe: `printf ... | grep -q` returns
+# 141 under `set -o pipefail` when grep exits on the first match before the write
+# finishes, which reads as NO MATCH on exactly the long inputs this sees.
+review_declined_to_start() {
+  local f="${1:-}" tail
+  [ -s "$f" ] || return 1
+  tail="$(_text_after_last_findings_block "$f")"
+  [ -n "$tail" ] || return 1
+  grep -qiE "waiting[[:space:]]+for[[:space:]]+[\`'\"]?(an[[:space:]]+)?(ok|go[- ]ahead|confirmation|approval)|reply[[:space:]]+[\`'\"]?ok[\`'\"]?[[:space:]]+(and|so|then)|say[[:space:]]+[\`'\"]?(ok|go)[\`'\"]?[[:space:]]+and[[:space:]]+i|awaiting[[:space:]]+(your[[:space:]]+)?(confirmation|approval|go[- ]ahead)" <<<"$tail"
+}
+
+# review_is_usable <review-file>
+# THE ONE QUESTION pr-review-agent.sh asks before it lets a stream fill the gate:
+# did a review actually happen here? Both dispatch sites (codex, and the Opus
+# fallback -- where this class last hid, ASK-221) gate on this single predicate,
+# so the two paths cannot drift into different answers about the same file.
+#
+# Usable means BOTH: a complete findings block that is not the prompt's own
+# template, AND an answer that did not stop to ask permission. Either one alone
+# lets a review that never ran set a REQUIRED status.
+review_is_usable() {
+  local f="${1:-}"
+  has_complete_findings_block "$f" || return 1
+  ! review_declined_to_start "$f"
 }
 
 # has_complete_findings_block <review-file>

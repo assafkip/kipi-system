@@ -513,19 +513,26 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
   esac
 }
 
-# A codex answer is usable only if it carries a COMPLETE machine-readable block.
-# A truncated review that green-lights a PR nobody read is the worst outcome
-# available in this script.
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block
+# AND is actually a review. A truncated -- or unstarted -- stream that green-lights
+# a PR nobody read is the worst outcome available in this script.
 #
-# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# THE PREDICATE LIVES IN THE LIB, next to the reader that defines it
 # (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
 # "complete": both markers, anywhere, in any order. That passes a review whose
 # only complete block is a quoted prior round while the real trailing block is
 # truncated -- unusable stays off, the gate goes green, and the verdict comes from
 # findings the review itself withdrew. One definition, one reader.
-review_has_complete_findings_block() {
-  has_complete_findings_block "$1"
-}
+#
+# IT NOW ASKS review_is_usable, WHICH IS A WIDER QUESTION (sp-df1a458f). Block
+# completeness alone said YES to a stream where the model answered "Reply `OK`
+# and I'll execute exactly that plan" and the only complete block was the
+# PROMPT'S OWN echoed template. Both dispatch sites below call this, and the
+# second one -- the Opus fallback -- is where this exact class hid last time.
+# No local wrapper: both sites call review_is_usable directly. The wrapper existed
+# only to forward to the lib, and a forwarder is one more place the two dispatch
+# paths can be made to disagree about the same file.
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
 # cry-wolf failure: it trains the operator to skim, which costs the real alert
@@ -557,7 +564,7 @@ if [ "$ENGINE" != "codex" ]; then
     exit "$rc"
   fi
 elif run_engine codex "$REVIEW"; then
-  if review_has_complete_findings_block "$REVIEW"; then
+  if review_is_usable "$REVIEW"; then
     note_degraded_transition 0
     echo "$(TS) review written: $REVIEW"
   else
@@ -589,7 +596,7 @@ else
     # block, which derives APPROVE and would post state=success on the REQUIRED
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
-    if review_has_complete_findings_block "$REVIEW"; then
+    if review_is_usable "$REVIEW"; then
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
       REVIEW_UNUSABLE=1
