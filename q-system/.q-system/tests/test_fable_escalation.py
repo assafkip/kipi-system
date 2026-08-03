@@ -202,6 +202,57 @@ def test_edit_spiral_block_carries_fable_triage(actor, env):
     assert rows[0]["duration_s"] >= 0
 
 
+def configured_hook_timeout():
+    """The REAL budget this hook runs under, read from the wiring.
+
+    Deliberately NOT a literal 5. The number that matters is whatever
+    .claude/settings.json actually gives token-guard on PreToolUse, so the
+    assertion tracks the config; if someone retunes the hook, this test retunes
+    with it instead of silently testing a number nobody uses any more.
+    """
+    path = os.path.join(HERE, "..", "..", "..", ".claude", "settings.json")
+    settings = json.load(open(path))
+    for group in settings["hooks"]["PreToolUse"]:
+        for hook in group.get("hooks", []):
+            if "token-guard.py" in hook.get("command", ""):
+                return hook["timeout"]
+    raise AssertionError("token-guard is not wired into PreToolUse at all")
+
+
+def test_stuck_block_refuses_within_the_hook_timeout(actor, env, tmp_path):
+    """THE FINDING-1 REPRODUCER (PR #75 round 1, Codex major).
+
+    A refusal that arrives after this hook's configured timeout is not a late
+    refusal -- it is NO refusal. Measured live 2026-08-03 against `claude -p`
+    with a PreToolUse hook at `timeout: 5`:
+
+        hook sleeps 0s, exits 2  -> tool BLOCKED (marker file absent)
+        hook sleeps 8s, exits 2  -> tool RAN     (marker file created)
+
+    So a guard that waits on a model call spends its own refusal. The stuck
+    session then gets NEITHER the block NOR the triage, which is strictly worse
+    than before the escalation existed. This pytest case is the executable that
+    holds it: the guard must return its exit 2 inside the configured budget.
+    """
+    slow = _stub(tmp_path, "fable-slow",
+                 "#!/bin/sh\nsleep 8\necho 'too late to matter'\n")
+    overrides = guard_env(env)
+    overrides["KIPI_FABLE_CLAUDE_CMD"] = slow
+
+    budget = configured_hook_timeout()
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
+
+    started = time.time()
+    r = run_guard(edit_payload(actor), overrides)
+    elapsed = time.time() - started
+
+    assert r.returncode == 2, f"expected a block, got {r.returncode}: {r.stderr}"
+    assert "edit attempts on" in r.stderr, "the original block reason must survive"
+    assert elapsed < budget, (
+        "the guard took %.1fs but the hook runner kills it at %ss and DISCARDS "
+        "its exit 2 -- the refusal never reaches the model." % (elapsed, budget))
+
+
 def test_exact_retry_block_escalates(actor, env):
     """A2 is not the only stuck trigger: A1 (exact retry) escalates too."""
     payload = edit_payload(actor)

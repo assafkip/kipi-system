@@ -289,7 +289,34 @@ def notify_cap(trigger, count):
 # entry
 # --------------------------------------------------------------------------
 
-def escalate(trigger, reason, transcript_path, count, capped_notified):
+def write_pending(path, trigger, triage):
+    """Hand the triage back to the guard, atomically.
+
+    tmp + rename in the SAME directory, so a hook reading concurrently sees
+    either no file or the whole file. A plain open("w") would expose a window
+    where the reader gets half a JSON object and silently discards the triage
+    (json.load raises, the guard's except returns None) -- a loss that looks
+    exactly like "the model had nothing to say".
+    """
+    if not path:
+        return
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"trigger": trigger, "triage": triage, "ts": _now()}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def escalate(trigger, reason, transcript_path, count, capped_notified,
+             pending_file=""):
     result = {"triage": None, "escalated": False, "capped": False,
               "notified": False, "failure": None}
 
@@ -328,6 +355,8 @@ def escalate(trigger, reason, transcript_path, count, capped_notified):
     result["triage"] = triage
     result["escalated"] = triage is not None
     result["failure"] = failure
+    if triage:
+        write_pending(pending_file, trigger, triage)
     return result
 
 
@@ -388,6 +417,8 @@ def main():
     parser.add_argument("--count", type=int, default=0,
                         help="escalations already spent by this actor")
     parser.add_argument("--capped-notified", action="store_true")
+    parser.add_argument("--pending-file", default="",
+                        help="where to drop the triage for the guard to collect")
     parser.add_argument("--json", action="store_true",
                         help="machine output (the token-guard contract)")
     args = parser.parse_args()
@@ -397,7 +428,7 @@ def main():
                "notified": False, "failure": "disabled"}
     else:
         out = escalate(args.trigger, args.reason, args.transcript,
-                       args.count, args.capped_notified)
+                       args.count, args.capped_notified, args.pending_file)
 
     if args.json:
         print(json.dumps(out))
