@@ -357,17 +357,20 @@ AFTER=$(cat "$R9/q-system/.q-system/instruction-budget-baseline.json")
 if [ "$BEFORE" = "$AFTER" ]; then ok "--no-write did not touch the baseline"; else bad "--no-write rewrote the baseline"; fi
 
 echo "== 12. mutation: blind the scoping/deletion classifier -> section 3 goes RED"
-# A guard never seen to fail is not a guard. With scoping_freed returning nothing,
-# every drop reads as a deletion, the cap auto-tightens exactly as it did before
-# ASK-285, and the appended line is refused again.
+# A guard never seen to fail is not a guard. Blind the one arm that classifies a
+# scoped rule's surviving lines as NOT deleted and every drop reads as a deletion:
+# the cap auto-tightens exactly as it did before ASK-285 and the appended line is
+# refused again. The mutation targets deleted_lines because that is what decides
+# the cap now -- scoping_freed only writes the note (PR #88 round 2, minor).
 MUT=$(mktemp -d)/mutant-audit.py
 mkdir -p "$(dirname "$MUT")"
 python3 - "$AUDIT" "$MUT" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
-needle = "    freed = 0\n    moved = []\n"
-assert needle in src, "scoping_freed body moved; update the mutation"
-open(sys.argv[2], "w").write(src.replace(needle, needle + "    return 0, []\n", 1))
+needle = "        elif name in conditional:\n            after = min(before, conditional[name])\n"
+assert needle in src, "deleted_lines classifier moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(
+    needle, "        elif name in conditional:\n            after = 0\n", 1))
 PY
 RM=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUT"; mk_fixture "$RM"
 audit_rc "$RM"
@@ -460,6 +463,7 @@ git -C "$R12" init -q
 git -C "$R12" add -A
 BASE_REL="q-system/.q-system/instruction-budget-baseline.json"
 scope_rule "$R12" beta.md "q-system/output/**"
+git -C "$R12" add -A                 # section 20: a run only records a tree the commit carries
 audit_rc "$R12"                      # rewrites the baseline: total 33 -> 13
 check "staging run exits 0" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
 STAGED=$(git -C "$R12" show ":$BASE_REL")
@@ -489,6 +493,7 @@ audit_rc "$R14"
 git -C "$R14" init -q
 git -C "$R14" add -A
 scope_rule "$R14" beta.md "q-system/output/**"
+git -C "$R14" add -A
 audit_rc "$R14" --no-stage
 STAGED=$(git -C "$R14" show ":$BASE_REL")
 ONDISK=$(cat "$R14/$BASE_REL")
@@ -518,6 +523,73 @@ mkdir -p "$RM2/.claude/rules/team"
 audit_rc "$RM2"
 check "mutant reports the nested rule as free" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
 AUDIT="$AUDIT_SAVE"
+
+echo "== 19. mixed scoping + deletion + addition: the deletion still tightens the cap"
+# PR #88 round 2, minor. The cap moved on the NET drop, so a step that scopes 20
+# lines, deletes 3 and adds 3 elsewhere netted to "scoping only" and the 3 deleted
+# lines silently became permanent extra headroom. Deletion is now counted per file
+# against the snapshot, so an addition somewhere else cannot pay for it.
+R15=$(mktemp -d); mk_fixture "$R15"
+audit_rc "$R15"                       # cap 33, total 33, snapshot alpha 10 / beta 20
+scope_rule "$R15" beta.md "q-system/output/**"   # frees 20
+python3 - "$R15/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+printf '\nA third behavioural line.\n\nA fourth behavioural line.\n\nA fifth behavioural line.\n' >> "$R15/CLAUDE.md"
+# CLAUDE.md 3 -> 6, alpha 10 -> 7, beta scoped: total = 6 + 7 = 13.
+audit_rc "$R15"
+check "mixed step exits 0" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap tightened by the deleted lines only" 30 "$(cap_of "$R15")"
+check_num "total after the mixed step" 13 "$(total_of "$R15")"
+check "headroom is the scoping credit minus the addition" 0 "headroom 17" "$AUDIT_RC" "$AUDIT_OUT"
+check "the scoping credit is still reported in full" 0 "scoped: beta.md (20)" "$AUDIT_RC" "$AUDIT_OUT"
+
+echo "== 20. an unstaged rule deletion records nothing, so a fresh checkout stays green"
+# PR #88 round 2, major. The ratchet reads the WORKING TREE and stages what it
+# wrote. Under a partial `git add`, a tree-only deletion tightened the cap and that
+# cap was committed while the rules it was computed from were not -- so a fresh
+# clone audited RED and needed a hand repair. Recording now waits for a tree that
+# matches the index.
+R16=$(mktemp -d); mk_fixture "$R16"
+audit_rc "$R16"                       # bootstrap: cap 33, total 33
+git -C "$R16" init -q
+git -C "$R16" add -A
+python3 - "$R16/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+audit_rc "$R16"                       # the deletion is in the tree, NOT in the index
+check "dirty run still exits 0" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+check "it says why it recorded nothing" 0 "not recording" "$AUDIT_RC" "$AUDIT_OUT"
+check "it names the diverging path" 0 "alpha.md" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap not tightened from an unstaged deletion" 33 "$(cap_of "$R16")"
+git -C "$R16" -c user.email=t@t -c user.name=t commit -qm "commit the index, not the tree"
+R17=$(mktemp -d); rmdir "$R17"
+git clone -q "$R16" "$R17"
+cp "$AUDIT" "$R17/q-system/.q-system/scripts/instruction-budget-audit.py"
+audit_rc "$R17" --no-write --no-stage
+check "a fresh checkout of that commit audits green" 0 "RATCHET PASS: total 33, cap 33" "$AUDIT_RC" "$AUDIT_OUT"
+# Staging the same deletion is what makes the accounting land.
+git -C "$R16" add -A
+audit_rc "$R16"
+check "staged, the deletion tightens the cap" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap follows a staged deletion down" 30 "$(cap_of "$R16")"
+
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

@@ -59,11 +59,23 @@ protection is that the file is tracked and any change to it lands in the commit
 diff. That was equally true before this change; it is not a regression, and it is
 not a claim this script makes good on.
 
-SECOND HONEST BOUNDARY: every count here reads the WORKING TREE, not the index, so
-under a partial `git add` the staged baseline can describe rule text that is not in
-the commit. That was true before the baseline was staged at all; staging makes the
-recorded number match the tree the next run will read, which is the property that
-was missing, and does not make it match the commit.
+SECOND HONEST BOUNDARY: every count here reads the WORKING TREE, not the index.
+That is required -- apply_claude_changes.py runs this as a gate right after writing
+its edits into the tree and BEFORE anything is staged, so an index-reading gate
+would be blind to exactly the change it is gating. The consequence is that under a
+partial `git add` the tree this run measured is not the tree the commit carries, so
+the run RECORDS NOTHING when any audited path differs from the index (see
+index_divergence). Judging is unchanged -- the cap check still runs against the tree
+and still fails closed on growth; only the accounting transition waits for a commit
+that carries the rules it was computed from (PR #88 round 2, major).
+
+THIRD HONEST BOUNDARY: deletion is accounted PER FILE, at the granularity the
+baseline snapshot stores. Three lines deleted from one rule and three added to
+another tighten the cap by three. Three deleted and three added inside the SAME
+rule net to zero and tighten nothing -- separating them needs a line-level diff of
+rule bodies, which this baseline does not carry. The direction of that residual is
+a cap that stays up to N lines looser than ideal; it never raises the ceiling and
+never banks headroom (sp-cdd3f338).
 """
 import json
 import os
@@ -155,18 +167,23 @@ def is_effectively_always_on(path):
     return False
 
 
-def resolve_imports(path):
-    """Count lines including @import targets."""
-    total = count_lines(path)
+def claude_md_sources(path):
+    """CLAUDE.md plus every @import target it pulls in. One list, so the counter
+    and the index-divergence check cannot disagree about which files are audited."""
+    files = [path]
     if not os.path.exists(path):
-        return total
+        return files
     with open(path) as f:
         for line in f:
             match = re.match(r"^@(.+)$", line.strip())
             if match:
-                import_path = os.path.join(os.path.dirname(path), match.group(1))
-                total += count_lines(import_path)
-    return total
+                files.append(os.path.join(os.path.dirname(path), match.group(1)))
+    return files
+
+
+def resolve_imports(path):
+    """Count lines including @import targets."""
+    return sum(count_lines(p) for p in claude_md_sources(path))
 
 
 def baseline_path(project_root):
@@ -253,6 +270,91 @@ def stage_baseline(project_root):
     return os.path.relpath(path, project_root)
 
 
+def index_divergence(project_root, audited):
+    """Audited paths whose WORKING TREE content differs from the index.
+
+    Returns [] when the tree and the index agree, and None when there is no index
+    to compare against (a --root'ed fixture, a non-git tree) -- callers treat None
+    as "not applicable", never as "clean", so a missing git is not silently a pass
+    for a check that never ran.
+
+    WHY THIS EXISTS (PR #88 round 2, major). The ratchet reads the tree and stages
+    the baseline it wrote. Under a partial `git add`, a deletion that lives only in
+    the tree tightened the cap, and that tightened cap got committed while the
+    rules it was computed from did not -- so the very next fresh clone audited RED
+    against a cap no committed rule text could satisfy, and only a hand edit of the
+    baseline got it back. Recording a transition therefore waits for a tree that
+    matches the index. Judging does not wait: the cap check upstream still runs
+    against the tree, so growth still fails closed.
+    """
+    rel = []
+    for path in audited:
+        r = os.path.relpath(path, project_root)
+        if r.startswith(".."):
+            continue  # outside the audited root; not in this index either
+        rel.append(r)
+    if not rel:
+        return None
+    try:
+        proc = subprocess.run(["git", "-C", project_root, "status", "--porcelain",
+                               "-z", "--"] + rel,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+
+    diverged = []
+    records = [r for r in proc.stdout.decode("utf-8", "replace").split("\0") if r]
+    skip_next = False
+    for record in records:
+        if skip_next:
+            skip_next = False
+            continue
+        if len(record) < 4:
+            continue
+        index_state, tree_state, name = record[0], record[1], record[3:]
+        if index_state in ("R", "C"):
+            skip_next = True  # the rename/copy source follows as its own record
+        # Second column is the worktree-vs-index state. ' ' means they agree; a
+        # staged-only change (e.g. "M ") is exactly what we want to let through.
+        if tree_state != " ":
+            diverged.append(name)
+    return sorted(set(diverged))
+
+
+def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_lines):
+    """Always-on lines the snapshot had that no longer exist anywhere, per file.
+
+    Netting the whole repo's drop against the scoping credit was wrong: a step that
+    scoped 20 lines, deleted 3 from one rule and added 3 to another netted out to
+    "scoping only", so the 3 deleted lines never tightened the cap and turned into
+    permanent extra headroom (PR #88 round 2, minor). An addition in one file must
+    not pay for a deletion in another, so each file is diffed against its own
+    snapshot entry:
+
+      still always-on : deleted = max(0, before - after)
+      now conditional : the credited survivors are min(before, after), so the
+                        uncredited remainder is a deletion -- same split section 9
+                        already pinned for scoped-and-gutted
+      gone entirely   : the whole entry is a deletion
+
+    CLAUDE.md has no snapshot entry of its own; its previous line count is the
+    recorded total minus the recorded rules, which is exact.
+    """
+    deleted = max(0, prev_claude_md - claude_md_lines)
+    for name, before in snapshot.items():
+        if name in always_on:
+            after = always_on[name]
+        elif name in conditional:
+            after = min(before, conditional[name])
+        else:
+            after = 0
+        if after < before:
+            deleted += before - after
+    return deleted
+
+
 def scoping_freed(snapshot, always_on, conditional):
     """Lines the last audit counted as always-on that are now paths-scoped.
 
@@ -318,7 +420,7 @@ def report_baseline_written(project_root, stage):
 
 
 def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
-                write=True, stage=True):
+                audited=(), write=True, stage=True):
     """Regression gate: block growth past the cap; tighten the cap on deletion."""
     if claude_md_lines > BUDGET_CLAUDE_MD:
         print(
@@ -345,16 +447,34 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         print(ratchet_fail_text(cap, total, always_on))
         return 1
 
-    if snapshot is None:
-        # No snapshot to diff against, so no drop can be attributed to scoping.
-        # Fall back to the old auto-tighten, which is the conservative answer.
-        freed, moved = 0, []
-    else:
-        freed, moved = scoping_freed(snapshot, always_on, conditional)
+    diverged = index_divergence(project_root, audited)
+    if diverged:
+        print(f"RATCHET PASS: total {total}, cap {cap}, headroom {cap - total}. "
+              f"Target {BUDGET_TOTAL_ALWAYS_ON}.")
+        print("RATCHET: not recording. {n} audited path(s) differ from the index "
+              "({names}), so this run measured a tree the commit does not carry and "
+              "a cap recorded from it could be one the committed rules already "
+              "violate. Stage them, or let the commit that carries them record "
+              "it.".format(n=len(diverged), names=", ".join(diverged)))
+        return 0
 
-    delta = prev_total - total
-    deletion_delta = max(0, delta - freed)
-    new_cap = cap - deletion_delta
+    if snapshot is None:
+        # No snapshot to diff against, so no drop can be attributed to scoping and
+        # none can be attributed per file either. Fall back to the old netted
+        # auto-tighten, which is the conservative answer.
+        moved = []
+        deletion_delta = max(0, prev_total - total)
+    else:
+        _, moved = scoping_freed(snapshot, always_on, conditional)
+        prev_claude_md = prev_total - sum(snapshot.values())
+        deletion_delta = deleted_lines(snapshot, always_on, conditional,
+                                       prev_claude_md, claude_md_lines)
+
+    # Never below the current total: moving lines between two always-on rules is a
+    # per-file deletion plus a per-file addition, and letting the deletion half
+    # alone push the cap under the tree that just passed would fail the NEXT commit
+    # with no reachable move. Still monotone non-increasing -- both arms are <= cap.
+    new_cap = max(total, cap - deletion_delta)
 
     changed = (new_cap != cap or total != prev_total or snapshot is None)
     if changed and write:
@@ -364,7 +484,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
     if moved:
         scoped_note = " scoped: %s;" % ", ".join("%s (%d)" % (n, c) for n, c in moved)
     if new_cap < cap:
-        print(f"RATCHET: tightened cap {cap} -> {new_cap} on {deletion_delta} deleted "
+        print(f"RATCHET: tightened cap {cap} -> {new_cap} on {cap - new_cap} deleted "
               f"line(s).{scoped_note} total {total}, headroom {new_cap - total} "
               f"(target {BUDGET_TOTAL_ALWAYS_ON}).")
     else:
@@ -403,13 +523,15 @@ def main():
     claude_md = os.path.join(project_root, "CLAUDE.md")
     rules_dir = os.path.join(project_root, ".claude", "rules")
 
+    audited = claude_md_sources(claude_md) + [rules_dir]
     claude_md_lines = resolve_imports(claude_md)
     always_on, conditional = scan_rules(rules_dir)
     total = claude_md_lines + sum(always_on.values())
 
     if "--ratchet" in argv:
         sys.exit(run_ratchet(project_root, claude_md_lines, total,
-                             always_on, conditional, write=write, stage=stage))
+                             always_on, conditional, audited=audited,
+                             write=write, stage=stage))
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")
     print(f"Always-on rules ({len(always_on)} files):")
