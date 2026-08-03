@@ -14,7 +14,11 @@ doing / next path / the refuting check) and Opus keeps the work.
 
 Contract with token-guard: one JSON object on stdout —
   {"triage": str|null, "escalated": bool, "capped": bool, "notified": bool,
-   "failure": str|null}
+   "delivered": bool, "failure": str|null}
+`notified` means a page was ATTEMPTED; `delivered` means it could actually have
+left the machine. They are separate because slack-notify.sh exits 0 having sent
+nothing when no webhook resolves, so one field cannot carry both facts without
+lying about one of them.
 Exit is ALWAYS 0. A non-zero exit from here would turn a triage attempt into a
 guard crash, and the guard's job (blocking a runaway loop) outranks this one.
 
@@ -291,8 +295,45 @@ def log_row(row):
         pass  # an unwritable ledger must never cost the caller its block
 
 
+def notify_channel_configured():
+    """True when a page could actually leave this machine.
+
+    slack-notify.sh resolves its webhook from $KIPI_SLACK_WEBHOOK then
+    ~/.config/kipi/slack-webhook, and its own header states: "No webhook
+    configured -> silent no-op (exit 0), so callers never break." So its exit
+    code cannot distinguish a delivered message from a swallowed one; the
+    webhook has to be checked separately or delivery is unknowable.
+
+    An explicit KIPI_FABLE_NOTIFY_CMD means the caller supplied its own
+    notifier and owns its delivery semantics, so its channel is not ours to
+    judge.
+    """
+    if os.environ.get("KIPI_FABLE_NOTIFY_CMD"):
+        return True
+    if (os.environ.get("KIPI_SLACK_WEBHOOK") or "").strip():
+        return True
+    path = os.path.join(os.path.expanduser("~"), ".config", "kipi",
+                        "slack-webhook")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return bool(fh.read().strip())
+    except OSError:
+        return False
+
+
 def notify_cap(trigger, count):
     """Page the founder once when cross-model triage did not unstick the run.
+
+    Returns a record of what is KNOWN, never a bare claim of success.
+
+    Scar (PR #75 round 1, Codex major): this returned True whenever the notifier
+    process merely STARTED, and the caller wrote that straight into the ledger
+    as `notified` AND used it to suppress every later page. With no webhook
+    configured slack-notify.sh sends nothing and exits 0, so the row asserted a
+    page that never happened and then guaranteed no further attempt would be
+    made -- the founder was never reached at all, and the record said otherwise.
+    Same class as rca-specification-reported-as-state-2026-08-02: a receipt for
+    an action that did not occur.
 
     The one-arg legacy form on purpose: main's slack-notify.sh takes the message
     as $1, and the ASK-294 decision gate (unmerged at time of writing) keeps
@@ -300,17 +341,34 @@ def notify_cap(trigger, count):
     the version on main would make the flag the message body.
     """
     notify = os.environ.get("KIPI_FABLE_NOTIFY_CMD") or DEFAULT_NOTIFY
+    configured = notify_channel_configured()
+    record = {"notify_attempted": False, "notify_exit": None,
+              "notify_delivered": False,
+              "notify_channel_configured": configured, "notify_note": None}
+
     if not os.path.exists(notify):
-        return False
+        record["notify_note"] = "notifier not found at %s" % notify
+        return record
+
     message = ("agent stuck after %d Fable escalations (last trigger: %s). "
                "Cross-model triage did not unstick it; a human call is next."
                % (count, trigger))
     try:
-        subprocess.run(["bash", notify, message], timeout=20,
-                       capture_output=True, text=True)
-        return True
-    except (subprocess.SubprocessError, OSError):
-        return False
+        proc = subprocess.run(["bash", notify, message], timeout=20,
+                              capture_output=True, text=True)
+    except (subprocess.SubprocessError, OSError) as exc:
+        record["notify_note"] = "notifier failed to run: %s" % exc
+        return record
+
+    record["notify_attempted"] = True
+    record["notify_exit"] = proc.returncode
+    # BOTH halves are required. Exit 0 alone is the lie this fix removes, and a
+    # configured channel alone says nothing about whether the send worked.
+    record["notify_delivered"] = bool(proc.returncode == 0 and configured)
+    if not record["notify_delivered"]:
+        record["notify_note"] = (
+            "exit %s, channel_configured=%s" % (proc.returncode, configured))
+    return record
 
 
 # --------------------------------------------------------------------------
@@ -346,17 +404,29 @@ def write_pending(path, trigger, triage):
 def escalate(trigger, reason, transcript_path, count, capped_notified,
              pending_file=""):
     result = {"triage": None, "escalated": False, "capped": False,
-              "notified": False, "failure": None}
+              "notified": False, "delivered": False, "failure": None}
 
     cap = _int_env("KIPI_FABLE_CAP", DEFAULT_CAP)
     if count >= cap:
         result["capped"] = True
         result["failure"] = "cap reached (%d)" % cap
+        row = {"ts": _now(), "trigger": trigger, "capped": True,
+               "fable_ok": False, "failure": result["failure"],
+               "call_timeout_s": 0, "next_path_taken": None}
         if not capped_notified:
-            result["notified"] = notify_cap(trigger, count)
-        log_row({"ts": _now(), "trigger": trigger, "capped": True,
-                 "fable_ok": False, "failure": result["failure"],
-                 "notified": result["notified"]})
+            record = notify_cap(trigger, count)
+            row.update(record)
+            # `notified` now means ATTEMPTED, and delivery is its own field.
+            # Collapsing the two is what made the old row a false receipt.
+            result["notified"] = record["notify_attempted"]
+            result["delivered"] = record["notify_delivered"]
+        else:
+            configured = notify_channel_configured()
+            row.update({"notify_attempted": False, "notify_exit": None,
+                        "notify_delivered": False,
+                        "notify_channel_configured": configured,
+                        "notify_note": "already paged for this episode"})
+        log_row(row)
         return result
 
     packet = build_packet(trigger, reason, transcript_path)
@@ -430,6 +500,16 @@ def report():
             first = (row.get("diagnosis") or "").splitlines()
             if first:
                 print("    %s" % first[0][:110])
+            # The cap row is the one a human needs to trust, so it never prints
+            # a bare "notified". It prints whether the page could have LEFT the
+            # machine, and why not when it could not.
+            if row.get("capped"):
+                print("    page: attempted=%s exit=%s channel=%s delivered=%s%s"
+                      % (row.get("notify_attempted"), row.get("notify_exit"),
+                         row.get("notify_channel_configured"),
+                         row.get("notify_delivered"),
+                         " (%s)" % row["notify_note"]
+                         if row.get("notify_note") else ""))
     print("%d escalation(s) in %s" % (total, directory))
 
 
@@ -453,7 +533,7 @@ def main():
 
     if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
         out = {"triage": None, "escalated": False, "capped": False,
-               "notified": False, "failure": "disabled"}
+               "notified": False, "delivered": False, "failure": "disabled"}
     else:
         out = escalate(args.trigger, args.reason, args.transcript,
                        args.count, args.capped_notified, args.pending_file)

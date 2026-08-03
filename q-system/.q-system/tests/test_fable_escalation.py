@@ -660,6 +660,71 @@ def test_escalations_stop_at_the_cap_and_page_once(actor, env):
     assert open(env["_notify_log"]).read().count("\n") == 1, "paged twice"
 
 
+def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path):
+    """FINDING-2 REPRODUCER (PR #75 round 1, Codex major).
+
+    slack-notify.sh resolves its webhook from $KIPI_SLACK_WEBHOOK then
+    ~/.config/kipi/slack-webhook, and its own header says: "No webhook
+    configured -> silent no-op (exit 0), so callers never break." The cap path
+    took that exit 0 as proof of delivery, wrote `notified: true` into the
+    ledger, and set fable_capped_notified so no later attempt would ever be
+    made. On a machine with no webhook the founder was never reached AND the
+    record said they had been -- the escalation cap silently became a dead end.
+
+    Same class as rca-specification-reported-as-state-2026-08-02: a receipt for
+    an action that did not occur.
+
+    This drives the REAL notifier with no webhook reachable (HOME redirected to
+    an empty dir, KIPI_SLACK_WEBHOOK unset), so the no-op is genuine rather
+    than simulated by a stub.
+    """
+    e = guard_env(env)
+    del e["KIPI_FABLE_NOTIFY_CMD"]          # use the real slack-notify.sh
+    e["HOME"] = str(tmp_path / "emptyhome")
+    e["KIPI_SLACK_WEBHOOK"] = ""
+    e["KIPI_FABLE_CAP"] = "1"
+    os.makedirs(e["HOME"], exist_ok=True)
+
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
+         fable_escalations=1)
+    r = run_guard(edit_payload(actor), e)
+    assert r.returncode == 2
+
+    row = settled_rows(env)[0]
+    assert row["capped"] is True
+    assert row["notify_channel_configured"] is False, (
+        "the probe found a webhook, so this run could not have proven anything")
+    assert row["notify_delivered"] is False, (
+        "the ledger claims the founder was paged, but no webhook exists and "
+        "slack-notify.sh sent nothing")
+    assert row["notify_note"], "an undelivered page must record why"
+
+    # And the refusal itself must not assert a page either.
+    assert "has been paged" not in r.stderr
+
+
+def test_cap_row_records_delivery_when_a_channel_exists(actor, env):
+    """The paired positive. Without it the assertion above would still pass if
+    notify_delivered were hardcoded False, which would make the field useless in
+    the one case it exists to report."""
+    e = guard_env(env)
+    e["KIPI_FABLE_CAP"] = "1"
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
+         fable_escalations=1)
+    r = run_guard(edit_payload(actor), e)
+    assert r.returncode == 2
+
+    row = settled_rows(env)[0]
+    assert row["capped"] is True
+    assert row["notify_channel_configured"] is True
+    assert row["notify_attempted"] is True
+    assert row["notify_exit"] == 0
+    assert row["notify_delivered"] is True
+    log = settle(lambda: open(env["_notify_log"]).read()
+                 if os.path.exists(env["_notify_log"]) else "")
+    assert "stuck" in log.lower()
+
+
 def quiet_after_cap(env, grace=2.0):
     """The cap must stop the MODEL call, not merely the message.
 
