@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -322,6 +323,204 @@ def test_skipped_paths_are_reported(tmp: Path) -> None:
           got.returncode != 0, got.stdout)
 
 
+# --------------------------------------------------------------------------
+# 9. A path the hook ENUMERATED but could not STAGE must not be counted as
+#    snapshotted. (Codex PR #83, major.) `git add` can refuse a path that
+#    `ls-files`/`diff` happily listed a moment earlier -- the real case is a
+#    rename or delete landing between the two calls. The hook retries such a
+#    chunk one path at a time and then prints `len(files)`, which is the
+#    enumerated count, not the staged count.
+#
+#    That is the SAME failure as test 8 in a smaller box: an operator reading
+#    "snapshotted 7 files" believes 7 files are safe. Here one of them is not
+#    in the tree at all, and nothing said so.
+#
+#    Reproduced hermetically with a mode-000 untracked file: git lists it in
+#    `ls-files --others` (stat is enough) and then refuses it with
+#    "unable to index file" (open is not). Verified against real git before
+#    being relied on -- see the probe output in the ASK-314 thread. Same
+#    enumerated-then-unstageable shape as the rename, without a race.
+# --------------------------------------------------------------------------
+def test_unstageable_path_is_not_counted(tmp: Path) -> None:
+    repo = make_repo(tmp)
+    dirty(repo, "q-system/.q-system/staged-fine.txt", "this one really is safe\n")
+    bad = repo / "q-system" / ".q-system" / "unstageable.txt"
+    dirty(repo, "q-system/.q-system/unstageable.txt", "cannot be indexed\n")
+    os.chmod(bad, 0o000)
+    try:
+        r = run_hook(repo, "sess-jjj")
+        out = r.stdout + r.stderr
+
+        ref = wip_ref("sess-jjj")
+        in_tree = subprocess.run(
+            ["git", "cat-file", "-p", f"{ref}:q-system/.q-system/unstageable.txt"],
+            cwd=repo, capture_output=True, text=True,
+        ).returncode == 0
+        # Precondition for the finding: git really did refuse it.
+        check(
+            "unstageable path is genuinely absent from the snapshot",
+            not in_tree,
+            "git staged it after all; reproducer no longer reproduces",
+        )
+        # The finding itself: the hook must not report it as snapshotted.
+        check(
+            "unstageable path is named as NOT snapshotted",
+            "q-system/.q-system/unstageable.txt" in out
+            and ("not snapshotted" in out.lower() or "left dirty" in out.lower()),
+            out.strip(),
+        )
+        # And the count must be the staged count, not the enumerated one.
+        check(
+            "snapshot count excludes the path git refused",
+            "snapshotted 1 file" in out,
+            out.strip(),
+        )
+        # The good path must still be there: refusing to lie about one file is
+        # not a licence to drop the other.
+        good = subprocess.run(
+            ["git", "cat-file", "-p", f"{ref}:q-system/.q-system/staged-fine.txt"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        check(
+            "the stageable path is still snapshotted",
+            good.returncode == 0 and good.stdout == "this one really is safe\n",
+            f"rc={good.returncode} out={good.stdout!r}",
+        )
+    finally:
+        os.chmod(bad, 0o644)  # so TemporaryDirectory can clean up
+
+
+# --------------------------------------------------------------------------
+# 10. A LOST compare-and-swap must not lose the snapshot. (Codex PR #83,
+#     major.) One session's Stop hook can overlap itself: turn N's hook is
+#     still running when turn N+1's fires. Both read the same `prev`, both
+#     build a tree, one lands, and the other's update-ref is refused.
+#
+#     Refusing is correct -- clobbering is what a CAS exists to prevent. What
+#     is not correct is giving up: the refused run is usually the one holding
+#     the FRESHER tree, so "ref update refused" means the newest work is the
+#     work that was dropped. The ref is left stale and the hook says so in a
+#     line nobody reads at 3am.
+#
+#     Deterministic without threads: a `git` shim on PATH advances the ref
+#     once, at exactly the moment the hook is between reading `prev` and
+#     calling update-ref (it wedges on `commit-tree`). That is the real
+#     interleaving, made repeatable.
+# --------------------------------------------------------------------------
+def _install_racing_git_shim(tmp: Path, repo: Path, ref: str) -> dict:
+    """A `git` that lets a competitor land the ref once, mid-hook."""
+    real_git = shutil.which("git")
+    bindir = tmp / "shim-bin"
+    bindir.mkdir()
+    marker = tmp / "raced-once"
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, subprocess, sys\n"
+        f"REAL = {real_git!r}\n"
+        f"MARKER = {str(marker)!r}\n"
+        f"REPO = {str(repo)!r}\n"
+        f"REF = {ref!r}\n"
+        "# Wedge between the hook reading `prev` and the hook calling\n"
+        "# update-ref: land a competing value exactly once.\n"
+        "if 'commit-tree' in sys.argv and not os.path.exists(MARKER):\n"
+        "    open(MARKER, 'w').close()\n"
+        "    head = subprocess.run([REAL, 'rev-parse', 'HEAD'], cwd=REPO,\n"
+        "                          capture_output=True, text=True).stdout.strip()\n"
+        "    subprocess.run([REAL, 'update-ref', REF, head], cwd=REPO,\n"
+        "                   capture_output=True, text=True)\n"
+        "os.execv(REAL, [REAL] + sys.argv[1:])\n"
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def test_lost_cas_still_lands(tmp: Path) -> None:
+    repo = make_repo(tmp)
+    before_head = git(repo, "rev-parse", "HEAD")
+    ref = wip_ref("sess-kkk")
+    body = "the fresher tree, the one that must not be dropped\n"
+    dirty(repo, "q-system/.q-system/racy.txt", body)
+
+    r = run_hook(repo, "sess-kkk", extra_env=_install_racing_git_shim(tmp, repo, ref))
+    out = r.stdout + r.stderr
+
+    # The competitor really did land first, or this proves nothing.
+    check(
+        "the shim landed a competing ref update",
+        (tmp / "raced-once").exists(),
+        "shim never fired; reproducer no longer reproduces",
+    )
+    # The finding: after losing the race, the hook must re-parent and retry,
+    # so its content ends up on the ref rather than in the bin.
+    got = subprocess.run(
+        ["git", "cat-file", "-p", f"{ref}:q-system/.q-system/racy.txt"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    check(
+        "snapshot survives a lost compare-and-swap",
+        got.returncode == 0 and got.stdout == body,
+        f"rc={got.returncode} out={got.stdout!r} hook-said={out.strip()!r}",
+    )
+    # Retrying must not become clobbering: the competitor's commit stays
+    # reachable from the ref, which is what re-parenting (not force) buys.
+    reachable = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", before_head, ref],
+        cwd=repo, capture_output=True, text=True,
+    ).returncode == 0
+    check("the competing commit is still reachable from the ref", reachable)
+    # And the branch is still untouched, which is the whole point of ASK-314.
+    check("racing does not put a commit on the branch",
+          git(repo, "rev-parse", "HEAD") == before_head)
+
+
+# --------------------------------------------------------------------------
+# 11. The snapshot spans the WHOLE checkout, and the hook must say so.
+#     (Codex PR #83, minor.) The hook's own docstring claimed two sessions
+#     sharing a checkout meant "neither can sweep up the other's uncommitted
+#     work". Half true, and the false half is the dangerous half: a Stop hook
+#     cannot attribute a dirty path to a session, so session B's ref really
+#     does contain session A's work.
+#
+#     What is actually true -- and worth keeping -- is that nothing is TAKEN:
+#     A's working tree is untouched and no branch gains a commit. Both halves
+#     are asserted here, because an operator who believes the ref is
+#     session-scoped will read a `wip` ref as "my work" and cherry-pick a
+#     stranger's half-finished edit onto their branch.
+# --------------------------------------------------------------------------
+def test_snapshot_scope_is_stated_honestly(tmp: Path) -> None:
+    repo = make_repo(tmp)
+    others = "q-system/.q-system/from-session-a.txt"
+    a_body = "session A's in-flight work\n"
+    dirty(repo, others, a_body)
+    dirty(repo, "q-system/.q-system/from-session-b.txt", "session B's work\n")
+
+    r = run_hook(repo, "sess-lll")  # only B's hook fires
+    out = r.stdout + r.stderr
+
+    # The true state of affairs: B's ref DOES carry A's file.
+    got = subprocess.run(
+        ["git", "cat-file", "-p", f"{wip_ref('sess-lll')}:{others}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    check(
+        "another session's dirty path is inside this session's snapshot",
+        got.returncode == 0 and got.stdout == a_body,
+        f"rc={got.returncode}",
+    )
+    # So the hook must not let an operator believe otherwise.
+    check(
+        "the hook states the snapshot covers the whole checkout",
+        "checkout" in out.lower() and "not only this session" in out.lower(),
+        out.strip(),
+    )
+    # The half that IS true, and is the actual safety property: A keeps its work.
+    check(
+        "the other session's working tree copy is untouched",
+        (repo / others).exists() and (repo / others).read_text() == a_body,
+    )
+
+
 def main() -> int:
     if not HOOK.exists():
         print(f"FAIL: hook not found at {HOOK}")
@@ -336,6 +535,9 @@ def main() -> int:
         test_operation_in_progress,
         test_no_duplicate_snapshot,
         test_skipped_paths_are_reported,
+        test_unstageable_path_is_not_counted,
+        test_lost_cas_still_lands,
+        test_snapshot_scope_is_stated_honestly,
     ]
     for t in tests:
         print(f"\n{t.__name__}")

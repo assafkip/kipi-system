@@ -30,7 +30,14 @@ via commit-tree/update-ref. Consequences, all intended:
     still holds their dirty work and still writes their own commit message.
   - No named branch can gain a commit nobody intended, on any branch, ever.
   - Two sessions sharing a checkout write to two different refs, so neither can
-    sweep up the other's uncommitted work.
+    take the other's work: nothing is staged, moved, or committed away from it.
+    Note carefully what this does NOT say. A Stop hook cannot attribute a dirty
+    path to a session, so each ref is a snapshot of the WHOLE checkout and does
+    contain the other session's in-flight edits. The safety property is that
+    nothing is taken, not that the ref is session-scoped -- an operator who
+    believes the latter will cherry-pick a stranger's half-finished work onto
+    their branch, which is the 2026-08-02 damage rebuilt by hand. Every message
+    this hook prints says which of the two it means.
   - Nothing is lost: a ref is a real ref, so gc will not prune it, and recovery
     is `git cherry-pick` or `git checkout <ref> -- <path>`.
 
@@ -137,15 +144,29 @@ def get_changed_files():
     return kept, skipped
 
 
-def report_skipped(skipped):
-    """Name every dirty path the snapshot does NOT contain."""
-    if not skipped:
-        return
-    print(f"auto-commit: {len(skipped)} path(s) left dirty, not snapshotted:")
-    for f in skipped[:20]:
-        print(f"auto-commit:   {f}")
-    if len(skipped) > 20:
-        print(f"auto-commit:   ... and {len(skipped) - 20} more")
+def report_left_behind(skipped, refused=()):
+    """Name every dirty path the snapshot does NOT contain, and say why.
+
+    Two reasons, kept apart on purpose. `skipped` is policy (SKIP_PREFIXES) and
+    is expected. `refused` is git declining a path this hook had already
+    enumerated -- a rename or delete landing between `ls-files` and `git add`,
+    or a file it cannot read. That one is a surprise, and surprises are exactly
+    what an unattended writer must not swallow.
+    """
+    if skipped:
+        print(f"auto-commit: {len(skipped)} path(s) left dirty, not snapshotted"
+              " (skipped by policy):")
+        for f in skipped[:20]:
+            print(f"auto-commit:   {f}")
+        if len(skipped) > 20:
+            print(f"auto-commit:   ... and {len(skipped) - 20} more")
+    if refused:
+        print(f"auto-commit: {len(refused)} path(s) left dirty, NOT snapshotted"
+              " (git refused to index them):")
+        for f, why in refused[:20]:
+            print(f"auto-commit:   {f}  <- {why}")
+        if len(refused) > 20:
+            print(f"auto-commit:   ... and {len(refused) - 20} more")
 
 
 def in_progress_ops(git_dir):
@@ -163,11 +184,19 @@ def build_tree(files):
     The real index is never opened. That is the point: the author's staged state
     is theirs, and a Stop hook that consumed it is what discarded three
     in-progress commit messages on 2026-08-02.
+
+    Returns (tree, staged, refused). `staged` is what git ACTUALLY indexed, not
+    what was enumerated. Those two lists differ whenever a path is renamed or
+    deleted between `ls-files` and `git add`, or cannot be read -- and reporting
+    the enumerated count as if it were the staged count is the "snapshotted N
+    files" lie that test 8 exists to prevent, one box smaller. A count nobody
+    can trust is worse than no count, because it stops the reader from looking.
     """
     fd, tmp_index = tempfile.mkstemp(prefix="kipi-wip-index-")
     os.close(fd)
     os.unlink(tmp_index)  # git wants to create it itself
     env = dict(os.environ, GIT_INDEX_FILE=tmp_index)
+    staged, refused = [], []
     try:
         # Seed from HEAD so the snapshot is a full tree, not just the dirty set.
         if run(["git", "read-tree", "HEAD"], env=env).returncode != 0:
@@ -178,16 +207,74 @@ def build_tree(files):
         for i in range(0, len(files), 400):
             chunk = files[i:i + 400]
             r = run(["git", "add", "--"] + chunk, env=env)
-            if r.returncode != 0:
-                # One bad path (vanished mid-run, ignored) must not sink the
-                # whole snapshot. Retry the chunk one path at a time.
-                for f in chunk:
-                    run(["git", "add", "--", f], env=env)
+            if r.returncode == 0:
+                staged.extend(chunk)
+                continue
+            # git add is all-or-nothing per invocation: one bad path stages
+            # NOTHING from the chunk. So retry one at a time and record each
+            # verdict, rather than assuming the retry saved everything.
+            for f in chunk:
+                r1 = run(["git", "add", "--", f], env=env)
+                if r1.returncode == 0:
+                    staged.append(f)
+                else:
+                    why = (r1.stderr.strip().splitlines() or ["git add failed"])[0]
+                    refused.append((f, why[:120]))
 
-        return git_ok(["git", "write-tree"], env=env)
+        return git_ok(["git", "write-tree"], env=env), staged, refused
     finally:
         if os.path.exists(tmp_index):
             os.unlink(tmp_index)
+
+
+# Matches the 3-attempt cap in .claude/rules/self-healing-retry.md. Bounded on
+# purpose: a Stop hook that spins on a contended ref delays session exit, and
+# the fallback (say what was dropped, loudly) is safe.
+MAX_LAND_ATTEMPTS = 3
+
+
+def land_snapshot(ref, tree, message):
+    """Point `ref` at a new commit holding `tree`. Returns (status, commit).
+
+    Status is "landed", "unchanged", or a human-readable failure.
+
+    The update is a compare-and-swap, so a second hook for the same session --
+    turn N still running when turn N+1 fires -- cannot clobber. But losing the
+    swap must not mean losing the snapshot: the loser is usually the run holding
+    the FRESHER tree, so a single refused update dropped the newest work and
+    left the ref stale (Codex, PR #83). So on refusal we re-read the ref,
+    RE-PARENT on whatever landed, and try again. Re-parenting rather than
+    forcing is what keeps the winner's commit reachable; the loser's content
+    arrives as a child, not as a replacement.
+    """
+    head = git_ok(["git", "rev-parse", "--verify", "--quiet", "HEAD"])
+    last_err = "unknown"
+    for _ in range(MAX_LAND_ATTEMPTS):
+        prev = git_ok(["git", "rev-parse", "--verify", "--quiet", ref])
+        parent = prev or head
+
+        # A Stop hook fires every turn. Without this the ref grows an identical
+        # commit per turn and the useful history is buried in noise. Re-checked
+        # each attempt: the run that beat us may have written our exact tree.
+        if parent and git_ok(["git", "rev-parse", f"{parent}^{{tree}}"]) == tree:
+            return "unchanged", None
+
+        args = ["git", "commit-tree", tree]
+        if parent:
+            args += ["-p", parent]
+        args += ["-m", message]
+        commit = git_ok(args)
+        if not commit:
+            return "commit-tree failed, nothing snapshotted", None
+
+        # Empty oldvalue asserts the ref does not yet exist.
+        r = run(["git", "update-ref", ref, commit, prev if prev else ""])
+        if r.returncode == 0:
+            return "landed", commit
+        last_err = r.stderr.strip()[:100]
+
+    return (f"ref update lost {MAX_LAND_ATTEMPTS} races ({last_err}); "
+            "NOTHING was snapshotted this turn"), None
 
 
 def main():
@@ -203,36 +290,32 @@ def main():
     files, skipped = get_changed_files()
     if not files:
         print("auto-commit: no changes")
-        report_skipped(skipped)
+        report_left_behind(skipped)
         return
 
-    tree = build_tree(files)
+    tree, staged, refused = build_tree(files)
     if not tree:
         print("auto-commit: could not write tree, nothing snapshotted")
-        report_skipped(skipped)
+        report_left_behind(skipped, refused)
         return
 
-    ref = f"{WIP_NAMESPACE}/{session_id}"
-    prev = git_ok(["git", "rev-parse", "--verify", "--quiet", ref])
     head = git_ok(["git", "rev-parse", "--verify", "--quiet", "HEAD"])
-    parent = prev or head
-
-    # A Stop hook fires every turn. Without this the ref grows an identical
-    # commit per turn and the useful history is buried in noise.
-    if parent and git_ok(["git", "rev-parse", f"{parent}^{{tree}}"]) == tree:
-        print("auto-commit: no change since last snapshot")
-        report_skipped(skipped)
-        return
-
     git_dir = git_ok(["git", "rev-parse", "--absolute-git-dir"]) or ".git"
     branch = git_ok(["git", "rev-parse", "--abbrev-ref", "HEAD"]) or "(detached)"
     ops = in_progress_ops(git_dir)
 
-    subject = f"wip: session snapshot on {branch} ({len(files)} files)"
+    # Counts are of what git INDEXED. `files` is what was enumerated, and the
+    # two differ exactly when something moved underneath us.
+    n = len(staged)
+    subject = f"wip: checkout snapshot on {branch} ({n} file{'' if n == 1 else 's'})"
     body = [
         "",
         "Unattended Stop-hook snapshot. NOT a commit on any branch -- it exists",
         "only on the ref below so nothing is lost if this session dies.",
+        "",
+        "Scope: every dirty path in this checkout, not only this session's work.",
+        "A Stop hook cannot tell whose edit is whose, so a parallel session's",
+        "in-flight files are in here too. Take paths, not the whole commit.",
         "",
         f"session: {session_id}",
         f"branch:  {branch}",
@@ -241,35 +324,32 @@ def main():
     if ops:
         body.append(f"WARNING: {', '.join(ops)} in progress -- tree may contain")
         body.append("conflict markers. Inspect before reusing this snapshot.")
+    if refused:
+        body.append("")
+        body.append(f"NOT in this snapshot ({len(refused)} path(s) git refused):")
+        body += [f"! {f}" for f, _ in refused[:40]]
     body.append("")
-    body += [f"- {f}" for f in files[:40]]
-    if len(files) > 40:
-        body.append(f"- ... and {len(files) - 40} more")
+    body += [f"- {f}" for f in staged[:40]]
+    if n > 40:
+        body.append(f"- ... and {n - 40} more")
 
-    args = ["git", "commit-tree", tree]
-    if parent:
-        args += ["-p", parent]
-    args += ["-m", subject + "\n" + "\n".join(body)]
-    commit = git_ok(args)
-    if not commit:
-        print("auto-commit: commit-tree failed, nothing snapshotted")
-        report_skipped(skipped)
-        return
+    ref = f"{WIP_NAMESPACE}/{session_id}"
+    status, commit = land_snapshot(ref, tree, subject + "\n" + "\n".join(body))
 
-    # Compare-and-swap. Two sessions never share a ref, but a session whose
-    # hook overlaps itself would otherwise race. Empty oldvalue asserts the ref
-    # does not yet exist.
-    r = run(["git", "update-ref", ref, commit, prev if prev else ""])
-    if r.returncode != 0:
-        print(f"auto-commit: ref update refused ({r.stderr.strip()[:80]})")
-        report_skipped(skipped)
-        return
+    if status == "unchanged":
+        print("auto-commit: no change since last snapshot")
+    elif status == "landed":
+        print(f"auto-commit: snapshotted {n} file{'' if n == 1 else 's'} "
+              f"-> {ref} ({commit[:8]})")
+        print("auto-commit: scope - every dirty path in this checkout, "
+              "not only this session's work")
+        if ops:
+            print(f"auto-commit: note - {', '.join(ops)} in progress")
+        print(f"auto-commit: recover with  git checkout {ref} -- <path>")
+    else:
+        print(f"auto-commit: {status}")
 
-    print(f"auto-commit: snapshotted {len(files)} files -> {ref} ({commit[:8]})")
-    if ops:
-        print(f"auto-commit: note - {', '.join(ops)} in progress")
-    print(f"auto-commit: recover with  git checkout {ref} -- <path>")
-    report_skipped(skipped)
+    report_left_behind(skipped, refused)
 
 
 if __name__ == "__main__":
