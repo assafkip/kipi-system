@@ -2067,22 +2067,97 @@ $(sed 's/^/        /' "$Q3/pages.txt" 2>/dev/null)"
 grep -qi 'codex' "$Q3/pages.txt" || fail "the page never names codex: $(cat "$Q3/pages.txt")"
 ok "the founder is paged exactly once on the transition into degraded mode"
 
-# --- Q4. codex answers with NOTHING USABLE -> never APPROVE -------------------
-# The single most dangerous path in this issue. An empty or truncated answer has
-# no findings in it, and "no findings" derives APPROVE. Both shapes must land on
-# a NON-success status, and neither may be laundered through the Opus fallback:
-# an outage has no review at all, but garbage is an attempted review whose
-# content cannot be trusted, so approving over it invents a verdict.
+# =============================================================================
+# AN ENGINE THAT PRODUCED NOTHING NEVER RAN (ASK-287)
+# =============================================================================
+# THE DEFECT, measured 2026-08-02 with a real billed call:
+#
+#   codex exec --skip-git-repo-check --model gpt-5.6-sol "Reply with exactly: ALIVE"
+#   ERROR: Your workspace is out of credits. Add credits to continue.
+#
+# and it EXITED 0. So `run_engine codex` reported success, control took the
+# "answered with nothing parseable" branch -- which by design does NOT fall back
+# -- and the Opus fallback promised at the top of pr-review-agent.sh never fired.
+# Not "fired and failed": NEVER, since the day it was written.
+# Consequences on disk: 0-byte reviews pr-66-20260802-092103.md and
+# pr-67-20260802-092225.md, degraded.state=1 (the system NOTICED), and
+# ~/.config/kipi/pr-reviews/claude/ which did not exist at all. Both PRs sat on
+# kipi/reviewer-approved=failure, CI-green, unmergeable.
+#
+# Same defect class as 2026-08-01: two failure modes genuinely different in the
+# world, identical in the signal being read. An outage and a garbage answer
+# cannot be told apart by an exit code.
+#
+# THE CONTRACT THESE CASES PIN. The discriminator is EVIDENCE, never the exit
+# code: an outage produces NO CONTENT AT ALL, a garbage answer produces content
+# that does not parse.
+#   Q4  empty output      -> OUTAGE  -> Opus fills the slot, marked DEGRADED
+#   Q4B content, unparseable -> GARBAGE -> UNSTATED, NO fallback, nothing invented
+# Q4B is the rule that must NOT move. Filling the slot with an Opus approval over
+# an attempted-but-unreadable review invents a verdict for a review that said
+# nothing, and a fabricated green is worse than a blocked merge.
+
+# --- Q4. codex EXITS 0 AND SAYS NOTHING -> that is an outage, not an answer ----
+# mk_engine_stubs' `empty` mode is exit 0 with no output: the exact shape the
+# out-of-credits call left on disk. Before the fix this took the garbage branch,
+# so claude-calls.log stayed empty and the status was posted unstated=failure.
 Q4="$W2/eng-empty"
 mk_engine_stubs "$Q4" "$SHA_A" empty ""
 run_engine_reviewer "$Q4" --post --engine codex
 CALL="$(status_call "$Q4")"
-printf '%s' "$CALL" | grep -q 'state=success' \
-  && fail "THE DEFECT: codex returned an EMPTY review and the reviewer posted state=success. An
-      empty answer read as 'no findings survived reproduction' green-lights a PR nobody read.
-      Call was: $CALL"
-ok "an EMPTY codex review never posts state=success"
 
+[ -s "$Q4/claude-calls.log" ] \
+  || fail "THE ASK-287 DEFECT: codex exited 0 and produced NOTHING, and the Opus fallback never
+      ran. An engine that emitted no bytes did not review anything -- reading that as 'it answered,
+      just unparseably' is reading the exit code, which an out-of-credits codex sets to 0. Every PR
+      in the loop then accumulates kipi/reviewer-approved=failure and nothing merges. claude saw:
+      $(cat "$Q4/claude-calls.log" 2>/dev/null)"
+ok "codex exit 0 with EMPTY output is treated as an outage: the Opus fallback runs"
+
+[ -n "$CALL" ] \
+  || fail "no commit status was posted at all after the fallback, so $CODEX_CONTEXT stays absent
+      and the PR wedges exactly as it did before. gh saw:
+$(sed 's/^/        /' "$Q4/gh-calls.log")"
+printf '%s' "$CALL" | grep -q "context=$CODEX_CONTEXT" \
+  || fail "the fallback filled the wrong slot after an empty codex run: $CALL"
+printf '%s' "$CALL" | grep -q 'state=success' \
+  || fail "the Opus fallback wrote a real APPROVE review and the required gate did not go green,
+      so the wedge survives the fix. Call was: $CALL"
+printf '%s' "$CALL" | grep -qi 'degraded' \
+  || fail "the slot was filled by Opus with NO degraded marker. Both statuses now come from one
+      model family and the status text says nothing about it. Call was: $CALL"
+ok "the empty-codex fallback fills $CODEX_CONTEXT=success and says DEGRADED out loud"
+
+[ "$(pages_in "$Q4")" = "1" ] \
+  || fail "expected EXACTLY 1 page on the transition into degraded mode, got $(pages_in "$Q4"):
+$(sed 's/^/        /' "$Q4/pages.txt" 2>/dev/null)"
+grep -qi 'codex' "$Q4/pages.txt" || fail "the page never names codex: $(cat "$Q4/pages.txt")"
+ok "an empty-codex outage pages the founder exactly once, naming codex"
+
+# The verdict the gate reads must come from the review Opus actually wrote, not
+# from the nothing codex returned. Asserting the RECORD and not just the status
+# is what separates "a real fallback review" from "a green posted on absence".
+Q4_REC="$Q4/home/.config/kipi/pr-reviews/pr-901.verdict.json"
+[ -s "$Q4_REC" ] || fail "no verdict record was written after the fallback: $Q4_REC"
+# $APPROVE_REVIEW is the claude stub's body and its FINDINGS block is empty, so
+# the fallback's own derivation is APPROVE. Pinned to that exact value rather
+# than to "non-empty": the point is that the gate carries the FALLBACK REVIEW's
+# conclusion, and a wildcard would pass on a verdict inherited from anywhere.
+[ "$(verdict_from_record "$Q4_REC")" = "APPROVE" ] \
+  || fail "the record's verdict is '$(verdict_from_record "$Q4_REC")', not the fallback review's own
+      APPROVE. The gate must be derived from the review that was actually performed."
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$Q4_REC'))['source'])" 2>/dev/null)" = "findings" ] \
+  || fail "the fallback's verdict did not come from its FINDINGS block, so it was read from prose
+      or invented. Record: $(cat "$Q4_REC")"
+ok "the fallback's verdict is derived from the findings of the review it really performed"
+
+# --- Q4B. content that does not parse is a GARBAGE ANSWER, and does NOT fall back
+# THE PROPERTY MOST AT RISK in the ASK-287 fix: widening the outage branch must
+# not swallow this one. Codex here ANSWERED -- there is prose, there is a verdict
+# line, there is an opened FINDINGS block -- it just cannot be trusted. An outage
+# has no review at all; garbage is an attempted review whose CONTENT cannot be
+# trusted, and filling the slot with an Opus approval over it invents a verdict
+# for a review that said nothing. Unstated HOLDS the PR; green RELEASES it.
 Q4B="$W2/eng-trunc"
 mk_engine_stubs "$Q4B" "$SHA_A" ok "$CODEX_TRUNCATED"
 run_engine_reviewer "$Q4B" --post --engine codex
@@ -2098,6 +2173,43 @@ ok "a TRUNCATED codex review (unclosed FINDINGS block) never posts state=success
       review to trust; garbage is a review whose CONTENT cannot be trusted, and filling the slot
       with an Opus approval over it invents a verdict for a review that said nothing."
 ok "an unusable codex answer is not laundered through the fallback"
+
+# Assert the ABSENCE explicitly, on the record and not only on the status. "No
+# fallback ran" and "no verdict was invented" are two different claims, and the
+# second is the one the hard constraint is about: the gate must never carry a
+# verdict nobody derived from a review that was actually performed.
+Q4B_REC="$Q4B/home/.config/kipi/pr-reviews/pr-901.verdict.json"
+[ -s "$Q4B_REC" ] || fail "no verdict record was written for the garbage case: $Q4B_REC"
+[ -z "$(verdict_from_record "$Q4B_REC")" ] \
+  || fail "THE HARD CONSTRAINT: the garbage case recorded verdict
+      '$(verdict_from_record "$Q4B_REC")'. Codex answered with content nobody can parse, so the
+      only honest verdict is NONE. A fabricated green is worse than a blocked merge.
+      Record: $(cat "$Q4B_REC")"
+ok "the garbage case records NO verdict at all (nothing invented over an unreadable review)"
+
+# --- Q4C. NEGATIVE SELF-TEST: break the fallback trigger, the outage goes red --
+# Q4 asserts a fallback fires. On its own that assertion could pass for reasons
+# unrelated to the fix, so the trigger is MUTATED and the same case is re-run:
+# with the emptiness discriminator neutered, the empty-codex run must fall back
+# to the pre-fix behaviour (no Opus call). If this case still shows a fallback,
+# Q4 is decoration and proves nothing about which branch it took.
+Q4C="$W2/eng-empty-mutant"
+mk_engine_stubs "$Q4C" "$SHA_A" empty ""
+MUTANT="$W2/pr-review-agent.mutant.sh"
+# The mutation is on the ONE predicate the fix introduces: make it answer "there
+# is content here" for every input, which is exactly the pre-ASK-287 reading.
+sed 's/^engine_produced_nothing() {.*$/engine_produced_nothing() { return 1; # MUTANT/' \
+  "$REVIEWER" > "$MUTANT"
+grep -q 'MUTANT' "$MUTANT" \
+  || fail "the mutation did not apply: pr-review-agent.sh has no engine_produced_nothing()
+      predicate to neuter, so the emptiness discriminator this issue adds is not there at all."
+( PATH="$Q4C/bin:$PATH" HOME="$Q4C/home" KIPI_NOTIFY="$Q4C/bin/notify" \
+  bash "$MUTANT" 901 --post --engine codex ) >"$Q4C/out.txt" 2>"$Q4C/err.txt"
+[ ! -s "$Q4C/claude-calls.log" ] \
+  || fail "MUTATION SURVIVED: with engine_produced_nothing() forced to 'there is content', the
+      empty-codex run STILL fell back to Opus. Q4 is therefore not testing that predicate, and
+      something else is routing the fallback. claude saw: $(cat "$Q4C/claude-calls.log")"
+ok "mutation kills it: neuter the emptiness predicate and the outage case stops falling back"
 
 # --- Q5. harness noise is not a finding and does not move the verdict ---------
 # Q1's fixture is the noisy one on purpose; this reads back what the parser
