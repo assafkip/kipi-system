@@ -2790,7 +2790,12 @@ ok "converge says no human owes the merge when the worker RECORDED the PR armed"
 # AND THE RECEIPT SENTENCE STAYS OFF THE HEALTHY PAGE. A fix that makes the page
 # louder on every run is the cry-wolf failure this fleet keeps killing: the
 # receipt landed here, so there is nothing to say about it.
-grep -qi "receipt" "$W2/pages.txt" \
+# MATCHES THE PROSE, NOT THE FLAG (ASK-310). This grepped the bare word
+# "receipt", which was unambiguous until ASK-283 gave slack-notify.sh a
+# `--kind receipt` argument -- after that EVERY page contains the word and this
+# assertion failed on the healthy case it was written to protect. The thing it
+# actually guards is the prd-os receipt SENTENCE, so it now matches that.
+grep -qi "prd-os receipt" "$W2/pages.txt" \
   && fail "the healthy page now carries receipt prose on a run where the receipt LANDED. Every
       converged PR would page about a problem that is not there: $(cat "$W2/pages.txt")"
 ok "an armed PR whose receipt landed pages exactly what it did before"
