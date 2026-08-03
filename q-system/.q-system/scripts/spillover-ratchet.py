@@ -17,8 +17,19 @@ today.
 Consequence, deliberately: a finding about a file nobody ever touches again
 never fires. That is correct. If the file is dead, the finding was too.
 
-PostToolUse on Edit/Write. Advisory only -- exit 0 always. A note is not a
-blocker; it is context delivered at the one moment it is useful.
+PostToolUse on Edit/Write. Exits 2 ONCE per file per day, because the hook
+contract is exit 2 = stderr fed to Claude, exit 0 = pass. An exit-0 hook writes
+to a stderr nobody reads -- the first version of this file did exactly that and
+was inert on arrival, which is the same defect the whole ledger suffered from.
+
+The ask is NOT "fix this". Fixing an adjacent bug mid-task is scope creep and
+the repo rules forbid it. The ask is "is this still true?" -- an agent with the
+file already open is the cheapest verifier that will ever exist, and a confirm
+or a void drains the pile one note at a time without a cleanup day.
+
+Once per file per day, so a file with 17 notes interrupts once, not 17 times
+and not on every edit. The marker is a date-stamped file; a new day re-asks,
+which is correct for a note that was deferred rather than resolved.
 
 Usage (hook): reads the tool payload on stdin.
 Usage (manual): spillover-ratchet.py <path>
@@ -33,6 +44,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve()
 SKELETON = HERE.parents[3]
 MAX_SHOWN = 3
+ACK_DIR = Path.home() / ".config" / "kipi" / "spillover-ratchet-ack"
 
 
 def ledger_rows(root: Path) -> list:
@@ -83,7 +95,13 @@ def findings_for(filename: str, rows: list) -> list:
         return []
     pat = re.compile(r"(?<![\w/-])" + re.escape(base) + r"(?![\w])")
     stem = os.path.splitext(base)[0]
-    spat = re.compile(r"(?<![\w.-])" + re.escape(stem) + r"(?![\w-])") if len(stem) > 4 else None
+    # Stem matching only for DISTINCTIVE stems, i.e. ones carrying a separator
+    # ("capability-gate", "linear_dor_drafter"). Caught 2026-08-03: matching any
+    # stem over 4 chars made README.md fire, because "README" appears in dozens
+    # of unrelated descriptions. A ratchet that cries wolf on README is a ratchet
+    # someone switches off, and then it protects nothing.
+    distinctive = ("-" in stem or "_" in stem) and len(stem) > 4
+    spat = re.compile(r"(?<![\w.-])" + re.escape(stem) + r"(?![\w-])") if distinctive else None
     hits = []
     for r in rows:
         d = r.get("description", "") or ""
@@ -110,16 +128,37 @@ def main() -> int:
     if not hits:
         return 0
 
-    print(f"\n[spillover] {len(hits)} open note(s) about {os.path.basename(target)}:",
+    # One interruption per file per day. Without this, a file with 17 notes
+    # would block every edit 17 times and the hook would be switched off within
+    # the hour -- which is how a gate that protects nothing gets created.
+    import datetime
+    stamp = os.environ.get("KIPI_RATCHET_DATE") or datetime.date.today().isoformat()
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{stamp}-{os.path.basename(target)}")
+    ack = ACK_DIR / key
+    if ack.exists():
+        return 0
+    try:
+        ACK_DIR.mkdir(parents=True, exist_ok=True)
+        ack.write_text("")
+    except OSError:
+        pass   # an unwritable marker must not turn one note into a loop
+
+    print(f"\n[spillover] {len(hits)} open note(s) about {os.path.basename(target)}.",
           file=sys.stderr)
+    print("These were left by whoever last worked here. You have the file open, "
+          "so you are the cheapest person to check them.", file=sys.stderr)
     for r in hits[:MAX_SHOWN]:
-        print(f"  {r['id']} (src {r.get('source')}): "
-              f"{(r.get('description') or '')[:200]}", file=sys.stderr)
+        print(f"\n  {r['id']} (src {r.get('source')}):\n    "
+              f"{(r.get('description') or '')[:260]}", file=sys.stderr)
     if len(hits) > MAX_SHOWN:
-        print(f"  ...and {len(hits) - MAX_SHOWN} more", file=sys.stderr)
-    print("  Fix it now, or `prd_runner.py spillover resolve <id> --void \"<reason>\"` "
-          "if it is stale.\n", file=sys.stderr)
-    return 0     # advisory, never blocks
+        print(f"\n  ...and {len(hits) - MAX_SHOWN} more "
+              f"(`prd_runner.py spillover list --open`)", file=sys.stderr)
+    print("\n  DO NOT fix them -- that is scope creep. Just say whether each is "
+          "STILL TRUE:\n"
+          "    still true  -> leave it, carry on with your task\n"
+          "    stale/wrong -> prd_runner.py spillover resolve <id> --void \"<reason>\"\n"
+          "  Then continue. This fires once per file per day.\n", file=sys.stderr)
+    return 2     # the ONLY exit code whose stderr reaches the agent
 
 
 if __name__ == "__main__":
