@@ -207,6 +207,62 @@ ok "derive: empty findings block -> APPROVE (a clean PR is reachable)"
   || fail "no FINDINGS block must derive nothing so the caller falls back to prose"
 ok "derive: no findings block -> empty (prose fallback, never a guess)"
 
+# --- THE ECHOED PROMPT IS NOT THE ENGINE'S ANSWER (ASK-287, PR #86 round 2) ----
+# `run_engine` captures the whole `codex exec` transcript, and the transcript
+# replays the prompt -- which ENDS with the template block the reviewer asks for.
+# So a complete FINDINGS block is present in every artifact before the model has
+# said anything, and it derived APPROVE: a green required gate on a PR nobody
+# reviewed. Pinned HERE, at the lib, because the reader is what every consumer
+# shares; a caller-side ordering fix would leave the next consumer fail-open.
+#
+# The template is sliced out of the reviewer at test time for the same reason the
+# transcript preamble is (see CODEX_ECHOED_PROMPT_TAIL below): a retyped copy
+# tests the copy, not the producer, which is how this defect got past round 1.
+DERIVE_TMPL="$(sed -n '/^FINDINGS:$/,/^END FINDINGS"$/p' "$REVIEWER" | sed 's/"$//')"
+[ -n "$DERIVE_TMPL" ] || fail "could not slice the findings template out of $REVIEWER"
+
+{ printf 'Reading additional input from stdin...\nOpenAI Codex v0.146.0\nuser\n'
+  printf '%s\n' "$DERIVE_TMPL"
+  printf 'hook: UserPromptSubmit Completed\n'
+  printf 'ERROR: Your workspace is out of credits. Add credits to continue.\n'
+} > "$WORK/echo-outage.md"
+[ -z "$(findings_block "$WORK/echo-outage.md")" ] \
+  || fail "the echoed prompt template parsed as the engine's findings block. The model never took a
+      turn on this transcript (no ^codex marker), so nothing in it is its output.
+      Parsed: $(findings_block "$WORK/echo-outage.md")"
+[ -z "$(verdict_from_findings "$WORK/echo-outage.md")" ] \
+  || fail "AN OUT-OF-CREDITS CODEX RUN DERIVED '$(verdict_from_findings "$WORK/echo-outage.md")'.
+      A verdict off a transcript where the model emitted zero tokens is a fabricated review, and
+      APPROVE here posts a green required check on a PR that was never read."
+ok "derive: a transcript with no assistant turn derives NOTHING (the echoed template is not an answer)"
+
+# The other half: a model that DID answer must be read, and read from ITS block --
+# not from the echoed template sitting above it. Without the strip, "last complete
+# block" is ambiguous the moment the real one is cut off.
+{ printf 'Reading additional input from stdin...\nOpenAI Codex v0.146.0\nuser\n'
+  printf '%s\n' "$DERIVE_TMPL"
+  printf 'hook: UserPromptSubmit Completed\ncodex\n'
+  printf '## VERDICT: REQUEST CHANGES\n\nFINDINGS:\nmajor|the fallback fills the slot silently|x.sh:1\nEND FINDINGS\n'
+} > "$WORK/echo-answered.md"
+[ "$(verdict_from_findings "$WORK/echo-answered.md")" = "REQUEST CHANGES" ] \
+  || fail "a real review inside a transcript must still derive from the MODEL's block, got
+      '$(verdict_from_findings "$WORK/echo-answered.md")'. The strip must drop the echo, not the answer."
+ok "derive: a transcript WITH an assistant turn still derives from the model's own block"
+
+# NEGATIVE SELF-TEST. Both assertions above pass trivially if findings_block were
+# broken outright, so mutate out the two transcript lines and prove the outage
+# case goes back to APPROVE. If this mutant still derives nothing, the assertions
+# are being carried by something other than the strip and prove nothing about it.
+DERIVE_MUTANT="$WORK/lib-no-strip.sh"
+grep -v -e '^    NR <= 10 && /\^OpenAI Codex v/' \
+        -e '^    transcript && !turn' "$LIB" > "$DERIVE_MUTANT"
+MUTANT_VERDICT="$(bash -c '. "$1"; verdict_from_findings "$2"' _ "$DERIVE_MUTANT" "$WORK/echo-outage.md")"
+[ "$MUTANT_VERDICT" = "APPROVE" ] \
+  || fail "mutation did not kill it: with the transcript strip removed the out-of-credits artifact
+      derived '$MUTANT_VERDICT', not the APPROVE the defect actually produced. The two assertions
+      above are therefore not testing the strip -- something else is producing their result."
+ok "mutation kills it: remove the transcript strip and the out-of-credits artifact derives APPROVE again"
+
 # The disagreement case the reviewer must not be trusted on: prose says APPROVE
 # while its own labels carry a major. Derivation has to win, or a reviewer can
 # talk a majors-laden PR through the gate.
@@ -1914,25 +1970,48 @@ END FINDINGS
 # fix ship half-done: every codex run -- success, garbage, or total outage --
 # writes this banner, the echoed prompt, and the hook chatter into the review
 # file BEFORE anything else. There is no such thing as a 0-byte codex artifact.
-CODEX_PREAMBLE='Reading additional input from stdin...
+#
+# THE ECHOED PROMPT IS READ OUT OF THE PRODUCER, NOT RETYPED (round 2 of the same
+# PR #86 review). The first cut of this preamble stubbed the echo as the single
+# line `Review this PR.`, and that stand-in is exactly where the next defect hid:
+# the REAL prompt ends with the machine-readable TEMPLATE the reviewer asks for,
+#
+#     FINDINGS: / severity|one-sentence claim|file:line / END FINDINGS
+#
+# so `codex exec` echoing it back writes a COMPLETE findings block into every
+# transcript before the model has emitted one token. A one-line stand-in has no
+# block, so the fixture could not see it. Slicing the tail out of the reviewer at
+# test time means the fixture cannot drift from the prompt it is imitating: edit
+# the template in pr-review-agent.sh and this fixture follows.
+CODEX_ECHOED_PROMPT_TAIL="$(sed -n '/^FINDINGS:$/,/^END FINDINGS"$/p' "$REVIEWER" | sed 's/"$//')"
+[ -n "$CODEX_ECHOED_PROMPT_TAIL" ] \
+  || fail "could not slice the findings template out of $REVIEWER -- the fixture would silently
+      go back to imitating a prompt that carries no block, which is the defect it exists to pin."
+printf '%s' "$CODEX_ECHOED_PROMPT_TAIL" | grep -q '^END FINDINGS$' \
+  || fail "the sliced prompt tail has no closing END FINDINGS line, so the echoed template would not
+      parse as a complete block and the fixture would prove nothing. Got: $CODEX_ECHOED_PROMPT_TAIL"
+
+CODEX_PREAMBLE="Reading additional input from stdin...
 OpenAI Codex v0.146.0
 --------
 workdir: /tmp/review-tree
 model: gpt-5.6-sol
 provider: openai
 approval: never
-sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+sandbox: workspace-write [workdir, /tmp, \$TMPDIR]
 reasoning effort: medium
 reasoning summaries: none
 session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
 --------
 user
-Review this PR.
+Review this PR. Report findings in exactly this shape:
+
+$CODEX_ECHOED_PROMPT_TAIL
 warning: Skill descriptions were shortened to fit the 2% skills context budget.
 hook: SessionStart
 hook: SessionStart Completed
 hook: UserPromptSubmit
-hook: UserPromptSubmit Completed'
+hook: UserPromptSubmit Completed"
 
 # Truncated: the stream died after the block opened. `sed /FINDINGS:/,/END
 # FINDINGS/p` runs to EOF on this, so an empty range derives APPROVE unless the

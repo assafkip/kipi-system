@@ -82,13 +82,54 @@ extract_verdict() {
 # starting `FINDINGS:` reads as unstated. That is the safe direction and the same
 # posture the rest of this file takes: unstated HOLDS a PR, green RELEASES it.
 #
-# awk, not sed, because the rule is stateful in two ways a range expression cannot
-# express: opening a new block discards an unclosed one, and the end-of-input state
-# decides whether any of it counts.
+# THE HARNESS ECHOES THE PROMPT, AND THE PROMPT CARRIES THE TEMPLATE (ASK-287,
+# found by codex reviewing PR #86 round 2). `run_engine` captures the WHOLE
+# `codex exec` transcript (`> "$2" 2>&1`), and that transcript replays the prompt
+# back before the model runs. The reviewer's prompt ends by showing the exact
+# block it wants:
+#
+#     FINDINGS: / severity|one-sentence claim|file:line / END FINDINGS
+#
+# so EVERY codex artifact contains a syntactically complete findings block that
+# the model did not write. Measured on the out-of-credits shape (probe, 2026-08-03):
+# has_complete_findings_block TRUE, verdict_from_findings APPROVE, on a run where
+# the model never emitted one token. That is the worst output this file can
+# produce -- a green required gate on a PR that was never reviewed -- and it beat
+# the outage classifier because the classifier ran second, on a file that had
+# already parsed.
+#
+# THE CUT IS THE ASSISTANT-TURN MARKER, the same structural property of the
+# producer the outage predicate already reads: `codex` alone on a line is printed
+# before the model's first token. Everything above it is the harness talking to
+# itself (banner, workdir, echoed prompt, hook chatter); everything below is the
+# engine's own output. So on a transcript:
+#
+#   turn marker present -> parse ONLY what follows the FIRST one
+#   turn marker absent  -> the model never spoke, so there is NO content to parse
+#
+# It lives HERE, in the one reader, and not in pr-review-agent.sh's branch order,
+# because a fix in the caller leaves the lib handing APPROVE to every other
+# consumer that asks -- the exact "safety lived in one caller instead of in the
+# reader" defect the comment above this one was written about.
+#
+# `claude -p` writes only the model's words, no banner and no echo, so a review
+# from that engine has no transcript to strip and is read whole. The transcript
+# test is anchored to the banner in the first lines, where the producer writes it
+# (measured: line 2), so a REVIEW that merely quotes the banner mid-prose is not
+# mistaken for one. If that guard is ever wrong the failure is toward UNSTATED,
+# which holds a PR; the defect it replaces released one.
+#
+# awk, not sed, because the rule is stateful in three ways a range expression
+# cannot express: the transcript region has to be skipped before matching starts,
+# opening a new block discards an unclosed one, and the end-of-input state decides
+# whether any of it counts.
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
   awk '
+    NR <= 10 && /^OpenAI Codex v/ { transcript = 1 }
+    transcript && !turn && /^codex[[:space:]]*$/ { turn = 1; next }
+    transcript && !turn           { next }
     /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }
     open && /^END FINDINGS/ { last = buf $0 "\n"; open = 0; next }
     open                    { buf = buf $0 "\n" }
