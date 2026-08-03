@@ -1,4 +1,27 @@
 #!/usr/bin/env bash
+# EVERYTHING BELOW IS INSIDE A BRACE GROUP. Do not remove the `{` here or the `}`
+# on the last line, and do not remove the `exit` that precedes that `}`.
+#
+# bash does not load a script into memory. It reads a chunk, executes it, then
+# seeks back to a saved byte offset for the next command. This script runs for
+# hours, and the repo it lives in is edited by agents the whole time. On
+# 2026-08-03 commit d142466 landed at 03:45:48Z, seven minutes into the ASK-288
+# run that started at 03:38:26Z. Every byte offset after the edit shifted, bash
+# resumed mid-string, and bare words inside a quoted STALL_LOG became commands:
+#   converge.sh: line 872: of: command not found
+#   converge.sh: line 872: not: command not found
+#   converge.sh: line 876: syntax error near unexpected token `fi'
+# Line 872 is `fi`. `bash -n` passes on every committed version -- the file was
+# never syntactically wrong, it was edited underneath a live reader. Four rounds
+# of review work were already done and were thrown away at the exit.
+#
+# bash must parse a compound command to completion before running any of it, so
+# the brace group is consumed at startup and a later edit cannot reach it. The
+# trailing `exit` is the other half and is NOT redundant: without it bash seeks
+# PAST the closing brace looking for one more command, lands at a stale offset,
+# and dies on the leftovers even though the body ran fine. Both halves are held
+# by q-system/.q-system/tests/test-script-stable-under-self-edit.sh (tests 3a/3b).
+{
 # Drive one Linear issue to an APPROVED PR: dispatch Sana, review, repeat.
 #
 # WHY THIS EXISTS
@@ -880,4 +903,9 @@ done
 
 say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
 bash "$NOTIFY" --kind receipt "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+# This exit is load-bearing, not just the last statement. See the brace-group note
+# at the top: without an exit reached before `}`, bash seeks past the closing brace
+# for one more command and dies on stale bytes. Any new terminal path added below
+# must exit too.
 exit 2
+}

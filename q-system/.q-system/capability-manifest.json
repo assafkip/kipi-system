@@ -490,6 +490,10 @@
     {
       "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

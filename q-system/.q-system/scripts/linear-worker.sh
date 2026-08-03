@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# EVERYTHING BELOW IS INSIDE A BRACE GROUP. Do not remove the `{` here or the `}`
+# on the last line, and do not remove the `exit` that precedes that `}`.
+#
+# bash reads a script incrementally, seeking back to a saved byte offset between
+# commands. This worker runs for up to 1800s per round inside a repo that agents
+# are editing the whole time, so an edit landing mid-run shifts every later offset
+# and bash resumes parsing mid-string. linear-worker.log carries the signature:
+#   linear-worker.sh: line N: not: command not found
+#   linear-worker.sh: line N: ial: command not found
+# `ial` is not a word in this file -- it is the tail of one, read from a slipped
+# offset. Same defect took down the ASK-288 converge run on 2026-08-03 and threw
+# away four completed rounds of review work.
+#
+# bash parses a compound command fully before running any of it, so the brace
+# group is safe once startup finishes. The trailing `exit` is the other half and
+# is NOT redundant: without it bash reads past `}` and dies on stale bytes even
+# though the body succeeded. Both halves are held by
+# q-system/.q-system/tests/test-script-stable-under-self-edit.sh (tests 3a/3b).
+{
 # The autonomous worker: pick a ready Linear issue, do it, leave a trail, open a PR.
 #
 # WHAT IT IS
@@ -1946,4 +1965,9 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
 done
 
 say "worker: run complete"
+# This exit is load-bearing, not just the last statement. See the brace-group note
+# at the top: without an exit reached before `}`, bash seeks past the closing brace
+# for one more command and dies on stale bytes. Any new terminal path added below
+# must exit too.
 exit 0
+}
