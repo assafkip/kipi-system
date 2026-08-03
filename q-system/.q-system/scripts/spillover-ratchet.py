@@ -153,11 +153,16 @@ def main() -> int:
     if len(hits) > MAX_SHOWN:
         print(f"\n  ...and {len(hits) - MAX_SHOWN} more "
               f"(`prd_runner.py spillover list --open`)", file=sys.stderr)
-    print("\n  DO NOT fix them -- that is scope creep. Just say whether each is "
-          "STILL TRUE:\n"
-          "    still true  -> leave it, carry on with your task\n"
-          "    stale/wrong -> prd_runner.py spillover resolve <id> --void \"<reason>\"\n"
-          "  Then continue. This fires once per file per day.\n", file=sys.stderr)
+    print("\n  DO NOT fix them here -- that is scope creep. Decide, and give each "
+          "an ADDRESS:\n"
+          "    STALE     -> prd_runner.py spillover resolve <id> --void \"<reason>\"\n"
+          "    STILL TRUE-> spillover-promote.py <id> --title \"...\" --dor-file <f>\n"
+          "                 makes a Linear issue the worker can pick up. It REFUSES\n"
+          "                 without allowed-files + acceptance, because an issue\n"
+          "                 nothing can work is the queue this all started from.\n"
+          "  A confirmed note with no address is just the pile, re-read.\n"
+          "  Then continue your task. This fires once per file per day.\n",
+          file=sys.stderr)
     return 2     # the ONLY exit code whose stderr reaches the agent
 
 
