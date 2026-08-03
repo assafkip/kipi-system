@@ -69,11 +69,7 @@ def find_nested_repos(root: Path) -> set:
         parent = git.parent
         if parent.resolve() == root.resolve():
             continue
-        # Filters to the same parity as every other walker in this file (ASK-315).
-        # SKIP_DIRS alone was a partial application: is_vendored also knows about
-        # virtualenvs and vendor markers, and a repo checked out under a review tree
-        # is already dark to every consumer, so registering it as nested was noise.
-        if is_vendored(parent) or is_excluded_tree(parent, root):
+        if any(d in SKIP_DIRS for d in parent.parts):
             continue
         found.add(parent.resolve())
     return found
@@ -153,7 +149,7 @@ def walk(root: Path, *parts):
         return []
     out = []
     for p in base.rglob(parts[-1]):
-        if is_vendored(p) or is_excluded_tree(p, root):
+        if is_vendored(p):
             continue
         if p.is_file():
             out.append(p)
@@ -177,7 +173,7 @@ def collect_commands(root: Path) -> list:
         if not base.is_dir():
             continue
         for p in base.rglob("*.md"):
-            if is_vendored(p) or is_excluded_tree(p, root):
+            if is_vendored(p):
                 continue
             if base.name == "plugins" and "commands" not in p.parts:
                 continue
@@ -202,9 +198,7 @@ def collect_commands(root: Path) -> list:
 def collect_skills(root: Path) -> list:
     caps = []
     for p in root.rglob("SKILL.md"):
-        # A SKILL.md inside a review tree or a generated dir is a copy, not a skill
-        # this repo ships. Same predicate as every other walker here (ASK-315).
-        if is_vendored(p) or is_excluded_tree(p, root):
+        if is_vendored(p):
             continue
         text = read_text(p)
         name = p.parent.name
@@ -336,121 +330,17 @@ def _docstring_line(text: str) -> str:
 # reference; markdown is handled separately below because prose is not wiring.
 SURFACE_CODE_EXT = {
     ".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".toml", ".json",
-    ".cfg", ".ini", ".mk",
+    ".cfg", ".ini", ".mk", ".txt",
 }
-# .txt IS PROSE, NOT CODE (codex round 5, major). It sat in SURFACE_CODE_EXT,
-# where every mention counts with no invocation filter at all, so any note,
-# report or log ANYWHERE outside q-system/output/ silently marked a named engine
-# LIVE. Excluding the generated tree fixed one instance of this and left the
-# class open: the same defect shape as the B1 prose leak, on a different
-# extension. A .txt is a runbook far less often than it is somebody's notes, so
-# it belongs with .md where a line must actually invoke something.
-SURFACE_DOC_EXT = {".md", ".txt"}
+SURFACE_DOC_EXT = {".md"}
 # Extensionless wiring surfaces (the kipi CLI, Makefiles, lefthook's shell blocks).
 SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "justfile"}
-
-# GENERATED ARTIFACTS ARE NOT WIRING SURFACES (ASK-122, caught pre-merge).
-#
-# Widening the scan repo-wide swept in q-system/output/, which holds codex
-# transcripts, run logs, plans and RCAs. Those name scripts constantly and run
-# nothing. Measured on kipi-investigations: the `_sync_all` design-system script
-# flipped to LIVE on the
-# strength of `q-system/output/codex-sfactivity-prd-out.txt` line 738, a bare
-# `find`-style listing of that script's path.
-#
-# NOTE the extension is omitted deliberately everywhere in these comments. A
-# bare module name only counts inside import/loader syntax (MODULE_REF_RE), but
-# the FILENAME regex matches anywhere in any code file, comments included. The
-# first draft of this scar named the file outright and thereby marked it LIVE --
-# a comment explaining that a script is dead resurrected it, which is the very
-# shape documented just below. Do not add the suffix back.
-#
-# The invocation filter cannot save this: that line starts with "./" and so
-# matches MD_INVOCATION_RE. A log of a command that ENUMERATED files is
-# indistinguishable, line by line, from a runbook that INVOKES one. The only
-# durable separator is provenance -- who wrote the file -- so the fix is to drop
-# generated trees from the surface rather than to write a cleverer regex.
-#
-# q-system/output/ is the OS's generated-artifacts directory by convention; it is
-# also in kipi-update.sh's INSTANCE_OWNED_SUBTREES, i.e. already understood
-# fleet-wide as an instance's own output rather than source.
-GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
-
-# Review scratch: a detached copy of the repo, or a dump ABOUT the repo. Neither
-# is wiring. `.pr36rev/all-dors.json` is a Linear DoR dump whose own text says
-# `_sync_all` has "no test, no wiring reference" -- a document asserting a
-# script is DEAD was the thing marking it alive (Fable B2). Matched on the path
-# component so a nested `.pr42rev-r2/tree/...` counts too.
-#
-# NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
-# PRIMARY wiring locations; treating every dotted component as scratch is what
-# made _witness_rank cite the wrong file (Fable A1).
-SCRATCH_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
-
-
-def _is_excluded_part(part: str) -> bool:
-    return bool(SCRATCH_DIR_RE.match(part))
-
-
-def is_excluded_tree(p: Path, root: Path) -> bool:
-    """Generated artifact or review scratch: not an engine, not a wiring surface,
-    not a witness.
-
-    ONE predicate for EVERY consumer ON PURPOSE. Excluding a tree from only some of
-    them is the defect shape that recurred six times in this file in one night:
-    engines excluded but still voting as surfaces (Fable B3), trees off the surface
-    but still collected as engines (review round 1 major), snapshots skipped one way
-    only, has_test's own rglob left out of the very commit that claimed to
-    consolidate everything. If a tree is not real, it is not real for any question.
-
-    DO NOT WRITE A COUNT HERE (ASK-315). The previous version of this docstring said
-    "all three consumers" and shipped with a fourth, because the count came from
-    memory. `consumer-parity-check.py` now enumerates the consumers from this file's
-    AST and blocks on any walker that skips this predicate, so the census is taken by
-    a gate rather than recalled by a person.
-    """
-    try:
-        rel = p.relative_to(root)
-    except ValueError:
-        return False
-    if rel.as_posix().startswith(GENERATED_SURFACE_PREFIXES):
-        return True
-    return any(_is_excluded_part(part) for part in rel.parts)
-
-
-def _witness_rank(p: Path):
-    """Sort key preferring a REAL caller over a scratch copy of one.
-
-    Ranks on KNOWN scratch markers, not on a leading dot. The dot rule demoted
-    `.claude/` and `.q-system/` -- where most of this fleet's wiring actually
-    lives -- so any non-hidden file out-cited the true caller (Fable A1).
-    """
-    scratch = any(_is_excluded_part(part) for part in p.parts)
-    return (scratch, len(p.parts), str(p))
 
 # A markdown line only counts as wiring if it INVOKES something. A findings doc
 # saying "engine_x.py left the template unfilled" names a script without keeping it
 # alive; a runbook line `python3 engine_x.py` does. Without this split, widening the
 # scan repo-wide just trades false-dead for false-alive (ASK-122).
-# ANCHORED TO INVOCATION POSITION (Fable B1). The unanchored version matched
-# ordinary English, and this filter is the SOLE evidence for 9.2% of fleet LIVE
-# verdicts:
-#   "The source of the bug is engine_x.py"          -> hit on `source `
-#   "run-sweep.sh used to call engine_x.py"         -> hit on `sh `
-#   "this old python script engine_x.py is dead"    -> hit on `python `
-#   "see ../notes for why engine_x.py was dropped"  -> hit on `./`
-# All four assert the script is DEAD and all four marked it LIVE. The suite's
-# prose-negative fixture passed only because its wording happened to dodge those
-# tokens: green for a reason unrelated to correctness.
-# A command starts a line or follows a pipe / && / ; / backtick / $( -- never
-# mid-sentence. `-m` is dropped as a standalone arm: it cannot start a command,
-# and `python -m x` is already covered by the python arm.
-# The interpreter arms need trailing whitespace (`python3 x.py`); `./` does not,
-# because the path follows it directly (`./x.py`). Requiring a separator for both
-# silently dropped every `./script` caller -- caught by the kill-test, not by eye.
-MD_INVOCATION_RE = re.compile(
-    r"(?:^|[|&;(`]|\$\()\s*(?:(?:python3?|bash|sh|source)\s|\./)"
-)
+MD_INVOCATION_RE = re.compile(r"(?:python3?\s|bash\s|\bsh\s|\./|source\s|-m\s)")
 
 # Module tokens an engine can be reached by WITHOUT its .py suffix. `import x`,
 # `from x import y`, `python -m x`, and importlib's spec_from_file_location("x", ...)
@@ -490,16 +380,6 @@ def _iter_surface_files(root: Path):
     """
     for p in root.rglob("*"):
         if not p.is_file() or is_vendored(p):
-            continue
-        if is_excluded_tree(p, root):
-            continue
-        # A dated snapshot is DATA, and this file already says so by refusing to
-        # collect it as an engine. It must not VOTE either: a rollback copy's
-        # `import geo_clues` kept geo_clues.py LIVE after every real caller was
-        # gone, and Alice writes one snapshot per sweep so the phantom votes
-        # accumulate forever (Fable B3). Excluding it on one side only was the
-        # same half-exclusion this file keeps repeating.
-        if DATED_SNAPSHOT_RE.search(p.stem):
             continue
         if p.suffix.lower() in SURFACE_CODE_EXT or p.suffix.lower() in SURFACE_DOC_EXT:
             yield p
@@ -559,31 +439,13 @@ def collect_engines(root: Path) -> list:
     """Scripts that have a paired test, or that are referenced from a wiring
     surface. An engine with neither is reported UNWIRED rather than assumed fine."""
     caps = []
-    # FOURTH consumer of the exclusion predicate, and the one I missed when
-    # claiming "one predicate for all three" in the commit that introduced it
-    # (codex round 3, major). Without this, a test filename inside a review tree
-    # or a generated dir still grants has_test, so the same one-sided-exclusion
-    # shape survived inside the very change written to eliminate it. The count
-    # of consumers is not fixed at three; grep is_excluded_tree before adding a
-    # new walk over the repo.
-    tests = {p.name for p in root.rglob("test*")
-             if p.is_file() and not is_vendored(p) and not is_excluded_tree(p, root)}
+    tests = {p.name for p in root.rglob("test*") if p.is_file() and not is_vendored(p)}
 
     engines = []
     for p in root.rglob("*.py"):
         if is_vendored(p):
             continue
         if p.name.startswith(("test_", "test-")) or "test" in p.parts:
-            continue
-        # A generated tree is not a wiring surface (see is_excluded_tree), so
-        # it must not be an ENGINE source either. Excluding it from only one of
-        # the two makes its contents permanently dark: still collected, but with
-        # every file that could reference them now off-surface, so they report
-        # UNWIRED with no way to ever clear it (review finding, PR #74 major;
-        # would have compounded sp-3761d2d9). An artifact is not an engine, so
-        # the coherent move is to stop reporting it at all rather than to report
-        # it as dead. Measured: drops 12 phantom engines in kipi-investigations.
-        if is_excluded_tree(p, root):
             continue
         if DATED_SNAPSHOT_RE.search(p.stem):
             continue
@@ -596,14 +458,8 @@ def collect_engines(root: Path) -> list:
     for p in engines:
         text = read_text(p)
         sources = refs.get(p, set())
-        # WITNESS ORDER IS NOT ALPHABETICAL (review finding, PR #74 minor).
-        # Plain sorted()[0] puts dot-prefixed paths first, so the evidence named
-        # a review scratch tree (.pr42rev/, .claude/worktrees/) instead of the
-        # real caller in 163 of 785 witnesses measured across five repos. The
-        # verdict was right and the citation was useless, which is worse than it
-        # sounds: the citation is the only part a human re-checks.
-        test_sources = sorted((s for s in sources if _is_test_file(s)), key=_witness_rank)
-        wiring_sources = sorted((s for s in sources if not _is_test_file(s)), key=_witness_rank)
+        test_sources = sorted(s for s in sources if _is_test_file(s))
+        wiring_sources = sorted(s for s in sources if not _is_test_file(s))
         has_test = any(p.stem in t for t in tests) or bool(test_sources)
         referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
@@ -635,10 +491,7 @@ def collect_domains(root: Path) -> list:
     for p in sorted(root.glob("q-*")):
         if not p.is_dir() or p.name in ("q-system",):
             continue
-        if is_vendored(p) or is_excluded_tree(p, root):
-            continue
-        files = [f for f in p.rglob("*")
-                 if f.is_file() and not is_vendored(f) and not is_excluded_tree(f, root)]
+        files = [f for f in p.rglob("*") if f.is_file() and not is_vendored(f)]
         caps.append({
             "name": f"domain {p.name}",
             "layer": L_DOMAIN,
@@ -718,10 +571,6 @@ def tag_origin(caps: list, root: Path, skeleton: Path) -> list:
 
 def build(root: Path, repo: str, skeleton: Path) -> dict:
     global _NESTED_REPOS
-    # Cleared FIRST: find_nested_repos now filters through is_vendored, which reads
-    # this global, so a value left over from a previous build() in the same process
-    # would decide which repos the next scan is allowed to see (ASK-315).
-    _NESTED_REPOS = set()
     _NESTED_REPOS = find_nested_repos(root)
     caps = []
     for fn in (collect_rules, collect_commands, collect_skills, collect_hooks,
