@@ -1,8 +1,8 @@
 Reading additional input from stdin...
-2026-08-03T01:52:56.526145Z ERROR codex_core::session::session: failed to load skill /Users/assafkipnis/.agents/skills/audhd-executive-function/SKILL.md: missing YAML frontmatter delimited by ---
+2026-08-03T01:52:56.526145Z ERROR codex_core::session::session: failed to load skill /Users/founder/.agents/skills/audhd-executive-function/SKILL.md: missing YAML frontmatter delimited by ---
 OpenAI Codex v0.146.0
 --------
-workdir: /Users/assafkipnis/.config/kipi/review-trees/pr-74
+workdir: /Users/founder/.config/kipi/review-trees/pr-74
 model: gpt-5.6-sol
 provider: openai
 approval: never
@@ -13,7 +13,7 @@ session id: 019fc552-ef78-7042-b537-564700d059ef
 --------
 user
 You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
-You were asked to review pull request #74 in /Users/assafkipnis/.config/kipi/review-trees/pr-74, and you are ADVERSARIAL by default:
+You were asked to review pull request #74 in /Users/founder/.config/kipi/review-trees/pr-74, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.
 
 ## THIS IS REVIEW ROUND 2 OF THIS PR
@@ -158,7 +158,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "sed -n '1,240p' /Users/assafkipnis/.codex/plugins/cache/openai-curated-remote/github/0.1.9-alpha.0-5f2a107-2841cf9749ae/skills/github/SKILL.md && sed -n '1,260p' /Users/assafkipnis/.agents/skills/assaf-voice/SKILL.md && sed -n '1,260p' q-system/AGENTS.md" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "sed -n '1,240p' /Users/founder/.codex/plugins/cache/openai-curated-remote/github/0.1.9-alpha.0-5f2a107-2841cf9749ae/skills/github/SKILL.md && sed -n '1,260p' /Users/founder/.agents/skills/assaf-voice/SKILL.md && sed -n '1,260p' q-system/AGENTS.md" in /Users/founder/.config/kipi/review-trees/pr-74
  exited 1 in 0ms:
 ---
 name: github
@@ -465,9 +465,9 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "wc -l /Users/assafkipnis/.agents/skills/assaf-voice/SKILL.md && sed -n '261,620p' /Users/assafkipnis/.agents/skills/assaf-voice/SKILL.md && sed -n '1,240p' /Users/assafkipnis/.agents/skills/assaf-voice/references/layers/core-voice.md && sed -n '1,240p' /Users/assafkipnis/.agents/skills/assaf-voice/references/layers/vocabulary.md && sed -n '1,240p' /Users/assafkipnis/.agents/skills/assaf-voice/references/layers/gotchas.md && pwd && rg --files -g 'AGENTS.md' -g '"'!node_modules'"' -g '"'!vendor'"'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "wc -l /Users/founder/.agents/skills/assaf-voice/SKILL.md && sed -n '261,620p' /Users/founder/.agents/skills/assaf-voice/SKILL.md && sed -n '1,240p' /Users/founder/.agents/skills/assaf-voice/references/layers/core-voice.md && sed -n '1,240p' /Users/founder/.agents/skills/assaf-voice/references/layers/vocabulary.md && sed -n '1,240p' /Users/founder/.agents/skills/assaf-voice/references/layers/gotchas.md && pwd && rg --files -g 'AGENTS.md' -g '"'!node_modules'"' -g '"'!vendor'"'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
-     350 /Users/assafkipnis/.agents/skills/assaf-voice/SKILL.md
+     350 /Users/founder/.agents/skills/assaf-voice/SKILL.md
 
 4. **Mechanical "man"/"dude" insertion.** These words are natural in Assaf's voice but AI sprinkles them as casual-signaling. Max 1-2 per batch of messages. Never in back-to-back drafts. Never as the only casual marker.
 
@@ -683,7 +683,7 @@ The formal forms (do not, is not, does not, it is, you are) read as AI-generated
 ## Active Corrections (auto-populated by copy-diff agent)
 
 (No corrections logged yet. This file grows as the founder edits generated copy.)
-/Users/assafkipnis/.config/kipi/review-trees/pr-74
+/Users/founder/.config/kipi/review-trees/pr-74
 AGENTS.md
 
 hook: PostToolUse
@@ -695,7 +695,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "sed -n '1,320p' AGENTS.md && git status --short && git remote -v && gh pr view 74 --json number,title,body,author,baseRefName,headRefName,headRefOid,baseRefOid,url,files,commits,statusCheckRollup && gh pr diff 74" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "sed -n '1,320p' AGENTS.md && git status --short && git remote -v && gh pr view 74 --json number,title,body,author,baseRefName,headRefName,headRefOid,baseRefOid,url,files,commits,statusCheckRollup && gh pr diff 74" in /Users/founder/.config/kipi/review-trees/pr-74
  exited 1 in 38ms:
 error connecting to api.github.com
 check your internet connection or https://githubstatus.com
@@ -711,7 +711,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'git branch --show-current && git branch -avv && git show-ref --heads --tags && git log --oneline --decorate -20 && git status --porcelain=v1 && git diff --stat origin/main...HEAD && git diff --name-status origin/main...HEAD' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'git branch --show-current && git branch -avv && git show-ref --heads --tags && git log --oneline --decorate -20 && git status --porcelain=v1 && git diff --stat origin/main...HEAD && git diff --name-status origin/main...HEAD' in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 14ms:
  q-system/.q-system/capability-manifest.json        |   4 +
  q-system/.q-system/scripts/capability-map-gen.py   | 210 ++++++++++++++++++---
@@ -730,7 +730,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'git diff --find-renames --find-copies --unified=80 origin/main...HEAD -- q-system/.q-system/capability-manifest.json q-system/.q-system/scripts/capability-map-gen.py q-system/.q-system/scripts/test/test-capability-map-wiring.py' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'git diff --find-renames --find-copies --unified=80 origin/main...HEAD -- q-system/.q-system/capability-manifest.json q-system/.q-system/scripts/capability-map-gen.py q-system/.q-system/scripts/test/test-capability-map-wiring.py' in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 diff --git a/q-system/.q-system/capability-manifest.json b/q-system/.q-system/capability-manifest.json
 index b0b47af..2561ae6 100644
@@ -1508,7 +1508,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "sed -n '1,260p' q-system/.q-system/scripts/capability-map-gen.py && sed -n '260,620p' q-system/.q-system/scripts/capability-map-gen.py && sed -n '620,980p' q-system/.q-system/scripts/capability-map-gen.py && rg -n \"capability-map-gen|collect_engines|capability-map\" --glob '"'!q-system/output/**'"' --glob '"'!*.md'"' . && rg -n \"spec_from_file_location|"'^'"\\s*from\\s+\\.|"'^'"\\s*import\\s+["'^#]*," --glob '"'*.py' --glob '"'!q-system/output/**'"' . | head -200" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "sed -n '1,260p' q-system/.q-system/scripts/capability-map-gen.py && sed -n '260,620p' q-system/.q-system/scripts/capability-map-gen.py && sed -n '620,980p' q-system/.q-system/scripts/capability-map-gen.py && rg -n \"capability-map-gen|collect_engines|capability-map\" --glob '"'!q-system/output/**'"' --glob '"'!*.md'"' . && rg -n \"spec_from_file_location|"'^'"\\s*from\\s+\\.|"'^'"\\s*import\\s+["'^#]*," --glob '"'*.py' --glob '"'!q-system/output/**'"' . | head -200" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 #!/usr/bin/env python3
 """Generate a CAPABILITY-MAP.json for a kipi instance repo by structural recon.
@@ -2260,7 +2260,7 @@ for name, vals in sorted(by_name.items()):
         print('\\nDUP', name, len(vals))
         for c in vals:
             print(c['entry'], c['status'], c['evidence'])
-PY" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+PY" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 1715ms:
 pr-74-review: 397 capabilities (LIVE=377, NEEDS_WORK=9, UNWIRED=11) [local=397] -> 20 actionable+local -> /var/folders/th/ty0kb7r56dvfrkgkrcbx9fv00000gn/T//pr74-capability-map.json
 engines 284 Counter({'LIVE': 273, 'UNWIRED': 11})
@@ -2624,7 +2624,7 @@ PY
 rg -n \""'^'"\\.pr25rev|"'^'"\\.review-tmp|"'^'"\\.pr2[0-9]rev\" .gitignore .git/info/exclude 2>/dev/null || true
 git ls-files '.pr25rev/**' '.review-tmp-pr11/**' '.pr27rev/**' | sed -n '1,80p'
 git ls-files '.pr25rev/**' '.review-tmp-pr11/**' '.pr27rev/**' | wc -l
-nl -ba q-system/.q-system/scripts/capability-map-gen.py | sed -n '330,510p'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+nl -ba q-system/.q-system/scripts/capability-map-gen.py | sed -n '330,510p'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 UNWIRED True .pr24rev/mutate.py :: .pr24rev/mutate.py: 76 lines; NO test and NO wiring reference found.
 LIVE True .pr27rev/token-guard.py :: .pr27rev/token-guard.py: 923 lines; has a paired test (.pr27rev/test-token-guard-hook-behavior.sh), referenced on a wiring surface (instance-registry.json).
@@ -3096,7 +3096,7 @@ for name in ['pr74-duplicate-basename-repro.py','pr74-hidden-artifact-repro.py',
     p = Path(os.environ['TMPDIR']) / name
     print(p)
     print(os.path.relpath(p, cwd))
-PY" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+PY" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 /var/folders/th/ty0kb7r56dvfrkgkrcbx9fv00000gn/T/pr74-duplicate-basename-repro.py
 ../../../../../../var/folders/th/ty0kb7r56dvfrkgkrcbx9fv00000gn/T/pr74-duplicate-basename-repro.py
@@ -3126,7 +3126,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3163,7 +3163,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3187,7 +3187,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'python3 "$TMPDIR/pr74-duplicate-basename-repro.py"' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'python3 "$TMPDIR/pr74-duplicate-basename-repro.py"' in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 dead/worker.py LIVE dead/worker.py: 47 lines; referenced on a wiring surface (run.sh).
 live/worker.py LIVE live/worker.py: 47 lines; referenced on a wiring surface (run.sh).
@@ -3208,7 +3208,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3241,7 +3241,7 @@ for c in data['capabilities']:
     if c['layer'] == 'L5 Engines and scripts' and 'kipi_ingest' in c['entry']:
         print(c['entry'], c['status'], c['evidence'])
 PY
-rg -n \"from \\.|import \\..*\" q-system/lib/kipi_ingest --glob '*.py'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+rg -n \"from \\.|import \\..*\" q-system/lib/kipi_ingest --glob '*.py'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
       42 q-system/lib/kipi_ingest/__init__.py
      182 q-system/lib/kipi_ingest/conformance.py
@@ -3283,7 +3283,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3307,7 +3307,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "sed -n '1,60p' q-system/lib/kipi_ingest/__init__.py && rg -n \"contract\\.py|xlsx_reader\\.py|csv_reader\\.py|markdown\\.py\" q-system/lib/kipi_ingest --glob '*.py'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "sed -n '1,60p' q-system/lib/kipi_ingest/__init__.py && rg -n \"contract\\.py|xlsx_reader\\.py|csv_reader\\.py|markdown\\.py\" q-system/lib/kipi_ingest --glob '*.py'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 """kipi_ingest -- fleet-canonical ingestion coverage contract + readers.
 
@@ -3369,7 +3369,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3393,7 +3393,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "nl -ba kipi | sed -n '120,190p' && rg -n \"capabilities|capability-map-gen\" q-system/.q-system/scripts q-system/.q-system/*.py kipi .github --glob '"'!q-system/output/**'"' | sed -n '1,220p' && git show --stat --oneline d20f412 && git show --stat --oneline d48ad6a && git show --stat --oneline 73a8870" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "nl -ba kipi | sed -n '120,190p' && rg -n \"capabilities|capability-map-gen\" q-system/.q-system/scripts q-system/.q-system/*.py kipi .github --glob '"'!q-system/output/**'"' | sed -n '1,220p' && git show --stat --oneline d20f412 && git show --stat --oneline d48ad6a && git show --stat --oneline 73a8870" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
    120	    # refuses a commit that names no issue; this is how you cheaply get an issue
    121	    # to name BEFORE building, rather than minting a receipt after.
@@ -3528,7 +3528,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3552,7 +3552,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "nl -ba q-system/.q-system/scripts/fleet-health-daily.py | sed -n '1000,1085p' && nl -ba q-system/.q-system/scripts/linear-sync.py | sed -n '960,1055p' && git show 73a8870 -- q-system/.q-system/scripts/capability-map-gen.py" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "nl -ba q-system/.q-system/scripts/fleet-health-daily.py | sed -n '1000,1085p' && nl -ba q-system/.q-system/scripts/linear-sync.py | sed -n '960,1055p' && git show 73a8870 -- q-system/.q-system/scripts/capability-map-gen.py" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
   1000	              "hand-clearing the gate is not possible."
   1001	        ),
@@ -3844,7 +3844,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3880,7 +3880,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3907,7 +3907,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3944,7 +3944,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -3971,7 +3971,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4003,7 +4003,7 @@ data = json.loads(p.read_text())
 for c in data['capabilities']:
     if c['layer'] == 'L5 Engines and scripts' and c['entry'].endswith('_sync_all.py'):
         print(c['entry'], c['status'], c['evidence'])
-PY" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+PY" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 orphan.py LIVE orphan.py: 47 lines; referenced on a wiring surface (notes.py).
 plugins/kipi-design/skills/ui-ux-pro-max/data/_sync_all.py LIVE plugins/kipi-design/skills/ui-ux-pro-max/data/_sync_all.py: 414 lines; has a paired test (q-system/.q-system/scripts/test/test-capability-map-wiring.py), referenced on a wiring surface (q-system/.q-system/scripts/capability-map-gen.py).
@@ -4025,7 +4025,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4052,7 +4052,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4080,7 +4080,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'gh pr view 74 --comments' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'gh pr view 74 --comments' in /Users/founder/.config/kipi/review-trees/pr-74
  exited 1 in 26ms:
 error connecting to api.github.com
 check your internet connection or https://githubstatus.com
@@ -4101,7 +4101,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4128,7 +4128,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4154,7 +4154,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "rg -n \"PR #74|round 1|_witness_rank|generated trees|conftest\\.py\" --hidden --glob '"'!q-system/output/**'"' --glob '"'!.git/**'"' . | sed -n '1,260p' && git log --all --format='%H%n%B%n---' --grep='PR #74\\|capability-map' -20" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "rg -n \"PR #74|round 1|_witness_rank|generated trees|conftest\\.py\" --hidden --glob '"'!q-system/output/**'"' --glob '"'!.git/**'"' . | sed -n '1,260p' && git log --all --format='%H%n%B%n---' --grep='PR #74\\|capability-map' -20" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 58ms:
 73a887014dc90d80cbd2aa748ea31f26fa52524e
 fix(capability-map): address PR #74 review, round 1 (ASK-122)
@@ -4520,7 +4520,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4547,7 +4547,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4571,7 +4571,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc "python3 q-system/.q-system/scripts/capability-gate.py --help | sed -n '1,160p' && sed -n '1,120p' q-system/.q-system/scripts/capability-gate.py && rg -n \"capability-gate.py\" lefthook.yml validate-separation.py build-template-repo.sh q-system/.q-system/scripts/test --glob '*.sh' --glob '*.py' | sed -n '1,200p'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc "python3 q-system/.q-system/scripts/capability-gate.py --help | sed -n '1,160p' && sed -n '1,120p' q-system/.q-system/scripts/capability-gate.py && rg -n \"capability-gate.py\" lefthook.yml validate-separation.py build-template-repo.sh q-system/.q-system/scripts/test --glob '*.sh' --glob '*.py' | sed -n '1,200p'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 usage: capability-gate.py [-h] [--repo-root REPO_ROOT] [--check-only]
 
@@ -4730,7 +4730,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4757,7 +4757,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4781,7 +4781,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only' in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 capability-gate mode=skeleton
   declared: 107 tests (0 quarantined), 17 skeleton-only, 16 declared-inert
@@ -4814,7 +4814,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4841,7 +4841,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4875,7 +4875,7 @@ cmap = json.loads((Path(os.environ['TMPDIR'])/'pr74-real-map.json').read_text())
 for c in cmap['capabilities']:
     if c['entry'] in known_inert and c['status'] == 'LIVE':
         print(c['entry'], '=>', c['status'], '=>', c['evidence'].split('; ',1)[1])
-PY" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+PY" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 1463ms:
 q-system/.q-system/scripts/session_recall.py => LIVE => has a paired test (q-system/.q-system/scripts/test_autocapture_e2e.py), referenced on a wiring surface (q-system/.q-system/capability-manifest.json).
 q-system/.q-system/scripts/granola-voice-synthesize.py => LIVE => referenced on a wiring surface (automation/voice_refresh.py).
@@ -4909,7 +4909,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4936,7 +4936,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -4961,7 +4961,7 @@ hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
 /bin/zsh -lc 'for f in plugins/kipi-design/skills/design/scripts/cip/core.py plugins/kipi-design/skills/design/scripts/logo/core.py plugins/kipi-design/skills/ui-ux-pro-max/scripts/core.py plugins/kipi-design/skills/ui-ux-pro-max/src/scripts/core.py; do echo "$f"; rg -n "(''^|[/'"'\\\" ])core\\.py|from .*core|import core\" \""'$(dirname "$f")" --glob '"'*.py' --glob '*.sh' --glob '*.md' | sed -n '1,30p'; done
-rg -n \"design/scripts/logo/core\\.py|design/scripts/cip/core\\.py|ui-ux-pro-max/src/scripts/core\\.py|ui-ux-pro-max/scripts/core\\.py\" --hidden --glob '"'!q-system/output/**'"' --glob '"'!.git/**'"' . | sed -n '1,160p'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+rg -n \"design/scripts/logo/core\\.py|design/scripts/cip/core\\.py|ui-ux-pro-max/src/scripts/core\\.py|ui-ux-pro-max/scripts/core\\.py\" --hidden --glob '"'!q-system/output/**'"' --glob '"'!.git/**'"' . | sed -n '1,160p'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 0ms:
 plugins/kipi-design/skills/design/scripts/cip/core.py
 plugins/kipi-design/skills/design/scripts/cip/search.py:14:from core import search, search_all, get_cip_brief, CSV_CONFIG
@@ -4994,7 +4994,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5021,7 +5021,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5051,7 +5051,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'git diff --check origin/main...HEAD && git status --porcelain=v1 && python3 q-system/.q-system/scripts/test/test-capability-map-wiring.py && python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only | tail -2' in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'git diff --check origin/main...HEAD && git status --porcelain=v1 && python3 q-system/.q-system/scripts/test/test-capability-map-wiring.py && python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only | tail -2' in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 542ms:
 test_dated_snapshot_is_not_an_engine (__main__.TestWiringDetection.test_dated_snapshot_is_not_an_engine) ... ok
 test_evidence_names_the_referencing_file (__main__.TestWiringDetection.test_evidence_names_the_referencing_file) ... ok
@@ -5086,7 +5086,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5113,7 +5113,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5137,7 +5137,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-hidden.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-hidden.json\")); [print(c[\"entry\"], c[\"status\"], \"track=\"+str(c[\"track\"])) for c in d[\"capabilities\"] if c[\"status\"]==\"UNWIRED\" and c[\"track\"] and any(x.startswith(\".\") for x in pathlib.Path(c[\"entry\"]).parts)]'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-hidden.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-hidden.json\")); [print(c[\"entry\"], c[\"status\"], \"track=\"+str(c[\"track\"])) for c in d[\"capabilities\"] if c[\"status\"]==\"UNWIRED\" and c[\"track\"] and any(x.startswith(\".\") for x in pathlib.Path(c[\"entry\"]).parts)]'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 1571ms:
 .pr24rev/mutate.py UNWIRED track=True
 .review-tmp-pr11/repro_B_update_path_crashes_run.py UNWIRED track=True
@@ -5162,7 +5162,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5189,7 +5189,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5213,7 +5213,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-hidden.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-hidden.json\")); [print(c[\"entry\"], c[\"status\"], \"track=\"+str(c[\"track\"])) for c in d[\"capabilities\"] if c[\"status\"]==\"UNWIRED\" and c[\"track\"] and c[\"entry\"].startswith((\".pr\", \".review\"))]'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-hidden.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-hidden.json\")); [print(c[\"entry\"], c[\"status\"], \"track=\"+str(c[\"track\"])) for c in d[\"capabilities\"] if c[\"status\"]==\"UNWIRED\" and c[\"track\"] and c[\"entry\"].startswith((\".pr\", \".review\"))]'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 1389ms:
 .pr24rev/mutate.py UNWIRED track=True
 .review-tmp-pr11/repro_B_update_path_crashes_run.py UNWIRED track=True
@@ -5237,7 +5237,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5264,7 +5264,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5288,7 +5288,7 @@ hook: PreToolUse
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 exec
-/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-comments.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-comments.json\")); [print(c[\"entry\"], c[\"status\"], c[\"evidence\"].split(\"; \",1)[1]) for c in d[\"capabilities\"] if c[\"entry\"]==\"q-system/.q-system/scripts/instance-diet.py\"]' && python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only | grep 'instance-diet.py'" in /Users/assafkipnis/.config/kipi/review-trees/pr-74
+/bin/zsh -lc 'python3 q-system/.q-system/scripts/capability-map-gen.py --root . --repo pr-74-review --out "$TMPDIR/pr74-comments.json" --skeleton . >/dev/null && python3 -c '"'import json,os,pathlib; d=json.load(open(pathlib.Path(os.environ[\"TMPDIR\"])/\"pr74-comments.json\")); [print(c[\"entry\"], c[\"status\"], c[\"evidence\"].split(\"; \",1)[1]) for c in d[\"capabilities\"] if c[\"entry\"]==\"q-system/.q-system/scripts/instance-diet.py\"]' && python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --check-only | grep 'instance-diet.py'" in /Users/founder/.config/kipi/review-trees/pr-74
  succeeded in 1769ms:
 q-system/.q-system/scripts/instance-diet.py LIVE referenced on a wiring surface (q-system/.q-system/capability-manifest.json).
   DECLARED-INERT (sp-cc33bdb0): q-system/.q-system/scripts/instance-diet.py — one-off maintenance tool, no wiring surface references
@@ -5309,7 +5309,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5336,7 +5336,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5472,7 +5472,7 @@ index 0000000000000000000000000000000000000000..f91219271fd62e16e0561752207c38a0
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
@@ -5499,7 +5499,7 @@ index 0000000000000000000000000000000000000000..26be198225a5dbacbdc2ecdfab15ec06
 +import tempfile
 +from pathlib import Path
 +
-+GEN = Path("/Users/assafkipnis/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
++GEN = Path("/Users/founder/.config/kipi/review-trees/pr-74/q-system/.q-system/scripts/capability-map-gen.py")
 +spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
 +mod = importlib.util.module_from_spec(spec)
 +spec.loader.exec_module(mod)
