@@ -430,6 +430,10 @@
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],
