@@ -44,11 +44,27 @@ import sys
 # of fable-discipline-lint prose ABOUT this script. A detector that cries wolf on
 # comments gets switched off, so it must match the shape of a call: an interpreter
 # followed by the notifier. Every real site in this repo is one of three forms.
+# THE INTERPRETER IS OPTIONAL (PR #72 review, minor). This hardcoded `bash\s+`,
+# so it saw only one of the three ways a shell actually invokes the notifier.
+# Measured against four planted producers: it caught 2. It missed a direct exec
+# (`"$NOTIFY" "msg"`, valid because the file is +x) and an `sh`-prefixed call.
+# A gate wired into `kipi check` and described as enforcement, that finds half of
+# what it claims, is a sieve reported as a gate.
 INVOKE = re.compile(
     r"""(?:
-          bash\s+["']?\$\{?(?:KIPI_)?NOTIFY          # bash "$NOTIFY"
-        | bash\s+["'][^"']*slack-notify\.sh["']      # bash "$SKEL/.../slack-notify.sh"
-        | subprocess\.run\(\s*\[[^\]]*(?i:notif)     # subprocess.run([notifier, msg]
+        # 1. interpreter form, UNANCHORED as it always was: `bash "$NOTIFY"`,
+        #    and now sh/zsh/env too. Unanchored so `&& bash "$NOTIFY"` still hits.
+          (?:(?:ba|z)?sh|env)\s+["']?\$\{?(?:KIPI_)?NOTIFY
+        # 2. DIRECT EXEC, anchored to a command position on purpose. The file is
+        #    +x so `"$NOTIFY" "msg"` is a real call the old pattern never saw.
+        #    Anchoring is load-bearing: an unanchored version of this matched
+        #    `NOTIFY="${KIPI_NOTIFY:-...}"`, `if [ -x "$NOTIFY" ]`, `chmod +x
+        #    "$NOTIFY"`, `> "$NOTIFY"` and echo prose -- 12 false positives in
+        #    this repo, traded for 2 real catches. A gate that cries wolf gets
+        #    switched off, so the anchor stays.
+        | ^\s*(?:(?:then|else|do|elif)\s+)?["']?\$\{?(?:KIPI_)?NOTIFY["']?\s+["'-]
+        | (?:(?:ba|z)?sh|env)\s+["'][^"']*slack-notify\.sh["']
+        | subprocess\.run\(\s*\[[^\]]*(?i:notif)
         )""",
     re.VERBOSE,
 )
@@ -154,7 +170,29 @@ def offending_sites(repo):
             window = "\n".join(lines[i:i + WINDOW])
             if FORWARD_MARKER in window:
                 continue
-            if not KIND.search(window):
+            # A COMMENT IS NOT A DECLARATION (PR #72 review). The window exists
+            # because Python producers build argv over several lines, but it was
+            # matching --kind ANYWHERE in those lines, comments included. So a
+            # bare call sitting under `# --kind receipt is what a good call looks
+            # like` was excused by the very sentence describing what it failed to
+            # do. In the planted-producer fixture that one fault masked three
+            # other misses, so the detector scored 2/4 while appearing to score
+            # 4/4. FORWARD_MARKER above still reads the FULL window on purpose --
+            # that marker IS a comment and must be seen.
+            # AND THE WINDOW STOPS AT THE NEXT CALL. Looking forward 4 lines
+            # meant a LATER, DIFFERENT invocation's --kind excused an earlier
+            # bare one. In the fixture, `sh "$NOTIFY" "bare three"` was cleared
+            # by a correct call two lines below it. The window is here to cover
+            # ONE call's continuation lines, so it must end where the next call
+            # begins.
+            argv_lines = []
+            for j, l in enumerate(lines[i:i + WINDOW]):
+                if j and INVOKE.search(l):
+                    break
+                if not l.lstrip().startswith("#"):
+                    argv_lines.append(l)
+            argv_window = "\n".join(argv_lines)
+            if not KIND.search(argv_window):
                 found.append((rel, i + 1, line.strip()[:110]))
     return found
 

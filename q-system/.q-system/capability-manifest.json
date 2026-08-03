@@ -218,6 +218,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-callsite-audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-notify-decision-gate.sh",
       "runner": "bash"
     },
