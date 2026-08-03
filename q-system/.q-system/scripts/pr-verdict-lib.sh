@@ -197,6 +197,18 @@ review_is_usable() {
 # is truncated -- so the unusable flag stays off, the gate goes green, and the
 # verdict is derived from findings the review had already withdrawn. Two
 # definitions of "complete" in one script is the drift this file exists to stop.
+#
+# DELIBERATELY STRUCTURAL, NOT ROW-COUNTING (ASK-312). Requiring at least one
+# severity row here looks like the obvious hardening and is wrong: a round-2 review
+# that refutes every round-1 finding closes with a legitimately EMPTY block, and
+# `test-findings-block-reader.sh` case 2 pins that shape. Rejecting it would route
+# a real review to the fallback engine and mark the status DEGRADED for finding
+# nothing, which is the opposite of what finding nothing means.
+#
+# "Reviewed, found nothing" and "never started" are byte-identical inside the
+# block. The discriminator is OUTSIDE it -- the reviewer's own STATED verdict --
+# so the fix lives at that comparison, not in this predicate. See
+# verdict_from_findings below and the decline-to-start guard in pr-review-agent.sh.
 has_complete_findings_block() {
   [ -n "$(findings_block "${1:-}")" ]
 }
@@ -223,8 +235,54 @@ verdict_from_findings() {
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
   elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
   elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  # An empty block deriving APPROVE is a DELIBERATE contract, pinned by name in
+  # test-severity-floor.sh: a round 2 that refutes everything must be able to land,
+  # or approved PRs wedge forever. ASK-312 tried removing it and collided with that
+  # contract plus test-findings-block-reader.sh case 2. The decline-to-start defect
+  # is not fixed here -- see resolve_verdict below, where the discriminator lives.
   else printf 'APPROVE'
   fi
+}
+
+# resolve_verdict <stated> <derived>
+# The ONE place a stated and a derived verdict become the verdict that gets posted.
+#
+# WHY THIS FAILS CLOSED (ASK-312). pr-review-agent.sh used to prefer the derived
+# verdict whenever it existed, printing a NOTE about any disagreement and
+# proceeding. On 2026-08-02 that silently converted a reviewer's own
+# "REQUEST CHANGES" into APPROVE, twice, and posted kipi/reviewer-approved=success
+# on the head SHA of a PR nobody had read. The reviewer had answered "Reply `OK`
+# and I'll run the review exactly as planned" and echoed the prompt's TEMPLATE
+# back: a structurally perfect block with zero rows, which the severity ladder
+# reads as "nothing was wrong" when it meant "nothing was examined".
+#
+# The rule: a disagreement may never resolve TOWARD approval. Deriving a harsher
+# verdict than the reviewer stated is fine and stays -- that is the severity floor
+# doing its job against a reviewer that logged a blocker and then said APPROVE.
+# Deriving a SOFTER one means the two signals contradict each other about whether
+# the PR is safe, and the only safe reading of a contradiction is the harsher side.
+#
+# Ranked least to most permissive; a disagreement resolves to the lower rank.
+verdict_rank() {   # verdict_rank <verdict>
+  case "$1" in
+    BLOCK)                printf '0' ;;
+    "REQUEST CHANGES")    printf '1' ;;
+    "APPROVE WITH NITS")  printf '2' ;;
+    APPROVE)              printf '3' ;;
+    *)                    printf '9' ;;   # unknown/empty: not a verdict
+  esac
+}
+
+resolve_verdict() {   # resolve_verdict <stated> <derived>
+  local stated="${1:-}" derived="${2:-}" sr dr
+  [ -n "$derived" ] || { printf '%s' "$stated"; return 0; }
+  [ -n "$stated" ]  || { printf '%s' "$derived"; return 0; }
+  sr="$(verdict_rank "$stated")"
+  dr="$(verdict_rank "$derived")"
+  # An unrecognised stated verdict cannot vouch for anything, so the derived one
+  # stands alone rather than being averaged with noise.
+  [ "$sr" = "9" ] && { printf '%s' "$derived"; return 0; }
+  if [ "$dr" -le "$sr" ]; then printf '%s' "$derived"; else printf '%s' "$stated"; fi
 }
 
 # pr_merge_state <pr-number>

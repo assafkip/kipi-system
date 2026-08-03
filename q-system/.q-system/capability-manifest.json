@@ -450,6 +450,10 @@
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
