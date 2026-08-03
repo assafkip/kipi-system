@@ -18,6 +18,7 @@ the live module.
 
 import ast
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -121,6 +122,43 @@ class TestLiveModuleIsAtParity(unittest.TestCase):
         self.assertTrue(CP.is_blocking(MODULE_PATH_IN_REPO))
         self.assertFalse(CP.is_blocking("q-system/.q-system/scripts/linear-sync.py"),
                          "everything but the seed reports until the FP rate is measured")
+
+
+class TestHookPath(unittest.TestCase):
+    """The wired path, end to end. A check whose LIBRARY is green while its hook
+    entry point never blocks is the dead-switch shape capability-map-gen.py exists
+    to detect; it would be absurd for this gate to ship with it."""
+
+    def _run(self, file_path: str):
+        return subprocess.run(
+            [sys.executable, str(CHECK)],
+            input=json.dumps({"tool_name": "Edit",
+                              "tool_input": {"file_path": file_path}}),
+            capture_output=True, text=True, timeout=60)
+
+    def test_hook_exits_2_on_the_seed_module(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = Path(td) / MODULE_PATH_IN_REPO
+            seed.parent.mkdir(parents=True)
+            seed.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+            proc = self._run(str(seed))
+        self.assertEqual(2, proc.returncode,
+                         f"the seed module must BLOCK: {proc.stderr or proc.stdout}")
+        self.assertIn("CONSUMER PARITY (blocked)", proc.stderr)
+
+    def test_hook_reports_but_does_not_block_a_non_seed_module(self):
+        """Everything else reports until the false-positive rate is measured."""
+        with tempfile.TemporaryDirectory() as td:
+            other = Path(td) / "some-other-engine.py"
+            other.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+            proc = self._run(str(other))
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("consumer-parity-check (report)", proc.stdout)
+
+    def test_hook_ignores_non_python_writes(self):
+        proc = self._run("q-system/canonical/decisions.md")
+        self.assertEqual(0, proc.returncode)
+        self.assertEqual("", proc.stdout.strip())
 
 
 class TestNegativeSelfTest(unittest.TestCase):

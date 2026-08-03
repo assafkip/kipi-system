@@ -84,10 +84,17 @@ How to move through complex work without shipping a confident wrong answer.
    (a regenerable fixture or sandbox environment). Then corrupt a valid input and
    prove the check FAILS on the violation, so a green result is not a rubber stamp.
 
-3. **Single-writer chokepoint, guarded by a grep-the-tree test.** Route every
-   mutation of a shared resource through one helper, and write a test that greps
-   the tree to prove no caller bypasses it. Migrate existing call-sites one small,
-   independently revertible edit at a time, not one bulk rewrite.
+3. **Single-writer chokepoint, guarded by a CENSUS TAKEN BY CODE.** Route every
+   mutation of a shared resource through one helper, and make a gate enumerate the
+   consumers from the source, never from your recollection of them. Migrate existing
+   call-sites one small, independently revertible edit at a time, not one bulk
+   rewrite. For a module that declares an exclusion predicate, that gate is
+   `q-system/.q-system/scripts/consumer-parity-check.py` (PostToolUse), which walks
+   the AST and reports every walker that skips the predicate. Retired 2026-08-03
+   (ASK-315): this line used to say "write a test that greps the tree", which is
+   prose naming no executable. Under it, a commit whose message read "one predicate
+   for all three consumers" shipped with a fourth, and six instances of that shape
+   landed in one file in one night. A habit is not a census.
 
 4. **Why-comments anchored to a named scar.** Comments encode the constraint and
    the specific past bug that motivates it, not a restatement of the code. These
