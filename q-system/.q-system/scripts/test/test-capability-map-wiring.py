@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Wiring detection in capability-map-gen.py: what counts as "this engine is alive".
+
+WHY (ASK-122): the generator flagged 22 local engines in Alice as UNWIRED. Nearly
+all of them had a visible caller on disk -- `regenerate.sh` literally runs
+`python3 "$G/fill_sheet.py"`, `brightdata.sh` runs `mcp-client.py`, `pipeline.py`
+imports `geo_clues`. The scan simply never opened those files: it walked only
+.claude/, plugins/ and q-system/, and Alice's code lives in q-investigate/ and
+scripts/. A gate that reports dead-and-alive the same way is not a gate.
+
+Second blind spot, same issue, already scarred once (ASK-230, provenance_vocabulary):
+`has_test` compared FILENAMES only, so `tests/test_extract.py` importing `geo_clues`
+scored as no-test. An importer is the strongest liveness evidence there is.
+
+The two NEGATIVE cases below are the point of this file. Widening the scan makes
+false-LIVE the new failure mode, so a truly orphaned engine and a prose-only
+mention must both still come back UNWIRED. A gate that cannot fail is a rubber
+stamp.
+
+Isolation: every fixture is built in a tempdir. Nothing here reads a real repo.
+"""
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+GEN = Path(__file__).resolve().parent.parent / "capability-map-gen.py"
+
+
+def load_generator():
+    spec = importlib.util.spec_from_file_location("capability_map_gen", GEN)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Populated per run in main(); an inherited value would mark fixture paths
+    # vendored and silently collect zero engines.
+    mod._NESTED_REPOS = set()
+    return mod
+
+
+def engine_body(name: str) -> str:
+    """A file long enough to clear the generator's 40-line engine floor."""
+    head = f'#!/usr/bin/env python3\n"""{name} -- fixture engine."""\n'
+    return head + "\n".join(f"# line {i}" for i in range(60))
+
+
+def build_fixture(root: Path) -> None:
+    (root / "q-investigate" / "tools").mkdir(parents=True)
+    (root / "q-investigate" / "lib").mkdir(parents=True)
+    (root / "q-investigate" / "tests").mkdir(parents=True)
+    (root / "docs").mkdir(parents=True)
+
+    # 1. LIVE: only caller is a shell script outside q-system/.
+    (root / "q-investigate/tools/engine_shell_called.py").write_text(
+        engine_body("engine_shell_called"))
+    (root / "q-investigate/tools/run.sh").write_text(
+        '#!/bin/bash\nset -euo pipefail\n'
+        'python3 "$(dirname "$0")/engine_shell_called.py" --once\n')
+
+    # 2. LIVE: only evidence is a test that IMPORTS it under a different filename.
+    (root / "q-investigate/lib/engine_import_tested.py").write_text(
+        engine_body("engine_import_tested"))
+    (root / "q-investigate/tests/test_unrelated_name.py").write_text(
+        "import sys\nsys.path.insert(0, '../lib')\n"
+        "import engine_import_tested\n\n"
+        "def test_it():\n    assert engine_import_tested\n")
+
+    # 3. LIVE: invoked from a fenced command inside a markdown command/runbook.
+    (root / "q-investigate/lib/engine_doc_invoked.py").write_text(
+        engine_body("engine_doc_invoked"))
+    (root / "docs/runbook.md").write_text(
+        "# Runbook\n\nRegenerate the deliverable:\n\n```bash\n"
+        "python3 q-investigate/lib/engine_doc_invoked.py\n```\n")
+
+    # 4. NEGATIVE: named in prose only. A findings doc saying a script is broken
+    #    is not a caller. This must stay UNWIRED or the widened scan has simply
+    #    traded false-dead for false-alive.
+    (root / "q-investigate/lib/engine_prose_only.py").write_text(
+        engine_body("engine_prose_only"))
+    (root / "docs/findings.md").write_text(
+        "# Findings\n\nDefect D1: engine_prose_only.py left the template unfilled.\n"
+        "Nobody has run engine_prose_only since the migration.\n")
+
+    # 5. NEGATIVE: nothing anywhere mentions it.
+    (root / "q-investigate/lib/engine_orphan.py").write_text(
+        engine_body("engine_orphan"))
+
+    # 6. NEGATIVE: self-reference in its own docstring is not a caller.
+    (root / "q-investigate/lib/engine_self_ref.py").write_text(
+        '#!/usr/bin/env python3\n'
+        '"""engine_self_ref.py -- run engine_self_ref.py nightly."""\n'
+        + "\n".join(f"# line {i}" for i in range(60)))
+
+    # 7. A dated snapshot of a live engine is not a second engine. Its writer
+    #    interpolates the date, so no static scan can ever match its literal name.
+    (root / "q-investigate/tools/backups").mkdir(parents=True)
+    (root / "q-investigate/tools/backups/engine_shell_called.2026-07-28.py").write_text(
+        engine_body("engine_shell_called snapshot"))
+
+
+class TestWiringDetection(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_generator()
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        build_fixture(cls.root)
+        cls.by_entry = {
+            c["entry"]: c for c in cls.mod.collect_engines(cls.root)
+        }
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def status(self, entry: str) -> str:
+        self.assertIn(entry, self.by_entry,
+                      f"{entry} was not collected at all; got {sorted(self.by_entry)}")
+        return self.by_entry[entry]["status"]
+
+    # --- positive: real wiring the old scan could not see -------------------
+
+    def test_shell_caller_outside_qsystem_counts(self):
+        self.assertEqual(
+            "LIVE", self.status("q-investigate/tools/engine_shell_called.py"),
+            "run.sh invokes it by path; that is wiring wherever run.sh lives")
+
+    def test_importing_test_counts_even_with_mismatched_filename(self):
+        self.assertEqual(
+            "LIVE", self.status("q-investigate/lib/engine_import_tested.py"),
+            "test_unrelated_name.py imports the module; filename match is not the test")
+
+    def test_fenced_invocation_in_markdown_counts(self):
+        self.assertEqual(
+            "LIVE", self.status("q-investigate/lib/engine_doc_invoked.py"),
+            "a runbook line that runs the script is a trigger")
+
+    # --- negative: the widened scan must still be able to say dead ----------
+
+    def test_prose_mention_is_not_wiring(self):
+        self.assertEqual(
+            "UNWIRED", self.status("q-investigate/lib/engine_prose_only.py"),
+            "a findings doc naming a script does not make it live")
+
+    def test_orphan_stays_unwired(self):
+        self.assertEqual(
+            "UNWIRED", self.status("q-investigate/lib/engine_orphan.py"),
+            "nothing references it; this is the case the gate exists for")
+
+    def test_self_reference_is_not_wiring(self):
+        self.assertEqual(
+            "UNWIRED", self.status("q-investigate/lib/engine_self_ref.py"),
+            "a script naming itself in its own docstring is not a caller")
+
+    def test_dated_snapshot_is_not_an_engine(self):
+        self.assertNotIn(
+            "q-investigate/tools/backups/engine_shell_called.2026-07-28.py",
+            self.by_entry,
+            "a dated snapshot is a rollback artifact; flagging it forever leaves "
+            "deleting the rollback copy as the only way to clear the gate")
+
+    # --- the evidence has to name the caller, not just assert a verdict -----
+
+    def test_evidence_names_the_referencing_file(self):
+        ev = self.by_entry["q-investigate/tools/engine_shell_called.py"]["evidence"]
+        self.assertIn("run.sh", ev,
+                      f"evidence must point at the caller so the map is auditable: {ev}")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
