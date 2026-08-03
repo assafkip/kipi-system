@@ -17,8 +17,11 @@ the live module.
 """
 
 import ast
+import contextlib
 import importlib.util
+import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -322,6 +325,131 @@ class TestPredicateModelling(unittest.TestCase):
         findings = CP.check_source(src, "x.py")
         self.assertEqual(1, len(findings), f"the ack must not cover the second walker: {findings}")
         self.assertIn("rglob", findings[0].expr)
+
+    def test_a_nested_walkers_ack_does_not_vouch_for_its_unfiltered_parent(self):
+        """Review finding, PR #82 minor. The ack is scanned over the region's LINE
+        SPAN, and a nested walker's span is inside its parent's -- so acking the inner
+        one silenced the outer one too. That is exactly the shape this check exists to
+        catch, one rung down: the acknowledged consumer vouching for the unfiltered
+        one. Sibling shape is already covered by
+        test_a_filtered_sibling_walker_does_not_vouch_for_an_unfiltered_one."""
+        src = ("SKIP_DIRS = {'a'}\n\n"
+               "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n"
+               "def go(root):\n"
+               "    for d in sorted(root.glob('q-*')):\n"
+               "        for f in d.rglob('*'):  # parity-ack: caller filters these\n"
+               "            yield f\n")
+        findings = CP.check_source(src, "x.py")
+        self.assertEqual(1, len(findings),
+                         f"the inner ack must not cover the outer glob: {findings}")
+        self.assertIn("glob('q-*')", findings[0].expr)
+        self.assertEqual("bypass", findings[0].severity)
+
+    def test_an_ack_on_the_regions_own_opening_line_still_counts(self):
+        """The guard above removes nested-walker lines from the parent's ack scan. The
+        parent's OWN opening line is never one of them, even when a nested walker
+        starts on it, or the fix would silently void acks written where they read
+        best."""
+        src = ("SKIP_DIRS = {'a'}\n\n"
+               "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n"
+               "def go(root):\n"
+               "    for f in [x for x in root.glob('*')]:  # parity-ack: names only\n"
+               "        yield f\n")
+        self.assertEqual([], CP.check_source(src, "x.py"))
+
+
+class TestNonFilesystemWalkIsNotAWalker(unittest.TestCase):
+    """`ast.walk(tree)` is a tree traversal, not a filesystem walk, and demanding a
+    path-exclusion predicate at one is pure noise. The docstring already declared this
+    false-positive class; naming REPORT_SKIP_PARTS made this module declare a predicate
+    and turned the declaration into five live findings against the gate's own source.
+    A checker that cries wolf on itself is the one an operator switches off first."""
+
+    def test_ast_walk_is_not_counted_as_a_filesystem_walker(self):
+        src = ("import ast\n"
+               "SKIP_DIRS = {'a'}\n\n"
+               "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n"
+               "def go(tree):\n    return [n for n in ast.walk(tree)]\n")
+        self.assertEqual([], CP.check_source(src, "x.py"))
+
+    def test_os_walk_is_still_counted(self):
+        """os.walk IS a filesystem walker. The denylist is by receiver, not by method
+        name, so narrowing ast.walk must not narrow os.walk with it."""
+        src = ("import os\n"
+               "SKIP_DIRS = {'a'}\n\n"
+               "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n"
+               "def go(root):\n    return [d for d, _, _ in os.walk(root)]\n")
+        findings = CP.check_source(src, "x.py")
+        self.assertEqual(1, len(findings), f"got {findings}")
+        self.assertIn("os.walk", findings[0].expr)
+
+    def test_the_gate_is_at_parity_with_itself(self):
+        """The seed module is checked by TestLiveModuleIsAtParity. This one checks the
+        checker: it declares a predicate now, so it is inside its own census."""
+        self.assertEqual([], CP.check_file(SCRIPTS / "consumer-parity-check.py",
+                                          "consumer-parity-check.py"))
+
+
+class TestReportExcludesKnownRedTrees(unittest.TestCase):
+    """Review finding, PR #82 minor. `--report` is the false-positive MEASUREMENT the
+    DoR gates widening BLOCKING_MODULES on. Counting this check's own deliberately-red
+    historical fixture, and copies of the repo inside review scratch trees, inflates
+    both the module count and the finding count with modules that are not real
+    modules -- the measurement argues against itself."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="parity-report-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        dirty = ("SKIP_DIRS = {'a'}\n\n"
+                 "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n"
+                 "def go(root):\n    for p in root.rglob('*'):\n        yield p\n")
+        for rel in ("real/mod.py",
+                    "q-system/.q-system/scripts/test/fixtures/capability-map-gen.d20f412.py",
+                    ".pr25rev/mut/q-system/.q-system/scripts/capability-map-gen.py",
+                    ".claude/worktrees/ask-1/mod.py"):
+            target = self.root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(dirty, encoding="utf-8")
+
+    def _report(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            CP.run_report(self.root)
+        return buf.getvalue()
+
+    def test_the_pinned_historical_fixture_is_not_counted(self):
+        self.assertNotIn("capability-map-gen.d20f412.py", self._report(),
+                         "a snapshot pinned to a pre-fix commit is red on purpose")
+
+    def test_review_scratch_copies_are_not_counted(self):
+        out = self._report()
+        self.assertNotIn(".pr25rev", out)
+        self.assertNotIn("worktrees", out)
+
+    def test_a_real_module_is_still_counted(self):
+        out = self._report()
+        self.assertIn("real/mod.py", out)
+        self.assertIn("1 module(s) declare a predicate", out)
+        self.assertIn("1 have at least one walker below parity", out)
+
+    def test_a_root_living_under_an_excluded_name_still_sweeps(self):
+        """The skip is judged relative to root, not on absolute parts. This worktree is
+        at `.../kipi/worktrees/ask-315`, so an absolute scan matched `worktrees` on
+        every file and reported 0 modules fleet-wide -- a zero that reads as a clean
+        bill of health and was a broken query."""
+        nest = self.root / "worktrees" / "ask-1"
+        shutil.copytree(self.root / "real", nest / "real")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            CP.run_report(nest)
+        self.assertIn("1 module(s) declare a predicate", buf.getvalue())
+
+    def test_an_explicitly_named_fixture_path_still_checks(self):
+        """Excluded from the SWEEP, never from a direct check -- the reproducer that
+        proves this whole gate works runs the fixture by path."""
+        fixture = (self.root / "q-system/.q-system/scripts/test/fixtures"
+                   / "capability-map-gen.d20f412.py")
+        self.assertEqual(1, len(CP.check_file(fixture, str(fixture))))
 
 
 if __name__ == "__main__":

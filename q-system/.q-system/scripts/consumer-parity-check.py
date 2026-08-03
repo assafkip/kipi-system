@@ -43,8 +43,13 @@ HONEST BOUNDARY (stated so this is not theater):
     is_*_tree / is_vendored). A module whose exclusion predicate is called
     `keep_this_one` declares nothing this check can see, and is silently clean.
   - `.walk` and `.glob` are matched on the attribute name, so a non-filesystem object
-    with a method of that name is a false positive. That is why everything except the
-    seed module REPORTS rather than blocks.
+    with a method of that name is a false positive. NON_FS_RECEIVERS narrows the
+    known ones by receiver name (`ast.walk` is a tree traversal, `os.walk` is not); an
+    unlisted one still reports. That is why everything except the seed module REPORTS
+    rather than blocks.
+  - `--report` skips fixtures/ and review-scratch trees (REPORT_SKIP_PARTS), judged
+    RELATIVE to root. Those are red on purpose or are byte-copies of the repo, and
+    counting them makes the false-positive measurement argue against itself.
 
 MODE. Blocking is scoped to BLOCKING_MODULES (the seed). Every other module is
 reported, never blocked, until the false-positive rate has been measured on real
@@ -74,11 +79,55 @@ BLOCKING_MODULES = ("q-system/.q-system/scripts/capability-map-gen.py",)
 
 ACK_MARKER = "parity-ack"
 
+# --report only. Trees whose .py files are not modules of the repo under measurement.
+# `--report` is the false-positive MEASUREMENT that gates widening BLOCKING_MODULES, so
+# a tree that is red ON PURPOSE, or a byte-copy of the repo sitting in review scratch,
+# makes the measurement argue against itself: it inflates both the module count and the
+# finding count with things nobody will ever fix (review finding, PR #82 minor).
+#   fixtures  - this check's own pre-fix snapshots. A module inside a fixtures/ dir IS
+#               a fixture; being red is what it is pinned there to prove.
+#   scratch   - .pr<N>rev/, worktrees/, review-trees/, .prd-os/: whole copies of the
+#               repo, so every real finding in them is counted a second time.
+# Deliberately NOT imported from capability-map-gen.py even though that module knows the
+# same scratch shapes: a gate that imports the module it gates goes green when that
+# module breaks. Duplication is the cheaper failure here.
+REPORT_SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                     ".pytest_cache", "site-packages", "dist-packages", "fixtures"}
+REPORT_SKIP_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
+
+
+def is_report_skipped(path: Path, root: Path) -> bool:
+    """Sweep-only. A path named directly on the CLI is ALWAYS checked -- the reproducer
+    that proves this gate works runs the pinned fixture by path.
+
+    Judged on the path RELATIVE to root. Absolute parts are not the repo's business and
+    reading them makes the answer depend on where the checkout happens to live: this
+    worktree sits at `.../kipi/worktrees/ask-315`, so an absolute scan matched
+    `worktrees` on EVERY file and swept the whole repo to 0 modules -- a zero that
+    looked like a clean bill of health and was a broken query.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        rel = path
+    return any(part in REPORT_SKIP_PARTS or REPORT_SKIP_DIR_RE.match(part)
+               for part in rel.parts)
+
 # Method names that hand back filesystem entries. Attribute calls only: a bare
 # `walk(...)` is usually a module-local helper that wraps a real walker, and that
 # inner walker is already in the census -- counting the wrapper too would report the
 # same walk twice and demand the filter at both layers.
 WALKER_ATTRS = {"rglob", "glob", "iglob", "iterdir", "walk", "scandir", "listdir"}
+
+# Receivers whose `.walk` / `.glob` hands back something that is not a filesystem
+# entry, so a path-exclusion predicate at that call site would be meaningless. Matched
+# on the BARE NAME of the receiver, never on the method, so `os.walk` stays a walker.
+# This narrows the false-positive class the module docstring already declares; it is
+# not a bypass list, and a real filesystem module never belongs in it.
+# `ast` earned its place by making this check report five findings against its OWN
+# source the moment REPORT_SKIP_PARTS gave the module a declared predicate. A checker
+# that cries wolf on itself is the one an operator switches off first.
+NON_FS_RECEIVERS = {"ast", "re", "json", "networkx", "nx"}
 
 # An exclusion predicate names itself. FUNCTIONS whose name carries an exclusion verb,
 # and module-level CONSTANTS whose name does and whose value is a container or a
@@ -187,9 +236,12 @@ def _required(predicates: set, coverage: dict) -> set:
 
 
 def _is_walker_call(node: ast.AST) -> bool:
-    return (isinstance(node, ast.Call)
+    if not (isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr in WALKER_ATTRS)
+            and node.func.attr in WALKER_ATTRS):
+        return False
+    receiver = node.func.value
+    return not (isinstance(receiver, ast.Name) and receiver.id in NON_FS_RECEIVERS)
 
 
 def _parents(tree: ast.Module) -> dict:
@@ -270,10 +322,40 @@ def _expr_text(call: ast.Call, source_lines: list) -> str:
     return text if len(text) <= 90 else text[:87] + "..."
 
 
-def _acked(region: ast.AST, source_lines: list) -> bool:
-    start = getattr(region, "lineno", 1) - 1
-    end = getattr(region, "end_lineno", start + 1)
-    return any(ACK_MARKER in line for line in source_lines[max(start, 0):end])
+def _is_nested_in(inner: ast.AST, outer: ast.AST) -> bool:
+    i_start, i_end = _span(inner)
+    o_start, o_end = _span(outer)
+    return o_start <= i_start and i_end <= o_end
+
+
+def _span(node: ast.AST) -> tuple:
+    start = getattr(node, "lineno", 1)
+    return start, getattr(node, "end_lineno", start)
+
+
+def _acked(region: ast.AST, source_lines: list, nested: list) -> bool:
+    """Is there a `parity-ack` comment on a line this region OWNS?
+
+    A nested walker's lines are not the parent's. The ack is scanned by line span, and
+    a nested region's span sits inside its parent's, so an ack on the inner walker used
+    to silence the outer one as well -- the acknowledged consumer vouching for the
+    unfiltered one, which is the one-sided-exclusion shape this whole check exists to
+    catch, one rung down (review finding, PR #82 minor). Same reason `_names_in_region`
+    refuses to descend into a sibling region.
+
+    The region's own OPENING line is always its own, even when a nested walker starts
+    on it (`for f in [x for x in root.glob('*')]:  # parity-ack: ...`); otherwise the
+    guard would silently void acks written where they read best.
+    """
+    start, end = _span(region)
+    owned_by_nested = set()
+    for other in nested:
+        o_start, o_end = _span(other)
+        owned_by_nested.update(range(o_start, o_end + 1))
+    owned_by_nested.discard(start)
+    return any(ACK_MARKER in line
+               for lineno, line in enumerate(source_lines[max(start - 1, 0):end], start)
+               if lineno not in owned_by_nested)
 
 
 # --- the check ----------------------------------------------------------------
@@ -298,11 +380,14 @@ def check_source(source: str, path: str) -> list:
     calls = [n for n in ast.walk(tree) if _is_walker_call(n)]
     regions = {id(call): _region_for(call, parents, tree) for call in calls}
     region_ids = {id(r.node) for r in regions.values()}
+    region_nodes = {id(r.node): r.node for r in regions.values()}
 
     findings = []
     for call in calls:
         region = regions[id(call)]
-        if _acked(region.node, source_lines):
+        nested = [n for i, n in region_nodes.items()
+                  if i != id(region.node) and _is_nested_in(n, region.node)]
+        if _acked(region.node, source_lines, nested):
             continue
         applied = _names_in_region(region.node, region_ids - {id(region.node)}, predicates)
         expanded = set(applied)
@@ -377,11 +462,9 @@ def run_report(root: Path) -> int:
     """Fleet sweep. This is the false-positive measurement the DoR gates widening on:
     it prints every module with a declared predicate and how many walkers miss parity,
     and it NEVER blocks."""
-    skip_parts = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                  ".pytest_cache", "site-packages", "dist-packages"}
     modules, total, dirty = 0, 0, 0
     for path in sorted(root.rglob("*.py")):
-        if any(part in skip_parts for part in path.parts):
+        if is_report_skipped(path, root):
             continue
         source = path.read_text(encoding="utf-8", errors="ignore")
         try:
