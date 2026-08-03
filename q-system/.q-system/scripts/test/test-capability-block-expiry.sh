@@ -107,6 +107,11 @@ PROBES = {
     # 5. a shell command dressed as a probe -> must NOT run, must not unblock.
     #    If this ever executes, it writes the file the assertion looks for.
     "ASK-905": "cmd:touch $WORK/SHELL-ESCAPED",
+    # 6. ANOTHER REPO'S PARKED ISSUE, and its probe PASSES. Without a passing
+    #    probe the "out-of-repo issues are left alone" assertion below holds for
+    #    the wrong reason -- there was nothing to clear either way -- and the
+    #    unscoped-sweep case (codex round 3) has no way to go red at all.
+    "ASK-906": "path:" + PRESENT,
     # 8. THE STALE MARKER (codex PR #77, capability_block_expiry.py:240). The
     #    marker below is real but belongs to a park from a MONTH ago that was
     #    already cleared. The CURRENT park's comment never posted (the progress
@@ -441,6 +446,85 @@ if printf '%s' "$ROTATED_MUTATIONS" | grep -q "ASK-909"; then
 else
   bad "rotating the credential clears the block" \
       "ASK-909 stayed parked after KIPI_FIXTURE_CRED changed -- the block is permanent, which is the defect ASK-288 exists to remove"
+fi
+
+# --- 10. an UNSCOPED run refuses; it does not sweep the whole team ----------
+# (codex PR #77 round 3, capability_block_expiry.py:317.) The scope filter was
+# `if repo_project and ...` -- so an unset scope did not mean "this repo", it
+# meant NO FILTER, and `--apply` then cleared parked blocks belonging to every
+# other repo on the team. The blast radius is the opposite of the one the guard
+# was written for: one checkout wakes work no runner here can check out, and the
+# label is gone. An unset scope is not a permissive default; it is missing
+# information, and this file's rule for missing information is fail closed.
+BEFORE_UNSCOPED="$(wc -l < "$WORK/requests.log")"
+env -u REPO_PROJECT "${LINEAR_ENV[@]}" python3 "$EXPIRY" --apply \
+  > "$WORK/unscoped.out" 2>&1
+UNSCOPED_RC=$?
+UNSCOPED_MUTATIONS="$(tail -n +"$((BEFORE_UNSCOPED + 1))" "$WORK/requests.log" \
+  | grep -E "issueRemoveLabel|issueUpdate" || true)"
+if [ "$UNSCOPED_RC" -ne 0 ]; then
+  ok "an unscoped --apply refuses (rc=$UNSCOPED_RC)"
+else
+  bad "an unscoped --apply refuses" \
+      "rc=0 -- the sweep ran with no repo scope: $(head -3 "$WORK/unscoped.out")"
+fi
+if printf '%s' "$UNSCOPED_MUTATIONS" | grep -q "ASK-906"; then
+  bad "an unscoped run never clears another repo's block" \
+      "ASK-906 (some-other-repo) was unblocked by a checkout that cannot check it out"
+else
+  ok "an unscoped run never clears another repo's block"
+fi
+# The refusal has to SAY what is missing, or the next operator reads exit 1 as
+# "Linear is down" and retries it forever.
+if grep -qi "repo-project\|REPO_PROJECT" "$WORK/unscoped.out"; then
+  ok "the refusal names the missing scope"
+else
+  bad "the refusal names the missing scope" \
+      "nothing about --repo-project in: $(head -3 "$WORK/unscoped.out")"
+fi
+
+# --- 11. the loser of two overlapping sweeps reports nothing ----------------
+# (codex PR #77 round 3, capability_block_expiry.py:400.) Two sweeps can be in
+# flight over one board: each lists the parked issues, each probes, each calls
+# unblock. The first removes the label. The second's removal is a NO-OP -- and
+# it exited 0, because "already absent" is deliberately idempotent -- so the
+# caller counted a clear it did not perform and posted a second permanent
+# "the capability arrived" comment onto an issue that already had one. Linear
+# comments cannot be deleted, so a duplicate is forever.
+#
+# ASK-907 carries no `blocked:capability`, which is exactly what the losing
+# sweep sees when it gets there: the label is already gone.
+BEFORE_NOOP="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" python3 - "$REPO_SCRIPTS" > "$WORK/noop.out" 2>&1 <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import capability_block_expiry as cbe
+outcome, detail = cbe.clear_block("ASK-907", "path:/fixture", "fixture evidence")
+# Compared against the module's own constant, not against the literal "noop".
+# A test that hard-codes the string still passes if the caller stops recognising
+# it, which is the exact class of drift this finding is.
+print("outcome=%s is_clear=%s detail=%s" % (outcome, outcome == cbe.CLEARED, detail))
+PY
+NOOP_REQS="$(tail -n +"$((BEFORE_NOOP + 1))" "$WORK/requests.log" || true)"
+if grep -q "is_clear=False" "$WORK/noop.out"; then
+  ok "a no-op unblock is not reported as a clear"
+else
+  bad "a no-op unblock is not reported as a clear" \
+      "clear_block said it cleared a label that was already gone: $(head -3 "$WORK/noop.out")"
+fi
+if printf '%s' "$NOOP_REQS" | grep "commentCreate" | grep -q "ASK-907"; then
+  bad "a no-op unblock posts no recovery comment" \
+      "a second 'the capability arrived' comment was posted onto ASK-907 -- Linear comments are permanent"
+else
+  ok "a no-op unblock posts no recovery comment"
+fi
+# The absence above must not pass because clear_block crashed before it got
+# there. Pin that the call completed and returned a verdict.
+if grep -q "^outcome=" "$WORK/noop.out"; then
+  ok "negative self-test: clear_block ran to a verdict (not an exception)"
+else
+  bad "negative self-test: clear_block ran to a verdict" \
+      "no verdict line -- the two assertions above passed vacuously: $(head -5 "$WORK/noop.out")"
 fi
 
 # --- 7. the worker calls it before picking (wiring) -------------------------

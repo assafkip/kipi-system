@@ -49,6 +49,10 @@ QROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_COLLISION = 3
+# The write was already true when we got there: nothing was changed and nothing
+# failed. Distinct from EXIT_OK because "I did it" and "someone else did it"
+# lead to different reporting -- see cmd_unblock.
+EXIT_NOOP = 4
 
 MARKER_RE = re.compile(r"<!--\s*kipi-key:\s*([^\s>]+)\s*-->")
 PROJECT_SUFFIX = "__project__"
@@ -818,8 +822,21 @@ def cmd_unblock(args) -> int:
     if args.name not in current:
         # Idempotent, matching cmd_label: two expiry sweeps can overlap, and the
         # second must not be an error just because the first won.
+        #
+        # BUT IT IS NOT EXIT_OK EITHER (codex, PR #77 round 3). Returning 0 told
+        # the caller "the label is gone" and the caller cannot tell that from
+        # "the label is gone BECAUSE OF ME". capability_block_expiry counted the
+        # loser of an overlapping sweep as a clear and posted a second permanent
+        # "the capability arrived" comment onto an issue that already had one.
+        # Linear comments cannot be deleted, so every duplicate is forever.
+        #
+        # This branch is the only place that knows the difference -- it is the
+        # read that answered "was it even applied" -- so it reports the
+        # difference rather than making the caller take the same read again and
+        # race on it a second time. EXIT_NOOP is a success, not a failure: the
+        # world is in the state the caller asked for.
         print(f"{issue['identifier']}: not labelled {args.name}, nothing to remove")
-        return EXIT_OK
+        return EXIT_NOOP
 
     result = graphql(ISSUE_REMOVE_LABEL,
                      {"id": issue["id"], "labelId": current[args.name]})

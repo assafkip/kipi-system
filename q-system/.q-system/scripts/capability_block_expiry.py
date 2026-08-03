@@ -101,6 +101,23 @@ def _load_linear_sync():
     return mod
 
 
+_EXIT_NOOP = None
+
+
+def ls_exit_noop() -> int:
+    """linear-sync's EXIT_NOOP, READ FROM THAT FILE rather than restated here.
+
+    A literal `4` in this file would be a second copy of a contract to keep in
+    step, and the entire reason this script shells out to linear-sync instead of
+    writing its own mutation is that linear-sync is the one writer. Cached: the
+    load execs the module, and the clear path can run once per parked issue.
+    """
+    global _EXIT_NOOP
+    if _EXIT_NOOP is None:
+        _EXIT_NOOP = _load_linear_sync().EXIT_NOOP
+    return _EXIT_NOOP
+
+
 # --- the probe allowlist -----------------------------------------------------
 # Each returns (passed, evidence). The evidence string goes onto the Linear issue
 # verbatim: "I ran X and got Y" is this repo's bar, and an unblock that says only
@@ -292,7 +309,23 @@ TEAM_ID_QUERY = 'query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}'
 
 
 def blocked_issues(ls, team_key: str, repo_project: str | None):
-    """Every parked issue this checkout owns."""
+    """Every parked issue this checkout owns. A repo scope is REQUIRED.
+
+    The scope check used to read `if repo_project and ...`, so an unset scope
+    silently meant NO FILTER (codex, PR #77 round 3) -- the sweep listed every
+    parked issue on the team and `--apply` cleared other repos' blocks from a
+    checkout that cannot check any of them out. That is the inverse of what the
+    filter was written for, and it is unrecoverable in the same way every other
+    un-park is: the label is gone and the picker will not offer the issue again.
+
+    Raising here rather than only in main() is deliberate: the guard belongs at
+    the read that produces the issue list, so a future caller that skips the
+    argument parser cannot walk around it.
+    """
+    if not (repo_project or "").strip():
+        raise ValueError(
+            "no repo scope: refusing to list parked blocks across the whole team. "
+            "Pass --repo-project NAME or set $REPO_PROJECT.")
     team = ls.graphql(TEAM_ID_QUERY, {"k": team_key})["teams"]["nodes"]
     if not team:
         raise ls.LinearAPIError(f"no team with key {team_key}")
@@ -312,9 +345,10 @@ def blocked_issues(ls, team_key: str, repo_project: str | None):
             continue
         # SCOPED TO THIS CHECKOUT, same rule the picker uses. Unblocking an
         # issue this repo cannot check out does not restart it, it just moves
-        # the stall to a queue nobody is draining. An unset project is NOT this
-        # repo (the picker's in_this_repo comment carries the same reasoning).
-        if repo_project and (i.get("project") or {}).get("name") != repo_project:
+        # the stall to a queue nobody is draining. An issue with NO project is
+        # not this repo either (the picker's in_this_repo comment carries the
+        # same reasoning), which the inequality below already answers.
+        if (i.get("project") or {}).get("name") != repo_project:
             continue
         out.append(i)
     return out
@@ -374,18 +408,49 @@ def recorded_probe(ls, identifier: str, since: str | None) -> str | None:
 # it, which is the drift sp-53b02cc4 already records for the attempts ledger.
 
 
-def _sync(*args) -> tuple[bool, str]:
+def _sync(*args) -> tuple[int, str]:
+    """Run one linear-sync verb. Returns its EXIT CODE, not a boolean.
+
+    A boolean collapsed `unblock`'s two success codes into one answer, which is
+    the whole of the duplicate-comment defect below.
+    """
     proc = subprocess.run(
         [sys.executable, str(HERE / "linear-sync.py"), *args],
         capture_output=True, text=True, timeout=120,
     )
-    return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-def clear_block(identifier: str, probe: str, evidence: str) -> tuple[bool, str]:
-    ok, detail = _sync("unblock", identifier, BLOCK_LABEL)
-    if not ok:
-        return False, detail
+# What clear_block did. Only CLEARED may be counted as a recovery or write a
+# comment; NOOP and FAILED both mean this process changed nothing, for opposite
+# reasons that a reader of the log has to be able to tell apart.
+CLEARED, NOOP, FAILED = "cleared", "noop", "failed"
+
+
+def clear_block(identifier: str, probe: str, evidence: str) -> tuple[str, str]:
+    """Remove the block label and, ONLY on a real removal, say why it came back.
+
+    TWO SWEEPS CAN BE IN FLIGHT (codex, PR #77 round 3). The worker runs this
+    before every pick and a scheduled sweep runs it on its own clock, so two
+    runs can each list the parked board, each probe, and each call unblock. One
+    of them does the removal. The other's removal is a no-op -- and it used to
+    exit 0 like a real one, so BOTH counted a clear and BOTH posted the
+    permanent "the capability arrived" comment. The comment is the damage: a
+    Linear comment cannot be deleted, so the duplicate is on the issue forever
+    and the recovery reads as having happened twice.
+
+    linear-sync now separates the two with EXIT_NOOP, so the caller stops
+    guessing. The residual window is the sub-second one INSIDE linear-sync,
+    between its label read and its mutation; two sweeps interleaved there both
+    see the label present and both comment. That is narrower than the 15-minute
+    overlap this closes, and closing it needs an atomic conditional write Linear
+    does not offer. Stated rather than papered over.
+    """
+    rc, detail = _sync("unblock", identifier, BLOCK_LABEL)
+    if rc == ls_exit_noop():
+        return NOOP, detail
+    if rc != 0:
+        return FAILED, detail
     # The comment is how a reader learns why the issue reappeared. Posted only
     # on a state CHANGE -- a re-test that changes nothing must not write a
     # comment, or a 15-minute loop becomes a comment every 15 minutes on an
@@ -399,7 +464,7 @@ def clear_block(identifier: str, probe: str, evidence: str) -> tuple[bool, str]:
     )
     _sync("progress", identifier, note, "--agent", "capability-expiry",
           "--evidence", f"{probe} -> {evidence}")
-    return True, detail
+    return CLEARED, detail
 
 
 def main(argv=None) -> int:
@@ -411,6 +476,17 @@ def main(argv=None) -> int:
                     help="actually clear the blocks that pass; dry without it")
     args = ap.parse_args(argv)
 
+    # Refused BEFORE the first API call, and refused for a dry run too. A dry
+    # run that prints "ASK-906 WOULD BE CLEARED" for another repo's issue is a
+    # lie about what --apply does, and the operator plans against the dry output.
+    if not (args.repo_project or "").strip():
+        print("BLOCK: no repo scope. This sweep clears blocks for ONE checkout; "
+              "with no scope it would clear every parked block on team "
+              f"{args.team}, including issues no runner here can check out. "
+              "Pass --repo-project NAME or set $REPO_PROJECT "
+              "(linear-worker.sh sets it from the checkout).", file=sys.stderr)
+        return EXIT_USAGE
+
     ls = _load_linear_sync()
     try:
         parked = blocked_issues(ls, args.team, args.repo_project)
@@ -421,7 +497,8 @@ def main(argv=None) -> int:
         print(f"BLOCK: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    counts = {"pass": 0, "fail": 0, "unprobeable": 0, "unknown": 0, "cleared": 0}
+    counts = {"pass": 0, "fail": 0, "unprobeable": 0, "unknown": 0,
+              "cleared": 0, "already_cleared": 0}
     if not parked:
         print(f"capability-expiry: no issue parked at {BLOCK_LABEL}"
               + (f" in {args.repo_project}" if args.repo_project else ""))
@@ -455,10 +532,17 @@ def main(argv=None) -> int:
             print(f"capability-expiry: {ident} WOULD BE CLEARED "
                   f"(probe `{probe}` passed: {evidence}) -- dry, use --apply")
             continue
-        cleared, detail = clear_block(ident, probe, evidence)
-        if cleared:
+        outcome, detail = clear_block(ident, probe, evidence)
+        if outcome == CLEARED:
             counts["cleared"] += 1
             print(f"capability-expiry: {ident} CLEARED -- probe `{probe}` passed ({evidence})")
+        elif outcome == NOOP:
+            # A concurrent sweep got there first. Reported, never counted: the
+            # recovery is real but it is not THIS run's, and a count that adds
+            # both sweeps says two blocks lifted when one did.
+            counts["already_cleared"] += 1
+            print(f"capability-expiry: {ident} already un-parked by a concurrent "
+                  f"sweep ({detail}) -- no second recovery comment posted")
         else:
             # Same reasoning as the worker's failed-label branch: if the write
             # did not land, the issue is still parked and saying "cleared" would
@@ -469,6 +553,7 @@ def main(argv=None) -> int:
     print("capability-expiry: " + json.dumps({
         "parked": len(parked),
         "cleared": counts["cleared"],
+        "already_cleared": counts["already_cleared"],
         "still_blocked": counts["fail"],
         "unprobeable": counts["unprobeable"],
         "unrunnable_probe": counts["unknown"],
