@@ -85,6 +85,16 @@ file. Both fall back to the pre-fix reading: the old path is charged as a deleti
 and the new one as a fresh file. That direction only ever TIGHTENS the cap (and is
 clamped at the total that just passed), so it costs banked headroom and never
 mints any. Recovering it is a founder edit of the baseline, same as before.
+
+FIFTH HONEST BOUNDARY: git failing is FAIL-CLOSED in both directions, and both
+directions cost something. A `git status` that fails inside a work tree records
+nothing, even when the tree was in fact clean -- so a broken git quietly stops the
+accounting from advancing until it is fixed, and the run still says so on every
+pass. A `git add` of the baseline that fails inside a work tree FAILS the run and
+blocks the commit. Outside a work tree neither applies, which is what keeps the
+fixtures and apply_claude_changes.py's gate suite passing. `inside_work_tree` is
+the one place that call is made; when git cannot be run at all it answers None,
+and None is treated as "assume there is an index", never as "there is none".
 """
 import json
 import os
@@ -252,9 +262,37 @@ def scan_rules(rules_dir):
     return always_on, conditional
 
 
+def inside_work_tree(project_root):
+    """True inside a git work tree, False provably outside one, None when git
+    itself could not be run.
+
+    The discriminator both git-failure paths below need. `git status` failing and
+    `git add` failing each have two very different causes, and the old code could
+    not tell them apart (PR #88 round 4, both majors): either there is no index
+    here at all -- a --root'ed fixture, apply_claude_changes.py's gate suite, which
+    is ordinary and must never fail a run -- or there is one and git could not be
+    read (index.lock contention, a corrupt index, a permission fault), which is
+    never ordinary and must never be treated as "clean".
+
+    Reads no index, so it still answers when `git status` cannot. None (no git
+    binary at all) is deliberately NOT False: unknown fails closed, and the cost
+    of that is only a run that declines to record.
+    """
+    try:
+        proc = subprocess.run(["git", "-C", project_root, "rev-parse",
+                               "--is-inside-work-tree"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return False
+    return proc.stdout.decode("utf-8", "replace").strip() == "true"
+
+
 def stage_baseline(project_root):
-    """git add the baseline the ratchet just rewrote. Returns the staged
-    repo-relative path, or None when there is no index to stage into.
+    """git add the baseline the ratchet just rewrote.
+
+    Returns (staged repo-relative path, error text); exactly one of the two is set.
 
     The ratchet runs from lefthook pre-commit and rewrites the baseline in the
     WORKING TREE. Left unstaged, the commit that CAUSED the accounting transition
@@ -264,28 +302,54 @@ def stage_baseline(project_root):
     which addresses a reader who is not there -- the hook runs unattended, and an
     instruction nobody executes is not a mechanism.
 
-    Never raises and never fails the run. The fixtures and apply_claude_changes.py's
-    gate suite both run this against a --root'ed tree that is not a git work tree;
-    where the audit was run from must not be what fails it.
+    Never raises. Whether a failure here fails the RUN is report_baseline_written's
+    call, because that is where inside_work_tree() separates "no index to stage
+    into" from "an index that would not take it".
     """
     path = baseline_path(project_root)
     try:
         proc = subprocess.run(["git", "-C", project_root, "add", "--", path],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    except OSError:
-        return None
+    except OSError as exc:
+        return None, str(exc)
     if proc.returncode != 0:
-        return None
-    return os.path.relpath(path, project_root)
+        detail = proc.stdout.decode("utf-8", "replace").strip()
+        return None, detail or "git add exited %d" % proc.returncode
+    return os.path.relpath(path, project_root), None
+
+
+class _GitUnreadable:
+    """Sentinel: this tree HAS an index and git would not tell us about it."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "GIT_UNREADABLE"
+
+
+GIT_UNREADABLE = _GitUnreadable()
+
+
+def no_status(project_root):
+    """What git_status returns when git did not answer: None when the tree is
+    provably not a git work tree, GIT_UNREADABLE otherwise.
+
+    One helper, called from both git_status failure arms. Two spellings of
+    "classify a git failure" is the drift class that opened the nested-rules hole
+    in round 1, and this is the same judgement in both places.
+    """
+    return None if inside_work_tree(project_root) is False else GIT_UNREADABLE
 
 
 def git_status(project_root, audited):
     """Parsed `git status --porcelain -z` records for the audited paths.
 
     Returns [(index_state, tree_state, path, source_path), ...] with source_path
-    set only on a rename/copy, or None when there is no index to read (a --root'ed
-    fixture, a non-git tree). Callers treat None as "not applicable", never as
-    "clean", so a missing git is not silently a pass for a check that never ran.
+    set only on a rename/copy; None when there is no index to read (a --root'ed
+    fixture, a non-git tree); or GIT_UNREADABLE when there IS an index and git
+    failed to report on it. Callers treat None as "not applicable" and
+    GIT_UNREADABLE as "assume the worst", never either as "clean", so a git that
+    did not run is not silently a pass for a check that never ran.
 
     ONE call with TWO readers on purpose: index_divergence wants the
     worktree-vs-index column and rule_renames wants the rename records, and they
@@ -309,9 +373,9 @@ def git_status(project_root, audited):
                                "-z", "--"] + rel,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
-        return None
+        return no_status(project_root)
     if proc.returncode != 0:
-        return None
+        return no_status(project_root)
 
     fields = [f for f in proc.stdout.decode("utf-8", "replace").split("\0") if f]
     records = []
@@ -350,6 +414,33 @@ def index_divergence(records):
     # Second column is the worktree-vs-index state. ' ' means they agree; a
     # staged-only change (e.g. "M ") is exactly what we want to let through.
     return sorted({name for _, tree_state, name, _ in records if tree_state != " "})
+
+
+def recording_block(records):
+    """Why this run must not record its accounting transition, or None to proceed.
+
+    Two reasons, one defect class: the run cannot prove the tree it measured is
+    the tree the commit will carry. A cap recorded from a tree the commit does not
+    carry is a cap the committed rules already violate, and the next fresh clone
+    audits RED with only a hand edit of the baseline to get back (PR #88 round 2).
+
+    GIT_UNREADABLE is the round-4 half of it: a failed `git status` used to be
+    indistinguishable from "no index here", so it walked straight past the
+    divergence guard and committed exactly that cap.
+    """
+    if records is GIT_UNREADABLE:
+        return ("git status failed inside a git work tree, so this run cannot see "
+                "whether the tree it measured is the tree the commit carries, and "
+                "a cap recorded from an unstaged deletion is one the committed "
+                "rules already violate. Fix git, then commit again.")
+    diverged = index_divergence(records)
+    if not diverged:
+        return None
+    return ("{n} audited path(s) differ from the index ({names}), so this run "
+            "measured a tree the commit does not carry and a cap recorded from it "
+            "could be one the committed rules already violate. Stage them, or let "
+            "the commit that carries them record it.").format(
+                n=len(diverged), names=", ".join(diverged))
 
 
 def rule_renames(records, project_root, rules_dir):
@@ -493,12 +584,36 @@ def ratchet_fail_text(cap, total, always_on):
 
 
 def report_baseline_written(project_root, stage):
-    """One line saying where the rewritten baseline went, staged or not."""
-    staged = stage_baseline(project_root) if stage else None
+    """One line saying where the rewritten baseline went, staged or not.
+
+    Returns False when the baseline HAD to be staged and could not be, which must
+    fail the run (PR #88 round 4, major). A swallowed `git add` failure let the
+    commit carry the rules WITHOUT the accounting they moved, and printing "stage
+    this file" is the same instruction-to-an-absent-reader that stage_baseline
+    replaced once already. A rename is the sharp case: git reports it only in the
+    commit that makes it, so a baseline left behind charges the whole rule as a
+    deletion on the very next run and eats banked headroom.
+
+    Failing is gated on inside_work_tree(), so the fixtures and the engine's gate
+    suite -- neither of which has an index -- keep passing exactly as before.
+    """
+    path = baseline_path(project_root)
+    if not stage:
+        print(f"RATCHET: stage {path} with this commit.")
+        return True
+    staged, error = stage_baseline(project_root)
     if staged:
         print(f"RATCHET: staged {staged} with this commit.")
-    else:
-        print(f"RATCHET: stage {baseline_path(project_root)} with this commit.")
+        return True
+    if inside_work_tree(project_root) is False:
+        print(f"RATCHET: stage {path} with this commit.")
+        return True
+    print(f"RATCHET FAIL: rewrote {path} but could not stage it: {error}\n"
+          "  The commit would carry the rules without the accounting they moved, "
+          "so the next run reads a baseline that disagrees with the tree.\n"
+          "  Fix git, or re-run with --no-stage and `git add` the baseline "
+          "yourself before committing.")
+    return False
 
 
 def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
@@ -515,7 +630,8 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
         if write:
             write_baseline(project_root, total, total, always_on)
-            report_baseline_written(project_root, stage)
+            if not report_baseline_written(project_root, stage):
+                return 1
         return 0
 
     # A pre-ASK-285 baseline carries one number that meant both cap and total.
@@ -530,15 +646,11 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         return 1
 
     records = git_status(project_root, audited)
-    diverged = index_divergence(records)
-    if diverged:
+    blocked = recording_block(records)
+    if blocked:
         print(f"RATCHET PASS: total {total}, cap {cap}, headroom {cap - total}. "
               f"Target {BUDGET_TOTAL_ALWAYS_ON}.")
-        print("RATCHET: not recording. {n} audited path(s) differ from the index "
-              "({names}), so this run measured a tree the commit does not carry and "
-              "a cap recorded from it could be one the committed rules already "
-              "violate. Stage them, or let the commit that carries them record "
-              "it.".format(n=len(diverged), names=", ".join(diverged)))
+        print("RATCHET: not recording. " + blocked)
         return 0
 
     if snapshot is None:
@@ -586,7 +698,8 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
         print(f"RATCHET PASS: total {total}, cap {new_cap}, headroom "
               f"{new_cap - total}.{scoped_note} Target {BUDGET_TOTAL_ALWAYS_ON}.")
     if changed and write:
-        report_baseline_written(project_root, stage)
+        if not report_baseline_written(project_root, stage):
+            return 1
     return 0
 
 

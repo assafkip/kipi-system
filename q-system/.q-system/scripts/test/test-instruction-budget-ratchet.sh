@@ -674,6 +674,134 @@ audit_rc "$RM3"
 check "mutant charges the rename as a deletion" 0 "tightened cap 33 -> 23" "$AUDIT_RC" "$AUDIT_OUT"
 AUDIT="$AUDIT_SAVE"
 
+echo "== 24. a FAILED git status records nothing; it does not read as a clean tree"
+# PR #88 round 4, major. git_status() returned None both when there is no index to
+# read (a --root'ed fixture -- ordinary) and when git was there and could not be
+# read (index.lock contention, a corrupt index, a permission fault -- never
+# ordinary). index_divergence(None) is falsy, so the second case walked straight
+# past the guard section 20 built and committed a cap computed from an UNSTAGED
+# deletion. The discriminator is `git rev-parse --is-inside-work-tree`, which reads
+# no index and so still answers when `git status` cannot.
+#
+# The shim is how a status failure is made deterministic: `git -C <root> <cmd>` is
+# the shape every call in the audit uses, so $3 is always the subcommand.
+REAL_GIT=$(command -v git)
+mk_git_shim() {  # mk_git_shim <dir> <subcommand-to-fail>
+  mkdir -p "$1"
+  cat > "$1/git" <<SH
+#!/usr/bin/env bash
+if [ "\${3:-}" = "$2" ]; then echo "fatal: simulated $2 failure" >&2; exit 128; fi
+exec "$REAL_GIT" "\$@"
+SH
+  chmod +x "$1/git"
+}
+audit_with_path() {  # audit_with_path <PATH-prefix-dir> <root> [args...]
+  local shim="$1" r="$2"; shift 2
+  set +e
+  AUDIT_OUT=$(PATH="$shim:$PATH" python3 "$AUDIT" --ratchet --root "$r" "$@" 2>&1)
+  AUDIT_RC=$?
+  set -e
+}
+
+SHIM_STATUS=$(mktemp -d)/bin; mk_git_shim "$SHIM_STATUS" status
+R19=$(mktemp -d); mk_fixture "$R19"
+audit_rc "$R19"                       # bootstrap: cap 33, total 33
+git -C "$R19" init -q
+git -C "$R19" add -A
+git -C "$R19" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+python3 - "$R19/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+audit_with_path "$SHIM_STATUS" "$R19"   # deletion in the tree only, and status is broken
+check "a broken git status still exits 0" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+check "it says why it recorded nothing" 0 "not recording" "$AUDIT_RC" "$AUDIT_OUT"
+check "it names git status, not a diverging path" 0 "git status failed" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap not tightened behind a broken git status" 33 "$(cap_of "$R19")"
+# Fail-closed is the whole point, so it costs a recording even when the tree is in
+# fact clean. Stated as a boundary in the docstring; pinned here so it stays a
+# choice rather than a surprise.
+git -C "$R19" add -A
+audit_with_path "$SHIM_STATUS" "$R19"
+check "still recording nothing while git status is broken" 0 "not recording" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap still held" 33 "$(cap_of "$R19")"
+audit_rc "$R19"                       # real git back on PATH: the accounting lands
+check "with git working the staged deletion lands" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap follows the deletion once git answers" 30 "$(cap_of "$R19")"
+
+echo "== 25. a FAILED baseline git add fails the run, it does not exit 0"
+# PR #88 round 4, major. stage_baseline() swallowed a failed `git add` and printed
+# "stage <path> with this commit" -- the same instruction-to-an-absent-reader that
+# section 16 already replaced once. The commit then carried the rules WITHOUT the
+# accounting they moved. A rename is the sharp case: git reports it only in the
+# commit that makes it, so a baseline left behind charges the whole rule as a
+# deletion on the very next run and eats banked headroom.
+SHIM_ADD=$(mktemp -d)/bin; mk_git_shim "$SHIM_ADD" add
+R20=$(mktemp -d); mk_fixture "$R20"
+audit_rc "$R20"                       # bootstrap: cap 33, total 33
+git -C "$R20" init -q
+git -C "$R20" add -A
+git -C "$R20" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+BEFORE_BASE=$(git -C "$R20" show ":$BASE_REL")
+scope_rule "$R20" beta.md "q-system/output/**"
+git -C "$R20" add -A                  # tree matches the index, so recording is allowed
+audit_with_path "$SHIM_ADD" "$R20"
+check "an unstageable baseline fails the run" 1 "RATCHET FAIL" "$AUDIT_RC" "$AUDIT_OUT"
+check "the failure names the staging problem" 1 "could not stage" "$AUDIT_RC" "$AUDIT_OUT"
+if [ "$(git -C "$R20" show ":$BASE_REL")" = "$BEFORE_BASE" ]; then
+  ok "the index really did not get the new baseline"
+else
+  bad "shim did not block the add; the case proves nothing"
+fi
+# The new failure is gated on being in a work tree, so fixtures and the engine's
+# gate suite (section 17) keep passing with the same broken `git add`.
+R21=$(mktemp -d); mk_fixture "$R21"
+audit_rc "$R21"
+scope_rule "$R21" beta.md "q-system/output/**"
+audit_with_path "$SHIM_ADD" "$R21"
+check "a non-git tree is untouched by the add failure" 0 "RATCHET PASS" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap held in the non-git tree" 33 "$(cap_of "$R21")"
+
+echo "== 26. mutation: blind the work-tree probe -> sections 24 and 25 go RED"
+# A regression case never watched fail is not known to catch anything. This makes
+# inside_work_tree() answer False everywhere, which is exactly the pre-fix reading:
+# every git failure looks like "no index here, carry on".
+MUTG=$(mktemp -d)/mutant-worktree.py
+mkdir -p "$(dirname "$MUTG")"
+python3 - "$AUDIT" "$MUTG" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = '    return proc.stdout.decode("utf-8", "replace").strip() == "true"\n'
+assert needle in src, "inside_work_tree moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(needle, "    return False\n", 1))
+PY
+RM4=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTG"; mk_fixture "$RM4"
+audit_rc "$RM4"
+git -C "$RM4" init -q
+git -C "$RM4" add -A
+git -C "$RM4" -c user.email=t@t -c user.name=t commit -qm "fixture (ASK-285)"
+python3 - "$RM4/.claude/rules/alpha.md" <<'PY'
+import sys
+p = sys.argv[1]
+kept, dropped = [], 0
+for line in open(p).read().splitlines(True):
+    if line.strip() and dropped < 3 and line.startswith("Alpha line"):
+        dropped += 1
+        continue
+    kept.append(line)
+open(p, "w").write("".join(kept))
+PY
+audit_with_path "$SHIM_STATUS" "$RM4"
+check "mutant commits a cap from an unstaged deletion" 0 "tightened cap 33 -> 30" "$AUDIT_RC" "$AUDIT_OUT"
+AUDIT="$AUDIT_SAVE"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]
