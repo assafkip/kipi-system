@@ -35,21 +35,85 @@ THE FOUR DECISIONS, MADE (ASK-295's Definition of Ready)
    daily budget, the liveness assert, the notify sink. A second job would be a
    second copy of all four, drifting.
 
-3. ATTRIBUTION IS THE BRANCH NAME, with no Linear round-trip. The worker cuts
-   every branch as `<agent>/<issue>` (`sana/ask-295`), so the branch already
-   carries both facts this needs. A branch that does not match is not an agent
-   PR and is none of this tool's business -- the founder's own PRs keep behaving
-   exactly as they do today.
+3. ATTRIBUTION IS THE BRANCH FIRST, THE PR TITLE SECOND, and never a guess.
 
 4. THE CAP IS ONE ATTEMPT PER PR PER FAILURE SIGNATURE, held in the existing
-   attempts ledger (single-writer, flock'd -- attempts-ledger.py). The signature
-   is the set of failing check NAMES, deliberately NOT the head sha: a re-push
-   that fails the same check again is the same failure, and re-dispatching on it
-   is how a handler re-runs a flake forever. ASK-295 names that risk by hand --
-   one root cause of the 2026-08-02 redness was a measurement taken against the
-   wrong tree, and a handler that re-runs CI without fixing tree isolation would
-   have looped on it all night. A genuinely NEW failure gets its own fresh
-   attempt, because it is a different problem.
+   attempts ledger (single-writer, flock'd -- attempts-ledger.py), and spent by
+   the DISPATCHER confirming a dispatch, not by this script offering a pick.
+
+Points 3 and 4 each cost a defect in round 1 and are written out below.
+
+ATTRIBUTION: TWO SOURCES, RANKED, NEITHER OF THEM A GUESS (review finding 3)
+---------------------------------------------------------------------------
+Round 1 read the issue id out of the branch name and nothing else, on the
+reasoning that the worker cuts every branch as `<agent>/<issue>`. The worker
+does. A SANA SESSION DRIVEN BY HAND DOES NOT: `sana/block-expiry` is PR #69, it
+is one of the three PRs that mailed the founder in the scar above, it was red on
+`validate` while I wrote the rule that skipped it, and the rule's own docstring
+cited it as motivation. A tool that misses the case it was built for is worse
+than no tool, because the gap is now believed to be covered.
+
+So: the branch tail if it is an issue id (`sana/ask-295` -> ASK-295), otherwise
+the PR TITLE, which carries the id because `linear-issue-ref-check.py` makes it
+mandatory in the commit message the title is cut from. Reading a stated id is
+not guessing. Guessing is what is still refused: a title naming TWO distinct
+issues is ambiguous and is left alone, because picking either is how the wrong
+issue gets re-dispatched.
+
+The `<agent>/` prefix must be a KNOWN agent (AGENT_BRANCH_OWNERS). This errs
+toward doing nothing: an unrecognised owner is treated as a human's branch and
+left exactly as it behaves today. Handing a founder's branch to an agent is the
+expensive direction of this error, so the ambiguity resolves the cheap way.
+
+A REVIEW VERDICT IS NOT CI (review finding 1)
+---------------------------------------------
+`pr-review-agent.sh` posts its verdict as a commit STATUS -- `kipi/reviewer-approved`
+for the primary engine, `kipi/<engine>-approved` for the advisory one -- and
+anything that is not an approval is posted as `state: failure`. That status rides
+in the same `statusCheckRollup` as the CI checks, so round 1 counted every
+REQUEST CHANGES review as red CI. Live consequence, on this script's own PR: #73
+had `validate: SUCCESS` and `kipi/reviewer-approved: FAILURE`, so the handler
+would have re-dispatched a PR with a passing build and then paged the founder
+that the build was still red.
+
+It is also already handled: the reviewer comments on the Linear issue and the
+worker re-dispatches from there. Two consumers for one event is how a PR gets
+worked twice. So the reviewer's own slots are excluded and nothing else is -- a
+third-party commit status (`ci/external-builder`) is real CI and stays in.
+
+THE CAP IS SPENT ON THE DISPATCH, NOT ON THE OFFER (review finding 2)
+--------------------------------------------------------------------
+Round 1 claimed the attempt inside `redrive`, at the moment it printed the pick.
+kipi-dispatch.sh can still abort after that -- a converge run already live for
+that issue exits 0 without launching anything. The attempt was then spent on a
+dispatch that never happened, and on the very next heartbeat the founder was
+paged with a message asserting a re-dispatch AND a second CI failure, neither of
+which had occurred.
+
+Two changes. `redrive` is READ-ONLY: it offers a pick and writes nothing, so an
+aborted heartbeat costs nothing and the next one offers the same PR again. The
+dispatcher calls `mark-dispatched` immediately before it launches, and that call
+is the atomic claim: rc 0 means it is yours to dispatch, rc 1 means someone else
+already has it and you must not. A lock timeout is rc 1 as well -- nothing was
+recorded, so nothing may act as though it was.
+
+And the escalation now says only what it observed. It records the head sha at
+dispatch time and compares it with the head sha now: the head moved (the agent
+pushed and the same check failed again) and the head did not move (it was handed
+back and nothing landed) are DIFFERENT facts and get different sentences.
+
+THE SIGNATURE IS THE CHECK SET, AND TODAY THAT IS ONE CHECK (review finding 4)
+-----------------------------------------------------------------------------
+The signature is the set of failing check NAMES, deliberately NOT the head sha:
+a re-push that fails the same check again is the same failure, and re-dispatching
+on it is how a handler re-runs a flake forever. ASK-295 names that risk by hand.
+
+Stated plainly rather than promised: this repo posts exactly ONE CI check
+(`validate`, from Skeleton Validation), so the signature is constant per PR here
+and the effective cap is ONE hand-back per PR, full stop. The "a genuinely new
+failure earns a fresh attempt" behaviour is real in the code and unreachable in
+this repo until a second required check exists. Round 1's docstring sold it as a
+live property, which is a claim the repo could not honour.
 
 WHAT IT DOES NOT DO
 -------------------
@@ -58,10 +122,11 @@ state and answers one question: which issue should the dispatcher hand back to
 its agent right now. The dispatching is the dispatcher's, and stays under the
 dispatcher's caps.
 
-    scan     -> JSON of red agent PRs (read-only, no ledger write, no page)
-    redrive  -> claim one attempt, print the issue id, exit 0
-                nothing claimable -> exit 1
-                gh could not answer -> exit 2, nothing claimed
+    scan            -> JSON of red agent PRs (read-only, no ledger write, no page)
+    redrive         -> read-only. prints `<issue>\t<signature>\t<head_sha>`,
+                       exit 0. Nothing to offer -> exit 1. gh could not answer
+                       -> exit 2. Escalates any candidate whose attempt is spent.
+    mark-dispatched -> the atomic claim. exit 0 = dispatch it, exit 1 = do not.
 
 THE PROBE'S rc IS PART OF ITS ANSWER. `gh pr list` failing is not "no red PRs":
 reading it that way is how a real red PR goes unhandled behind a clean exit. It
@@ -84,10 +149,24 @@ DEFAULT_ATTEMPTS = os.path.join(
     os.environ.get("KIPI_STATE_DIR", os.path.expanduser("~/.config/kipi")),
     "linear-worker-attempts.json")
 
-# `sana/ask-295` -> agent `sana`, issue `ASK-295`. Anchored at both ends on
-# purpose: `sana/ask-295-followup` is a branch a human named, and guessing which
-# issue a human meant is how the wrong issue gets re-dispatched.
-BRANCH_RE = re.compile(r"^(?P<agent>[a-z][a-z0-9_-]*)/(?P<issue>[a-z]{2,6}-\d+)$")
+# `<owner>/<anything>`. The owner has to be a KNOWN agent -- see the attribution
+# section of the docstring. An unknown owner is a human's branch.
+BRANCH_RE = re.compile(r"^(?P<owner>[a-z][a-z0-9_-]*)/(?P<tail>.+)$")
+AGENT_BRANCH_OWNERS = frozenset(
+    o.strip() for o in os.environ.get("KIPI_AGENT_BRANCH_OWNERS", "sana").split(",")
+    if o.strip())
+
+# `ask-295` as a whole branch tail, anchored: `ask-295-followup` is a name a
+# human chose and is not an issue id.
+TAIL_ISSUE_RE = re.compile(r"^(?P<issue>[a-z]{2,6}-\d+)$")
+# `(ASK-288)` anywhere in a PR title. linear-issue-ref-check.py makes the id
+# mandatory in the commit message, and the PR title is cut from it.
+TITLE_ISSUE_RE = re.compile(r"\b([A-Za-z]{2,6}-\d+)\b")
+
+# The reviewer's own verdict slots: `kipi/reviewer-approved` (primary engine) and
+# `kipi/<engine>-approved` (advisory). Posted by pr-review-agent.sh, NOT by CI,
+# and already consumed by the reviewer's own comment on the Linear issue.
+REVIEWER_CONTEXT_RE = re.compile(r"^kipi/[a-z0-9-]+-approved$")
 
 # A CheckRun that COMPLETED with one of these is red. Everything else -- queued,
 # in progress, skipped, neutral -- is not a failure, and treating "still running"
@@ -97,7 +176,7 @@ FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE",
 # The legacy commit-status half of the same rollup speaks a different vocabulary.
 FAILED_STATES = {"FAILURE", "ERROR"}
 
-PR_FIELDS = "number,headRefName,url,title,statusCheckRollup,isDraft"
+PR_FIELDS = "number,headRefName,headRefOid,url,title,statusCheckRollup,isDraft"
 
 
 class GhUnavailable(Exception):
@@ -122,23 +201,77 @@ def list_prs(repo_dir):
         raise GhUnavailable("`gh pr list` returned unparseable JSON: %s" % exc)
 
 
+# --- attribution -------------------------------------------------------------
+
+def branch_owner(branch):
+    """The agent that owns this branch, or None if no known agent does."""
+    match = BRANCH_RE.match(branch or "")
+    if not match:
+        return None
+    owner = match.group("owner")
+    return owner if owner in AGENT_BRANCH_OWNERS else None
+
+
+def title_issue(title):
+    """The ONE issue id a title names, or None.
+
+    Two distinct ids is ambiguity, and this refuses ambiguity rather than
+    resolving it -- the wrong issue re-dispatched is worse than none.
+    """
+    found = {m.upper() for m in TITLE_ISSUE_RE.findall(title or "")}
+    return found.pop() if len(found) == 1 else None
+
+
+def attribute(pr):
+    """(issue, agent, source) for an agent PR, or None. Never a guess."""
+    branch = pr.get("headRefName") or ""
+    agent = branch_owner(branch)
+    if agent is None:
+        return None
+    tail = BRANCH_RE.match(branch).group("tail")
+    tail_match = TAIL_ISSUE_RE.match(tail)
+    if tail_match:
+        return (tail_match.group("issue").upper(), agent, "branch")
+    issue = title_issue(pr.get("title"))
+    if issue:
+        return (issue, agent, "title")
+    return None
+
+
+# --- what counts as red ------------------------------------------------------
+
+def is_reviewer_slot(name):
+    return bool(REVIEWER_CONTEXT_RE.match((name or "").strip()))
+
+
 def failing_checks(pr):
-    """Names of the checks that are red RIGHT NOW, sorted and de-duplicated."""
+    """Names of the CI checks that are red RIGHT NOW, sorted and de-duplicated.
+
+    The reviewer's verdict slots are not CI and are excluded -- see the docstring.
+    Applied to both halves of the rollup: the status API is where the verdict is
+    posted today, and a name-based rule that only guards one half is a rule that
+    stops working the day the producer changes shape.
+    """
     names = set()
     for check in pr.get("statusCheckRollup") or []:
         if not isinstance(check, dict):
             continue
-        kind = check.get("__typename")
-        if kind == "StatusContext":
+        if check.get("__typename") == "StatusContext":
+            context = check.get("context") or "(unnamed status)"
+            if is_reviewer_slot(context):
+                continue
             if (check.get("state") or "").upper() in FAILED_STATES:
-                names.add(check.get("context") or "(unnamed status)")
+                names.add(context)
             continue
         # CheckRun, and anything else the rollup grows later that speaks
         # status/conclusion. A check that has not COMPLETED has not failed.
+        name = check.get("name") or "(unnamed check)"
+        if is_reviewer_slot(name):
+            continue
         if (check.get("status") or "").upper() != "COMPLETED":
             continue
         if (check.get("conclusion") or "").upper() in FAILED_CONCLUSIONS:
-            names.add(check.get("name") or "(unnamed check)")
+            names.add(name)
     return sorted(names)
 
 
@@ -146,7 +279,9 @@ def signature(names):
     """Identity of a FAILURE, not of a run.
 
     Head sha is left out deliberately -- see the module docstring. Same checks
-    red again == same problem == the machine tier is already spent on it.
+    red again == same problem == the machine tier is already spent on it. In
+    THIS repo that means one hand-back per PR, because `validate` is the only
+    CI check posted; the discrimination is real code waiting on a second check.
     """
     return hashlib.sha1("\n".join(names).encode("utf-8")).hexdigest()[:12]
 
@@ -154,18 +289,21 @@ def signature(names):
 def candidates(repo_dir):
     out = []
     for pr in list_prs(repo_dir):
-        match = BRANCH_RE.match(pr.get("headRefName") or "")
-        if not match:
-            continue                       # not an agent branch, not ours
+        attributed = attribute(pr)
+        if attributed is None:
+            continue                       # not an agent PR, or not attributable
+        issue, agent, source = attributed
         failing = failing_checks(pr)
         if not failing:
             continue
         out.append({
-            "issue": match.group("issue").upper(),
-            "agent": match.group("agent"),
+            "issue": issue,
+            "agent": agent,
+            "issue_source": source,
             "pr": pr.get("number"),
             "url": pr.get("url"),
             "branch": pr.get("headRefName"),
+            "head_sha": pr.get("headRefOid") or "",
             "failing_checks": failing,
             "signature": signature(failing),
         })
@@ -184,6 +322,16 @@ def ledger_get(path, issue, key):
     return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
+def _ledger_claim_rc(path, issue, flag):
+    proc = subprocess.run(
+        [sys.executable, LEDGER_SCRIPT, path, "claim-flag", issue, flag],
+        capture_output=True, text=True)
+    if proc.returncode not in (0, 1):
+        sys.stderr.write("ci-redrive: ledger refused `%s` for %s: %s\n"
+                         % (flag, issue, (proc.stderr or "").strip()[:200]))
+    return proc.returncode
+
+
 def ledger_claim(path, issue, flag):
     """True the first time this flag is claimed anywhere, False otherwise.
 
@@ -191,13 +339,29 @@ def ledger_claim(path, issue, flag):
     Nothing was recorded, so nothing may act as though it was -- the next
     scheduled run claims it instead.
     """
-    proc = subprocess.run(
-        [sys.executable, LEDGER_SCRIPT, path, "claim-flag", issue, flag],
-        capture_output=True, text=True)
-    if proc.returncode not in (0, 1):
-        sys.stderr.write("ci-redrive: ledger refused `%s` for %s: %s\n"
-                         % (flag, issue, (proc.stderr or "").strip()[:200]))
-    return proc.returncode == 0
+    return _ledger_claim_rc(path, issue, flag) == 0
+
+
+def ledger_recorded(path, issue, flag):
+    """True if the flag is now set, whether this call or an earlier one set it.
+
+    Different question from `ledger_claim`, and the difference is load-bearing:
+    for a fact being RECORDED, "someone already wrote it" is success. Only a
+    lock timeout or a write failure is not.
+    """
+    return _ledger_claim_rc(path, issue, flag) in (0, 1)
+
+
+def redrive_flag(cand):
+    return "ci_redrive_%s" % cand["signature"]
+
+
+def head_flag(head_sha):
+    return "ci_redrive_head_%s" % (head_sha or "unknown")[:12]
+
+
+def head_recorded_flag(cand):
+    return "ci_redrive_headrec_%s" % cand["signature"]
 
 
 def notify(message):
@@ -210,6 +374,24 @@ def notify(message):
         sys.stderr.write("ci-redrive: notify failed: %s\n" % exc)
 
 
+def what_happened_since(path, cand):
+    """The one sentence about the branch that this run can actually evidence.
+
+    Three states, and the third is named rather than folded into one of the
+    first two. `ci_redrive_headrec_<sig>` says a head sha WAS recorded at
+    dispatch; `ci_redrive_head_<sha>` says which one. Absent recording is not
+    evidence of a push.
+    """
+    checks = ", ".join(cand["failing_checks"])
+    if not ledger_get(path, cand["issue"], head_recorded_flag(cand)):
+        return "what has happened on the branch since is not recorded."
+    if ledger_get(path, cand["issue"], head_flag(cand["head_sha"])):
+        return ("no new commit has landed on the branch since, so it stopped "
+                "rather than hand back an unchanged tree.")
+    return ("a new commit landed and %s failed again, so it stopped rather "
+            "than re-run a flake." % checks)
+
+
 def escalate(path, cand):
     """The founder's ONE message about this failure, and only after the machine.
 
@@ -217,51 +399,85 @@ def escalate(path, cand):
     per signature, because the dispatcher reaches this state on every heartbeat
     for as long as the PR sits red -- paging per run is a page every 15 minutes
     for one fact that has not changed.
+
+    Every clause is an observation. Round 1 asserted a re-dispatch and a second
+    CI failure unconditionally; both were untrue on the very first heartbeat
+    after an offer the dispatcher never launched.
     """
     if not ledger_claim(path, cand["issue"], "ci_escalated_%s" % cand["signature"]):
         return False
     notify(
-        "ci-redrive: %s PR #%s is still red after the machine tier. The failing "
-        "check is %s. What the machine tried: it re-dispatched %s to %s once for "
-        "this exact failure and the same check failed again, so it stopped rather "
-        "than re-run a flake. %s"
+        "ci-redrive: %s PR #%s is still red on %s after the machine tier. What "
+        "the machine tried: it handed %s back to %s once for this failure; %s %s"
         % (cand["issue"], cand["pr"], ", ".join(cand["failing_checks"]),
-           cand["issue"], cand["agent"], cand["url"]))
+           cand["issue"], cand["agent"], what_happened_since(path, cand),
+           cand["url"]))
     return True
 
 
+def attempts_path():
+    return os.environ.get("KIPI_ATTEMPTS", DEFAULT_ATTEMPTS)
+
+
 def cmd_redrive(cands):
-    path = os.environ.get("KIPI_ATTEMPTS", DEFAULT_ATTEMPTS)
+    """READ-ONLY. Offers one pick; the dispatcher spends it via mark-dispatched."""
+    path = attempts_path()
     chosen = None
     for cand in cands:
-        flag = "ci_redrive_%s" % cand["signature"]
-        # Read before claiming so EVERY spent candidate escalates on this pass,
-        # not just the one that happens to sort first. The claim below is still
-        # the atomic gate -- this read only decides who gets offered it.
-        if ledger_get(path, cand["issue"], flag):
-            escalate(path, cand)
+        if ledger_get(path, cand["issue"], redrive_flag(cand)):
+            escalate(path, cand)           # machine tier already spent on this
             continue
-        if chosen is not None:
-            continue                       # one hand-back per run, like the pick
-        if ledger_claim(path, cand["issue"], flag):
-            chosen = cand
+        if chosen is None:
+            chosen = cand                  # one hand-back per run, like the pick
     if chosen is None:
         return 1
     sys.stderr.write(
-        "ci-redrive: %s PR #%s red on %s -- handing it back to %s\n"
+        "ci-redrive: %s PR #%s red on %s -- offering it back to %s\n"
         % (chosen["issue"], chosen["pr"], ", ".join(chosen["failing_checks"]),
            chosen["agent"]))
-    print(chosen["issue"])
+    print("%s\t%s\t%s" % (chosen["issue"], chosen["signature"],
+                          chosen["head_sha"]))
+    return 0
+
+
+def cmd_mark_dispatched(issue, sig, head_sha):
+    """The atomic claim. 0 = it is yours to dispatch, 1 = it is not."""
+    path = attempts_path()
+    if not ledger_claim(path, issue, "ci_redrive_%s" % sig):
+        sys.stderr.write(
+            "ci-redrive: %s attempt for signature %s was already claimed (or the "
+            "ledger could not be written) -- not dispatching.\n" % (issue, sig))
+        return 1
+    # Order matters: record WHICH head first, then the marker saying a head was
+    # recorded at all. The reverse order lets a failure between the two claim
+    # that a sha is on file when none is, and the escalation would then read a
+    # missing sha as a push that never happened.
+    if ledger_recorded(path, issue, head_flag(head_sha)):
+        ledger_recorded(path, issue, "ci_redrive_headrec_%s" % sig)
     return 0
 
 
 def main(argv):
     ap = argparse.ArgumentParser(
         description="Machine consumer for red CI on agent-opened PRs (ASK-295).")
-    ap.add_argument("op", choices=("scan", "redrive"))
+    ap.add_argument("op", choices=("scan", "redrive", "mark-dispatched"))
     ap.add_argument("--repo-dir", default=".",
                     help="checkout whose open PRs are read (gh runs here)")
+    ap.add_argument("--issue", help="mark-dispatched: the issue being dispatched")
+    ap.add_argument("--signature", help="mark-dispatched: signature from redrive")
+    ap.add_argument("--head-sha", default="",
+                    help="mark-dispatched: head sha from redrive")
     args = ap.parse_args(argv[1:])
+
+    # No gh call: mark-dispatched commits the offer the dispatcher is holding.
+    # Re-probing here would decide against a world that may have moved between
+    # the offer and the launch, which is a different PR state than the one the
+    # dispatcher is about to act on.
+    if args.op == "mark-dispatched":
+        if not args.issue or not args.signature:
+            ap.error("mark-dispatched needs --issue and --signature")
+        return cmd_mark_dispatched(args.issue, args.signature, args.head_sha)
+
     try:
         cands = candidates(args.repo_dir)
     except GhUnavailable as exc:

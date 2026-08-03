@@ -807,12 +807,26 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 #
 # rc 2 (gh could not answer) is NOT treated as "no red PRs": the fresh pick
 # stands and the reason is logged. rc 1 is the ordinary "nothing red".
+#
+# THE OFFER IS NOT THE CLAIM (PR #73 review, finding 2). `redrive` writes
+# nothing: it prints `<issue>\t<signature>\t<head_sha>` and leaves the ledger
+# alone. This block is still ~70 lines above the launch, and one of the guards
+# in between (a converge run already live for that issue) exits 0 without
+# launching anything. Claiming here spent the PR's one machine attempt on a
+# dispatch that never happened, and the next heartbeat then paged the founder
+# with a message asserting a re-dispatch and a second CI failure, neither of
+# which had occurred. The claim now happens at MARK-DISPATCHED below, past every
+# guard that can still abort.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
+REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
 if [ -f "$REDRIVE" ]; then
-  REDRIVE_NEXT="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
+  REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
                     --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
   REDRIVE_RC=$?
-  if [ "$REDRIVE_RC" = "0" ] && [ -n "$REDRIVE_NEXT" ]; then
+  if [ "$REDRIVE_RC" = "0" ] && [ -n "$REDRIVE_LINE" ]; then
+    REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
+    REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
+    REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
     say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
     NEXT="$REDRIVE_NEXT"
   elif [ "$REDRIVE_RC" = "2" ]; then
@@ -850,6 +864,20 @@ PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
 if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
+fi
+
+# --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
+# Past every guard that can still abort, and immediately before the launch. This
+# is where the PR's one machine attempt is spent, and the call is the atomic
+# gate: rc 0 means this run owns the attempt, rc non-zero means another run
+# already claimed it (or the ledger could not be written, which is the same
+# answer -- nothing was recorded, so nothing may act as though it was).
+if [ -n "$REDRIVE_SIG" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+  if ! python3 "$REDRIVE" mark-dispatched --issue "$NEXT" \
+       --signature "$REDRIVE_SIG" --head-sha "$REDRIVE_SHA" 2>>"$LOG"; then
+    say "red-CI redrive: the attempt for $NEXT is already claimed -- not dispatching"
+    exit 0
+  fi
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two
