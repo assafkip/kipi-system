@@ -324,6 +324,43 @@ which was not doing the isolating everyone assumed it was.
       suites). `PYTEST_CURRENT_TEST`-keyed chokepoint refusal exists for the
       ASK-311 path only; generalising it is not in this issue
 
+## The limit of this fix, found by pointing it at its own PR (`sp-9e6c8196`)
+
+This fix makes a wedge VISIBLE by handing the PR to the real producer. It does
+not make the producer correct, and those are different claims.
+
+PR #78 (this change) wedged exactly like #75, was detected by its own detector,
+and the reviewer was run. codex then **declined to start**: the run ended on
+*"Reply `OK` and I'll run the read-only adversarial review exactly as planned"*,
+having said *"Per the repo's multi-file review rule, I'm pausing for your OK
+before executing."* The repo's own `CLAUDE.md` rule ("state your approach and
+wait for OK") leaks into the reviewer's context, and codex is invoked with
+`</dev/null`, so the OK can never arrive.
+
+ASK-312's `resolve_verdict` did its job — it failed CLOSED, so no false APPROVE
+was posted. But the status posted was `kipi/reviewer-approved=failure` on a PR
+nobody read. **A false REQUEST CHANGES, not a false green.**
+
+The interaction with this change is the part worth writing down:
+
+- The wedged tier spends one attempt per PR per missing-context set. Once any
+  status is posted the PR is no longer absent, so this tier never revisits it.
+- For an agent PR with an issue id that is fine: REQUEST CHANGES has a rework
+  path and the worker re-dispatches.
+- For a PR with **no** issue id — the founder's own, the class this detector was
+  widened to cover — there is no rework path, so a declined review leaves a
+  permanent false rejection.
+
+So the honest scope of the fix is: absence becomes a visible state with a
+machine consumer. It is not: the verdict on that state is trustworthy.
+
+It is intermittent, not deterministic. PR #68's review the same hour was real:
+1.47 MB of output, three majors and a minor, each with an executed reproducer.
+That is why this is captured rather than treated as a blocker on this change.
+
+Evidence: `~/.config/kipi/pr-reviews/codex/pr-78-20260802-211816.md` (7597 bytes)
+versus `pr-68-20260802-210908.md` (1474493 bytes).
+
 ## What is deliberately left open
 
 - **The producer is still local-only.** A launchd job on one Mac is the sole
