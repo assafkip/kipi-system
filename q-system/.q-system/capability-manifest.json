@@ -62,6 +62,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-diagnosed-not-built.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
       "runner": "bash"
     },
