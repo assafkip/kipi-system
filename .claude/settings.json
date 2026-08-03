@@ -271,6 +271,16 @@
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
           }
         ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostCompact": [

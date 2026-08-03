@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
+REPO_ROOT = SCRIPTS.parents[2]  # scripts/ -> .q-system/ -> q-system/ -> repo root
 CHECK = SCRIPTS / "consumer-parity-check.py"
 LIVE_MODULE = SCRIPTS / "capability-map-gen.py"
 FIXTURE = HERE / "fixtures" / "capability-map-gen.d20f412.py"
@@ -159,6 +160,66 @@ class TestHookPath(unittest.TestCase):
         proc = self._run("q-system/canonical/decisions.md")
         self.assertEqual(0, proc.returncode)
         self.assertEqual("", proc.stdout.strip())
+
+
+class TestEveryWriteToolReachesTheGate(unittest.TestCase):
+    """The matcher is part of the gate. A hook wired under `Edit|Write` is OFF for
+    an agent that edits with MultiEdit, and the unattended workers do exactly that.
+
+    Codex found this on PR #82: the entry landed in the `Edit|Write` group of
+    .claude/settings.json while the same entry landed in the `Edit|Write|MultiEdit`
+    group of settings-template.json -- the fleet template armed, the skeleton's own
+    runtime not. settings-template-sync-check.py compares script presence, not the
+    matcher, so both files looked in sync while one write tool walked past the gate.
+    """
+
+    WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
+    SETTINGS_FILES = (".claude/settings.json", "settings-template.json")
+
+    def _matchers_carrying_the_gate(self, rel: str) -> list:
+        path = REPO_ROOT / rel
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        matchers = []
+        for group in settings.get("hooks", {}).get("PostToolUse", []):
+            commands = " ".join(h.get("command", "") for h in group.get("hooks", []))
+            if "consumer-parity-check.py" in commands:
+                matchers.append(group.get("matcher") or "")
+        return matchers
+
+    def test_the_gate_is_wired_in_both_settings_files(self):
+        for rel in self.SETTINGS_FILES:
+            with self.subTest(settings=rel):
+                self.assertTrue(
+                    self._matchers_carrying_the_gate(rel),
+                    f"{rel} has no PostToolUse entry for consumer-parity-check.py")
+
+    def test_every_write_tool_is_covered_in_both_settings_files(self):
+        for rel in self.SETTINGS_FILES:
+            covered = set()
+            for matcher in self._matchers_carrying_the_gate(rel):
+                covered.update(part.strip() for part in matcher.split("|"))
+            for tool in self.WRITE_TOOLS:
+                with self.subTest(settings=rel, tool=tool):
+                    self.assertIn(
+                        tool, covered,
+                        f"{rel} never fires consumer-parity-check.py on a {tool}; "
+                        f"an agent writing a walker with {tool} bypasses the gate")
+
+    def test_the_hook_entry_point_accepts_a_multiedit_payload(self):
+        """The matcher is only half of it: the script itself must not filter the
+        tool out once the runtime does deliver the payload."""
+        with tempfile.TemporaryDirectory() as td:
+            seed = Path(td) / MODULE_PATH_IN_REPO
+            seed.parent.mkdir(parents=True)
+            seed.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CHECK)],
+                input=json.dumps({"tool_name": "MultiEdit",
+                                  "tool_input": {"file_path": str(seed)}}),
+                capture_output=True, text=True, timeout=60)
+        self.assertEqual(2, proc.returncode,
+                         f"a MultiEdit payload must block too: {proc.stderr or proc.stdout}")
+        self.assertIn("CONSUMER PARITY (blocked)", proc.stderr)
 
 
 class TestNegativeSelfTest(unittest.TestCase):
