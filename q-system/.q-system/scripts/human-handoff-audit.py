@@ -174,6 +174,32 @@ def heredoc_lines(lines) -> set:
     return out
 
 
+STRING_OPEN = re.compile(r'^\s*[A-Za-z_][A-Za-z0-9_]*=\"')
+
+
+def quoted_block_lines(lines) -> set:
+    """Line indices inside a multi-line double-quoted shell assignment.
+
+    Same reasoning as heredoc_lines: a string BODY is data. pr-review-agent.sh
+    builds its reviewer prompt as `PROMPT="...40 lines..."`, and that prose
+    defines review severity using a human as the unit of measure. It is not a
+    control path, and a marker cannot be placed inside it -- inserting a `#` line
+    there once already turned two comments into instructions the reviewer would
+    have read (reverted the same day).
+    """
+    inside, out = False, set()
+    for i, line in enumerate(lines):
+        if inside:
+            out.add(i)
+            # An odd number of unescaped quotes closes the assignment.
+            if line.count('"') - line.count('\\"') >= 1:
+                inside = False
+            continue
+        if STRING_OPEN.search(line) and (line.count('"') - line.count('\\"')) == 1:
+            inside = True
+    return out
+
+
 def findings(repo: str):
     out = []
     for rel in tracked(repo):
@@ -182,7 +208,8 @@ def findings(repo: str):
                          errors="replace").read().splitlines()
         except OSError:
             continue
-        skip = heredoc_lines(lines) if rel.endswith(".sh") else set()
+        skip = (heredoc_lines(lines) | quoted_block_lines(lines)
+                ) if rel.endswith(".sh") else set()
         for i, line in enumerate(lines):
             if i in skip:
                 continue

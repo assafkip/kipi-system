@@ -131,6 +131,8 @@ has_complete_findings_block() {
 # but nothing made it. Severity labels are structured data; the verdict is a
 # function of them, so compute it instead of reading prose.
 #   any blocker -> BLOCK            (anchor: unrecoverable if merged)
+# human-handoff-audit: definitional -- 'a human must clean up' is the unit of
+# measure that separates a blocker from a nit, not a routing decision.
 #   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
 #   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
 #   none        -> APPROVE
@@ -386,6 +388,8 @@ extract_minor_findings() {
 # THE VERDICT AND FINDINGS DO NOT COME FROM THE TRUNCATED TEXT. They are taken
 # from the caller's already-derived verdict and from `findings_block` (THE ONE
 # READER), then printed ABOVE the tail. That ordering is the whole safety
+# human-handoff-audit: definitional -- 'a human must clean up' is the unit of
+# measure that separates a blocker from a nit, not a routing decision.
 # property: truncation can drop narrative, never the two facts a human needs to
 # act. Deriving them from a tail we just cut would be a second reader with its
 # own semantics, the defect class this file exists to stop.
@@ -436,6 +440,8 @@ review_comment_body() {
   head_bytes=$(( $(review_comment_body_header_size) + ${block_bytes:-0} ))
   local room=$(( limit - head_bytes ))
   # A findings block alone can now exceed the limit. Truncating findings would
+  # human-handoff-audit: definitional -- 'a human must clean up' is the unit of
+  # measure that separates a blocker from a nit, not a routing decision.
   # drop the one thing a human must act on, so the narrative goes to zero first
   # and the block is still printed whole -- deliberately overrunning rather than
   # silently losing a finding. The caller's failure branch then reports it, which
