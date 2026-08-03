@@ -49,6 +49,25 @@ import time
 
 
 # --- Thresholds ---
+# THE CAP ESCALATES TO A PEER, NOT TO THE FOUNDER (ASK-310, founder-directed
+# 2026-08-02: "you failed 3 times, ask fable").
+#
+# Every ceiling below used to end its message with "tell the founder what's
+# blocking you". That is the same defect the whole ASK-310 line is about: the
+# system reaching its own limit and converting the remainder into founder work.
+# Three failed attempts is evidence that THIS model is stuck on THIS problem, not
+# evidence that a human is required. A different model is the cheaper, faster and
+# more correct next step, and the founder is what comes after that fails too.
+#
+# Measured cost of not having this, same session: three attempts at diagnosing a
+# test failure ended in a hand-back with the repo still red, when the remaining
+# work was two stale test assumptions a fresh pass found in minutes.
+FABLE_ESCALATION = (
+    "escalate to Fable BEFORE the founder: Agent(subagent_type='general-purpose', "
+    "model='fable') carrying what you tried, what each attempt returned, and the "
+    "exact question. Page the founder only if Fable is also stuck."
+)
+
 RETRY_LIMIT = 3            # Same tool+input N times = block
 VOLUME_CEILING = 50         # Tool calls since last user message = block
 VOLUME_WARNING = 35         # Tool calls since last user message = warn
@@ -267,7 +286,7 @@ def check_exact_retry(tool_name, tool_input, cache):
     key = f"{tool_name}:{input_hash}"
     count = cache.get("repeat_map", {}).get(key, 0)
     if count >= RETRY_LIMIT:
-        return f"You've attempted this exact call {count} times. Stop. Diagnose the failure and tell the founder what's blocking you."
+        return f"You've attempted this exact call {count} times. Stop. Diagnose the failure, then " + FABLE_ESCALATION
     return None
 
 
@@ -355,7 +374,7 @@ def check_edit_spiral(tool_name, tool_input, cache):
     count = cache.get("edit_targets", {}).get(file_path, 0)
     if count >= EDIT_FAIL_LIMIT:
         short = os.path.basename(file_path)
-        return f"{count} edit attempts on {short}. The approach isn't working. Read the file again, find the exact string, or tell the founder what's wrong."
+        return f"{count} edit attempts on {short}. The approach isn't working. Read the file again and find the exact string; if that fails, " + FABLE_ESCALATION
     return None
 
 
@@ -365,7 +384,7 @@ def check_agent_no_output(tool_name, cache):
         return None
     count = cache.get("agents_without_write", 0)
     if count >= AGENT_NO_OUTPUT_LIMIT:
-        return f"{count} agents spawned with no output written. Agents aren't helping. Use Grep/Glob/Read directly or tell the founder what you're looking for."
+        return f"{count} agents spawned with no output written. Use Grep/Glob/Read directly; if you still cannot make progress, " + FABLE_ESCALATION
     return None
 
 

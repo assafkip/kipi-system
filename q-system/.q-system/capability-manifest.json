@@ -58,6 +58,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-fable-escalation.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-ff-merge-if-safe.sh",
       "runner": "bash"
     },
