@@ -66,10 +66,21 @@ READER_WRITE_FLAGS = {
 # A subcommand is not read-only independent of its arguments (finding, round 3).
 # Dropped rather than special-cased: their read forms on a .claude/ path are
 # rare, and a false block is the safe direction here.
+# `add` is here from ASK-291, and it is the one entry that writes ANYTHING: it
+# writes the git INDEX. It cannot write the working tree, which is the only thing
+# this guard protects. Measured live 2026-08-03, one command after the guards
+# were armed through the sanctioned route:
+#     BLOCKED: git add targets .claude/: .../.claude/settings.json
+# So the founder could arm the guards and then never commit the arming. That is
+# the acceptance criterion this issue carries in its own words -- a guard that
+# blocks the legitimate path too is a different outage -- and it is how a gate
+# gets switched off. `checkout`, `restore`, `stash` and `apply` stay OUT: those
+# write the worktree, and probe_guard.py pins two of them blocked so nobody
+# "completes the set" later by pattern-matching on the word read-only.
 GIT_READ_ONLY = {
     "status", "log", "diff", "show", "ls-files", "ls-tree", "cat-file",
     "blame", "grep", "rev-parse", "describe", "shortlog", "hash-object",
-    "branch", "remote", "count-objects", "check-ignore",
+    "branch", "remote", "count-objects", "check-ignore", "add",
 }
 
 # Piping into an interpreter re-enters the shell with content this parser never
@@ -88,8 +99,63 @@ SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
 # pipeline is one unit of intent, and splitting it severs the path from the
 # writer. `echo .claude/x | xargs touch` has the path in stage 1 and the writer
 # in stage 2, and neither stage alone looks dangerous. Caught by its own test.
-STATEMENT_SPLIT = re.compile(r"&&|\|\||;|\n")
+STATEMENT_OPS = ("&&", "||", ";", "\n")
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def split_outside_quotes(text, ops):
+    """Split on `ops`, but never inside a quoted string.
+
+    SCAR (ASK-291, measured live one command after the guards were armed): the
+    splitters were quote-blind regexes. A multi-line quoted argument -- a git
+    commit message DESCRIBING a .claude/ change, including the guard's own
+    stderr, which begins ".claude/ wires every hook, rule and agent" -- was
+    shredded into fake statements, and that line became a bare `.claude` token in
+    program position:
+
+        BLOCKED: git commit targets .claude/: /Users/.../ask-291/.claude
+
+    So the guard blocked the commit of its own arming. A quoted string was never
+    a separate statement; treating it as one invents commands nobody wrote, which
+    is the phrase-versus-structure defect this file's header warns about.
+
+    This does NOT weaken the guard: an operator inside quotes is data, not a
+    boundary, so no real statement is merged away. `D=.claude; touch $D/x` still
+    splits -- its `;` is unquoted -- and probe_guard.py pins that.
+    """
+    out, buf, quote, i, n = [], [], None, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                buf.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(text[i + 1])
+            i += 2
+            continue
+        hit = next((op for op in ops if text.startswith(op, i)), None)
+        if hit:
+            out.append("".join(buf))
+            buf = []
+            i += len(hit)
+            continue
+        buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return out
 
 # Gitignored scratch at the TOP of a `.claude/` tree. Layer 2
 # (claude-integrity-tripwire.py) already refuses to watch these -- they churn
@@ -174,12 +240,16 @@ def analyse(command, cwd):
     assigns = {}
     effective_cwd = cwd
 
-    for raw_stmt in STATEMENT_SPLIT.split(command):
+    for raw_stmt in split_outside_quotes(command, STATEMENT_OPS):
         stmt = raw_stmt.strip()
         if not stmt:
             continue
 
-        stages = [s.strip() for s in stmt.split("|") if s.strip()]
+        # Stages split quote-aware too: a `|` inside a quoted message ("reverted
+        # 1 | quarantined at ...") used to cut the argument in half, leaving a
+        # fragment with an unbalanced quote that shlex refused, falling back to a
+        # whitespace split that handed `.claude/...` back as a bare token.
+        stages = [s.strip() for s in split_outside_quotes(stmt, ("|",)) if s.strip()]
 
         # Pipeline judged whole: any stage that re-enters an interpreter turns
         # a .claude/ path anywhere in the statement into a write.
@@ -267,8 +337,22 @@ def _stage(seg, assigns, cwd_box):
     if _is_sanctioned(tokens):
         return ok
 
+    # A token carrying a NEWLINE is a text payload, not a path: a commit message,
+    # a --body, a heredoc line. Real filesystem arguments do not contain one.
+    # Resolving them as paths is what blocked `git commit -m "<message quoting
+    # the guard's own stderr>"` -- the message embeds the literal string
+    # `/repo/.claude/settings.json`, so the whole message resolved to a path with
+    # `.claude` as a component (ASK-291, measured live).
+    #
+    # NAMED GAP, not an oversight: `touch $'.claude/x\ny'` now walks past this
+    # check. That is Layer 1 behaving as its own header describes -- COVERAGE,
+    # NOT A BOUNDARY -- and Layer 2 still catches it, because the file lands and
+    # the hash moves. The two shapes that carry a payload rather than a path,
+    # redirects and interpreter code strings, are matched against the raw segment
+    # further down and are NOT affected by this: `python3 -c "<multi-line code
+    # touching .claude>"` stays blocked, and probe_guard.py pins it.
     paths = [expand(a, effective_cwd, assigns) for a in args
-             if not a.startswith("-")]
+             if not a.startswith("-") and "\n" not in a]
     touches = [p for p in paths if hits_claude(p)]
 
     # A bare write inside an already-.claude cwd has no .claude token at all.

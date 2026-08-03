@@ -1120,10 +1120,65 @@ def main(argv):
         return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
                     % (slug, bad, len(written)), log, root, 3)
 
-    return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held"
+    registered = register_with_tripwire(root, written, log)
+
+    return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held%s"
                 % (slug, len(prop["edits"]), len(written),
-                   len(before_census["hooks"]), len(after_census["hooks"])),
+                   len(before_census["hooks"]), len(after_census["hooks"]), registered),
                 log, root, 0)
+
+
+def register_with_tripwire(root, written, log):
+    """Record this apply's .claude/ writes as sanctioned content (ASK-291).
+
+    SCAR, observed live 2026-08-03 15:22Z, one tool call after the tripwire was
+    armed: this applier wrote .claude/settings.json, exited OK, and the very next
+    PostToolUse hook run saw the arming itself as unsanctioned drift and reverted
+    it --
+
+        SECURITY: unsanctioned .claude/ change -- 1 modified ... | reverted 1
+
+    -- leaving the runtime unarmed while settings-template.json (unwatched) kept
+    the change, i.e. exactly the split state settings-template-sync-check calls
+    red. This applier IS the sanctioned write path; a Layer 2 that reverts it
+    turns the one legitimate route into an outage, and an outage on the safe
+    route is how a gate gets switched off.
+
+    The tripwire already exposed the fix (`--register PATH...`, its own docstring
+    calls it "the sanctioned-apply hook"). Nothing called it. Same defect as
+    kipi update's, fixed the same way: whoever writes .claude/ through a reviewed
+    path re-records what it wrote.
+
+    Scoped to what THIS run wrote, never a blanket --baseline: a full re-baseline
+    would also absorb any unrelated drift sitting in the tree at that moment,
+    which is the blinding version of this fix.
+    """
+    claude_paths = [rel for rel in written
+                    if canonical_rel(rel).startswith(".claude" + os.sep)]
+    if not claude_paths:
+        return ""
+    tripwire = os.path.join(root, "q-system", ".q-system", "scripts",
+                            "claude-integrity-tripwire.py")
+    if not os.path.isfile(tripwire):
+        return ""  # tripwire not adopted here; nothing to keep in sync
+    try:
+        out = subprocess.run(
+            # --register is nargs="*", so it MUST come last: any flag placed
+            # after it terminates the path list and argparse then rejects the
+            # paths as unrecognized positionals. Caught by phase 5 of
+            # probe_apply_on_copy.sh, which reported the register as FAILED.
+            [sys.executable, tripwire, "--root", root, "--quiet", "--register"]
+            + claude_paths,
+            capture_output=True, text=True, timeout=60,
+            env=dict(os.environ, KIPI_NOTIFY="/usr/bin/true"))
+        if out.returncode != 0:
+            log.append("tripwire register FAILED rc=%d: %s" % (out.returncode, out.stderr.strip()))
+            return ", tripwire register FAILED (next tool call may revert this)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.append("tripwire register error: %s" % exc)
+        return ", tripwire register FAILED (next tool call may revert this)"
+    log.append("tripwire: registered %d sanctioned path(s)" % len(claude_paths))
+    return ", tripwire updated"
 
 
 def restore(root, backup_dir, written):

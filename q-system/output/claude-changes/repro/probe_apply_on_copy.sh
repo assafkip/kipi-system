@@ -71,6 +71,49 @@ OUT4="$(cd "$D" && CLAUDE_PROJECT_DIR="$D" python3 "$D/q-system/.q-system/script
 [ "$RC4" -eq 0 ] && pass "no stranded hook: the pair landed on both surfaces" \
                  || fail "sync-check exit $RC4: $OUT4"
 
+echo "== Phase 5. The sanctioned route still works AFTER arming =="
+# THE ONE THAT FIRED LIVE (2026-08-03 15:22Z). The applier wrote .claude/
+# settings.json, exited OK, and the very next tool call ran the freshly-armed
+# PostToolUse tripwire, which saw the arming itself as unsanctioned drift and
+# REVERTED it:
+#   SECURITY: unsanctioned .claude/ change -- 1 modified ... | reverted 1
+# The applier is THE sanctioned write path, so its writes have to be recorded as
+# sanctioned. The tripwire already exposes exactly this (`--register PATH...`,
+# its docstring calls it "the sanctioned-apply hook"); the applier never called
+# it. A guard that reverts the legitimate path is a different outage, and this is
+# the phase that holds it shut.
+D2="$WORK/root2"
+mkdir -p "$D2/q-system/.q-system"
+cp -R "$ROOT/.claude" "$D2/.claude"
+rm -rf "$D2/.claude/worktrees" "$D2/.claude/state" "$D2/.claude/plans"
+cp "$ROOT/settings-template.json" "$D2/"
+cp -R "$ROOT/q-system/.q-system/scripts" "$D2/q-system/.q-system/scripts"
+cp "$ROOT/q-system/.q-system/capability-manifest.json" "$D2/q-system/.q-system/" 2>/dev/null
+git -C "$D2" init -q
+git -C "$D2" add -A >/dev/null 2>&1
+git -C "$D2" -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1
+TW="$D2/q-system/.q-system/scripts/claude-integrity-tripwire.py"
+KIPI_NOTIFY=/usr/bin/true python3 "$TW" --root "$D2" --enforce --quiet >/dev/null 2>&1  # arm
+
+bash "$APPLY" "$PROPOSAL" --root "$D2" >/dev/null 2>&1
+RC5=$?
+[ "$RC5" -eq 0 ] && pass "applier succeeds against an armed tree (exit 0)" \
+                 || fail "applier exit $RC5 against an armed tree"
+
+KIPI_NOTIFY=/usr/bin/true python3 "$TW" --root "$D2" --enforce --quiet >/dev/null 2>&1
+RC5B=$?
+[ "$RC5B" -eq 0 ] && pass "the tripwire treats the applier's write as sanctioned (exit 0)" \
+                  || fail "tripwire reported the sanctioned apply as drift (exit $RC5B)"
+grep -q 'claude-path-write-guard' "$D2/.claude/settings.json" \
+  && pass "the arming SURVIVED the enforcer (not auto-reverted)" \
+  || fail "the applier's own change was reverted by the tripwire"
+
+# And the other end: registering the applier's write must not blind the tripwire.
+printf 'pwned\n' >> "$D2/.claude/settings.json"
+KIPI_NOTIFY=/usr/bin/true python3 "$TW" --root "$D2" --enforce --quiet >/dev/null 2>&1
+[ $? -eq 2 ] && pass "a tamper after a sanctioned apply is still caught" \
+             || fail "tripwire went blind after the apply registered its write"
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -58,6 +58,15 @@ CASES = [
     ("ATTACK", "python3 -c \"open('.claude/settings.json','w')\"", REPO, BLOCK),
     ("ATTACK", "echo .claude/rules/x | xargs touch", REPO, BLOCK),
     ("ATTACK", "cp /tmp/x $HOME/projects/kipi-system/.claude/settings.json", REPO, BLOCK),
+    # A MULTI-LINE interpreter payload. Newline-carrying tokens stopped being
+    # treated as path candidates (so a commit message stops false-blocking), so
+    # this pins the shape that must NOT ride through on that: an interpreter is
+    # matched against the raw segment, never via path resolution.
+    ("ATTACK",
+     'python3 -c "import io\nopen(\'.claude/settings.json\',\'w\').write(\'x\')"',
+     REPO, BLOCK),
+    # Same for a multi-line redirect: matched by regex on the segment.
+    ("ATTACK", 'printf "line one\nline two" > .claude/rules/security.md', REPO, BLOCK),
 
     # ---- LOOP: ordinary agent work from a worktree that happens to live under
     # .claude/worktrees/. Every one of these was blocked before the fix, because
@@ -71,9 +80,32 @@ CASES = [
     # Layer 1 must not block it either.
     ("LOOP", "touch %s" % os.path.join(WT, "scratch.txt"), REPO, ALLOW),
 
+    # Committing a sanctioned apply. `git add` reads the worktree and writes the
+    # INDEX; it cannot alter a file under .claude/. Blocking it means the founder
+    # can arm the guards but never commit the arming -- measured live 2026-08-03:
+    #   BLOCKED: git add targets .claude/: .../.claude/settings.json
+    # A guard that blocks the legitimate path is a different outage.
+    ("LOOP", "git add .claude/settings.json", REPO, ALLOW),
+    # ...and committing it with a message that DESCRIBES the change. The message
+    # quotes the guard's own stderr, whose first line begins ".claude/ wires
+    # every hook". A quote-blind statement split turned that line into a fake
+    # statement with a bare `.claude` in program position, so the guard blocked
+    # the commit of its own arming (measured live 2026-08-03). The `|` and `;`
+    # inside the message are data, not operators.
+    ("LOOP",
+     'git commit -m "arm the guards (ASK-291)\n\n'
+     'BLOCKED: git add targets .claude/: /repo/.claude/settings.json\n'
+     '.claude/ wires every hook, rule and agent; an agent that writes there\n'
+     'reverted 1 | quarantined at q-system/output/claude-integrity/quarantine\n"',
+     REPO, ALLOW),
+
     # ---- BENIGN: reads and the sanctioned write path. Must stay allowed.
     ("BENIGN", "cat .claude/settings.json", REPO, ALLOW),
     ("BENIGN", "git status .claude/", REPO, ALLOW),
+    # The write-capable git subcommands stay blocked. `add` is allowed because it
+    # writes the index; `checkout` and `restore` write the worktree.
+    ("ATTACK", "git checkout -- .claude/settings.json", REPO, BLOCK),
+    ("ATTACK", "git restore .claude/rules/security.md", REPO, BLOCK),
     ("BENIGN", "ls -la /tmp", REPO, ALLOW),
     ("BENIGN",
      "bash q-system/.q-system/scripts/apply-claude-changes.sh "

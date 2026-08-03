@@ -160,6 +160,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -170,6 +180,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" --enforce --quiet",
+            "timeout": 20
           }
         ]
       },
