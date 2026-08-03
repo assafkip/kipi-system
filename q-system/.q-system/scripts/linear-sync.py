@@ -766,6 +766,56 @@ def cmd_label(args) -> int:
     return EXIT_OK
 
 
+def cmd_unblock(args) -> int:
+    """Remove ONE label from an issue, keeping every other label on it.
+
+    THE INVERSE OF cmd_label, AND IT DID NOT EXIST (ASK-288). The worker could
+    apply `blocked:capability` and nothing in the fleet could take it off, so a
+    park was permanent: the label removes the issue from the picker, and the
+    Linear comment's "once it exists, remove this label" named a human as the
+    only actor who could. Ten issues sat at that state on 2026-08-01 while the
+    loop reported a healthy empty queue every 15 minutes.
+
+    A block worth applying automatically is a block worth clearing
+    automatically. capability_block_expiry.py is the caller: it re-tests the
+    recorded probe and calls this only on an affirmative pass.
+
+    READ-MODIFY-WRITE for the same reason cmd_label is: issueUpdate takes
+    labelIds as the COMPLETE set, so the surviving labels are computed here and
+    sent back whole. Sending an empty set would also "remove" the block -- and
+    would strip owner:sana with it, dropping the issue out of the queue for a
+    completely different reason than the one being fixed.
+    """
+    try:
+        issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    if args.name not in current:
+        # Idempotent, matching cmd_label: two expiry sweeps can overlap, and the
+        # second must not be an error just because the first won.
+        print(f"{issue['identifier']}: not labelled {args.name}, nothing to remove")
+        return EXIT_OK
+
+    survivors = sorted(v for k, v in current.items() if k != args.name)
+    result = graphql(ISSUE_UPDATE, {"id": issue["id"], "input": {"labelIds": survivors}})
+    updated = (result or {}).get("issueUpdate") or {}
+    # CHECK THE MUTATION RESULT (codex 2026-07-29, the same defect twice above):
+    # a discarded return value here reports an un-parked issue that is still
+    # parked, so the caller logs a recovery the picker will never see.
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not remove {args.name} from {issue['identifier']}. "
+              f"Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue['identifier']}: removed {args.name}")
+    return EXIT_OK
+
+
 def cmd_comments(args) -> int:
     """Print an issue's comment thread so an agent can READ what the other said.
 
@@ -1170,6 +1220,11 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-148")
     p.add_argument("name", help="label to add, e.g. needs-scope")
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("unblock", help="remove one label from an issue, keeping the rest")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-288")
+    p.add_argument("name", help="label to remove, e.g. blocked:capability")
+    p.set_defaults(func=cmd_unblock)
 
     p = sub.add_parser("comments", help="read an issue's comment thread")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
