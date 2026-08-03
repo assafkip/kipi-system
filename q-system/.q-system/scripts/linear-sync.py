@@ -440,6 +440,16 @@ mutation($id: String!, $input: IssueUpdateInput!) {
 }
 """
 
+# Removes ONE label, server-side. The alternative -- reading labelIds and
+# sending the survivors back through issueUpdate -- is a full-set overwrite that
+# drops whatever another actor added between the read and the write. See
+# cmd_unblock for why that window is routine on this board rather than rare.
+ISSUE_REMOVE_LABEL = """
+mutation($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) { success }
+}
+"""
+
 TEAM_STATES_QUERY = """
 query($teamId: String!) {
   team(id: $teamId) { states(first: 100) { nodes { id name type position } } }
@@ -780,11 +790,20 @@ def cmd_unblock(args) -> int:
     automatically. capability_block_expiry.py is the caller: it re-tests the
     recorded probe and calls this only on an affirmative pass.
 
-    READ-MODIFY-WRITE for the same reason cmd_label is: issueUpdate takes
-    labelIds as the COMPLETE set, so the surviving labels are computed here and
-    sent back whole. Sending an empty set would also "remove" the block -- and
-    would strip owner:sana with it, dropping the issue out of the queue for a
-    completely different reason than the one being fixed.
+    NOT READ-MODIFY-WRITE (codex, PR #77). The first cut mirrored cmd_label:
+    read every label, drop one, send the rest back through issueUpdate, which
+    takes labelIds as the COMPLETE set. That makes the write a full-set
+    overwrite carrying a snapshot taken seconds earlier -- so any label another
+    actor added in between is silently deleted. This fleet runs a picker, a
+    worker and this expiry sweep against ONE board, so a concurrent labeller is
+    the normal case rather than a rare interleaving, and the label most likely
+    to be added in that window is the one a second worker uses to claim the
+    issue. Losing it would double-dispatch the issue that was just recovered.
+
+    issueRemoveLabel names the single label and lets the server do the set
+    arithmetic under its own lock. The read below is only to resolve the label
+    NAME to an id and to answer "was it even applied"; nothing read there is
+    written back.
     """
     try:
         issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
@@ -802,9 +821,9 @@ def cmd_unblock(args) -> int:
         print(f"{issue['identifier']}: not labelled {args.name}, nothing to remove")
         return EXIT_OK
 
-    survivors = sorted(v for k, v in current.items() if k != args.name)
-    result = graphql(ISSUE_UPDATE, {"id": issue["id"], "input": {"labelIds": survivors}})
-    updated = (result or {}).get("issueUpdate") or {}
+    result = graphql(ISSUE_REMOVE_LABEL,
+                     {"id": issue["id"], "labelId": current[args.name]})
+    updated = (result or {}).get("issueRemoveLabel") or {}
     # CHECK THE MUTATION RESULT (codex 2026-07-29, the same defect twice above):
     # a discarded return value here reports an un-parked issue that is still
     # parked, so the caller logs a recovery the picker will never see.

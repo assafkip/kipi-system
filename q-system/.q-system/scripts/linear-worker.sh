@@ -1533,33 +1533,23 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # discovered three weeks later is a block that was never expirable and
     # nobody knew; validating on the way in means the park either carries a
     # probe the expiry script can actually run, or honestly records `none`.
-    CAP_PROBE="none"
-    # An `if` rather than `[ -f ... ] || continue` ON PURPOSE. test-terminal-states.sh
-    # enumerates EVERY `continue` inside the issue loop as an exit site and attributes
-    # it to the nearest marker above -- which here is REFUSE_LABEL="needs-scope". A
-    # `continue` that only skips one probe source is not an exit from the run, and
-    # reconciling the registry to 3 sites would record a non-exit as a terminal state.
-    for probe_src in "$TREE/.sana-blocked-capability.probe" "$TREE/.codex-blocked-capability.probe"; do
-      if [ -f "$probe_src" ]; then
-        CAP_PROBE="$(head -c 300 "$probe_src" 2>/dev/null | python3 -c '
-import sys, pathlib
+    # VALIDATION LIVES IN capability_block_expiry.py, not in a second copy here.
+    # The writer and the reader of a probe drifting apart is a block that reads
+    # as expirable and is not, discovered weeks later by nobody.
+    read_capability_probe() { # <probe-file> -> a probe spec, or `none`
+      local recorded=""
+      [ -f "$1" ] || { printf 'none'; return 0; }
+      recorded="$(head -c 300 "$1" 2>/dev/null | python3 -c '
+import sys
 sys.path.insert(0, sys.argv[1])
 import capability_block_expiry as cbe
-spec = (sys.stdin.read() or "").strip().splitlines()[0].strip() if sys.stdin else ""
-kind, sep, value = spec.partition(":")
-# "-->" would close the HTML comment the marker lives in and let the rest of the
-# value escape into the rendered body, so a probe carrying one is refused rather
-# than sanitised: a probe that had to be edited to be storable is not the probe
-# the runner meant to record.
-ok = sep and kind.strip().lower() in cbe.PROBES and value.strip() and "-->" not in spec
-print(spec if ok else "none")
+print(cbe.validate_recorded_probe(sys.stdin.read()))
 ' "$SCRIPT_DIR" 2>/dev/null)"
-        [ -n "$CAP_PROBE" ] || CAP_PROBE="none"
-        [ "$CAP_PROBE" != "none" ] && break
-      fi
-    done
+      printf '%s' "${recorded:-none}"
+    }
+    CAP_PROBE="$(read_capability_probe "$TREE/.sana-blocked-capability.probe")"
     rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability" \
-          "$TREE/.sana-blocked-capability.probe" "$TREE/.codex-blocked-capability.probe"
+          "$TREE/.sana-blocked-capability.probe"
     if [ "$REFUSE_KIND" = "capability" ]; then
       say "$ISSUE BLOCKED on a missing capability (the spec is fine, the runner is not): $SCOPE_WHY"
     else

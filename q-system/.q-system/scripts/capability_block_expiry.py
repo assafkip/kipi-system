@@ -120,13 +120,55 @@ def probe_bin(value: str):
     return bool(found), f"shutil.which({value!r}) -> {found!r}"
 
 
+def _env_fingerprint(name: str, value: str) -> str:
+    """A short, non-reversing witness that a variable held a PARTICULAR value.
+
+    Not a secret in itself: recovering the credential from 12 hex characters of
+    a salted sha256 means guessing the credential, and anyone who can guess it
+    already has it. What it carries is only "is this still the same string".
+    """
+    material = f"kipi-capability-probe\0{name}\0{value}".encode()
+    return __import__("hashlib").sha256(material).hexdigest()[:12]
+
+
+_FINGERPRINT = re.compile(r"^[0-9a-f]{12}$")
+
+
 def probe_env(value: str):
-    """The capability is a credential or setting present in the environment."""
-    # Reports SET/UNSET and the length, never the value. This string is posted to
-    # Linear, and a probe that proves a token exists by printing it is a leak.
-    raw = os.environ.get(value) or ""
+    """The capability is a credential or setting present in the environment.
+
+    TWO FORMS, AND THE SECOND EXISTS BECAUSE NONBLANK IS NOT WORKING
+    (codex, PR #77). `env:NAME` asks "is it set". An EXPIRED credential is set.
+    So a park whose whole reason was "this token no longer authenticates"
+    re-tested as a pass against the unchanged environment and un-parked itself
+    on the first sweep -- spending a dispatch to reach the identical wall. And
+    "an expired credential" is not a corner case here; linear-worker.sh names it
+    in the refusal instructions as a worked example of the capability class.
+
+    `env:NAME@<fingerprint>` is what a park writes when the variable was ALREADY
+    set at park time. It then takes a CHANGE of value, not mere presence: the
+    credential was rotated, which is the event the block is actually waiting on.
+    Presence still answers the other case, where the variable was genuinely
+    absent when the park was written and unset -> set is real evidence.
+
+    Reports SET/UNSET and the length, never the value. This string is posted to
+    Linear, and a probe that proves a token exists by printing it is a leak.
+    """
+    name, sep, fingerprint = value.rpartition("@")
+    if not (sep and _FINGERPRINT.match(fingerprint)):
+        name, fingerprint = value, None
+    raw = os.environ.get(name) or ""
     present = bool(raw.strip())
-    return present, f"os.environ[{value!r}] -> {'set' if present else 'unset'} (len {len(raw)})"
+    state = "set" if present else "unset"
+    if fingerprint is None:
+        return present, f"os.environ[{name!r}] -> {state} (len {len(raw)})"
+    if not present:
+        return False, (f"os.environ[{name!r}] -> unset; the park recorded a value, "
+                       f"so an unset variable is a regression, not an arrival")
+    changed = _env_fingerprint(name, raw) != fingerprint
+    return changed, (f"os.environ[{name!r}] -> set (len {len(raw)}), "
+                     f"{'differs from' if changed else 'IDENTICAL to'} the value "
+                     f"the park refused (fingerprint {fingerprint})")
 
 
 def probe_write(value: str):
@@ -186,11 +228,65 @@ def run_probe(spec: str):
     return ("pass" if passed else "fail"), evidence
 
 
+def validate_recorded_probe(spec: str) -> str:
+    """What a park is allowed to WRITE for this issue. Returns a probe or `none`.
+
+    THIS RUNS AT RECORD TIME, in linear-worker.sh, and it lives here so the
+    writer and the reader cannot drift: a probe validated by one set of rules
+    and evaluated by another is a block that looks expirable and is not.
+
+    A PROBE THAT ALREADY PASSES CANNOT PROVE ARRIVAL. That is the whole rule.
+    If `bin:codex` passes on the machine that just refused the issue, then codex
+    is on PATH and the block is about something else -- recording it un-parks
+    the issue on the very next sweep, spends a dispatch, and parks it again. So
+    an already-passing probe is refused and the park honestly records `none`.
+
+    `env:` is the one kind with somewhere better to go. A credential that is
+    present and expired makes the probe pass while nothing has arrived, and it
+    is the most common capability block this fleet has. Rather than dropping it
+    to `none` (which would make the commonest block hand-clear-only, i.e. the
+    exact defect ASK-288 removes), the park records a fingerprint of the value
+    it refused, and the re-test then requires a ROTATION.
+    """
+    spec = (spec or "").strip().splitlines()
+    spec = spec[0].strip() if spec else ""
+    kind, sep, value = spec.partition(":")
+    kind, value = kind.strip().lower(), value.strip()
+    # "-->" would close the HTML comment the marker lives in and let the rest of
+    # the value escape into the rendered body, so a probe carrying one is refused
+    # rather than sanitised: a probe that had to be edited to be storable is not
+    # the probe the runner meant to record.
+    if not (sep and kind in PROBES and value and "-->" not in spec):
+        return PROBE_NONE
+    normalized = f"{kind}:{value}"
+    status, _ = run_probe(normalized)
+    if status != "pass":
+        return normalized
+    if kind != "env":
+        return PROBE_NONE
+    if "@" in value:
+        # The fingerprint suffix is the only thing allowed after an `@`, and an
+        # env var name cannot contain one. A value that does is either already
+        # fingerprinted or malformed; either way this park did not produce it.
+        return PROBE_NONE
+    return f"env:{value}@{_env_fingerprint(value, os.environ.get(value) or '')}"
+
+
 # --- Linear reads ------------------------------------------------------------
 
+# `labels{nodes{id name}}`: the id is what issueRemoveLabel and the park-time
+# history lookup both name. Matching on the NAME and mutating by id keeps the
+# label's display name a presentation detail.
 BLOCKED_QUERY = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
  nodes{id identifier title state{name type} project{name}
-       labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}"""
+       labels{nodes{id name}}} pageInfo{hasNextPage endCursor}}}"""
+
+# When this issue's CURRENT park started. Verified against the live API on
+# 2026-08-03 (ASK-281 returned one row: addedLabelIds carrying the block label,
+# createdAt 2026-08-01T20:15:06Z) rather than assumed from the schema -- a
+# fixture built from my own picture of a producer is a test of the picture.
+PARK_HISTORY = """query($id:String!){issue(id:$id){
+ history(first:100){nodes{createdAt addedLabelIds}}}}"""
 
 TEAM_ID_QUERY = 'query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}'
 
@@ -224,13 +320,39 @@ def blocked_issues(ls, team_key: str, repo_project: str | None):
     return out
 
 
-def recorded_probe(ls, identifier: str) -> str | None:
-    """The probe from the LAST park comment, or None if none was ever written.
+def parked_at(ls, identifier: str, block_label_id: str) -> str | None:
+    """When the CURRENT park began: the last time the block label was added."""
+    issue = ls.graphql(PARK_HISTORY, {"id": identifier}).get("issue")
+    if not issue:
+        return None
+    stamps = [n.get("createdAt") for n in (issue.get("history") or {}).get("nodes") or []
+              if block_label_id in (n.get("addedLabelIds") or [])]
+    return max(stamps) if stamps else None
+
+
+def recorded_probe(ls, identifier: str, since: str | None) -> str | None:
+    """The probe THIS park recorded, or None if this park recorded nothing.
 
     Sorted explicitly by createdAt: linear-sync.cmd_comments carries a comment
     about Linear returning this connection newest-first, and a re-park writes a
     fresh probe that must outvote the one before it.
+
+    SCOPED TO THE CURRENT PARK, not to the whole thread (codex, PR #77). The park
+    comment is posted best-effort -- linear-worker.sh ends that call with
+    `|| true`, because a park whose label landed must not be undone by a comment
+    that did not. The consequence is a thread whose newest marker can belong to
+    an OLDER park: a different capability, asked about in a different month,
+    already cleared. It can pass. "Last marker on the thread wins" then un-parks
+    an issue whose current block was never tested, and the label is gone.
+
+    `since` is when this park started. A marker older than that describes a
+    question nobody asked this time and is ignored. No `since` at all (history
+    unreadable, or a label applied outside the history window) means the marker
+    cannot be dated against the park, so nothing is trusted -- fail closed, the
+    same direction every other ambiguity in this file takes.
     """
+    if not since:
+        return None
     issue = ls.graphql(ls.ISSUE_COMMENTS, {"id": identifier}).get("issue")
     if not issue:
         return None
@@ -238,6 +360,8 @@ def recorded_probe(ls, identifier: str) -> str | None:
     nodes.sort(key=lambda n: n.get("createdAt") or "")
     found = None
     for node in nodes:
+        if (node.get("createdAt") or "") < since:
+            continue
         for match in PROBE_MARKER.findall(node.get("body") or ""):
             found = match
     return found
@@ -305,8 +429,11 @@ def main(argv=None) -> int:
 
     for issue in parked:
         ident = issue["identifier"]
+        block_label_id = next(
+            (n["id"] for n in (issue.get("labels") or {}).get("nodes", [])
+             if n.get("name") == BLOCK_LABEL), None)
         try:
-            probe = recorded_probe(ls, ident)
+            probe = recorded_probe(ls, ident, parked_at(ls, ident, block_label_id))
         except ls.LinearAPIError as exc:
             # One unreadable thread does not stop the sweep: the other blocks
             # are still worth re-testing, and a whole run lost to one bad read

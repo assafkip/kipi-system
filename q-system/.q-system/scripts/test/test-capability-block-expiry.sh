@@ -54,6 +54,33 @@ PRESENT="$WORK/capability-that-now-exists"
 : > "$PRESENT"
 ABSENT="$WORK/capability-that-is-still-missing"
 
+# --- the credential fixtures, RECORDED BY THE PRODUCER -----------------------
+# ASK-909 and ASK-910 are both `env:` parks, and the difference between them is
+# the whole of codex's finding on probe_env: a credential that is PRESENT AND
+# EXPIRED is nonblank, so "is it set" answers yes on the very environment the
+# park was refused in. Nothing arrived; the issue un-parks anyway, spends a
+# dispatch, and blocks again.
+#
+# The recorded probe text is produced by the park-time validator rather than
+# hand-written here. A probe string I typed from memory tests my mental model of
+# the format; asking the producer tests the round trip the loop actually runs.
+CRED_EXPIRED="expired-token-from-the-park"
+CRED_ROTATED="a-freshly-rotated-credential"
+record_probe() { # <env-value-at-park-time> <spec>
+  KIPI_FIXTURE_CRED="$1" python3 - "$REPO_SCRIPTS" "$2" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import capability_block_expiry as cbe
+print(cbe.validate_recorded_probe(sys.argv[2]))
+PY
+}
+# 909: the credential was SET (and expired) when the park was written.
+FIXTURE_PROBE_909="$(record_probe "$CRED_EXPIRED" "env:KIPI_FIXTURE_CRED")"
+# 910: the credential was genuinely ABSENT at park time. This is the honest
+# arrival case and it must keep working -- unset -> set is real evidence.
+FIXTURE_PROBE_910="$(record_probe "" "env:KIPI_FIXTURE_CRED")"
+export FIXTURE_PROBE_909 FIXTURE_PROBE_910
+
 # --- fixture Linear ----------------------------------------------------------
 # Five parked issues, one per class the expiry script must tell apart. Every
 # request body is appended to requests.log so the assertions can ask what was
@@ -80,7 +107,35 @@ PROBES = {
     # 5. a shell command dressed as a probe -> must NOT run, must not unblock.
     #    If this ever executes, it writes the file the assertion looks for.
     "ASK-905": "cmd:touch $WORK/SHELL-ESCAPED",
+    # 8. THE STALE MARKER (codex PR #77, capability_block_expiry.py:240). The
+    #    marker below is real but belongs to a park from a MONTH ago that was
+    #    already cleared. The CURRENT park's comment never posted (the progress
+    #    call is best-effort: \`|| true\`), so the newest marker on the thread
+    #    describes an environment question nobody asked this time -- and it
+    #    passes. "Last marker on the thread wins" un-parks on the strength of it.
+    "ASK-908": "path:" + PRESENT,
+    # 9/10. the credential probe, recorded by the park-time validator (which is
+    #    the producer -- these are not hand-written). Filled in by the harness
+    #    below, because the value it carries depends on the environment the park
+    #    observed, which is exactly the point.
+    "ASK-909": os.environ.get("FIXTURE_PROBE_909") or "none",
+    "ASK-910": os.environ.get("FIXTURE_PROBE_910") or "none",
 }
+
+# When \`blocked:capability\` was last ADDED, per issue. Linear records this as a
+# history entry carrying addedLabelIds; verified live against ASK-281 on
+# 2026-08-03 rather than assumed, because a fixture invented from my own mental
+# model of the API is a test of that model (the scar this repo already carries).
+PARKED_AT = {ident: "2026-08-01T00:00:30.000Z" for ident in
+             ("ASK-901", "ASK-902", "ASK-903", "ASK-904", "ASK-905",
+              "ASK-906", "ASK-909", "ASK-910")}
+# The stale case: parked LAST, marker written FIRST. Everything else about the
+# thread looks healthy.
+PARKED_AT["ASK-908"] = "2026-08-02T12:00:00.000Z"
+
+# The marker comment's timestamp. Default sits just after the park.
+MARKED_AT = {ident: "2026-08-01T00:01:00.000Z" for ident in PROBES}
+MARKED_AT["ASK-908"] = "2026-07-01T00:01:00.000Z"
 
 def comments_for(ident):
     nodes = [{"id": "c0-" + ident, "createdAt": "2026-08-01T00:00:00.000Z",
@@ -88,9 +143,25 @@ def comments_for(ident):
               "user": {"name": "t"}, "botActor": None}]
     probe = PROBES.get(ident)
     if probe is not None:
-        nodes.append({"id": "c1-" + ident, "createdAt": "2026-08-01T00:01:00.000Z",
+        nodes.append({"id": "c1-" + ident, "createdAt": MARKED_AT.get(ident, "2026-08-01T00:01:00.000Z"),
                       "body": "**sana** · park\n\nBlocked on a missing capability, not on scope.\n\n<!-- capability-probe: " + probe + " -->",
                       "user": {"name": "t"}, "botActor": None})
+    return nodes
+
+def history_for(ident):
+    """The label-change history Linear serves, shaped as the live API shapes it.
+
+    Only the block label's add matters here, but the unrelated entries are kept
+    so a reader of this fixture can see that the script has to FILTER rather
+    than take the newest history row.
+    """
+    when = PARKED_AT.get(ident)
+    nodes = [{"createdAt": "2026-07-20T00:00:00.000Z",
+              "addedLabelIds": ["l-owner:sana"], "removedLabelIds": None}]
+    if when:
+        nodes.append({"createdAt": when,
+                      "addedLabelIds": ["l-blocked:capability"],
+                      "removedLabelIds": None})
     return nodes
 
 def issue(ident, labels):
@@ -101,7 +172,8 @@ def issue(ident, labels):
             "labels": {"nodes": [{"id": "l-" + n, "name": n} for n in labels]}}
 
 BOARD = [issue(i, ["owner:sana", "blocked:capability"])
-         for i in ("ASK-901", "ASK-902", "ASK-903", "ASK-904", "ASK-905")]
+         for i in ("ASK-901", "ASK-902", "ASK-903", "ASK-904", "ASK-905",
+                   "ASK-908", "ASK-909", "ASK-910")]
 # A parked issue in ANOTHER repo's project. The expiry script scopes to this
 # checkout for the same reason the picker does: unblocking an issue this
 # checkout cannot check out just moves the stall somewhere quieter.
@@ -122,10 +194,15 @@ class H(BaseHTTPRequestHandler):
         q, v = payload["query"], payload.get("variables") or {}
         if "teams(" in q:
             data = {"teams": {"nodes": [{"id": "t", "key": "ASK", "name": "ASK"}]}}
+        elif "issueRemoveLabel" in q:
+            data = {"issueRemoveLabel": {"success": True}}
         elif "issueUpdate" in q:
             data = {"issueUpdate": {"success": True}}
         elif "commentCreate" in q:
             data = {"commentCreate": {"success": True, "comment": {"id": "new"}}}
+        elif "history(" in q:
+            i = BY_ID.get(v.get("id"))
+            data = {"issue": {"history": {"nodes": history_for(i["identifier"])}} if i else None}
         elif "comments(" in q:
             i = BY_ID.get(v.get("id"))
             data = {"issue": dict(i, comments={"nodes": comments_for(i["identifier"])}) if i else None}
@@ -181,7 +258,12 @@ env "${LINEAR_ENV[@]}" python3 "$EXPIRY" --repo-project kipi-system --apply \
   > "$WORK/run.out" 2>&1
 RC=$?
 OUT="$(cat "$WORK/run.out")"
-MUTATIONS="$(grep "issueUpdate" "$WORK/requests.log" 2>/dev/null || true)"
+# BOTH shapes. The correct removal is issueRemoveLabel; issueUpdate is matched
+# too so that a regression back to the full-set rewrite is caught by the
+# assertions below rather than silently passing every "was it unblocked" check
+# for the opposite reason (no mutation of either shape looks identical to a
+# mutation this grep cannot see).
+MUTATIONS="$(grep -E "issueRemoveLabel|issueUpdate" "$WORK/requests.log" 2>/dev/null || true)"
 
 if [ "$RC" -ne 0 ]; then
   bad "the apply run exits 0" "rc=$RC: $(head -5 "$WORK/run.out")"
@@ -198,19 +280,31 @@ if printf '%s' "$MUTATIONS" | grep -q "ASK-901"; then
 else
   bad "a passing probe clears the block" "no issueUpdate naming ASK-901 in requests.log"
 fi
-# And the label set it wrote back must have DROPPED blocked:capability while
-# KEEPING owner:sana. Sending only the survivors is right; sending an empty set
-# would also "remove" the block and would drop the issue out of the queue for a
-# completely different reason.
-if printf '%s' "$MUTATIONS" | grep "ASK-901" | grep -q "l-owner:sana"; then
-  ok "the label removal keeps owner:sana"
-else
-  bad "the label removal keeps owner:sana" "owner:sana missing from the ASK-901 labelIds"
-fi
+# ...and it must name the BLOCK label, so the removal is the one that was asked
+# for rather than whatever the label set happened to contain.
 if printf '%s' "$MUTATIONS" | grep "ASK-901" | grep -q "l-blocked:capability"; then
-  bad "the label removal drops blocked:capability" "blocked:capability still in the ASK-901 labelIds"
+  ok "the removal names blocked:capability"
 else
-  ok "the label removal drops blocked:capability"
+  bad "the removal names blocked:capability" "no l-blocked:capability in the ASK-901 mutation"
+fi
+# --- 1b. the removal touches ONE label, not the whole set -------------------
+# (codex PR #77, linear-sync.py:806.) issueUpdate takes labelIds as the COMPLETE
+# set, so a read-modify-write here sends back a snapshot taken seconds earlier
+# and silently deletes anything another worker added in between. This loop runs
+# a picker, a worker and an expiry sweep against one board, so "another writer
+# labelled it while I was thinking" is the normal case, not a rare interleaving.
+# issueRemoveLabel names the single label and lets the server do the arithmetic.
+if printf '%s' "$MUTATIONS" | grep "ASK-901" | grep -q "l-owner:sana"; then
+  bad "the removal does not rewrite the whole label set" \
+      "the ASK-901 mutation carries owner:sana -- it is sending a complete labelIds set, so a label added concurrently is erased"
+else
+  ok "the removal does not rewrite the whole label set (owner:sana is never resent)"
+fi
+if grep -q "issueRemoveLabel" "$WORK/requests.log" 2>/dev/null; then
+  ok "the unblock goes through the single-label mutation"
+else
+  bad "the unblock goes through the single-label mutation" \
+      "no issueRemoveLabel in requests.log -- the removal is still a full-set issueUpdate"
 fi
 # The comment is how a reader learns WHY it came back. Without it the issue
 # silently reappears in the picker and the trail says nothing.
@@ -277,18 +371,105 @@ else
   ok "unblocked issues are not touched"
 fi
 
+# --- 8. a marker from an EARLIER park does not clear the CURRENT one --------
+# The park comment is posted best-effort (`|| true` in linear-worker.sh): the
+# label lands, the comment can fail. When it does, the newest marker on the
+# thread belongs to a park that was already cleared -- a different question,
+# asked about a different capability, in a different month. It can pass. Taking
+# "the last marker on the thread" then un-parks an issue whose current block was
+# never tested at all, which is the one unrecoverable direction.
+if printf '%s' "$MUTATIONS" | grep -q "ASK-908"; then
+  bad "a marker older than the current park does not clear it" \
+      "ASK-908 was unblocked on a probe recorded by a park from 2026-07-01 -- the current park (2026-08-02) recorded nothing"
+else
+  ok "a marker older than the current park does not clear it"
+fi
+# The absence above passes for free if ASK-908 was never examined. Pin that it
+# was, and that the reason given is the honest one.
+if printf '%s\n' "$OUT" | grep -q "ASK-908"; then
+  ok "negative self-test: ASK-908 was examined and reported, not skipped"
+else
+  bad "negative self-test: ASK-908 was examined" \
+      "ASK-908 never named in the output -- the assertion above passed vacuously"
+fi
+
+# --- 9. a credential that is present-and-expired is not 'arrived' -----------
+# probe_env asked `is it nonblank`. An expired token is nonblank. So the park
+# that refused BECAUSE the credential does not work re-tests as a pass on the
+# unchanged environment, and the issue un-parks on the first sweep.
+if printf '%s' "$MUTATIONS" | grep -q "ASK-909"; then
+  bad "an unchanged credential does not un-park" \
+      "ASK-909 was unblocked while KIPI_FIXTURE_CRED still holds the exact value the park refused"
+else
+  ok "an unchanged credential does not un-park"
+fi
+# The counterpart, and the reason this is not just 'never trust env:'. A
+# credential that was genuinely ABSENT at park time and is now set DID arrive.
+if printf '%s' "$MUTATIONS" | grep -q "ASK-910"; then
+  ok "a credential that was absent at park time and is now set DOES un-park"
+else
+  bad "a credential that was absent at park time and is now set un-parks" \
+      "ASK-910 stayed parked -- the fix over-corrected and env: probes can no longer clear anything"
+fi
+# And the park-time record must not be the bare variable name for a value that
+# was already set, or there is nothing later to compare against.
+if [ "$FIXTURE_PROBE_909" = "env:KIPI_FIXTURE_CRED" ]; then
+  bad "a park over an already-set credential records what it saw" \
+      "the validator recorded the bare 'env:KIPI_FIXTURE_CRED' -- it kept no record of the value it refused, so no later sweep can tell rotation from the status quo"
+else
+  ok "a park over an already-set credential records what it saw ($FIXTURE_PROBE_909)"
+fi
+
+# --- 9b. the rotated credential DOES clear it -------------------------------
+# The whole point of ASK-288 is that no human is the next actor. If a
+# present-but-expired credential could only ever be hand-cleared, the most
+# common capability block in this fleet would be exactly as permanent as before.
+# Rotate the value and the same recorded probe must now pass.
+BEFORE_ROTATE="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" KIPI_FIXTURE_CRED="$CRED_ROTATED" \
+  python3 "$EXPIRY" --repo-project kipi-system --apply > "$WORK/rotated.out" 2>&1
+ROTATED_MUTATIONS="$(tail -n +"$((BEFORE_ROTATE + 1))" "$WORK/requests.log" \
+  | grep -E "issueRemoveLabel|issueUpdate" || true)"
+if printf '%s' "$ROTATED_MUTATIONS" | grep -q "ASK-909"; then
+  ok "rotating the credential clears the block with no human in the path"
+else
+  bad "rotating the credential clears the block" \
+      "ASK-909 stayed parked after KIPI_FIXTURE_CRED changed -- the block is permanent, which is the defect ASK-288 exists to remove"
+fi
+
 # --- 7. the worker calls it before picking (wiring) -------------------------
 # Read from the worker's source rather than by running it: the run itself is
 # already covered by test-worker-refusal.sh, and what is being asserted here is
 # that the pre-pick step EXISTS and precedes the pick. Grepping for the call is
 # the load-path proof for a step whose only observable effect is on Linear.
-PRE_PICK_LINE="$(grep -n "capability_block_expiry.py" "$WORKER" | head -1 | cut -d: -f1)"
+#
+# MATCH THE INVOCATION, NOT THE NAME (codex PR #77, this file:285). The first cut
+# grepped for `capability_block_expiry.py`, whose first hit is the line that
+# builds the PATH -- `EXPIRY="$SCRIPT_DIR/capability_block_expiry.py"`. Deleting
+# the line that actually RUNS it left this assertion green, so the wiring proof
+# proved only that the worker knows the filename. The pattern below requires the
+# script to be executed.
+expiry_invocation_line() { # <worker-file>
+  grep -nE 'python3[[:space:]]+"\$EXPIRY"' "$1" | head -1 | cut -d: -f1
+}
+PRE_PICK_LINE="$(expiry_invocation_line "$WORKER")"
 PICK_LINE="$(grep -n "^PICKED=" "$WORKER" | head -1 | cut -d: -f1)"
 if [ -n "$PRE_PICK_LINE" ] && [ -n "$PICK_LINE" ] && [ "$PRE_PICK_LINE" -lt "$PICK_LINE" ]; then
   ok "the worker runs the expiry BEFORE it picks (line $PRE_PICK_LINE < $PICK_LINE)"
 else
   bad "the worker runs the expiry before it picks" \
-      "expiry call at '${PRE_PICK_LINE:-none}', pick at '${PICK_LINE:-none}'"
+      "expiry invocation at '${PRE_PICK_LINE:-none}', pick at '${PICK_LINE:-none}'"
+fi
+# NEGATIVE SELF-TEST for the assertion above, which is the only reason to trust
+# it. Strip the invocation from a copy and the check must go RED. Without this,
+# the next loosening of the pattern is invisible exactly the way the last one was.
+MUTILATED="$WORK/worker-without-the-call.sh"
+grep -vE 'python3[[:space:]]+"\$EXPIRY"' "$WORKER" > "$MUTILATED"
+if [ -z "$(expiry_invocation_line "$MUTILATED")" ]; then
+  ok "negative self-test: removing the expiry invocation makes the wiring check fail"
+else
+  bad "negative self-test: removing the expiry invocation makes the wiring check fail" \
+      "the check still finds an invocation in a worker that has none -- it is matching something other than the call"
 fi
 
 # The park path must RECORD a probe, or the expiry above has nothing to read on
