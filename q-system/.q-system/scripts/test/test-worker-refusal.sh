@@ -230,6 +230,11 @@ fi
 # Every other blocked issue: Codex is refused too, so the park still happens.
 # This is what keeps cases 3b and 6 honest -- they now pass THROUGH the handoff.
 printf '%s' "codex has no credential for the target host either" > .codex-blocked-capability
+# ...AND it records how to re-test that refusal, which is what its own handoff
+# prompt instructs it to do. The name is one nothing can have installed, so the
+# probe FAILS when evaluated -- a probe that already passes is refused at record
+# time and would tell us nothing about whether it survived the handoff.
+printf '%s' "bin:a-binary-no-machine-has-installed" > .codex-blocked-capability.probe
 exit 0
 SH
 # The label + progress calls are the thing under test, so they are RECORDED
@@ -496,6 +501,36 @@ if grep -q "codex has no credential for the target host either" <<<"$ALL_WRITTEN
 else
   bad "when Codex also refuses, its reason is recorded alongside Sana's" \
       "the Codex refusal text never reached the log or the Linear note"
+fi
+
+# --- 8c. Codex's PROBE survives the handoff ---------------------------------
+# (codex PR #77, linear-worker.sh:1537.) The probe files for BOTH runners were
+# read in one loop that ran BEFORE the handoff, and deleted immediately after.
+# Codex is instructed to write its probe during the handoff -- so the read
+# happened before the file could exist, every Codex-recorded probe was dropped,
+# and the park stored `none`. `none` means hand-clear-only, which is precisely
+# the permanent block ASK-288 exists to remove: the second runner is the one
+# with the different harness, so its probe is the one most likely to describe a
+# capability that will actually arrive.
+if grep -q "parked with probe 'bin:a-binary-no-machine-has-installed'" <<<"$ALL_WRITTEN"; then
+  ok "a probe Codex recorded during the handoff reaches the park"
+else
+  bad "a probe Codex recorded during the handoff reaches the park" \
+      "the park stored no Codex probe -- it was read before Codex ran, so the block is hand-clear-only. Saw: $(grep -o "parked with probe '[^']*'" <<<"$ALL_WRITTEN" | head -3 | tr '\n' ' ')$(grep -c 'parked with NO probe' <<<"$ALL_WRITTEN") park(s) recorded NO probe"
+fi
+# ORDERING, read from the source. The assertion above proves the probe arrives;
+# this one names WHY it used to not, so a future edit that moves the read back
+# above the handoff fails here with the reason attached rather than as 22
+# mystery failures downstream (which is what the regression actually looks like:
+# the unconsumed .probe leaves the worktree dirty and the position guard then
+# refuses to reposition it, wedging every issue after the first).
+CODEX_RUN_LINE="$(grep -n 'CODEX_CMD' "$WORKER" | head -1 | cut -d: -f1)"
+CODEX_PROBE_LINE="$(grep -n 'read_capability_probe "\$TREE/\.codex-blocked-capability\.probe"' "$WORKER" | head -1 | cut -d: -f1)"
+if [ -n "$CODEX_RUN_LINE" ] && [ -n "$CODEX_PROBE_LINE" ] && [ "$CODEX_PROBE_LINE" -gt "$CODEX_RUN_LINE" ]; then
+  ok "the Codex probe is read AFTER the Codex run (line $CODEX_PROBE_LINE > $CODEX_RUN_LINE)"
+else
+  bad "the Codex probe is read after the Codex run" \
+      "codex runs at '${CODEX_RUN_LINE:-none}', its probe is read at '${CODEX_PROBE_LINE:-none}' -- a read that precedes the run reads a file that cannot exist yet"
 fi
 
 # --- 8b. NEGATIVE SELF-TEST for case 8 --------------------------------------

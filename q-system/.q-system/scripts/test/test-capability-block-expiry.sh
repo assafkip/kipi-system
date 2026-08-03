@@ -228,6 +228,12 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-
 LINEAR_ENV=(
   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql"
   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret"
+  # The environment the sweep re-tests against. The credential is SET and holds
+  # the SAME value the park refused, which is the whole of the expired-token
+  # case: ASK-909 (fingerprinted at park time) must read that as no change,
+  # while ASK-910 (parked when the variable was absent) must read it as arrival.
+  # One variable, two verdicts, decided by what each park recorded.
+  KIPI_FIXTURE_CRED="$CRED_EXPIRED"
 )
 
 echo "== capability block expiry (script under test: $EXPIRY)"

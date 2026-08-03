@@ -1619,6 +1619,22 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       else
         crc=$?
       fi
+      # READ CODEX'S PROBE **AFTER** CODEX RAN (codex, PR #77). The first cut
+      # read both runners' probe files in one loop up above -- before the
+      # handoff -- so the file Codex is told to write, four paragraphs earlier
+      # in its own prompt, was read before it could exist and deleted a line
+      # later. Every Codex-recorded probe was dropped and its park stored
+      # `none`: hand-clear-only, which is the state this issue exists to
+      # remove. The deletion also stopped covering it, leaving an untracked
+      # `.probe` behind, and the position guard refuses to reposition a dirty
+      # tree.
+      #
+      # Sana's probe wins when both wrote one: hers is the refusal the park's
+      # prose is about, so a reader comparing the two sees one story.
+      if [ "$CAP_PROBE" = "none" ]; then
+        CAP_PROBE="$(read_capability_probe "$TREE/.codex-blocked-capability.probe")"
+      fi
+      rm -f "$TREE/.codex-blocked-capability.probe"
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
         [ -n "$CODEX_WHY" ] || CODEX_WHY="the Codex run refused but recorded no reason"
