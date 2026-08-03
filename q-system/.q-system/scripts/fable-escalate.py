@@ -53,6 +53,7 @@ DEFAULT_CAP = 2             # escalations per actor per session, then the human
 TRANSCRIPT_WINDOW = 25      # trailing records fed to Fable
 PER_RECORD_CHARS = 600
 PACKET_CHAR_CAP = 12000
+REASON_CHARS = 800          # the caller's own message, bounded at this end too
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -137,17 +138,44 @@ def transcript_tail(path, window=TRANSCRIPT_WINDOW):
 
 
 def build_packet(trigger, reason, transcript_path):
-    tail = transcript_tail(transcript_path)
-    packet = [
-        "TRIGGER: %s" % trigger,
-        "WHAT THE GUARD SAID: %s" % (reason or "(none)"),
+    """Header + as much recent tail as fits + the four-section ASK.
+
+    THE ASK IS RESERVED BEFORE THE TAIL IS FITTED, and the tail is filled
+    newest-first so the OLDEST records are the ones dropped.
+
+    Scar (PR #75 round 1, Codex minor): this was header + tail + ASK joined and
+    then sliced [:PACKET_CHAR_CAP]. A full window is TRANSCRIPT_WINDOW x
+    PER_RECORD_CHARS = 25 x 600 = 15000 against a 12000 cap, so on any busy
+    session the slice cut the ASK off entirely -- Fable was handed a transcript
+    and never asked a question -- and what it did cut from the tail was the
+    NEWEST end, which is the part describing the loop. Truncating from the end
+    is backwards for both halves of the packet at once.
+    """
+    # Capped HERE, not only by the caller. token-guard trims the reason to 500,
+    # but the CLI path (Tier B/C, a human typing --reason) has no such limit,
+    # and an over-long one would push the total past the cap and put the ASK
+    # back within reach of a truncation.
+    header = [
+        "TRIGGER: %s" % str(trigger)[:200],
+        "WHAT THE GUARD SAID: %s" % ((reason or "(none)")[:REASON_CHARS]),
         "",
-        "RECENT SESSION TAIL (last %d records, oldest first):" % len(tail),
     ]
-    packet.extend(tail or ["(transcript unavailable)"])
-    packet += ["", ASK]
-    text = "\n".join(packet)
-    return text[:PACKET_CHAR_CAP]
+    label = "RECENT SESSION TAIL (%d of %d records, oldest first):"
+    fixed = len("\n".join(header)) + len(ASK) + len(label % (99, 99)) + 8
+    budget = max(0, PACKET_CHAR_CAP - fixed)
+
+    tail = transcript_tail(transcript_path)
+    kept = []
+    for line in reversed(tail):
+        if len(line) + 1 > budget:
+            break
+        budget -= len(line) + 1
+        kept.append(line)
+    kept.reverse()
+
+    body = [label % (len(kept), len(tail))]
+    body.extend(kept or ["(transcript unavailable)"])
+    return "\n".join(header + body + ["", ASK])
 
 
 # --------------------------------------------------------------------------

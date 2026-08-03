@@ -512,6 +512,75 @@ def test_child_cannot_escalate_again(actor, env):
 
 
 # --------------------------------------------------------------------------
+# packet shape: what gets dropped when the window does not fit
+# --------------------------------------------------------------------------
+
+def _escalate_module():
+    """Import fable-escalate.py by path (the hyphen makes it un-importable)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fable_escalate", os.path.abspath(ESCALATE))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_packet_keeps_the_ask_and_drops_the_OLDEST_records(tmp_path):
+    """FINDING-3 REPRODUCER (PR #75 round 1, Codex minor).
+
+    A full window is TRANSCRIPT_WINDOW x PER_RECORD_CHARS = 25 x 600 = 15000
+    characters against a 12000 cap, so on any busy session the packet overflows.
+    It was assembled as header + tail + ASK and then sliced [:PACKET_CHAR_CAP],
+    which cuts from the END -- taking the four-section ASK off completely (Fable
+    is handed a transcript and never asked a question) and, of the tail, eating
+    the NEWEST records, which are the ones that describe the loop.
+
+    Both halves are wrong at the same end, so this pins both: the ASK survives
+    intact, the newest record survives, and the OLDEST is what gets dropped.
+    """
+    mod = _escalate_module()
+
+    # A transcript that overflows the cap: every record is padded past the
+    # per-record limit so the window cannot fit.
+    recs = []
+    for i in range(mod.TRANSCRIPT_WINDOW + 5):
+        recs.append({"type": "assistant", "message": {
+            "role": "assistant",
+            "content": [{"type": "text",
+                         "text": "REC%03d " % i + ("x" * mod.PER_RECORD_CHARS)}]}})
+    p = tmp_path / "big.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in recs))
+
+    packet = mod.build_packet("edit-spiral", "the guard said so", str(p))
+
+    assert len(packet) <= mod.PACKET_CHAR_CAP, "the cap is not being honoured"
+
+    for label in ("DIAGNOSIS:", "STOP:", "NEXT:", "REFUTE:"):
+        assert label in packet, (
+            "the %s section was truncated away -- Fable got a transcript and "
+            "no question" % label)
+
+    newest = "REC%03d" % (len(recs) - 1)
+    oldest_in_window = "REC%03d" % (len(recs) - mod.TRANSCRIPT_WINDOW)
+    assert newest in packet, (
+        "the NEWEST record was dropped; it is the one describing the loop")
+    assert oldest_in_window not in packet, (
+        "nothing was dropped from the oldest end, so the packet either did not "
+        "overflow or was trimmed from the wrong side")
+
+
+def test_an_overlong_reason_cannot_push_the_ask_out(tmp_path):
+    """The CLI path (Tier B/C, a human typing --reason) has no length limit of
+    its own; token-guard trims to 500 but nothing else does. An unbounded reason
+    would reintroduce the finding through a different door."""
+    mod = _escalate_module()
+    packet = mod.build_packet("founder-repeat", "z" * 50000, "")
+    assert len(packet) <= mod.PACKET_CHAR_CAP
+    for label in ("DIAGNOSIS:", "STOP:", "NEXT:", "REFUTE:"):
+        assert label in packet, "an overlong reason truncated the %s section" % label
+
+
+# --------------------------------------------------------------------------
 # scope: only stuck blocks escalate
 # --------------------------------------------------------------------------
 
