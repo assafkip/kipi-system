@@ -61,6 +61,23 @@ import time
 EXCLUDED_DIRS = {"state", "plans", "worktrees", "backups", "__pycache__"}
 EXCLUDED_FILES = {"settings.local.json", ".DS_Store"}
 
+# The two guard scripts themselves. They live OUTSIDE `.claude/`, so nothing
+# watched them.
+#
+# SCAR (review finding, PR #85 round 2): both layers are wired as
+# `test -f X && python3 X` -- the repo's documented convention (skill-hook-
+# pairing.md), which makes a MISSING script a silent, exit-0 no-op. So
+# `rm q-system/.q-system/scripts/claude-path-write-guard.py` disarmed Layer 1
+# with no alarm on either layer, and this PR's own body claims the write path
+# "is now closed". A gate whose off-switch is one unwatched `rm` was never on.
+#
+# Watching them here means a delete lands as `removed` on the very next tool
+# call: it pages, and --enforce restores the file from its stored git blob.
+EXTRA_WATCHED = (
+    os.path.join("q-system", ".q-system", "scripts", "claude-path-write-guard.py"),
+    os.path.join("q-system", ".q-system", "scripts", "claude-integrity-tripwire.py"),
+)
+
 BASELINE_REL = os.path.join("q-system", ".q-system", "claude-integrity-baseline.json")
 QUARANTINE_REL = os.path.join("q-system", "output", "claude-integrity", "quarantine")
 
@@ -80,11 +97,14 @@ def sha256_file(path):
 
 
 def watch_set(root):
-    """Every file under <root>/.claude/ that is not volatile, as repo-relative paths."""
+    """Every file under <root>/.claude/ that is not volatile, plus the two guard
+    scripts, as repo-relative paths."""
     base = os.path.join(root, ".claude")
-    found = []
+    found = [rel for rel in EXTRA_WATCHED
+             if os.path.islink(os.path.join(root, rel))
+             or os.path.isfile(os.path.join(root, rel))]
     if not os.path.isdir(base):
-        return found
+        return sorted(found)
     for dirpath, dirnames, filenames in os.walk(base):
         # Prune the volatile names ONLY at the top of .claude/. Pruning at every
         # depth made loadable artifacts invisible: `.claude/skills/plans/` and
@@ -309,6 +329,43 @@ def attributable(root, rel):
     return bool(head) and head == git_blob_id(root, rel, write=False)
 
 
+def head_is_pushed(root):
+    """True when HEAD is contained in some remote-tracking ref.
+
+    This is the discriminator round 3 lacked. `attributable()` alone cannot tell
+    `git pull` from an agent that wrote a file and committed it -- both leave
+    content equal to the HEAD blob -- which is why round 3 refused it in
+    --enforce entirely. But that refusal was decided against a surface that did
+    not exist yet: this PR wires --enforce PostToolUse on Bash, where the actor
+    of a `git pull` is git delivering REVIEWED REMOTE content. Measured by the
+    reviewer, single tree: a pull silently un-applied itself, left the worktree
+    disagreeing with HEAD three ways, and Slack-paged SECURITY for a reviewed
+    commit. On 23 machines, at 3am.
+
+    Being on a commit that already exists on a remote is the reviewed-provenance
+    signal `attributable()` is missing. An agent that writes then commits sits on
+    an UNPUSHED HEAD, so it gets no absorption and is still reverted -- the exact
+    attack round 3 protected, still closed. One git call per run, not per file.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "for-each-ref", "--contains", "HEAD",
+             "--format=%(refname)", "refs/remotes/"],
+            capture_output=True, text=True, timeout=20)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except Exception:
+        return False  # cannot prove reviewed provenance -> do not sanction
+
+
+def matches_head(root, rel):
+    """True when the worktree agrees with HEAD about `rel` -- including agreeing
+    that it is GONE. The invariant --enforce must never break is leaving the tree
+    inconsistent with HEAD; this is the test for it."""
+    if not os.path.exists(os.path.join(root, rel)):
+        return not git_head_blob(root, rel)
+    return attributable(root, rel)
+
+
 def drift_fingerprint(root, rels):
     """Stable id for one drift state, so an unchanged situation pages once."""
     h = hashlib.sha256()
@@ -370,6 +427,27 @@ def _inside_claude(root, full):
     return parent == base or parent.startswith(base + os.sep)
 
 
+def _restorable(root, rel, full):
+    """Where restore() is allowed to write: inside <root>/.claude, or one of the
+    two EXTRA_WATCHED guard scripts at its exact literal path.
+
+    The guard scripts live outside `.claude/`, so `_inside_claude` refuses them
+    -- measured live the moment they were added to the watch set:
+
+        COULD NOT RESTORE: q-system/.q-system/scripts/claude-path-write-guard.py
+        (parent resolves outside .claude/)
+
+    Watching a file this function cannot repair gives a page and no repair, which
+    is half the fix. The allowance stays as narrow as the round-2 rule it extends:
+    a fixed two-entry tuple, matched by relative path, with the parent resolved
+    so a symlinked leaf still cannot smuggle the write somewhere else.
+    """
+    if rel in EXTRA_WATCHED:
+        want = os.path.realpath(os.path.join(root, os.path.dirname(rel)))
+        return os.path.realpath(os.path.dirname(full)) == want
+    return _inside_claude(root, full)
+
+
 def restore(root, baseline, modified, added, removed):
     """Put the sanctioned content back.
 
@@ -393,7 +471,7 @@ def restore(root, baseline, modified, added, removed):
 
     for rel in modified + removed:
         full = os.path.join(root, rel)
-        if not _inside_claude(root, full):
+        if not _restorable(root, rel, full):
             failed.append("%s (parent resolves outside .claude/)" % rel)
             continue
         rec = recorded.get(rel, {})
@@ -422,7 +500,7 @@ def restore(root, baseline, modified, added, removed):
 
     for rel in added:
         full = os.path.join(root, rel)
-        if not _inside_claude(root, full):
+        if not _restorable(root, rel, full):
             failed.append("%s (parent resolves outside .claude/)" % rel)
             continue
         if os.path.islink(full) or os.path.isfile(full):
@@ -521,7 +599,8 @@ def main(argv=None):
     # agent that writes then commits is precisely the attack this would wave
     # through. (Review finding, round 3.)
     absorbed = []
-    if not args.enforce:
+    sanction_git = (not args.enforce) or head_is_pushed(root)
+    if sanction_git:
         for rel in list(modified) + list(added):
             if attributable(root, rel):
                 absorbed.append(rel)
@@ -574,12 +653,38 @@ def main(argv=None):
         return 1
 
     if args.enforce:
+        # THE INVARIANT: --enforce never leaves the worktree inconsistent with
+        # HEAD. A drifted path whose state already EQUALS HEAD is HELD -- paged
+        # and reported, never reverted. Reverting those is what un-applied a
+        # `git checkout` three different ways in the reviewer's repro.
+        #
+        # Reaching here means head_is_pushed() was False (a pushed HEAD was
+        # absorbed above), so a held path sits on an UNPUSHED local commit: not
+        # sanctioned provenance, but undoing it behind git's back trades a
+        # recoverable alarm for a silently broken tree. Report, do not revert.
+        held = [r for r in modified + added + removed if matches_head(root, r)]
+        heldset = set(held)
+        act_mod = [r for r in modified if r not in heldset]
+        act_add = [r for r in added if r not in heldset]
+        act_rem = [r for r in removed if r not in heldset]
+
+        if not (act_mod or act_add or act_rem):
+            msg = summary + " | matches HEAD on an unpushed commit -- reported, NOT reverted"
+            fp = drift_fingerprint(root, held)
+            if fp != baseline.get("last_alarm", ""):
+                notify(root, msg)
+                save_baseline(root, baseline.get("entries", {}), fp)
+            print(msg, file=sys.stderr)
+            return 1
+
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         # `removed` is quarantined too: the symlink-swap tamper shows up as a
         # removal, and its target is the evidence (review finding, round 2).
-        qdir = quarantine(root, modified + added + removed, stamp)
-        restored, failed = restore(root, baseline, modified, added, removed)
+        qdir = quarantine(root, act_mod + act_add + act_rem, stamp)
+        restored, failed = restore(root, baseline, act_mod, act_add, act_rem)
         msg = summary + (" | reverted %d, quarantined at %s" % (len(restored), os.path.relpath(qdir, root)))
+        if held:
+            msg += " | held %d matching HEAD" % len(held)
         if failed:
             msg += " | COULD NOT RESTORE: " + ", ".join(failed)
         notify(root, msg)

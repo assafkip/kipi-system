@@ -200,9 +200,10 @@ def unquote(token):
     return t.replace('"', "").replace("'", "")
 
 
-def expand(token, cwd, assigns):
-    """~, $HOME, ${HOME} and locally-assigned vars. A path held in a variable is
-    still a path; a guard that only reads literals misses `D=.claude; touch $D/x`."""
+def _subst(token, assigns):
+    """~, $HOME, ${HOME} and locally-assigned vars, WITHOUT anchoring to a cwd.
+    A path held in a variable is still a path; a guard that only reads literals
+    misses `D=.claude; touch $D/x`."""
     t = token
     for name, val in assigns.items():
         t = t.replace("${%s}" % name, val).replace("$" + name, val)
@@ -210,9 +211,55 @@ def expand(token, cwd, assigns):
     t = t.replace("${HOME}", home).replace("$HOME", home)
     if t.startswith("~"):
         t = os.path.expanduser(t)
+    return t
+
+
+def expand(token, cwd, assigns):
+    """Substitute what we can, then anchor a relative result to `cwd`."""
+    t = _subst(token, assigns)
     if not os.path.isabs(t):
         t = os.path.join(cwd, t)
     return os.path.normpath(t)
+
+
+# A `$(...)`, a backtick, or a `$VAR` this parser never saw assigned. The shell
+# will expand it; we cannot.
+UNRESOLVED = re.compile(r"\$\(|`|\$\{?[A-Za-z_]")
+
+# Sentinel cwd for "a `cd` went somewhere this parser cannot name". Never a real
+# path, and deliberately carries no `.claude` component, so hits_claude() is
+# False on it rather than accidentally true.
+UNKNOWN_CWD = "\x00unknown-cwd"
+
+
+def resolve(token, cwd, assigns):
+    """The path a token refers to, or None when it CANNOT BE ANCHORED.
+
+    SCAR (review finding, PR #85 round 2 -- and it blocked the reviewer's own
+    first command of the review, verbatim): every token was joined against the
+    session cwd whether or not its expansions had actually been resolved. So
+
+        D=$(mktemp -d); mkdir -p "$D/.claude/rules"
+        cd "$WORK" && mkdir -p .claude/agents
+
+    were refused with a fabricated path -- `<session-cwd>/$(mktemp/.claude/rules`
+    -- naming a `.claude/` that exists nowhere. Building a fixture tree in a temp
+    dir is ordinary work, and this is the fourth false block of the same class in
+    one issue. A guard that stops the work it guards gets switched off.
+
+    NAMED GAP, not an oversight, and the same shape as the newline-token gap
+    below: `touch $UNSET/.claude/settings.json` now walks past Layer 1 when the
+    shell expands $UNSET to empty. Layer 2 still catches it -- the file lands and
+    the hash moves -- which is exactly the division of labour this file's header
+    describes. What is NOT traded away: anything this parser can actually resolve
+    ($HOME, ~, a var it saw assigned, a literal) stays blocked, and
+    probe_round3_findings.sh phase 4 pins all three of those.
+    """
+    if UNRESOLVED.search(_subst(token, assigns)):
+        return None
+    if cwd == UNKNOWN_CWD and not os.path.isabs(_subst(token, assigns)):
+        return None
+    return expand(token, cwd, assigns)
 
 
 def hits_claude(path):
@@ -262,22 +309,73 @@ def strip_heredocs(text):
     redirects INTO .claude/.
     """
     out, pos = [], 0
-    for m in HEREDOC_RE.finditer(text):
-        if m.start() < pos:
+    for start, end, delim in _heredoc_openers(text):
+        if start < pos:
             continue  # inside a body already consumed
-        delim = m.group(2)
-        nl = text.find("\n", m.end())
+        nl = text.find("\n", end)
         if nl == -1:
             continue  # no body in this payload; nothing to strip
+        term = re.search(r"^[\t ]*%s[\t ]*$" % re.escape(delim),
+                         text[nl + 1:], re.M)
+        if term is None:
+            # FAIL CLOSED. Round 2 set `body_end = len(text)` here, so an opener
+            # whose delimiter never appears on its own line DISCARDED THE WHOLE
+            # REST OF THE COMMAND before it was ever judged.
+            continue
         out.append(text[pos:nl + 1])
-        body_end = len(text)
-        for line in re.finditer(r"^[\t ]*%s[\t ]*$" % re.escape(delim),
-                                text[nl + 1:], re.M):
-            body_end = nl + 1 + line.start()
-            break
-        pos = body_end
+        pos = nl + 1 + term.start()
     out.append(text[pos:])
     return "".join(out)
+
+
+def _heredoc_openers(text):
+    """(start, end, delimiter) for every `<<WORD` that is OUTSIDE quotes.
+
+    SCAR (review finding, PR #85 round 2): `split_outside_quotes` was written
+    quote-aware and `strip_heredocs`, added in the same commit, was not. A `<<`
+    inside a quoted string read as a heredoc opener, its delimiter was never
+    found on its own line, and the round-2 code then dropped everything after
+    line 1:
+
+        echo "diff a<<b"          ->  strip_heredocs leaves only this line
+        touch .claude/evil.txt    ->  never judged at all, ALLOWED
+
+    Layer 2 backstops writes to WATCHED files, but `.claude/settings.local.json`
+    is in its EXCLUDED_FILES (the documented named gap), so Layer 1 was the only
+    cover on a permissions self-grant and this removed it. The defect is not an
+    unenumerated evasion shape -- it is the parser throwing away input it was
+    asked to judge, which also hit benign work like
+    `git commit -m "switch to <<EOF heredocs" && rm .claude/rules/stale.md`.
+
+    Same state machine as split_outside_quotes. A quoted DELIMITER (`<<'EOF'`) is
+    still an opener: the quotes there sit after the `<<`, so the scanner meets
+    the `<<` outside any string.
+    """
+    out, quote, i, n = [], None, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        m = HEREDOC_RE.match(text, i)
+        if m:
+            out.append((m.start(), m.end(), m.group(2)))
+            i = m.end()
+            continue
+        i += 1
+    return out
 
 
 def analyse(command, cwd):
@@ -376,7 +474,8 @@ def _stage(seg, assigns, cwd_box):
     # (review finding, round 2). Excluding & and < from the target keeps `2>&1`
     # and here-strings from matching as paths.
     for redir in re.finditer(r">>?\s*([^\s;&|<>]+)", seg):
-        if hits_claude(expand(unquote(redir.group(1)), effective_cwd, assigns)):
+        target = resolve(unquote(redir.group(1)), effective_cwd, assigns)
+        if target and hits_claude(target):
             return "redirects output into .claude/: %s" % redir.group(1)
 
     # Leading VAR=value assignments, so a path in a variable still resolves.
@@ -393,8 +492,10 @@ def _stage(seg, assigns, cwd_box):
     args = tokens[1:]
 
     # `cd .claude && touch x` -- the write target is relative to the NEW cwd.
+    # A target we cannot resolve leaves the cwd UNKNOWN rather than pretending it
+    # is the session cwd; see resolve().
     if prog == "cd" and args:
-        return [expand(args[0], effective_cwd, assigns)]
+        return [resolve(args[0], effective_cwd, assigns) or UNKNOWN_CWD]
 
     if _is_sanctioned(tokens):
         return ok
@@ -413,9 +514,9 @@ def _stage(seg, assigns, cwd_box):
     # redirects and interpreter code strings, are matched against the raw segment
     # further down and are NOT affected by this: `python3 -c "<multi-line code
     # touching .claude>"` stays blocked, and probe_guard.py pins it.
-    paths = [expand(a, effective_cwd, assigns) for a in args
+    paths = [resolve(a, effective_cwd, assigns) for a in args
              if not a.startswith("-") and "\n" not in a]
-    touches = [p for p in paths if hits_claude(p)]
+    touches = [p for p in paths if p and hits_claude(p)]
 
     # A bare write inside an already-.claude cwd has no .claude token at all.
     if not touches and hits_claude(effective_cwd) and prog not in READ_ONLY:

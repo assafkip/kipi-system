@@ -390,18 +390,46 @@ printf 'pwned differently\n' > "$FIX/.claude/rules/alpha.md"
 tw --root "$FIX" --check >/dev/null 2>&1
 [ "$(pagecount)" = "2" ] && pass "NEW drift does page again" || fail "NEW drift does page again (got $(pagecount))"
 
-# G3: --enforce must NOT honour git-attribution. An agent that writes AND
-# commits is the attack; absorbing that would hand it the keys.
+# G3: --enforce against an UNPUSHED commit -- the agent-writes-then-commits
+# shape. Round 3 reverted it and this test pinned that. The round-2 review of
+# PR #85 falsified the reasoning, not the goal: round 3 decided "in --enforce
+# the actor is provably the agent" against a surface that did not exist yet,
+# and THIS PR wires --enforce PostToolUse on Bash, where the actor of a
+# `git pull` is git delivering reviewed remote content. Measured: the pull
+# silently un-applied itself and left the worktree disagreeing with HEAD three
+# ways, on every machine that adopts it.
+#
+# The contract is now three-tier and this pins the MIDDLE tier: content equal
+# to HEAD on an UNPUSHED commit is HELD -- paged and reported (rc=1), never
+# reverted, so --enforce never leaves the tree inconsistent with HEAD. It is
+# not sanctioned either: nothing is absorbed and the alarm still fires, so the
+# attack is visible rather than waved through. The reviewed tier (HEAD
+# contained in a remote-tracking ref -> absorbed, rc=0) needs a real remote to
+# express, so probe_round3_findings.sh phase 1 owns it.
 FIX="$(new_fixture)"; : > "$PAGES"
 tw --root "$FIX" --baseline --quiet
 printf 'agent tampered then committed\n' > "$FIX/.claude/rules/alpha.md"
 git -C "$FIX" add -A >/dev/null 2>&1
 git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm "agent commit" >/dev/null 2>&1
 tw --root "$FIX" --enforce >/dev/null 2>&1
-[ "$?" = "2" ] && pass "--enforce ignores git-attribution (still reverts)" \
-                || fail "--enforce ignores git-attribution (still reverts)"
-grep -q 'rule alpha' "$FIX/.claude/rules/alpha.md" && pass "--enforce restored despite the commit" \
-                                                   || fail "--enforce restored despite the commit"
+[ "$?" = "1" ] && pass "--enforce on an unpushed commit reports instead of reverting" \
+                || fail "--enforce on an unpushed commit reports instead of reverting"
+[ "$(pagecount)" = "1" ] && pass "an unpushed-commit change still pages (not sanctioned)" \
+                         || fail "an unpushed-commit change still pages (got $(pagecount))"
+grep -q 'agent tampered then committed' "$FIX/.claude/rules/alpha.md" \
+  && pass "--enforce leaves the worktree consistent with HEAD" \
+  || fail "--enforce leaves the worktree consistent with HEAD"
+
+# G3b: NEGATIVE SELF-TEST. An UNCOMMITTED shell write matches no HEAD state, so
+# the full quarantine-and-revert must still fire. Without this, G3 would pass
+# just as well on a tripwire that had stopped enforcing altogether.
+printf 'uncommitted tamper\n' > "$FIX/.claude/rules/alpha.md"
+tw --root "$FIX" --enforce >/dev/null 2>&1
+[ "$?" = "2" ] && pass "NEGATIVE: an uncommitted write is still reverted" \
+                || fail "NEGATIVE: an uncommitted write is still reverted"
+grep -q 'rule alpha' "$FIX/.claude/rules/alpha.md" \
+  && pass "NEGATIVE: reverted to the sanctioned baseline content" \
+  || fail "NEGATIVE: reverted to the sanctioned baseline content"
 
 # G4: concurrent first-run --check must not crash on a shared temp path.
 FIX="$(new_fixture)"
