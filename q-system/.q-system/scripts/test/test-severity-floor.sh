@@ -221,7 +221,29 @@ ok "derive: no findings block -> empty (prose fallback, never a guess)"
 DERIVE_TMPL="$(sed -n '/^FINDINGS:$/,/^END FINDINGS"$/p' "$REVIEWER" | sed 's/"$//')"
 [ -n "$DERIVE_TMPL" ] || fail "could not slice the findings template out of $REVIEWER"
 
-{ printf 'Reading additional input from stdin...\nOpenAI Codex v0.146.0\nuser\n'
+# THE HEADER IS THE PRODUCER'S, NOT A THREE-LINE GESTURE AT IT. Round 2's
+# fixtures opened `Reading.../OpenAI Codex v.../user` and stopped, which is the
+# same retyping mistake one level down: the real `codex exec` header is a
+# `--------` fenced block carrying workdir/model/provider/sandbox/session lines,
+# and round 3's fix reads that block rather than the banner alone. A fixture
+# missing it would have certified a strip that never armed. Captured live
+# 2026-08-03 from the invocation run_engine makes; CODEX_PREAMBLE below is built
+# from this same constant so the two cannot drift apart.
+CODEX_HEADER='Reading additional input from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /tmp/review-tree
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
+--------
+user'
+
+{ printf '%s\n' "$CODEX_HEADER"
   printf '%s\n' "$DERIVE_TMPL"
   printf 'hook: UserPromptSubmit Completed\n'
   printf 'ERROR: Your workspace is out of credits. Add credits to continue.\n'
@@ -239,7 +261,7 @@ ok "derive: a transcript with no assistant turn derives NOTHING (the echoed temp
 # The other half: a model that DID answer must be read, and read from ITS block --
 # not from the echoed template sitting above it. Without the strip, "last complete
 # block" is ambiguous the moment the real one is cut off.
-{ printf 'Reading additional input from stdin...\nOpenAI Codex v0.146.0\nuser\n'
+{ printf '%s\n' "$CODEX_HEADER"
   printf '%s\n' "$DERIVE_TMPL"
   printf 'hook: UserPromptSubmit Completed\ncodex\n'
   printf '## VERDICT: REQUEST CHANGES\n\nFINDINGS:\nmajor|the fallback fills the slot silently|x.sh:1\nEND FINDINGS\n'
@@ -262,6 +284,100 @@ MUTANT_VERDICT="$(bash -c '. "$1"; verdict_from_findings "$2"' _ "$DERIVE_MUTANT
       derived '$MUTANT_VERDICT', not the APPROVE the defect actually produced. The two assertions
       above are therefore not testing the strip -- something else is producing their result."
 ok "mutation kills it: remove the transcript strip and the out-of-credits artifact derives APPROVE again"
+
+# --- A REVIEW IS NOT A TRANSCRIPT JUST BECAUSE IT NAMES ONE -------------------
+# (ASK-287, PR #86 round 3, minor.) The strip above armed on `^OpenAI Codex v` in
+# the first ten lines and nothing else. The Opus fallback's entire subject is the
+# codex outage it just replaced, so naming the version it saw belongs in its
+# OPENING lines -- and such a review carries no `codex` turn marker, so every line
+# of it was discarded and the verdict came back UNSTATED. The fallback exists to
+# keep the required check from wedging; this made the fallback wedge it.
+#
+# Live, not hypothetical: it turned `validate` red on this PR via
+# test-review-comment-body.sh case 4, whose fixture opens with the banner and is
+# not a transcript.
+{ printf '## VERDICT: REQUEST CHANGES\n\n'
+  printf 'DEGRADED: codex is down. Its transcript ended at the OpenAI Codex v0.146.0\n'
+  printf 'banner with no assistant turn, so this is the Opus stand-in.\n\n'
+  printf 'FINDINGS:\nmajor|the outage path posts a verdict nobody derived|y.sh:2\nEND FINDINGS\n'
+} > "$WORK/fallback-quotes-banner.md"
+[ "$(verdict_from_findings "$WORK/fallback-quotes-banner.md")" = "REQUEST CHANGES" ] \
+  || fail "a PLAIN review that mentions the codex banner in its first lines was read as a transcript,
+      so its findings were discarded and it derived '$(verdict_from_findings "$WORK/fallback-quotes-banner.md")'.
+      That is the Opus fallback wedging the very required check it exists to fill."
+ok "derive: a plain review that QUOTES the codex banner is still read whole (banner != transcript)"
+
+# The tightening must not have bought that by loosening the round-2 fix, so both
+# transcript cases are re-asserted against the SAME lib right here. A guard that
+# fixes one direction by reopening the other is not a fix.
+[ -z "$(verdict_from_findings "$WORK/echo-outage.md")" ] \
+  || fail "the header-block test reopened the round-2 defect: the out-of-credits transcript derives
+      '$(verdict_from_findings "$WORK/echo-outage.md")' again."
+[ "$(verdict_from_findings "$WORK/echo-answered.md")" = "REQUEST CHANGES" ] \
+  || fail "the header-block test broke the answered-transcript case"
+ok "derive: tightening the transcript test did not reopen the echoed-template defect"
+
+# --- ONE PAGE PER TRANSITION, UNDER CONCURRENCY -------------------------------
+# (ASK-287, PR #86 round 3, major.) note_degraded_transition read the previous
+# state, then wrote the new one, with nothing holding the two together. An outage
+# is by definition simultaneous -- every open PR's reviewer hits the dead API in
+# the same minute -- so N reviewers all read prev=0, all wrote 1, and all paged.
+# N pings for one transition is the cry-wolf failure the transition check exists
+# to prevent, which makes an unlocked check decoration.
+#
+# The function is SLICED OUT OF THE REVIEWER at test time, same reason as the
+# prompt template above: a retyped copy would test the copy. pr-review-agent.sh
+# runs top-to-bottom and cannot be sourced, so the slice is the only way to drive
+# the real function.
+DEG_FN="$WORK/note-degraded.sh"
+awk '/^note_degraded_transition\(\) \{/,/^\}$/' "$REVIEWER" > "$DEG_FN"
+grep -q '^note_degraded_transition() {' "$DEG_FN" \
+  || fail "could not slice note_degraded_transition out of $REVIEWER"
+grep -q '^}$' "$DEG_FN" || fail "the sliced note_degraded_transition has no closing brace"
+
+printf '%s\n' 'printf "%s\n" "$1" >> "$KIPI_TEST_PAGES"' > "$WORK/notify-stub.sh"
+
+# run_transition_trial <lib-file> <n-concurrent> -> prints how many pages fired
+run_transition_trial() {
+  local fn="$1" n="$2" i
+  : > "$WORK/pages.log"
+  rm -rf "$WORK/deg"; mkdir -p "$WORK/deg"
+  for i in $(seq 1 "$n"); do
+    ( export KIPI_TEST_PAGES="$WORK/pages.log"
+      DEGRADED_STATE="$WORK/deg/degraded.state"
+      PR=86; STATUS_CONTEXT="kipi/reviewer-approved"; NOTIFY="$WORK/notify-stub.sh"
+      # shellcheck disable=SC1090
+      . "$fn"
+      note_degraded_transition 1 "the same outage, seen by every reviewer at once" ) &
+  done
+  wait
+  wc -l < "$WORK/pages.log" | tr -d ' '
+}
+
+DEG_PAGES="$(run_transition_trial "$DEG_FN" 20)"
+[ "$DEG_PAGES" = "1" ] \
+  || fail "20 reviewers hit ONE outage transition and it paged $DEG_PAGES times. Every extra ping is
+      the cry-wolf failure this check exists to prevent -- an operator who learns to skim the
+      degraded alert misses the one that matters."
+ok "degraded transition: 20 concurrent outage reviews page exactly once"
+
+# NEGATIVE SELF-TEST. The assertion above passes trivially if the pages never
+# fire at all, so strip the lock back out and prove the duplicate returns. The
+# race is reliable but not certain on one trial, so three trials are run and at
+# least one must double-page; a mutant that never doubles means the assertion
+# above is carried by something other than the lock.
+DEG_MUTANT="$WORK/note-degraded-unlocked.sh"
+sed '/^  until mkdir "\$lock"/,/^  done$/d; /^  rmdir "\$lock"/d' "$DEG_FN" > "$DEG_MUTANT"
+grep -q 'mkdir "\$lock"' "$DEG_MUTANT" \
+  && fail "the mutation did not remove the lock, so it proves nothing"
+MUTANT_DOUBLED=0
+for _ in 1 2 3; do
+  [ "$(run_transition_trial "$DEG_MUTANT" 20)" -gt 1 ] && MUTANT_DOUBLED=1
+done
+[ "$MUTANT_DOUBLED" = "1" ] \
+  || fail "mutation did not kill it: with the lock removed, 20 concurrent transitions still paged once
+      across three trials. The assertion above is therefore not testing the lock."
+ok "mutation kills it: remove the lock and one transition pages more than once"
 
 # The disagreement case the reviewer must not be trusted on: prose says APPROVE
 # while its own labels carry a major. Derivation has to win, or a reviewer can
@@ -1991,19 +2107,7 @@ printf '%s' "$CODEX_ECHOED_PROMPT_TAIL" | grep -q '^END FINDINGS$' \
   || fail "the sliced prompt tail has no closing END FINDINGS line, so the echoed template would not
       parse as a complete block and the fixture would prove nothing. Got: $CODEX_ECHOED_PROMPT_TAIL"
 
-CODEX_PREAMBLE="Reading additional input from stdin...
-OpenAI Codex v0.146.0
---------
-workdir: /tmp/review-tree
-model: gpt-5.6-sol
-provider: openai
-approval: never
-sandbox: workspace-write [workdir, /tmp, \$TMPDIR]
-reasoning effort: medium
-reasoning summaries: none
-session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
---------
-user
+CODEX_PREAMBLE="$CODEX_HEADER
 Review this PR. Report findings in exactly this shape:
 
 $CODEX_ECHOED_PROMPT_TAIL

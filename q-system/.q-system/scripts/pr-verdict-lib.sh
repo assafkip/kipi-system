@@ -113,11 +113,37 @@ extract_verdict() {
 # reader" defect the comment above this one was written about.
 #
 # `claude -p` writes only the model's words, no banner and no echo, so a review
-# from that engine has no transcript to strip and is read whole. The transcript
-# test is anchored to the banner in the first lines, where the producer writes it
-# (measured: line 2), so a REVIEW that merely quotes the banner mid-prose is not
-# mistaken for one. If that guard is ever wrong the failure is toward UNSTATED,
-# which holds a PR; the defect it replaces released one.
+# from that engine has no transcript to strip and is read whole.
+#
+# THE BANNER ALONE IS NOT THE TRANSCRIPT (codex round 3 on PR #86, minor). The
+# first cut tested `^OpenAI Codex v` in the first ten lines and nothing else, on
+# the reasoning that a review only quotes the banner "mid-prose". It does not:
+# the Opus fallback's whole subject is the codex outage it just replaced, so
+# naming the version it saw belongs in its opening lines -- and a review that
+# does that has no `codex` turn marker, so every line of it was discarded and the
+# verdict came back UNSTATED. That wedges the gate using the very fallback that
+# exists to unwedge it. It was not hypothetical: it turned `validate` red on this
+# PR (test-review-comment-body.sh case 4), whose fixture opens with the banner
+# and is not a transcript.
+#
+# So the test is the producer's HEADER BLOCK, not one string out of it. `codex
+# exec` writes the banner and then a `workdir:` line inside the same `--------`
+# fenced header, every run, before anything else (measured 2026-08-03 on a live
+# capture: banner line 2, workdir line 4). Prose that mentions the banner does
+# not reproduce the header around it.
+#
+# The two signals cannot be checked at once in a single pass, so `transcript`
+# arms on the SECOND one, and arming resets any block opened in the two header
+# lines between them -- otherwise a `FINDINGS:` above the banner could be closed
+# by an `END FINDINGS` from the model's own turn, splicing two regions into one
+# block. Nothing the producer writes up there matches, but a reader whose safety
+# depends on the producer never changing is the defect this file keeps re-fixing.
+#
+# BOTH DIRECTIONS OF THIS GUARD ARE NOT EQUAL. Calling a real transcript "not a
+# transcript" restores the round-2 defect (the echoed template derives APPROVE on
+# a PR nobody read, releasing it). Calling a plain review "a transcript" costs an
+# UNSTATED, which holds a PR. This tightening therefore adds a signal the
+# producer always writes, rather than replacing the banner with a narrower one.
 #
 # awk, not sed, because the rule is stateful in three ways a range expression
 # cannot express: the transcript region has to be skipped before matching starts,
@@ -127,7 +153,8 @@ findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
   awk '
-    NR <= 10 && /^OpenAI Codex v/ { transcript = 1 }
+    NR <= 10 && /^OpenAI Codex v/ { banner = 1 }
+    NR <= 10 && banner && /^workdir: / { transcript = 1; buf = ""; open = 0; next }
     transcript && !turn && /^codex[[:space:]]*$/ { turn = 1; next }
     transcript && !turn           { next }
     /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }

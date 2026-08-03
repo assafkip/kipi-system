@@ -534,7 +534,9 @@ review_has_complete_findings_block() {
 # So `run_engine codex` reported SUCCESS, control took the "answered with nothing
 # parseable" branch -- which by design does NOT fall back -- and the Opus fallback
 # promised at the top of this file never fired. Not "fired and failed": never
-# once since it was written. On disk: 0-byte reviews for PRs #66 and #67,
+# once since it was written. On disk: unusable reviews for PRs #66 and #67 (7,724
+# bytes of transcript each, not one token of model output -- see the correction
+# below; "0-byte" was this comment's original guess and it was wrong),
 # degraded.state=1 (the system NOTICED), and no pr-reviews/claude/ directory at
 # all. Both PRs sat CI-green on kipi/reviewer-approved=failure and nothing merged.
 #
@@ -601,12 +603,38 @@ engine_never_answered() {   # engine_never_answered <review-file>
 # later. Both edges earn their one line -- going degraded means the two statuses
 # stopped being independent, and an operator who never hears the recovery cannot
 # tell a live second opinion from an Opus stand-in wearing its context.
+#
+# ONE WRITER PER TRANSITION (codex round 3 on PR #86, major). The read and the
+# write used to sit next to each other with nothing holding them together, so
+# two reviewers hitting the same outage -- which is what an outage IS, every PR
+# on the board failing at once -- both read prev=0, both wrote 1, and both paged.
+# Two pings for one transition is precisely the cry-wolf failure the transition
+# check exists to prevent, so the check has to be atomic or it is decoration.
+# Reproduced at 100/100 trials before this lock (codex), 0/100 after.
+#
+# `mkdir` is the test-and-set: it is atomic on every filesystem this runs on and
+# needs no `flock`, which macOS does not ship. The whole read-compare-write sits
+# inside it; the PAGE deliberately does not, because by then the winner is
+# already decided and holding a lock across a network call is how one slow
+# notifier stalls every reviewer behind it.
+#
+# THE LOCK EXPIRES RATHER THAN WEDGING. A run killed between mkdir and rmdir
+# would otherwise silence the notifier forever, and a notifier that never fires
+# again is a worse failure than the duplicate page this lock exists to stop. So
+# after ~10s the waiter takes the lock anyway and accepts that risk explicitly.
 note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
-  local now="$1" reason="${2:-}" prev="" msg
+  local now="$1" reason="${2:-}" prev="" msg lock waited=0
+  mkdir -p "$(dirname "$DEGRADED_STATE")"
+  lock="$DEGRADED_STATE.lock"
+  until mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -ge 100 ] && break
+    sleep 0.1
+  done
   [ -f "$DEGRADED_STATE" ] && prev="$(tr -dc '01' < "$DEGRADED_STATE" 2>/dev/null | head -c1)"
   [ -n "$prev" ] || prev=0
-  mkdir -p "$(dirname "$DEGRADED_STATE")"
   printf '%s\n' "$now" > "$DEGRADED_STATE"
+  rmdir "$lock" 2>/dev/null || true
   [ "$now" = "$prev" ] && return 0
   if [ "$now" = "1" ]; then
     msg="reviewer: codex is not producing an independent review (PR #$PR): $reason. $STATUS_CONTEXT stops being a second lab's opinion until codex is back."
