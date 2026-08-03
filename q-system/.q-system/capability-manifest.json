@@ -102,6 +102,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-human-handoff-audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
       "runner": "bash"
     },

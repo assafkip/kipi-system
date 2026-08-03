@@ -882,7 +882,7 @@ def fix_capitalization(text):
 
 
 def fix_mode(file_path):
-    """Repair what is repairable, then report only what a human must decide."""
+    """Repair what is repairable, then report only what a writer must decide."""
     original = pathlib.Path(file_path).read_text(encoding="utf-8")
     fixed, n = fix_capitalization(original)
     if n:

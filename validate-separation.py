@@ -815,6 +815,28 @@ def phase_1():
     else:
         check("Gate 1.2b: notify-callsite-audit.py exists", False)
 
+    # Gate 1.2c: no code path may declare a human dependency without naming the
+    # authority it lacks (ASK-310). Worded to avoid the trigger phrases it hunts:
+    # this comment described the gate and the gate reported itself.
+    #
+    # THE SCAR THIS CLOSES IS THE AUDIT'S OWN. human-handoff-audit.py was written,
+    # run by hand to take this repo from 46 unexplained handoffs to 0, and then
+    # wired to nothing and left untested -- in the same session whose entire
+    # subject was "built but not wired". A sweep run once by hand is a cleanup;
+    # only a gate stops the 47th handoff landing tomorrow.
+    handoff_audit = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
+                                 "human-handoff-audit.py")
+    if file_exists(handoff_audit):
+        ha = subprocess.run([sys.executable, handoff_audit, "--repo", SCRIPT_DIR],
+                            capture_output=True, text=True)
+        check("Gate 1.2c: every human handoff names the class that makes it human-only",
+              ha.returncode == 0)
+        if ha.returncode != 0:
+            print("\n".join(("    " + l) for l in
+                            (ha.stdout + ha.stderr).splitlines()[-18:]))
+    else:
+        check("Gate 1.2c: human-handoff-audit.py exists", False)
+
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
 
