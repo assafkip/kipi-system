@@ -336,6 +336,34 @@ SURFACE_DOC_EXT = {".md"}
 # Extensionless wiring surfaces (the kipi CLI, Makefiles, lefthook's shell blocks).
 SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "justfile"}
 
+# GENERATED ARTIFACTS ARE NOT WIRING SURFACES (ASK-122, caught pre-merge).
+#
+# Widening the scan repo-wide swept in q-system/output/, which holds codex
+# transcripts, run logs, plans and RCAs. Those name scripts constantly and run
+# nothing. Measured on kipi-investigations: _sync_all.py flipped to LIVE on the
+# strength of `q-system/output/codex-sfactivity-prd-out.txt` line 738, a bare
+# `find`-style listing `./plugins/.../_sync_all.py`.
+#
+# The invocation filter cannot save this: that line starts with "./" and so
+# matches MD_INVOCATION_RE. A log of a command that ENUMERATED files is
+# indistinguishable, line by line, from a runbook that INVOKES one. The only
+# durable separator is provenance -- who wrote the file -- so the fix is to drop
+# generated trees from the surface rather than to write a cleverer regex.
+#
+# q-system/output/ is the OS's generated-artifacts directory by convention; it is
+# also in kipi-update.sh's INSTANCE_OWNED_SUBTREES, i.e. already understood
+# fleet-wide as an instance's own output rather than source.
+GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
+
+
+def is_generated_surface(p: Path, root: Path) -> bool:
+    """True when p is a generated artifact, so its content must not count as wiring."""
+    try:
+        rel = p.relative_to(root).as_posix()
+    except ValueError:
+        return False
+    return rel.startswith(GENERATED_SURFACE_PREFIXES)
+
 # A markdown line only counts as wiring if it INVOKES something. A findings doc
 # saying "engine_x.py left the template unfilled" names a script without keeping it
 # alive; a runbook line `python3 engine_x.py` does. Without this split, widening the
@@ -380,6 +408,8 @@ def _iter_surface_files(root: Path):
     """
     for p in root.rglob("*"):
         if not p.is_file() or is_vendored(p):
+            continue
+        if is_generated_surface(p, root):
             continue
         if p.suffix.lower() in SURFACE_CODE_EXT or p.suffix.lower() in SURFACE_DOC_EXT:
             yield p

@@ -12,10 +12,15 @@ Second blind spot, same issue, already scarred once (ASK-230, provenance_vocabul
 `has_test` compared FILENAMES only, so `tests/test_extract.py` importing `geo_clues`
 scored as no-test. An importer is the strongest liveness evidence there is.
 
-The four NEGATIVE cases below are the point of this file. Widening the scan makes
+The five NEGATIVE cases below are the point of this file. Widening the scan makes
 false-LIVE the new failure mode, so a prose-only mention, a true orphan, a
-self-referencing docstring, and a dated snapshot must all still fail to count as
-wiring. A gate that cannot fail is a rubber stamp.
+self-referencing docstring, a generated run log, and a dated snapshot must all
+still fail to count as wiring. A gate that cannot fail is a rubber stamp.
+
+The generated-log case was not written from imagination: it was found by diffing
+old-vs-new output across five real instances before merge, where it had already
+flipped a genuinely dead script to LIVE. A negative case earns its place by
+having caught something.
 
 Isolation: every fixture is built in a tempdir. Nothing here reads a real repo.
 """
@@ -92,7 +97,22 @@ def build_fixture(root: Path) -> None:
         '"""engine_self_ref.py -- run engine_self_ref.py nightly."""\n'
         + "\n".join(f"# line {i}" for i in range(60)))
 
-    # 7. A dated snapshot of a live engine is not a second engine. Its writer
+    # 7. NEGATIVE: named only inside q-system/output/, the generated-artifacts
+    #    tree. A codex transcript or run log that ENUMERATES files reads exactly
+    #    like a runbook that INVOKES one, so the fixture is a `find`-style
+    #    listing -- the real shape that flipped _sync_all.py to LIVE in
+    #    kipi-investigations. Note both lines below satisfy MD_INVOCATION_RE
+    #    ("./" and "python3 "), which is the point: the invocation filter cannot
+    #    catch this, only dropping the generated tree can.
+    (root / "q-system" / "output").mkdir(parents=True)
+    (root / "q-investigate/lib/engine_logged_only.py").write_text(
+        engine_body("engine_logged_only"))
+    (root / "q-system/output/codex-run-out.txt").write_text(
+        "Files considered:\n"
+        "./q-investigate/lib/engine_logged_only.py\n"
+        "python3 q-investigate/lib/engine_logged_only.py  # transcript echo\n")
+
+    # 8. A dated snapshot of a live engine is not a second engine. Its writer
     #    interpolates the date, so no static scan can ever match its literal name.
     (root / "q-investigate/tools/backups").mkdir(parents=True)
     (root / "q-investigate/tools/backups/engine_shell_called.2026-07-28.py").write_text(
@@ -152,6 +172,12 @@ class TestWiringDetection(unittest.TestCase):
         self.assertEqual(
             "UNWIRED", self.status("q-investigate/lib/engine_self_ref.py"),
             "a script naming itself in its own docstring is not a caller")
+
+    def test_generated_output_is_not_wiring(self):
+        self.assertEqual(
+            "UNWIRED", self.status("q-investigate/lib/engine_logged_only.py"),
+            "q-system/output/ holds codex transcripts and run logs; a log that "
+            "lists a script did not run it, and its lines look like invocations")
 
     def test_dated_snapshot_is_not_an_engine(self):
         self.assertNotIn(
