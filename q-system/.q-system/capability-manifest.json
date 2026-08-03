@@ -62,6 +62,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
