@@ -189,6 +189,28 @@ def main() -> int:
     cases.append(("two claims each carrying their own fence both pass",
                   mod.evaluate(paired) == []))
 
+    # === PR #79 review round 2: the SAME-LINE residue of the minor-1 fix ===
+    # Binding a fence to the nearest claim LINE still let one line hold two claims.
+    # Codex's reproducer, verbatim: both claims on one line, one fence answering only
+    # the Alice half. The merge claim rode out on the Alice claim's evidence.
+    same_line = ("- Merge is blocked pending founder approval. "
+                 "The 10 Alice scripts are LIVE.\n\n```\n"
+                 "bash alice/run.sh --list\n"
+                 "alice/collect.sh: never invoked, no run-log entry\n```\n")
+    found = mod.evaluate(same_line)
+    cases.append(("one fence settles one claim on a two-claim LINE",
+                  len(found) == 1 and found[0].pattern == "rollup-as-config"))
+    # The report must point at the sentence that is unsettled, not the whole line:
+    # the operator has to see WHICH half still needs a command.
+    cases.append(("the finding quotes the unsettled sentence, not the whole line",
+                  bool(found) and "LIVE" not in found[0].text
+                  and "blocked" in found[0].text))
+    # Collection half: two claims on one line with NO evidence are two findings.
+    both = mod.evaluate("- Merge is blocked pending approval. The scripts are LIVE.")
+    cases.append(("two claims on one line are two findings, not one",
+                  [f.pattern for f in both]
+                  == ["rollup-as-config", "lookup-as-runtime-fact"]))
+
     # === PR #79 review, minor 2: the repo's own "unreachable" status wording ===
     # Not a fabricated phrase: the autonomous-board prompt tells agents to report
     # when "Linear is unreachable". That is a stop claim, and it was invisible.

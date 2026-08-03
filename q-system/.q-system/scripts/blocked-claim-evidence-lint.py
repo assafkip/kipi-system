@@ -102,6 +102,19 @@ class Pattern(NamedTuple):
     settles: str
 
 
+class Claim(NamedTuple):
+    """One state claim: a SENTENCE, located by its line and its place within it."""
+    line: int
+    ordinal: int  # sentence index within the line; two claims on a line are two claims
+    pattern: Pattern
+    text: str
+
+    @property
+    def key(self) -> tuple[int, int]:
+        """Identity AND reading order: max() over keys is the nearest claim above."""
+        return (self.line, self.ordinal)
+
+
 class Finding(NamedTuple):
     pattern: str
     line: int
@@ -237,25 +250,32 @@ def _settling_fences(lines: list[str], spans: list[tuple[int, int]]) -> set[int]
     return out
 
 
-def _claim_lines(lines: list[str], interior: set[int]) -> list[tuple[int, Pattern]]:
-    """(line index, matched pattern) for every unlabelled state claim, in order."""
+def _claims(lines: list[str], interior: set[int]) -> list[Claim]:
+    """Every unlabelled state claim, in reading order.
+
+    A claim is a SENTENCE, not a line. Scar (PR #79 review round 2, codex): round 1
+    bound each fence to the nearest claim LINE, and this loop kept only the first
+    claim per line, so a line carrying two claims collapsed to one entry and a single
+    fence cleared both. The laundering just moved from between lines to within one.
+    Sentences are the unit the trigger regexes already match on, so they are the unit
+    a fence has to answer.
+    """
     claims = []
     for i, line in enumerate(lines):
         if i in interior or not line.strip() or _has_provenance(line):
             continue
-        for sentence in _SENTENCE_SPLIT_RE.split(line):
+        for ordinal, sentence in enumerate(_SENTENCE_SPLIT_RE.split(line)):
             sentence = sentence.strip()
             if not sentence or sentence.endswith("?"):
                 continue  # a question is an open loop, not a claim
             hit = _first_match(sentence)
             if hit is not None:
-                claims.append((i, hit))
-                break  # one finding per line keeps the report readable
+                claims.append(Claim(i, ordinal, hit, sentence))
     return claims
 
 
-def _settled_claims(claims: list[tuple[int, Pattern]], settling: set[int]) -> set[int]:
-    """Line indices a fence settles. ONE fence settles exactly ONE claim.
+def _settled_claims(claims: list[Claim], settling: set[int]) -> set[tuple[int, int]]:
+    """The (line, ordinal) keys a fence settles. ONE fence settles exactly ONE claim.
 
     Evidence must FOLLOW the claim: a fence above it belongs to an earlier claim.
     Scar (PR #79 review, codex): the first cut cleared EVERY claim within LOOKAHEAD
@@ -263,11 +283,14 @@ def _settled_claims(claims: list[tuple[int, Pattern]], settling: set[int]) -> se
     unrelated false claim sitting next to it -- the exact laundering this gate exists
     to stop. A fence is evidence for the nearest claim it follows, and it is spent
     once, so two adjacent claims need two fences.
+
+    "Nearest" is by (line, ordinal), so on a two-claim line the fence below answers
+    the LAST sentence, and the earlier one still needs its own command.
     """
-    settled: set[int] = set()
+    settled: set[tuple[int, int]] = set()
     for fence in sorted(settling):
-        owners = [i for i, _ in claims
-                  if i < fence <= i + LOOKAHEAD and i not in settled]
+        owners = [c.key for c in claims
+                  if c.line < fence <= c.line + LOOKAHEAD and c.key not in settled]
         if owners:
             settled.add(max(owners))  # the nearest claim above this fence
     return settled
@@ -280,10 +303,13 @@ def evaluate(final_text: str) -> list[Finding]:
     lines = final_text.splitlines()
     spans = _fence_spans(lines)
     interior = {i for start, end in spans for i in range(start, end + 1)}
-    claims = _claim_lines(lines, interior)
+    claims = _claims(lines, interior)
     settled = _settled_claims(claims, _settling_fences(lines, spans))
-    return [Finding(hit.pattern_id, i + 1, lines[i].strip(), hit.why, hit.settles)
-            for i, hit in claims if i not in settled]
+    # Report the SENTENCE, not the whole line: on a two-claim line the operator has
+    # to see which half is still unsettled, not re-read the line and guess.
+    return [Finding(c.pattern.pattern_id, c.line + 1, c.text,
+                    c.pattern.why, c.pattern.settles)
+            for c in claims if c.key not in settled]
 
 
 def _first_match(sentence: str):
