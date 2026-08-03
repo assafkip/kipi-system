@@ -781,6 +781,72 @@ page_clear linear-down
 # --- LINEAR-OUTAGE-GUARD:END ---
 
 NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
+
+# --- RED-CI REDRIVE (ASK-295) -----------------------------------------------
+# A PR this loop opened going red is a dead end: ready() only returns
+# backlog/unstarted issues, and an issue with a live PR is In Progress, so the
+# fresh pick above can never return it. GitHub's notifier is then the only thing
+# that noticed, and its only addressee is the repo owner -- who does not work on
+# the code. Three such emails reached him on 2026-08-02.
+#
+# BEFORE the empty-NEXT exit, not after. Nothing ready is the ORDINARY state of
+# a healthy queue, so handling the red PR only when something else was also
+# waiting would leave it unhandled on exactly the quiet cycles.
+#
+# AHEAD of a fresh pick, because finishing an issue that already has a PR beats
+# starting a new one, and because the red PR is what is generating founder mail
+# right now.
+#
+# HERE AND NOT IN A NEW LAUNCHD JOB: every cap this needs already exists in this
+# file and has been proven (MAX_CONCURRENT, the daily budget, the liveness
+# assert, page_once, one dispatch per heartbeat). A second job would be a second
+# copy of all four, drifting -- and per-repo jobs die silently: the income
+# scanners went dark for 6 days that way. ci-redrive.py holds its own cap of one
+# attempt per PR per failure signature in the SAME attempts ledger the worker
+# uses, so a handler cannot re-run a flake forever.
+#
+# rc 2 (gh could not answer) is NOT treated as "no red PRs": the fresh pick
+# stands and the reason is logged. rc 1 is the ordinary "nothing red".
+#
+# THE OFFER IS NOT THE CLAIM (PR #73 review, finding 2). `redrive` writes
+# nothing: it prints `<issue>\t<signature>\t<head_sha>` and leaves the ledger
+# alone. This block is still ~70 lines above the launch, and one of the guards
+# in between (a converge run already live for that issue) exits 0 without
+# launching anything. Claiming here spent the PR's one machine attempt on a
+# dispatch that never happened, and the next heartbeat then paged the founder
+# with a message asserting a re-dispatch and a second CI failure, neither of
+# which had occurred. The claim now happens at MARK-DISPATCHED below, past every
+# guard that can still abort.
+#
+# AND AN OFFER MUST NOT COST THE FRESH PICK ITS SLOT (PR #73 review r2, finding
+# 2). NEXT is overwritten below, and the duplicate-dispatch guard ~40 lines down
+# exits 0 without launching anything when a converge for that issue is already
+# live. So a red PR whose converge was still running discarded the ready issue
+# that WAS dispatchable -- every heartbeat, for the whole run.
+#
+# Fixed where the decision is made, not here: ci-redrive.py's converge_live()
+# reads the same `ps -Ao args=` command line the guard below matches and does not
+# OFFER a candidate that is already in flight, so NEXT keeps the fresh pick. A
+# second liveness rule spelled out in this file is the drift this repo keeps
+# paying for, and only the Python side can also suppress the founder page (that
+# page is finding 1). Its stderr lands in this log, so the skip is visible here.
+REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
+REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+if [ -f "$REDRIVE" ]; then
+  REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
+                    --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
+  REDRIVE_RC=$?
+  if [ "$REDRIVE_RC" = "0" ] && [ -n "$REDRIVE_LINE" ]; then
+    REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
+    REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
+    REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
+    say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
+    NEXT="$REDRIVE_NEXT"
+  elif [ "$REDRIVE_RC" = "2" ]; then
+    say "red-CI redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
+  fi
+fi
+
 if [ -z "$NEXT" ]; then
   say "nothing ready ($(printf '%s' "$WORK_OUT" | grep -oE '[0-9]+ ready issue' | head -1))"
   exit 0
@@ -811,6 +877,20 @@ PS_SNAPSHOT="$(ps -Ao args= 2>/dev/null || true)"
 if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
+fi
+
+# --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
+# Past every guard that can still abort, and immediately before the launch. This
+# is where the PR's one machine attempt is spent, and the call is the atomic
+# gate: rc 0 means this run owns the attempt, rc non-zero means another run
+# already claimed it (or the ledger could not be written, which is the same
+# answer -- nothing was recorded, so nothing may act as though it was).
+if [ -n "$REDRIVE_SIG" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+  if ! python3 "$REDRIVE" mark-dispatched --issue "$NEXT" \
+       --signature "$REDRIVE_SIG" --head-sha "$REDRIVE_SHA" 2>>"$LOG"; then
+    say "red-CI redrive: the attempt for $NEXT is already claimed -- not dispatching"
+    exit 0
+  fi
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two
