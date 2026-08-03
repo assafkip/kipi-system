@@ -369,6 +369,43 @@ OUT="$(run wedged)"; RC=$?
 check "14a rc 0: green CI + absent required context is a wedge" "$RC" "0"
 contains "14b names the PR" "$OUT" "76"
 
+# --- 15. A CLAIMED ATTEMPT IS NOT A COMPLETED ATTEMPT ------------------------
+# Found by codex reviewing THIS change (PR #78): "the second heartbeat falsely
+# escalates a wedged PR while its detached reviewer is still running, then
+# suppresses the later real alert."
+#
+# The reviewer is launched DETACHED and takes minutes; the heartbeat is 900s.
+# So the very next run sees the ledger flag set, reads it as "the machine tier
+# is spent", and pages the founder that the reviewer ran and the context is
+# still absent -- while the reviewer is mid-flight. Worse, that page CLAIMS
+# `wedged_escalated_<sig>`, so when the reviewer really does fail, the one page
+# owed to the founder has already been burnt on a false alarm.
+#
+# cmd_redrive already guards exactly this and says why: "the founder would be
+# paged that a still-running attempt had stopped -- burning the one page owed
+# to him when it really does." That guard was not carried into this tier.
+# The dispatcher's own WEDGED_PS check does NOT cover it: that only stops a
+# SECOND reviewer being launched, and the escalation lives in here.
+ps_fixture() { printf '%s\n' "$1" > "$TMP/ps-table"; PS_FIXTURE="$TMP/ps-table"; }
+
+fresh_state 15; fixture "$WEDGED"
+OUT="$(run wedged)"; SIG="$(printf '%s' "$OUT" | cut -f2)"
+run mark-reviewed --pr 75 --signature "$SIG" >/dev/null
+# the detached reviewer this run just launched is still going
+ps_fixture "bash /Users/x/q-system/.q-system/scripts/pr-review-agent.sh 75 --post --engine codex"
+run wedged >/dev/null; RC=$?
+check "15a rc 1: nothing offered while its own reviewer is live" "$RC" "1"
+check "15b NOT paged about a reviewer that is still running" "$(pages)" "0"
+lacks "15c no escalation text" "$(cat "$NOTIFY_LOG")" "machine tier is spent"
+
+# --- 16. ...AND THE REAL PAGE STILL FIRES ONCE THE REVIEWER IS GONE ----------
+# The discrimination for 15. If 15 were implemented by simply never escalating,
+# the founder would never hear about a wedge the machine could not fix.
+ps_fixture ""                      # reviewer exited, context still absent
+run wedged >/dev/null
+check "16a paged once the reviewer is actually gone" "$(pages)" "1"
+contains "16b and it names the missing context" "$(cat "$NOTIFY_LOG")" "kipi/reviewer-approved"
+
 echo
 printf 'wedged-pr: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

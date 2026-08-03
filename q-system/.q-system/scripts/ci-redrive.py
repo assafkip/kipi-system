@@ -497,6 +497,35 @@ def converge_live(issue):
     return bool(pattern.search(table))
 
 
+def reviewer_live(pr):
+    """True if a reviewer for this PR is in the process table right now.
+
+    A CLAIMED ATTEMPT IS NOT A COMPLETED ATTEMPT (codex on PR #78, major).
+    The reviewer is launched DETACHED and takes minutes; the heartbeat is 900s.
+    So the next run sees the ledger flag, reads it as "the machine tier is
+    spent", and pages that the reviewer ran and the context is still absent --
+    while it is mid-flight. That page also claims `wedged_escalated_<sig>`, so
+    the one page owed to the founder is burnt on a false alarm and the REAL
+    failure is then silent. Exactly the scar cmd_redrive already guards with
+    converge_live; it was not carried into this tier.
+
+    The dispatcher's own `WEDGED_PS` check does not cover this: that only stops
+    a second reviewer being LAUNCHED. The escalation decision lives here.
+
+    An unreadable table answers True, same direction as converge_live: skipping
+    one heartbeat is recoverable, a false page that also burns the flag is not.
+    """
+    table = process_table()
+    if table is None:
+        sys.stderr.write("ci-redrive: could not read the process table -- treating "
+                         "every wedged PR as already under review.\n")
+        return True
+    # `(?:\s|$)` MULTILINE so PR 7 does not match `pr-review-agent.sh 75`.
+    pattern = re.compile(r"pr-review-agent\.sh\s+%s(?:\s|$)" % re.escape(str(pr)),
+                         re.MULTILINE)
+    return bool(pattern.search(table))
+
+
 def signature(names):
     """Identity of a FAILURE, not of a run.
 
@@ -732,8 +761,18 @@ def cmd_wedged(cands):
                 "its own review will post the context\n"
                 % (cand["pr"], cand["issue"]))
             continue
+        # BEFORE both the offer and the escalation, for the two different
+        # reasons cmd_redrive gives: offering would buy a second review of the
+        # same head, and escalating would page that a still-running attempt had
+        # stopped -- burning the one page owed to the founder. Found by codex
+        # reviewing this change (PR #78, major).
+        if reviewer_live(cand["pr"]):
+            sys.stderr.write(
+                "ci-redrive: PR #%s is wedged and its reviewer is still running "
+                "-- not offering it and not escalating it this run\n" % cand["pr"])
+            continue
         if ledger_get(path, wedged_key(cand), wedged_flag(cand)):
-            escalate_wedged(path, cand)    # machine tier already spent
+            escalate_wedged(path, cand)    # machine tier spent AND finished
             continue
         if chosen is None:
             chosen = cand

@@ -354,10 +354,15 @@ The interaction with this change is the part worth writing down:
 So the honest scope of the fix is: absence becomes a visible state with a
 machine consumer. It is not: the verdict on that state is trustworthy.
 
-**Correction, after re-running it: this is REPRODUCIBLE, not intermittent.** The
-first write-up of this section called it a flake on the strength of PR #68
-succeeding. A second run on #78 declined identically — *"Reply `OK` and I'll
-execute."* / *"Waiting for `OK` to begin the read-only review."* Two of two.
+**This claim was corrected twice, and the second correction reverses the
+first.** Round 1 called it intermittent (on #68 succeeding). Round 2 called it
+REPRODUCIBLE after #78 declined twice. Round 3 is the truth: across four runs of
+the same prompt it is **3 declines and 1 real review** — run C2, in the isolated
+worktree, produced a full adversarial review with findings. So it is neither a
+one-off nor deterministic, and the two earlier confident labels were each drawn
+from too few runs. Recording the sequence rather than only the answer, because
+the pattern — a label asserted at n=1, re-asserted at n=2, wrong both times — is
+the same over-claiming this document is about.
 
 So it is PR-dependent, not random, and the discriminator is NOT identified.
 PR #68's review the same hour was genuinely real (1.47 MB, three majors and a
@@ -473,6 +478,54 @@ The conclusion nevertheless holds, for a reason the void_reason did not give:
 (measured above). So this is an enumeration gap whose effect is not
 load-bearing — recorded here as an instance of the class, not as a false
 resolution to reverse.
+
+## The review that did run found a real major in this change
+
+Run C2 completed a genuine adversarial review and returned one finding:
+
+> `major|The second heartbeat falsely escalates a wedged PR while its detached
+> reviewer is still running, then suppresses the later real alert|ci-redrive.py:735`
+
+It is correct, and it is **this document's class one more time.** The reviewer is
+launched DETACHED and takes minutes; the heartbeat is 900s. So the next run read
+the ledger flag as "the machine tier is spent", paged the founder that the
+reviewer had run and the context was still absent — while it was mid-flight —
+and that page claimed `wedged_escalated_<sig>`, so the REAL failure would then
+have been silent. A claimed attempt is not a completed attempt.
+
+`cmd_redrive` already guards exactly this, and its comment already names the
+scar: *"the founder would be paged that a still-running attempt had stopped --
+burning the one page owed to him when it really does."* **I did not carry the
+guard into the new tier.** A guard existing in one tier is not a guard in the
+tier next to it — the same shape as the required check that existed without a
+producer.
+
+The dispatcher's own `WEDGED_PS` check does not cover it: that only stops a
+second reviewer being LAUNCHED. The escalation decision lives in `cmd_wedged`.
+
+Fixed with `reviewer_live(pr)`, reproducer first:
+
+```
+before: wedged-pr: 37 passed, 2 failed   (15b, 15c)
+after:  wedged-pr: 39 passed, 0 failed
+```
+
+Mutation-tested 3 ways — guard removed, never-live, always-live — all killed,
+with case 16 as the discrimination so the fix cannot be "never escalate".
+`test-ci-redrive.sh` still 65/65.
+
+Worth stating plainly: **the detector caught its own PR, the review it triggered
+found a real defect in the detector, and that defect was an un-enumerated copy
+of a guard the neighbouring tier already had.** That is the strongest evidence in
+this document that the class is structural rather than anecdotal.
+
+### A process error of mine, recorded
+
+I removed the discriminator worktree with `git worktree remove --force` while
+runs C and C2 were still executing against it. C2 noticed and said so in its own
+output: *"`/tmp/ask313-disc-...` disappeared without any delete command from
+this session."* It completed anyway; run C did not. I should have checked for
+live consumers before removing the tree.
 
 ## What is deliberately left open
 
