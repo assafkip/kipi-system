@@ -34,7 +34,16 @@ is_vendored and not is_excluded_tree: filtered, but not to parity.
 
 HONEST BOUNDARY (stated so this is not theater):
   - It proves the predicate is REFERENCED in the walker's consumer region, not that
-    the reference is used correctly. `if is_vendored(p): pass` passes.
+    the reference is used correctly. `if is_vendored(p): pass` passes. STATICALLY dead
+    references are the one class subtracted from that: a constant-false branch, the
+    untaken side of a constant-true one, and anything after an unconditional
+    return/raise/continue/break do not count as enforcement, because there the
+    reference provably never runs and the walker is provably unfiltered (review
+    finding, PR #82 minor). Reachability past that is undecidable, so `if DEBUG:`
+    still counts and this boundary still holds.
+  - A walker that itself sits in dead code is still REPORTED. The deadness rule only
+    ever subtracts from `applied`, never from the census, so the error is toward
+    reporting a walk that cannot run rather than toward passing one that can.
   - The consumer region is the enclosing `for` or comprehension. A walker whose result
     is stored in a variable and filtered three functions later is reported as
     `indirect` and checked at whole-function granularity, which is coarser and can go
@@ -294,24 +303,86 @@ def _enclosing_function(node: ast.AST, parents: dict) -> str:
     return "<module>"
 
 
-def _names_in_region(region: ast.AST, other_regions: set, predicates: set) -> set:
+def _names_in_region(region: ast.AST, other_regions: set, predicates: set,
+                     dead: set) -> set:
     """Predicate names referenced in this region, NOT descending into a sibling
-    walker's region.
+    walker's region and NOT into statically dead code.
 
     collect_domains is the case: its outer `for p in sorted(root.glob("q-*"))` body
     contains an inner comprehension that DOES filter. Counting the inner filter for the
     outer walker is how a one-sided exclusion hides -- the filtered consumer vouches
     for the unfiltered one.
+
+    `dead` is the same shape one rung further down: a predicate named in code that can
+    never execute filters nothing, so counting it turns the BLOCKING path green over an
+    unfiltered walk (review finding, PR #82 minor).
     """
     found, stack = set(), [region]
     while stack:
         node = stack.pop()
-        if node is not region and id(node) in other_regions:
+        if node is not region and (id(node) in other_regions or id(node) in dead):
             continue
         if isinstance(node, ast.Name) and node.id in predicates:
             found.add(node.id)
         stack.extend(ast.iter_child_nodes(node))
     return found
+
+
+# Statements after one of these in the same block cannot run.
+_TERMINATORS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+_BLOCK_FIELDS = ("body", "orelse", "finalbody")
+
+
+def _static_truth(test: ast.AST):
+    """True / False when the test is a compile-time constant, else None.
+
+    Constants only, deliberately. `if DEBUG:` may be dead in every real run and this
+    says nothing about it: over-claiming deadness would DISCOUNT a real filter and
+    report a walker that does filter, and a checker that cries wolf is the one an
+    operator switches off (same reasoning as NON_FS_RECEIVERS).
+    """
+    if isinstance(test, ast.Constant):
+        try:
+            return bool(test.value)
+        except Exception:  # pragma: no cover - bool() on a constant does not raise
+            return None
+    return None
+
+
+def _dead_nodes(tree: ast.Module) -> set:
+    """ids of every node inside code that cannot execute.
+
+    Three decidable shapes only: the body of a constant-false `if`/`while`, the
+    `else` of a constant-true one, and whatever follows an unconditional
+    return/raise/continue/break in the same statement list. Reachability in general is
+    undecidable; this covers the shape the review named and nothing more.
+    """
+    dead = set()
+
+    def kill(node: ast.AST) -> None:
+        for inner in ast.walk(node):
+            dead.add(id(inner))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While)):
+            truth = _static_truth(node.test)
+            if truth is True:
+                for stmt in node.orelse:
+                    kill(stmt)
+            elif truth is False:
+                for stmt in node.body:
+                    kill(stmt)
+        for field in _BLOCK_FIELDS:
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            terminated = False
+            for stmt in block:
+                if terminated:
+                    kill(stmt)
+                elif isinstance(stmt, _TERMINATORS):
+                    terminated = True
+    return dead
 
 
 def _expr_text(call: ast.Call, source_lines: list) -> str:
@@ -376,6 +447,7 @@ def check_source(source: str, path: str) -> list:
         return []
 
     parents = _parents(tree)
+    dead = _dead_nodes(tree)
     source_lines = source.splitlines()
     calls = [n for n in ast.walk(tree) if _is_walker_call(n)]
     regions = {id(call): _region_for(call, parents, tree) for call in calls}
@@ -389,7 +461,8 @@ def check_source(source: str, path: str) -> list:
                   if i != id(region.node) and _is_nested_in(n, region.node)]
         if _acked(region.node, source_lines, nested):
             continue
-        applied = _names_in_region(region.node, region_ids - {id(region.node)}, predicates)
+        applied = _names_in_region(region.node, region_ids - {id(region.node)},
+                                   predicates, dead)
         expanded = set(applied)
         for name in applied:
             expanded |= coverage.get(name, set())

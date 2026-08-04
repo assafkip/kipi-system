@@ -263,6 +263,30 @@ class TestNegativeSelfTest(unittest.TestCase):
         self.assertEqual("bypass", findings[0].severity)
         self.assertEqual((), findings[0].applied)
 
+    def test_burying_a_walkers_filter_in_dead_code_goes_red(self):
+        """The PR #82 minor, proved on the REAL blocking module rather than a string.
+
+        `if False:` around collect_skills' guard leaves both predicate NAMES sitting in
+        the region, so a name scan reads the walker as fully filtered while it walks
+        every vendored copy in the tree. This is a false NEGATIVE on the one module
+        where this check exits 2.
+        """
+        findings = self._mutate(
+            "        if is_vendored(p) or is_excluded_tree(p, root):\n"
+            "            continue\n"
+            "        text = read_text(p)\n"
+            "        name = p.parent.name",
+            "        if False:\n"
+            "            if is_vendored(p) or is_excluded_tree(p, root):\n"
+            "                continue\n"
+            "        text = read_text(p)\n"
+            "        name = p.parent.name")
+        self.assertEqual(1, len(findings),
+                         f"exactly the buried walker must go red; got {findings}")
+        self.assertEqual("collect_skills", findings[0].scope)
+        self.assertEqual("bypass", findings[0].severity)
+        self.assertEqual((), findings[0].applied)
+
     def test_a_brand_new_unfiltered_walker_goes_red(self):
         """The whole point: a walker ADDED tomorrow is in the census automatically.
 
@@ -356,6 +380,74 @@ class TestPredicateModelling(unittest.TestCase):
                "    for f in [x for x in root.glob('*')]:  # parity-ack: names only\n"
                "        yield f\n")
         self.assertEqual([], CP.check_source(src, "x.py"))
+
+
+class TestUnreachableCodeIsNotEnforcement(unittest.TestCase):
+    """Review finding, PR #82 minor. `applied` is a NAME SCAN over the consumer
+    region, so a predicate mentioned in code that can never run counted as
+    enforcement and the walker went green. That is a false NEGATIVE in the blocking
+    path: the seed module is the one place this check exits 2, so a hole here is the
+    gate reporting "at parity" over an unfiltered walk.
+
+    Bounded on purpose. Only STATICALLY dead code is discounted -- a constant-false
+    branch, the untaken side of a constant-true one, and statements after an
+    unconditional return/raise/continue/break in the same block. Whether a runtime
+    condition is ever true is undecidable, and the docstring's HONEST BOUNDARY (the
+    reference is not proven to be USED correctly) still stands for everything else.
+    """
+
+    HEAD = ("SKIP_DIRS = {'a'}\n\n"
+            "def is_vendored(p):\n    return any(d in SKIP_DIRS for d in p.parts)\n\n")
+
+    def _findings(self, body: str) -> list:
+        return CP.check_source(self.HEAD + "def go(root):\n" + body, "x.py")
+
+    def test_a_reference_in_a_constant_false_branch_is_not_enforcement(self):
+        findings = self._findings(
+            "    for p in root.rglob('*'):\n"
+            "        if False:\n"
+            "            if is_vendored(p):\n                continue\n"
+            "        yield p\n")
+        self.assertEqual(1, len(findings),
+                         f"dead code filters nothing; got {findings}")
+        self.assertEqual("bypass", findings[0].severity)
+        self.assertEqual((), findings[0].applied)
+
+    def test_a_reference_in_the_untaken_side_of_a_constant_true_branch_is_not_enforcement(self):
+        findings = self._findings(
+            "    for p in root.rglob('*'):\n"
+            "        if True:\n            pass\n"
+            "        else:\n"
+            "            if is_vendored(p):\n                continue\n"
+            "        yield p\n")
+        self.assertEqual(1, len(findings), f"got {findings}")
+        self.assertEqual((), findings[0].applied)
+
+    def test_a_reference_after_an_unconditional_return_is_not_enforcement(self):
+        findings = self._findings(
+            "    for p in root.rglob('*'):\n"
+            "        return p\n"
+            "        if is_vendored(p):\n            continue\n")
+        self.assertEqual(1, len(findings), f"got {findings}")
+        self.assertEqual((), findings[0].applied)
+
+    def test_a_reference_under_a_runtime_condition_still_counts(self):
+        """The cut is STATIC deadness, not "might not run". A predicate applied
+        behind a real flag is enforcement; discounting it would flood the report and
+        get the gate switched off, which is the failure mode NON_FS_RECEIVERS exists
+        to avoid."""
+        self.assertEqual([], self._findings(
+            "    for p in root.rglob('*'):\n"
+            "        if root.strict and is_vendored(p):\n            continue\n"
+            "        yield p\n"))
+
+    def test_the_live_reference_still_counts_when_dead_code_sits_beside_it(self):
+        """Killing dead lines must not kill the live ones sharing the block."""
+        self.assertEqual([], self._findings(
+            "    for p in root.rglob('*'):\n"
+            "        if is_vendored(p):\n            continue\n"
+            "        if False:\n            pass\n"
+            "        yield p\n"))
 
 
 class TestNonFilesystemWalkIsNotAWalker(unittest.TestCase):
