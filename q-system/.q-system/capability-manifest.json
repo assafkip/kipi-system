@@ -62,6 +62,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
@@ -199,14 +203,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
       "runner": "bash"
     },
     {
@@ -360,6 +356,14 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
@@ -441,6 +445,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -450,10 +458,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -474,6 +478,10 @@
     },
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fable_escalation.py",
       "runner": "python3"
     },
     {
@@ -579,6 +587,27 @@
           "why": "without the restore the first mutant stays applied, so every later mutant in the same suite is measured against an already-broken tree"
         }
       ]
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "runner": "python3",
+      "timeout_s": 240
     }
   ],
   "required_data": [],

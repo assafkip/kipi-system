@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -478,6 +479,18 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
         _spillover_append(cfg, new)
 
 
+def _rollback_findings(path: Path, pre_bytes: bytes | None) -> bool:
+    """Restore the findings file to its pre-write bytes. Returns success."""
+    try:
+        if pre_bytes is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(pre_bytes)
+        return True
+    except OSError:
+        return False
+
+
 def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901
     if args.disposition not in DISPOSITIONS:
         sys.stderr.write(
@@ -489,6 +502,21 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
             f"disposition={args.disposition!r} requires --rationale\n"
         )
         return 2
+    # Judgment Compiler fail-fast half (PRD prd-judgment-compiler-2026-08-04):
+    # an evidence-requiring reason code without its stable reference is refused
+    # BEFORE the findings file mutates, so a gate failure never leaves the
+    # ledger and the findings file disagreeing about what happened.
+    judgment_enabled = os.environ.get("KIPI_JUDGMENT_CAPTURE") != "0"
+    if judgment_enabled:
+        import judgment_compiler
+
+        gate_errors = judgment_compiler.validate_triage_decision(
+            getattr(args, "reason_code", None), getattr(args, "evidence", []),
+            args.disposition, cfg)
+        if gate_errors:
+            for gate_error in gate_errors:
+                sys.stderr.write(f"{gate_error}\n")
+            return 2
     path = _findings_path(cfg, args.prd_id)
     try:
         recs = _load_findings(path)
@@ -520,7 +548,44 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
     except ValueError as exc:
         sys.stderr.write(f"{exc}\n")
         return 2
+    # Snapshot BEFORE the write so a failed capture can restore it. Mirrors the
+    # rollback cmd_add already does for its stamp step. Without this, any
+    # capture failure that the fail-fast pre-check cannot see (a stale packet, a
+    # bad --judge-run, an unresolvable evidence ref, an OSError on the shared
+    # ledger) left the findings file saying "rejected" with no receipt — the
+    # exact divergence `verify --cross-check` exists to detect, manufactured by
+    # our own primary write path (review 2026-08-04).
+    pre_findings_bytes = path.read_bytes() if path.is_file() else None
     _write_all(path, recs)
+    # Spillover fans out AFTER the receipt lands, not before. Ordered the other
+    # way, a refused receipt rolled the findings file back while the spillover
+    # append stood — and that ledger is append-only, so the standing gate saw
+    # permanent open work for a disposition the command had just reported as
+    # rolled back (Codex review, PR #97, executed reproducer). The receipt is
+    # the failure-prone step, so it goes first among the two irreversible ones.
+    if judgment_enabled:
+        import judgment_compiler
+
+        try:
+            judgment_compiler.capture_from_triage(
+                cfg, args.prd_id, target,
+                actor=getattr(args, "actor", "founder"),
+                reason_code=getattr(args, "reason_code", None),
+                evidence_refs=list(getattr(args, "evidence", [])),
+                rationale=(args.rationale or "").strip() or None,
+                judge_run_path=getattr(args, "judge_run", None),
+            )
+        except (judgment_compiler.ValidationError, OSError) as exc:
+            rolled_back = _rollback_findings(path, pre_findings_bytes)
+            sys.stderr.write(
+                f"judgment receipt refused: {exc}\n"
+                + ("disposition rolled back; findings file unchanged.\n"
+                   if rolled_back else
+                   "WARNING: rollback ALSO failed. The findings file may now "
+                   "disagree with the judgment ledger; run "
+                   "`kipi judgment verify --cross-check` before trusting it.\n")
+            )
+            return 2
     _sync_spillover_for_finding(cfg, args.prd_id, target)
     print(
         json.dumps(
@@ -593,6 +658,14 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--rationale", default="")
     p_set.add_argument("--covered-by", default="", dest="covered_by",
                        help="umbrella coverage: the phase PRD id that owns this finding")
+    p_set.add_argument("--reason-code", default=None, dest="reason_code",
+                       help="canonical judgment reason code (judgment_compiler)")
+    p_set.add_argument("--evidence", action="append", default=[],
+                       help="stable evidence ref (repeatable), e.g. finding:<prd>/<id>")
+    p_set.add_argument("--actor", default="founder",
+                       help="who made this decision (judgment receipt)")
+    p_set.add_argument("--judge-run", default=None, dest="judge_run",
+                       help="path to a judge-run JSON bound to the context packet")
     p_set.set_defaults(func=cmd_set_disposition)
 
     p_rec = sub.add_parser("record-review")
