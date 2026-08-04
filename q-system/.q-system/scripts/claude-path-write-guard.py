@@ -400,15 +400,24 @@ def _unanchored_unwatched(args, cwd, assigns):
     file Layer 2 does not watch. Returned as ordinary touches, so the read-only
     allowlist, the git-subcommand rule and the sink rule all still apply.
 
-    Narrow on purpose. `mkdir -p "$D/.claude/rules"` in a temp fixture stays
-    ALLOWED -- rules/ is watched, so the handoff is real, and that is the false
-    block that has already nearly killed this guard four times.
+    Narrow on purpose, twice over:
+
+    * `mkdir -p "$D/.claude/rules"` in a temp fixture stays ALLOWED -- rules/ is
+      watched, so the handoff to Layer 2 is real, and that is the false block
+      that has already nearly killed this guard four times.
+    * a token carrying a NEWLINE is skipped, same as the rule above. Those are
+      text payloads (a commit message, a --body, a progress comment), and the
+      first version of this function judged them as paths -- so a message that
+      merely NAMED settings.local.json would have been refused as a write. It
+      would have blocked the comment reporting this very fix. What that costs is
+      the exotic `touch $'.claude/settings.local.json\ny'` shape, which stays
+      inside the newline gap this file already names.
     """
     out = []
     for arg in args:
-        if arg.startswith("-"):
+        if arg.startswith("-") or "\n" in arg:
             continue
-        if "\n" not in arg and resolve(arg, cwd, assigns) is not None:
+        if resolve(arg, cwd, assigns) is not None:
             continue  # anchorable: judged as a real path elsewhere
         tail = literal_claude_tail(arg, assigns)
         if tail and unwatched_by_layer2(tail):

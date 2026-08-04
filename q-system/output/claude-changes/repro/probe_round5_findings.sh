@@ -117,8 +117,48 @@ FIX2="$WORK/p2"; mkdir -p "$FIX2/.claude"
 # NOT watched by Layer 2, so Layer 1 walking past it means NOTHING fires.
 assert_block "unresolved prefix + settings.local.json is blocked" \
   'touch $NOPE/.claude/settings.local.json' "$FIX2"
-assert_block "unresolved prefix + newline payload, same target" \
+assert_block "the same target quoted, still blocked" \
   'touch "$NOPE/.claude/settings.local.json"' "$FIX2"
+# A TEXT PAYLOAD that merely names the file is not a write. Caught while
+# reporting this issue: the first version of the fail-closed rule judged
+# newline-carrying tokens as paths, so it would have refused the very comment
+# reporting it -- the fifth false block of this class in ASK-291.
+#
+# The exact shape matters, and the first draft of this case had it wrong: the
+# tail is split on "/" only, so the block needs `.claude` to be its own
+# component AND the path to END the token. "fixed .claude/x" never matched, and
+# neither did a path with trailing prose after it -- the last component came out
+# as "settings.local.json today". A message that ENDS on a full path does match,
+# and quoting the guard's own stderr into a commit message is a scar this issue
+# already carries once. The self-test below is what caught the wrong draft.
+assert_allow "a multi-line message NAMING the file is not a write" \
+  "git commit -m \"closed the hole reported as
+$FIX2/.claude/settings.local.json\"" "$FIX2"
+assert_allow "a relative mention in prose is not a write either" \
+  'git commit -m "fixed the gap
+on .claude/settings.local.json today"' "$FIX2"
+
+# NEGATIVE SELF-TEST for the case above: reconstruct the pre-fix rule and prove
+# it BLOCKED that message. A probe whose case passes under both versions of the
+# code is pinning nothing, which is how the first draft of this case slipped
+# through green.
+PREV="$WORK/guard_prev.py"
+python3 - "$GUARD" "$PREV" <<'PY'
+import io, sys
+src = io.open(sys.argv[1], encoding="utf-8").read()
+fixed = '        if arg.startswith("-") or "\\n" in arg:\n            continue\n        if resolve(arg, cwd, assigns) is not None:'
+prefix = '        if arg.startswith("-"):\n            continue\n        if "\\n" not in arg and resolve(arg, cwd, assigns) is not None:'
+if src.count(fixed) != 1:
+    sys.exit("cannot reconstruct the pre-fix rule")
+io.open(sys.argv[2], "w", encoding="utf-8").write(src.replace(fixed, prefix))
+PY
+# Assigned INSIDE the substitution subshell: a bare `GUARD=x guard_rc` leaks the
+# value into every later phase in bash, which would silently test the wrong file.
+prev_rc="$(GUARD="$PREV"; guard_rc "git commit -m \"closed the hole reported as
+$FIX2/.claude/settings.local.json\"" "$FIX2")"
+[ "$prev_rc" = "2" ] \
+  && pass "self-test: the pre-fix rule DID block that message (rc=2)" \
+  || fail "self-test is inert: pre-fix rule returned $prev_rc, not 2"
 # The scar this must NOT reintroduce: a fixture tree under an unresolvable var
 # whose tail IS watched by Layer 2 stays allowed (4 false blocks in this issue).
 assert_allow "unresolved prefix + a Layer-2-WATCHED tail stays allowed" \
