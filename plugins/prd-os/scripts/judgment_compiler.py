@@ -109,11 +109,14 @@ JUDGE_TO_LEGACY = {
 }
 
 RECEIPT_FIELDS = frozenset((
-    "schema_version", "receipt_id", "captured_at", "finding", "review",
-    "repo_state", "prd_state", "issue_state", "scope", "duplicates",
+    "schema_version", "receipt_id", "sequence", "captured_at", "finding",
+    "review", "repo_state", "prd_state", "issue_state", "scope", "duplicates",
     "remediation", "related_prds", "prior_receipts", "missing_context",
     "judge", "human", "sampling", "supersedes", "prev_receipt_sha256",
 ))
+TIP_NAME = "judgments-tip.json"
+TIP_FIELDS = frozenset(("count", "last_receipt_sha256", "last_receipt_id",
+                        "updated_at"))
 PACKET_FIELDS = frozenset((
     "packet_schema_version", "assembled_at", "packet_sha256", "finding",
     "review", "repo_state", "prd_state", "issue_state", "scope", "duplicates",
@@ -183,6 +186,54 @@ def ledger_path(cfg: Config) -> Path:
 
 def candidates_path(cfg: Config) -> Path:
     return _ledger_dir(cfg) / CANDIDATES_NAME
+
+
+def tip_path(cfg: Config) -> Path:
+    return _ledger_dir(cfg) / TIP_NAME
+
+
+def read_tip(path: Path) -> dict | None:
+    """The tip anchor: how long the chain is and what its last line hashes to.
+
+    WHY THIS EXISTS (self-attack 2026-08-04, before this file ever shipped):
+    a prev-hash chain proves each retained line follows the one before it. It
+    cannot prove the chain is COMPLETE, because any prefix of a valid chain is
+    itself a valid chain. Truncating the tail (or deleting the whole ledger)
+    passed `verify` cleanly. Reproduced: 2 receipts -> VERIFY PASS; `head -1`
+    the file -> still VERIFY PASS. The anchor closes deletion, the one
+    tamper class the chain structurally cannot see.
+
+    HONEST BOUNDARY: the anchor is written by the same process that writes the
+    ledger, so an attacker who can edit one can edit the other. This is
+    tamper-EVIDENT (accidental truncation, a crashed write, a partial sync,
+    a naive edit), not tamper-PROOF. For an independent check use
+    `verify --cross-check`, which reads the findings ledgers instead.
+    """
+    if not path.is_file():
+        return None
+    try:
+        tip = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValidationError(f"{path}: unreadable tip anchor: {exc}") from exc
+    if not isinstance(tip, dict):
+        raise ValidationError(f"{path}: tip anchor must be an object")
+    _require_keys(tip, TIP_FIELDS, str(path))
+    if not isinstance(tip["count"], int) or isinstance(tip["count"], bool) \
+            or tip["count"] < 0:
+        raise ValidationError(f"{path}: tip count must be a non-negative int")
+    return tip
+
+
+def write_tip(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "count": len(records),
+        "last_receipt_sha256": canonical_hash(records[-1]) if records else None,
+        "last_receipt_id": records[-1]["receipt_id"] if records else None,
+        "updated_at": _now_iso(),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
 
 
 def read_ledger(path: Path) -> list[dict]:
@@ -333,6 +384,9 @@ def validate_receipt(record: dict, where: str) -> None:
     _require_keys(record, RECEIPT_FIELDS, where)
     if record["schema_version"] != RECEIPT_SCHEMA_VERSION:
         raise ValidationError(f"{where}: unsupported schema_version")
+    sequence = record["sequence"]
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ValidationError(f"{where}: sequence must be a positive integer")
     if receipt_content_id(record) != record["receipt_id"]:
         raise ValidationError(
             f"{where}: receipt_id does not match record content (mutated "
@@ -750,6 +804,7 @@ def build_receipt(cfg: Config, packet: dict, *, disposition: str,
 
     record = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
+        "sequence": len(existing) + 1,
         "captured_at": _now_iso(),
         "finding": packet["finding"],
         "review": packet["review"],
@@ -804,6 +859,12 @@ def capture_episode(cfg: Config, packet: dict, **kwargs) -> dict:
     existing = read_ledger(path)
     record = build_receipt(cfg, packet, existing=existing, **kwargs)
     append_receipt(path, record)
+    # Anchor AFTER the append. If the process dies between the two the anchor
+    # under-counts, and an under-counting anchor is deliberately NOT an error
+    # (see _tip_errors) so a crashed write never manufactures a truncation
+    # alarm. Anchoring first would do the opposite: claim a receipt that was
+    # never written, and fail every later verify.
+    write_tip(tip_path(cfg), existing + [record])
     return record
 
 
@@ -846,12 +907,16 @@ def validate_triage_decision(reason_code: str | None,
 # ---------------------------------------------------------------------------
 
 
-def verify_ledger(records: list[dict]) -> list[str]:
+def verify_ledger(records: list[dict], tip: dict | None = None) -> list[str]:
     errors = []
     seen_ids: set[str] = set()
     prev_hash: str | None = None
     for index, record in enumerate(records, 1):
         where = f"receipt line {index}"
+        if record.get("sequence") != index:
+            errors.append(
+                f"{where}: sequence {record.get('sequence')!r} does not match "
+                f"its position {index} — a receipt was deleted or reordered")
         # Duplicate detection runs on the STORED id, before content validation:
         # a forged copy of an earlier receipt fails self-hash too, but the
         # duplicate must be named as such (N-7) — one error per defect class.
@@ -876,7 +941,27 @@ def verify_ledger(records: list[dict]) -> list[str]:
                 f"{where}: supersedes {record['supersedes']} which does not "
                 "appear earlier in the ledger")
         prev_hash = canonical_hash(record)
+    errors.extend(_tip_errors(records, tip, prev_hash))
     return errors
+
+
+def _tip_errors(records: list[dict], tip: dict | None,
+                last_hash: str | None) -> list[str]:
+    """Deletion detection. A prefix of a valid chain is a valid chain, so the
+    chain walk above cannot see a truncated tail; the anchor can."""
+    if tip is None:
+        # No anchor (legacy or fresh ledger). Do not hard-fail — that would
+        # break every repo whose ledger predates the anchor — but never claim
+        # completeness we cannot check.
+        return []
+    if len(records) < tip["count"]:
+        return [f"ledger is TRUNCATED: {len(records)} receipt(s) present, tip "
+                f"anchor recorded {tip['count']}"]
+    if len(records) == tip["count"] and tip["last_receipt_sha256"] is not None \
+            and last_hash != tip["last_receipt_sha256"]:
+        return ["ledger tail does not match the tip anchor: the last receipt "
+                "was replaced"]
+    return []
 
 
 def verify_candidates(records: list[dict]) -> list[str]:
@@ -886,6 +971,40 @@ def verify_candidates(records: list[dict]) -> list[str]:
             validate_candidate(record, f"candidate line {index}")
         except ValidationError as exc:
             errors.append(str(exc))
+    return errors
+
+
+def cross_check_findings(cfg: Config, records: list[dict],
+                         since: str | None = None) -> list[str]:
+    """Completeness check against an INDEPENDENT source: every dispositioned
+    finding should have a receipt.
+
+    The tip anchor and the ledger share a writer, so both move together if that
+    writer is wrong or malicious. The findings ledgers do not: they are written
+    by findings_writer's own path. A dispositioned finding with no receipt is
+    either a truncation the anchor missed or a capture that silently failed.
+
+    `since` filters by finding resolved_at, because findings dispositioned
+    before this feature existed have no receipt by construction and would
+    otherwise report as thousands of false gaps.
+    """
+    covered = {(r["finding"]["prd_id"], r["finding"]["finding_id"])
+               for r in records}
+    errors = []
+    for path in sorted(cfg.findings_dir.rglob("*-findings.jsonl")):
+        for record in _read_findings(path):
+            disposition = record.get("disposition")
+            if disposition in (None, "pending"):
+                continue
+            resolved_at = str(record.get("resolved_at") or "")
+            if since and resolved_at < since:
+                continue
+            key = (record.get("prd_id"), record.get("id"))
+            if key not in covered:
+                errors.append(
+                    f"{key[0]}/{key[1]}: dispositioned {disposition!r} at "
+                    f"{resolved_at or 'unknown time'} but no judgment receipt "
+                    "exists")
     return errors
 
 
@@ -1283,9 +1402,12 @@ def cmd_capture(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
     records = read_ledger(ledger_path(cfg))
-    errors = verify_ledger(records)
+    errors = verify_ledger(records, read_tip(tip_path(cfg)))
     candidate_records = read_ledger(candidates_path(cfg))
     errors.extend(verify_candidates(candidate_records))
+    if getattr(args, "cross_check", False):
+        errors.extend(cross_check_findings(cfg, records,
+                                           getattr(args, "since", None)))
     if args.packet or args.receipt_id:
         if not (args.packet and args.receipt_id):
             raise ValidationError("--packet and --receipt-id go together")
@@ -1308,7 +1430,7 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_evaluate(cfg: Config, args: argparse.Namespace) -> int:
     records = read_ledger(ledger_path(cfg))
-    errors = verify_ledger(records)
+    errors = verify_ledger(records, read_tip(tip_path(cfg)))
     if errors:
         print("EVALUATE REFUSED: ledger fails verification:", file=sys.stderr)
         for error in errors:
@@ -1335,7 +1457,7 @@ def cmd_sample_check(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_policy_candidates(cfg: Config, args: argparse.Namespace) -> int:
     records = read_ledger(ledger_path(cfg))
-    errors = verify_ledger(records)
+    errors = verify_ledger(records, read_tip(tip_path(cfg)))
     if errors:
         print("POLICY-CANDIDATES REFUSED: ledger fails verification",
               file=sys.stderr)
@@ -1381,6 +1503,11 @@ def main(argv: list[str]) -> int:
     p_verify = sub.add_parser("verify")
     p_verify.add_argument("--packet")
     p_verify.add_argument("--receipt-id", dest="receipt_id")
+    p_verify.add_argument("--cross-check", action="store_true",
+                          dest="cross_check",
+                          help="also require a receipt for every dispositioned "
+                               "finding (independent completeness check)")
+    p_verify.add_argument("--since", help="ISO timestamp floor for --cross-check")
     p_verify.set_defaults(func=cmd_verify)
 
     p_evaluate = sub.add_parser("evaluate")

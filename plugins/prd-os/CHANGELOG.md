@@ -2,6 +2,23 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.10.2] - 2026-08-04
+
+### Fixed
+- **Judgment ledger truncation was undetectable.** Found by self-attack before
+  the feature shipped: a prev-hash chain proves each retained line follows the
+  previous one, but any PREFIX of a valid chain is itself a valid chain, so
+  `head -1 judgments.jsonl` still returned `VERIFY PASS`. Deletion was the one
+  tamper class the chain structurally could not see. Closed with three
+  independent checks: a monotonic `sequence` field (catches middle deletion and
+  reordering), a tip anchor `.prd-os/judgments-tip.json` recording count + last
+  hash (catches tail truncation and whole-file deletion; tamper-EVIDENT not
+  tamper-proof, since the same writer owns both files), and
+  `verify --cross-check` which requires a receipt for every dispositioned
+  finding by reading the findings ledgers — an independent source the judgment
+  writer does not control. A missing tip anchor does not hard-fail, so ledgers
+  predating the anchor still verify.
+
 ## [0.10.0] - 2026-08-04
 
 ### Added

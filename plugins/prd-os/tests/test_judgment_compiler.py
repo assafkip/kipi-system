@@ -392,6 +392,91 @@ class TestChainIntegrity:
         path.write_text("\n".join(lines) + "\n")
         assert run_judgment(judgment_repo, "verify").returncode == 2
 
+    def test_truncating_the_tail_is_detected(self, judgment_repo):
+        """Self-attack 2026-08-04: a prefix of a valid chain is a valid chain,
+        so the prev-hash walk alone passed a truncated ledger. The tip anchor
+        closes deletion — the one tamper class the chain cannot see."""
+        two_receipts(judgment_repo)
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        lines = path.read_text().splitlines()
+        path.write_text(lines[0] + "\n")  # drop the last receipt
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "truncated" in proc.stderr.lower()
+
+    def test_deleting_the_whole_ledger_is_detected(self, judgment_repo):
+        two_receipts(judgment_repo)
+        (judgment_repo / ".prd-os" / "judgments.jsonl").write_text("")
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "truncated" in proc.stderr.lower()
+
+    def test_deleting_a_middle_receipt_is_detected(self, judgment_repo):
+        """Sequence contiguity catches a middle deletion even where a
+        recomputed chain would look continuous."""
+        packet_path, _ = assemble_packet(judgment_repo)
+        for disposition, code, rationale in (
+                ("accepted", None, None),
+                ("rejected", "invalid-finding", "no"),
+                ("deferred", "defer-ordering", "later")):
+            args = ["capture", "--prd", PRD_ID, "--finding", "finding-1",
+                    "--context", str(packet_path), "--disposition", disposition,
+                    "--actor", "founder"]
+            if code:
+                args += ["--reason-code", code, "--rationale", rationale]
+            assert run_judgment(judgment_repo, *args).returncode == 0
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        lines = path.read_text().splitlines()
+        path.write_text(lines[0] + "\n" + lines[2] + "\n")  # drop the middle
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+
+    def test_replacing_the_last_receipt_is_detected(self, judgment_repo):
+        two_receipts(judgment_repo)
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        lines = path.read_text().splitlines()
+        forged = json.loads(lines[1])
+        forged["human"]["rationale"] = "rewritten"
+        forged["receipt_id"] = "jr-" + hashlib.sha256(json.dumps(
+            {k: v for k, v in forged.items() if k != "receipt_id"},
+            sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode()).hexdigest()[:16]
+        path.write_text(lines[0] + "\n" + json.dumps(
+            forged, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False) + "\n")
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "tip anchor" in proc.stderr.lower()
+
+    def test_missing_tip_anchor_does_not_hard_fail(self, judgment_repo):
+        """A ledger predating the anchor must still verify — otherwise the
+        upgrade breaks every existing repo. Absence is not a claim."""
+        two_receipts(judgment_repo)
+        (judgment_repo / ".prd-os" / "judgments-tip.json").unlink()
+        assert run_judgment(judgment_repo, "verify").returncode == 0
+
+    def test_cross_check_flags_a_dispositioned_finding_with_no_receipt(
+            self, judgment_repo, run_findings_writer):
+        """Independent completeness source: findings_writer's own ledger."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        assert read_ledger(judgment_repo) == []
+        plain = run_judgment(judgment_repo, "verify")
+        assert plain.returncode == 0  # chain itself is fine (it is empty)
+        crossed = run_judgment(judgment_repo, "verify", "--cross-check")
+        assert crossed.returncode == 2
+        assert "no judgment receipt" in crossed.stderr
+
+    def test_cross_check_since_floor_excludes_legacy_findings(
+            self, judgment_repo, run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2099-01-01T00:00:00Z")
+        assert proc.returncode == 0
+
     def test_supersedes_must_resolve(self, judgment_repo):
         packet_path, _ = assemble_packet(judgment_repo)
         proc = capture(judgment_repo, packet_path,
