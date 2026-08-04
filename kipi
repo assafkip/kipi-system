@@ -32,6 +32,12 @@ usage() {
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
   echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
+  echo "  kipi judgment assemble --prd <id> --finding <id> [--output <f>]  Freeze decision-time context"
+  echo "  kipi judgment capture ...     Validate + append one triage episode receipt"
+  echo "  kipi judgment verify          Re-walk the receipt chain (add --packet/--receipt-id to bind a run)"
+  echo "  kipi judgment evaluate        Score prospective judge-vs-founder cases + release gates"
+  echo "  kipi judgment sample-check --basis <sha256>  Reproduce the 5% sampling verdict"
+  echo "  kipi judgment policy-candidates [--min-cases N]  Detect repeated override patterns (proposals only)"
   echo "  kipi review <PR#> [--post]  Adversarial PR review (Netflix staff, fresh eyes, repro-or-drop)"
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
@@ -114,6 +120,28 @@ case "${1:-help}" in
     # Scheduled by q-system/.q-system/scripts/com.kipi.fleet-health.plist at 08:15.
     shift || true
     python3 "$KIPI_HOME/q-system/.q-system/scripts/fleet-health-daily.py" "$@"
+    ;;
+  judgment)
+    # Judgment Compiler (PRD prd-judgment-compiler-2026-08-04, ASK-363).
+    # Runs against the CALLER's repo: judgment_compiler.py discovers the repo
+    # root by walking up from cwd, so each instance reads its own .prd-os
+    # ledgers, not the skeleton's.
+    shift || true
+    JUDGMENT="$KIPI_HOME/plugins/prd-os/scripts/judgment_compiler.py"
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      assemble|capture|verify|evaluate|sample-check|policy-candidates)
+        python3 "$JUDGMENT" "$sub" "$@"
+        ;;
+      selftest)
+        python3 "$JUDGMENT" --selftest
+        ;;
+      *)
+        echo "usage: kipi judgment <assemble|capture|verify|evaluate|sample-check|policy-candidates|selftest>" >&2
+        exit 1
+        ;;
+    esac
     ;;
   linear)
     # Issue-first fast path. The commit-msg gate (linear-issue-ref-check.py)

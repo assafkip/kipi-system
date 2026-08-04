@@ -774,3 +774,13 @@ class TestReadOnly:
         finally:
             for path in locked:
                 os.chmod(path, 0o755)
+
+
+if __name__ == "__main__":
+    # Self-executing under the capability gate's `python3` runner (the
+    # test_prd_split_from_linear.py precedent): a manifest entry that cannot
+    # run is exactly the silent absence the gate exists to catch.
+    sys.exit(subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-q"],
+        cwd=str(PLUGIN_ROOT.parent.parent),
+    ).returncode)

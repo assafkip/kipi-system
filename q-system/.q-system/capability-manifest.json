@@ -462,6 +462,11 @@
     {
       "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
       "runner": "bash"
+    },
+    {
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "runner": "python3",
+      "timeout_s": 240
     }
   ],
   "required_data": [],
