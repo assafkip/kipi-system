@@ -901,6 +901,13 @@ def build_receipt(packet: dict, *, disposition: str,
     }
     record["receipt_id"] = receipt_content_id(record)
     if record["receipt_id"] in known_ids:
+        # DEFENSIVE, and knowingly untested: no normal path reaches it, because
+        # captured_at, prev_receipt_sha256 and sequence all differ between any
+        # two real captures, so the content hash cannot collide. A mutation run
+        # confirmed deleting this line breaks no test. The ENFORCED half is the
+        # read-side duplicate check in verify_ledger (test_n7), which catches a
+        # forged ledger. Kept because it is free and would catch a future change
+        # that made receipt content less unique.
         raise ValidationError(
             f"duplicate receipt id {record['receipt_id']}: refusing to append")
     validate_receipt(record, record["receipt_id"])

@@ -406,6 +406,53 @@ class TestInvariantIsolation:
         assert proc.returncode == 2
         assert "chain" in proc.stderr.lower()
 
+    def test_forged_sampling_verdict_is_caught_on_read(self, judgment_repo):
+        """READ-path check. The suite exercised the write path, where the
+        sampler computes its own verdict, so deleting the read-time
+        reproducibility check survived every test (mutation run 2026-08-04)."""
+        recs = two_receipts(judgment_repo)
+        recs[1]["sampling"]["sampled"] = not recs[1]["sampling"]["sampled"]
+        reseal_ledger(judgment_repo, recs)
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "sampling" in proc.stderr.lower()
+
+    def test_forged_evidence_free_disposition_is_caught_on_read(
+            self, judgment_repo):
+        """A hand-written ledger line claiming `duplicate` with no evidence
+        must fail verify even though no writer would produce it."""
+        recs = two_receipts(judgment_repo)
+        recs[1]["human"]["reason_code"] = "duplicate"
+        recs[1]["human"]["evidence_refs"] = []
+        reseal_ledger(judgment_repo, recs)
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "duplicate" in proc.stderr
+
+    def test_forged_judge_output_hash_is_caught_on_read(self, judgment_repo):
+        packet_path, packet = assemble_packet(judgment_repo)
+        judge_path = judgment_repo / "judge.json"
+        judge_path.write_text(json.dumps(make_judge_run(packet)))
+        assert capture(judgment_repo, packet_path,
+                       "--judge-run", str(judge_path)).returncode == 0
+        recs = read_ledger(judgment_repo)
+        recs[-1]["judge"]["output"]["confidence"] = 0.1  # hash now stale
+        reseal_ledger(judgment_repo, recs)
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "output_sha256" in proc.stderr
+
+    def test_packet_whose_hash_does_not_match_its_body_is_refused(
+            self, judgment_repo):
+        """Distinct from the fabricated-false test, which re-hashes on purpose:
+        here the body and its self-hash simply disagree."""
+        packet_path, packet = assemble_packet(judgment_repo)
+        packet["finding"]["body"] = "silently swapped"
+        packet_path.write_text(json.dumps(packet))  # packet_sha256 untouched
+        proc = capture(judgment_repo, packet_path)
+        assert proc.returncode == 2
+        assert "packet_sha256" in proc.stderr
+
     def test_reseal_helper_itself_produces_a_valid_ledger(self, judgment_repo):
         """Guard the guard: if reseal produced an invalid ledger, the two tests
         above would pass for the wrong reason."""
@@ -979,6 +1026,50 @@ class TestTriageIntegration:
 # ---------------------------------------------------------------------------
 # Read-only survival (R-5) and selftest
 # ---------------------------------------------------------------------------
+
+
+class TestConcurrency:
+    def test_concurrent_captures_do_not_fork_the_chain(
+            self, judgment_repo, run_findings_writer):
+        """The ledger sits at the SHARED worktree root by design, so N
+        worktrees write one file. Unlocked, capture was a read-modify-append:
+        concurrent calls both derived sequence/prev_hash from a stale snapshot,
+        the chain forked, and EVERY writer exited 0 — corruption surfaced only
+        later, at a verify that append-only forbids repairing."""
+        count = 6
+        assert run_findings_writer(
+            judgment_repo, "add", PRD_ID, "--source", "codex-review",
+            stdin_text=json.dumps([
+                {"severity": "major", "body": f"distinct objection {i}"}
+                for i in range(count - 1)]),
+        ).returncode == 0
+        packets = []
+        for index in range(1, count + 1):
+            out = judgment_repo / f"cp{index}.json"
+            assert run_judgment(judgment_repo, "assemble", "--prd", PRD_ID,
+                                "--finding", f"finding-{index}",
+                                "--output", str(out)).returncode == 0
+            packets.append((f"finding-{index}", out))
+
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(JUDGMENT), "capture", "--prd", PRD_ID,
+                 "--finding", finding_id, "--context", str(out),
+                 "--disposition", "accepted", "--actor", "founder"],
+                cwd=str(judgment_repo), stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "CLAUDE_PROJECT_DIR": str(judgment_repo)})
+            for finding_id, out in packets
+        ]
+        errors = [proc.communicate()[1] for proc in procs]
+        assert all(proc.returncode == 0 for proc in procs), errors
+
+        recs = read_ledger(judgment_repo)
+        assert len(recs) == count, f"expected {count} receipts, got {len(recs)}"
+        assert [r["sequence"] for r in recs] == list(range(1, count + 1))
+        assert len({r["receipt_id"] for r in recs}) == count
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 0, proc.stderr
 
 
 class TestReadOnly:

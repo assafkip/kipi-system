@@ -2,6 +2,19 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.2] - 2026-08-04
+
+### Testing
+- Mutation-tested the suite: 17 single-invariant corruptions applied to a copy,
+  16 killed. The run exposed that 7 checks were shadowed by other checks in
+  every test (`sequence`, the prev-hash link, and 5 read-path validators the
+  suite never reached because it only exercised the write path). Added a
+  `reseal_ledger` helper that rebuilds a fully self-consistent chain so each
+  test can break exactly one invariant, plus a real 6-process concurrency test.
+  The single surviving mutation is a defensive build-time duplicate-id assert
+  that no normal path can reach; its enforced half is the read-side check, and
+  the code now says so rather than implying coverage it does not have.
+
 ## [0.11.1] - 2026-08-04
 
 ### Fixed (adversarial review, 17 findings)
