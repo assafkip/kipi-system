@@ -2,6 +2,22 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.4] - 2026-08-04
+
+### Fixed (Codex review, PR #97 — both findings had executed reproducers)
+- **Receipts beyond the tip anchor were trusted.** An under-counting anchor was
+  treated as fine so a crashed anchor-write would not false-alarm; the cost was
+  that receipts past the anchor sat OUTSIDE deletion detection while `verify`
+  still reported "chain intact". Verify now refuses when
+  `len(records) != tip.count` in either direction, and a new `reanchor`
+  subcommand re-covers a legitimate tail. Reanchor refuses a truncated ledger
+  and refuses a broken chain, so it cannot launder tampering: it only ever
+  extends coverage over receipts that already verify.
+- **A refused receipt rolled the findings file back but left the spillover
+  append standing.** Because that ledger is append-only, the standing gate saw
+  permanent open work for a disposition the command had just reported as rolled
+  back. Spillover now fans out only after the receipt lands.
+
 ## [0.11.3] - 2026-08-04
 
 ### Testing

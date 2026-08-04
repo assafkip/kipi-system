@@ -1064,7 +1064,24 @@ def _tip_errors(records: list[dict], tip: dict | None,
     if len(records) < tip["count"]:
         return [f"ledger is TRUNCATED: {len(records)} receipt(s) present, tip "
                 f"anchor recorded {tip['count']}"]
-    if len(records) == tip["count"] and tip["last_receipt_sha256"] is not None \
+    if len(records) > tip["count"]:
+        # An UNDER-counting anchor was originally treated as fine, on the theory
+        # that a crash between append and anchor-write must not raise a
+        # truncation alarm. Codex review (PR #97) showed what that actually
+        # bought: the receipts past the anchor sit OUTSIDE deletion detection,
+        # so verify/evaluate/policy-candidates all trust a tail that could be
+        # silently truncated back to the anchor later and still pass. Verify
+        # cannot claim the chain is intact when it has not checked all of it.
+        # Recoverable, not corrupt: `reanchor` re-covers the tail. Re-anchoring
+        # can only ever EXTEND coverage — a deletion shows up as the branch
+        # above first, and forged appends are caught by the chain walk, not the
+        # anchor — so the repair cannot launder tampering.
+        return [f"ledger has {len(records) - tip['count']} receipt(s) BEYOND "
+                f"the tip anchor ({len(records)} present, {tip['count']} "
+                "anchored): the tail is outside deletion detection. If the "
+                "extra receipts are legitimate (a crash between append and "
+                "anchor write), run `kipi judgment reanchor` to cover them."]
+    if tip["last_receipt_sha256"] is not None \
             and last_hash != tip["last_receipt_sha256"]:
         return ["ledger tail does not match the tip anchor: the last receipt "
                 "was replaced"]
@@ -1668,6 +1685,36 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reanchor(cfg: Config, args: argparse.Namespace) -> int:
+    """Re-cover a legitimate unanchored tail (crash between append and anchor).
+
+    Refuses when the CHAIN itself is broken, so this can never be used to bless
+    a tampered ledger: it only ever extends anchor coverage over receipts that
+    already verify, and a deletion presents as a truncation (fewer records than
+    the anchor), which is not a state this repairs.
+    """
+    with ledger_lock(cfg):
+        records = read_ledger(ledger_path(cfg))
+        tip = read_tip(tip_path(cfg))
+        if tip is not None and len(records) < tip["count"]:
+            raise ValidationError(
+                f"refusing to reanchor a TRUNCATED ledger: {len(records)} "
+                f"present, {tip['count']} anchored. Restore the missing "
+                "receipts first; reanchor is not a truncation eraser.")
+        chain_errors = [e for e in verify_ledger(records, None)
+                        if "tip anchor" not in e]
+        if chain_errors:
+            print("refusing to reanchor: the chain itself does not verify",
+                  file=sys.stderr)
+            for error in chain_errors:
+                print(f"  - {error}", file=sys.stderr)
+            return 2
+        write_tip(tip_path(cfg), records)
+    print(json.dumps({"reanchored": len(records),
+                      "path": str(tip_path(cfg))}, indent=2))
+    return 0
+
+
 def cmd_evaluate(cfg: Config, args: argparse.Namespace) -> int:
     records = read_ledger(ledger_path(cfg))
     errors = verify_ledger(records, read_tip(tip_path(cfg)))
@@ -1752,6 +1799,9 @@ def main(argv: list[str]) -> int:
 
     p_evaluate = sub.add_parser("evaluate")
     p_evaluate.set_defaults(func=cmd_evaluate)
+
+    p_reanchor = sub.add_parser("reanchor")
+    p_reanchor.set_defaults(func=cmd_reanchor)
 
     p_sample = sub.add_parser("sample-check")
     p_sample.add_argument("--basis", required=True)

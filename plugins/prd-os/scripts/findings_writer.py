@@ -557,7 +557,12 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
     # our own primary write path (review 2026-08-04).
     pre_findings_bytes = path.read_bytes() if path.is_file() else None
     _write_all(path, recs)
-    _sync_spillover_for_finding(cfg, args.prd_id, target)
+    # Spillover fans out AFTER the receipt lands, not before. Ordered the other
+    # way, a refused receipt rolled the findings file back while the spillover
+    # append stood — and that ledger is append-only, so the standing gate saw
+    # permanent open work for a disposition the command had just reported as
+    # rolled back (Codex review, PR #97, executed reproducer). The receipt is
+    # the failure-prone step, so it goes first among the two irreversible ones.
     if judgment_enabled:
         import judgment_compiler
 
@@ -581,6 +586,7 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                    "`kipi judgment verify --cross-check` before trusting it.\n")
             )
             return 2
+    _sync_spillover_for_finding(cfg, args.prd_id, target)
     print(
         json.dumps(
             {

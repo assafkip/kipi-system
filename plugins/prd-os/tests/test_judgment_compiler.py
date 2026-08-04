@@ -614,6 +614,61 @@ class TestChainIntegrity:
                             "--since", "2099-01-01T00:00:00Z")
         assert proc.returncode == 0
 
+    def test_receipts_beyond_the_tip_anchor_are_reported(self, judgment_repo):
+        """Codex review PR #97: an UNDER-counting anchor was treated as fine so
+        a crashed anchor-write would not false-alarm — but that left the
+        receipts past the anchor outside deletion detection, and verify still
+        said 'chain intact'."""
+        two_receipts(judgment_repo)
+        tip_file = judgment_repo / ".prd-os" / "judgments-tip.json"
+        tip = json.loads(tip_file.read_text())
+        recs = read_ledger(judgment_repo)
+        tip["count"] = 1  # simulate the crash: ledger moved on, anchor did not
+        tip["last_receipt_sha256"] = canonical_hash(recs[0])
+        tip["last_receipt_id"] = recs[0]["receipt_id"]
+        tip_file.write_text(json.dumps(tip, indent=2, sort_keys=True))
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "BEYOND" in proc.stderr
+        assert "reanchor" in proc.stderr
+
+    def test_reanchor_recovers_a_legitimate_unanchored_tail(self, judgment_repo):
+        two_receipts(judgment_repo)
+        tip_file = judgment_repo / ".prd-os" / "judgments-tip.json"
+        recs = read_ledger(judgment_repo)
+        tip_file.write_text(json.dumps(
+            {"count": 1, "last_receipt_sha256": canonical_hash(recs[0]),
+             "last_receipt_id": recs[0]["receipt_id"],
+             "updated_at": "2026-08-04T00:00:00Z"}, indent=2, sort_keys=True))
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+        proc = run_judgment(judgment_repo, "reanchor")
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["reanchored"] == 2
+        assert run_judgment(judgment_repo, "verify").returncode == 0
+
+    def test_reanchor_refuses_a_truncated_ledger(self, judgment_repo):
+        """Reanchor must never double as a truncation eraser."""
+        two_receipts(judgment_repo)
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        path.write_text(path.read_text().splitlines()[0] + "\n")
+        proc = run_judgment(judgment_repo, "reanchor")
+        assert proc.returncode == 2
+        assert "TRUNCATED" in proc.stderr
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+
+    def test_reanchor_refuses_a_broken_chain(self, judgment_repo):
+        two_receipts(judgment_repo)
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        lines = path.read_text().splitlines()
+        rec = json.loads(lines[1])
+        rec["prev_receipt_sha256"] = "f" * 64
+        lines[1] = json.dumps(rec, sort_keys=True, separators=(",", ":"),
+                              ensure_ascii=False)
+        path.write_text("\n".join(lines) + "\n")
+        proc = run_judgment(judgment_repo, "reanchor")
+        assert proc.returncode == 2
+        assert "chain" in proc.stderr.lower()
+
     def test_supersedes_must_resolve(self, judgment_repo):
         packet_path, _ = assemble_packet(judgment_repo)
         proc = capture(judgment_repo, packet_path,
@@ -986,6 +1041,36 @@ class TestTriageIntegration:
         assert proc.returncode == 2
         assert findings_path.read_text() == before
         assert read_ledger(judgment_repo) == []
+
+    def test_failed_capture_leaves_no_spillover_entry(
+            self, judgment_repo, run_findings_writer):
+        """Codex review PR #97: spillover fanned out BEFORE the receipt, so a
+        refused receipt rolled the findings file back while the append-only
+        spillover entry stood — the standing gate then saw permanent open work
+        for a disposition the command reported as rolled back."""
+        spill = judgment_repo / ".prd-os" / "spillover.jsonl"
+        before = spill.read_text() if spill.is_file() else ""
+        # An unresolvable evidence ref passes the fail-fast grammar check and
+        # fails inside capture, which is exactly the late-failure window.
+        proc = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "deferred",
+            "--rationale", "later", "--reason-code", "defer-ordering",
+            "--evidence", "judgment:jr-doesnotexist000")
+        assert proc.returncode == 2
+        after = spill.read_text() if spill.is_file() else ""
+        assert after == before, "spillover mutated despite the rollback"
+        assert read_ledger(judgment_repo) == []
+
+    def test_successful_deferral_still_creates_the_spillover_entry(
+            self, judgment_repo, run_findings_writer):
+        """The reorder must not cost the fan-out on the success path."""
+        proc = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "deferred",
+            "--rationale", "next phase", "--reason-code", "defer-ordering")
+        assert proc.returncode == 0, proc.stderr
+        spill = judgment_repo / ".prd-os" / "spillover.jsonl"
+        assert spill.is_file()
+        assert f"defer-{PRD_ID}-finding-1" in spill.read_text()
 
     def test_kill_switch_restores_legacy_behavior(
             self, judgment_repo, run_findings_writer):
