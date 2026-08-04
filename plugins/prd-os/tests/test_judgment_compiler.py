@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1183,6 +1184,46 @@ class TestLedgerRoot:
         payload = json.loads(proc.stdout)
         assert payload["path"].endswith("judgments.jsonl")
         assert str(judgment_repo) in payload["path"]
+
+
+class TestCliParity:
+    """The Python subparsers and the `kipi judgment` bash allowlist are two
+    lists of the same thing, edited by hand, in different files. Codex review
+    round 2 caught the predictable result: `reanchor` shipped in Python and in
+    the docs while the dispatcher rejected it, so the documented recovery for
+    an interrupted anchor write did not exist. One test, both ends."""
+
+    KIPI = PLUGIN_ROOT.parents[1] / "kipi"
+
+    def _python_subcommands(self) -> set[str]:
+        source = JUDGMENT.read_text()
+        return set(re.findall(r'sub\.add_parser\("([a-z-]+)"\)', source))
+
+    def _bash_subcommands(self) -> set[str]:
+        block = self.KIPI.read_text().split("  judgment)", 1)[1]
+        allowlist = re.search(r"^\s+([a-z|-]+)\)$", block, re.M).group(1)
+        return set(allowlist.split("|")) | {"selftest"}
+
+    def test_every_python_subcommand_is_reachable_through_kipi(self):
+        missing = self._python_subcommands() - self._bash_subcommands()
+        assert not missing, (
+            f"judgment_compiler.py exposes {sorted(missing)} but `kipi "
+            "judgment` rejects them: the CLI cannot reach a shipped command")
+
+    def test_the_dispatcher_advertises_nothing_python_lacks(self):
+        # selftest is a --flag, not a subparser, so it is exempt by name.
+        phantom = self._bash_subcommands() - self._python_subcommands() - {"selftest"}
+        assert not phantom, (
+            f"`kipi judgment` advertises {sorted(phantom)} which "
+            "judgment_compiler.py does not implement")
+
+    def test_usage_text_lists_every_subcommand(self):
+        usage_lines = [l for l in self.KIPI.read_text().splitlines()
+                       if "usage: kipi judgment" in l]
+        assert usage_lines, "the judgment dispatcher prints no usage line"
+        for name in self._python_subcommands():
+            assert name in usage_lines[0], (
+                f"{name} is dispatchable but absent from the usage text")
 
 
 class TestReadOnly:

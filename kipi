@@ -36,6 +36,7 @@ usage() {
   echo "  kipi judgment capture ...     Validate + append one triage episode receipt"
   echo "  kipi judgment verify          Re-walk the receipt chain (add --packet/--receipt-id to bind a run)"
   echo "  kipi judgment evaluate        Score prospective judge-vs-founder cases + release gates"
+  echo "  kipi judgment reanchor        Re-cover a legitimate unanchored tail after an interrupted write"
   echo "  kipi judgment sample-check --basis <sha256>  Reproduce the 5% sampling verdict"
   echo "  kipi judgment policy-candidates [--min-cases N]  Detect repeated override patterns (proposals only)"
   echo "  kipi review <PR#> [--post]  Adversarial PR review (Netflix staff, fresh eyes, repro-or-drop)"
@@ -131,14 +132,14 @@ case "${1:-help}" in
     sub="${1:-}"
     shift || true
     case "$sub" in
-      assemble|capture|verify|evaluate|sample-check|policy-candidates)
+      assemble|capture|verify|evaluate|reanchor|sample-check|policy-candidates)
         python3 "$JUDGMENT" "$sub" "$@"
         ;;
       selftest)
         python3 "$JUDGMENT" --selftest
         ;;
       *)
-        echo "usage: kipi judgment <assemble|capture|verify|evaluate|sample-check|policy-candidates|selftest>" >&2
+        echo "usage: kipi judgment <assemble|capture|verify|evaluate|reanchor|sample-check|policy-candidates|selftest>" >&2
         exit 1
         ;;
     esac

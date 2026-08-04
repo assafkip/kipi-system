@@ -2,6 +2,17 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.5] - 2026-08-04
+
+### Fixed (Codex review round 2, PR #97)
+- **`reanchor` shipped in Python and in the docs but the `kipi judgment`
+  dispatcher rejected it**, so the documented recovery for an interrupted
+  anchor write did not exist at the CLI. The Python subparsers and the bash
+  allowlist are two hand-edited lists of the same thing; a `TestCliParity`
+  class now diffs them both ways and checks the usage text, so a subcommand
+  cannot ship reachable-in-one-place again. Verified by re-introducing the bug:
+  the parity tests go red.
+
 ## [0.11.4] - 2026-08-04
 
 ### Fixed (Codex review, PR #97 — both findings had executed reproducers)
