@@ -2,6 +2,58 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.14.0] - 2026-08-04
+
+### Changed — PR #101 split: the integrity half is required, the agreement half warns
+PR #101 took 7 Codex review rounds and rounds 7 and 8 were regressions caused by
+the round-6 fix. The 8 rounds partition cleanly, so the PR was split rather than
+patched a ninth time.
+
+- **Kept as blocking (rounds 1-5, integrity).** Fail closed on an unreadable
+  ledger, exact `prd_id` prefix match, verify the chain before trusting a
+  receipt, and read under the writer's lock. Four defects, zero self-inflicted
+  regressions. These protect the calibration set: `cmd_evaluate` reads ONLY the
+  ledger, so a missing receipt is a permanent invisible hole in it.
+- **Demoted to a warning (rounds 6-8, field agreement).** `_decision_fingerprint`
+  compared the MUTABLE findings file against the IMMUTABLE receipt. It caused two
+  of its own regressions, and three of its four tests existed to stop it blocking
+  legitimate work rather than to catch a real threat. When the two disagree the
+  receipt is still the honest record, so `advance approved` now prints a warning
+  and does not block. A gate that false-blocks gets switched off, and an off gate
+  protects nothing.
+- **`evaluate` reports `decision_disagreement_count`** and gates on it
+  (`zero_decision_disagreements`). The demotion is not a silent drop: blocking a
+  human's approval over drift is a false block, blocking AUTOMATION over it is
+  the right severity. Same shape as 41c0876, which made the release gates read
+  the evidence-gate bypass rate.
+
+### Fixed — the date-inference defect class, killed by construction
+Rounds 2, 7 and 8 were ONE defect: inferring "was this decided after the floor"
+from `resolved_at`, a mutable strippable field on a hand-editable file. The
+round-8 code admitted the inference was undecidable ("undateable AND unclaimed:
+cannot judge, do not guess") and left a documented hole — switch capture off,
+strip the date, and the missing receipt is invisible.
+
+The gate runs at `advance approved` for ONE named PRD, and PRD ids carry their
+creation date. So the floor is now read from the PRD id and no `resolved_at` is
+parsed at all: a PRD dated at or after the floor requires a receipt for every
+dispositioned finding, unconditionally; a PRD predating the floor is exempt
+(pre-compiler decisions can never have receipts). Nothing enforces a prd_id
+format, so an id whose date cannot be parsed FAILS CLOSED. `verify --cross-check`
+is unchanged and still reports both classes as errors — it is a diagnostic and
+stays maximally informative.
+
+### Fixed — the persist path is one critical section (sp-0c725cde)
+A defect in merged code, not only in #101. `_write_all` published the disposition
+and only afterwards did `capture_from_triage` take `ledger_lock` internally. The
+approval gate reads the ledger under that lock, so a gate landing in the gap saw
+a dispositioned finding with no receipt and false-blocked. Reproduced with an
+out-of-process observer that acquired the lock mid-persist and reported
+`dispositioned=1 receipts=0`. `ledger_lock` is now re-entrant per thread (flock
+keys on the open file description, so a nested acquire on a second fd deadlocks
+the caller against itself — measured) and findings_writer holds it across the
+findings write and the capture. Spillover still fans out after the receipt lands.
+
 ## [0.13.7] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 7)

@@ -1376,7 +1376,7 @@ class TestBakedIntoApproval:
         sys.modules["jc_cfg"] = cfgmod
         cfg_spec.loader.exec_module(cfgmod)
         cfg = cfgmod.load(judgment_repo)
-        missing = jc.cross_check_findings(cfg, [], "2026-01-01T00:00:00Z")
+        missing, _ = jc.cross_check_findings(cfg, [], "2026-01-01T00:00:00Z")
         assert any(PRD_ID in m for m in missing), missing
         assert any("no judgment receipt" in m for m in missing)
 
@@ -1399,7 +1399,7 @@ class TestBakedIntoApproval:
             judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
             env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
         cfg = cfgmod.load(judgment_repo)
-        far_future = jc.cross_check_findings(cfg, [], "2099-01-01T00:00:00Z")
+        far_future, _ = jc.cross_check_findings(cfg, [], "2099-01-01T00:00:00Z")
         assert far_future == [], "floor did not exempt an older disposition"
 
 
@@ -1451,8 +1451,11 @@ class TestReceiptGateFailsClosed:
         import contextlib
         monkeypatch.setattr(jc, "ledger_lock",
                             lambda cfg: contextlib.nullcontext())
-        monkeypatch.setattr(jc, "cross_check_findings", lambda c, r, s: [
-            "prd-alpha-2/finding-1: dispositioned but no judgment receipt exists"])
+        monkeypatch.setattr(
+            jc, "cross_check_findings",
+            lambda c, r, s=None, *, prd_id=None: ([
+                "prd-alpha-2/finding-1: dispositioned but no judgment receipt "
+                "exists"], []))
         assert runner._judgment_receipt_gate(object(), "prd-alpha")[0] == 0
         assert runner._judgment_receipt_gate(object(), "prd-alpha-2")[0] == 2
 
@@ -1638,3 +1641,234 @@ class TestFloorDoesNotShieldAConflict:
         proc = run_judgment(judgment_repo, "verify", "--cross-check",
                             "--since", "2099-01-01T00:00:00Z")
         assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# PR #101 split: the gate keeps the integrity half (rounds 1-5) and demotes the
+# field-agreement half (rounds 6-8). See CHANGELOG 0.14.0.
+# ---------------------------------------------------------------------------
+
+
+FINDINGS_REL = ".prd-os/findings"
+
+
+def _load_module(name: str, filename: str):
+    """Load a scripts/ module under a private name (the file's own convention)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _cfg_for(repo: Path):
+    return _load_module(f"cfg_{repo.name}_{id(repo)}", "config.py").load(repo)
+
+
+def _findings_rows(repo: Path, prd_id: str = PRD_ID) -> tuple[Path, list[dict]]:
+    path = repo / FINDINGS_REL / f"{prd_id}-findings.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()
+            if line.strip()]
+    return path, rows
+
+
+def _rewrite_findings(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(
+        json.dumps(r, sort_keys=True) + "\n" for r in rows))
+
+
+class TestGateUsesAPrdLevelFloor:
+    """Rounds 2, 7 and 8 were ONE defect class: inferring "was this decided
+    after the floor" from `resolved_at`, a mutable strippable field on a
+    hand-editable file. The round-8 code admitted the inference was undecidable
+    ("undateable AND unclaimed: cannot judge, do not guess") and left a
+    documented hole: capture off, strip the date, invisible. The gate runs for
+    ONE named PRD whose id carries its creation date, so the floor is read from
+    the id instead and no `resolved_at` is parsed at all.
+    """
+
+    def test_stripping_resolved_at_no_longer_hides_a_missing_receipt(
+            self, judgment_repo, run_findings_writer):
+        """THE round-8 hole, executed: the documented invisible case."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        path, rows = _findings_rows(judgment_repo)
+        for row in rows:
+            row.pop("resolved_at", None)
+        _rewrite_findings(path, rows)
+        runner = _load_module("pr_floor_a", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 2, (
+            "a dispositioned finding with the date stripped and no receipt was "
+            "waved through: the kill-switch-plus-strip hole")
+        assert "no judgment receipt" in message
+
+    def test_a_prd_created_before_the_floor_stays_exempt(
+            self, fake_repo, write_config, run_findings_writer):
+        """Pre-compiler decisions can never have receipts. A gate that cannot
+        be satisfied gets switched off, and an off gate protects nothing."""
+        legacy = "prd-legacy-2026-07-01"
+        write_config(fake_repo, {"config_schema_version": 1})
+        write_prd_spec(fake_repo, legacy)
+        assert run_findings_writer(
+            fake_repo, "add", legacy, "--source", "codex-review",
+            stdin_text=json.dumps(
+                [{"severity": "major", "body": "a legacy finding"}])
+        ).returncode == 0
+        assert run_findings_writer(
+            fake_repo, "set-disposition", legacy, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        runner = _load_module("pr_floor_b", "prd_runner.py")
+        code, _ = runner._judgment_receipt_gate(_cfg_for(fake_repo), legacy)
+        assert code == 0, "the floor must not block every legacy PRD forever"
+
+    def test_an_undateable_prd_id_fails_closed(
+            self, fake_repo, write_config, run_findings_writer):
+        """No code enforces a prd_id format, so an id whose date cannot be
+        parsed must be treated as post-floor, never exempted."""
+        weird = "prd-no-date-at-all"
+        write_config(fake_repo, {"config_schema_version": 1})
+        write_prd_spec(fake_repo, weird)
+        assert run_findings_writer(
+            fake_repo, "add", weird, "--source", "codex-review",
+            stdin_text=json.dumps(
+                [{"severity": "major", "body": "an undateable finding"}])
+        ).returncode == 0
+        assert run_findings_writer(
+            fake_repo, "set-disposition", weird, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        runner = _load_module("pr_floor_c", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(_cfg_for(fake_repo), weird)
+        assert code == 2, "an unparseable prd_id must fail CLOSED, not exempt"
+        assert "no judgment receipt" in message
+
+    def test_a_post_floor_prd_with_its_receipt_passes(self, judgment_repo,
+                                                      run_findings_writer):
+        """Negative self-test: the gate is not simply always-blocking."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        runner = _load_module("pr_floor_d", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 0, message
+
+
+class TestDecisionDisagreementWarnsAndDoesNotBlock:
+    """Rounds 6-8 compared the MUTABLE findings file against the IMMUTABLE
+    receipt and caused two of their own regressions. `cmd_evaluate` (which
+    feeds the release gates) reads ONLY the ledger, so the ledger is the
+    calibration set and the findings file is operational state. When they
+    disagree the receipt is still the honest record, so this reports rather
+    than blocks -- and false-blocking is the failure mode that gets a gate
+    switched off.
+    """
+
+    def _diverge(self, repo, run_findings_writer):
+        assert run_findings_writer(repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path, rows = _findings_rows(repo)
+        rows[0]["rationale"] = "rewritten after the receipt was frozen"
+        _rewrite_findings(path, rows)
+
+    def test_a_fingerprint_mismatch_exits_zero_with_a_warning(
+            self, judgment_repo, run_findings_writer):
+        self._diverge(judgment_repo, run_findings_writer)
+        runner = _load_module("pr_warn_a", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 0, (
+            "a disagreement between the mutable findings copy and the receipt "
+            f"must not block approval: {message}")
+        assert "warning" in message.lower()
+        assert "finding-1" in message
+
+    def test_evaluate_reports_the_disagreement_count(self, judgment_repo,
+                                                     run_findings_writer):
+        """Precedent: 41c0876 made the release gates read the evidence-gate
+        bypass rate rather than leaving a documented condition unenforced."""
+        self._diverge(judgment_repo, run_findings_writer)
+        proc = run_judgment(judgment_repo, "evaluate")
+        assert proc.returncode == 0, proc.stderr
+        report = json.loads(proc.stdout)
+        assert report["decision_disagreement_count"] == 1, report
+        gate = report["release_gates"]["zero_decision_disagreements"]
+        assert gate["passed"] is False, gate
+        assert report["release_gates"]["passed"] is False
+
+    def test_evaluate_reports_zero_when_the_copy_agrees(
+            self, judgment_repo, run_findings_writer):
+        """Negative self-test for the counter itself."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "evaluate")
+        assert proc.returncode == 0, proc.stderr
+        report = json.loads(proc.stdout)
+        assert report["decision_disagreement_count"] == 0
+        assert report["release_gates"][
+            "zero_decision_disagreements"]["passed"] is True
+
+
+# An out-of-process observer: the ONLY way to probe the lock from a test, since
+# flock re-entry on a second fd blocks in the SAME process (measured: a second
+# LOCK_EX in one process hangs). It reports whether the persist path left a
+# window in which a gate could see a disposition whose receipt is not yet there.
+_LOCK_OBSERVER = '''
+import fcntl, json, sys
+from pathlib import Path
+
+repo, prd = Path(sys.argv[1]), sys.argv[2]
+handle = open(repo / ".prd-os" / ".judgments.lock", "a+")
+try:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    print("LOCK_HELD")
+    raise SystemExit(0)
+rows = [json.loads(l) for l
+        in (repo / ".prd-os" / "findings" / (prd + "-findings.jsonl")
+            ).read_text().splitlines() if l.strip()]
+done = [r for r in rows if r.get("disposition") not in (None, "pending")]
+ledger = repo / ".prd-os" / "judgments.jsonl"
+receipts = len([l for l in ledger.read_text().splitlines() if l.strip()]) \\
+    if ledger.is_file() else 0
+print("WINDOW_OPEN dispositioned=%d receipts=%d" % (len(done), receipts))
+'''
+
+
+class TestPersistPathIsOneCriticalSection:
+    """sp-0c725cde, a defect in MERGED code. `_write_all` published the
+    disposition and only afterwards did `capture_from_triage` take
+    `ledger_lock` internally. A gate reading under that lock (the round-4 fix)
+    could land in the gap, see a dispositioned finding with no receipt, and
+    false-block work that was completing normally.
+    """
+
+    def test_no_reader_can_observe_a_disposition_without_its_receipt(
+            self, judgment_repo, tmp_path, monkeypatch):
+        import argparse
+
+        writer = _load_module("fw_window", "findings_writer.py")
+        observer = tmp_path / "lock_observer.py"
+        observer.write_text(_LOCK_OBSERVER)
+        seen: list[str] = []
+        real_write_all = writer._write_all
+
+        def watched_write_all(path, records):
+            real_write_all(path, records)
+            proc = subprocess.run(
+                [sys.executable, str(observer), str(judgment_repo), PRD_ID],
+                capture_output=True, text=True)
+            seen.append((proc.stdout + proc.stderr).strip())
+
+        monkeypatch.setattr(writer, "_write_all", watched_write_all)
+        args = argparse.Namespace(
+            prd_id=PRD_ID, finding_id="finding-1", disposition="accepted",
+            rationale="", covered_by="", reason_code=None, evidence=[],
+            actor="founder", judge_run=None)
+        assert writer.cmd_set_disposition(_cfg_for(judgment_repo), args) == 0
+        assert seen, "the persist path never wrote the findings file"
+        assert seen[0] == "LOCK_HELD", (
+            "an outside reader observed the findings file mid-persist: "
+            f"{seen[0]}")

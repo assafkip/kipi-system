@@ -290,8 +290,12 @@ def cmd_advance(cfg: Config, args: argparse.Namespace) -> int:
 
     if target == "approved":
         rc, err = _findings_gate(cfg, state)
-        if rc != 0:
+        # Emitted on rc == 0 too: the judgment gate returns a decision-
+        # disagreement WARNING alongside a passing code, and the old
+        # `if rc != 0` guard would have swallowed it silently.
+        if err:
             sys.stderr.write(err)
+        if rc != 0:
             return rc
         rc, err = _issues_manifest_gate(cfg, state)
         if rc != 0:
@@ -606,15 +610,47 @@ def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
 # calibration set it exists to be.
 JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
 
+_PRD_ID_DATE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
+
+
+def _prd_predates_floor(prd_id: str) -> bool:
+    """Is this PRD old enough that its findings can never carry receipts?
+
+    Answered from the PRD ID, which carries its creation date, and NOT from any
+    finding's `resolved_at`. Rounds 2, 7 and 8 of PR #101 were all ONE defect:
+    inferring "decided after the floor" from `resolved_at`, a mutable and
+    strippable field on a hand-editable file. The round-8 code admitted the
+    inference was undecidable ("undateable AND unclaimed: cannot judge, do not
+    guess") and so left a permanent documented hole -- switch capture off,
+    strip the date, and the missing receipt is invisible. Patching it a ninth
+    time is paying a meter, so the class is killed by construction: this gate
+    runs for ONE named PRD, and that PRD's own date answers the question
+    without reading a single finding field.
+
+    FAILS CLOSED on an id whose date cannot be parsed. Measured: 36 of 36
+    prd_ids under `.prd-os/findings/` carry a trailing ISO date, but NOTHING in
+    prd_runner enforces that format, so an id without one is treated as
+    post-floor and REQUIRES receipts. The alternative is a free exemption for
+    any id that simply omits a date, which is the same hole in a new shape.
+    """
+    match = _PRD_ID_DATE.search(prd_id or "")
+    if not match:
+        return False
+    return match.group(1) < JUDGMENT_RECEIPT_FLOOR[:10]
+
 
 def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
-    """Every finding dispositioned since the floor must carry a receipt.
+    """Every finding of a post-floor PRD must carry a receipt.
 
     FLOOR, not a blanket requirement: ~342 findings were adjudicated before the
     compiler existed and can never have receipts. Demanding them would block
     every pre-existing PRD forever, and a gate that cannot be satisfied gets
-    switched off -- which protects nothing. So the rule binds only decisions
-    made after the feature landed.
+    switched off -- which protects nothing. So the rule binds only PRDs created
+    after the feature landed.
+
+    Returns (exit_code, text). The text is NOT only an error: a decision-
+    disagreement warning rides back with exit 0, so the caller must emit it
+    regardless of the code.
     """
     try:
         import judgment_compiler
@@ -647,8 +683,15 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
                 + ("\n  ..." if len(chain_errors) > 5 else "")
                 + "\n\nRun `kipi judgment verify` for the full report.\n"
             )
-        raw_missing = judgment_compiler.cross_check_findings(
-            cfg, records, JUDGMENT_RECEIPT_FLOOR)
+        if _prd_predates_floor(prd_id):
+            # Chain integrity was verified above for every PRD; only the
+            # COMPLETENESS requirement is waived for a pre-compiler PRD.
+            raw_missing, raw_drift = [], []
+        else:
+            # No `since` at all: the PRD-level floor already answered the
+            # only question `resolved_at` was ever used for.
+            raw_missing, raw_drift = judgment_compiler.cross_check_findings(
+                cfg, records, None, prd_id=prd_id)
     except Exception as exc:
         # FAIL CLOSED. The first version caught everything and returned 0,
         # defended as "a bug in the check must not cause an approval outage".
@@ -667,18 +710,41 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
     # "<prd_id>/<finding_id>: ...", so a substring test let a missing receipt
     # for `prd-alpha-2` block approval of `prd-alpha` (Codex, PR #101).
     missing = [m for m in raw_missing if m.startswith(f"{prd_id}/")]
+    drift = [d for d in raw_drift if d.startswith(f"{prd_id}/")]
+    # WARNING, never a block (PR #101 rounds 6-8). This compares the MUTABLE
+    # findings file against the IMMUTABLE receipt, and when they disagree the
+    # receipt is still the honest record of the decision -- `cmd_evaluate`,
+    # which feeds the release gates, reads ONLY the ledger. Rounds 6-8 blocked
+    # on it and produced two self-inflicted regressions; three of the four
+    # tests guarding it existed to stop it blocking legitimate work rather than
+    # to catch a real threat. A gate that false-blocks gets switched off, and
+    # an off gate protects nothing. It is not dropped: `kipi judgment evaluate`
+    # counts it as decision_disagreement_count and gates AUTOMATION on it.
+    warning = ""
+    if drift:
+        warning = (
+            f"WARNING: {len(drift)} finding(s) whose findings-file record "
+            "disagrees with the receipt that froze the decision:\n  "
+            + "\n  ".join(drift[:5])
+            + ("\n  ..." if len(drift) > 5 else "")
+            + "\n\nApproval is NOT blocked: the receipt is the immutable record "
+              "and the ledger is what calibration reads, while the findings "
+              "file is mutable operational state. Counted as "
+              "decision_disagreement_count by `kipi judgment evaluate`.\n"
+        )
     if missing:
         return 2, (
-            f"approval blocked: {len(missing)} finding(s) dispositioned since "
-            f"{JUDGMENT_RECEIPT_FLOOR} with no judgment receipt:\n  "
+            f"approval blocked: {len(missing)} finding(s) in a PRD created on "
+            f"or after {JUDGMENT_RECEIPT_FLOOR[:10]} with no judgment "
+            "receipt:\n  "
             + "\n  ".join(missing[:5])
             + ("\n  ..." if len(missing) > 5 else "")
             + "\n\nRe-run the disposition through findings_writer.py "
               "set-disposition so the decision is recorded, or explain the gap. "
               "Receipts are the calibration set; a hole in them is invisible "
               "later.\n"
-        )
-    return 0, ""
+        ) + warning
+    return 0, warning
 
 
 # ---------------------------------------------------------------------------

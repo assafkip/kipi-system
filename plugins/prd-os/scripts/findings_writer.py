@@ -556,43 +556,64 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
     # exact divergence `verify --cross-check` exists to detect, manufactured by
     # our own primary write path (review 2026-08-04).
     pre_findings_bytes = path.read_bytes() if path.is_file() else None
-    _write_all(path, recs)
+    # ONE critical section over the findings write AND the receipt (sp-0c725cde,
+    # a defect in merged code). Previously `_write_all` published the
+    # disposition and only then did capture_from_triage take `ledger_lock`
+    # internally. The approval gate reads the ledger UNDER that lock (PR #101
+    # round 4), so a gate landing in the gap saw a dispositioned finding with no
+    # receipt and false-blocked work that was completing normally. Reproduced
+    # with an out-of-process observer that acquired the lock mid-persist and
+    # reported `dispositioned=1 receipts=0`. `ledger_lock` is re-entrant per
+    # thread precisely so the capture below can take it again.
+    import contextlib
+
+    if judgment_enabled:
+        import judgment_compiler
+
+        persist_lock = judgment_compiler.ledger_lock(cfg)
+    else:
+        # No receipt is coming, so there is no window to close and no reason to
+        # serialise unrelated triage on the shared ledger lock.
+        persist_lock = contextlib.nullcontext()
+    with persist_lock:
+        _write_all(path, recs)
+        # INSIDE the lock, with the write above: that pairing is the whole
+        # point of the critical section. The receipt still lands before
+        # spillover fans out, which stays OUTSIDE the lock below.
+        if judgment_enabled:
+            try:
+                judgment_compiler.capture_from_triage(
+                    cfg, args.prd_id, target,
+                    actor=getattr(args, "actor", "founder"),
+                    reason_code=getattr(args, "reason_code", None),
+                    evidence_refs=list(getattr(args, "evidence", [])),
+                    # Freeze what the RECORD says, not what the flag said. A
+                    # re-disposition to accepted passes no --rationale while the
+                    # record keeps its previous one (only `pending` clears it), so
+                    # reading the flag captured None against a record that still had
+                    # text -- and the decision fingerprint then falsely reported the
+                    # decision as uncaptured (Codex, PR #101 round 6: a regression
+                    # from the round-5 fingerprint fix).
+                    rationale=(target.get("rationale") or "").strip() or None,
+                    judge_run_path=getattr(args, "judge_run", None),
+                )
+            except (judgment_compiler.ValidationError, OSError) as exc:
+                rolled_back = _rollback_findings(path, pre_findings_bytes)
+                sys.stderr.write(
+                    f"judgment receipt refused: {exc}\n"
+                    + ("disposition rolled back; findings file unchanged.\n"
+                       if rolled_back else
+                       "WARNING: rollback ALSO failed. The findings file may now "
+                       "disagree with the judgment ledger; run "
+                       "`kipi judgment verify --cross-check` before trusting it.\n")
+                )
+                return 2
     # Spillover fans out AFTER the receipt lands, not before. Ordered the other
     # way, a refused receipt rolled the findings file back while the spillover
     # append stood — and that ledger is append-only, so the standing gate saw
     # permanent open work for a disposition the command had just reported as
     # rolled back (Codex review, PR #97, executed reproducer). The receipt is
     # the failure-prone step, so it goes first among the two irreversible ones.
-    if judgment_enabled:
-        import judgment_compiler
-
-        try:
-            judgment_compiler.capture_from_triage(
-                cfg, args.prd_id, target,
-                actor=getattr(args, "actor", "founder"),
-                reason_code=getattr(args, "reason_code", None),
-                evidence_refs=list(getattr(args, "evidence", [])),
-                # Freeze what the RECORD says, not what the flag said. A
-                # re-disposition to accepted passes no --rationale while the
-                # record keeps its previous one (only `pending` clears it), so
-                # reading the flag captured None against a record that still had
-                # text -- and the decision fingerprint then falsely reported the
-                # decision as uncaptured (Codex, PR #101 round 6: a regression
-                # from the round-5 fingerprint fix).
-                rationale=(target.get("rationale") or "").strip() or None,
-                judge_run_path=getattr(args, "judge_run", None),
-            )
-        except (judgment_compiler.ValidationError, OSError) as exc:
-            rolled_back = _rollback_findings(path, pre_findings_bytes)
-            sys.stderr.write(
-                f"judgment receipt refused: {exc}\n"
-                + ("disposition rolled back; findings file unchanged.\n"
-                   if rolled_back else
-                   "WARNING: rollback ALSO failed. The findings file may now "
-                   "disagree with the judgment ledger; run "
-                   "`kipi judgment verify --cross-check` before trusting it.\n")
-            )
-            return 2
     _sync_spillover_for_finding(cfg, args.prd_id, target)
     print(
         json.dumps(
