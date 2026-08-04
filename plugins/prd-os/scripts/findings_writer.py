@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -489,6 +490,20 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
             f"disposition={args.disposition!r} requires --rationale\n"
         )
         return 2
+    # Judgment Compiler fail-fast half (PRD prd-judgment-compiler-2026-08-04):
+    # an evidence-requiring reason code without its stable reference is refused
+    # BEFORE the findings file mutates, so a gate failure never leaves the
+    # ledger and the findings file disagreeing about what happened.
+    judgment_enabled = os.environ.get("KIPI_JUDGMENT_CAPTURE") != "0"
+    if judgment_enabled:
+        import judgment_compiler
+
+        gate_errors = judgment_compiler.validate_triage_decision(
+            getattr(args, "reason_code", None), getattr(args, "evidence", []))
+        if gate_errors:
+            for gate_error in gate_errors:
+                sys.stderr.write(f"{gate_error}\n")
+            return 2
     path = _findings_path(cfg, args.prd_id)
     try:
         recs = _load_findings(path)
@@ -522,6 +537,27 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
         return 2
     _write_all(path, recs)
     _sync_spillover_for_finding(cfg, args.prd_id, target)
+    if judgment_enabled:
+        # Append the immutable triage episode receipt. A failure here is loud:
+        # the disposition already landed, so a silent skip would strand the
+        # decision outside the judgment ledger with nothing to flag it.
+        import judgment_compiler
+
+        try:
+            judgment_compiler.capture_from_triage(
+                cfg, args.prd_id, target,
+                actor=getattr(args, "actor", "founder"),
+                reason_code=getattr(args, "reason_code", None),
+                evidence_refs=list(getattr(args, "evidence", [])),
+                rationale=(args.rationale or "").strip() or None,
+                judge_run_path=getattr(args, "judge_run", None),
+            )
+        except judgment_compiler.ValidationError as exc:
+            sys.stderr.write(
+                "disposition was written but the judgment receipt was NOT: "
+                f"{exc}\n"
+            )
+            return 2
     print(
         json.dumps(
             {
@@ -593,6 +629,14 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--rationale", default="")
     p_set.add_argument("--covered-by", default="", dest="covered_by",
                        help="umbrella coverage: the phase PRD id that owns this finding")
+    p_set.add_argument("--reason-code", default=None, dest="reason_code",
+                       help="canonical judgment reason code (judgment_compiler)")
+    p_set.add_argument("--evidence", action="append", default=[],
+                       help="stable evidence ref (repeatable), e.g. finding:<prd>/<id>")
+    p_set.add_argument("--actor", default="founder",
+                       help="who made this decision (judgment receipt)")
+    p_set.add_argument("--judge-run", default=None, dest="judge_run",
+                       help="path to a judge-run JSON bound to the context packet")
     p_set.set_defaults(func=cmd_set_disposition)
 
     p_rec = sub.add_parser("record-review")

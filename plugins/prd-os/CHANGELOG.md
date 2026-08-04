@@ -2,6 +2,26 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.10.0] - 2026-08-04
+
+### Added
+- **Judgment Compiler** (`scripts/judgment_compiler.py`, PRD
+  prd-judgment-compiler-2026-08-04, ASK-363): append-only, hash-chained triage
+  episode receipts in `.prd-os/judgments.jsonl` (shared worktree ledger root),
+  a deterministic decision-context assembler (unknown stays unknown, every
+  fact carries a source), a split judge contract (technical_validity separate
+  from workflow_disposition, canonical 12-code reason enum), a disposition
+  evidence gate (duplicate / already-remediated / scope-removed /
+  out-of-scope / owned-by-other-prd / superseded require stable references:
+  judge output degrades to needs-human, human decisions hard-fail), a
+  prospective v2 evaluator with release gates (≥88% agreement, kappa ≥0.80,
+  ≥80% per-class recall, ≥50 cases), deterministic 5% sampling, and a
+  policy-candidate detector that cannot self-install.
+  `findings_writer.py set-disposition` now captures a receipt per
+  adjudication (new optional flags `--reason-code`, `--evidence`, `--actor`,
+  `--judge-run`; kill switch `KIPI_JUDGMENT_CAPTURE=0`). Paired tests:
+  `tests/test_judgment_compiler.py` (48 cases, written red-first).
+
 ## [Unreleased]
 
 ### Added
