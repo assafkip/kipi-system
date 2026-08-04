@@ -934,7 +934,7 @@ def _program_names(tokens):
     return cands
 
 
-def _could_name_baseline(token, cwd, assigns, baseline_abs):
+def _could_name_baseline(token, cwd, assigns):
     """True if `token` could name Layer 2's baseline file.
 
     NOT a check for a writer. The question is reach: if this command can NAME
@@ -958,29 +958,44 @@ def _could_name_baseline(token, cwd, assigns, baseline_abs):
         `rm -rf q-system` reaches the baseline and is treated as such. MORE
         components names something strictly deeper, which the baseline is not.
 
-    A token that is ENTIRELY expansions still returns True only if every one of
-    its components is unknowable AND it is no deeper than the baseline -- the
-    unanchorable `.claude` write (`${!V}/rules/pwn.md`) fails at its second
-    component (`rules` != `.q-system`), which is what keeps the round-8/9 handoff
-    allow alive instead of collapsing every handoff into a block."""
+    A token that is ENTIRELY expansions reaches NOTHING: it agrees with no
+    component, so there is no evidence it names the baseline, and returning True
+    on zero evidence is what made pass 2 block an awk program text. That is the
+    named bound of this whole check -- `rm -f "${!V}"` is not caught here -- and
+    Layer 2's armed marker is what covers it. It is also what keeps the round-8/9
+    handoff alive: the unanchorable `.claude` write is itself such a token, and
+    blocking on it would collapse every handoff and delete the handoff."""
     raw = _subst(unquote(token), assigns)
     if not raw or raw.startswith("-"):
         return False
-    if not os.path.isabs(raw):
-        raw = os.path.join(cwd, raw)
-    parts = [p for p in os.path.normpath(raw).split(os.sep) if p not in ("", ".")]
-    base_parts = [p for p in baseline_abs.split(os.sep) if p not in ("", ".")]
-    if not parts or len(parts) > len(base_parts):
+    # RELATIVE TO cwd, never absolute. Comparing absolute paths let the cwd
+    # components match literally on both sides, which handed every token under
+    # cwd the "concrete agreement" the check below demands without it having
+    # earned any (pass 2). The question is only about the tail below the root.
+    if os.path.isabs(raw):
+        rel = os.path.relpath(os.path.normpath(raw), cwd)
+    else:
+        rel = os.path.normpath(raw)
+    parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+    base_parts = [p for p in LAYER2_BASELINE_REL.split(os.sep) if p not in ("", ".")]
+    if not parts or parts[0] == ".." or len(parts) > len(base_parts):
         return False
+    # REACH REQUIRES EVIDENCE. An unknowable component (an expansion, a brace)
+    # cannot veto -- it really could be anything -- but it cannot AGREE either.
+    # Pass 2 let a token made entirely of unknowable components fall out of this
+    # loop having compared nothing and return True, which blocked `{print $1}`
+    # (an awk program text) as though it named the baseline.
+    concrete_matches = 0
     for got, want in zip(parts, base_parts):
         if UNRESOLVED.search(got) or "{" in got or "}" in got:
-            continue  # an expansion can be any single component
+            continue
         if NOT_A_LITERAL.search(got):
             if not fnmatch.fnmatchcase(want, got):
                 return False
         elif got != want:
             return False
-    return True
+        concrete_matches += 1
+    return concrete_matches > 0
 
 
 def _voids_layer2(command, cwd=None):
@@ -1048,8 +1063,7 @@ def _voids_layer2(command, cwd=None):
     what the handoff assumes. Reading or deleting the baseline in a command with
     NO unanchorable `.claude/` write is untouched, pinned as allows in phase 3.
     """
-    baseline_abs = os.path.normpath(os.path.join(cwd or os.getcwd(),
-                                                 LAYER2_BASELINE_REL))
+    cwd = cwd or os.getcwd()
     for text in [command] + extract_substitutions(command):
         for stmt in split_outside_quotes(strip_heredocs(text), STATEMENT_OPS):
             for stage in split_outside_quotes(stmt, ("|",)):
@@ -1063,9 +1077,7 @@ def _voids_layer2(command, cwd=None):
                     return True
                 assigns = dict(a.groups() for a in
                                (ASSIGN.match(t) for t in tokens) if a)
-                if any(_could_name_baseline(t, cwd or os.getcwd(), assigns,
-                                            baseline_abs)
-                       for t in tokens):
+                if any(_could_name_baseline(t, cwd, assigns) for t in tokens):
                     return True
     return False
 
