@@ -15,6 +15,7 @@ repo, runs a real suite, or reads capability-manifest.json.
 """
 
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -314,6 +315,67 @@ class TestEmptiedDeclarations(unittest.TestCase):
              "verdict": "KILLED", "exit": 1, "detail": ""}]}]
         self.assertEqual(1, MC.report(results, ["emptied.py"]))
         self.assertEqual(0, MC.report(results, []))
+
+
+class TestJsonReportFreshness(unittest.TestCase):
+    """`--json` is the weekly job's only durable artifact, so a refusal has to
+    reach it.
+
+    The plist runs the checker headless and points `--json` at
+    ~/.config/kipi/mutation-check.json. If a run refuses and returns before
+    refreshing that file, last week's all-killed report stays on disk with
+    nothing in it saying this week refused. An operator reading it sees green
+    for a run that never checked anything -- the same silent-absence shape the
+    checker exists to catch, one level up in its own reporting.
+    """
+
+    MANIFEST = ('{"expected_tests": [{"path": "other.py", "runner": "python3",'
+                ' "mutants": [{"id": "m", "target": "t.py", "find": "x",'
+                ' "replace": "", "why": "w"}]}]}')
+
+    STALE = '{"ref": "worktree", "exit_code": 0, "refused": null, "results": []}'
+
+    def run_cli(self, td, manifest_text, *args):
+        man = Path(td) / "m.json"
+        man.write_text(manifest_text, encoding="utf-8")
+        report = Path(td) / "report.json"
+        report.write_text(self.STALE, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CHECKER), "--manifest", str(man),
+             "--json", str(report), *args],
+            capture_output=True, text=True, check=False)
+        return proc, json.loads(report.read_text(encoding="utf-8"))
+
+    def test_a_required_suite_refusal_refreshes_the_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            proc, data = self.run_cli(
+                td, self.MANIFEST, "--require", "test-severity-floor")
+        self.assertEqual(2, proc.returncode)
+        self.assertEqual(2, data["exit_code"])
+        self.assertIn("test-severity-floor", data["refused"] or "")
+
+    def test_a_bad_manifest_refusal_refreshes_the_report(self):
+        """Selection refuses for more than --require. Every refusal path out of
+        the checker is the same stale-green risk, so none of them may return
+        before the artifact is rewritten."""
+        with tempfile.TemporaryDirectory() as td:
+            proc, data = self.run_cli(
+                td, '{"expected_tests": [{"path": "a.py", "runner": "python3"}]}')
+        self.assertEqual(2, proc.returncode)
+        self.assertEqual(2, data["exit_code"])
+        self.assertIn("no expected_tests entry declares", data["refused"] or "")
+
+    def test_an_emptied_suite_exit_1_reaches_the_report(self):
+        """Exit 1 is a finding, not a refusal, and must be readable from the
+        artifact alone -- `results: []` looks identical to a clean run."""
+        with tempfile.TemporaryDirectory() as td:
+            proc, data = self.run_cli(
+                td, '{"expected_tests": [{"path": "emptied.py",'
+                    ' "runner": "python3", "mutants": []}]}')
+        self.assertEqual(1, proc.returncode)
+        self.assertEqual(1, data["exit_code"])
+        self.assertIsNone(data["refused"])
+        self.assertEqual(["emptied.py"], data["unmutated"])
 
 
 if __name__ == "__main__":

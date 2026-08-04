@@ -563,6 +563,14 @@
           "why": "an un-appliable declaration would exit 0 alongside the killed ones, so the run would claim to prove more than it did"
         },
         {
+          "id": "checker-refusal-skips-the-json-report",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if refusal is not None:\n        print(f\"REFUSED: {refusal}\", file=sys.stderr)\n    else:\n",
+          "replace": "    if refusal is not None:\n        print(f\"REFUSED: {refusal}\", file=sys.stderr)\n        return rc\n    else:\n",
+          "why": "returning before the one writer leaves the previous run's all-killed report on disk, so the weekly job's only durable artifact reads green for a run that refused"
+        },
+        {
           "id": "checker-mutant-not-restored-between-runs",
           "target": "q-system/.q-system/scripts/mutation-check.py",
           "kind": "call-site",

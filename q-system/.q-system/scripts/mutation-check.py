@@ -368,6 +368,9 @@ def main() -> int:
     ap.add_argument("--json", metavar="PATH", help="also write the raw results here")
     args = ap.parse_args()
 
+    results, unmutated, picked = [], [], []
+    refusal, rc = None, 0
+
     try:
         entries = load_entries(Path(args.manifest))
         picked, unmutated = select_entries(entries, args.only)
@@ -381,10 +384,8 @@ def main() -> int:
         if not picked and not unmutated:
             raise Refusal("no expected_tests entry declares a `mutants` list")
     except Refusal as exc:
-        print(f"REFUSED: {exc}", file=sys.stderr)
-        return 2
+        refusal, rc, picked = str(exc), 2, []
 
-    results, rc = [], 0
     # No tree work when nothing is left to mutate: copying the repo to report an
     # emptied declaration list would cost minutes to say what selection knows.
     if picked:
@@ -397,14 +398,23 @@ def main() -> int:
                           f"({len(entry['mutants'])} mutant(s))", flush=True)
                     results.append(check_entry(tree, entry))
             except Refusal as exc:
-                print(f"REFUSED: {exc}", file=sys.stderr)
-                rc = 2
+                refusal, rc = str(exc), 2
 
-    if rc == 0:
+    if refusal is not None:
+        print(f"REFUSED: {refusal}", file=sys.stderr)
+    else:
         rc = report(results, unmutated)
+
+    # ONE writer, reached by every exit path including the refusals above. A
+    # refusal that returned early left last week's all-killed report on disk
+    # with nothing saying this week checked nothing -- the artifact reads green
+    # for a run that never happened, which is the silent-absence shape this
+    # checker exists to catch, one level up in its own reporting.
     if args.json:
         Path(args.json).write_text(
-            json.dumps({"ref": args.at or "worktree", "results": results}, indent=2),
+            json.dumps({"ref": args.at or "worktree", "exit_code": rc,
+                        "refused": refusal, "unmutated": unmutated,
+                        "results": results}, indent=2),
             encoding="utf-8")
     return rc
 
