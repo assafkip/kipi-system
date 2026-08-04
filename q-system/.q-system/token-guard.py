@@ -530,7 +530,7 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
         sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
         "--trigger", trigger,
         "--reason", (reason or "")[:500],
-        "--transcript", hook_input.get("transcript_path", "") or "",
+        "--transcript", transcript,
         "--count", str(count),
         "--pending-file", pending_path(actor),
     ]

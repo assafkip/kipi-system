@@ -141,6 +141,25 @@ def transcript_tail(path, window=TRANSCRIPT_WINDOW):
     return lines[-window:]
 
 
+def _fixture_refusal():
+    """The single definition of "a suite must not spend a real model call".
+
+    Lives here rather than inline in call_fable because escalate() has to CHECK
+    IT FIRST, ahead of the starvation refusal below. Both refuse the call, so
+    neither can bill anything, but they record different reasons and the fixture
+    reason is the one a suite author needs to see. Ordering it second would have
+    hidden the chokepoint behind starvation for every test that passes an empty
+    transcript_path, which is how most of them are written -- a safety guard
+    that stops being reachable stops being tested, and an untested guard is the
+    one that is broken when it finally matters.
+    """
+    if os.environ.get("KIPI_FABLE_CLAUDE_CMD"):
+        return None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "fixture run: refused to spend a real Fable call"
+    return None
+
+
 TRANSCRIPT_OK = "ok"
 
 
@@ -260,8 +279,8 @@ def call_fable(packet, timeout):
     # is total in both directions, which is what makes it safe to refuse on.
     # An explicit KIPI_FABLE_CLAUDE_CMD overrides it, because a suite that
     # points at its own stub has already opted out of the live path.
-    if not command and os.environ.get("PYTEST_CURRENT_TEST"):
-        return None, "fixture run: refused to spend a real Fable call"
+    if not command and _fixture_refusal():
+        return None, _fixture_refusal()
 
     command = command or shutil.which("claude")
     if not command or not os.path.exists(command):
@@ -392,7 +411,6 @@ def notify_cap(trigger, count, transcript_state=TRANSCRIPT_OK):
     checkout still takes the message as $1 and exposes no --kind classifier, so
     the classification stays in the message text. Passing --kind here would make
     the flag the message body.
-    """
 
     Returns a record of what is KNOWN, never a bare claim of success.
 
