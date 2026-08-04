@@ -25,6 +25,21 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL - $1"; }
 RECORDS="$WORK/records"; mkdir -p "$RECORDS"
 BIN="$WORK/bin"; mkdir -p "$BIN"
 
+# --- the notify sink, stubbed for EVERY case in this file --------------------
+# NOT just for the escalation cases. review-redrive escalates from inside
+# `select`, so any case that reaches a spent attempt calls the sink. With no
+# stub that is the REAL slack-notify.sh -- a live data path in a test suite,
+# quiet only because no webhook resolves on this machine. Quiet-because-
+# unconfigured is not isolation; it is a leak waiting for the day a webhook
+# exists. The fable-discipline lint blocks this class, and it caught me here.
+PAGES="$WORK/pages.txt"; : > "$PAGES"
+cat > "$BIN/notify.sh" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$PAGES"
+EOS
+chmod +x "$BIN/notify.sh"
+pages_count() { wc -l < "$PAGES" | tr -d ' '; }
+
 # --- the board, stubbed at the gh seam --------------------------------------
 # review-redrive reads PRs through ci-redrive's list_prs, which shells `gh`. The
 # stub prints whatever board the case under test set up, so no case can reach
@@ -63,7 +78,7 @@ PY
 }
 
 select_all() {
-  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" \
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_NOTIFY="$BIN/notify.sh" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select --all 2>/dev/null
 }
 action_for() {   # action_for <pr>
@@ -191,6 +206,7 @@ A42="$(action_for 42)"
 LEDGER="$WORK/attempts.json"; echo '{}' > "$LEDGER"
 select_one() {
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
+      KIPI_NOTIFY="$BIN/notify.sh" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
 }
 printf '[%s]\n' "$(pr_entry 98 ask-298 cccc9999)" > "$WORK/board.json"
@@ -217,6 +233,48 @@ env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
   --issue ASK-298 --action rework --pr 98 --head-sha cccc9999 >/dev/null 2>&1
 [ -z "$(select_one)" ] && ok "after mark-dispatched the pick is suppressed -- the cap is real" \
   || bad "the pick survived mark-dispatched -- the cap never fires"
+
+# --- case 8: a spent attempt that is STILL failing escalates, exactly once ----
+# Codex found this on PR #91 (major): the spent-attempt branch wrote a stderr
+# line and moved on, so a PR that got its one redrive and stayed failing was
+# silently ignored forever. That is the terminal-state-with-no-consumer defect
+# this selector exists to kill, reintroduced inside the fix for it. A cap with no
+# escalation is a quieter version of the 29-hour park.
+#
+# ASSERTED ON THE PAGE ITSELF, not on stderr. "It escalated OR it logged
+# something" passes on the weak half and never tests the alarm; the notify sink
+# is the alarm's own recorder, so that is what is counted.
+# Case 7's suppression check already reached the spent-attempt branch once, so
+# the page for THIS pr/action/sha is expected to be spent by now. Asserting an
+# absolute count of 1 here would be asserting the order the cases happen to run
+# in; the property is that the sink saw the page exactly once in total.
+select_one >/dev/null
+[ "$(pages_count)" = "1" ] && ok "a spent attempt still failing pages once" \
+  || bad "spent attempt produced $(pages_count) pages, want 1"
+grep -q "PR #98" "$PAGES" && grep -q "rework" "$PAGES" \
+  && ok "the page names the PR and which action was already spent" \
+  || bad "the page does not name the PR and the spent action: $(cat "$PAGES")"
+
+# The dispatcher hits this state every heartbeat for as long as the PR sits
+# failing. A page per run is a page every 15 minutes about one unchanged fact.
+select_one >/dev/null
+[ "$(pages_count)" = "1" ] && ok "a second pass does NOT page again -- once per PR per action per sha" \
+  || bad "escalation paged $(pages_count) times across two passes"
+
+# A new head sha is new information and earns its own attempt AND its own page.
+# Without this the cap is permanent: a PR that pushes a real fix could never be
+# re-entered and would never be reported again either.
+python3 - "$WORK/board.json" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+open(p, "w").write(s.replace("cccc9999", "dddd0000"))
+PY
+record 98 "REQUEST CHANGES" "REQUEST CHANGES" true dddd0000
+PICK3="$(select_one)"
+[ "$(printf '%s' "$PICK3" | cut -f1)" = "rework" ] \
+  && ok "a new head sha is offered again -- the cap is per sha, not permanent" \
+  || bad "after a push the PR was not re-offered: '$PICK3'"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

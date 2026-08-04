@@ -292,6 +292,51 @@ def flag(cand):
                                   cand["pr"], (cand["head_sha"] or "nohead")[:12])
 
 
+def escalate_flag(cand):
+    return "review_escalated_%s_pr%s_%s" % (
+        cand["action"].replace("-", ""), cand["pr"],
+        (cand["head_sha"] or "nohead")[:12])
+
+
+def escalate(path, cand):
+    """The ONE message about this PR, and only after the machine tier is spent.
+
+    WHY IT EXISTS (codex review of PR #91, major). Without it, the spent-attempt
+    branch above just wrote a stderr line and moved on, so a PR that got its one
+    redrive and stayed failing was silently ignored forever. That is the exact
+    defect this whole selector was built to kill -- a terminal state with no
+    consumer -- reintroduced one level down, inside the fix for it. A cap with no
+    escalation is not a cap, it is a quieter version of the 29-hour park.
+
+    ONCE PER PR PER ACTION PER HEAD SHA, matching the attempt flag it reports on.
+    The dispatcher reaches this state on every heartbeat for as long as the PR
+    sits failing, so paging per run is a page every 15 minutes about one fact
+    that has not changed -- the cry-wolf failure that trains the reader to skim.
+    Keyed on the sha and not on the PR alone because a push is new information:
+    the next sha earns its own attempt and, if that also fails, its own page.
+
+    EVERY CLAUSE IS AN OBSERVATION. It says which action was spent and what the
+    reviewer's record actually holds now, because the two failures look identical
+    from outside and the reader's next move is different for each: a spent
+    RE-REVIEW that is still unusable means the reviewer cannot review this PR at
+    all, while a spent REWORK still refused means the agent could not satisfy it.
+
+    The claim is the gate: `ledger_claim` is False if another run already paged,
+    and False on a lock timeout or write failure -- nothing was recorded, so
+    nothing may act as though it was, and the next run pages instead.
+    """
+    if not CI.ledger_claim(path, cand["issue"], escalate_flag(cand)):
+        return False
+    CI.notify(
+        "review-redrive: %s PR #%s still has %s failing after the machine tier. "
+        "What the machine tried: one %s at %s. The reviewer's record now reads "
+        "%s. %s"
+        % (cand["issue"], cand["pr"], ", ".join(cand["slots"]), cand["action"],
+           (cand["head_sha"] or "an unknown head")[:8], cand["reason"],
+           cand["url"]))
+    return True
+
+
 def cmd_select(cands, show_all):
     if not cands:
         return 1
@@ -332,6 +377,7 @@ def cmd_select(cands, show_all):
                 "review-redrive: %s PR #%s already had its one %s attempt at %s "
                 "-- not offering it again.\n"
                 % (c["issue"], c["pr"], c["action"], (c["head_sha"] or "?")[:8]))
+            escalate(path, c)   # machine tier spent and the slot is STILL failing
             continue
         sys.stderr.write("review-redrive: %s PR #%s -> %s (%s)\n"
                          % (c["issue"], c["pr"], c["action"], c["reason"]))
