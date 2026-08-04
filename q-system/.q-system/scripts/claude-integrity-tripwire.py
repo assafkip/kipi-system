@@ -27,10 +27,21 @@ not an evasion -- the write still lands, and the hash still moves.
 
 MODES
   --baseline            (re)record the whole watch set as sanctioned
-  --check               report drift; exit 1 if drift, 0 if clean (read-only)
+  --check               report drift; exit 1 if drift, 0 if clean
   --enforce             drift -> quarantine + restore + page; exit 2 if it acted
   --register PATH...    re-record only these paths (the sanctioned-apply hook)
   --root DIR            repo root to operate on (default: derived from THIS file)
+
+--check IS NOT READ-ONLY, and calling it that hid a hole for four rounds (review
+finding, round 5). It writes the baseline two ways:
+
+  * it ABSORBS drift that carries reviewed provenance, moving the sanctioned
+    content forward so a `git pull` does not page an identical line forever, and
+  * it records `last_alarm`, the fingerprint of the drift it just paged, so an
+    unchanged situation pages once instead of every session.
+
+Both are writes, and the first is a SANCTIONING decision -- which is why it now
+answers to exactly the same provenance rule as --enforce (see verify()).
 
 --root exists so the test suite runs against a temp copy of a tree, never the
 live one. The default is derived from __file__, not from cwd: a guard whose root
@@ -708,14 +719,30 @@ def verify(root, args):
 
     modified, added, removed = diff(root, baseline)
 
-    # THE RE-BASELINE PATH. In report mode, absorb every drifted file whose
-    # content equals its git HEAD blob: that change came through pull/checkout/
-    # merge, which is reviewed, so it is sanctioned and the baseline moves with
-    # it. Never in --enforce mode: there the actor is provably the agent, and an
-    # agent that writes then commits is precisely the attack this would wave
-    # through. (Review finding, round 3.)
+    # THE RE-BASELINE PATH: absorb a drifted file whose content equals its git
+    # HEAD blob AND whose HEAD is contained in a remote's DEFAULT branch. That
+    # pair is reviewed provenance -- a pull, a checkout, a merge of something a
+    # PR landed -- so the change is sanctioned and the baseline moves with it.
+    # Without an absorb, one `git pull` touching a rule leaves the tree
+    # permanently drifted and pages an identical SECURITY line every session
+    # forever, which is the founder's own complaint manufactured by its fix.
+    #
+    # ONE PROVENANCE RULE, BOTH MODES (review finding, round 5). Rounds 3-4 let
+    # --check absorb on ANY branch, gated only by `not args.enforce`, so the two
+    # modes disagreed about what "sanctioned" means and the weaker one won by
+    # running last: --enforce HELD an agent's committed tamper (exit 1, paged,
+    # deliberately NOT sanctioned), then the next SessionStart --check absorbed
+    # that same tamper into the baseline and every later --enforce reported a
+    # clean tree. A hold the next session silently converts into a sanction was
+    # never a hold. Measured in probe_round5_findings.sh phase 1: hold, absorb,
+    # clean.
+    #
+    # The cost is stated, not hidden: content arriving on a branch that no
+    # remote default contains now REPORTS drift instead of absorbing it. That is
+    # simply the --enforce rule reaching --check; it exits 1 rather than acting,
+    # and its stderr already names the remedy (--baseline).
     absorbed = []
-    sanction_git = (not args.enforce) or head_is_reviewed(root)
+    sanction_git = head_is_reviewed(root)
     if sanction_git:
         for rel in list(modified) + list(added):
             if attributable(root, rel):

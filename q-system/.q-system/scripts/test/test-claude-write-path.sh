@@ -361,11 +361,25 @@ pagecount() { [ -f "$PAGES" ] && wc -l < "$PAGES" | tr -d ' ' || echo 0; }
 
 # G1: a legitimate change that landed through git (pull / checkout / merge, and
 # `kipi update`, which commits into each instance) must RE-BASELINE ITSELF.
+#
+# The fixture grows a REMOTE in round 5. Rounds 3-4 committed locally with no
+# remote at all and called that "git-landed", which passed only because --check
+# absorbed on any branch. That leniency was the round-5 finding: --enforce HELD
+# an agent's committed tamper and the next --check sanctioned it permanently.
+# Both modes now ask the same question -- is HEAD contained in a remote's
+# DEFAULT branch -- so the fixture has to model the artifact it claims to model.
+# The assertion is unchanged: a pull must not page, ever, or the alarm is noise.
 FIX="$(new_fixture)"; : > "$PAGES"
+gitq() { git -C "$FIX" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; }
+ORIGIN="$FIX-origin.git"; git init --bare -q -b main "$ORIGIN"
+gitq remote add origin "$ORIGIN"
+gitq push -u origin HEAD:main
+gitq remote set-head origin main
 tw --root "$FIX" --baseline --quiet
 printf 'legitimately updated rule\n' > "$FIX/.claude/rules/alpha.md"
-git -C "$FIX" add -A >/dev/null 2>&1
-git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm "pull" >/dev/null 2>&1
+gitq add -A
+gitq commit -qm "pull"
+gitq push origin HEAD:main
 tw --root "$FIX" --check --quiet >/dev/null 2>&1
 [ "$?" = "0" ] && pass "git-landed change re-baselines itself (no alarm)" \
                 || fail "git-landed change re-baselines itself (no alarm)"
@@ -374,6 +388,27 @@ tw --root "$FIX" --check --quiet >/dev/null 2>&1
 tw --root "$FIX" --check --quiet >/dev/null 2>&1
 [ "$?" = "0" ] && pass "and stays clean on the next session (not permanent drift)" \
                 || fail "and stays clean on the next session (not permanent drift)"
+
+# G1b (round 5): the same change committed on a branch NO remote default
+# contains is NOT sanctioned provenance. --check reports it instead of absorbing
+# it, so it cannot quietly undo a hold --enforce already decided on.
+FIX="$(new_fixture)"; : > "$PAGES"
+gitq() { git -C "$FIX" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; }
+ORIGIN="$FIX-origin.git"; git init --bare -q -b main "$ORIGIN"
+gitq remote add origin "$ORIGIN"
+gitq push -u origin HEAD:main
+gitq remote set-head origin main
+tw --root "$FIX" --baseline --quiet
+gitq checkout -b agent/tamper
+printf 'committed tamper\n' > "$FIX/.claude/rules/alpha.md"
+gitq commit -qam tamper
+gitq push origin agent/tamper
+tw --root "$FIX" --check --quiet >/dev/null 2>&1
+[ "$?" = "1" ] && pass "committed tamper off the default branch is NOT absorbed" \
+                || fail "committed tamper off the default branch is NOT absorbed"
+tw --root "$FIX" --enforce --quiet >/dev/null 2>&1
+[ "$?" = "1" ] && pass "--enforce still holds it after --check ran" \
+                || fail "--enforce still holds it after --check ran"
 
 # G2: unattributed drift still alarms -- but ONCE, not every session forever.
 FIX="$(new_fixture)"; : > "$PAGES"
