@@ -175,5 +175,48 @@ A42="$(action_for 42)"
 [ "$A42" = "re-review" ] && ok "a legacy record whose review file is gone -> re-review, not a guess" \
   || bad "vanished review file routed to '$A42', want re-review"
 
+# --- case 7: the SINGLE-PICK path, and it must not write ---------------------
+# THE PATH THE DISPATCHER ACTUALLY USES, and every case above missed it. They
+# all call `select --all`, which returns before the ledger is ever touched, so
+# 13 green cases said nothing about the code path that runs in production.
+#
+# THE DEFECT THIS PINS. `select` was documented read-only and asked the ledger
+# "has this been claimed?" through ci-redrive's `ledger_recorded` -- which is a
+# WRITE wearing a reader's name: it runs claim-flag and answers True on rc 0
+# (just claimed) as well as rc 1 (already claimed). So the FIRST ever invocation
+# claimed every candidate and then skipped all of them for having been claimed.
+# Measured live before the fix: 14 PRs, all reported "already had its one
+# attempt", nothing offered, on a ledger where none of them appeared. A selector
+# that silently offers nothing looks exactly like the park it exists to end.
+LEDGER="$WORK/attempts.json"; echo '{}' > "$LEDGER"
+select_one() {
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
+    python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
+}
+printf '[%s]\n' "$(pr_entry 98 ask-298 cccc9999)" > "$WORK/board.json"
+record 98 "REQUEST CHANGES" "REQUEST CHANGES" true cccc9999
+
+PICK1="$(select_one)"
+[ "$(printf '%s' "$PICK1" | cut -f1)" = "rework" ] && ok "select (single pick) offers the candidate" \
+  || bad "select offered '$PICK1' -- the dispatcher's own path returns nothing"
+
+LEDGER_AFTER="$(cat "$LEDGER")"
+[ "$LEDGER_AFTER" = '{}' ] && ok "select wrote NOTHING to the ledger -- the offer is not the claim" \
+  || bad "select mutated the ledger: $LEDGER_AFTER"
+
+# Read-only means REPEATABLE. A select that claimed on the way past would offer
+# once and then go silent forever, which is how the defect hid: the first run
+# looked fine in isolation.
+PICK2="$(select_one)"
+[ "$PICK2" = "$PICK1" ] && ok "a second select offers the same pick -- reading did not consume it" \
+  || bad "second select offered '$PICK2' after '$PICK1' -- select is consuming its own candidates"
+
+# And the claim, when it is made deliberately, DOES suppress the next offer.
+# Without this the case above is satisfied by a cap that never fires at all.
+env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
+  --issue ASK-298 --action rework --pr 98 --head-sha cccc9999 >/dev/null 2>&1
+[ -z "$(select_one)" ] && ok "after mark-dispatched the pick is suppressed -- the cap is real" \
+  || bad "the pick survived mark-dispatched -- the cap never fires"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -312,7 +312,22 @@ def cmd_select(cands, show_all):
                 "review-redrive: %s PR #%s needs rework but a converge for it is "
                 "already live -- not offering it.\n" % (c["issue"], c["pr"]))
             continue
-        if CI.ledger_recorded(path, c["issue"], flag(c)):
+        # A READ. NOT ci-redrive's `ledger_recorded`, which is a WRITE wearing a
+        # reader's name: it calls `claim-flag` and answers True on rc 0 (just
+        # claimed) OR rc 1 (already claimed). Using it here made `select` claim
+        # every candidate the first time it ran and then skip all of them for
+        # having been claimed -- so the selector reported "already had its one
+        # attempt" for 14 PRs on its first ever invocation and offered nothing.
+        # A selector that silently offers nothing is indistinguishable from the
+        # 29-hour park it was built to end. Caught by the live acceptance run,
+        # not by the 13 unit cases, because those all used `--all`, which returns
+        # before the ledger is touched.
+        #
+        # `get` is the only read op the ledger exposes; op_claim stores `True`,
+        # so a set flag reads back as the string "True" and an unset one as the
+        # default. Empty default, not "0": "0" is a non-empty string and would
+        # make every unset flag read as recorded, which is this same bug again.
+        if CI.ledger_get(path, c["issue"], flag(c)):
             sys.stderr.write(
                 "review-redrive: %s PR #%s already had its one %s attempt at %s "
                 "-- not offering it again.\n"
