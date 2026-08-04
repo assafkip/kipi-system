@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.4] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 4)
+- **The approval gate read the ledger without the writer's lock.** capture
+  appends the receipt and then writes the tip; observed between those two the
+  ledger holds N+1 records against a tip of N, which the new chain check calls
+  "receipts BEYOND the tip anchor" and blocks approval over a concurrent capture
+  that was perfectly fine. The writer got a lock in 0.12.0 and the reader never
+  did. Ledger and tip are now read together under `ledger_lock`.
+
 ## [0.13.3] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 3)

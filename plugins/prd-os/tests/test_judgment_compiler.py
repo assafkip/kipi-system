@@ -1426,6 +1426,9 @@ class TestReceiptGateFailsClosed:
         import judgment_compiler as jc
 
         monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
+        import contextlib
+        monkeypatch.setattr(jc, "ledger_lock",
+                            lambda cfg: contextlib.nullcontext())
         def boom(_path):
             raise ValueError("line 7: invalid JSON")
         monkeypatch.setattr(jc, "read_ledger", boom)
@@ -1444,6 +1447,10 @@ class TestReceiptGateFailsClosed:
         monkeypatch.setattr(jc, "tip_path", lambda cfg: Path("/dev/null"))
         monkeypatch.setattr(jc, "read_tip", lambda p: None)
         monkeypatch.setattr(jc, "verify_ledger", lambda r, tip=None: [])
+        # the gate now reads under the writer's lock; a stub cfg has no path
+        import contextlib
+        monkeypatch.setattr(jc, "ledger_lock",
+                            lambda cfg: contextlib.nullcontext())
         monkeypatch.setattr(jc, "cross_check_findings", lambda c, r, s: [
             "prd-alpha-2/finding-1: dispositioned but no judgment receipt exists"])
         assert runner._judgment_receipt_gate(object(), "prd-alpha")[0] == 0

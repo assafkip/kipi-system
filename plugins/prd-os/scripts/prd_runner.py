@@ -623,16 +623,22 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
         # instance), so there is no contract to enforce and nothing to read.
         return 0, ""
     try:
-        records = judgment_compiler.read_ledger(
-            judgment_compiler.ledger_path(cfg))
+        # Read UNDER THE WRITER'S LOCK. capture appends the receipt and then
+        # writes the tip; observed between those two, the ledger holds N+1
+        # records against a tip of N, which the chain check below correctly
+        # calls "receipts BEYOND the tip anchor" -- and would block approval
+        # over a concurrent capture that was perfectly fine (Codex, PR #101
+        # round 4). I gave the writer a lock and left the reader without one.
+        with judgment_compiler.ledger_lock(cfg):
+            records = judgment_compiler.read_ledger(
+                judgment_compiler.ledger_path(cfg))
+            tip = judgment_compiler.read_tip(judgment_compiler.tip_path(cfg))
         # VERIFY before trusting. read_ledger only parses JSON, so without this
         # a receipt appended by hand -- right prd_id, right finding_id, right
         # disposition, broken chain -- satisfied the gate and authorized
         # approval (Codex, PR #101 round 3). A hash chain no consumer checks is
         # decoration; the gate is the consumer that matters.
-        chain_errors = judgment_compiler.verify_ledger(
-            records, judgment_compiler.read_tip(
-                judgment_compiler.tip_path(cfg)))
+        chain_errors = judgment_compiler.verify_ledger(records, tip)
         if chain_errors:
             return 2, (
                 "approval blocked: the judgment ledger does not verify, so its "
