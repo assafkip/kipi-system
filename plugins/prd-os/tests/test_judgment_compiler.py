@@ -616,17 +616,32 @@ class TestEvidenceGate:
             assert proc.returncode == 2, f"{bad} was accepted: {proc.stdout}"
         assert read_ledger(judgment_repo) == []
 
-    def test_omitting_reason_code_on_rejected_is_refused(self, judgment_repo):
-        """The gate keyed off the reason code, so omitting it skipped the gate
-        entirely — a duplicate-rejection with zero evidence (review)."""
+    def test_omitting_reason_code_is_a_known_bypass_that_is_counted(
+            self, judgment_repo):
+        """Omitting the code skips the evidence gate (requirements key off it).
+        Requiring it changes the contract of a fleet-wide shipped command, so
+        that is its own issue; here the bypass must at least be VISIBLE:
+        recorded as missing context and counted by evaluate."""
         packet_path, _ = assemble_packet(judgment_repo)
         proc = run_judgment(
             judgment_repo, "capture", "--prd", PRD_ID,
             "--finding", "finding-1", "--context", str(packet_path),
             "--disposition", "rejected", "--actor", "founder",
             "--rationale", "nah, dupe of something else")
-        assert proc.returncode == 2
-        assert "reason-code" in proc.stderr
+        assert proc.returncode == 0, proc.stderr
+        rec = read_ledger(judgment_repo)[-1]
+        assert rec["human"]["reason_code"] is None
+        assert "human.reason_code" in rec["missing_context"]
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["ungated_decision_rate"] == 1.0
+
+    def test_ungated_rate_is_zero_when_codes_are_supplied(self, judgment_repo):
+        packet_path, _ = assemble_packet(judgment_repo)
+        assert capture(judgment_repo, packet_path, "--reason-code",
+                       "invalid-finding", "--rationale", "no",
+                       disposition="rejected").returncode == 0
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["ungated_decision_rate"] == 0.0
 
     def test_omitting_reason_code_on_accepted_still_works(self, judgment_repo):
         """accepted/pending need no justification — being fixed is the reason."""

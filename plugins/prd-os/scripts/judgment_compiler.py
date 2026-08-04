@@ -966,19 +966,21 @@ def validate_triage_decision(reason_code: str | None,
         errors.append(
             f"reason-code must be one of {REASON_CODES}; got {reason_code!r}")
         return errors
-    # Omitting the code used to opt a decision out of the evidence gate
-    # entirely: `rejected --rationale "dupe of something else"` recorded a
-    # duplicate-rejection with zero evidence, which is the exact decision the
-    # gate exists to refuse (adversarial review 2026-08-04). rejected/deferred
-    # already owe a --rationale; they now owe a machine-readable code too.
-    # accepted/pending stay optional — being fixed needs no justification.
-    if reason_code is None and disposition in ("rejected", "deferred"):
-        errors.append(
-            f"disposition={disposition!r} requires --reason-code (one of "
-            f"{REASON_CODES}). Omitting it would skip the evidence gate. "
-            "Use insufficient-context or needs-human if none of the specific "
-            "codes fit.")
-        return errors
+    # KNOWN, MEASURED BYPASS (adversarial review 2026-08-04): omitting the code
+    # opts a decision out of the evidence gate, because requirements are keyed
+    # off the code. `rejected --rationale "dupe of something else"` records a
+    # duplicate-rejection with zero evidence.
+    #
+    # Requiring a code on rejected/deferred closes it and was implemented — then
+    # reverted, because it changes the contract of `set-disposition`, a shipped
+    # command every instance in the fleet inherits (it broke 5 existing tests
+    # encoding that contract). This repo's own rule: a gate whose blast radius
+    # is the whole fleet earns its own issue instead of arriving as a side
+    # effect of another PRD. Captured as sp-1caf70c9.
+    #
+    # Until then the bypass is not silent: the receipt records reason_code null
+    # plus a `human.reason_code` missing_context entry, and `evaluate` reports
+    # `ungated_decision_rate` so its size is a number, not a vibe.
     try:
         _validate_evidence_refs(evidence_refs, "human decision")
     except ValidationError as exc:
@@ -1323,6 +1325,14 @@ def evaluate(records: list[dict]) -> dict:
         "human_review_rate": (len(human_reviewed) / len(judged))
         if judged else 0.0,
         "needs_human_count": needs_human,
+        # Decisions carrying no reason code skipped the evidence gate entirely
+        # (the code is what the requirements key off). Reported so the size of
+        # that known bypass is a number rather than an assumption.
+        "ungated_decision_rate": (
+            sum(1 for r in active
+                if r.get("human") and r["human"]["reason_code"] is None
+                and r["human"]["disposition"] in ("rejected", "deferred"))
+            / len(active)) if active else 0.0,
         "unsupported_disposition_rate": (converted / len(judged)) if judged else 0.0,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))

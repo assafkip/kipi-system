@@ -2,6 +2,37 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.1] - 2026-08-04
+
+### Fixed (adversarial review, 17 findings)
+- **Blocker — concurrent capture forked the ledger and every writer exited 0.**
+  `capture_episode` was an unlocked read-modify-append while the ledger sits at
+  the SHARED worktree root by design. Now `fcntl.flock`-guarded across
+  read+build+append+anchor. Repro: 6 concurrent captures -> 6 receipts, chain
+  intact.
+- Deleting the tip anchor restored the entire truncation hole for one `rm`; a
+  missing anchor over a non-empty ledger is now an error (an empty ledger with
+  no anchor is still a clean fresh repo).
+- Evidence refs are RESOLVED, not just prefix-matched: `finding:`, `prd:`,
+  `issue:`, `judgment:`, `receipt:`, `spillover:`, `commit:`, `test:`/`scope:`
+  are each opened, and a ref pointing at nothing is refused.
+- `set-disposition` rolls the findings file back when receipt capture fails, so
+  the two ledgers cannot diverge on partial failure.
+- `verify` resolves policy-candidate receipt citations and checks case_count.
+- Scope regex anchored (`## Out of Scope` used to hash as `## Scope`); bare
+  `except Exception` narrowed and partial duplicate lists discarded;
+  `needs-human` abstentions no longer counted as human overrides; degenerate
+  Cohen's kappa returns 0.0 not 1.0; judge stores raw + stored output hashes and
+  validates the stored one; unvalidated packets no longer exit 1 with a
+  traceback; receipts deepcopy their packet; `human_review_rate` uses a set union.
+
+### Known bypass (deliberately not closed here)
+- Omitting `--reason-code` skips the evidence gate. Closing it changes the
+  contract of a command every fleet instance inherits, so it is its own issue
+  (spillover `sp-1caf70c9`). Interim: the receipt records a null code plus a
+  `human.reason_code` missing-context entry, and `evaluate` reports
+  `ungated_decision_rate` so the bypass is counted rather than assumed.
+
 ## [0.10.2] - 2026-08-04
 
 ### Fixed
