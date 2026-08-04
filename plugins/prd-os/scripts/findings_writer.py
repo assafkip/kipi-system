@@ -572,7 +572,14 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                 actor=getattr(args, "actor", "founder"),
                 reason_code=getattr(args, "reason_code", None),
                 evidence_refs=list(getattr(args, "evidence", [])),
-                rationale=(args.rationale or "").strip() or None,
+                # Freeze what the RECORD says, not what the flag said. A
+                # re-disposition to accepted passes no --rationale while the
+                # record keeps its previous one (only `pending` clears it), so
+                # reading the flag captured None against a record that still had
+                # text -- and the decision fingerprint then falsely reported the
+                # decision as uncaptured (Codex, PR #101 round 6: a regression
+                # from the round-5 fingerprint fix).
+                rationale=(target.get("rationale") or "").strip() or None,
                 judge_run_path=getattr(args, "judge_run", None),
             )
         except (judgment_compiler.ValidationError, OSError) as exc:

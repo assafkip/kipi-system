@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.6] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 6) — a regression from round 5
+- Re-dispositioning rejected -> accepted without a new `--rationale` falsely
+  blocked approval. findings_writer keeps the previous rationale on the record
+  (only `pending` clears it), while the receipt captured the FLAG, which was
+  absent. The fingerprint added in 0.13.5 then correctly reported two different
+  decisions. The receipt now freezes the rationale the RECORD carries, which is
+  what a receipt is for.
+
 ## [0.13.5] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 5) — closed as a CLASS

@@ -1578,3 +1578,25 @@ class TestDecisionFingerprint:
         proc = run_judgment(judgment_repo, "verify", "--cross-check",
                             "--since", "2026-01-01T00:00:00Z")
         assert proc.returncode == 0, proc.stderr
+
+
+class TestRedispositionWithoutNewRationale:
+    def test_rejected_to_accepted_without_rationale_stays_covered(
+            self, judgment_repo, run_findings_writer):
+        """Codex PR #101 r6, a regression from my own round-5 fingerprint fix:
+        findings_writer keeps the previous rationale on a re-disposition (only
+        `pending` clears it), so capturing the FLAG instead of the RECORD froze
+        None against a record that still had text, and the gate falsely blocked."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "not a real defect",
+            "--reason-code", "invalid-finding").returncode == 0
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+        rec = read_ledger(judgment_repo)[-1]
+        assert rec["human"]["disposition"] == "accepted"
+        assert rec["human"]["rationale"] == "not a real defect", (
+            "the receipt must freeze the rationale the finding actually carries")
