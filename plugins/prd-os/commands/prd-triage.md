@@ -48,12 +48,25 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/findings_writer.py" list "$PRD_ID" --only
 
 Show them to the author. For each, ask what disposition they want. Do NOT guess the author's intent; pending findings are theirs to resolve.
 
-4. Apply each disposition:
+4. Apply each disposition. Pass the structured reason code and its evidence so
+   the judgment receipt captures a machine-checkable decision, not prose:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/findings_writer.py" \
   set-disposition "$PRD_ID" <finding-id> <accepted|rejected|deferred> \
-  [--rationale "<text>"]
+  [--rationale "<text>"] \
+  [--reason-code <valid-fix-now|already-remediated|duplicate|owned-by-other-prd|scope-removed|out-of-scope|superseded|defer-dependency|defer-ordering|invalid-finding|insufficient-context|needs-human>] \
+  [--evidence <finding:prd/id | issue:id | prd:id | receipt:id | commit:sha | test:path | scope:path#section | judgment:receipt-id | spillover:id>]...
 ```
 
+   Every adjudication appends an immutable receipt to `.prd-os/judgments.jsonl`
+   (the Judgment Compiler ledger — `judgment_compiler.py`, enforced in code,
+   not here). Evidence-requiring codes (`duplicate`, `already-remediated`,
+   `owned-by-other-prd`, `scope-removed`, `out-of-scope`, `superseded`) are
+   REFUSED by the writer without a stable `--evidence` reference; the findings
+   file stays untouched on refusal. Omitting `--reason-code` still works and
+   records an honest `null` — prefer passing it: receipts with codes are what
+   the calibration evaluator and policy-candidate detector can learn from.
+
 5. When all findings are dispositioned, remind the author to run `/prd-approve`.
+   `kipi judgment verify` re-proves the receipt chain any time.
