@@ -612,6 +612,12 @@ JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
 
 _PRD_ID_DATE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
 
+# Plausibility bound for a PRD id's date. MEASURED, not guessed: the 36 prd_ids
+# under `.prd-os/findings/` span 2026-05-13 to 2026-08-04, so this sits months
+# before the earliest real PRD and cannot false-block one, while still refusing
+# a date that this project could never have produced.
+_PRD_DATE_EARLIEST = "2026-01-01"
+
 
 def _prd_predates_floor(prd_id: str) -> bool:
     """Is this PRD old enough that its findings can never carry receipts?
@@ -636,7 +642,24 @@ def _prd_predates_floor(prd_id: str) -> bool:
     match = _PRD_ID_DATE.search(prd_id or "")
     if not match:
         return False
-    return match.group(1) < JUDGMENT_RECEIPT_FLOOR[:10]
+    stamp = match.group(1)
+    # A date-SHAPED suffix is not a date. Matching the shape and then string-
+    # comparing it RELOCATED the very defect this function exists to kill: the
+    # floor moved off `resolved_at` because a strippable field handed out a free
+    # exemption, and `prd-evade-0000-00-00` -- which no calendar can produce --
+    # bought exactly the same exemption through the new mechanism (review of
+    # PR #102, executed table). Parse it for real, and fail closed when it is
+    # not a date.
+    try:
+        datetime.strptime(stamp, "%Y-%m-%d")
+    except ValueError:
+        return False
+    # strptime ALONE does not close it: `1970-01-01` parses perfectly and was
+    # still exempt. A real date decades before this project existed is evasion,
+    # not history, so the exemption also needs a plausibility floor.
+    if stamp < _PRD_DATE_EARLIEST:
+        return False
+    return stamp < JUDGMENT_RECEIPT_FLOOR[:10]
 
 
 def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:

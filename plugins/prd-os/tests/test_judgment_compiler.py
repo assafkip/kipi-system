@@ -1872,3 +1872,34 @@ class TestPersistPathIsOneCriticalSection:
         assert seen[0] == "LOCK_HELD", (
             "an outside reader observed the findings file mid-persist: "
             f"{seen[0]}")
+
+
+@pytest.mark.parametrize("prd_id,requires_receipt", [
+    ("prd-real-2026-08-05", True),      # post-floor: enforced
+    ("prd-legacy-2026-06-01", False),   # genuinely pre-floor: exempt
+    ("prd-nodate", True),               # no date at all: fail closed
+    ("prd-evade-0000-00-00", True),     # date-SHAPED, no calendar produces it
+    ("prd-evade-1970-01-01", True),     # a real date, absurd for this project
+    ("prd-evade-2026-13-45", True),     # month 13: rejected by shape alone
+    # IN-RANGE and sorts before the floor, so ONLY the real-date parse rejects
+    # it. Added after a mutation run: deleting the strptime guard left every
+    # other row green, because the plausibility floor happens to subsume
+    # 0000-00-00 and string ordering happens to subsume 2026-13-45. Without
+    # this row the guard could be deleted and no test would notice.
+    ("prd-evade-2026-02-30", True),     # February 30th does not exist
+    ("prd-evade-2026-06-31", True),     # June has 30 days
+])
+def test_only_a_real_plausible_date_earns_an_exemption(prd_id, requires_receipt):
+    """The exemption must need a date that a calendar can produce AND that this
+    project could plausibly have used.
+
+    The whole reason the floor moved off `resolved_at` was that a strippable
+    field handed out a free exemption. Matching a date-SHAPED suffix and then
+    string-comparing it relocates that defect rather than killing it:
+    `prd-evade-0000-00-00` is not a date any calendar produces, and
+    `1970-01-01` parses fine but predates this project by decades. Both were
+    exempt. `strptime` alone does not close it -- the epoch date is valid --
+    so a plausibility floor is required too, and both branches fail closed.
+    """
+    runner = _load_module(f"pr_shape_{prd_id}", "prd_runner.py")
+    assert runner._prd_predates_floor(prd_id) is not requires_receipt

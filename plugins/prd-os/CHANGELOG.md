@@ -2,6 +2,29 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.14.1] - 2026-08-04
+
+### Fixed (review of PR #102) — the date class had RELOCATED, not died
+`_prd_predates_floor` matched a date-SHAPED suffix and then string-compared it,
+so `prd-evade-0000-00-00` and `prd-evade-1970-01-01` each bought a free
+exemption from the receipt requirement. That is precisely the defect 0.14.0
+claimed to kill: the floor moved off `resolved_at` because a strippable field
+handed out a free pass, and a suffix no calendar can produce handed out the same
+pass through the new mechanism. 0.14.0's own docstring made the argument against
+it ("the alternative is the same hole in a new shape") and then did not apply it.
+
+The suffix is now parsed with `strptime` AND checked against a plausibility
+floor, both failing closed. `strptime` alone is insufficient: `1970-01-01`
+parses perfectly. The bound (2026-01-01) is MEASURED, not guessed — the 36
+prd_ids under `.prd-os/findings/` span 2026-05-13 to 2026-08-04, so it sits
+months before the earliest real PRD and cannot false-block one.
+
+Regression is table-driven so the next relocation of this class is caught by an
+existing check rather than by review. Two of its rows (`2026-02-30`,
+`2026-06-31`) exist only because a mutation run showed the real-date guard could
+be deleted with every other row still green: the plausibility floor happens to
+subsume `0000-00-00`, and string ordering happens to subsume `2026-13-45`.
+
 ## [0.14.0] - 2026-08-04
 
 ### Changed — PR #101 split: the integrity half is required, the agreement half warns
