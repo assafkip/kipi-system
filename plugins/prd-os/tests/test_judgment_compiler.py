@@ -1600,3 +1600,41 @@ class TestRedispositionWithoutNewRationale:
         assert rec["human"]["disposition"] == "accepted"
         assert rec["human"]["rationale"] == "not a real defect", (
             "the receipt must freeze the rationale the finding actually carries")
+
+
+class TestFloorDoesNotShieldAConflict:
+    def test_finding_without_resolved_at_still_compared_when_a_receipt_exists(
+            self, judgment_repo, run_findings_writer):
+        """Codex PR #101 r7: '' sorts before every timestamp, so a dispositioned
+        finding with no resolved_at was skipped by the floor even when its
+        receipt disagreed. The floor exempts findings that CANNOT have a
+        receipt; one that has a receipt is not in that category."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["disposition"] = "rejected"     # conflicts with the receipt
+        rows[0]["rationale"] = "changed offline"
+        rows[0].pop("resolved_at", None)        # ...and is undateable
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2099-01-01T00:00:00Z")
+        assert proc.returncode == 2, "a far-future floor hid a real conflict"
+        assert "never captured" in proc.stderr
+
+    def test_undateable_and_unclaimed_finding_is_still_exempt(
+            self, judgment_repo, run_findings_writer):
+        """No receipt and no date: genuinely pre-feature. Must stay exempt, or
+        every legacy PRD blocks forever and the gate gets switched off."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0].pop("resolved_at", None)
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2099-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr

@@ -1251,9 +1251,19 @@ def cross_check_findings(cfg: Config, records: list[dict],
             if disposition in (None, "pending"):
                 continue
             resolved_at = str(record.get("resolved_at") or "")
-            if since and resolved_at < since:
-                continue
             key = (record.get("prd_id"), record.get("id"))
+            # The floor exempts findings that CANNOT have a receipt because
+            # they were decided before the compiler existed. A finding that HAS
+            # one is not in that category, so the floor must never shield a
+            # mismatch between it and the record. It also must not shield a
+            # finding with no resolved_at at all: "" sorts before every
+            # timestamp, so those were skipped silently even when a conflicting
+            # receipt existed (Codex, PR #101 round 7).
+            if since and resolved_at and resolved_at < since \
+                    and key not in covered:
+                continue
+            if since and not resolved_at and key not in covered:
+                continue  # undateable AND unclaimed: cannot judge, do not guess
             if key not in covered:
                 errors.append(
                     f"{key[0]}/{key[1]}: dispositioned {disposition!r} at "

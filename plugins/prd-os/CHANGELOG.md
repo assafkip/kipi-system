@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.7] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 7)
+- The since-floor shielded real conflicts. `""` sorts before every timestamp, so
+  a dispositioned finding with no `resolved_at` was skipped even when its
+  receipt disagreed. The floor exists to exempt findings that CANNOT have a
+  receipt; one that HAS a receipt is not in that category, so the floor no
+  longer applies to it. A finding that is both undateable and unclaimed stays
+  exempt, or every legacy PRD blocks forever.
+
 ## [0.13.6] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 6) — a regression from round 5
