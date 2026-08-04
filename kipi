@@ -34,6 +34,7 @@ usage() {
   echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
   echo "  kipi judgment assemble --prd <id> --finding <id> [--output <f>]  Freeze decision-time context"
   echo "  kipi judgment capture ...     Validate + append one triage episode receipt"
+  echo "  kipi judgment judge --prd <id> --finding <id> --output <f>  Run the blind LLM judge (tools OFF)"
   echo "  kipi judgment verify          Re-walk the receipt chain (add --packet/--receipt-id to bind a run)"
   echo "  kipi judgment evaluate        Score prospective judge-vs-founder cases + release gates"
   echo "  kipi judgment reanchor        Re-cover a legitimate unanchored tail after an interrupted write"
@@ -132,14 +133,14 @@ case "${1:-help}" in
     sub="${1:-}"
     shift || true
     case "$sub" in
-      assemble|capture|verify|evaluate|reanchor|sample-check|policy-candidates)
+      assemble|capture|judge|verify|evaluate|reanchor|sample-check|policy-candidates)
         python3 "$JUDGMENT" "$sub" "$@"
         ;;
       selftest)
         python3 "$JUDGMENT" --selftest
         ;;
       *)
-        echo "usage: kipi judgment <assemble|capture|verify|evaluate|reanchor|sample-check|policy-candidates|selftest>" >&2
+        echo "usage: kipi judgment <assemble|capture|judge|verify|evaluate|reanchor|sample-check|policy-candidates|selftest>" >&2
         exit 1
         ;;
     esac

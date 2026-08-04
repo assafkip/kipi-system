@@ -2,6 +2,46 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.0] - 2026-08-04
+
+### Added — the judge runner, the producer that never existed (sp-320d30e3)
+The Judgment Compiler's entire evaluation half was unreachable. `_load_judge_run`
+and `--judge-run` existed, `evaluate` counted a calibration case only when a
+receipt carried BOTH `judge` and `human`, and NO production code ever wrote a
+judge run: `/prd-triage` never passed the flag. Every triage produced a
+human-only receipt, `judged` stayed empty forever, and all four release gates
+(50 cases, 88% agreement, kappa 0.80, per-class recall) were unreachable by
+construction. ~90 tests passed on that path because every one of them
+hand-built the judge run.
+
+- **`kipi judgment judge --prd <id> --finding <id> --output <f>`** assembles the
+  packet, calls one LLM through `claude -p`, validates the reply against the
+  existing `validate_judge_output`, and writes a judge run. Wired into
+  `/prd-triage`, which now passes `--judge-run`.
+- **The judge runs with tools OFF.** `duplicates[].source` is a path to a
+  findings file and `prior_receipts` lists receipt ids; a judge that can open
+  files reads prior HUMAN dispositions out of both, and the calibration set
+  stops measuring prediction and starts measuring leakage. `source` is also
+  dropped from the prompt text (not the packet, so the hash still binds).
+- **Bounded retry (3), then a loud failure.** No fallback disposition: a
+  fabricated prediction poisons the calibration set worse than a missing one.
+  A failed judge writes no run file at all.
+- **The prompt is pinned by `prompt_sha256`**, a required receipt field, so
+  tuning the prompt after seeing disagreements is a visible discontinuity in
+  the ledger rather than a silent redefinition of the experiment.
+- The model is pinned and recorded on each run, so a model change shows up in
+  the ledger instead of confounding a kappa shift.
+- `/prd-triage` degrades rather than blocks: if the judge call fails, triage
+  continues without `--judge-run`. A model outage costs one calibration case,
+  never an author's ability to close findings.
+
+### Added — mechanical detector for a class that has now bitten twice
+`test_every_receipt_populating_flag_has_a_production_caller` fails when a flag
+that is the sole production input to a receipt field is passed by no slash
+command and no `kipi` dispatcher path. Definition sites are deliberately not the
+corpus: an `add_argument` proves the flag exists, which was never in doubt. Run
+red before the fix, naming `--judge-run` exactly.
+
 ## [0.14.1] - 2026-08-04
 
 ### Fixed (review of PR #102) — the date class had RELOCATED, not died

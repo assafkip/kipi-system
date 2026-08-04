@@ -1903,3 +1903,199 @@ def test_only_a_real_plausible_date_earns_an_exemption(prd_id, requires_receipt)
     """
     runner = _load_module(f"pr_shape_{prd_id}", "prd_runner.py")
     assert runner._prd_predates_floor(prd_id) is not requires_receipt
+
+
+# ---------------------------------------------------------------------------
+# The judge runner: the producer that never existed (ASK-363, sp-320d30e3)
+# ---------------------------------------------------------------------------
+
+# Stand-in for the LLM. The judge shells out, so the seam is the COMMAND, set
+# via KIPI_JUDGE_CMD. A test must never make a real model call: it would be
+# slow, nondeterministic, and billed.
+_JUDGE_STUB = '''
+import json, os, sys
+sys.stdin.read()
+n = int(os.environ.get("STUB_CALL_COUNT_FILE_BUMP", "0"))
+counter = os.environ.get("STUB_COUNTER")
+if counter:
+    prior = 0
+    if os.path.exists(counter):
+        prior = int(open(counter).read() or "0")
+    open(counter, "w").write(str(prior + 1))
+    n = prior + 1
+bad = os.environ.get("STUB_BAD_UNTIL")
+if bad and n <= int(bad):
+    sys.stdout.write("not json at all")
+    raise SystemExit(0)
+sys.stdout.write(os.environ.get("STUB_JUDGE_OUTPUT") or json.dumps({
+    "technical_validity": "valid",
+    "technical_reason": "the fixture gate can be bypassed as described",
+    "workflow_disposition": "fix-now",
+    "workflow_reason_code": "valid-fix-now",
+    "evidence_refs": [],
+    "missing_context": [],
+    "confidence": 0.82,
+}))
+'''
+
+
+@pytest.fixture
+def judge_stub(tmp_path):
+    path = tmp_path / "judge_stub.py"
+    path.write_text(_JUDGE_STUB)
+    return f"{sys.executable} {path}"
+
+
+class TestJudgeRunnerClosesTheProductionGap:
+    """No judge-run PRODUCER existed in production code.
+
+    `/prd-triage` never passed `--judge-run`, and `evaluate` counts a
+    calibration case only when a receipt carries BOTH `judge` and `human`. So
+    every triage wrote a human-only receipt, `judged` stayed empty forever, and
+    all four release gates were unreachable by construction. ~90 tests passed on
+    that path because every one of them hand-built the judge run -- the
+    "a gate's input needs a production producer, not just a test" class,
+    recurring.
+    """
+
+    def test_production_triage_yields_a_judged_case(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """THE reproducer: drive the real production path end to end and ask
+        `evaluate` whether it scored anything. Zero before the producer."""
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run), env_extra={"KIPI_JUDGE_CMD": judge_stub})
+        assert proc.returncode == 0, proc.stderr
+        disp = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run))
+        assert disp.returncode == 0, disp.stderr
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["judged_receipts"] == 1, (
+            "a full production-path triage still scored zero calibration "
+            f"cases: {report['judged_receipts']}")
+        assert report["cases"] == 1
+
+    def test_judge_run_binds_to_an_independently_assembled_packet(
+            self, judgment_repo, tmp_path, judge_stub):
+        """The hard design question: the judge assembles its own packet and
+        `capture` assembles another. They bind because `packet_hash` excludes
+        `assembled_at` and `packet_sha256`, so two assemblies of unchanged
+        state hash identically. If that ever stops being true, no judged
+        receipt can be written at all."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        emitted = json.loads(run.read_text())
+        _, packet = assemble_packet(judgment_repo)  # a SEPARATE assembly
+        assert emitted["input_sha256"] == packet["packet_sha256"]
+
+    def test_the_judge_is_invoked_with_tools_disabled(self):
+        """`duplicates[].source` is a filesystem path to a findings file and
+        `prior_receipts` lists receipt ids. A judge that can open files reads
+        prior HUMAN dispositions straight out of both, and the calibration set
+        becomes a measure of its own leakage."""
+        jc = _load_module("jc_judge_argv", "judgment_compiler.py")
+        argv = jc._judge_argv("claude-opus-5")
+        joined = " ".join(argv)
+        assert "--allowedTools" in joined or "--allowed-tools" in joined, argv
+        index = [i for i, a in enumerate(argv)
+                 if a in ("--allowedTools", "--allowed-tools")][0]
+        assert argv[index + 1] == "", (
+            f"tools must be disabled for the judge; got {argv[index + 1]!r}")
+
+    def test_malformed_output_retries_then_fails_loudly(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Bounded retry (3, per the self-healing-retry contract) and then a
+        LOUD failure. No silent fallback to a default disposition: a fabricated
+        prediction poisons the calibration set worse than a missing one."""
+        counter = tmp_path / "calls.txt"
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_COUNTER": str(counter),
+                       "STUB_BAD_UNTIL": "99"})
+        assert proc.returncode == 2, proc.stdout
+        assert int(counter.read_text()) == 3, "retry must be bounded at 3"
+        assert not run.exists(), "a failed judge must not write a run file"
+
+    def test_a_transient_malformed_reply_recovers_within_the_cap(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Negative self-test for the retry: the cap must not be a hard fail."""
+        counter = tmp_path / "calls.txt"
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_COUNTER": str(counter),
+                       "STUB_BAD_UNTIL": "2"})
+        assert proc.returncode == 0, proc.stderr
+        assert int(counter.read_text()) == 3
+        assert json.loads(run.read_text())["output"]["confidence"] == 0.82
+
+    def test_the_prompt_is_pinned_by_hash(self):
+        """A judge whose prompt is tuned after seeing disagreements stops being
+        an independent predictor. `prompt_sha256` is required on every run, so a
+        changed prompt is a visible discontinuity in the ledger: cases either
+        side of it are different experiments and must not be pooled."""
+        jc = _load_module("jc_judge_prompt", "judgment_compiler.py")
+        assert jc.JUDGE_PROMPT_SHA256 == hashlib.sha256(
+            jc.JUDGE_PROMPT.encode("utf-8")).hexdigest()
+        assert jc._prompt_hash("a different prompt") != jc.JUDGE_PROMPT_SHA256
+
+    def test_the_packet_handed_to_the_judge_carries_no_label(
+            self, judgment_repo, run_findings_writer):
+        """Blindness is the dataset. Assert on the REAL packet text the judge
+        receives, after a disposition exists to leak."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "a distinctive rationale string",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        jc = _load_module("jc_judge_blind", "judgment_compiler.py")
+        cfg = _cfg_for(judgment_repo)
+        text = jc._judge_prompt_text(jc.assemble_packet(cfg, PRD_ID, "finding-1"))
+        assert "a distinctive rationale string" not in text
+        assert "rejected" not in text
+
+
+# Flags whose ABSENCE leaves a receipt field permanently null. Each maps to the
+# receipt field it is the only production input for.
+RECEIPT_POPULATING_FLAGS = {
+    "--judge-run": "receipt.judge — the calibration half of every scored case",
+    "--reason-code": "receipt.human.reason_code — keys the evidence gate",
+    "--evidence": "receipt.human.evidence_refs",
+}
+
+
+def test_every_receipt_populating_flag_has_a_production_caller():
+    """MECHANICAL detector for a class that has now produced a defect twice.
+
+    "A consumer without a production producer is dead wiring, and tests that
+    supply the consumer's input verify the consumer's logic while hiding that
+    the wiring is dead." `--judge-run` was defined on two argparse parsers,
+    consumed by `_load_judge_run`, scored by `evaluate`, and covered by ~90
+    tests that each hand-built the judge run -- while NO production caller ever
+    passed it. `judged` was therefore empty forever and all four release gates
+    were unreachable.
+
+    Definition sites are deliberately NOT the corpus: an `add_argument` call
+    proves a flag exists, which is exactly the thing that was never in doubt.
+    The corpus is the set of places production actually INVOKES these scripts —
+    the slash commands and the `kipi` dispatcher. This test fails on a flag
+    nothing calls, which is the shape the class always takes.
+    """
+    corpus = "\n".join(
+        [p.read_text() for p in sorted((PLUGIN_ROOT / "commands").glob("*.md"))]
+        + [(PLUGIN_ROOT.parents[1] / "kipi").read_text()])
+    orphaned = {flag: field for flag, field in RECEIPT_POPULATING_FLAGS.items()
+                if flag not in corpus}
+    assert not orphaned, (
+        "these flags are defined and consumed but no production caller passes "
+        "them, so the field each one feeds can never be populated outside "
+        f"tests: {orphaned}")

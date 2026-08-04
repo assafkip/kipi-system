@@ -49,6 +49,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -1941,6 +1942,195 @@ def cmd_policy_candidates(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Judge runner: the PRODUCER (ASK-363, sp-320d30e3)
+# ---------------------------------------------------------------------------
+#
+# This half of the compiler shipped with a consumer and no producer.
+# `_load_judge_run` and the `--judge-run` flag existed, `evaluate` counted a
+# calibration case only when a receipt carried BOTH `judge` and `human`, and
+# NOTHING in production ever wrote a judge run: `/prd-triage` never passed the
+# flag. So every triage wrote a human-only receipt, `judged` stayed empty
+# forever, and all four release gates were unreachable by construction. ~90
+# tests passed on that path because each of them hand-built the judge run --
+# the recurring "a gate's input needs a production producer, not just a test"
+# class. This is the missing write site.
+
+JUDGE_MODEL_DEFAULT = "claude-opus-5"
+
+# The prompt is CONTENT, and its hash is a required receipt field, so tuning it
+# after seeing disagreements shows up in the ledger as a discontinuity instead
+# of silently redefining the experiment. Cases either side of a prompt change
+# are different experiments and must not be pooled.
+JUDGE_PROMPT = """\
+You are adjudicating one code-review finding for a PRD triage system.
+
+You are given a frozen context packet as JSON. Decide, from that packet ALONE,
+how the finding should be dispositioned. You have no tools and cannot open
+files; if the packet does not contain what you need, say so in missing_context
+and use the needs-human disposition rather than guessing.
+
+Reply with ONE JSON object and nothing else. Exactly these fields:
+
+  technical_validity    one of: valid, invalid, uncertain
+  technical_reason      one sentence, plain text
+  workflow_disposition  one of: fix-now, already-remediated, duplicate,
+                        scope-removed, out-of-scope, defer, invalid, needs-human
+  workflow_reason_code  one of: valid-fix-now, already-remediated, duplicate,
+                        owned-by-other-prd, scope-removed, out-of-scope,
+                        superseded, defer-dependency, defer-ordering,
+                        invalid-finding, insufficient-context, needs-human
+  evidence_refs         list of "kind:value" refs (finding:, issue:, prd:,
+                        receipt:, judgment:, commit:, test:, scope:,
+                        spillover:). Use [] if you cannot cite a real one.
+  missing_context       list of strings naming what the packet lacked
+  confidence            number in [0,1]
+
+Do not invent an evidence ref. Refs are resolved by the `resolve_evidence_refs`
+function, which OPENS each one rather than pattern-matching it, and
+`evidence_gate_errors` converts an unsupported disposition to needs-human. A
+fabricated citation therefore cannot pass; it only costs you the case. An empty
+list is the honest answer when you cannot cite something real.
+"""
+# The paragraph above is not prompt-only enforcement: the executable blockers
+# it names are `resolve_evidence_refs` (opens every ref, exit 2 on a miss),
+# `evidence_gate_errors` (downgrades unsupported dispositions), and
+# `validate_judge_output`, which `run_judge` calls on every attempt before a
+# run file is written. The prompt merely tells the judge what the code will do.
+
+
+def _prompt_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+JUDGE_PROMPT_SHA256 = _prompt_hash(JUDGE_PROMPT)
+
+JUDGE_MAX_ATTEMPTS = 3
+
+
+def _judge_argv(model: str) -> list[str]:
+    """The real invocation: `claude -p`, no tools.
+
+    TOOLS OFF is a dataset requirement, not a hardening nicety. The packet's
+    `duplicates[].source` is a filesystem path to a findings file and
+    `prior_receipts` lists receipt ids; a judge that can open files reads prior
+    HUMAN dispositions straight out of both, and the calibration set stops
+    measuring prediction and starts measuring leakage.
+
+    `claude -p` is the established LLM client in this fleet (no API key, rides
+    the founder's subscription). The model is pinned and recorded on the run:
+    unpinned headless jobs here silently rode a cheaper model and burned 3% of
+    a weekly budget in an hour, and an unrecorded model change would confound a
+    kappa shift with a capability shift.
+    """
+    return ["claude", "-p", "--model", model, "--allowedTools", ""]
+
+
+def _judge_prompt_text(packet: dict) -> str:
+    """Prompt = instructions + the packet as TEXT.
+
+    `duplicates[].source` is dropped here. It is a path, useful only to a
+    reader that can open it, and the judge must not be able to. Dropping it
+    from the PROMPT does not touch the packet or its hash, so the binding to
+    `input_sha256` is unaffected -- the judge simply never sees a pointer to
+    the labels.
+    """
+    shown = copy.deepcopy(packet)
+    for duplicate in shown.get("duplicates") or []:
+        duplicate.pop("source", None)
+    return (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
+            + json.dumps(shown, indent=2, sort_keys=True))
+
+
+def _extract_json_object(raw: str) -> dict:
+    """Parse the model's reply. EXTRACTION only, never repair.
+
+    A tolerant parser that patches missing fields would fabricate a prediction,
+    and a fabricated prediction poisons the calibration set worse than a
+    missing one. So this only strips fences and slices the outermost object;
+    anything still malformed raises and burns a retry.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\n", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValidationError("judge reply contained no JSON object")
+    return json.loads(text[start:end + 1])
+
+
+def run_judge(packet: dict, *, model: str) -> dict:
+    """Call the judge and return a validated judge-run dict.
+
+    Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
+    contract). There is deliberately no fallback disposition: returning a
+    default on exhaustion would write a decision the judge never made.
+    """
+    prompt = _judge_prompt_text(packet)
+    override = os.environ.get("KIPI_JUDGE_CMD")
+    argv = shlex.split(override) if override else _judge_argv(model)
+    failures = []
+    for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
+        try:
+            proc = subprocess.run(argv, input=prompt, capture_output=True,
+                                  text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"attempt {attempt}: invocation failed: {exc}")
+            continue
+        if proc.returncode != 0:
+            failures.append(
+                f"attempt {attempt}: judge exited {proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:200]}")
+            continue
+        try:
+            output = _extract_json_object(proc.stdout)
+            validate_judge_output(output, "judge run")
+        except (ValidationError, json.JSONDecodeError) as exc:
+            failures.append(f"attempt {attempt}: {exc}")
+            continue
+        return {
+            "model": model,
+            "prompt_sha256": JUDGE_PROMPT_SHA256,
+            "input_sha256": packet["packet_sha256"],
+            "output": output,
+        }
+    raise ValidationError(
+        f"judge produced no valid output in {JUDGE_MAX_ATTEMPTS} attempts:\n  "
+        + "\n  ".join(failures)
+        + "\nRefusing to write a run. A fabricated prediction is worse than a "
+          "missing one: it enters the calibration set as if a judge had made "
+          "it.")
+
+
+def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
+    packet = assemble_packet(cfg, args.prd, args.finding)
+    model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
+        or JUDGE_MODEL_DEFAULT
+    run = run_judge(packet, model=model)
+    # Written only on success, and only after validation, so a failed judge
+    # leaves no partial file for a later `--judge-run` to pick up.
+    destination = Path(args.output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(run, indent=2, sort_keys=True),
+                           encoding="utf-8")
+    print(json.dumps({
+        "path": str(destination),
+        "model": run["model"],
+        "prompt_sha256": run["prompt_sha256"],
+        "input_sha256": run["input_sha256"],
+        "workflow_disposition": run["output"]["workflow_disposition"],
+        "note": "do NOT show this to the founder before their disposition is "
+                "set; a human who sees the prediction and agrees inflates "
+                "measured agreement and the calibration set is worthless",
+    }, indent=2))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true")
@@ -1975,6 +2165,15 @@ def main(argv: list[str]) -> int:
                                "finding (independent completeness check)")
     p_verify.add_argument("--since", help="ISO timestamp floor for --cross-check")
     p_verify.set_defaults(func=cmd_verify)
+
+    p_judge = sub.add_parser("judge")
+    p_judge.add_argument("--prd", required=True)
+    p_judge.add_argument("--finding", required=True)
+    p_judge.add_argument("--output", required=True)
+    p_judge.add_argument("--model", default=None,
+                         help="override the pinned judge model (recorded on "
+                              "the run so a change is visible in the ledger)")
+    p_judge.set_defaults(func=cmd_judge)
 
     p_evaluate = sub.add_parser("evaluate")
     p_evaluate.set_defaults(func=cmd_evaluate)
