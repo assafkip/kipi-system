@@ -1541,3 +1541,40 @@ class TestGateVerifiesBeforeTrusting:
         code, message = runner._judgment_receipt_gate(cfg, PRD_ID)
         assert code == 2, "a forged receipt authorized approval"
         assert "does not verify" in message
+
+
+class TestDecisionFingerprint:
+    """Rounds 2-5 of PR #101 each found a different unchecked field. One
+    fingerprint, used on both sides, closes the class rather than the instance."""
+
+    def test_hand_edited_rationale_is_caught(self, judgment_repo,
+                                             run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "duplicate of finding-9",
+            "--reason-code", "invalid-finding").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["rationale"] = "actually it was a security hole"  # rewritten
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 2
+        assert "never captured" in proc.stderr
+
+    def test_empty_vs_absent_rationale_is_not_a_change(self, judgment_repo,
+                                                       run_findings_writer):
+        """The writer stores None for an empty rationale; a findings record may
+        omit the key. That difference must not read as tampering."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0].pop("rationale", None)
+        rows[0]["rationale"] = ""
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr

@@ -2,6 +2,17 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.5] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 5) — closed as a CLASS
+- The coverage check compared `disposition` only, so a hand-edited `rationale`
+  passed as covered. Rounds 2-5 each found a different unchecked field
+  (identity only, then disposition, then rationale). Rather than patch a third
+  field, `_decision_fingerprint` is now the single definition of "the same
+  decision" and is applied to BOTH sides, so a newly frozen field cannot go
+  unchecked on one of them. Empty-vs-absent rationale is normalised, because
+  that difference is not a decision change and must not read as tampering.
+
 ## [0.13.4] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 4)

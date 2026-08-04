@@ -1198,6 +1198,18 @@ def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
     return "unknown reference kind"
 
 
+def _decision_fingerprint(disposition, rationale) -> tuple:
+    """What makes two human decisions the same decision.
+
+    ONE definition, used for both sides of the comparison, so adding a frozen
+    field cannot silently go unchecked on one side. Rationale is normalised:
+    the writer stores None for an empty one while a findings record may simply
+    omit the key, and that difference is not a decision change.
+    """
+    text = (rationale or "").strip()
+    return (disposition, text)
+
+
 def cross_check_findings(cfg: Config, records: list[dict],
                          since: str | None = None) -> list[str]:
     """Completeness check against an INDEPENDENT source: every dispositioned
@@ -1219,13 +1231,19 @@ def cross_check_findings(cfg: Config, records: list[dict],
     # anyway (Codex, PR #101 round 2, executed repro). Receipts are appended in
     # order and supersede by position, so the last human-bearing receipt for a
     # finding is its current claim.
-    covered: dict[tuple, str] = {}
+    # Compare EVERY decision field the receipt freezes, not one field at a time.
+    # Rounds 2-5 of PR #101 each found a different unchecked field (identity
+    # only, then disposition, then rationale); patching them one by one is
+    # whack-a-mole on a class. `_decision_fingerprint` is the single definition
+    # of "the same decision", so a new frozen field is covered by construction.
+    covered: dict[tuple, tuple] = {}
     for record in records:
         human = record.get("human")
         if not human:
             continue  # judge-only receipt makes no claim about a human decision
         covered[(record["finding"]["prd_id"],
-                 record["finding"]["finding_id"])] = human["disposition"]
+                 record["finding"]["finding_id"])] = _decision_fingerprint(
+                     human.get("disposition"), human.get("rationale"))
     errors = []
     for path in sorted(cfg.findings_dir.rglob("*-findings.jsonl")):
         for record in _read_findings(path):
@@ -1241,12 +1259,16 @@ def cross_check_findings(cfg: Config, records: list[dict],
                     f"{key[0]}/{key[1]}: dispositioned {disposition!r} at "
                     f"{resolved_at or 'unknown time'} but no judgment receipt "
                     "exists")
-            elif covered[key] != disposition:
-                errors.append(
-                    f"{key[0]}/{key[1]}: findings file says {disposition!r} but "
-                    f"the latest receipt records {covered[key]!r} — the current "
-                    "decision was never captured (hand-edited, or a capture "
-                    "that failed after the write)")
+            else:
+                current = _decision_fingerprint(
+                    disposition, record.get("rationale"))
+                if covered[key] != current:
+                    errors.append(
+                        f"{key[0]}/{key[1]}: the findings file records "
+                        f"{current} but the latest receipt froze {covered[key]} "
+                        "— the current decision was never captured "
+                        "(hand-edited, or a capture that failed after the "
+                        "write)")
     return errors
 
 
