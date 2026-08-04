@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.2] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 2)
+- **A receipt for an EARLIER decision satisfied the gate.** Coverage was
+  identity-only `(prd_id, finding_id)`, so hand-editing the findings file to a
+  different disposition left the stale receipt standing in for a decision that
+  was never captured -- and approval passed. The check now compares the
+  finding's current disposition against the latest human-bearing receipt, and
+  says so specifically when they disagree.
+
 ## [0.13.1] - 2026-08-04
 
 ### Fixed (Codex review, PR #101)

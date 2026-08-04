@@ -1212,8 +1212,20 @@ def cross_check_findings(cfg: Config, records: list[dict],
     before this feature existed have no receipt by construction and would
     otherwise report as thousands of false gaps.
     """
-    covered = {(r["finding"]["prd_id"], r["finding"]["finding_id"])
-               for r in records}
+    # Map to the LATEST recorded human disposition, not merely to "a receipt
+    # exists". Identity-only coverage let a receipt for an earlier decision
+    # satisfy the gate after the findings file was hand-edited to a different
+    # one, so the decision actually recorded had no receipt and approval passed
+    # anyway (Codex, PR #101 round 2, executed repro). Receipts are appended in
+    # order and supersede by position, so the last human-bearing receipt for a
+    # finding is its current claim.
+    covered: dict[tuple, str] = {}
+    for record in records:
+        human = record.get("human")
+        if not human:
+            continue  # judge-only receipt makes no claim about a human decision
+        covered[(record["finding"]["prd_id"],
+                 record["finding"]["finding_id"])] = human["disposition"]
     errors = []
     for path in sorted(cfg.findings_dir.rglob("*-findings.jsonl")):
         for record in _read_findings(path):
@@ -1229,6 +1241,12 @@ def cross_check_findings(cfg: Config, records: list[dict],
                     f"{key[0]}/{key[1]}: dispositioned {disposition!r} at "
                     f"{resolved_at or 'unknown time'} but no judgment receipt "
                     "exists")
+            elif covered[key] != disposition:
+                errors.append(
+                    f"{key[0]}/{key[1]}: findings file says {disposition!r} but "
+                    f"the latest receipt records {covered[key]!r} — the current "
+                    "decision was never captured (hand-edited, or a capture "
+                    "that failed after the write)")
     return errors
 
 

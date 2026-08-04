@@ -1458,3 +1458,46 @@ class TestReceiptGateFailsClosed:
             return real_import(name, *args, **kwargs)
         monkeypatch.setattr("builtins.__import__", no_compiler)
         assert runner._judgment_receipt_gate(object(), "prd-alpha") == (0, "")
+
+
+class TestGateChecksTheDecisionNotJustTheFinding:
+    def test_hand_edited_disposition_is_caught(self, judgment_repo,
+                                               run_findings_writer):
+        """Codex PR #101 r2: coverage was identity-only, so a receipt for an
+        EARLIER decision satisfied the gate after the findings file was edited
+        to a different one -- the decision actually recorded had none."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        assert len(read_ledger(judgment_repo)) == 1
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["disposition"] = "rejected"      # hand-edit, no capture
+        rows[0]["rationale"] = "changed my mind offline"
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 2
+        assert "never captured" in proc.stderr
+
+    def test_matching_disposition_passes(self, judgment_repo,
+                                         run_findings_writer):
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_redisposition_through_the_writer_stays_covered(
+            self, judgment_repo, run_findings_writer):
+        """A legitimate change of mind captures a superseding receipt, so the
+        latest receipt matches and the gate stays green."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "reconsidered", "--reason-code",
+            "invalid-finding").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
