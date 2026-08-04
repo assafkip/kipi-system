@@ -159,6 +159,40 @@ is_managed_plugin_path() {
 # down to 605MB free before it was killed.
 #
 # Cached per instance root so two callers cannot observe two different trees.
+# PATHS THE SYSTEM ITSELF WRITES INTO AN INSTANCE.
+# The dirty-tree guard below refuses ANY tracked modification, which is correct
+# for founder work and wrong for the updater's own exhaust: measured 2026-08-04,
+# 6 of 23 instances sat 2-6 prd-os versions behind and 4 were blocked SOLELY by
+# files this system wrote (the monthly sycophancy stamp, hook state, and a
+# plugins/ tree an EARLIER update staged and never committed). The fleet updater
+# was blocked by itself, silently. This list is deliberately narrow and explicit:
+# anything not named here is treated as founder work and still refuses.
+SYSTEM_OWNED_PATHS=(
+  "q-system/memory/.sycophancy-monthly-stamp"
+  "q-system/.q-system/claude-integrity-baseline.json"
+  ".claude/state/stop-gate-firings.json"
+)
+# Skeleton-managed plugin dirs are appended at run time from the SAME
+# enumeration the sync itself uses (managed_plugin_names), never as a blanket
+# "plugins" entry. The blanket version classified the WHOLE tree as system-owned
+# and would have committed founder edits inside an instance-LOCAL plugin, which
+# the sync does not manage (Codex review, PR #98 round 2). One enumeration, one
+# meaning of "managed".
+#
+# Consequence, accepted deliberately: an ORPHANED plugin dir -- one an older
+# skeleton shipped and a newer one dropped, e.g. plugins/memory-lifecycle -- is
+# no longer covered, so it still blocks that instance. That is the right answer.
+# An orphan is genuinely ambiguous (is it founder-adopted or dead weight?) and
+# now gets NAMED in the run summary instead of silently skipped.
+system_owned_paths_for_run() {
+  local plugin_name
+  printf '%s\n' "${SYSTEM_OWNED_PATHS[@]}"
+  while IFS= read -r -d '' plugin_name; do
+    printf 'plugins/%s\n' "$plugin_name"
+  done < <(managed_plugin_names)
+}
+FAILED_NAMES=""
+
 MODEL_SKIPPED_ROOT=""
 MODEL_SKIPPED_PATHS=()
 
@@ -499,6 +533,12 @@ PY
 # increment itself in exactly one place.
 count_instance_failure() {
   FAIL=$((FAIL + 1))
+  # NAME the instance, do not just count it. The summary reported "Failed: 6"
+  # with no names, so nobody could see WHICH instances were drifting -- they sat
+  # 2-6 prd-os versions behind for weeks and each run skipped a different subset
+  # (measured 2026-08-04). A count is not a report.
+  FAILED_NAMES="$FAILED_NAMES
+    - ${name:-<unnamed>} (${path:-unknown path})"
 }
 
 abandon_instance() {
@@ -1142,6 +1182,39 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # Clear the system's OWN artifacts first, so the guard below judges founder
+    # work only. Each path is committed individually and only if it is actually
+    # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
+    sys_owned_dirty=()
+    while IFS= read -r sys_path; do
+      [ -n "$sys_path" ] || continue
+      if ! git diff --quiet -- "$sys_path" 2>/dev/null ||
+          ! git diff --cached --quiet -- "$sys_path" 2>/dev/null; then
+        sys_owned_dirty+=("$sys_path")
+      fi
+    done < <(system_owned_paths_for_run)
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+      echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
+      printf '    %s\n' "${sys_owned_dirty[@]}"
+      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
+      # with no pathspec commits everything ALREADY STAGED, so a founder with
+      # staged work would have had it swept into this infra commit -- the exact
+      # thing the guard below exists to prevent, reintroduced by the fix for it
+      # (Codex review, PR #98). With a pathspec, only these paths are committed
+      # no matter what else sits in the index.
+      #
+      # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
+      # gate wants a Linear id, and this is the sanctioned hatch that gets
+      # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
+      # to land a commit in their repo is not ours to do.
+      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+
+These files are written by the fleet itself (sycophancy stamp, integrity
+baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
+updater from being blocked by its own exhaust; founder work is never included
+because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+    fi
+
     # Refuse tracked work in progress. The updater owns only its scoped sync
     # commits and must never package unrelated founder edits into an infra commit.
     if ! git diff --cached --quiet 2>/dev/null ||
@@ -1524,6 +1597,9 @@ fi
 echo "=== Summary ==="
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
+if [ -n "$FAILED_NAMES" ]; then
+  echo "  NOT UPDATED (still on their previous skeleton version):$FAILED_NAMES"
+fi
 echo "  Skipped: $SKIP"
 if [ -n "${GATE_FAIL:-}" ]; then
   echo "  CAPABILITY GATE RED in:$GATE_FAIL"
