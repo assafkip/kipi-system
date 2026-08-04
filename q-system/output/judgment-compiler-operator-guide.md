@@ -25,15 +25,22 @@ python3 plugins/prd-os/scripts/findings_writer.py \
 ```
 
 - `duplicate`, `already-remediated`, `owned-by-other-prd`, `scope-removed`,
-  `out-of-scope`, `superseded` are REFUSED without `--evidence` (that is the
-  point: unsupported dispositions stop passing as facts).
-- No `--reason-code`? Still works, records an honest null.
+  `out-of-scope`, `superseded` are REFUSED without `--evidence`, and the
+  reference is **opened** — a ref pointing at nothing is refused too. If the
+  receipt cannot be written, the findings file rolls back, so the two never
+  disagree.
+- No `--reason-code`? Still works and records an honest null — **but be aware
+  that omitting it skips the evidence requirement entirely** (the requirements
+  key off the code). That bypass is counted: `kipi judgment evaluate` reports
+  `ungated_decision_rate`. Making the code mandatory is tracked separately
+  (`sp-1caf70c9`) because it changes a contract every instance inherits.
 - Emergency off switch: `KIPI_JUDGMENT_CAPTURE=0` (exact legacy behavior).
 
 ## Commands (from any instance repo)
 
 ```bash
 kipi judgment verify              # re-prove the whole receipt chain
+kipi judgment verify --cross-check  # ...plus: every dispositioned finding has a receipt
 kipi judgment evaluate            # calibration metrics + release-gate status
 kipi judgment assemble --prd <id> --finding <id>   # see decision-time context
 kipi judgment sample-check --basis <sha256>        # reproduce a 5% sample verdict

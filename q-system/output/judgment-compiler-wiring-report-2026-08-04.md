@@ -22,7 +22,9 @@ Date: 2026-08-04. Branch: `worktree-judgment-compiler`. Every row is "ran X, got
 |---|---|---|
 | R-1 | v1 calibration self-test | `SELFTEST PASS: scoring changes, schema and coverage enforced, blind export clean` |
 | R-2 | v1 dataset verification | `VERIFY PASS: 50 unique cases, 20/20/10 balance, all source hashes match` |
-| R-3 | full prd-os suite | `406 passed, 1 skipped` (was 399 + 1 before this work; +7 new) |
+| R-3 | full prd-os suite | `422 passed, 1 skipped` (was 399 + 1 before this work; +23 new, zero regressions) |
+| R-8 | mutation test | 17 single-invariant corruptions applied to a copy; **16 killed**. The one survivor is a defensive build-time assert no normal path reaches, labelled as such in the code; its enforced half is the read-side check (test_n7). |
+| R-9 | concurrency | 6 concurrent `capture` processes → 6 receipts, sequences 1..6, `verify` exit 0 |
 | R-5 | read-only execution | `test_verify_evaluate_selftest_survive_read_only_repo` chmods the tree 0555; verify, evaluate and selftest all exit 0 |
 | R-6 | `kipi check` | **PARTIAL — see below** |
 
@@ -39,6 +41,40 @@ set-disposition finding-2 rejected            -> REFUSED exit 2:
 same call + --evidence finding:…/finding-1    -> accepted, receipt jr-9b7382d8…, chained
 verify                                        -> VERIFY PASS: 2 receipt(s), chain intact
 ```
+
+## Adversarial review: 17 findings, all dispositioned
+
+A senior-staff adversarial review (`claude-adversarial`, a first-class reviewer
+source in findings_writer) returned 1 blocker, 6 major, 7 minor, 3 nit. Every
+one was real and reproduced. 16 fixed in code; 1 deferred with its own tracked
+issue. Highlights:
+
+- **Blocker — concurrent capture forked the ledger while every writer exited 0.**
+  Unlocked read-modify-append on a ledger deliberately shared across worktrees.
+  Now `fcntl.flock`-guarded. Repro before: corruption; after: 6 concurrent
+  captures → chain intact.
+- **Deleting the tip anchor re-opened the entire truncation hole** for one `rm`
+  (cheaper than editing it, and a bad rsync does it by accident). A missing
+  anchor over a non-empty ledger is now an error.
+- **Evidence refs were grammar-matched, never resolved** — `commit:zzzz` and
+  `finding:prd-does-not-exist/finding-999` were both recorded as the evidence
+  justifying a rejection. Now every ref kind is opened.
+- **Findings and judgment ledgers diverged on partial failure.** The findings
+  file now rolls back when capture fails.
+- **Deferred with its own issue (sp-1caf70c9):** omitting `--reason-code` skips
+  the evidence gate. Closing it changes the contract of a command every fleet
+  instance inherits, so it does not ride along inside this PRD. Interim: the
+  bypass is counted, not assumed — `evaluate` reports `ungated_decision_rate`.
+
+## Mistake made and corrected during this work
+
+The dogfood run used a sandbox that had copied a `.git` directory, so
+`_ledger_root` correctly resolved to the **main checkout** and wrote 17 test
+receipts into the live ledger. The behavior was right; the harness was wrong.
+The files were moved out (preserved in the session scratchpad, not deleted from
+any history — the ledger had existed for three minutes and held zero real
+workflow decisions), the repo is back to its true pre-feature state with no
+`.prd-os/judgments*` files, and a test now pins the shared-root behavior.
 
 ## Defect found and fixed during this work (self-attack)
 

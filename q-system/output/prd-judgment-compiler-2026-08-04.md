@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-04
 **Author:** Claude (Fable 5), from the founder's handoff brief `q-system/output/claude-judgment-compiler-handoff-2026-08-04.md`
-**Status:** Implementing
+**Status:** Done
 **Priority:** P1 (high)
 **Linear:** ASK-363
 
@@ -451,17 +451,19 @@ before; `pending` re-dispositions capture a superseding receipt, never mutate.
 |----------|-------|----------|------------|
 | When ≥50 prospective decisions exist, which model runs the judge (codex exec vs claude -p) and at what cadence? | Assaf | after calibration data accrues | open — machinery is model-agnostic; hashes bind whichever runs |
 | Should `needs-human` findings page via slack-notify.sh? | Assaf | after first live week | open — default: surfaced in `/prd-triage` output only |
+| Make `--reason-code` mandatory on rejected/deferred (closes the last gate bypass, changes a fleet-wide command contract)? | Assaf | own issue | captured as spillover `sp-1caf70c9`; interim bypass is counted via `ungated_decision_rate` |
+| Refresh the marketplace clone so live `/prd-triage` runs current prd-os (it serves 0.6.0) | Assaf | before relying on in-session capture | captured as spillover `sp-fe57de2d` |
 
 ## 13. Wiring Checklist (MANDATORY)
 
 | Check | Status | Notes |
 |-------|--------|-------|
 | PRD file saved to `q-system/output/prd-judgment-compiler-2026-08-04.md` | Pass | this file |
-| All code/config changes implemented and tested | Pending | |
+| All code/config changes implemented and tested | Pass | 422 prd-os tests; 16/17 mutations killed |
 | New files listed in folder-structure rule | N/A | plugin scripts dir already canonical |
 | New conventions referenced in root CLAUDE.md | N/A | no new convention; CLI documented in `kipi` usage |
 | New rules referenced in folder-structure rules list | N/A | no new rule file |
-| Memory entry saved | Pending | at closeout |
-| `kipi update --dry` confirms propagation | Pending | skeleton files changed (plugins/, kipi) |
-| `kipi update` run | Pending | founder-authorized run at merge, not from worktree |
-| PRD Status updated to Done | Pending | after wiring report |
+| Memory entry saved | Pass | judgment-compiler memory file |
+| `kipi update --dry` confirms propagation | NOT RUN | deliberate: syncing a branch state to the fleet is a post-merge step |
+| `kipi update` run | NOT RUN | post-merge, founder-authorized |
+| PRD Status updated to Done | Pass | wiring report: q-system/output/judgment-compiler-wiring-report-2026-08-04.md |
