@@ -1172,8 +1172,19 @@ def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
         path = _ledger_dir(cfg) / "spillover.jsonl"
         if not path.is_file():
             return "no spillover ledger exists"
-        return None if f'"{value}"' in path.read_text(encoding="utf-8") \
-            else "no such spillover item"
+        # Substring-matched the raw file, so a value appearing in ANY field
+        # (a description quoting an id, a resolution_ref) resolved as if it
+        # were the item itself (Codex, PR #97 minor sp-fcb3573e). Parse and
+        # compare the id field.
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                if json.loads(raw).get("id") == value:
+                    return None
+            except json.JSONDecodeError:
+                continue
+        return "no such spillover item"
     if kind == "commit":
         if not re.fullmatch(r"[0-9a-f]{7,40}", value):
             return "not a commit sha"

@@ -596,6 +596,48 @@ def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
             f"approval blocked: {len(pending)} pending finding(s): "
             f"{', '.join(pending)}. Set a disposition on each before advancing.\n"
         )
+    return _judgment_receipt_gate(cfg, state["prd_id"])
+
+
+# The Judgment Compiler shipped WRITING a receipt on every triage and REQUIRING
+# one nowhere, which made it available rather than baked in: KIPI_JUDGMENT_CAPTURE=0,
+# a hand-edited findings file, or a capture that failed and got ignored all left
+# a silent hole no gate could see. A ledger with unnoticed holes cannot be the
+# calibration set it exists to be.
+JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
+
+
+def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
+    """Every finding dispositioned since the floor must carry a receipt.
+
+    FLOOR, not a blanket requirement: ~342 findings were adjudicated before the
+    compiler existed and can never have receipts. Demanding them would block
+    every pre-existing PRD forever, and a gate that cannot be satisfied gets
+    switched off -- which protects nothing. So the rule binds only decisions
+    made after the feature landed.
+    """
+    try:
+        import judgment_compiler
+    except ImportError:
+        return 0, ""  # compiler absent (older instance): nothing to enforce
+    try:
+        records = judgment_compiler.read_ledger(
+            judgment_compiler.ledger_path(cfg))
+        missing = [m for m in judgment_compiler.cross_check_findings(
+            cfg, records, JUDGMENT_RECEIPT_FLOOR) if prd_id in m]
+    except Exception as exc:  # never let the gate's own failure block approval
+        return 0, f"note: judgment receipt check skipped ({exc})\n"
+    if missing:
+        return 2, (
+            f"approval blocked: {len(missing)} finding(s) dispositioned since "
+            f"{JUDGMENT_RECEIPT_FLOOR} with no judgment receipt:\n  "
+            + "\n  ".join(missing[:5])
+            + ("\n  ..." if len(missing) > 5 else "")
+            + "\n\nRe-run the disposition through findings_writer.py "
+              "set-disposition so the decision is recorded, or explain the gap. "
+              "Receipts are the calibration set; a hole in them is invisible "
+              "later.\n"
+        )
     return 0, ""
 
 

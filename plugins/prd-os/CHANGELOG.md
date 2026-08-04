@@ -2,6 +2,23 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.0] - 2026-08-04
+
+### Added
+- **The Judgment Compiler is now REQUIRED, not just available.** It shipped
+  writing a receipt on every triage and requiring one nowhere, so
+  `KIPI_JUDGMENT_CAPTURE=0`, a hand-edited findings file, or an ignored capture
+  failure each left a hole no gate could see -- and a ledger with unnoticed
+  holes cannot be the calibration set it exists to be. `_judgment_receipt_gate`
+  now blocks `advance approved` when a finding dispositioned since
+  `JUDGMENT_RECEIPT_FLOOR` carries no receipt. The floor is the point: ~342
+  findings were adjudicated before the compiler existed and can never have
+  receipts, and a gate that cannot be satisfied gets switched off.
+
+### Fixed
+- Spillover evidence refs matched a value in ANY JSON field, so an id quoted
+  inside a description resolved as if it were the item (sp-fcb3573e).
+
 ## [0.12.0] - 2026-08-04
 
 ### Fixed (Codex review round 5, PR #97)

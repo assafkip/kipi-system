@@ -1340,3 +1340,64 @@ if __name__ == "__main__":
         [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-q"],
         cwd=str(PLUGIN_ROOT.parent.parent),
     ).returncode)
+
+
+class TestBakedIntoApproval:
+    """The compiler must be REQUIRED by prd-os, not merely available to it.
+
+    Shipped writing a receipt everywhere and requiring one nowhere, so
+    KIPI_JUDGMENT_CAPTURE=0 or a hand-edited findings file left a hole no gate
+    could see. These pin the gate that closes it.
+    """
+
+    def _prd_ready_for_approval(self, repo: Path, run_findings_writer):
+        spec = repo / ".prd-os" / "prds" / f"{PRD_ID}.md"
+        text = spec.read_text().replace(
+            "status: in-review",
+            "status: in-review\ncodex_reviewed_at: 2026-08-04T00:00:00Z\n"
+            f"findings_path: .prd-os/findings/{PRD_ID}-findings.jsonl")
+        spec.write_text(text)
+
+    def test_receipt_gate_reports_a_missing_receipt(self, judgment_repo,
+                                                    run_findings_writer):
+        """Direct call: the gate's own predicate, without the PRD state machine."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "jc_gate2", SCRIPTS_DIR / "judgment_compiler.py")
+        jc = importlib.util.module_from_spec(spec)
+        sys.modules["jc_gate2"] = jc
+        spec.loader.exec_module(jc)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        cfg_spec = importlib.util.spec_from_file_location(
+            "jc_cfg", SCRIPTS_DIR / "config.py")
+        cfgmod = importlib.util.module_from_spec(cfg_spec)
+        sys.modules["jc_cfg"] = cfgmod
+        cfg_spec.loader.exec_module(cfgmod)
+        cfg = cfgmod.load(judgment_repo)
+        missing = jc.cross_check_findings(cfg, [], "2026-01-01T00:00:00Z")
+        assert any(PRD_ID in m for m in missing), missing
+        assert any("no judgment receipt" in m for m in missing)
+
+    def test_floor_exempts_pre_feature_dispositions(self, judgment_repo,
+                                                    run_findings_writer):
+        """A gate that cannot be satisfied gets switched off. Findings decided
+        before the compiler existed must not block approval forever."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "jc_gate3", SCRIPTS_DIR / "judgment_compiler.py")
+        jc = importlib.util.module_from_spec(spec)
+        sys.modules["jc_gate3"] = jc
+        spec.loader.exec_module(jc)
+        cfg_spec = importlib.util.spec_from_file_location(
+            "jc_cfg3", SCRIPTS_DIR / "config.py")
+        cfgmod = importlib.util.module_from_spec(cfg_spec)
+        sys.modules["jc_cfg3"] = cfgmod
+        cfg_spec.loader.exec_module(cfgmod)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        cfg = cfgmod.load(judgment_repo)
+        far_future = jc.cross_check_findings(cfg, [], "2099-01-01T00:00:00Z")
+        assert far_future == [], "floor did not exempt an older disposition"
