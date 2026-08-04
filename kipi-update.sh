@@ -171,14 +171,26 @@ SYSTEM_OWNED_PATHS=(
   "q-system/memory/.sycophancy-monthly-stamp"
   "q-system/.q-system/claude-integrity-baseline.json"
   ".claude/state/stop-gate-firings.json"
-  # plugins/ is a kipi-update DESTINATION -- the updater rsyncs it from the
-  # skeleton and overwrites it, so a dirty plugins/ tree is by definition this
-  # system's output, not founder work. Named explicitly because the case that
-  # motivated this change (travel-agent carrying a STAGED plugins/memory-lifecycle
-  # tree from an earlier run) was otherwise still blocked by the very fix that
-  # cited it (Codex review, PR #98).
-  "plugins"
 )
+# Skeleton-managed plugin dirs are appended at run time from the SAME
+# enumeration the sync itself uses (managed_plugin_names), never as a blanket
+# "plugins" entry. The blanket version classified the WHOLE tree as system-owned
+# and would have committed founder edits inside an instance-LOCAL plugin, which
+# the sync does not manage (Codex review, PR #98 round 2). One enumeration, one
+# meaning of "managed".
+#
+# Consequence, accepted deliberately: an ORPHANED plugin dir -- one an older
+# skeleton shipped and a newer one dropped, e.g. plugins/memory-lifecycle -- is
+# no longer covered, so it still blocks that instance. That is the right answer.
+# An orphan is genuinely ambiguous (is it founder-adopted or dead weight?) and
+# now gets NAMED in the run summary instead of silently skipped.
+system_owned_paths_for_run() {
+  local plugin_name
+  printf '%s\n' "${SYSTEM_OWNED_PATHS[@]}"
+  while IFS= read -r -d '' plugin_name; do
+    printf 'plugins/%s\n' "$plugin_name"
+  done < <(managed_plugin_names)
+}
 FAILED_NAMES=""
 
 MODEL_SKIPPED_ROOT=""
@@ -1174,12 +1186,13 @@ PY
     # work only. Each path is committed individually and only if it is actually
     # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
     sys_owned_dirty=()
-    for sys_path in "${SYSTEM_OWNED_PATHS[@]}"; do
+    while IFS= read -r sys_path; do
+      [ -n "$sys_path" ] || continue
       if ! git diff --quiet -- "$sys_path" 2>/dev/null ||
           ! git diff --cached --quiet -- "$sys_path" 2>/dev/null; then
         sys_owned_dirty+=("$sys_path")
       fi
-    done
+    done < <(system_owned_paths_for_run)
     if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
       echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
