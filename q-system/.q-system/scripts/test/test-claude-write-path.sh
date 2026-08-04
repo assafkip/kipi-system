@@ -255,6 +255,24 @@ assert_block "sanctioned name in an argument does not disarm" \
 assert_allow "really running the sanctioned applier still works" \
   'bash q-system/.q-system/scripts/apply-claude-changes.sh prop.json'
 
+# F1b BLOCKER (round 6, then round 7): the sanctioned early-return skipped every
+# argument, so anything the SHELL runs before the exec was never judged. Round 6
+# closed `$(...)`/backticks; round 7 closed the process-substitution twin, which
+# runs the same way and reaches the tree the same way. Full reproducer with the
+# end-to-end tamper-then-baseline demo and a negative self-test:
+# q-system/output/claude-changes/repro/probe_round{6,7}_findings.sh
+assert_block "command substitution behind a sanctioned argv" \
+  'bash q-system/.q-system/scripts/apply-claude-changes.sh "$(touch .claude/evil.txt)"'
+assert_block "process substitution behind a sanctioned argv" \
+  'bash q-system/.q-system/scripts/apply-claude-changes.sh <(touch .claude/evil.txt)'
+assert_block "output process substitution the redirect scan cannot read" \
+  'bash q-system/.q-system/scripts/apply-claude-changes.sh p.json > >(rm .claude/rules/alpha.md)'
+# Inert inside BOTH quote kinds, unlike `$(`. Measured against bash itself; see
+# the extract_substitutions docstring. Judging inert text is the false-block
+# class this issue hit five times -- it would refuse this very test file.
+assert_allow "double-quoted process substitution is inert text" \
+  'echo "<(touch .claude/evil.txt)"'
+
 # F2 MINOR: the redirect regex required whitespace before '>'.
 assert_block "redirect with no space before >" 'printf pwned>.claude/settings.json'
 assert_block "append with no space before >>" 'printf pwned>>.claude/rules/alpha.md'
