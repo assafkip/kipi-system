@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
       "runner": "python3"
     },
@@ -28,6 +32,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
@@ -59,14 +67,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -222,10 +222,6 @@
       "runner": "bash"
     },
     {
-      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
-      "runner": "python3"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
       "runner": "python3"
     },
@@ -246,7 +242,15 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
       "runner": "bash"
     },
     {
@@ -254,7 +258,19 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-reviewer-floor.sh",
       "runner": "bash"
     },
     {
@@ -299,6 +315,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh",
       "runner": "bash"
     },
@@ -324,6 +348,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_autocapture_wiring.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
     },
     {
@@ -438,30 +466,6 @@
     {
       "path": "q-system/.q-system/tests/test_fable_escalation.py",
       "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
-      "runner": "bash"
     }
   ],
   "required_data": [],
