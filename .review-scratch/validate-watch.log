@@ -1,0 +1,19 @@
+Refreshing run status every 30 seconds. Press Ctrl+C to quit.
+
+* sana/ask-285 Skeleton Validation assafkip/kipi-system#88 · 30871633402
+Triggered via pull_request about 7 minutes ago
+
+JOBS
+* validate (ID 91874656692)
+  ✓ Set up job
+  ✓ Run actions/checkout@v6
+  ✓ Configure git identity for the updater tests
+  ✓ Set up Python
+  ✓ Install test dependencies
+  ✓ Capability gate (declared-vs-actual + full test suite)
+  ✓ Run skeleton validation (Phase 1)
+  * Run prd-os tests
+  * Plugin version-bump guard (PR only)
+  * Check for protected file changes
+  * Post Set up Python
+  * Post Run actions/checkout@v6
