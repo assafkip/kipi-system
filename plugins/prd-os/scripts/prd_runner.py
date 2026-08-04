@@ -290,8 +290,12 @@ def cmd_advance(cfg: Config, args: argparse.Namespace) -> int:
 
     if target == "approved":
         rc, err = _findings_gate(cfg, state)
-        if rc != 0:
+        # Emitted on rc == 0 too: the judgment gate returns a decision-
+        # disagreement WARNING alongside a passing code, and the old
+        # `if rc != 0` guard would have swallowed it silently.
+        if err:
             sys.stderr.write(err)
+        if rc != 0:
             return rc
         rc, err = _issues_manifest_gate(cfg, state)
         if rc != 0:
@@ -596,7 +600,138 @@ def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
             f"approval blocked: {len(pending)} pending finding(s): "
             f"{', '.join(pending)}. Set a disposition on each before advancing.\n"
         )
-    return 0, ""
+    return _judgment_receipt_gate(cfg, state["prd_id"])
+
+
+# The Judgment Compiler shipped WRITING a receipt on every triage and REQUIRING
+# one nowhere, which made it available rather than baked in: KIPI_JUDGMENT_CAPTURE=0,
+# a hand-edited findings file, or a capture that failed and got ignored all left
+# a silent hole no gate could see. A ledger with unnoticed holes cannot be the
+# calibration set it exists to be.
+JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
+
+def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
+    """Every dispositioned finding in this PRD must carry a receipt.
+
+    NO EXEMPTION, and deliberately no date logic of any kind. Three shapes all
+    failed the same way. Rounds 2/7/8 of PR #101 inferred eligibility from
+    `resolved_at`, a mutable strippable field. PR #102 moved the inference to
+    the PRD id's creation date, and its review round matched a date-SHAPED
+    suffix no calendar can produce. Then Codex found the defect underneath
+    both: a PRD-creation floor exempts every FUTURE decision on an old PRD, and
+    35 of 36 real PRDs predate the floor, so the gate was a near-permanent
+    no-op -- the opposite of "receipts are required from here on".
+
+    The signal was simply wrong. This gate fires when a PRD is APPROVED, and a
+    PRD being approved now is being decided now, whatever date its id carries.
+    So the rule is unconditional and reads no date at all.
+
+    Measured before removing the exemption, because "a gate that cannot be
+    satisfied gets switched off" is a real risk that deserved a number rather
+    than a worry: of the 36 real PRDs, 21 are archived and 13 approved, so they
+    can never reach this gate again. Exactly ONE is still in-review, with 13
+    dispositioned findings, and its remedy is one `set-disposition` re-run per
+    finding, which mints the receipt as a side effect. A bounded, one-time,
+    self-service cost bought back the whole guarantee.
+
+    Returns (exit_code, text). The text is NOT only an error: a decision-
+    disagreement warning rides back with exit 0, so the caller must emit it
+    regardless of the code.
+    """
+    try:
+        import judgment_compiler
+    except ImportError:
+        # The ONLY fail-open case: the compiler is not installed (an older
+        # instance), so there is no contract to enforce and nothing to read.
+        return 0, ""
+    try:
+        # Read UNDER THE WRITER'S LOCK. capture appends the receipt and then
+        # writes the tip; observed between those two, the ledger holds N+1
+        # records against a tip of N, which the chain check below correctly
+        # calls "receipts BEYOND the tip anchor" -- and would block approval
+        # over a concurrent capture that was perfectly fine (Codex, PR #101
+        # round 4). I gave the writer a lock and left the reader without one.
+        with judgment_compiler.ledger_lock(cfg):
+            records = judgment_compiler.read_ledger(
+                judgment_compiler.ledger_path(cfg))
+            tip = judgment_compiler.read_tip(judgment_compiler.tip_path(cfg))
+        # VERIFY before trusting. read_ledger only parses JSON, so without this
+        # a receipt appended by hand -- right prd_id, right finding_id, right
+        # disposition, broken chain -- satisfied the gate and authorized
+        # approval (Codex, PR #101 round 3). A hash chain no consumer checks is
+        # decoration; the gate is the consumer that matters.
+            chain_errors = judgment_compiler.verify_ledger(records, tip)
+            # Cross-check INSIDE the lock, with the read that feeds it (Codex
+            # major, PR #102). It used to run after the lock was released, so a
+            # concurrent and perfectly valid triage landing in that gap wrote a
+            # disposition this stale ledger snapshot could not see, and approval
+            # false-blocked on a missing receipt that did exist. The round-4 fix
+            # locked the read; the comparison needs the same span.
+            # No `since`: eligibility is unconditional now, so there is nothing
+            # to date-filter.
+            raw_missing, raw_drift = ([], []) if chain_errors else \
+                judgment_compiler.cross_check_findings(
+                    cfg, records, None, prd_id=prd_id)
+        if chain_errors:
+            return 2, (
+                "approval blocked: the judgment ledger does not verify, so its "
+                "receipts cannot be trusted as evidence:\n  "
+                + "\n  ".join(chain_errors[:5])
+                + ("\n  ..." if len(chain_errors) > 5 else "")
+                + "\n\nRun `kipi judgment verify` for the full report.\n"
+            )
+    except Exception as exc:
+        # FAIL CLOSED. The first version caught everything and returned 0,
+        # defended as "a bug in the check must not cause an approval outage".
+        # That conflated two different things: a corrupt or truncated ledger is
+        # not a bug in the gate, it is precisely the integrity failure the gate
+        # exists to catch, and letting approval through on it is the worst
+        # possible response (Codex, PR #101, executed repro: a ValueError from
+        # read_ledger returned rc=0). A required integrity gate fails closed.
+        return 2, (
+            f"approval blocked: the judgment ledger could not be checked ({exc}).\n"
+            "This is refused rather than skipped: an unreadable or corrupt "
+            "ledger is the integrity failure this gate exists to catch. Run "
+            "`kipi judgment verify` to see the damage.\n"
+        )
+    # Exact prd_id match, not `in`: cross_check_findings emits
+    # "<prd_id>/<finding_id>: ...", so a substring test let a missing receipt
+    # for `prd-alpha-2` block approval of `prd-alpha` (Codex, PR #101).
+    missing = [m for m in raw_missing if m.startswith(f"{prd_id}/")]
+    drift = [d for d in raw_drift if d.startswith(f"{prd_id}/")]
+    # WARNING, never a block (PR #101 rounds 6-8). This compares the MUTABLE
+    # findings file against the IMMUTABLE receipt, and when they disagree the
+    # receipt is still the honest record of the decision -- `cmd_evaluate`,
+    # which feeds the release gates, reads ONLY the ledger. Rounds 6-8 blocked
+    # on it and produced two self-inflicted regressions; three of the four
+    # tests guarding it existed to stop it blocking legitimate work rather than
+    # to catch a real threat. A gate that false-blocks gets switched off, and
+    # an off gate protects nothing. It is not dropped: `kipi judgment evaluate`
+    # counts it as decision_disagreement_count and gates AUTOMATION on it.
+    warning = ""
+    if drift:
+        warning = (
+            f"WARNING: {len(drift)} finding(s) whose findings-file record "
+            "disagrees with the receipt that froze the decision:\n  "
+            + "\n  ".join(drift[:5])
+            + ("\n  ..." if len(drift) > 5 else "")
+            + "\n\nApproval is NOT blocked: the receipt is the immutable record "
+              "and the ledger is what calibration reads, while the findings "
+              "file is mutable operational state. Counted as "
+              "decision_disagreement_count by `kipi judgment evaluate`.\n"
+        )
+    if missing:
+        return 2, (
+            f"approval blocked: {len(missing)} dispositioned finding(s) with "
+            "no judgment receipt:\n  "
+            + "\n  ".join(missing[:5])
+            + ("\n  ..." if len(missing) > 5 else "")
+            + "\n\nRe-run the disposition through findings_writer.py "
+              "set-disposition so the decision is recorded, or explain the gap. "
+              "Receipts are the calibration set; a hole in them is invisible "
+              "later.\n"
+        ) + warning
+    return 0, warning
 
 
 # ---------------------------------------------------------------------------

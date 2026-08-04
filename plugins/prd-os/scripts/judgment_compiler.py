@@ -51,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,9 +196,22 @@ def tip_path(cfg: Config) -> Path:
     return _ledger_dir(cfg) / TIP_NAME
 
 
+# Re-entrancy depth, per THREAD. Thread-local rather than a plain global so two
+# threads still serialise against each other through real flocks; only the same
+# thread re-entering skips the second acquire.
+_LOCK_DEPTH = threading.local()
+
+
 @contextmanager
 def ledger_lock(cfg: Config):
     """Exclusive lock held across read + build + append + anchor.
+
+    RE-ENTRANT within one thread, and it has to be: findings_writer now holds
+    this across its findings write AND the capture that follows (sp-0c725cde),
+    while capture_episode takes it again on the way down. flock keys on the
+    OPEN FILE DESCRIPTION, not the process, so a second LOCK_EX on a second fd
+    blocks the caller against itself -- measured before writing this, a nested
+    acquire hangs forever. A depth counter, not a second flock.
 
     WHY (adversarial review 2026-08-04, reproduced with 4 concurrent captures):
     capture is a read-modify-append. Both `sequence` and `prev_receipt_sha256`
@@ -213,13 +227,23 @@ def ledger_lock(cfg: Config):
     flock is advisory and per-host: it does not protect a ledger on a network
     filesystem shared between machines. Named, not hidden.
     """
+    depth = getattr(_LOCK_DEPTH, "value", 0)
+    if depth:
+        _LOCK_DEPTH.value = depth + 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH.value = depth
+        return
     path = _ledger_dir(cfg) / ".judgments.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _LOCK_DEPTH.value = 1
         try:
             yield
         finally:
+            _LOCK_DEPTH.value = 0
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
@@ -1172,8 +1196,19 @@ def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
         path = _ledger_dir(cfg) / "spillover.jsonl"
         if not path.is_file():
             return "no spillover ledger exists"
-        return None if f'"{value}"' in path.read_text(encoding="utf-8") \
-            else "no such spillover item"
+        # Substring-matched the raw file, so a value appearing in ANY field
+        # (a description quoting an id, a resolution_ref) resolved as if it
+        # were the item itself (Codex, PR #97 minor sp-fcb3573e). Parse and
+        # compare the id field.
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                if json.loads(raw).get("id") == value:
+                    return None
+            except json.JSONDecodeError:
+                continue
+        return "no such spillover item"
     if kind == "commit":
         if not re.fullmatch(r"[0-9a-f]{7,40}", value):
             return "not a commit sha"
@@ -1187,38 +1222,106 @@ def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
     return "unknown reference kind"
 
 
+def _decision_fingerprint(disposition, rationale) -> tuple:
+    """What makes two human decisions the same decision.
+
+    ONE definition, used for both sides of the comparison, so adding a frozen
+    field cannot silently go unchecked on one side. Rationale is normalised:
+    the writer stores None for an empty one while a findings record may simply
+    omit the key, and that difference is not a decision change.
+    """
+    text = (rationale or "").strip()
+    return (disposition, text)
+
+
 def cross_check_findings(cfg: Config, records: list[dict],
-                         since: str | None = None) -> list[str]:
+                         since: str | None = None, *,
+                         prd_id: str | None = None
+                         ) -> tuple[list[str], list[str]]:
     """Completeness check against an INDEPENDENT source: every dispositioned
     finding should have a receipt.
+
+    Returns (missing, disagreements). Two lists because the two results carry
+    different force. A MISSING receipt is a permanent, invisible hole in the
+    calibration set: `cmd_evaluate` reads ONLY the ledger, so a decision with
+    no receipt is one the calibration set can never see. A DISAGREEMENT is the
+    MUTABLE findings copy having drifted off the IMMUTABLE receipt, and the
+    receipt is still the honest record of what was decided. So the approval
+    gate blocks on the first and only warns on the second, while
+    `verify --cross-check` reports both as errors -- it is a diagnostic and
+    stays maximally informative.
 
     The tip anchor and the ledger share a writer, so both move together if that
     writer is wrong or malicious. The findings ledgers do not: they are written
     by findings_writer's own path. A dispositioned finding with no receipt is
     either a truncation the anchor missed or a capture that silently failed.
 
-    `since` filters by finding resolved_at, because findings dispositioned
-    before this feature existed have no receipt by construction and would
-    otherwise report as thousands of false gaps.
+    `since` filters by finding resolved_at and exists for the DIAGNOSTIC
+    caller, which passes an explicit --since. The approval gate no longer uses
+    it at all: it scopes with `prd_id` and decides exemption from the PRD's own
+    creation date, because `resolved_at` is a mutable field on a hand-editable
+    file (PR #101 rounds 2, 7 and 8 were all that one defect; see
+    prd_runner._prd_predates_floor).
     """
-    covered = {(r["finding"]["prd_id"], r["finding"]["finding_id"])
-               for r in records}
-    errors = []
+    # Map to the LATEST recorded human disposition, not merely to "a receipt
+    # exists". Identity-only coverage let a receipt for an earlier decision
+    # satisfy the gate after the findings file was hand-edited to a different
+    # one, so the decision actually recorded had no receipt and approval passed
+    # anyway (Codex, PR #101 round 2, executed repro). Receipts are appended in
+    # order and supersede by position, so the last human-bearing receipt for a
+    # finding is its current claim.
+    # Compare EVERY decision field the receipt freezes, not one field at a time.
+    # Rounds 2-5 of PR #101 each found a different unchecked field (identity
+    # only, then disposition, then rationale); patching them one by one is
+    # whack-a-mole on a class. `_decision_fingerprint` is the single definition
+    # of "the same decision", so a new frozen field is covered by construction.
+    covered: dict[tuple, tuple] = {}
+    for record in records:
+        human = record.get("human")
+        if not human:
+            continue  # judge-only receipt makes no claim about a human decision
+        covered[(record["finding"]["prd_id"],
+                 record["finding"]["finding_id"])] = _decision_fingerprint(
+                     human.get("disposition"), human.get("rationale"))
+    missing: list[str] = []
+    disagreements: list[str] = []
     for path in sorted(cfg.findings_dir.rglob("*-findings.jsonl")):
         for record in _read_findings(path):
             disposition = record.get("disposition")
             if disposition in (None, "pending"):
                 continue
-            resolved_at = str(record.get("resolved_at") or "")
-            if since and resolved_at < since:
+            if prd_id is not None and record.get("prd_id") != prd_id:
                 continue
+            resolved_at = str(record.get("resolved_at") or "")
             key = (record.get("prd_id"), record.get("id"))
+            # The floor exempts findings that CANNOT have a receipt because
+            # they were decided before the compiler existed. A finding that HAS
+            # one is not in that category, so the floor must never shield a
+            # mismatch between it and the record. It also must not shield a
+            # finding with no resolved_at at all: "" sorts before every
+            # timestamp, so those were skipped silently even when a conflicting
+            # receipt existed (Codex, PR #101 round 7).
+            if since and resolved_at and resolved_at < since \
+                    and key not in covered:
+                continue
+            if since and not resolved_at and key not in covered:
+                continue  # undateable AND unclaimed: cannot judge, do not guess
             if key not in covered:
-                errors.append(
+                missing.append(
                     f"{key[0]}/{key[1]}: dispositioned {disposition!r} at "
                     f"{resolved_at or 'unknown time'} but no judgment receipt "
                     "exists")
-    return errors
+            else:
+                current = _decision_fingerprint(
+                    disposition, record.get("rationale"))
+                if covered[key] != current:
+                    disagreements.append(
+                        f"{key[0]}/{key[1]}: the findings file records "
+                        f"{current} but the latest receipt froze {covered[key]} "
+                        "— the current decision was never captured "
+                        "(hand-edited, or a capture that failed after the "
+                        "write)")
+    return missing, disagreements
 
 
 def verify_packet_binding(packet: dict, receipt: dict) -> list[str]:
@@ -1305,7 +1408,7 @@ def _expected_calibration_error(cases: list[tuple[str, str, float]]) -> float:
     return ece
 
 
-def evaluate(records: list[dict]) -> dict:
+def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
     active, superseded_excluded = _active_receipts(records)
     judged = [r for r in active if r.get("judge") and r.get("human")
               and r["human"]["disposition"] != "pending"]
@@ -1351,7 +1454,8 @@ def evaluate(records: list[dict]) -> dict:
             and r["human"]["disposition"] in ("rejected", "deferred"))
         / len(active)) if active else 0.0
     unsupported_rate = (converted / len(judged)) if judged else 0.0
-    gates = _release_gates(result, ungated_rate, unsupported_rate)
+    gates = _release_gates(result, ungated_rate, unsupported_rate,
+                           decision_disagreements)
     result.update({
         "superseded_excluded": superseded_excluded,
         "active_receipts": len(active),
@@ -1363,6 +1467,13 @@ def evaluate(records: list[dict]) -> dict:
         # (the code is what the requirements key off). Reported AND gated.
         "ungated_decision_rate": ungated_rate,
         "unsupported_disposition_rate": unsupported_rate,
+        # The approval gate WARNS on these rather than blocking (PR #101
+        # rounds 6-8 false-blocked legitimate work and a gate that false-blocks
+        # gets switched off). Surfaced here so the demotion is not a silent
+        # drop: release_gates reads it, same shape as the evidence-gate bypass
+        # rate in 41c0876, which was a documented release condition nothing
+        # read. Zero when the caller did not supply a count.
+        "decision_disagreement_count": decision_disagreements,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))
         if active else 0.0,
@@ -1374,7 +1485,8 @@ def evaluate(records: list[dict]) -> dict:
 
 
 def _release_gates(scored: dict, ungated_rate: float = 0.0,
-                   unsupported_rate: float = 0.0) -> dict:
+                   unsupported_rate: float = 0.0,
+                   decision_disagreements: int = 0) -> dict:
     """The gates that must ALL pass before any disposition class auto-decides.
 
     The bypass checks are here because they were missing: the PRD listed "no
@@ -1401,6 +1513,14 @@ def _release_gates(scored: dict, ungated_rate: float = 0.0,
         "zero_unsupported_judge_dispositions": {
             "required": 0.0, "actual": unsupported_rate,
             "passed": unsupported_rate == 0.0,
+        },
+        # Approval only WARNS when the findings copy drifts off a receipt, so
+        # without this the demotion would let a ledger whose operational copy
+        # disagrees authorize auto-decide. Blocking a human's approval over it
+        # is a false block; blocking AUTOMATION over it is the right severity.
+        "zero_decision_disagreements": {
+            "required": 0, "actual": decision_disagreements,
+            "passed": decision_disagreements == 0,
         },
         "min_cases": {"required": 50, "actual": scored["cases"],
                       "passed": scored["cases"] >= 50},
@@ -1695,8 +1815,13 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
     errors.extend(verify_candidates(
         candidate_records, {r.get("receipt_id") for r in records}))
     if getattr(args, "cross_check", False):
-        errors.extend(cross_check_findings(cfg, records,
-                                           getattr(args, "since", None)))
+        # The diagnostic reports BOTH classes as errors. Only the approval gate
+        # demotes a disagreement to a warning; `verify` is where you go to see
+        # everything, so narrowing it here would hide the drift entirely.
+        gaps, drift = cross_check_findings(cfg, records,
+                                           getattr(args, "since", None))
+        errors.extend(gaps)
+        errors.extend(drift)
     if args.packet or args.receipt_id:
         if not (args.packet and args.receipt_id):
             raise ValidationError("--packet and --receipt-id go together")
@@ -1771,7 +1896,13 @@ def cmd_evaluate(cfg: Config, args: argparse.Namespace) -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 2
-    print(json.dumps(evaluate(records), indent=2, sort_keys=True))
+    # Counted here, not inside evaluate(): the disagreement lives in the
+    # findings files, which evaluate() cannot see (it takes records only, and
+    # the ledger is deliberately the single input to scoring). No floor is
+    # needed -- a disagreement requires a receipt to disagree WITH, so legacy
+    # pre-compiler findings cannot produce one.
+    _, drift = cross_check_findings(cfg, records)
+    print(json.dumps(evaluate(records, len(drift)), indent=2, sort_keys=True))
     return 0
 
 

@@ -2,6 +2,203 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.14.2] - 2026-08-04
+
+### Fixed (Codex review, PR #102 round 2) — BLOCKER: the floor exempted the future
+A PRD-creation-date floor exempts every FUTURE decision on a pre-floor PRD, not
+just the legacy ones. 35 of the 36 real PRDs predate the floor, so the gate was a
+near-permanent no-op — the exact opposite of "receipts are required from here on".
+
+The signal was wrong, so the mechanism is deleted rather than hardened a third
+time. `_prd_predates_floor`, `_PRD_ID_DATE` and `_PRD_DATE_EARLIEST` are gone and
+the gate reads no date at all: this gate fires when a PRD is APPROVED, and a PRD
+being approved now is being decided now, whatever date its id carries. A test
+asserts none of those three names comes back, so the class is provably gone
+rather than merely unused.
+
+Measured before removing the exemption, because "a gate that cannot be satisfied
+gets switched off" is a real risk that deserved a number: of the 36 real PRDs, 21
+are archived and 13 approved and can never reach this gate again. Exactly ONE is
+still in-review, with 13 dispositioned findings, and its remedy is one
+`set-disposition` re-run per finding, which mints the receipt as a side effect.
+
+This retires the whole date-inference lineage: PR #101 rounds 2/7/8
+(`resolved_at`), 0.14.0 (prd-id date), 0.14.1 (date-shape hardening).
+
+### Fixed (Codex review, PR #102 round 2) — MAJOR: the lock did not span the check
+The gate read the ledger under `ledger_lock`, RELEASED it, and only then
+cross-checked the findings files. A concurrent, perfectly valid triage landing in
+that gap writes a disposition the stale ledger snapshot cannot see, so approval
+false-blocks on a missing receipt that does exist. The round-4 fix locked the
+read; the comparison needed the same span. Both now run inside one critical
+section. The paired test asserts `ledger_lock` depth > 0 at the moment
+`cross_check_findings` is called — re-entrancy makes that probe safe.
+
+## [0.14.1] - 2026-08-04
+
+### Fixed (review of PR #102) — the date class had RELOCATED, not died
+`_prd_predates_floor` matched a date-SHAPED suffix and then string-compared it,
+so `prd-evade-0000-00-00` and `prd-evade-1970-01-01` each bought a free
+exemption from the receipt requirement. That is precisely the defect 0.14.0
+claimed to kill: the floor moved off `resolved_at` because a strippable field
+handed out a free pass, and a suffix no calendar can produce handed out the same
+pass through the new mechanism. 0.14.0's own docstring made the argument against
+it ("the alternative is the same hole in a new shape") and then did not apply it.
+
+The suffix is now parsed with `strptime` AND checked against a plausibility
+floor, both failing closed. `strptime` alone is insufficient: `1970-01-01`
+parses perfectly. The bound (2026-01-01) is MEASURED, not guessed — the 36
+prd_ids under `.prd-os/findings/` span 2026-05-13 to 2026-08-04, so it sits
+months before the earliest real PRD and cannot false-block one.
+
+Regression is table-driven so the next relocation of this class is caught by an
+existing check rather than by review. Two of its rows (`2026-02-30`,
+`2026-06-31`) exist only because a mutation run showed the real-date guard could
+be deleted with every other row still green: the plausibility floor happens to
+subsume `0000-00-00`, and string ordering happens to subsume `2026-13-45`.
+
+## [0.14.0] - 2026-08-04
+
+### Changed — PR #101 split: the integrity half is required, the agreement half warns
+PR #101 took 7 Codex review rounds and rounds 7 and 8 were regressions caused by
+the round-6 fix. The 8 rounds partition cleanly, so the PR was split rather than
+patched a ninth time.
+
+- **Kept as blocking (rounds 1-5, integrity).** Fail closed on an unreadable
+  ledger, exact `prd_id` prefix match, verify the chain before trusting a
+  receipt, and read under the writer's lock. Four defects, zero self-inflicted
+  regressions. These protect the calibration set: `cmd_evaluate` reads ONLY the
+  ledger, so a missing receipt is a permanent invisible hole in it.
+- **Demoted to a warning (rounds 6-8, field agreement).** `_decision_fingerprint`
+  compared the MUTABLE findings file against the IMMUTABLE receipt. It caused two
+  of its own regressions, and three of its four tests existed to stop it blocking
+  legitimate work rather than to catch a real threat. When the two disagree the
+  receipt is still the honest record, so `advance approved` now prints a warning
+  and does not block. A gate that false-blocks gets switched off, and an off gate
+  protects nothing.
+- **`evaluate` reports `decision_disagreement_count`** and gates on it
+  (`zero_decision_disagreements`). The demotion is not a silent drop: blocking a
+  human's approval over drift is a false block, blocking AUTOMATION over it is
+  the right severity. Same shape as 41c0876, which made the release gates read
+  the evidence-gate bypass rate.
+
+### Fixed — the date-inference defect class, killed by construction
+Rounds 2, 7 and 8 were ONE defect: inferring "was this decided after the floor"
+from `resolved_at`, a mutable strippable field on a hand-editable file. The
+round-8 code admitted the inference was undecidable ("undateable AND unclaimed:
+cannot judge, do not guess") and left a documented hole — switch capture off,
+strip the date, and the missing receipt is invisible.
+
+The gate runs at `advance approved` for ONE named PRD, and PRD ids carry their
+creation date. So the floor is now read from the PRD id and no `resolved_at` is
+parsed at all: a PRD dated at or after the floor requires a receipt for every
+dispositioned finding, unconditionally; a PRD predating the floor is exempt
+(pre-compiler decisions can never have receipts). Nothing enforces a prd_id
+format, so an id whose date cannot be parsed FAILS CLOSED. `verify --cross-check`
+is unchanged and still reports both classes as errors — it is a diagnostic and
+stays maximally informative.
+
+### Fixed — the persist path is one critical section (sp-0c725cde)
+A defect in merged code, not only in #101. `_write_all` published the disposition
+and only afterwards did `capture_from_triage` take `ledger_lock` internally. The
+approval gate reads the ledger under that lock, so a gate landing in the gap saw
+a dispositioned finding with no receipt and false-blocked. Reproduced with an
+out-of-process observer that acquired the lock mid-persist and reported
+`dispositioned=1 receipts=0`. `ledger_lock` is now re-entrant per thread (flock
+keys on the open file description, so a nested acquire on a second fd deadlocks
+the caller against itself — measured) and findings_writer holds it across the
+findings write and the capture. Spillover still fans out after the receipt lands.
+
+## [0.13.7] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 7)
+- The since-floor shielded real conflicts. `""` sorts before every timestamp, so
+  a dispositioned finding with no `resolved_at` was skipped even when its
+  receipt disagreed. The floor exists to exempt findings that CANNOT have a
+  receipt; one that HAS a receipt is not in that category, so the floor no
+  longer applies to it. A finding that is both undateable and unclaimed stays
+  exempt, or every legacy PRD blocks forever.
+
+## [0.13.6] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 6) — a regression from round 5
+- Re-dispositioning rejected -> accepted without a new `--rationale` falsely
+  blocked approval. findings_writer keeps the previous rationale on the record
+  (only `pending` clears it), while the receipt captured the FLAG, which was
+  absent. The fingerprint added in 0.13.5 then correctly reported two different
+  decisions. The receipt now freezes the rationale the RECORD carries, which is
+  what a receipt is for.
+
+## [0.13.5] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 5) — closed as a CLASS
+- The coverage check compared `disposition` only, so a hand-edited `rationale`
+  passed as covered. Rounds 2-5 each found a different unchecked field
+  (identity only, then disposition, then rationale). Rather than patch a third
+  field, `_decision_fingerprint` is now the single definition of "the same
+  decision" and is applied to BOTH sides, so a newly frozen field cannot go
+  unchecked on one of them. Empty-vs-absent rationale is normalised, because
+  that difference is not a decision change and must not read as tampering.
+
+## [0.13.4] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 4)
+- **The approval gate read the ledger without the writer's lock.** capture
+  appends the receipt and then writes the tip; observed between those two the
+  ledger holds N+1 records against a tip of N, which the new chain check calls
+  "receipts BEYOND the tip anchor" and blocks approval over a concurrent capture
+  that was perfectly fine. The writer got a lock in 0.12.0 and the reader never
+  did. Ledger and tip are now read together under `ledger_lock`.
+
+## [0.13.3] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 3)
+- **The approval gate trusted receipts it never verified.** It called
+  `read_ledger` (JSON parse only) and never `verify_ledger`, so a receipt
+  appended by hand -- correct prd_id, finding_id and disposition, broken chain
+  -- authorized approval. A hash chain no consumer checks is decoration, and
+  this gate is the consumer that matters. It now verifies the chain and tip
+  first and refuses on any integrity error.
+
+## [0.13.2] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 2)
+- **A receipt for an EARLIER decision satisfied the gate.** Coverage was
+  identity-only `(prd_id, finding_id)`, so hand-editing the findings file to a
+  different disposition left the stale receipt standing in for a decision that
+  was never captured -- and approval passed. The check now compares the
+  finding's current disposition against the latest human-bearing receipt, and
+  says so specifically when they disagree.
+
+## [0.13.1] - 2026-08-04
+
+### Fixed (Codex review, PR #101)
+- **The required receipt gate failed OPEN on an unreadable ledger.** It caught
+  every exception and returned 0, defended in the PR body as "a bug in the check
+  must not cause an approval outage". That conflated a buggy gate with a corrupt
+  ledger, and a corrupt or truncated ledger is precisely the integrity failure
+  the gate exists to catch. It now fails CLOSED on any read error; the only
+  fail-open case left is the compiler not being installed at all.
+- Substring matching let a missing receipt for `prd-alpha-2` block approval of
+  `prd-alpha`. Now an exact `<prd_id>/` prefix match.
+
+## [0.13.0] - 2026-08-04
+
+### Added
+- **The Judgment Compiler is now REQUIRED, not just available.** It shipped
+  writing a receipt on every triage and requiring one nowhere, so
+  `KIPI_JUDGMENT_CAPTURE=0`, a hand-edited findings file, or an ignored capture
+  failure each left a hole no gate could see -- and a ledger with unnoticed
+  holes cannot be the calibration set it exists to be. `_judgment_receipt_gate`
+  now blocks `advance approved` when a finding dispositioned since
+  `JUDGMENT_RECEIPT_FLOOR` carries no receipt. The floor is the point: ~342
+  findings were adjudicated before the compiler existed and can never have
+  receipts, and a gate that cannot be satisfied gets switched off.
+
+### Fixed
+- Spillover evidence refs matched a value in ANY JSON field, so an id quoted
+  inside a description resolved as if it were the item (sp-fcb3573e).
+
 ## [0.12.0] - 2026-08-04
 
 ### Fixed (Codex review round 5, PR #97)

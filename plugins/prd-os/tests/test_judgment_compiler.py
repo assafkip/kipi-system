@@ -1340,3 +1340,588 @@ if __name__ == "__main__":
         [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-q"],
         cwd=str(PLUGIN_ROOT.parent.parent),
     ).returncode)
+
+
+class TestBakedIntoApproval:
+    """The compiler must be REQUIRED by prd-os, not merely available to it.
+
+    Shipped writing a receipt everywhere and requiring one nowhere, so
+    KIPI_JUDGMENT_CAPTURE=0 or a hand-edited findings file left a hole no gate
+    could see. These pin the gate that closes it.
+    """
+
+    def _prd_ready_for_approval(self, repo: Path, run_findings_writer):
+        spec = repo / ".prd-os" / "prds" / f"{PRD_ID}.md"
+        text = spec.read_text().replace(
+            "status: in-review",
+            "status: in-review\ncodex_reviewed_at: 2026-08-04T00:00:00Z\n"
+            f"findings_path: .prd-os/findings/{PRD_ID}-findings.jsonl")
+        spec.write_text(text)
+
+    def test_receipt_gate_reports_a_missing_receipt(self, judgment_repo,
+                                                    run_findings_writer):
+        """Direct call: the gate's own predicate, without the PRD state machine."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "jc_gate2", SCRIPTS_DIR / "judgment_compiler.py")
+        jc = importlib.util.module_from_spec(spec)
+        sys.modules["jc_gate2"] = jc
+        spec.loader.exec_module(jc)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        cfg_spec = importlib.util.spec_from_file_location(
+            "jc_cfg", SCRIPTS_DIR / "config.py")
+        cfgmod = importlib.util.module_from_spec(cfg_spec)
+        sys.modules["jc_cfg"] = cfgmod
+        cfg_spec.loader.exec_module(cfgmod)
+        cfg = cfgmod.load(judgment_repo)
+        missing, _ = jc.cross_check_findings(cfg, [], "2026-01-01T00:00:00Z")
+        assert any(PRD_ID in m for m in missing), missing
+        assert any("no judgment receipt" in m for m in missing)
+
+    def test_floor_exempts_pre_feature_dispositions(self, judgment_repo,
+                                                    run_findings_writer):
+        """A gate that cannot be satisfied gets switched off. Findings decided
+        before the compiler existed must not block approval forever."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "jc_gate3", SCRIPTS_DIR / "judgment_compiler.py")
+        jc = importlib.util.module_from_spec(spec)
+        sys.modules["jc_gate3"] = jc
+        spec.loader.exec_module(jc)
+        cfg_spec = importlib.util.spec_from_file_location(
+            "jc_cfg3", SCRIPTS_DIR / "config.py")
+        cfgmod = importlib.util.module_from_spec(cfg_spec)
+        sys.modules["jc_cfg3"] = cfgmod
+        cfg_spec.loader.exec_module(cfgmod)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        cfg = cfgmod.load(judgment_repo)
+        far_future, _ = jc.cross_check_findings(cfg, [], "2099-01-01T00:00:00Z")
+        assert far_future == [], "floor did not exempt an older disposition"
+
+
+class TestReceiptGateFailsClosed:
+    """A REQUIRED integrity gate must refuse on doubt, not wave work through.
+
+    The first version caught every exception and returned 0, defended as 'a bug
+    in the check must not cause an approval outage'. That conflated a buggy gate
+    with a corrupt ledger -- and a corrupt ledger is exactly what this gate
+    exists to catch (Codex, PR #101).
+    """
+
+    def _runner(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "pr_gate", SCRIPTS_DIR / "prd_runner.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["pr_gate"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_unreadable_ledger_blocks_approval(self, monkeypatch):
+        runner = self._runner()
+        import judgment_compiler as jc
+
+        monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
+        import contextlib
+        monkeypatch.setattr(jc, "ledger_lock",
+                            lambda cfg: contextlib.nullcontext())
+        def boom(_path):
+            raise ValueError("line 7: invalid JSON")
+        monkeypatch.setattr(jc, "read_ledger", boom)
+        code, message = runner._judgment_receipt_gate(object(), "prd-alpha")
+        assert code == 2, "a corrupt ledger must not let approval through"
+        assert "could not be checked" in message
+
+    def test_prefix_prd_id_does_not_cross_block(self, monkeypatch):
+        """`prd-alpha` must not be blocked by a gap belonging to
+        `prd-alpha-2`; substring matching did exactly that."""
+        runner = self._runner()
+        import judgment_compiler as jc
+
+        monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
+        monkeypatch.setattr(jc, "read_ledger", lambda p: [])
+        monkeypatch.setattr(jc, "tip_path", lambda cfg: Path("/dev/null"))
+        monkeypatch.setattr(jc, "read_tip", lambda p: None)
+        monkeypatch.setattr(jc, "verify_ledger", lambda r, tip=None: [])
+        # the gate now reads under the writer's lock; a stub cfg has no path
+        import contextlib
+        monkeypatch.setattr(jc, "ledger_lock",
+                            lambda cfg: contextlib.nullcontext())
+        monkeypatch.setattr(
+            jc, "cross_check_findings",
+            lambda c, r, s=None, *, prd_id=None: ([
+                "prd-alpha-2/finding-1: dispositioned but no judgment receipt "
+                "exists"], []))
+        assert runner._judgment_receipt_gate(object(), "prd-alpha")[0] == 0
+        assert runner._judgment_receipt_gate(object(), "prd-alpha-2")[0] == 2
+
+    def test_missing_compiler_is_the_only_fail_open(self, monkeypatch):
+        """An instance without the compiler has no contract to enforce."""
+        runner = self._runner()
+        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) \
+            else __builtins__.__import__
+
+        def no_compiler(name, *args, **kwargs):
+            if name == "judgment_compiler":
+                raise ImportError("not installed")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr("builtins.__import__", no_compiler)
+        assert runner._judgment_receipt_gate(object(), "prd-alpha") == (0, "")
+
+
+class TestGateChecksTheDecisionNotJustTheFinding:
+    def test_hand_edited_disposition_is_caught(self, judgment_repo,
+                                               run_findings_writer):
+        """Codex PR #101 r2: coverage was identity-only, so a receipt for an
+        EARLIER decision satisfied the gate after the findings file was edited
+        to a different one -- the decision actually recorded had none."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        assert len(read_ledger(judgment_repo)) == 1
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["disposition"] = "rejected"      # hand-edit, no capture
+        rows[0]["rationale"] = "changed my mind offline"
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 2
+        assert "never captured" in proc.stderr
+
+    def test_matching_disposition_passes(self, judgment_repo,
+                                         run_findings_writer):
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_redisposition_through_the_writer_stays_covered(
+            self, judgment_repo, run_findings_writer):
+        """A legitimate change of mind captures a superseding receipt, so the
+        latest receipt matches and the gate stays green."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "reconsidered", "--reason-code",
+            "invalid-finding").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+
+
+class TestGateVerifiesBeforeTrusting:
+    def test_forged_receipt_does_not_authorize_approval(self, judgment_repo,
+                                                        run_findings_writer):
+        """Codex PR #101 r3: the gate parsed receipts but never verified the
+        chain, so a hand-appended receipt with the right ids authorized
+        approval. A hash chain no consumer checks is decoration."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        real = read_ledger(judgment_repo)[0]
+        forged = json.loads(json.dumps(real))
+        forged["finding"]["finding_id"] = "finding-2"
+        forged["prev_receipt_sha256"] = "0" * 64          # chain broken
+        path.write_text(path.read_text() + json.dumps(
+            forged, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False) + "\n")
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "pr_gate_v", SCRIPTS_DIR / "prd_runner.py")
+        runner = importlib.util.module_from_spec(spec)
+        sys.modules["pr_gate_v"] = runner
+        spec.loader.exec_module(runner)
+        import config as cfgmod
+        cfg = cfgmod.load(judgment_repo)
+        code, message = runner._judgment_receipt_gate(cfg, PRD_ID)
+        assert code == 2, "a forged receipt authorized approval"
+        assert "does not verify" in message
+
+
+class TestDecisionFingerprint:
+    """Rounds 2-5 of PR #101 each found a different unchecked field. One
+    fingerprint, used on both sides, closes the class rather than the instance."""
+
+    def test_hand_edited_rationale_is_caught(self, judgment_repo,
+                                             run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "duplicate of finding-9",
+            "--reason-code", "invalid-finding").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["rationale"] = "actually it was a security hole"  # rewritten
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 2
+        assert "never captured" in proc.stderr
+
+    def test_empty_vs_absent_rationale_is_not_a_change(self, judgment_repo,
+                                                       run_findings_writer):
+        """The writer stores None for an empty rationale; a findings record may
+        omit the key. That difference must not read as tampering."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0].pop("rationale", None)
+        rows[0]["rationale"] = ""
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+
+
+class TestRedispositionWithoutNewRationale:
+    def test_rejected_to_accepted_without_rationale_stays_covered(
+            self, judgment_repo, run_findings_writer):
+        """Codex PR #101 r6, a regression from my own round-5 fingerprint fix:
+        findings_writer keeps the previous rationale on a re-disposition (only
+        `pending` clears it), so capturing the FLAG instead of the RECORD froze
+        None against a record that still had text, and the gate falsely blocked."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "not a real defect",
+            "--reason-code", "invalid-finding").returncode == 0
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2026-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+        rec = read_ledger(judgment_repo)[-1]
+        assert rec["human"]["disposition"] == "accepted"
+        assert rec["human"]["rationale"] == "not a real defect", (
+            "the receipt must freeze the rationale the finding actually carries")
+
+
+class TestFloorDoesNotShieldAConflict:
+    def test_finding_without_resolved_at_still_compared_when_a_receipt_exists(
+            self, judgment_repo, run_findings_writer):
+        """Codex PR #101 r7: '' sorts before every timestamp, so a dispositioned
+        finding with no resolved_at was skipped by the floor even when its
+        receipt disagreed. The floor exempts findings that CANNOT have a
+        receipt; one that has a receipt is not in that category."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0]["disposition"] = "rejected"     # conflicts with the receipt
+        rows[0]["rationale"] = "changed offline"
+        rows[0].pop("resolved_at", None)        # ...and is undateable
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2099-01-01T00:00:00Z")
+        assert proc.returncode == 2, "a far-future floor hid a real conflict"
+        assert "never captured" in proc.stderr
+
+    def test_undateable_and_unclaimed_finding_is_still_exempt(
+            self, judgment_repo, run_findings_writer):
+        """No receipt and no date: genuinely pre-feature. Must stay exempt, or
+        every legacy PRD blocks forever and the gate gets switched off."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        path = (judgment_repo / ".prd-os" / "findings"
+                / f"{PRD_ID}-findings.jsonl")
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        rows[0].pop("resolved_at", None)
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        proc = run_judgment(judgment_repo, "verify", "--cross-check",
+                            "--since", "2099-01-01T00:00:00Z")
+        assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# PR #101 split: the gate keeps the integrity half (rounds 1-5) and demotes the
+# field-agreement half (rounds 6-8). See CHANGELOG 0.14.0.
+# ---------------------------------------------------------------------------
+
+
+FINDINGS_REL = ".prd-os/findings"
+
+
+def _load_module(name: str, filename: str):
+    """Load a scripts/ module under a private name (the file's own convention)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _cfg_for(repo: Path):
+    return _load_module(f"cfg_{repo.name}_{id(repo)}", "config.py").load(repo)
+
+
+def _findings_rows(repo: Path, prd_id: str = PRD_ID) -> tuple[Path, list[dict]]:
+    path = repo / FINDINGS_REL / f"{prd_id}-findings.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()
+            if line.strip()]
+    return path, rows
+
+
+def _rewrite_findings(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(
+        json.dumps(r, sort_keys=True) + "\n" for r in rows))
+
+
+class TestGateUsesAPrdLevelFloor:
+    """Rounds 2, 7 and 8 were ONE defect class: inferring "was this decided
+    after the floor" from `resolved_at`, a mutable strippable field on a
+    hand-editable file. The round-8 code admitted the inference was undecidable
+    ("undateable AND unclaimed: cannot judge, do not guess") and left a
+    documented hole: capture off, strip the date, invisible. The gate runs for
+    ONE named PRD whose id carries its creation date, so the floor is read from
+    the id instead and no `resolved_at` is parsed at all.
+    """
+
+    def test_stripping_resolved_at_no_longer_hides_a_missing_receipt(
+            self, judgment_repo, run_findings_writer):
+        """THE round-8 hole, executed: the documented invisible case."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        path, rows = _findings_rows(judgment_repo)
+        for row in rows:
+            row.pop("resolved_at", None)
+        _rewrite_findings(path, rows)
+        runner = _load_module("pr_floor_a", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 2, (
+            "a dispositioned finding with the date stripped and no receipt was "
+            "waved through: the kill-switch-plus-strip hole")
+        assert "no judgment receipt" in message
+
+    def test_an_old_prd_does_not_exempt_a_decision_made_today(
+            self, fake_repo, write_config, run_findings_writer):
+        """Codex BLOCKER on PR #102: a PRD-creation-date floor exempted every
+        FUTURE decision on a pre-floor PRD. 35 of 36 real PRDs predate the
+        floor, so the gate was a near-permanent no-op -- the opposite of
+        "receipts are required from here on".
+
+        Measured before removing the exemption: of the 36 real PRDs, 21 are
+        archived and 13 approved, so they can never reach this gate again. ONE
+        (in-review, 13 dispositioned findings) can, and its remedy is one
+        `set-disposition` re-run per finding, which mints the receipt. So the
+        exemption bought almost nothing and cost the entire guarantee."""
+        legacy = "prd-legacy-2026-07-01"
+        write_config(fake_repo, {"config_schema_version": 1})
+        write_prd_spec(fake_repo, legacy)
+        assert run_findings_writer(
+            fake_repo, "add", legacy, "--source", "codex-review",
+            stdin_text=json.dumps(
+                [{"severity": "major", "body": "a legacy finding"}])
+        ).returncode == 0
+        assert run_findings_writer(
+            fake_repo, "set-disposition", legacy, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        runner = _load_module("pr_floor_b", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(_cfg_for(fake_repo), legacy)
+        assert code == 2, (
+            "an old PRD id must not buy an exemption for a decision being "
+            "approved today")
+        assert "no judgment receipt" in message
+
+    def test_an_undateable_prd_id_fails_closed(
+            self, fake_repo, write_config, run_findings_writer):
+        """No code enforces a prd_id format, so an id whose date cannot be
+        parsed must be treated as post-floor, never exempted."""
+        weird = "prd-no-date-at-all"
+        write_config(fake_repo, {"config_schema_version": 1})
+        write_prd_spec(fake_repo, weird)
+        assert run_findings_writer(
+            fake_repo, "add", weird, "--source", "codex-review",
+            stdin_text=json.dumps(
+                [{"severity": "major", "body": "an undateable finding"}])
+        ).returncode == 0
+        assert run_findings_writer(
+            fake_repo, "set-disposition", weird, "finding-1", "accepted",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        runner = _load_module("pr_floor_c", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(_cfg_for(fake_repo), weird)
+        assert code == 2, "an unparseable prd_id must fail CLOSED, not exempt"
+        assert "no judgment receipt" in message
+
+    def test_a_post_floor_prd_with_its_receipt_passes(self, judgment_repo,
+                                                      run_findings_writer):
+        """Negative self-test: the gate is not simply always-blocking."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        runner = _load_module("pr_floor_d", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 0, message
+
+
+class TestDecisionDisagreementWarnsAndDoesNotBlock:
+    """Rounds 6-8 compared the MUTABLE findings file against the IMMUTABLE
+    receipt and caused two of their own regressions. `cmd_evaluate` (which
+    feeds the release gates) reads ONLY the ledger, so the ledger is the
+    calibration set and the findings file is operational state. When they
+    disagree the receipt is still the honest record, so this reports rather
+    than blocks -- and false-blocking is the failure mode that gets a gate
+    switched off.
+    """
+
+    def _diverge(self, repo, run_findings_writer):
+        assert run_findings_writer(repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path, rows = _findings_rows(repo)
+        rows[0]["rationale"] = "rewritten after the receipt was frozen"
+        _rewrite_findings(path, rows)
+
+    def test_a_fingerprint_mismatch_exits_zero_with_a_warning(
+            self, judgment_repo, run_findings_writer):
+        self._diverge(judgment_repo, run_findings_writer)
+        runner = _load_module("pr_warn_a", "prd_runner.py")
+        code, message = runner._judgment_receipt_gate(
+            _cfg_for(judgment_repo), PRD_ID)
+        assert code == 0, (
+            "a disagreement between the mutable findings copy and the receipt "
+            f"must not block approval: {message}")
+        assert "warning" in message.lower()
+        assert "finding-1" in message
+
+    def test_evaluate_reports_the_disagreement_count(self, judgment_repo,
+                                                     run_findings_writer):
+        """Precedent: 41c0876 made the release gates read the evidence-gate
+        bypass rate rather than leaving a documented condition unenforced."""
+        self._diverge(judgment_repo, run_findings_writer)
+        proc = run_judgment(judgment_repo, "evaluate")
+        assert proc.returncode == 0, proc.stderr
+        report = json.loads(proc.stdout)
+        assert report["decision_disagreement_count"] == 1, report
+        gate = report["release_gates"]["zero_decision_disagreements"]
+        assert gate["passed"] is False, gate
+        assert report["release_gates"]["passed"] is False
+
+    def test_evaluate_reports_zero_when_the_copy_agrees(
+            self, judgment_repo, run_findings_writer):
+        """Negative self-test for the counter itself."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        proc = run_judgment(judgment_repo, "evaluate")
+        assert proc.returncode == 0, proc.stderr
+        report = json.loads(proc.stdout)
+        assert report["decision_disagreement_count"] == 0
+        assert report["release_gates"][
+            "zero_decision_disagreements"]["passed"] is True
+
+
+# An out-of-process observer: the ONLY way to probe the lock from a test, since
+# flock re-entry on a second fd blocks in the SAME process (measured: a second
+# LOCK_EX in one process hangs). It reports whether the persist path left a
+# window in which a gate could see a disposition whose receipt is not yet there.
+_LOCK_OBSERVER = '''
+import fcntl, json, sys
+from pathlib import Path
+
+repo, prd = Path(sys.argv[1]), sys.argv[2]
+handle = open(repo / ".prd-os" / ".judgments.lock", "a+")
+try:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    print("LOCK_HELD")
+    raise SystemExit(0)
+rows = [json.loads(l) for l
+        in (repo / ".prd-os" / "findings" / (prd + "-findings.jsonl")
+            ).read_text().splitlines() if l.strip()]
+done = [r for r in rows if r.get("disposition") not in (None, "pending")]
+ledger = repo / ".prd-os" / "judgments.jsonl"
+receipts = len([l for l in ledger.read_text().splitlines() if l.strip()]) \\
+    if ledger.is_file() else 0
+print("WINDOW_OPEN dispositioned=%d receipts=%d" % (len(done), receipts))
+'''
+
+
+class TestPersistPathIsOneCriticalSection:
+    """sp-0c725cde, a defect in MERGED code. `_write_all` published the
+    disposition and only afterwards did `capture_from_triage` take
+    `ledger_lock` internally. A gate reading under that lock (the round-4 fix)
+    could land in the gap, see a dispositioned finding with no receipt, and
+    false-block work that was completing normally.
+    """
+
+    def test_no_reader_can_observe_a_disposition_without_its_receipt(
+            self, judgment_repo, tmp_path, monkeypatch):
+        import argparse
+
+        writer = _load_module("fw_window", "findings_writer.py")
+        observer = tmp_path / "lock_observer.py"
+        observer.write_text(_LOCK_OBSERVER)
+        seen: list[str] = []
+        real_write_all = writer._write_all
+
+        def watched_write_all(path, records):
+            real_write_all(path, records)
+            proc = subprocess.run(
+                [sys.executable, str(observer), str(judgment_repo), PRD_ID],
+                capture_output=True, text=True)
+            seen.append((proc.stdout + proc.stderr).strip())
+
+        monkeypatch.setattr(writer, "_write_all", watched_write_all)
+        args = argparse.Namespace(
+            prd_id=PRD_ID, finding_id="finding-1", disposition="accepted",
+            rationale="", covered_by="", reason_code=None, evidence=[],
+            actor="founder", judge_run=None)
+        assert writer.cmd_set_disposition(_cfg_for(judgment_repo), args) == 0
+        assert seen, "the persist path never wrote the findings file"
+        assert seen[0] == "LOCK_HELD", (
+            "an outside reader observed the findings file mid-persist: "
+            f"{seen[0]}")
+
+
+# The date-shape table that used to live here is gone with the mechanism it
+# guarded. `_prd_predates_floor` parsed a date out of the prd_id; Codex's
+# blocker showed the whole date-based exemption was wrong, so the function was
+# deleted rather than hardened a third time. A class dies best by deleting the
+# mechanism, not by adding a guard to it.
+
+
+def test_no_date_parsing_survives_in_the_receipt_gate():
+    """Executable proof the class is gone, not merely unused."""
+    source = (SCRIPTS_DIR / "prd_runner.py").read_text()
+    for dead in ("_prd_predates_floor", "_PRD_ID_DATE", "_PRD_DATE_EARLIEST"):
+        assert dead not in source, (
+            f"{dead} is back: the receipt gate must not infer eligibility "
+            "from any date")
+
+
+def test_the_cross_check_runs_under_the_writer_lock(judgment_repo, monkeypatch):
+    """Codex MAJOR on PR #102: the gate read the ledger under `ledger_lock`,
+    RELEASED it, and only then cross-checked the findings files. A concurrent,
+    perfectly valid triage landing in that gap writes a disposition the gate's
+    stale ledger snapshot cannot see, so approval false-blocks on a missing
+    receipt that does exist. The lock has to span the comparison, not just the
+    read that feeds it.
+
+    `ledger_lock` is re-entrant per thread, so depth > 0 is exactly the
+    assertion "a lock is held right now" without deadlocking the prober.
+    """
+    runner = _load_module("pr_lockspan", "prd_runner.py")
+    import judgment_compiler as jc
+
+    seen = []
+    real = jc.cross_check_findings
+    monkeypatch.setattr(jc, "cross_check_findings",
+                        lambda *a, **k: (seen.append(
+                            getattr(jc._LOCK_DEPTH, "value", 0)) or real(*a, **k)))
+    runner._judgment_receipt_gate(_cfg_for(judgment_repo), PRD_ID)
+    assert seen, "the cross-check never ran"
+    assert seen[0] >= 1, (
+        "cross_check_findings ran with the writer lock released; a concurrent "
+        "triage in that window false-blocks approval")

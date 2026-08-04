@@ -392,8 +392,13 @@ def _precision_gloss(result: dict) -> str:
     metrics beside it is worse than no report.
     """
     precision = result["per_label"]["accepted"]["precision"]
+    # Boundary matters: at exactly 0.5 neither "more than half rejected" nor
+    # "most accepted" is true, and the old split reported 50% as "Most",
+    # contradicting the number beside it (Codex, PR #100 minors).
     if precision < 0.5:
         return "More than half of the judge's fix-now calls were not accepted."
+    if precision == 0.5:
+        return "Exactly half of the judge's fix-now calls were accepted."
     if precision < 1.0:
         return "Most of the judge's fix-now calls were accepted."
     return "Every fix-now call the judge made was accepted."

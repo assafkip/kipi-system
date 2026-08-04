@@ -235,7 +235,18 @@ model_rsync_excludes() {
   # the projection cannot be built against a stale or unpopulated list. The
   # scan is cached per root, so this costs nothing on the second call.
   model_skip_scan "$instance_root"
+  # BUILD CACHES ARE NOT STATE. The model exists to preview what the skeleton
+  # sync would do, and the sync never touches these -- copying them is pure
+  # cost. Measured 2026-08-04: the accountant instance carried an 8.7G
+  # src-tauri/target tree, the copy hit "No space left on device" at 92% disk,
+  # and the instance reported FAILED in --dry while the real run had updated it
+  # fine. So --dry manufactured a false failure out of disk pressure alone.
+  # Every path here is regenerable by its own toolchain and gitignored.
   MODEL_EXCLUDES=(--exclude=".git")
+  local cache_dir
+  for cache_dir in target node_modules .venv venv __pycache__ .next dist build .pytest_cache .mypy_cache .ruff_cache; do
+    MODEL_EXCLUDES+=(--exclude="$cache_dir/")
+  done
   for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
     MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
   done
