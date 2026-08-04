@@ -2180,15 +2180,25 @@ def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(run, indent=2, sort_keys=True),
                            encoding="utf-8")
+    # The PREDICTION IS DELIBERATELY ABSENT from this summary (Codex major, PR
+    # #103 round 2). `/prd-triage` runs this command inside the founder's
+    # interactive session, so anything printed here lands in the transcript
+    # they read BEFORE setting a disposition. A founder who sees the prediction
+    # and agrees inflates measured agreement, and the calibration set stops
+    # measuring anything.
+    #
+    # The first version printed `workflow_disposition` alongside a `note`
+    # saying not to show it. That is prose doing a job that belongs to code:
+    # the value was already on screen by the time anyone read the warning. The
+    # prediction lives in the run file, which `set-disposition --judge-run`
+    # consumes without displaying. Paired test:
+    # TestTheJudgeSummaryWithholdsThePrediction.
     print(json.dumps({
         "path": str(destination),
         "model": run["model"],
         "prompt_sha256": run["prompt_sha256"],
         "input_sha256": run["input_sha256"],
-        "workflow_disposition": run["output"]["workflow_disposition"],
-        "note": "do NOT show this to the founder before their disposition is "
-                "set; a human who sees the prediction and agrees inflates "
-                "measured agreement and the calibration set is worthless",
+        "prediction": "withheld until the disposition is set",
     }, indent=2))
     return 0
 

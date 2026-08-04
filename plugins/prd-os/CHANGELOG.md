@@ -2,6 +2,22 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.5] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 2) — the judge summary leaked its own prediction
+`cmd_judge` printed `workflow_disposition` in its stdout summary. `/prd-triage`
+runs that command inside the founder's interactive session, so the prediction
+landed in the transcript they read BEFORE setting a disposition — the exact
+contamination the blindness rule exists to prevent. A founder who sees the
+prediction and agrees inflates measured agreement, and the calibration set stops
+measuring anything.
+
+The original shipped the leak AND a `note` field telling the reader not to show
+it. That is prose doing a job that belongs to code: the value was already on
+screen by the time anyone read the warning. The summary now withholds the
+prediction; the run file still records it, and `set-disposition --judge-run`
+consumes it without displaying it.
+
 ## [0.15.4] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 1) — two majors, both dataset-integrity

@@ -2202,3 +2202,43 @@ class TestFailSoftJudgeStaysCountable:
         assert receipt["judge"]["converted_to_needs_human"] is True, (
             "a disposition left unsupported after dropping a fabricated ref "
             "must degrade to needs-human, not stand as supported")
+
+
+class TestTheJudgeSummaryWithholdsThePrediction:
+    """Codex MAJOR, PR #103 round 2. `cmd_judge` printed
+    `workflow_disposition` in its stdout summary. `/prd-triage` runs that
+    command in the founder's interactive session, so the prediction landed in
+    the transcript BEFORE they set a disposition -- the precise contamination
+    the blindness rule exists to stop. A founder who sees the prediction and
+    agrees inflates measured agreement, and the calibration set stops measuring
+    anything.
+
+    The original code shipped the leak and a `note` field telling the reader
+    not to show it. Prose was doing a job that belongs to code: the fix is to
+    not emit the value at all.
+    """
+
+    def test_stdout_does_not_carry_the_predicted_disposition(
+            self, judgment_repo, tmp_path, judge_stub):
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run), env_extra={"KIPI_JUDGE_CMD": judge_stub})
+        assert proc.returncode == 0, proc.stderr
+        # The stub predicts fix-now / valid-fix-now.
+        for leak in ("fix-now", "valid-fix-now", "technical_validity"):
+            assert leak not in proc.stdout, (
+                f"the judge summary leaked {leak!r} into the transcript the "
+                f"founder reads before deciding:\n{proc.stdout}")
+
+    def test_the_run_file_still_records_the_prediction(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Negative self-test: withheld from the TRANSCRIPT, not discarded.
+        A judge whose prediction never reaches the ledger scores nothing."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["workflow_disposition"] == "fix-now"
