@@ -100,6 +100,14 @@ SHELL_SINKS = {"bash", "sh", "zsh", "dash", "ksh", "eval", "source", "xargs",
 SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
               "claude-integrity-tripwire.py", "kipi-update.sh")
 
+# The same four programs, named a SECOND time for a DIFFERENT property: each one
+# rewrites Layer 2's baseline (the tripwire directly; the other three by calling
+# it once they have written). Being sanctioned to write and being able to erase
+# the backstop are not the same claim -- a future entrypoint could be one without
+# the other -- so the next person editing one list does not silently change the
+# other. See _rebaselines_layer2(), which is the only reader.
+REBASELINERS = SANCTIONED
+
 # Statement boundaries only. A single `|` is deliberately NOT a boundary: a
 # pipeline is one unit of intent, and splitting it severs the path from the
 # writer. `echo .claude/x | xargs touch` has the path in stage 1 and the writer
@@ -395,7 +403,7 @@ def unwatched_by_layer2(path):
     return os.path.basename(os.path.normpath(path)) in LAYER2_EXCLUDED_FILES
 
 
-def _unanchored_unwatched(args, cwd, assigns):
+def _unanchored_unwatched(args, cwd, assigns, layer2_blind=False):
     """Tokens this parser cannot anchor whose LITERAL tail names a `.claude/`
     file Layer 2 does not watch. Returned as ordinary touches, so the read-only
     allowlist, the git-subcommand rule and the sink rule all still apply.
@@ -420,7 +428,12 @@ def _unanchored_unwatched(args, cwd, assigns):
         if resolve(arg, cwd, assigns) is not None:
             continue  # anchorable: judged as a real path elsewhere
         tail = literal_claude_tail(arg, assigns)
-        if tail and unwatched_by_layer2(tail):
+        if not tail:
+            continue
+        # Normally only the files Layer 2 refuses to watch fail closed here. When
+        # the command re-baselines Layer 2, NO protected position has a backstop
+        # left, so every one of them does (review finding, round 8).
+        if unwatched_by_layer2(tail) or (layer2_blind and protected_position(tail)):
             out.append(tail)
     return out
 
@@ -717,15 +730,22 @@ def analyse(command, cwd):
     the outer program, the sanctioned-entrypoint one above all, can reach inside
     them.
     """
+    # Computed ONCE over the whole command, never per body: a substitution body
+    # names no sanctioned program of its own, so a per-body flag would read False
+    # for `<tripwire> --register x <(touch $UNSET/.claude/rules/pwn.md)`.
+    blind = _rebaselines_layer2(command)
     for body in extract_substitutions(command):
-        reason = _analyse_statements(body, cwd)
+        reason = _analyse_statements(body, cwd, blind)
         if reason:
             return "shell substitution %s" % reason
-    return _analyse_statements(command, cwd)
+    return _analyse_statements(command, cwd, blind)
 
 
-def _analyse_statements(command, cwd):
-    """The statement-and-stage walk over one command string."""
+def _analyse_statements(command, cwd, layer2_blind=False):
+    """The statement-and-stage walk over one command string.
+
+    `layer2_blind` is True when this command also re-baselines Layer 2, which
+    voids every handoff to it. See _rebaselines_layer2()."""
     assigns = {}
     effective_cwd = cwd
     command = strip_heredocs(command)
@@ -768,7 +788,7 @@ def _analyse_statements(command, cwd):
                     return "pipeline feeds a .claude/ path into %r" % os.path.basename(head[0])
 
         for seg in stages:
-            reason = _stage(seg, assigns, [effective_cwd], cwd)
+            reason = _stage(seg, assigns, [effective_cwd], cwd, layer2_blind)
             if isinstance(reason, str):
                 return reason
             effective_cwd = reason[0]
@@ -791,18 +811,81 @@ def _is_sanctioned(tokens):
     looks at the PROGRAM POSITION only: argv[0], plus argv[1] when argv[0] is an
     interpreter, since `bash apply-claude-changes.sh ...` is the normal form.
     """
+    return any(c in SANCTIONED for c in _program_names(tokens))
+
+
+def _program_names(tokens):
+    """The basenames a segment could be EXECUTING: argv[0], plus argv[1] when
+    argv[0] is an interpreter, since `bash apply-claude-changes.sh ...` is the
+    normal form.
+
+    Factored out so the re-baseline test below asks the SAME structural question
+    of the SAME positions. Two program allowlists reading argv two ways is how a
+    bypass survives a round: round 1 shipped a substring match here and it took
+    a review to notice the other test had never agreed with it.
+    """
     if not tokens:
-        return False
+        return []
     cands = [os.path.basename(tokens[0])]
     if cands[0] in ("bash", "sh", "zsh", "python", "python3") and len(tokens) > 1:
         for t in tokens[1:]:
             if not t.startswith("-"):
                 cands.append(os.path.basename(t))
                 break
-    return any(c in SANCTIONED for c in cands)
+    return cands
 
 
-def _stage(seg, assigns, cwd_box, session_cwd=None):
+def _rebaselines_layer2(command):
+    """True if ANY stage of this command rewrites Layer 2's baseline.
+
+    WHY THIS EXISTS (review finding, PR #85 round 8, BLOCKER). Layer 1 hands an
+    UNANCHORABLE `.claude/` write to Layer 2 -- `resolve()` returns None, the
+    named gap this file already documents -- on the explicit ground that the file
+    lands and the hash moves, so the tripwire reverts it. That ground is a claim
+    about what happens AFTER this tool call. A sanctioned re-baseline in the SAME
+    call falsifies it:
+
+        touch $UNSET/.claude/rules/pwn.md; <tripwire> --register .claude/rules/pwn.md
+
+    The shell runs both before any PostToolUse hook fires, `--register` records
+    the tampered file as the trusted state, and the tripwire that was supposed to
+    be the backstop reports clean. Measured against the pre-fix guard by Codex
+    and by probe_round8_findings.sh phase 1: rc=0, six shapes through.
+
+    It is round 6 and round 7's hole a third time -- an exemption granted to one
+    program reaching work it was never granted for -- but it needs no
+    substitution at all, so the extractor could never have caught it. The
+    exemption that matters here is not `_is_sanctioned` returning `ok` for a
+    statement; it is the HANDOFF taken by a DIFFERENT statement whose backstop
+    the sanctioned one erases.
+
+    ORDER-INDEPENDENT on purpose. `;` is linear but `&&`, `||`, subshells and
+    background jobs are not, and a parser that decides which side of a `;` runs
+    first is a new failure surface guarding a hole it may get wrong. Blocking
+    both orders costs one tool call and mis-ordering costs the gate.
+
+    THE ESCAPE HATCH, and why the false-block cost is affordable: split the
+    command into TWO Bash calls. Layer 2 then runs BETWEEN them, which is exactly
+    the property the handoff assumed. probe_round8_findings.sh phase 3 pins the
+    one real false block this buys (a temp fixture tree built in the same command
+    as a re-baseline) rather than pretending the fix is free.
+
+    Substitution bodies are searched too: `--register` hidden in a `<(...)` still
+    erases the baseline.
+    """
+    for text in [command] + extract_substitutions(command):
+        for stmt in split_outside_quotes(strip_heredocs(text), STATEMENT_OPS):
+            for stage in split_outside_quotes(stmt, ("|",)):
+                try:
+                    tokens = shlex.split(stage, comments=True)
+                except ValueError:
+                    tokens = stage.split()
+                if any(c in REBASELINERS for c in _program_names(tokens)):
+                    return True
+    return False
+
+
+def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     """One pipeline stage. Returns a blocking reason (str), or [new_cwd] to
     carry a `cd` forward to the stages and statements after it.
 
@@ -827,9 +910,15 @@ def _stage(seg, assigns, cwd_box, session_cwd=None):
         target = resolve(raw, effective_cwd, assigns)
         if target and hits_claude(target, session_cwd):
             return "redirects output into .claude/: %s" % redir.group(1)
-        if target is None and unwatched_by_layer2(literal_claude_tail(raw, assigns) or ""):
-            return ("redirects into a .claude/ file Layer 2 does not watch: %s"
-                    % redir.group(1))
+        if target is None:
+            tail = literal_claude_tail(raw, assigns) or ""
+            if unwatched_by_layer2(tail):
+                return ("redirects into a .claude/ file Layer 2 does not watch: %s"
+                        % redir.group(1))
+            # Watched, but this command erases the baseline that would catch it.
+            if layer2_blind and protected_position(tail):
+                return ("redirects into .claude/ while re-baselining Layer 2: %s"
+                        % redir.group(1))
 
     # Leading VAR=value assignments, so a path in a variable still resolves.
     while tokens:
@@ -870,7 +959,7 @@ def _stage(seg, assigns, cwd_box, session_cwd=None):
     paths = [resolve(a, effective_cwd, assigns) for a in args
              if not a.startswith("-") and "\n" not in a]
     touches = [p for p in paths if p and hits_claude(p, session_cwd)]
-    touches += _unanchored_unwatched(args, effective_cwd, assigns)
+    touches += _unanchored_unwatched(args, effective_cwd, assigns, layer2_blind)
 
     # A bare write inside an already-.claude cwd has no .claude token at all.
     if not touches and hits_claude(effective_cwd, session_cwd) and prog not in READ_ONLY:
@@ -930,6 +1019,13 @@ def main():
             ".claude/ wires every hook, rule and agent; an agent that writes there can "
             "disable its own gates. Use the sanctioned path: a proposal applied by "
             "apply-claude-changes.sh (additive-only, ratcheted, auto-reverting).\n" % reason)
+        if _rebaselines_layer2(command):
+            sys.stderr.write(
+                "This command also RE-BASELINES Layer 2 (%s), so a .claude/ path this "
+                "parser cannot anchor has no backstop left and fails closed instead of "
+                "being handed off (ASK-291 round 8). If the block is unexpected, run the "
+                "two halves as SEPARATE Bash calls -- Layer 2 then runs between them, "
+                "which is what the handoff assumes.\n" % ", ".join(REBASELINERS))
         return 2
     return 0
 

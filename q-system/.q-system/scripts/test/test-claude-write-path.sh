@@ -560,6 +560,38 @@ assert_block ".claude/worktrees itself is still protected" \
 assert_block "watched subtree still protected under a scratch NAME" \
   'touch .claude/rules/worktrees.md'
 
+# --- round 8: a re-baseline in the same command voids the handoff to Layer 2 ---
+# Layer 1 hands an UNANCHORABLE `.claude/` write to Layer 2 because the file
+# lands and the hash moves. `--register` / `--baseline` in the SAME tool call
+# records the tamper as trusted before any PostToolUse hook runs, so the backstop
+# reports clean. Both layers defeated, no alarm (review finding, PR #85 round 8).
+TRIP=q-system/.q-system/scripts/claude-integrity-tripwire.py
+APPLY=q-system/.q-system/scripts/apply-claude-changes.sh
+
+assert_block "unanchorable write + --register in one command" \
+  "touch \$UNSET/.claude/rules/pwn.md; python3 $TRIP --register .claude/rules/pwn.md"
+assert_block "same pair, re-baseline first (order-independent)" \
+  "python3 $TRIP --register .claude/rules/pwn.md; touch \$UNSET/.claude/rules/pwn.md"
+assert_block "unanchorable redirect + blanket --baseline" \
+  "printf pwned > \$UNSET/.claude/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "unanchorable write inside <( ), re-baseline outside" \
+  "python3 $TRIP --register .claude/rules/pwn.md <(touch \$UNSET/.claude/rules/pwn.md)"
+assert_block "unanchorable write && the applier, which re-baselines" \
+  "touch \$UNSET/.claude/agents/pwn.md && bash $APPLY proposal.json"
+
+# The void reaches ONLY tokens that took the handoff. Everything below kept
+# working, and each line is one of the false blocks that has nearly killed this
+# guard: the handoff itself when nothing erases the backstop, the temp-dir
+# fixture, and any path this parser CAN anchor.
+assert_allow "unanchorable write alone still hands off to Layer 2" \
+  'touch $UNSET/.claude/rules/pwn.md'
+assert_allow "re-baseline alone" \
+  "python3 $TRIP --register .claude/rules/x.md"
+assert_allow "temp-dir fixture tree beside nothing" \
+  'D=$(mktemp -d); mkdir -p "$D/.claude/rules"'
+assert_allow "resolvable /tmp fixture beside a re-baseline" \
+  "mkdir -p /tmp/x/.claude/rules; python3 $TRIP --register .claude/rules/x.md"
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
