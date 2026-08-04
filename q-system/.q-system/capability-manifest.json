@@ -297,9 +297,9 @@
           "id": "floor-verdict-takes-more-than-the-first-token",
           "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
           "kind": "logic",
-          "find": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)\"\n",
-          "replace": "  v=\"$(grep -A3 -E 'VERDICT' \"$f\" 2>/dev/null | sed 's/BLOCKERS\\{0,1\\}//g' \\\n        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK')\"\n",
-          "why": "the real PR #11 round-4 verdict QUALIFIES itself on one line -- `**REQUEST CHANGES** (not BLOCK -- nothing here writes an unrecoverable object)` -- so the anchored window yields two tokens and only head -1 makes the stated verdict win. Without it the record reads BLOCK for a review that said the opposite in the same breath"
+          "find": "      if (s ~ /^APPROVE WITH NITS/) return \"APPROVE WITH NITS\"\n      if (s ~ /^REQUEST CHANGES/)   return \"REQUEST CHANGES\"\n      if (s ~ /^APPROVE/)           return \"APPROVE\"\n      if (s ~ /^BLOCK/)             return \"BLOCK\"\n",
+          "replace": "      if (s ~ /BLOCK/)              return \"BLOCK\"\n      if (s ~ /APPROVE WITH NITS/)  return \"APPROVE WITH NITS\"\n      if (s ~ /REQUEST CHANGES/)    return \"REQUEST CHANGES\"\n      if (s ~ /APPROVE/)            return \"APPROVE\"\n",
+          "why": "the real PR #11 round-4 verdict QUALIFIES itself on one line -- `**REQUEST CHANGES** (not BLOCK -- nothing here writes an unrecoverable object)` -- so the verdict token must be the one that LEADS the statement; a token from the qualifier that follows must not win. ASK-356 moved that property from `head -1` on a grep pipeline into the `^` anchors of awk leading_token, so the mutant follows it there: unanchoring lets `(not BLOCK ...)` decide and the record reads BLOCK for a review that said the opposite in the same breath"
         },
         {
           "id": "floor-worker-stops-sourcing-the-lib",
