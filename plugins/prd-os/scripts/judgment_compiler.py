@@ -2055,7 +2055,12 @@ def _judge_argv(model: str) -> list[str]:
     a weekly budget in an hour, and an unrecorded model change would confound a
     kappa shift with a capability shift.
     """
-    return ["claude", "-p", "--model", model, "--allowedTools", ""]
+    # `--tools ""` is the AVAILABILITY control; `claude --help` states: "Use
+    # "" to disable all tools". The first version used `--allowedTools ""`,
+    # which is a permission ALLOWLIST and does not remove availability -- the
+    # judge kept its tools and the paired test asserted the wrong flag, so the
+    # test encoded the bug instead of catching it (Codex, PR #103 round 1).
+    return ["claude", "-p", "--model", model, "--tools", ""]
 
 
 def _judge_prompt_text(packet: dict) -> str:
@@ -2096,7 +2101,7 @@ def _extract_json_object(raw: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
-def run_judge(packet: dict, *, model: str) -> dict:
+def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
     """Run the judge; the `validate_judge_output` validator and its pytest
     cases are the executable blockers on everything this docstring claims.
 
@@ -2129,6 +2134,27 @@ def run_judge(packet: dict, *, model: str) -> dict:
         except (ValidationError, json.JSONDecodeError) as exc:
             failures.append(f"attempt {attempt}: {exc}")
             continue
+        # RESOLVE the citations, do not merely pattern-match them (Codex major,
+        # PR #103 round 1). `validate_judge_output` checks SYNTAX, so an
+        # invented but well-formed ref like `finding:prd-nope/finding-999`
+        # satisfied the evidence gate and was stored as a supported decision
+        # that the release gates then counted. The judge prompt promises this
+        # resolution happens; until now that promise was false.
+        #
+        # Unresolvable refs are DROPPED rather than retried: a model that
+        # cannot cite something real will not do better on attempt 2, and the
+        # honest outcome is an unsupported disposition. Dropping them leaves
+        # `evidence_gate_errors` to convert the disposition to needs-human,
+        # which is the gate WORKING and is already counted as
+        # `converted_to_needs_human`.
+        refs = list(output.get("evidence_refs") or [])
+        if refs:
+            unresolved = set()
+            for problem in resolve_evidence_refs(cfg, refs):
+                for ref in refs:
+                    if ref in problem:
+                        unresolved.add(ref)
+            output["evidence_refs"] = [r for r in refs if r not in unresolved]
         return {
             "model": model,
             "prompt_sha256": JUDGE_PROMPT_SHA256,
@@ -2147,7 +2173,7 @@ def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
     packet = assemble_packet(cfg, args.prd, args.finding)
     model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
         or JUDGE_MODEL_DEFAULT
-    run = run_judge(packet, model=model)
+    run = run_judge(cfg, packet, model=model)
     # Written only on success, and only after validation, so a failed judge
     # leaves no partial file for a later `--judge-run` to pick up.
     destination = Path(args.output)

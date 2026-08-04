@@ -2,6 +2,27 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.4] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 1) — two majors, both dataset-integrity
+- **The judge was not actually blind.** `_judge_argv` passed `--allowedTools ""`,
+  which is a permission ALLOWLIST and does not remove tool availability. The
+  availability control is `--tools ""` (`claude --help`: "Use "" to disable all
+  tools"). The paired test asserted the wrong flag, so it encoded the bug rather
+  than catching it — a test can only protect the property it actually names.
+- **Judge citations were never resolved.** `validate_judge_output` checks ref
+  SYNTAX, so an invented but well-formed ref like `finding:prd-nope/finding-999`
+  satisfied the evidence gate and was stored as a supported decision that the
+  release gates counted. Judge refs now go through `resolve_evidence_refs`, which
+  opens each one; unresolvable refs are DROPPED rather than retried, leaving
+  `evidence_gate_errors` to degrade the disposition to needs-human — the gate
+  working, already counted as `converted_to_needs_human`.
+
+  This one was self-inflicted twice over: the judge prompt promised that refs are
+  resolved by `resolve_evidence_refs`, and that same sentence was what satisfied
+  the prompt-only-enforcement guard. A gate cleared with an untrue claim about
+  our own code. The claim is now true.
+
 ## [0.15.3] - 2026-08-04
 
 ### Fixed (Codex review, PR #102 round 3 minor — sp-9dc72a7e)

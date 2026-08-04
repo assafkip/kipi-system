@@ -2022,12 +2022,14 @@ class TestJudgeRunnerClosesTheProductionGap:
         becomes a measure of its own leakage."""
         jc = _load_module("jc_judge_argv", "judgment_compiler.py")
         argv = jc._judge_argv("claude-opus-5")
-        joined = " ".join(argv)
-        assert "--allowedTools" in joined or "--allowed-tools" in joined, argv
-        index = [i for i, a in enumerate(argv)
-                 if a in ("--allowedTools", "--allowed-tools")][0]
-        assert argv[index + 1] == "", (
-            f"tools must be disabled for the judge; got {argv[index + 1]!r}")
+        # `--tools ""` is the AVAILABILITY control -- `claude --help`: "Use ""
+        # to disable all tools". `--allowedTools` is a permission ALLOWLIST and
+        # does not remove availability, so the first version of this test
+        # asserted the wrong flag and encoded the very bug it was meant to
+        # prevent (Codex, PR #103 round 1).
+        assert "--tools" in argv, argv
+        assert argv[argv.index("--tools") + 1] == "", (
+            f"tools must be disabled: {argv}")
 
     def test_malformed_output_retries_then_fails_loudly(
             self, judgment_repo, tmp_path, judge_stub):
@@ -2160,3 +2162,43 @@ class TestFailSoftJudgeStaysCountable:
         assert report["unjudged_decision_rate"] == 0.0, report
         assert report["release_gates"][
             "zero_unjudged_decisions"]["passed"] is True
+
+
+    def test_a_fabricated_judge_evidence_ref_is_dropped_and_downgraded(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Codex MAJOR, PR #103 round 1. Judge refs were checked for SYNTAX and
+        never RESOLVED, so an invented-but-well-formed citation satisfied the
+        evidence gate and was stored as a supported decision that release gates
+        then counted.
+
+        Worse than a missed check: the judge prompt TOLD the model its refs
+        would be resolved by `resolve_evidence_refs`, and that sentence was also
+        what I used to satisfy the prompt-only-enforcement guard. A gate cleared
+        with an untrue claim about my own code.
+        """
+        run = tmp_path / "judge-run.json"
+        fabricated = json.dumps({
+            "technical_validity": "valid",
+            "technical_reason": "looks like a duplicate of something",
+            "workflow_disposition": "duplicate",
+            "workflow_reason_code": "duplicate",
+            "evidence_refs": ["finding:prd-does-not-exist/finding-999"],
+            "missing_context": [],
+            "confidence": 0.9,
+        })
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_JUDGE_OUTPUT": fabricated}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["evidence_refs"] == [], (
+            "an unresolvable citation must not survive into the run: "
+            f"{emitted['output']['evidence_refs']}")
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "dupe", "--judge-run", str(run)).returncode == 0
+        receipt = read_ledger(judgment_repo)[-1]
+        assert receipt["judge"]["converted_to_needs_human"] is True, (
+            "a disposition left unsupported after dropping a fabricated ref "
+            "must degrade to needs-human, not stand as supported")
