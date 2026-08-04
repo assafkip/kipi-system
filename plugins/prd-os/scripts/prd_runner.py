@@ -619,14 +619,32 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
     try:
         import judgment_compiler
     except ImportError:
-        return 0, ""  # compiler absent (older instance): nothing to enforce
+        # The ONLY fail-open case: the compiler is not installed (an older
+        # instance), so there is no contract to enforce and nothing to read.
+        return 0, ""
     try:
         records = judgment_compiler.read_ledger(
             judgment_compiler.ledger_path(cfg))
-        missing = [m for m in judgment_compiler.cross_check_findings(
-            cfg, records, JUDGMENT_RECEIPT_FLOOR) if prd_id in m]
-    except Exception as exc:  # never let the gate's own failure block approval
-        return 0, f"note: judgment receipt check skipped ({exc})\n"
+        raw_missing = judgment_compiler.cross_check_findings(
+            cfg, records, JUDGMENT_RECEIPT_FLOOR)
+    except Exception as exc:
+        # FAIL CLOSED. The first version caught everything and returned 0,
+        # defended as "a bug in the check must not cause an approval outage".
+        # That conflated two different things: a corrupt or truncated ledger is
+        # not a bug in the gate, it is precisely the integrity failure the gate
+        # exists to catch, and letting approval through on it is the worst
+        # possible response (Codex, PR #101, executed repro: a ValueError from
+        # read_ledger returned rc=0). A required integrity gate fails closed.
+        return 2, (
+            f"approval blocked: the judgment ledger could not be checked ({exc}).\n"
+            "This is refused rather than skipped: an unreadable or corrupt "
+            "ledger is the integrity failure this gate exists to catch. Run "
+            "`kipi judgment verify` to see the damage.\n"
+        )
+    # Exact prd_id match, not `in`: cross_check_findings emits
+    # "<prd_id>/<finding_id>: ...", so a substring test let a missing receipt
+    # for `prd-alpha-2` block approval of `prd-alpha` (Codex, PR #101).
+    missing = [m for m in raw_missing if m.startswith(f"{prd_id}/")]
     if missing:
         return 2, (
             f"approval blocked: {len(missing)} finding(s) dispositioned since "

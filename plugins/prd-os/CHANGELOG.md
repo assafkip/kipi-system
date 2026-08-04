@@ -2,6 +2,18 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.1] - 2026-08-04
+
+### Fixed (Codex review, PR #101)
+- **The required receipt gate failed OPEN on an unreadable ledger.** It caught
+  every exception and returned 0, defended in the PR body as "a bug in the check
+  must not cause an approval outage". That conflated a buggy gate with a corrupt
+  ledger, and a corrupt or truncated ledger is precisely the integrity failure
+  the gate exists to catch. It now fails CLOSED on any read error; the only
+  fail-open case left is the compiler not being installed at all.
+- Substring matching let a missing receipt for `prd-alpha-2` block approval of
+  `prd-alpha`. Now an exact `<prd_id>/` prefix match.
+
 ## [0.13.0] - 2026-08-04
 
 ### Added

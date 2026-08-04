@@ -1401,3 +1401,60 @@ class TestBakedIntoApproval:
         cfg = cfgmod.load(judgment_repo)
         far_future = jc.cross_check_findings(cfg, [], "2099-01-01T00:00:00Z")
         assert far_future == [], "floor did not exempt an older disposition"
+
+
+class TestReceiptGateFailsClosed:
+    """A REQUIRED integrity gate must refuse on doubt, not wave work through.
+
+    The first version caught every exception and returned 0, defended as 'a bug
+    in the check must not cause an approval outage'. That conflated a buggy gate
+    with a corrupt ledger -- and a corrupt ledger is exactly what this gate
+    exists to catch (Codex, PR #101).
+    """
+
+    def _runner(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "pr_gate", SCRIPTS_DIR / "prd_runner.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["pr_gate"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_unreadable_ledger_blocks_approval(self, monkeypatch):
+        runner = self._runner()
+        import judgment_compiler as jc
+
+        monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
+        def boom(_path):
+            raise ValueError("line 7: invalid JSON")
+        monkeypatch.setattr(jc, "read_ledger", boom)
+        code, message = runner._judgment_receipt_gate(object(), "prd-alpha")
+        assert code == 2, "a corrupt ledger must not let approval through"
+        assert "could not be checked" in message
+
+    def test_prefix_prd_id_does_not_cross_block(self, monkeypatch):
+        """`prd-alpha` must not be blocked by a gap belonging to
+        `prd-alpha-2`; substring matching did exactly that."""
+        runner = self._runner()
+        import judgment_compiler as jc
+
+        monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
+        monkeypatch.setattr(jc, "read_ledger", lambda p: [])
+        monkeypatch.setattr(jc, "cross_check_findings", lambda c, r, s: [
+            "prd-alpha-2/finding-1: dispositioned but no judgment receipt exists"])
+        assert runner._judgment_receipt_gate(object(), "prd-alpha")[0] == 0
+        assert runner._judgment_receipt_gate(object(), "prd-alpha-2")[0] == 2
+
+    def test_missing_compiler_is_the_only_fail_open(self, monkeypatch):
+        """An instance without the compiler has no contract to enforce."""
+        runner = self._runner()
+        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) \
+            else __builtins__.__import__
+
+        def no_compiler(name, *args, **kwargs):
+            if name == "judgment_compiler":
+                raise ImportError("not installed")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr("builtins.__import__", no_compiler)
+        assert runner._judgment_receipt_gate(object(), "prd-alpha") == (0, "")
