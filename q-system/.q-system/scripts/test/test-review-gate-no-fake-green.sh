@@ -70,33 +70,58 @@ done
 # "Reviewed, found nothing" and "never started" are byte-identical INSIDE the
 # block. The discriminator is outside it: what the reviewer itself said. So the
 # assertions below are on resolve_verdict, where the two signals meet.
-
-# UPSTREAM MOVED UNDER THIS LOOP. These two fixtures no longer reproduce the
-# original shape, and that is a fix landing, not a regression. ASK-274 (6fe7a3c)
-# added review_is_usable, which classifies a declined-to-start transcript as
-# UNUSABLE, so verdict_from_findings now returns EMPTY for both instead of the
-# historical APPROVE. Measured on this base:
-#   declined-to-start-short.md -> usable NO, stated 'REQUEST CHANGES', derived ''
-# The old assertion demanded derived = APPROVE and went red for exactly that
-# reason. Weakening it to "derived is whatever it is" would have made it vacuous,
-# so the fidelity burden MOVED to the fixture below, which still reproduces a live
-# disagreement. These two stay as defence in depth: if review_is_usable is ever
-# loosened, resolve_verdict is still the thing standing between a decline and a
-# green, and these assert it holds.
+# UPSTREAM MOVED UNDER THIS LOOP, TWICE, AND BOTH MOVES WERE FIXES LANDING.
+# These two fixtures no longer reproduce the original stated/derived shape:
+#
+#   derived: ASK-274 (6fe7a3c) added review_is_usable, and sp-df1a458f made
+#            findings_block skip the prompt's own echoed template, so both files
+#            now derive NOTHING where they historically derived APPROVE.
+#   stated:  ASK-356. The "REQUEST CHANGES" these fixtures used to state was
+#            never the reviewer -- it was the prompt's grading rule, echoed to
+#            stdout by `codex exec` and read back as the answer. The fixture's
+#            premise WAS the defect.
+#
+# Measured on this base 2026-08-03, both files: usable NO, stated '', derived ''.
+#
+# A test pinned to a bug's fingerprint dies with the bug and takes the gate with
+# it, and weakening it to "derived is whatever it is" would make it vacuous. So
+# what is asserted here is the SAFETY PROPERTY this suite exists for: A REVIEW
+# THAT NEVER RAN MUST NEVER PRODUCE AN APPROVAL -- at every point the pipeline
+# could leak one, each input signal SEPARATELY and then the resolved output,
+# because "stated is safe OR derived is safe" passes on the weak half and never
+# tests the other. The fidelity burden for reproducing a LIVE disagreement sits
+# on the fixture further down, which still does.
+approving() {   # approving <verdict> -- exit 0 when this verdict releases a PR
+  # The same two values post_reviewer_status maps to state=success. Anything
+  # else, unstated included, posts failure and HOLDS the PR.
+  case "${1:-}" in APPROVE|"APPROVE WITH NITS") return 0 ;; *) return 1 ;; esac
+}
 for f in declined-to-start-short.md declined-to-start-long.md; do
   stated="$(extract_verdict "$FX/$f")"
   derived="$(verdict_from_findings "$FX/$f")"
   final="$(resolve_verdict "$stated" "$derived")"
 
-  check "$f: reviewer stated a non-approving verdict (got '$stated')" \
-        "$([ "$stated" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
-
-  case "$final" in
-    APPROVE|"APPROVE WITH NITS")
-      check "$f resolves to a non-approving verdict (got '$final')" 1 ;;
-    *)
-      check "$f resolves to a non-approving verdict (got '$final')" 0 ;;
-  esac
+  check "$f: the reviewer's own words do not approve (stated '${stated:-<unstated>}')" \
+        "$(approving "$stated" && echo 1 || echo 0)"
+  check "$f: the severity ladder does not approve either (derived '${derived:-<unstated>}')" \
+        "$(approving "$derived" && echo 1 || echo 0)"
+  # THE TWO USABILITY RULES ARE ASSERTED SEPARATELY, AND THAT IS NOT REDUNDANCY.
+  # review_is_usable is an OR: a complete non-template block AND no decline. On
+  # these two fixtures BOTH rules fire, so each one masks the other and the
+  # roll-up cannot be killed by breaking either alone. Measured 2026-08-03: a
+  # mutant that makes review_declined_to_start never fire left the roll-up GREEN,
+  # because the block rule was still carrying it. An assertion no single mutation
+  # can turn red is not testing anything. The roll-up stays as the integration
+  # check -- it is the predicate pr-review-agent.sh actually calls -- but the two
+  # halves below are what give it teeth.
+  check "$f: the prompt's echoed template is not accepted as a findings block" \
+        "$(has_complete_findings_block "$FX/$f" && echo 1 || echo 0)"
+  check "$f: the plan-and-wait answer is detected as a decline" \
+        "$(review_declined_to_start "$FX/$f" && echo 0 || echo 1)"
+  check "$f: the stream is classified unusable" \
+        "$(review_is_usable "$FX/$f" && echo 1 || echo 0)"
+  check "$f resolves to a non-approving verdict (got '${final:-<unstated>}')" \
+        "$(approving "$final" && echo 1 || echo 0)"
 done
 
 # --- the shape that IS still live on this base --------------------------------

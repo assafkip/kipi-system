@@ -458,6 +458,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

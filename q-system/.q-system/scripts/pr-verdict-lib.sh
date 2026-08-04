@@ -32,14 +32,90 @@
 # That misread actually reached the record: pr-11.verdict.json read BLOCK while
 # the review said REQUEST CHANGES. Both route to rework so behavior survived,
 # but "APPROVE (not BLOCK...)" would have reworked an approved PR forever.
+# A VERDICT STATEMENT, NOT A LINE MENTIONING THE WORD (ASK-356). This used to
+# anchor on the first line matching `VERDICT`, take the first verdict token within
+# three lines, and fall back to grepping the WHOLE FILE for a token. All three
+# steps read the reviewer's conclusion out of text the reviewer did not write.
+#
+# `codex exec` ECHOES THE ENTIRE PROMPT to stdout, and the reviewer prompt carries
+# its own grading rule:
+#
+#     - **VERDICT:** decided by THIS RULE, not by feel:
+#         - any blocker or major finding      => REQUEST CHANGES
+#
+# That line is the first `VERDICT` match in every codex review ever produced, so
+# extract_verdict returned REQUEST CHANGES universally. Measured 2026-08-03: 47 of
+# 54 records carried stated=REQUEST CHANGES. It was cosmetic while
+# VERDICT="$DERIVED_VERDICT" won unconditionally, and became fleet-blocking the
+# moment ASK-312 made resolve_verdict take the HARSHER of stated and derived --
+# every codex-reviewed PR held at REQUEST CHANGES on a REQUIRED context. Codex
+# called this exact consequence on PR #89 and we shipped anyway; the answer was
+# always "keep resolve_verdict AND fix this", not one or the other.
+#
+# SHAPE FIRST, AND DELIBERATELY NOT "TAKE THE LAST MATCH" (review steer, ASK-356).
+# Copying findings_block's LAST-NOT-FIRST wholesale would be a second position
+# rule, and anchoring on position is what produced this bug. The grading rule is
+# not distinguished by WHERE it sits. It is distinguished by not being a
+# statement: a statement puts the verdict token DIRECTLY after the marker, while
+# the rule puts prose there. So the token must lead what follows `VERDICT:`, or
+# follow a marker that is bare (`## VERDICT` on its own line -- the real PR #11
+# round 4 shape, which also self-qualifies as `**REQUEST CHANGES** (not BLOCK...)`
+# and must still read REQUEST CHANGES).
+#
+# ORDER IS STILL NEEDED, FOR A DIFFERENT INPUT. The stream also replays the PR's
+# DIFF, so a review of a change to this loop contains real verdict statements the
+# reviewer is only quoting -- this file's own fixtures are exactly that. Those are
+# statement-shaped because they ARE quoted statements; shape cannot separate them.
+# The reviewer answers after the material it was given, so among candidates that
+# PASS the shape test the last one wins. Shape rejects the prompt; order resolves
+# the quotes. Neither alone is enough and the two are not the same rule.
+#
+# THE WHOLE-FILE FALLBACK IS GONE. With the echo present it scanned the prompt and
+# the diff for loose tokens, which is how source code gets parsed as a verdict
+# (`REWORK_VERDICTS = {"REQUEST CHANGES", ...}` is in the diff of this very
+# change). Losing it means a review that never states a verdict now reads
+# unstated, and unstated posts state=failure and HOLDS the PR. That is the safe
+# direction and the same posture the rest of this file takes.
+#
+# BLOCKER/BLOCKERS is still stripped before token matching: "Fix first: **BLOCKER
+# 1**" after a verdict line made a bare BLOCK match report verdict BLOCK on the
+# real PR #11 round 2 payload.
 extract_verdict() {
-  local f="$1" v=""
+  local f="$1"
   [ -s "$f" ] || return 0
-  v="$(grep -A3 -E 'VERDICT' "$f" 2>/dev/null | sed 's/BLOCKERS\{0,1\}//g' \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
-  [ -n "$v" ] || v="$(sed 's/BLOCKERS\{0,1\}//g' "$f" 2>/dev/null \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
-  printf '%s' "$v"
+  awk '
+    function leading_token(s,   t) {
+      sub(/^[[:space:]*_]+/, "", s)
+      if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
+      if (s ~ /^REQUEST CHANGES/)   return "REQUEST CHANGES"
+      if (s ~ /^APPROVE/)           return "APPROVE"
+      if (s ~ /^BLOCK/)             return "BLOCK"
+      return ""
+    }
+    {
+      line = $0
+      gsub(/BLOCKERS?/, "", line)
+    }
+    # Under a bare heading the FIRST non-blank line decides, and it decides either
+    # way: prose there is not a verdict, it is a heading with no statement under
+    # it. Continuing to scan would walk into the next paragraph.
+    awaiting {
+      if (line ~ /^[[:space:]]*$/) next
+      awaiting = 0
+      t = leading_token(line)
+      if (t != "") found = t
+      next
+    }
+    line ~ /VERDICT/ {
+      rest = line
+      sub(/^.*VERDICT[*_]*[[:space:]]*:?[[:space:]]*/, "", rest)
+      t = leading_token(rest)
+      if (t != "") { found = t; next }
+      # Bare marker: nothing but punctuation/emphasis left on the line.
+      if (rest ~ /^[[:space:]*_:#-]*$/) awaiting = 1
+    }
+    END { if (found != "") printf "%s", found }
+  ' "$f" 2>/dev/null
 }
 
 # findings_block <review-file>

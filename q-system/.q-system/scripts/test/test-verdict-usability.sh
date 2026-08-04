@@ -172,18 +172,41 @@ else
   bad "a real review recorded usable=$U2 (want true) -- the key is a constant, not a discriminator"
 fi
 
-# --- case 3: `stated` claims an objection on a review that never ran ---------
-# THE REASON THE KEY HAS TO EXIST, pinned as an assertion. The phantom's `stated`
-# is REQUEST CHANGES -- lifted straight out of the echoed grading rule -- which is
-# byte-identical to what a real objection writes. A selector reading `stated`, or
-# reading the `failure` commit status it produces, sends this PR to REWORK and the
-# agent is handed a review with nothing in it to fix. Only `usable` separates them.
-S1="$(field "$REC1" stated)"; S2="$(field "$REC2" stated)"
-if [ "$S1" = "$S2" ] && [ "$U1" != "$U2" ]; then
-  ok "both records state $S1; only usable tells the phantom from the objection"
-else
-  bad "stated1=$S1 stated2=$S2 usable1=$U1 usable2=$U2 -- wanted equal stated and differing usable"
-fi
+# --- case 3: the phantom and the objection are INDISTINGUISHABLE at the gate --
+# THE REASON THE KEY HAS TO EXIST. This used to be pinned as "both records state
+# REQUEST CHANGES", because the phantom's `stated` was lifted straight out of the
+# echoed grading rule and was byte-identical to what a real objection writes.
+#
+# ASK-356 fixed that read: the grading rule is the prompt talking, not the
+# reviewer, so the phantom now states nothing. The old assertion's PREMISE was
+# itself the defect, and an assertion built on a defect dies when the defect is
+# fixed. Rewriting it to the new stated values would just re-date it to today.
+#
+# WHAT DID NOT CHANGE is the only thing a downstream selector can actually see.
+# Neither record carries an approving verdict, so post_reviewer_status maps BOTH
+# to state=failure on the same context -- the phantom because it is unstated, the
+# objection because it objected. A selector reading the verdict, or reading the
+# commit status derived from it, still cannot tell "nobody reviewed this" from
+# "someone objected": it sends the phantom to REWORK and hands the agent a review
+# with nothing in it to fix. `usable` remains the ONLY key that separates them,
+# which is why the producer has to persist it instead of leaving consumers to
+# recompute it from a review file that rotates away.
+#
+# Asserted as three separate facts, not one conjunction, so a partial regression
+# names itself instead of collapsing into one opaque FAIL.
+approving() {   # approving <json-quoted verdict> -- true when it posts success
+  case "$1" in '"APPROVE"'|'"APPROVE WITH NITS"') return 0 ;; *) return 1 ;; esac
+}
+V1="$(field "$REC1" verdict)"; V2="$(field "$REC2" verdict)"
+approving "$V1" \
+  && bad "the phantom recorded an APPROVING verdict $V1 -- a review that never ran would post state=success" \
+  || ok "the phantom's verdict ($V1) does not release the PR"
+approving "$V2" \
+  && bad "the objection recorded an APPROVING verdict $V2 -- the reviewer objected" \
+  || ok "the objection's verdict ($V2) does not release the PR either"
+[ "$U1" != "$U2" ] \
+  && ok "the two are separated ONLY by usable ($U1 vs $U2), never by the verdict" \
+  || bad "usable1=$U1 usable2=$U2 -- the key does not discriminate, so nothing does"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
