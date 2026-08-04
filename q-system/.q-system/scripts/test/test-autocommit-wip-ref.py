@@ -521,6 +521,185 @@ def test_snapshot_scope_is_stated_honestly(tmp: Path) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# 12. A STALE snapshot must not become the recovery tip. (Codex PR #83 round 3,
+#     major.) Test 10's fix -- lose the CAS, re-parent, retry -- assumed the
+#     refused run is the one holding the fresher tree. The other interleaving is
+#     just as real: turn N's hook is slow, turn N+1 lands first, and then turn
+#     N's retry re-parents its OLDER tree on top. Nothing is lost from history,
+#     but the ref TIP is now the stale tree, and the tip is exactly what the
+#     hook's own recovery line reads:
+#
+#         git checkout refs/kipi/wip/<session> -- <path>
+#
+#     So an operator recovering after a crash gets turn N's content and silently
+#     loses turn N+1's edits. That is the 2026-08-02 damage class (work restored
+#     from the wrong moment) rebuilt inside the fix for it.
+#
+#     Ordering by commit date cannot decide this: the stale run COMMITS last,
+#     precisely because it retried. The snapshot has to carry the time its
+#     content was read.
+#
+#     Deterministic without threads: the same wedge-on-commit-tree shim as test
+#     10, except the competitor lands a real newer tree stamped ahead of us.
+# --------------------------------------------------------------------------
+BUILT_TRAILER = "kipi-wip-built"
+
+
+def _install_stamped_competitor_shim(
+    tmp: Path, repo: Path, ref: str, rel: str, body: str, stamp_offset_ns: int
+) -> dict:
+    """A `git` that lands ONE competing snapshot mid-hook, with a chosen stamp.
+
+    stamp_offset_ns > 0 makes the competitor NEWER than the hook's own snapshot
+    (the finding). < 0 makes it OLDER (the negative self-test: the hook must
+    still take the tip then, or "fix" degenerates into never landing).
+    """
+    real_git = shutil.which("git")
+    bindir = tmp / "shim-bin"
+    bindir.mkdir()
+    marker = tmp / "raced-once"
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, subprocess, sys, time\n"
+        f"REAL = {real_git!r}\n"
+        f"MARKER = {str(marker)!r}\n"
+        f"REPO = {str(repo)!r}\n"
+        f"REF = {ref!r}\n"
+        f"REL = {rel!r}\n"
+        f"BODY = {body!r}\n"
+        f"OFFSET = {stamp_offset_ns!r}\n"
+        f"TRAILER = {BUILT_TRAILER!r}\n"
+        "def real(*args, **kw):\n"
+        "    return subprocess.run([REAL] + list(args), cwd=REPO,\n"
+        "                          capture_output=True, text=True, **kw)\n"
+        "# Wedge between the hook reading `prev` and the hook calling\n"
+        "# update-ref: land a competing snapshot exactly once.\n"
+        "if 'commit-tree' in sys.argv and not os.path.exists(MARKER):\n"
+        "    open(MARKER, 'w').close()\n"
+        "    p = os.path.join(REPO, REL)\n"
+        "    os.makedirs(os.path.dirname(p), exist_ok=True)\n"
+        "    open(p, 'w').write(BODY)\n"
+        "    idx = MARKER + '.index'\n"
+        "    env = dict(os.environ, GIT_INDEX_FILE=idx)\n"
+        "    real('read-tree', 'HEAD', env=env)\n"
+        "    real('add', '--', REL, env=env)\n"
+        "    tree = real('write-tree', env=env).stdout.strip()\n"
+        "    head = real('rev-parse', 'HEAD').stdout.strip()\n"
+        "    msg = ('wip: competing snapshot\\n\\n%s: %d\\n'\n"
+        "           % (TRAILER, time.time_ns() + OFFSET))\n"
+        "    c = real('commit-tree', tree, '-p', head, '-m', msg).stdout.strip()\n"
+        "    real('update-ref', REF, c)\n"
+        "os.execv(REAL, [REAL] + sys.argv[1:])\n"
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def _blob_at(repo: Path, rev: str, rel: str) -> tuple[int, str]:
+    r = subprocess.run(
+        ["git", "cat-file", "-p", f"{rev}:{rel}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return r.returncode, r.stdout
+
+
+def test_stale_snapshot_does_not_replace_tip(tmp: Path) -> None:
+    repo = make_repo(tmp)
+    before_head = git(repo, "rev-parse", "HEAD")
+    ref = wip_ref("sess-mmm")
+    rel = "q-system/.q-system/shared.txt"
+    stale_body = "turn N: the older tree\n"
+    fresh_body = "turn N+1: the edit that must survive recovery\n"
+    dirty(repo, rel, stale_body)
+
+    r = run_hook(
+        repo, "sess-mmm",
+        extra_env=_install_stamped_competitor_shim(
+            tmp, repo, ref, rel, fresh_body, stamp_offset_ns=10 ** 15
+        ),
+    )
+    out = r.stdout + r.stderr
+
+    check(
+        "the shim landed a newer competing snapshot",
+        (tmp / "raced-once").exists(),
+        "shim never fired; reproducer no longer reproduces",
+    )
+    # THE FINDING: the tip is what `git checkout <ref> -- <path>` reads, so the
+    # tip must hold the NEWER content, not the stale run's.
+    rc, got = _blob_at(repo, ref, rel)
+    check(
+        "the newer snapshot stays the recovery tip",
+        rc == 0 and got == fresh_body,
+        f"rc={rc} tip={got!r} hook-said={out.strip()!r}",
+    )
+    # Paired durability assertion: refusing the tip is not licence to bin the
+    # stale tree. It must still be reachable from a real ref (gc-safe).
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/kipi/")
+    holder = None
+    for name in refs.splitlines():
+        rc2, got2 = _blob_at(repo, name.strip(), rel)
+        if rc2 == 0 and got2 == stale_body:
+            holder = name.strip()
+            break
+    check(
+        "the stale tree is still recoverable from a ref",
+        holder is not None,
+        f"refs={refs!r}",
+    )
+    # And the hook must SAY it did not take the tip, with where the older tree
+    # went -- a silent demotion is the "line nobody reads at 3am" again.
+    check(
+        "the hook names the ref its stale snapshot landed on",
+        holder is not None and holder in out,
+        out.strip(),
+    )
+    check("stale-loss handling does not put a commit on the branch",
+          git(repo, "rev-parse", "HEAD") == before_head)
+
+
+# --------------------------------------------------------------------------
+# 13. NEGATIVE SELF-TEST for 12. Demoting every refused run to a side ref would
+#     make test 12 pass and reintroduce test 10's bug: the fresher tree would
+#     stop being the tip. So when the competitor is OLDER, the hook must still
+#     re-parent and take the tip.
+# --------------------------------------------------------------------------
+def test_fresher_snapshot_still_takes_the_tip(tmp: Path) -> None:
+    repo = make_repo(tmp)
+    ref = wip_ref("sess-nnn")
+    rel = "q-system/.q-system/shared.txt"
+    fresh_body = "turn N+1: the fresher tree\n"
+    older_body = "turn N: already superseded\n"
+    dirty(repo, rel, fresh_body)
+
+    r = run_hook(
+        repo, "sess-nnn",
+        extra_env=_install_stamped_competitor_shim(
+            tmp, repo, ref, rel, older_body, stamp_offset_ns=-(10 ** 15)
+        ),
+    )
+    out = r.stdout + r.stderr
+
+    check(
+        "the shim landed an older competing snapshot",
+        (tmp / "raced-once").exists(),
+        "shim never fired; reproducer no longer reproduces",
+    )
+    rc, got = _blob_at(repo, ref, rel)
+    check(
+        "the fresher tree takes the tip when the competitor is older",
+        rc == 0 and got == fresh_body,
+        f"rc={rc} tip={got!r} hook-said={out.strip()!r}",
+    )
+    reachable = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", git(repo, "rev-parse", "HEAD"), ref],
+        cwd=repo, capture_output=True, text=True,
+    ).returncode == 0
+    check("the older competitor is still reachable from the ref", reachable)
+
+
 def main() -> int:
     if not HOOK.exists():
         print(f"FAIL: hook not found at {HOOK}")
@@ -538,6 +717,8 @@ def main() -> int:
         test_unstageable_path_is_not_counted,
         test_lost_cas_still_lands,
         test_snapshot_scope_is_stated_honestly,
+        test_stale_snapshot_does_not_replace_tip,
+        test_fresher_snapshot_still_takes_the_tip,
     ]
     for t in tests:
         print(f"\n{t.__name__}")

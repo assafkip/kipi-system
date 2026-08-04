@@ -39,7 +39,11 @@ via commit-tree/update-ref. Consequences, all intended:
     their branch, which is the 2026-08-02 damage rebuilt by hand. Every message
     this hook prints says which of the two it means.
   - Nothing is lost: a ref is a real ref, so gc will not prune it, and recovery
-    is `git cherry-pick` or `git checkout <ref> -- <path>`.
+    is `git cherry-pick` or `git checkout <ref> -- <path>`. The session ref
+    always holds the LATEST snapshot by build time; a turn that finishes with an
+    older tree goes to `<ref>-superseded` instead, so recovery reads the newest
+    work by default and the older tree is still there to go find. Every message
+    this hook prints names the ref it actually wrote.
 
 Note it no longer declares a `[no-issue]` bypass. That marker existed because
 the `linear-issue-ref` commit-msg gate refuses a commit with no issue id, and an
@@ -55,10 +59,21 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 PROJ_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
 
 WIP_NAMESPACE = "refs/kipi/wip"
+
+# Every snapshot commit carries the time its CONTENT was read, as a trailer.
+# Commit date cannot stand in for it: the stale run commits LAST, precisely
+# because it retried after losing the race. See land_snapshot.
+BUILT_TRAILER = "kipi-wip-built"
+
+# Where a snapshot goes when a newer one already holds the session ref. A
+# sibling ref name, not a subpath: refs/kipi/wip/<s> and refs/kipi/wip/<s>/old
+# cannot coexist (git's directory/file conflict), <s>-superseded can.
+SUPERSEDED_SUFFIX = "-superseded"
 
 # q-system/output/ is scratch/generated and is gitignored in most instances.
 # Kept as an explicit skip so an instance that tracks it still does not get its
@@ -233,19 +248,90 @@ def build_tree(files):
 MAX_LAND_ATTEMPTS = 3
 
 
-def land_snapshot(ref, tree, message):
-    """Point `ref` at a new commit holding `tree`. Returns (status, commit).
+def read_built_at(rev):
+    """The BUILT_TRAILER stamp on `rev`, or None if it carries none.
 
-    Status is "landed", "unchanged", or a human-readable failure.
+    None means "cannot be ordered against", not "old". Refs written before this
+    trailer existed, and the HEAD commit used as a first parent, both land here;
+    treating them as newer would strand a session on the superseded lane forever.
+    """
+    body = git_ok(["git", "log", "-1", "--format=%B", rev])
+    if not body:
+        return None
+    stamp = None
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith(BUILT_TRAILER + ":"):
+            try:
+                stamp = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                continue
+    return stamp
+
+
+def try_land(ref, tree, message, parent, prev):
+    """commit-tree + ONE compare-and-swap. Returns (commit, error)."""
+    args = ["git", "commit-tree", tree]
+    if parent:
+        args += ["-p", parent]
+    args += ["-m", message]
+    commit = git_ok(args)
+    if not commit:
+        return None, "commit-tree failed"
+    # Empty oldvalue asserts the ref does not yet exist.
+    r = run(["git", "update-ref", ref, commit, prev if prev else ""])
+    if r.returncode == 0:
+        return commit, None
+    return None, r.stderr.strip()[:100]
+
+
+def land_superseded(ref, tree, message, winner):
+    """Keep an already-superseded tree reachable, off the recovery tip.
+
+    Returns (status, commit, where). Chained on the lane's own tip so several
+    superseded turns accumulate instead of overwriting each other, and parented
+    on the winner the first time so the lane's history contains the tip's.
+    """
+    lane = ref + SUPERSEDED_SUFFIX
+    last_err = "unknown"
+    for _ in range(MAX_LAND_ATTEMPTS):
+        prev = git_ok(["git", "rev-parse", "--verify", "--quiet", lane])
+        parent = prev or winner
+        if parent and git_ok(["git", "rev-parse", f"{parent}^{{tree}}"]) == tree:
+            return "unchanged", None, lane
+        commit, err = try_land(lane, tree, message, parent, prev)
+        if commit:
+            return "superseded", commit, lane
+        last_err = err
+    return (f"superseded snapshot lost {MAX_LAND_ATTEMPTS} races ({last_err}); "
+            "NOTHING was snapshotted this turn"), None, lane
+
+
+def land_snapshot(ref, tree, message, built_at):
+    """Point `ref` at a new commit holding `tree`. Returns (status, commit, where).
+
+    Status is "landed", "superseded", "unchanged", or a human-readable failure.
 
     The update is a compare-and-swap, so a second hook for the same session --
     turn N still running when turn N+1 fires -- cannot clobber. But losing the
-    swap must not mean losing the snapshot: the loser is usually the run holding
-    the FRESHER tree, so a single refused update dropped the newest work and
-    left the ref stale (Codex, PR #83). So on refusal we re-read the ref,
-    RE-PARENT on whatever landed, and try again. Re-parenting rather than
-    forcing is what keeps the winner's commit reachable; the loser's content
-    arrives as a child, not as a replacement.
+    swap must not mean losing the snapshot, because the loser can be the run
+    holding the FRESHER tree (Codex, PR #83 round 1). So on refusal we re-read
+    the ref, RE-PARENT on whatever landed, and try again.
+
+    Re-parenting alone then has the mirror bug (Codex, PR #83 round 3): the
+    loser can equally be the STALER run, and re-parenting makes its older tree
+    the ref TIP. The tip is what this hook's own recovery line reads --
+    `git checkout <ref> -- <path>` -- so a crash recovery would hand back turn
+    N's content and silently drop turn N+1's edits. That is the 2026-08-02
+    damage class (work restored from the wrong moment) rebuilt inside its fix.
+
+    So the tip is ordered by BUILT_TRAILER, the time each snapshot's content was
+    read. Commit date cannot do this job: the stale run commits last, because it
+    retried. A snapshot older than what already holds the ref goes to the
+    superseded lane instead -- reachable, gc-safe, named in the output, and not
+    the thing a recovery reads first. Two runs whose builds truly OVERLAP are
+    genuinely ambiguous; the stamp then reflects who started reading last, which
+    is the best an unattended writer can know.
     """
     head = git_ok(["git", "rev-parse", "--verify", "--quiet", "HEAD"])
     last_err = "unknown"
@@ -257,24 +343,29 @@ def land_snapshot(ref, tree, message):
         # commit per turn and the useful history is buried in noise. Re-checked
         # each attempt: the run that beat us may have written our exact tree.
         if parent and git_ok(["git", "rev-parse", f"{parent}^{{tree}}"]) == tree:
-            return "unchanged", None
+            return "unchanged", None, ref
 
-        args = ["git", "commit-tree", tree]
-        if parent:
-            args += ["-p", parent]
-        args += ["-m", message]
-        commit = git_ok(args)
-        if not commit:
-            return "commit-tree failed, nothing snapshotted", None
+        # Checked every attempt, not only after a refusal: a slow run can find a
+        # newer snapshot already on the ref and clobber the tip on its FIRST
+        # try, with no race to lose.
+        if prev:
+            theirs = read_built_at(prev)
+            if theirs is not None and theirs >= built_at:
+                return land_superseded(
+                    ref,
+                    tree,
+                    message + f"\nSUPERSEDED by {prev[:8]}, a newer snapshot of "
+                              f"this session. Older tree, kept for recovery.\n",
+                    prev,
+                )
 
-        # Empty oldvalue asserts the ref does not yet exist.
-        r = run(["git", "update-ref", ref, commit, prev if prev else ""])
-        if r.returncode == 0:
-            return "landed", commit
-        last_err = r.stderr.strip()[:100]
+        commit, err = try_land(ref, tree, message, parent, prev)
+        if commit:
+            return "landed", commit, ref
+        last_err = err
 
     return (f"ref update lost {MAX_LAND_ATTEMPTS} races ({last_err}); "
-            "NOTHING was snapshotted this turn"), None
+            "NOTHING was snapshotted this turn"), None, ref
 
 
 def main():
@@ -293,6 +384,9 @@ def main():
         report_left_behind(skipped)
         return
 
+    # Stamped BEFORE the tree is built: this is when the content was read, and
+    # it is what orders two overlapping runs. See land_snapshot.
+    built_at = time.time_ns()
     tree, staged, refused = build_tree(files)
     if not tree:
         print("auto-commit: could not write tree, nothing snapshotted")
@@ -320,6 +414,7 @@ def main():
         f"session: {session_id}",
         f"branch:  {branch}",
         f"head:    {head or '(none)'}",
+        f"{BUILT_TRAILER}: {built_at}",
     ]
     if ops:
         body.append(f"WARNING: {', '.join(ops)} in progress -- tree may contain")
@@ -334,18 +429,25 @@ def main():
         body.append(f"- ... and {n - 40} more")
 
     ref = f"{WIP_NAMESPACE}/{session_id}"
-    status, commit = land_snapshot(ref, tree, subject + "\n" + "\n".join(body))
+    status, commit, where = land_snapshot(
+        ref, tree, subject + "\n" + "\n".join(body), built_at
+    )
 
     if status == "unchanged":
         print("auto-commit: no change since last snapshot")
-    elif status == "landed":
+    elif status in ("landed", "superseded"):
         print(f"auto-commit: snapshotted {n} file{'' if n == 1 else 's'} "
-              f"-> {ref} ({commit[:8]})")
+              f"-> {where} ({commit[:8]})")
         print("auto-commit: scope - every dirty path in this checkout, "
               "not only this session's work")
+        if status == "superseded":
+            # Say WHY it is not on the session ref. An operator who only sees
+            # "snapshotted" will read the tip and believe it is this turn's.
+            print(f"auto-commit: a newer snapshot already holds {ref}, so this "
+                  f"older tree went to {where} and is NOT the recovery tip")
         if ops:
             print(f"auto-commit: note - {', '.join(ops)} in progress")
-        print(f"auto-commit: recover with  git checkout {ref} -- <path>")
+        print(f"auto-commit: recover with  git checkout {where} -- <path>")
     else:
         print(f"auto-commit: {status}")
 
