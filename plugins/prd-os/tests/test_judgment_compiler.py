@@ -342,6 +342,79 @@ def two_receipts(repo: Path) -> list[dict]:
     return read_ledger(repo)
 
 
+def reseal_ledger(repo: Path, records: list[dict]) -> None:
+    """Rewrite the ledger as a FULLY self-consistent chain: recompute every
+    prev-hash and receipt_id, then refresh the tip anchor to match.
+
+    This simulates an attacker who repairs every invariant they know about. A
+    test that reseals and then breaks exactly one thing isolates that one
+    check — otherwise a redundant check masks it and the mutation survives.
+    Added after a mutation run showed `sequence` and the prev-hash link could
+    both be disabled with all 55 tests still green.
+    """
+    sealed = []
+    prev = None
+    for record in records:
+        record = json.loads(json.dumps(record))
+        record["prev_receipt_sha256"] = prev
+        record.pop("receipt_id", None)
+        record["receipt_id"] = "jr-" + canonical_hash(record)[:16]
+        sealed.append(record)
+        prev = canonical_hash(record)
+    write_sealed(repo, sealed)
+
+
+def write_sealed(repo: Path, sealed: list[dict]) -> None:
+    path = repo / ".prd-os" / "judgments.jsonl"
+    path.write_text("".join(
+        json.dumps(r, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False) + "\n" for r in sealed))
+    tip = {
+        "count": len(sealed),
+        "last_receipt_sha256": canonical_hash(sealed[-1]) if sealed else None,
+        "last_receipt_id": sealed[-1]["receipt_id"] if sealed else None,
+        "updated_at": "2026-08-04T00:00:00Z",
+    }
+    (repo / ".prd-os" / "judgments-tip.json").write_text(
+        json.dumps(tip, indent=2, sort_keys=True) + "\n")
+
+
+class TestInvariantIsolation:
+    """One test per integrity check, with every OTHER check repaired first."""
+
+    def test_sequence_gap_is_caught_when_everything_else_is_consistent(
+            self, judgment_repo):
+        recs = two_receipts(judgment_repo)
+        recs[1]["sequence"] = 3  # contiguity broken, nothing else is
+        reseal_ledger(judgment_repo, recs)
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "sequence" in proc.stderr.lower()
+
+    def test_broken_chain_link_is_caught_when_everything_else_is_consistent(
+            self, judgment_repo):
+        """An attacker who rewrites a receipt AND refreshes the tip anchor is
+        still caught: the anchor is tamper-evident, the chain is the real check."""
+        recs = two_receipts(judgment_repo)
+        reseal_ledger(judgment_repo, recs)
+        sealed = read_ledger(judgment_repo)
+        sealed[1]["prev_receipt_sha256"] = "f" * 64  # point at nothing
+        sealed[1].pop("receipt_id")
+        sealed[1]["receipt_id"] = "jr-" + canonical_hash(sealed[1])[:16]
+        write_sealed(judgment_repo, sealed)  # anchor refreshed to match
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "chain" in proc.stderr.lower()
+
+    def test_reseal_helper_itself_produces_a_valid_ledger(self, judgment_repo):
+        """Guard the guard: if reseal produced an invalid ledger, the two tests
+        above would pass for the wrong reason."""
+        recs = two_receipts(judgment_repo)
+        reseal_ledger(judgment_repo, recs)
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 0, proc.stderr
+
+
 class TestChainIntegrity:
     def test_chain_links_and_verify_green(self, judgment_repo):
         recs = two_receipts(judgment_repo)
@@ -448,11 +521,28 @@ class TestChainIntegrity:
         assert proc.returncode == 2
         assert "tip anchor" in proc.stderr.lower()
 
-    def test_missing_tip_anchor_does_not_hard_fail(self, judgment_repo):
-        """A ledger predating the anchor must still verify — otherwise the
-        upgrade breaks every existing repo. Absence is not a claim."""
+    def test_deleting_the_tip_anchor_is_itself_detected(self, judgment_repo):
+        """Treating a missing anchor as "legacy, pass" restored the whole
+        truncation hole for one extra `rm` — deleting a file is cheaper than
+        editing it. Every ledger this code writes has an anchor, so a
+        non-empty ledger without one is missing evidence."""
         two_receipts(judgment_repo)
         (judgment_repo / ".prd-os" / "judgments-tip.json").unlink()
+        proc = run_judgment(judgment_repo, "verify")
+        assert proc.returncode == 2
+        assert "missing" in proc.stderr.lower()
+
+    def test_rm_anchor_then_truncate_is_still_caught(self, judgment_repo):
+        """The exact two-command attack from the review."""
+        two_receipts(judgment_repo)
+        (judgment_repo / ".prd-os" / "judgments-tip.json").unlink()
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        path.write_text(path.read_text().splitlines()[0] + "\n")
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+
+    def test_fresh_repo_with_no_ledger_and_no_anchor_verifies_clean(
+            self, judgment_repo):
+        """Absence of BOTH is a genuinely fresh repo, not tampering."""
         assert run_judgment(judgment_repo, "verify").returncode == 0
 
     def test_cross_check_flags_a_dispositioned_finding_with_no_receipt(
@@ -504,9 +594,44 @@ class TestEvidenceGate:
         packet_path, _ = assemble_packet(judgment_repo)
         proc = capture(judgment_repo, packet_path,
                        "--reason-code", "already-remediated",
-                       "--evidence", "commit:" + "a" * 40,
+                       "--evidence", "test:.prd-os/config.json",
                        disposition="rejected")
         assert proc.returncode == 0, proc.stderr
+
+    def test_evidence_ref_that_points_at_nothing_is_refused(self, judgment_repo):
+        """Grammar was not enough: a well-formed ref to a non-existent object
+        used to be recorded as the evidence justifying a rejection."""
+        packet_path, _ = assemble_packet(judgment_repo)
+        for bad in (f"finding:{PRD_ID}/finding-999",
+                    "finding:prd-does-not-exist/finding-1",
+                    "commit:zzzz",
+                    "prd:prd-not-here",
+                    "judgment:jr-nope"):
+            proc = capture(judgment_repo, packet_path,
+                           "--reason-code", "duplicate" if bad.startswith("finding")
+                           else "already-remediated" if bad.startswith("commit")
+                           else "owned-by-other-prd" if bad.startswith("prd")
+                           else "superseded",
+                           "--evidence", bad, disposition="rejected")
+            assert proc.returncode == 2, f"{bad} was accepted: {proc.stdout}"
+        assert read_ledger(judgment_repo) == []
+
+    def test_omitting_reason_code_on_rejected_is_refused(self, judgment_repo):
+        """The gate keyed off the reason code, so omitting it skipped the gate
+        entirely — a duplicate-rejection with zero evidence (review)."""
+        packet_path, _ = assemble_packet(judgment_repo)
+        proc = run_judgment(
+            judgment_repo, "capture", "--prd", PRD_ID,
+            "--finding", "finding-1", "--context", str(packet_path),
+            "--disposition", "rejected", "--actor", "founder",
+            "--rationale", "nah, dupe of something else")
+        assert proc.returncode == 2
+        assert "reason-code" in proc.stderr
+
+    def test_omitting_reason_code_on_accepted_still_works(self, judgment_repo):
+        """accepted/pending need no justification — being fixed is the reason."""
+        packet_path, _ = assemble_packet(judgment_repo)
+        assert capture(judgment_repo, packet_path).returncode == 0
 
     def test_judge_unsupported_disposition_converts_to_needs_human(self, judgment_repo):
         """N-1/N-2 judge half: unsupported judge recommendation degrades to
@@ -771,15 +896,20 @@ class TestTriageIntegration:
 
     def test_set_disposition_with_reason_code_and_evidence(
             self, judgment_repo, run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "add", PRD_ID, "--source", "codex-review",
+            stdin_text=json.dumps([{"severity": "minor",
+                                    "body": "the owning defect"}]),
+        ).returncode == 0  # finding-2, so the evidence ref resolves
         proc = run_findings_writer(
             judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
             "--rationale", "same as finding-9",
             "--reason-code", "duplicate",
-            "--evidence", f"finding:{PRD_ID}/finding-9")
+            "--evidence", f"finding:{PRD_ID}/finding-2")
         assert proc.returncode == 0, proc.stderr
         rec = read_ledger(judgment_repo)[-1]
         assert rec["human"]["reason_code"] == "duplicate"
-        assert rec["human"]["evidence_refs"] == [f"finding:{PRD_ID}/finding-9"]
+        assert rec["human"]["evidence_refs"] == [f"finding:{PRD_ID}/finding-2"]
 
     def test_set_disposition_evidence_gate_fails_fast(
             self, judgment_repo, run_findings_writer):

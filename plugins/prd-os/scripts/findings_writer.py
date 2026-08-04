@@ -479,6 +479,18 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
         _spillover_append(cfg, new)
 
 
+def _rollback_findings(path: Path, pre_bytes: bytes | None) -> bool:
+    """Restore the findings file to its pre-write bytes. Returns success."""
+    try:
+        if pre_bytes is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(pre_bytes)
+        return True
+    except OSError:
+        return False
+
+
 def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901
     if args.disposition not in DISPOSITIONS:
         sys.stderr.write(
@@ -499,7 +511,8 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
         import judgment_compiler
 
         gate_errors = judgment_compiler.validate_triage_decision(
-            getattr(args, "reason_code", None), getattr(args, "evidence", []))
+            getattr(args, "reason_code", None), getattr(args, "evidence", []),
+            args.disposition, cfg)
         if gate_errors:
             for gate_error in gate_errors:
                 sys.stderr.write(f"{gate_error}\n")
@@ -535,12 +548,17 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
     except ValueError as exc:
         sys.stderr.write(f"{exc}\n")
         return 2
+    # Snapshot BEFORE the write so a failed capture can restore it. Mirrors the
+    # rollback cmd_add already does for its stamp step. Without this, any
+    # capture failure that the fail-fast pre-check cannot see (a stale packet, a
+    # bad --judge-run, an unresolvable evidence ref, an OSError on the shared
+    # ledger) left the findings file saying "rejected" with no receipt — the
+    # exact divergence `verify --cross-check` exists to detect, manufactured by
+    # our own primary write path (review 2026-08-04).
+    pre_findings_bytes = path.read_bytes() if path.is_file() else None
     _write_all(path, recs)
     _sync_spillover_for_finding(cfg, args.prd_id, target)
     if judgment_enabled:
-        # Append the immutable triage episode receipt. A failure here is loud:
-        # the disposition already landed, so a silent skip would strand the
-        # decision outside the judgment ledger with nothing to flag it.
         import judgment_compiler
 
         try:
@@ -552,10 +570,15 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                 rationale=(args.rationale or "").strip() or None,
                 judge_run_path=getattr(args, "judge_run", None),
             )
-        except judgment_compiler.ValidationError as exc:
+        except (judgment_compiler.ValidationError, OSError) as exc:
+            rolled_back = _rollback_findings(path, pre_findings_bytes)
             sys.stderr.write(
-                "disposition was written but the judgment receipt was NOT: "
-                f"{exc}\n"
+                f"judgment receipt refused: {exc}\n"
+                + ("disposition rolled back; findings file unchanged.\n"
+                   if rolled_back else
+                   "WARNING: rollback ALSO failed. The findings file may now "
+                   "disagree with the judgment ledger; run "
+                   "`kipi judgment verify --cross-check` before trusting it.\n")
             )
             return 2
     print(

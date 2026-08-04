@@ -42,6 +42,8 @@ Exit codes: 0 success, 2 validation error (matches findings_writer contract).
 from __future__ import annotations
 
 import argparse
+import copy
+import fcntl
 import hashlib
 import json
 import math
@@ -49,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -190,6 +193,34 @@ def candidates_path(cfg: Config) -> Path:
 
 def tip_path(cfg: Config) -> Path:
     return _ledger_dir(cfg) / TIP_NAME
+
+
+@contextmanager
+def ledger_lock(cfg: Config):
+    """Exclusive lock held across read + build + append + anchor.
+
+    WHY (adversarial review 2026-08-04, reproduced with 4 concurrent captures):
+    capture is a read-modify-append. Both `sequence` and `prev_receipt_sha256`
+    are derived from the ledger AS READ, and the ledger deliberately lives at
+    the SHARED worktree root so N worktrees write one file. Without a lock, two
+    interleaved triage calls both computed sequence=N, the chain forked, and
+    BOTH processes exited 0 — the corruption only surfaced later at `verify`.
+    That is unrecoverable by contract: `evaluate` and `policy-candidates` both
+    refuse on a failed verify, and repairing it means rewriting lines, which is
+    exactly what append-only forbids. One interleaved triage would brick the
+    evaluator for the whole repo.
+
+    flock is advisory and per-host: it does not protect a ledger on a network
+    filesystem shared between machines. Named, not hidden.
+    """
+    path = _ledger_dir(cfg) / ".judgments.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def read_tip(path: Path) -> dict | None:
@@ -425,9 +456,12 @@ def _validate_judge_block(judge, where: str) -> None:
         return
     _require_keys(judge, frozenset(
         ("model", "prompt_sha256", "review_run_id", "input_sha256",
-         "output_sha256", "output", "converted_to_needs_human",
-         "converted_from")), f"{where}.judge")
+         "raw_output_sha256", "output_sha256", "output",
+         "converted_to_needs_human", "converted_from")), f"{where}.judge")
     validate_judge_output(judge["output"], f"{where}.judge.output")
+    if canonical_hash(judge["output"]) != judge["output_sha256"]:
+        raise ValidationError(
+            f"{where}.judge.output_sha256 does not hash the stored output")
     if not isinstance(judge["converted_to_needs_human"], bool):
         raise ValidationError(f"{where}.judge.converted_to_needs_human: bool required")
 
@@ -563,7 +597,13 @@ def _assemble_scope(cfg: Config, prd_id: str, missing: list[str]) -> dict:
     rel = os.path.relpath(path, cfg.repo_root)
     if path.is_file():
         text = path.read_text(encoding="utf-8")
-        match = re.search(r"(?ms)^##\s+.*?Scope.*?$(.*?)(?=^##\s|\Z)", text)
+        # Anchored: `.*?Scope.*?` also matched "## Out of Scope" and
+        # "## Scope Notes", and re.search takes the FIRST hit — so a PRD with
+        # either heading above its real one recorded a confident hash of the
+        # wrong section, inverting the unknown-never-becomes-a-fact rule
+        # (review 2026-08-04). No match now falls through to unknown.
+        match = re.search(
+            r"(?ms)^##\s+(?:\d+\.\s*)?Scope\s*$(.*?)(?=^##\s|\Z)", text)
         if match:
             return {"source": f"{rel}#Scope",
                     "sha256": _sha256_text(match.group(1).strip())}
@@ -603,8 +643,15 @@ def _assemble_duplicates(cfg: Config, prd_id: str, finding_id: str,
                     "similarity": similarity,
                     "source": str(os.path.relpath(own_path, cfg.repo_root)),
                 })
-    except Exception:  # advisory engine failure -> honest unknown, not []
-        missing.append("duplicates")
+    except (ImportError, OSError, ValueError, KeyError, TypeError,
+            AttributeError) as exc:
+        # Narrowed from a bare `except Exception` (repo rule: never silently
+        # swallow). Two changes: the failure is NAMED in missing_context, and
+        # partial results are DISCARDED — a half-built duplicate list recorded
+        # next to "duplicates: unknown" let partial masquerade as resolved
+        # (review 2026-08-04).
+        missing.append(f"duplicates ({type(exc).__name__}: {exc})")
+        return []
     return duplicates
 
 
@@ -743,7 +790,12 @@ def _load_judge_run(path: Path, packet: dict) -> dict:
 
 def _judge_block_from_run(run: dict) -> dict:
     output = dict(run["output"])
-    output_sha256 = canonical_hash(output)
+    # Two hashes, because the stored output is not always the emitted one:
+    # raw_output_sha256 attests what the judge actually said, output_sha256
+    # attests what this receipt stores after any gate conversion. One field
+    # covering both was unfalsifiable — the natural check failed on every
+    # converted receipt (review 2026-08-04).
+    raw_output_sha256 = canonical_hash(output)
     converted_from = None
     gate = evidence_gate_errors(output["workflow_reason_code"],
                                 output["workflow_disposition"],
@@ -760,19 +812,26 @@ def _judge_block_from_run(run: dict) -> dict:
         "prompt_sha256": run["prompt_sha256"],
         "review_run_id": run.get("review_run_id"),
         "input_sha256": run["input_sha256"],
-        "output_sha256": output_sha256,
+        "raw_output_sha256": raw_output_sha256,
+        "output_sha256": canonical_hash(output),
         "output": output,
         "converted_to_needs_human": converted_from is not None,
         "converted_from": converted_from,
     }
 
 
-def build_receipt(cfg: Config, packet: dict, *, disposition: str,
+def build_receipt(packet: dict, *, disposition: str,
                   actor: str, reason_code: str | None,
                   evidence_refs: list[str], rationale: str | None,
                   judge_run: dict | None, supersedes: str | None,
                   existing: list[dict]) -> dict:
-    """Validate the whole episode and produce the receipt record (pure)."""
+    """Validate the whole episode and produce the receipt record (pure).
+
+    Takes no Config on purpose: everything here is a function of the packet and
+    the existing chain, which is what lets --selftest prove the contract with
+    no filesystem at all. Reference RESOLUTION (which does need a repo) happens
+    in the caller, before this runs.
+    """
     validate_packet(packet)
     if disposition not in LEGACY_DISPOSITIONS:
         raise ValidationError(f"disposition must be one of {LEGACY_DISPOSITIONS}")
@@ -802,20 +861,25 @@ def build_receipt(cfg: Config, packet: dict, *, disposition: str,
     if reason_code is None:
         missing_context.append("human.reason_code")
 
+    # deepcopy, not reference: the receipt_id is a hash of this content, so a
+    # later mutation of the caller's packet (or of args.evidence) would
+    # silently invalidate an already-appended receipt and every chain link
+    # after it. Immutability held by the data, not by call ordering.
+    frozen = copy.deepcopy(packet)
     record = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "sequence": len(existing) + 1,
         "captured_at": _now_iso(),
-        "finding": packet["finding"],
-        "review": packet["review"],
-        "repo_state": packet["repo_state"],
-        "prd_state": packet["prd_state"],
-        "issue_state": packet["issue_state"],
-        "scope": packet["scope"],
-        "duplicates": packet["duplicates"],
-        "remediation": packet["remediation"],
-        "related_prds": packet["related_prds"],
-        "prior_receipts": packet["prior_receipts"],
+        "finding": frozen["finding"],
+        "review": frozen["review"],
+        "repo_state": frozen["repo_state"],
+        "prd_state": frozen["prd_state"],
+        "issue_state": frozen["issue_state"],
+        "scope": frozen["scope"],
+        "duplicates": frozen["duplicates"],
+        "remediation": frozen["remediation"],
+        "related_prds": frozen["related_prds"],
+        "prior_receipts": frozen["prior_receipts"],
         "missing_context": sorted(set(missing_context)),
         "judge": _judge_block_from_run(judge_run) if judge_run else None,
         "human": {
@@ -823,7 +887,7 @@ def build_receipt(cfg: Config, packet: dict, *, disposition: str,
             "decided_at": _now_iso(),
             "disposition": disposition,
             "reason_code": reason_code,
-            "evidence_refs": evidence_refs,
+            "evidence_refs": list(evidence_refs),
             "rationale": rationale,
         },
         "sampling": {
@@ -854,17 +918,21 @@ def append_receipt(path: Path, record: dict) -> None:
 
 def capture_episode(cfg: Config, packet: dict, **kwargs) -> dict:
     """The single write path into the judgments ledger."""
+    validate_packet(packet)
     _check_packet_freshness(cfg, packet)
     path = ledger_path(cfg)
-    existing = read_ledger(path)
-    record = build_receipt(cfg, packet, existing=existing, **kwargs)
-    append_receipt(path, record)
+    with ledger_lock(cfg):
+        # Read INSIDE the lock: a snapshot taken outside it is exactly the
+        # stale `existing` that forked the chain in the concurrency repro.
+        existing = read_ledger(path)
+        record = build_receipt(packet, existing=existing, **kwargs)
+        append_receipt(path, record)
     # Anchor AFTER the append. If the process dies between the two the anchor
     # under-counts, and an under-counting anchor is deliberately NOT an error
     # (see _tip_errors) so a crashed write never manufactures a truncation
     # alarm. Anchoring first would do the opposite: claim a receipt that was
     # never written, and fail every later verify.
-    write_tip(tip_path(cfg), existing + [record])
+        write_tip(tip_path(cfg), existing + [record])
     return record
 
 
@@ -879,6 +947,9 @@ def capture_from_triage(cfg: Config, prd_id: str, finding: dict, *,
     judge_run = None
     if judge_run_path:
         judge_run = _load_judge_run(Path(judge_run_path), packet)
+    unresolved = resolve_evidence_refs(cfg, evidence_refs)
+    if unresolved:
+        raise ValidationError("; ".join(unresolved))
     return capture_episode(
         cfg, packet, disposition=finding["disposition"], actor=actor,
         reason_code=reason_code, evidence_refs=evidence_refs,
@@ -886,12 +957,27 @@ def capture_from_triage(cfg: Config, prd_id: str, finding: dict, *,
 
 
 def validate_triage_decision(reason_code: str | None,
-                             evidence_refs: list[str]) -> list[str]:
-    """Fail-fast half for findings_writer: returns error strings, no I/O."""
+                             evidence_refs: list[str],
+                             disposition: str | None = None,
+                             cfg: Config | None = None) -> list[str]:
+    """Fail-fast half for findings_writer, run BEFORE the findings file moves."""
     errors = []
     if reason_code is not None and reason_code not in REASON_CODES:
         errors.append(
             f"reason-code must be one of {REASON_CODES}; got {reason_code!r}")
+        return errors
+    # Omitting the code used to opt a decision out of the evidence gate
+    # entirely: `rejected --rationale "dupe of something else"` recorded a
+    # duplicate-rejection with zero evidence, which is the exact decision the
+    # gate exists to refuse (adversarial review 2026-08-04). rejected/deferred
+    # already owe a --rationale; they now owe a machine-readable code too.
+    # accepted/pending stay optional — being fixed needs no justification.
+    if reason_code is None and disposition in ("rejected", "deferred"):
+        errors.append(
+            f"disposition={disposition!r} requires --reason-code (one of "
+            f"{REASON_CODES}). Omitting it would skip the evidence gate. "
+            "Use insufficient-context or needs-human if none of the specific "
+            "codes fit.")
         return errors
     try:
         _validate_evidence_refs(evidence_refs, "human decision")
@@ -899,6 +985,8 @@ def validate_triage_decision(reason_code: str | None,
         errors.append(str(exc))
         return errors
     errors.extend(evidence_gate_errors(reason_code, None, evidence_refs))
+    if cfg is not None and evidence_refs:
+        errors.extend(resolve_evidence_refs(cfg, evidence_refs))
     return errors
 
 
@@ -950,9 +1038,19 @@ def _tip_errors(records: list[dict], tip: dict | None,
     """Deletion detection. A prefix of a valid chain is a valid chain, so the
     chain walk above cannot see a truncated tail; the anchor can."""
     if tip is None:
-        # No anchor (legacy or fresh ledger). Do not hard-fail — that would
-        # break every repo whose ledger predates the anchor — but never claim
-        # completeness we cannot check.
+        # A missing anchor used to be a silent pass ("legacy ledger"). That
+        # restored the whole truncation hole for the price of one extra `rm`:
+        # deleting the anchor is CHEAPER than editing it, and a bad rsync or
+        # `git clean` does it by accident (adversarial review 2026-08-04,
+        # reproduced: rm tip && head -1 ledger -> VERIFY PASS).
+        # Every ledger this code has ever written has an anchor — the feature
+        # shipped with it — so a non-empty ledger without one is missing
+        # evidence, not legacy. An EMPTY ledger with no anchor is a genuinely
+        # fresh repo and stays clean.
+        if records:
+            return ["tip anchor .prd-os/judgments-tip.json is MISSING while "
+                    f"{len(records)} receipt(s) exist: the anchor was deleted "
+                    "or never written, so completeness cannot be checked"]
         return []
     if len(records) < tip["count"]:
         return [f"ledger is TRUNCATED: {len(records)} receipt(s) present, tip "
@@ -964,14 +1062,102 @@ def _tip_errors(records: list[dict], tip: dict | None,
     return []
 
 
-def verify_candidates(records: list[dict]) -> list[str]:
+def verify_candidates(records: list[dict],
+                      known_receipt_ids: set[str] | None = None) -> list[str]:
+    """Validate each candidate AND resolve its receipt citations.
+
+    A candidate is the input to a human-reviewed promotion that changes triage
+    behavior, so an unresolvable citation inflating a case count is exactly the
+    claim a reviewer would lean on. Previously `supporting_receipt_ids:
+    ['jr-doesnotexist']` with `case_count: 99` verified clean (review 2026-08-04).
+    """
     errors = []
     for index, record in enumerate(records, 1):
+        where = f"candidate line {index}"
         try:
-            validate_candidate(record, f"candidate line {index}")
+            validate_candidate(record, where)
         except ValidationError as exc:
             errors.append(str(exc))
+            continue
+        if known_receipt_ids is None:
+            continue
+        dangling = [rid for rid in record["supporting_receipt_ids"]
+                    if rid not in known_receipt_ids]
+        if dangling:
+            errors.append(f"{where}: cites receipt id(s) that do not exist in "
+                          f"the ledger: {sorted(dangling)}")
+        if record["case_count"] != len(record["supporting_receipt_ids"]):
+            errors.append(
+                f"{where}: case_count {record['case_count']} does not match "
+                f"{len(record['supporting_receipt_ids'])} supporting receipt(s)")
     return errors
+
+
+def resolve_evidence_refs(cfg: Config, refs: list[str]) -> list[str]:
+    """Open each reference and report the ones that point at nothing.
+
+    WHY (adversarial review 2026-08-04): the gate used to check only that a ref
+    matched `prefix:value`, so `--evidence finding:prd-does-not-exist/finding-999`
+    and `--evidence commit:zzzz` both passed and were recorded as the evidence
+    that justified a rejection. A reference nobody opens is not evidence, and
+    the PRD sells these codes as REFUSED without a stable reference.
+
+    Unresolvable-by-design kinds are named rather than silently skipped:
+    `test:` and `scope:` point at a path (and optionally a #section) which may
+    legitimately not exist yet in the working tree of the machine running the
+    check, so they are existence-checked only when the path is present.
+    """
+    errors = []
+    for ref in refs:
+        kind, _, value = ref.partition(":")
+        problem = _resolve_one_ref(cfg, kind, value)
+        if problem:
+            errors.append(f"evidence ref {ref!r}: {problem}")
+    return errors
+
+
+def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
+    if kind == "finding":
+        prd_id, _, finding_id = value.partition("/")
+        if not prd_id or not finding_id:
+            return "expected finding:<prd-id>/<finding-id>"
+        path = cfg.findings_dir / f"{prd_id}-findings.jsonl"
+        if any(r.get("id") == finding_id for r in _read_findings(path)):
+            return None
+        return f"no finding {finding_id} in {os.path.relpath(path, cfg.repo_root)}"
+    if kind == "prd":
+        return None if (cfg.prds_dir / f"{value}.md").is_file() \
+            else f"no PRD spec {value}.md"
+    if kind == "issue":
+        return None if (cfg.issues_dir / f"{value}.md").is_file() \
+            else f"no issue spec {value}.md"
+    if kind == "judgment":
+        known = {r.get("receipt_id") for r in read_ledger(ledger_path(cfg))}
+        return None if value in known else "no such judgment receipt"
+    if kind == "receipt":
+        if not cfg.receipts_path.is_file():
+            return "no receipts ledger exists"
+        for raw in cfg.receipts_path.read_text(encoding="utf-8").splitlines():
+            if raw.strip() and json.loads(raw).get("issue_id") == value:
+                return None
+        return "no remediation receipt for that issue"
+    if kind == "spillover":
+        path = _ledger_dir(cfg) / "spillover.jsonl"
+        if not path.is_file():
+            return "no spillover ledger exists"
+        return None if f'"{value}"' in path.read_text(encoding="utf-8") \
+            else "no such spillover item"
+    if kind == "commit":
+        if not re.fullmatch(r"[0-9a-f]{7,40}", value):
+            return "not a commit sha"
+        return None if _git(cfg.repo_root, "cat-file", "-e", f"{value}^{{commit}}") \
+            is not None else "commit not found in this repo"
+    if kind in ("test", "scope"):
+        candidate = cfg.repo_root / value.split("#", 1)[0]
+        if candidate.exists():
+            return None
+        return f"path {value.split('#', 1)[0]} does not exist"
+    return "unknown reference kind"
 
 
 def cross_check_findings(cfg: Config, records: list[dict],
@@ -1053,8 +1239,13 @@ def _score_cases(cases: list[tuple[str, str, float]]) -> dict:
     expected = sum(gold_totals[l] * pred_totals[l] for l in labels) / (total * total) \
         if total else 0.0
     accuracy = correct / total if total else 0.0
+    # Degenerate case (one class everywhere) => kappa undefined; the convention
+    # is 0.0, because chance agreement fully explains the result. Returning 1.0
+    # published a perfect score for a constant classifier — the single failure
+    # mode this whole PRD exists to catch, since v1's judge said "accepted"
+    # 45/50 times (review 2026-08-04).
     kappa = (accuracy - expected) / (1 - expected) \
-        if total and not math.isclose(expected, 1.0) else (1.0 if total else 0.0)
+        if total and not math.isclose(expected, 1.0) else 0.0
     ece = _expected_calibration_error(cases)
     return {
         "cases": total,
@@ -1105,7 +1296,12 @@ def evaluate(records: list[dict]) -> dict:
         cases.append((record["human"]["disposition"], mapped,
                       float(output["confidence"])))
     result = _score_cases(cases)
-    sampled = sum(1 for r in judged if r["sampling"]["sampled"])
+    # Set union, not a sum: a receipt that is BOTH needs-human and in the 5%
+    # sample was counted twice, so a "rate" could print above 1.0.
+    human_reviewed = {
+        r["receipt_id"] for r in judged
+        if JUDGE_TO_LEGACY[r["judge"]["output"]["workflow_disposition"]] is None
+        or r["sampling"]["sampled"]}
     by_code: dict[str, dict] = {}
     for record in judged:
         code = record["human"]["reason_code"] or "null"
@@ -1124,8 +1320,9 @@ def evaluate(records: list[dict]) -> dict:
         "superseded_excluded": superseded_excluded,
         "active_receipts": len(active),
         "judged_receipts": len(judged),
-        "human_review_rate": ((needs_human + sampled) / len(judged))
+        "human_review_rate": (len(human_reviewed) / len(judged))
         if judged else 0.0,
+        "needs_human_count": needs_human,
         "unsupported_disposition_rate": (converted / len(judged)) if judged else 0.0,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))
@@ -1168,6 +1365,14 @@ def _override_pattern_key(record: dict) -> tuple | None:
     if not human or not judge or human["reason_code"] is None:
         return None
     mapped = JUDGE_TO_LEGACY[judge["output"]["workflow_disposition"]]
+    if mapped is None:
+        # needs-human is an ABSTENTION, not a disagreement. Counting it as an
+        # override made the detector manufacture patterns out of the very
+        # receipts the evidence gate creates: the more the gate fired, the more
+        # "repeated overrides" it proposed rules for, each built on cases where
+        # the judge never expressed an opinion (review 2026-08-04). `evaluate`
+        # already excluded these; the detector now uses the same filter.
+        return None
     if mapped == human["disposition"] and \
             judge["output"]["workflow_reason_code"] == human["reason_code"]:
         return None  # agreement, nothing to compile
@@ -1290,8 +1495,7 @@ def _selftest_receipt(existing: list[dict], index: int, **overrides) -> dict:
                   evidence_refs=[], rationale=None, judge_run=None,
                   supersedes=None)
     kwargs.update(overrides)
-    # cfg is unused by build_receipt's pure paths; pass None deliberately
-    return build_receipt(None, packet, existing=existing, **kwargs)  # type: ignore[arg-type]
+    return build_receipt(packet, existing=existing, **kwargs)
 
 
 def selftest() -> int:
@@ -1301,15 +1505,27 @@ def selftest() -> int:
         if not condition:
             failures.append(label)
 
+    def tip_for(records: list[dict]) -> dict:
+        return {"count": len(records),
+                "last_receipt_sha256": canonical_hash(records[-1])
+                if records else None,
+                "last_receipt_id": records[-1]["receipt_id"] if records else None,
+                "updated_at": "2026-08-04T00:00:00Z"}
+
     ledger: list[dict] = []
     ledger.append(_selftest_receipt(ledger, 0))
     ledger.append(_selftest_receipt(ledger, 1))
-    expect(verify_ledger(ledger) == [], "clean chain verifies")
+    expect(verify_ledger(ledger, tip_for(ledger)) == [], "clean chain verifies")
 
     mutated = [dict(ledger[0]), ledger[1]]
     mutated[0] = json.loads(json.dumps(mutated[0]))
     mutated[0]["human"]["disposition"] = "rejected"
-    expect(bool(verify_ledger(mutated)), "mutated receipt is detected")
+    expect(bool(verify_ledger(mutated, tip_for(ledger))),
+           "mutated receipt is detected")
+    expect(bool(verify_ledger(ledger[:1], tip_for(ledger))),
+           "truncated chain is detected")
+    expect(bool(verify_ledger(ledger, None)),
+           "a missing tip anchor over a non-empty ledger is detected")
 
     try:
         _selftest_receipt(ledger, 2, disposition="rejected",
@@ -1384,10 +1600,16 @@ def cmd_capture(cfg: Config, args: argparse.Namespace) -> int:
             packet.get("finding", {}).get("finding_id") != args.finding:
         raise ValidationError(
             "context packet is for a different finding than the capture args")
+    validate_packet(packet)  # unconditional: an unvalidated packet used to
+    # reach _check_packet_freshness and raise a bare KeyError, exiting 1 and
+    # breaking the documented 0/2 contract (adversarial review 2026-08-04).
     judge_run = None
     if args.judge_run:
-        validate_packet(packet)
         judge_run = _load_judge_run(Path(args.judge_run), packet)
+    gate = validate_triage_decision(args.reason_code, args.evidence or [],
+                                    args.disposition, cfg)
+    if gate:
+        raise ValidationError("; ".join(gate))
     record = capture_episode(
         cfg, packet, disposition=args.disposition, actor=args.actor,
         reason_code=args.reason_code, evidence_refs=args.evidence or [],
@@ -1404,7 +1626,8 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
     records = read_ledger(ledger_path(cfg))
     errors = verify_ledger(records, read_tip(tip_path(cfg)))
     candidate_records = read_ledger(candidates_path(cfg))
-    errors.extend(verify_candidates(candidate_records))
+    errors.extend(verify_candidates(
+        candidate_records, {r.get("receipt_id") for r in records}))
     if getattr(args, "cross_check", False):
         errors.extend(cross_check_findings(cfg, records,
                                            getattr(args, "since", None)))
