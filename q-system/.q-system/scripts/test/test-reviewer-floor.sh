@@ -71,6 +71,24 @@ check_eq "the floor's state is literally failure" "failure" "$FLOOR_STATE"
 check_eq "the floor's context is literally kipi/reviewer-approved" \
   "kipi/reviewer-approved" "$REVIEWER_CONTEXT"
 
+# SOURCING MUST BE CLEAN WHERE BASH_SOURCE DOES NOT EXIST. zsh is the founder's
+# login shell and has no BASH_SOURCE at all, so under this script's own `set -u`
+# a bare ${BASH_SOURCE[0]} emits "BASH_SOURCE[0]: parameter not set". Found live
+# 2026-08-03 while running the decision by hand across all 20 open PRs.
+#
+# ASSERT STDERR, NOT THE DECISION. The first version of this check compared
+# stdout and PASSED against the unfixed script -- the warning is non-fatal, so
+# `post` still came out and the check was a no-op. The stderr stream is the only
+# recorder that sees this defect. `bash -c` does NOT reproduce it (bash
+# populates BASH_SOURCE when sourcing a file), which is why the shell is zsh.
+if command -v zsh >/dev/null 2>&1; then
+  src_err="$(zsh -c ". '$SCRIPT'; floor_decision < '$FX/absent.json'" 2>&1 >/dev/null)"
+  check_eq "sourcing from zsh emits nothing on stderr" "" "$src_err"
+else
+  # Visible, not silent: a skipped check must never read as a passed one.
+  echo "  SKIP no zsh on this host -- BASH_SOURCE-unset check not exercised here"
+fi
+
 # ------------------------------------------------------------- integration half
 # Drives main() end to end with a recording stub in place of `gh`.
 STUB_DIR="$(mktemp -d)"

@@ -121,6 +121,13 @@ main() {
 }
 
 # Sourcing must run nothing: the test sources this file to drive floor_decision.
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+#
+# `:-` IS LOAD-BEARING. Under `set -u` a bare ${BASH_SOURCE[0]} is an unbound
+# variable wherever bash does not populate the array -- sourcing from `bash -c`
+# is the case that caught this, which is exactly how an operator inspects the
+# decision by hand. The bare form aborted the source with
+# "BASH_SOURCE[0]: parameter not set". Empty never equals "$0", so an
+# unpopulated BASH_SOURCE correctly reads as "sourced" and main stays put.
+if [ "${BASH_SOURCE[0]:-}" = "${0}" ]; then
   main "$@"
 fi
