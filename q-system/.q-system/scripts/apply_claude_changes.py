@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """apply-claude-changes engine: land agent-authored edits inside .claude/ without
-any human reading a diff, and without a path that can weaken enforcement.
+any human reading a diff, and without a MECHANICALLY DETECTABLE path that can
+weaken enforcement -- which means REMOVAL, never meaning.
+
+Read that line no wider than it is written. Text that leaves every enforcement
+point intact and appends a paragraph mooting it is accepted at exit 0, on
+purpose and with a decision behind it: see APPEND-NEGATION IS ACCEPTED at the
+end of this docstring before treating this tool as a semantic gate.
 
 WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 

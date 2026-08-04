@@ -1169,7 +1169,8 @@ echo "--- 16: append-negation is ACCEPTED, on purpose (ASK-293) ---"
 # These four cases PIN A DECISION, they do not guard anything. The engine's
 # census is membership-only, so a payload that keeps every censused line and
 # APPENDS text mooting them applies clean. Both cheap defenses were built and
-# defeated (q-system/output/ask293-decision-evidence.sh); the reasoning is in
+# defeated (scripts/test/ask293-decision-evidence.sh, which ASSERTS its own
+# result matrix and exits 1 if a run stops matching it); the reasoning is in
 # the engine docstring under APPEND-NEGATION IS ACCEPTED.
 #
 # 16a-16c are three spellings of ONE attack: literal, paraphrased, hoisted off

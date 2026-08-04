@@ -29,7 +29,7 @@ paths:
 - Never include API keys, tokens, or secrets in code output or committed files
 - Never expose MCP server tokens, OAuth credentials, or API keys
 - Use environment variable references (`${VAR}`) instead of hardcoded secrets
-- Never recursively delete root or dot directories
+- Never run `rm -rf` on root or dot directories
 - Never run untrusted scripts via `curl | bash`
 - Review all MCP server interactions for data leakage before executing
 MD
@@ -53,13 +53,42 @@ open(dest, "w").write(text)
 PY
 }
 
-run() {  # run <engine> <proposal> <root> <label>
+MISMATCHES=0
+
+# run <engine> <proposal> <root> <label> <expected-rc>
+#
+# The expected rc is the ASSERTION, and it is the whole point of this script.
+# The engine docstring cites these runs as the MEASUREMENT behind the ASK-293
+# acceptance, so every row has to be able to fail. Before PR #84 review this
+# printed a table and then echoed a fixed conclusion underneath it: pointed at
+# an engine whose guards were inert, it printed nine rc=0 rows, still claimed
+# "p1 refused", and still exited 0. A conclusion that cannot be contradicted by
+# the run it sits under is decoration, not evidence.
+run() {
+  local out rc expected="$5" verdict
   set +e
-  local out rc
   out=$(python3 "$1" "$2" --root "$3" 2>&1 | sed 's/ (log: .*//')
   rc=$?
   set -e
-  printf '    %-46s rc=%s  %s\n' "$4" "$rc" "$out"
+  if [ "$rc" = "$expected" ]; then
+    verdict="as expected"
+  else
+    verdict="MISMATCH want=$expected"
+    MISMATCHES=$((MISMATCHES + 1))
+  fi
+  printf '    %-6s rc=%-3s %-18s %s\n' "$4" "$rc" "$verdict" "$out"
+}
+
+# sweep <engine> <expected-rc-p1> <expected-rc-p2> <expected-rc-p3>
+sweep() {
+  local engine="$1" t
+  shift
+  for p in p1 p2 p3; do
+    t=$(mk); write_payloads "$t"
+    run "$engine" "$t/$p.json" "$t" "$p" "$1"
+    command rm -rf -- "$t"
+    shift
+  done
 }
 
 # ---------------------------------------------------------------- payloads
@@ -97,9 +126,8 @@ JSON
 echo "==============================================================="
 echo " BASELINE: shipped engine, no guard"
 echo "==============================================================="
-for p in p1 p2 p3; do
-  T=$(mk); write_payloads "$T"; run "$ENGINE" "$T/$p.json" "$T" "$p"; command rm -rf -- "$T"
-done
+echo "  expect: the shipped engine applies all three (this IS the finding)"
+sweep "$ENGINE" 0 0 0
 
 echo
 echo "==============================================================="
@@ -114,9 +142,8 @@ build_guard "$GUARD_A" '    if is_rule_text(rel) and content is not None:
         for _p in _NEG:
             if _p in _added.lower():
                 raise Refusal("negation phrase %r added to rule text %s" % (_p, rel))'
-for p in p1 p2 p3; do
-  T=$(mk); write_payloads "$T"; run "$GUARD_A" "$T/$p.json" "$T" "$p"; command rm -rf -- "$T"
-done
+echo "  expect: p1 REFUSED (2), p2 APPLIES (0), p3 REFUSED (2)"
+sweep "$GUARD_A" 2 0 2
 echo "    -> p1 refused. p2 carries no listed phrase and lands. The guard"
 echo "       matches vocabulary, and the attacker picks the vocabulary."
 
@@ -129,9 +156,8 @@ build_guard "$GUARD_B" '    if is_rule_text(rel) and content is not None:
         _tail = content.rstrip()
         if new.startswith(_tail) and new[len(_tail):].strip():
             raise Refusal("text may not be added after the last substantive line of %s" % rel)'
-for p in p1 p2 p3; do
-  T=$(mk); write_payloads "$T"; run "$GUARD_B" "$T/$p.json" "$T" "$p"; command rm -rf -- "$T"
-done
+echo "  expect: p1 REFUSED (2), p2 REFUSED (2), p3 APPLIES (0)"
+sweep "$GUARD_B" 2 2 0
 echo "    -> p1 refused. p3 is the SAME sentence anchored on the H1 instead,"
 echo "       which lands it ABOVE the rules it moots. Position is a proxy for"
 echo "       authority and the top of a document is not the weaker end."
@@ -144,3 +170,20 @@ T=$(mk); write_payloads "$T"
 python3 "$GUARD_B" "$T/p3.json" --root "$T" >/dev/null 2>&1 || true
 sed -n '7,12p' "$T/.claude/rules/security.md"
 command rm -rf -- "$T"
+
+echo
+echo "==============================================================="
+if [ "$MISMATCHES" = "0" ]; then
+  echo " EVIDENCE HOLDS: all 9 runs matched their expected return code."
+  echo " Neither cheap guard refuses all three payloads, so neither one"
+  echo " closes the hole -- which is what the acceptance rests on."
+  exit 0
+fi
+echo " EVIDENCE BROKEN: $MISMATCHES run(s) diverged from the expectation"
+echo " printed above them. The conclusions in this script and in the engine"
+echo " docstring's APPEND-NEGATION section are no longer backed by this run."
+echo " Re-measure before trusting either. If a guard now refuses ALL THREE"
+echo " payloads without refusing suite case 16d, that is the condition the"
+echo " docstring names for REVERSING the acceptance -- not a test to repair."
+echo "==============================================================="
+exit 1
