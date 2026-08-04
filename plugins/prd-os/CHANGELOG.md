@@ -2,6 +2,11 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.2] - 2026-08-04
+
+### Changed
+- Restacked the judge runner onto the 0.14.2 receipt gate (no date exemption, cross-check under the writer lock). No behaviour change in the judge runner itself.
+
 ## [0.15.1] - 2026-08-04
 
 ### Added — the fail-soft judge call is now countable
@@ -57,6 +62,38 @@ that is the sole production input to a receipt field is passed by no slash
 command and no `kipi` dispatcher path. Definition sites are deliberately not the
 corpus: an `add_argument` proves the flag exists, which was never in doubt. Run
 red before the fix, naming `--judge-run` exactly.
+
+## [0.14.2] - 2026-08-04
+
+### Fixed (Codex review, PR #102 round 2) — BLOCKER: the floor exempted the future
+A PRD-creation-date floor exempts every FUTURE decision on a pre-floor PRD, not
+just the legacy ones. 35 of the 36 real PRDs predate the floor, so the gate was a
+near-permanent no-op — the exact opposite of "receipts are required from here on".
+
+The signal was wrong, so the mechanism is deleted rather than hardened a third
+time. `_prd_predates_floor`, `_PRD_ID_DATE` and `_PRD_DATE_EARLIEST` are gone and
+the gate reads no date at all: this gate fires when a PRD is APPROVED, and a PRD
+being approved now is being decided now, whatever date its id carries. A test
+asserts none of those three names comes back, so the class is provably gone
+rather than merely unused.
+
+Measured before removing the exemption, because "a gate that cannot be satisfied
+gets switched off" is a real risk that deserved a number: of the 36 real PRDs, 21
+are archived and 13 approved and can never reach this gate again. Exactly ONE is
+still in-review, with 13 dispositioned findings, and its remedy is one
+`set-disposition` re-run per finding, which mints the receipt as a side effect.
+
+This retires the whole date-inference lineage: PR #101 rounds 2/7/8
+(`resolved_at`), 0.14.0 (prd-id date), 0.14.1 (date-shape hardening).
+
+### Fixed (Codex review, PR #102 round 2) — MAJOR: the lock did not span the check
+The gate read the ledger under `ledger_lock`, RELEASED it, and only then
+cross-checked the findings files. A concurrent, perfectly valid triage landing in
+that gap writes a disposition the stale ledger snapshot cannot see, so approval
+false-blocks on a missing receipt that does exist. The round-4 fix locked the
+read; the comparison needed the same span. Both now run inside one critical
+section. The paired test asserts `ledger_lock` depth > 0 at the moment
+`cross_check_findings` is called — re-entrancy makes that probe safe.
 
 ## [0.14.1] - 2026-08-04
 

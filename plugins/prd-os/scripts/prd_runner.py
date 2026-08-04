@@ -610,66 +610,29 @@ def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
 # calibration set it exists to be.
 JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
 
-_PRD_ID_DATE = re.compile(r"-(\d{4}-\d{2}-\d{2})$")
-
-# Plausibility bound for a PRD id's date. MEASURED, not guessed: the 36 prd_ids
-# under `.prd-os/findings/` span 2026-05-13 to 2026-08-04, so this sits months
-# before the earliest real PRD and cannot false-block one, while still refusing
-# a date that this project could never have produced.
-_PRD_DATE_EARLIEST = "2026-01-01"
-
-
-def _prd_predates_floor(prd_id: str) -> bool:
-    """Is this PRD old enough that its findings can never carry receipts?
-
-    Answered from the PRD ID, which carries its creation date, and NOT from any
-    finding's `resolved_at`. Rounds 2, 7 and 8 of PR #101 were all ONE defect:
-    inferring "decided after the floor" from `resolved_at`, a mutable and
-    strippable field on a hand-editable file. The round-8 code admitted the
-    inference was undecidable ("undateable AND unclaimed: cannot judge, do not
-    guess") and so left a permanent documented hole -- switch capture off,
-    strip the date, and the missing receipt is invisible. Patching it a ninth
-    time is paying a meter, so the class is killed by construction: this gate
-    runs for ONE named PRD, and that PRD's own date answers the question
-    without reading a single finding field.
-
-    FAILS CLOSED on an id whose date cannot be parsed. Measured: 36 of 36
-    prd_ids under `.prd-os/findings/` carry a trailing ISO date, but NOTHING in
-    prd_runner enforces that format, so an id without one is treated as
-    post-floor and REQUIRES receipts. The alternative is a free exemption for
-    any id that simply omits a date, which is the same hole in a new shape.
-    """
-    match = _PRD_ID_DATE.search(prd_id or "")
-    if not match:
-        return False
-    stamp = match.group(1)
-    # A date-SHAPED suffix is not a date. Matching the shape and then string-
-    # comparing it RELOCATED the very defect this function exists to kill: the
-    # floor moved off `resolved_at` because a strippable field handed out a free
-    # exemption, and `prd-evade-0000-00-00` -- which no calendar can produce --
-    # bought exactly the same exemption through the new mechanism (review of
-    # PR #102, executed table). Parse it for real, and fail closed when it is
-    # not a date.
-    try:
-        datetime.strptime(stamp, "%Y-%m-%d")
-    except ValueError:
-        return False
-    # strptime ALONE does not close it: `1970-01-01` parses perfectly and was
-    # still exempt. A real date decades before this project existed is evasion,
-    # not history, so the exemption also needs a plausibility floor.
-    if stamp < _PRD_DATE_EARLIEST:
-        return False
-    return stamp < JUDGMENT_RECEIPT_FLOOR[:10]
-
-
 def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
-    """Every finding of a post-floor PRD must carry a receipt.
+    """Every dispositioned finding in this PRD must carry a receipt.
 
-    FLOOR, not a blanket requirement: ~342 findings were adjudicated before the
-    compiler existed and can never have receipts. Demanding them would block
-    every pre-existing PRD forever, and a gate that cannot be satisfied gets
-    switched off -- which protects nothing. So the rule binds only PRDs created
-    after the feature landed.
+    NO EXEMPTION, and deliberately no date logic of any kind. Three shapes all
+    failed the same way. Rounds 2/7/8 of PR #101 inferred eligibility from
+    `resolved_at`, a mutable strippable field. PR #102 moved the inference to
+    the PRD id's creation date, and its review round matched a date-SHAPED
+    suffix no calendar can produce. Then Codex found the defect underneath
+    both: a PRD-creation floor exempts every FUTURE decision on an old PRD, and
+    35 of 36 real PRDs predate the floor, so the gate was a near-permanent
+    no-op -- the opposite of "receipts are required from here on".
+
+    The signal was simply wrong. This gate fires when a PRD is APPROVED, and a
+    PRD being approved now is being decided now, whatever date its id carries.
+    So the rule is unconditional and reads no date at all.
+
+    Measured before removing the exemption, because "a gate that cannot be
+    satisfied gets switched off" is a real risk that deserved a number rather
+    than a worry: of the 36 real PRDs, 21 are archived and 13 approved, so they
+    can never reach this gate again. Exactly ONE is still in-review, with 13
+    dispositioned findings, and its remedy is one `set-disposition` re-run per
+    finding, which mints the receipt as a side effect. A bounded, one-time,
+    self-service cost bought back the whole guarantee.
 
     Returns (exit_code, text). The text is NOT only an error: a decision-
     disagreement warning rides back with exit 0, so the caller must emit it
@@ -697,7 +660,18 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
         # disposition, broken chain -- satisfied the gate and authorized
         # approval (Codex, PR #101 round 3). A hash chain no consumer checks is
         # decoration; the gate is the consumer that matters.
-        chain_errors = judgment_compiler.verify_ledger(records, tip)
+            chain_errors = judgment_compiler.verify_ledger(records, tip)
+            # Cross-check INSIDE the lock, with the read that feeds it (Codex
+            # major, PR #102). It used to run after the lock was released, so a
+            # concurrent and perfectly valid triage landing in that gap wrote a
+            # disposition this stale ledger snapshot could not see, and approval
+            # false-blocked on a missing receipt that did exist. The round-4 fix
+            # locked the read; the comparison needs the same span.
+            # No `since`: eligibility is unconditional now, so there is nothing
+            # to date-filter.
+            raw_missing, raw_drift = ([], []) if chain_errors else \
+                judgment_compiler.cross_check_findings(
+                    cfg, records, None, prd_id=prd_id)
         if chain_errors:
             return 2, (
                 "approval blocked: the judgment ledger does not verify, so its "
@@ -706,15 +680,6 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
                 + ("\n  ..." if len(chain_errors) > 5 else "")
                 + "\n\nRun `kipi judgment verify` for the full report.\n"
             )
-        if _prd_predates_floor(prd_id):
-            # Chain integrity was verified above for every PRD; only the
-            # COMPLETENESS requirement is waived for a pre-compiler PRD.
-            raw_missing, raw_drift = [], []
-        else:
-            # No `since` at all: the PRD-level floor already answered the
-            # only question `resolved_at` was ever used for.
-            raw_missing, raw_drift = judgment_compiler.cross_check_findings(
-                cfg, records, None, prd_id=prd_id)
     except Exception as exc:
         # FAIL CLOSED. The first version caught everything and returned 0,
         # defended as "a bug in the check must not cause an approval outage".
@@ -757,9 +722,8 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
         )
     if missing:
         return 2, (
-            f"approval blocked: {len(missing)} finding(s) in a PRD created on "
-            f"or after {JUDGMENT_RECEIPT_FLOOR[:10]} with no judgment "
-            "receipt:\n  "
+            f"approval blocked: {len(missing)} dispositioned finding(s) with "
+            "no judgment receipt:\n  "
             + "\n  ".join(missing[:5])
             + ("\n  ..." if len(missing) > 5 else "")
             + "\n\nRe-run the disposition through findings_writer.py "
