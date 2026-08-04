@@ -1706,10 +1706,18 @@ class TestGateUsesAPrdLevelFloor:
             "waved through: the kill-switch-plus-strip hole")
         assert "no judgment receipt" in message
 
-    def test_a_prd_created_before_the_floor_stays_exempt(
+    def test_an_old_prd_does_not_exempt_a_decision_made_today(
             self, fake_repo, write_config, run_findings_writer):
-        """Pre-compiler decisions can never have receipts. A gate that cannot
-        be satisfied gets switched off, and an off gate protects nothing."""
+        """Codex BLOCKER on PR #102: a PRD-creation-date floor exempted every
+        FUTURE decision on a pre-floor PRD. 35 of 36 real PRDs predate the
+        floor, so the gate was a near-permanent no-op -- the opposite of
+        "receipts are required from here on".
+
+        Measured before removing the exemption: of the 36 real PRDs, 21 are
+        archived and 13 approved, so they can never reach this gate again. ONE
+        (in-review, 13 dispositioned findings) can, and its remedy is one
+        `set-disposition` re-run per finding, which mints the receipt. So the
+        exemption bought almost nothing and cost the entire guarantee."""
         legacy = "prd-legacy-2026-07-01"
         write_config(fake_repo, {"config_schema_version": 1})
         write_prd_spec(fake_repo, legacy)
@@ -1722,8 +1730,11 @@ class TestGateUsesAPrdLevelFloor:
             fake_repo, "set-disposition", legacy, "finding-1", "accepted",
             env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
         runner = _load_module("pr_floor_b", "prd_runner.py")
-        code, _ = runner._judgment_receipt_gate(_cfg_for(fake_repo), legacy)
-        assert code == 0, "the floor must not block every legacy PRD forever"
+        code, message = runner._judgment_receipt_gate(_cfg_for(fake_repo), legacy)
+        assert code == 2, (
+            "an old PRD id must not buy an exemption for a decision being "
+            "approved today")
+        assert "no judgment receipt" in message
 
     def test_an_undateable_prd_id_fails_closed(
             self, fake_repo, write_config, run_findings_writer):
@@ -1874,32 +1885,43 @@ class TestPersistPathIsOneCriticalSection:
             f"{seen[0]}")
 
 
-@pytest.mark.parametrize("prd_id,requires_receipt", [
-    ("prd-real-2026-08-05", True),      # post-floor: enforced
-    ("prd-legacy-2026-06-01", False),   # genuinely pre-floor: exempt
-    ("prd-nodate", True),               # no date at all: fail closed
-    ("prd-evade-0000-00-00", True),     # date-SHAPED, no calendar produces it
-    ("prd-evade-1970-01-01", True),     # a real date, absurd for this project
-    ("prd-evade-2026-13-45", True),     # month 13: rejected by shape alone
-    # IN-RANGE and sorts before the floor, so ONLY the real-date parse rejects
-    # it. Added after a mutation run: deleting the strptime guard left every
-    # other row green, because the plausibility floor happens to subsume
-    # 0000-00-00 and string ordering happens to subsume 2026-13-45. Without
-    # this row the guard could be deleted and no test would notice.
-    ("prd-evade-2026-02-30", True),     # February 30th does not exist
-    ("prd-evade-2026-06-31", True),     # June has 30 days
-])
-def test_only_a_real_plausible_date_earns_an_exemption(prd_id, requires_receipt):
-    """The exemption must need a date that a calendar can produce AND that this
-    project could plausibly have used.
+# The date-shape table that used to live here is gone with the mechanism it
+# guarded. `_prd_predates_floor` parsed a date out of the prd_id; Codex's
+# blocker showed the whole date-based exemption was wrong, so the function was
+# deleted rather than hardened a third time. A class dies best by deleting the
+# mechanism, not by adding a guard to it.
 
-    The whole reason the floor moved off `resolved_at` was that a strippable
-    field handed out a free exemption. Matching a date-SHAPED suffix and then
-    string-comparing it relocates that defect rather than killing it:
-    `prd-evade-0000-00-00` is not a date any calendar produces, and
-    `1970-01-01` parses fine but predates this project by decades. Both were
-    exempt. `strptime` alone does not close it -- the epoch date is valid --
-    so a plausibility floor is required too, and both branches fail closed.
+
+def test_no_date_parsing_survives_in_the_receipt_gate():
+    """Executable proof the class is gone, not merely unused."""
+    source = (SCRIPTS_DIR / "prd_runner.py").read_text()
+    for dead in ("_prd_predates_floor", "_PRD_ID_DATE", "_PRD_DATE_EARLIEST"):
+        assert dead not in source, (
+            f"{dead} is back: the receipt gate must not infer eligibility "
+            "from any date")
+
+
+def test_the_cross_check_runs_under_the_writer_lock(judgment_repo, monkeypatch):
+    """Codex MAJOR on PR #102: the gate read the ledger under `ledger_lock`,
+    RELEASED it, and only then cross-checked the findings files. A concurrent,
+    perfectly valid triage landing in that gap writes a disposition the gate's
+    stale ledger snapshot cannot see, so approval false-blocks on a missing
+    receipt that does exist. The lock has to span the comparison, not just the
+    read that feeds it.
+
+    `ledger_lock` is re-entrant per thread, so depth > 0 is exactly the
+    assertion "a lock is held right now" without deadlocking the prober.
     """
-    runner = _load_module(f"pr_shape_{prd_id}", "prd_runner.py")
-    assert runner._prd_predates_floor(prd_id) is not requires_receipt
+    runner = _load_module("pr_lockspan", "prd_runner.py")
+    import judgment_compiler as jc
+
+    seen = []
+    real = jc.cross_check_findings
+    monkeypatch.setattr(jc, "cross_check_findings",
+                        lambda *a, **k: (seen.append(
+                            getattr(jc._LOCK_DEPTH, "value", 0)) or real(*a, **k)))
+    runner._judgment_receipt_gate(_cfg_for(judgment_repo), PRD_ID)
+    assert seen, "the cross-check never ran"
+    assert seen[0] >= 1, (
+        "cross_check_findings ran with the writer lock released; a concurrent "
+        "triage in that window false-blocks approval")
