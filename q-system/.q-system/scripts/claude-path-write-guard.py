@@ -258,9 +258,39 @@ def expand(token, cwd, assigns):
     return os.path.normpath(t)
 
 
-# A `$(...)`, a backtick, or a `$VAR` this parser never saw assigned. The shell
-# will expand it; we cannot.
-UNRESOLVED = re.compile(r"\$\(|`|\$\{?[A-Za-z_]")
+# Anything the shell will still expand once _subst() has done what it can.
+#
+# SCAR (review finding, PR #85 round 9, BLOCKER): this used to ENUMERATE the
+# expansion shapes it knew -- `$(`, a backtick, `${?<letter>`. `${!V}` is `$`,
+# `{`, `!`, so it matched none of them and the token was treated as ANCHORABLE.
+# resolve() joined it to the cwd verbatim, producing the fabricated path
+# `<cwd>/${!V}/rules/pwn.md`, which carries no `.claude` component -- so
+# hits_claude() said no, literal_claude_tail() found nothing, and round 8's
+# fail-closed branch (reachable only from `resolve() is None`) never ran. That is
+# the round-3 scar again: comparing a REPRESENTATION instead of the thing.
+#
+# The fix is not one more shape. Enumerating shapes is open-ended -- `${V:-x}`,
+# `${#V}`, `${V/a/b}`, `${A[0]}`, `$'..'`, `$((..))`, `$1`, `$@` are the same hole
+# with different spelling, and probe_round9_findings.sh phase 2 measured six of
+# them live. The ALPHABET is not open-ended: in the shell grammar every expansion
+# is introduced by `$` or by a backtick, and by nothing else. So the test is on
+# the alphabet. A token still carrying either character after substitution names
+# something this parser cannot know, full stop.
+#
+# Deliberately NOT here: glob and brace metacharacters. They expand too, but
+# widening THIS regex to cover them would send `touch .claude/rules/{a,b}.md` --
+# a token whose `.claude` component is plainly visible and which is blocked
+# outright today -- down the unanchorable path and into a mere handoff. Weaker,
+# not stronger. They are handled where that weakening cannot apply: the
+# no-backstop rule in _stage(). See NOT_A_LITERAL.
+UNRESOLVED = re.compile(r"[$`]")
+
+# Every metacharacter that makes a token something other than a plain literal
+# path: the two expansion introducers above, plus glob and brace expansion.
+# Read ONLY when the command re-baselines Layer 2 (see _stage), where "this
+# parser cannot read the token" must mean block, because nothing is left
+# downstream to catch whatever it turns out to name.
+NOT_A_LITERAL = re.compile(r"[$`*?\[\]{}]")
 
 # Sentinel cwd for "a `cd` went somewhere this parser cannot name". Never a real
 # path, and deliberately carries no `.claude` component, so hits_claude() is
@@ -907,6 +937,14 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     # and here-strings from matching as paths.
     for redir in re.finditer(r">>?\s*([^\s;&|<>]+)", seg):
         raw = unquote(redir.group(1))
+        # No backstop left -> a target this parser cannot read character-for-
+        # character is refused, whether or not a `.claude` tail is visible in it
+        # (review finding, round 9). `printf pwned > ${!V}/rules/pwn.md` shows
+        # nothing to match against; that is the point of it.
+        if layer2_blind and NOT_A_LITERAL.search(_subst(raw, assigns)):
+            return ("redirects into a target this parser cannot read as a literal "
+                    "path, while the same command re-baselines Layer 2: %s"
+                    % redir.group(1))
         target = resolve(raw, effective_cwd, assigns)
         if target and hits_claude(target, session_cwd):
             return "redirects output into .claude/: %s" % redir.group(1)
@@ -932,6 +970,35 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
 
     prog = os.path.basename(tokens[0])
     args = tokens[1:]
+
+    # NO BACKSTOP -> ONLY A PLAIN LITERAL IS READABLE (review finding, round 9).
+    #
+    # Everywhere else in this file, a token this parser cannot anchor is HANDED
+    # OFF to Layer 2 on the stated ground that the write lands and the hash
+    # moves. A same-command re-baseline falsifies that ground (round 8). Round 8
+    # acted on it only where a literal `.claude` tail was still visible; round 9
+    # showed the tail can be hidden in the variable too, at which point there is
+    # nothing left to pattern-match and the only safe answer is to stop reading
+    # tokens this parser cannot read.
+    #
+    # So inside a re-baselining command the verdict depends on NO expansion
+    # semantics at all: a plain literal is judged as always, anything else is
+    # refused. That is what makes the class finite instead of one more round of
+    # out-guessing bash.
+    #
+    # Bounded three ways so the cost stays affordable: readers are exempt (a
+    # `grep .claude/rules/*.md` beside a re-baseline still works), the sanctioned
+    # entrypoints are exempt, and flag tokens and text payloads carrying a
+    # newline are skipped exactly as they are in _unanchored_unwatched(). The
+    # escape hatch is unchanged: run the two halves as SEPARATE Bash calls.
+    if layer2_blind and prog not in READ_ONLY and not _is_sanctioned(tokens):
+        unreadable = next((a for a in args
+                           if not a.startswith("-") and "\n" not in a
+                           and NOT_A_LITERAL.search(_subst(a, assigns))), None)
+        if unreadable is not None:
+            return ("%r takes an argument this parser cannot read as a literal "
+                    "path (%s), while the same command re-baselines Layer 2"
+                    % (prog, unreadable))
 
     # `cd .claude && touch x` -- the write target is relative to the NEW cwd.
     # A target we cannot resolve leaves the cwd UNKNOWN rather than pretending it

@@ -592,6 +592,47 @@ assert_allow "temp-dir fixture tree beside nothing" \
 assert_allow "resolvable /tmp fixture beside a re-baseline" \
   "mkdir -p /tmp/x/.claude/rules; python3 $TRIP --register .claude/rules/x.md"
 
+# --- round 9: with no backstop left, only a plain literal is readable ---------
+# Round 8 voided the handoff, but acted only where a literal `.claude` tail was
+# still VISIBLE. `${!V}` hides the whole component in the variable, and
+# UNRESOLVED enumerated expansion SHAPES rather than the alphabet, so the token
+# was anchored to a fabricated path carrying no `.claude` at all: rc=0, both
+# layers defeated (review finding, PR #85 round 9).
+#
+# Two changes hold these. UNRESOLVED now tests the ALPHABET -- every shell
+# expansion is introduced by `$` or a backtick and by nothing else -- and inside
+# a re-baselining command a token that is not a plain literal is refused without
+# any expansion reasoning at all. Nine spellings, one rule; the list is here so
+# the next person sees it is a CLASS and does not close them one at a time.
+assert_block "indirect expansion + same-command --baseline" \
+  "P=.claude; V=P; touch \${!V}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "default-value expansion" \
+  "touch \${UNSET:-.claude}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "substring-replacement expansion" \
+  "P=xclaude; touch \${P/x/.}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "array-subscript expansion" \
+  "A=(.claude); touch \${A[0]}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "ANSI-C quoting" \
+  "touch \$'.clau''de'/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "glob that expands to .claude" \
+  "touch .clau*/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "brace expansion" \
+  "touch .{claude}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "character class" \
+  "touch .clau[d]e/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "unreadable redirect target beside a re-baseline" \
+  "printf pwned > \${!V}/rules/pwn.md; python3 $TRIP --baseline"
+assert_block "indirect expansion inside a process substitution" \
+  "python3 $TRIP --baseline <(P=.claude; V=P; touch \${!V}/rules/pwn.md)"
+
+# The no-backstop rule is bounded, and each of these is one of the bounds. A
+# reader is still a reader, and an expansion with no re-baseline beside it is
+# still a real handoff to Layer 2 -- the file lands, the hash moves.
+assert_allow "reading a glob beside a re-baseline (READ_ONLY holds)" \
+  "grep -rn hook .claude/rules/*.md; python3 $TRIP --baseline"
+assert_allow "indirect expansion alone still hands off to Layer 2" \
+  'P=.claude; V=P; touch ${!V}/rules/pwn.md'
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
