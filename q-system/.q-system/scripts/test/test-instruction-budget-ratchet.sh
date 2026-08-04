@@ -327,17 +327,20 @@ echo "== 9. negative control: scoped-and-gutted credits only the surviving lines
 R7=$(mktemp -d); mk_fixture "$R7"
 audit_rc "$R7"   # cap 33, total 33, beta 20 lines
 # beta.md is scoped AND cut to 5 body lines in one step: 4 frontmatter + 5 body
-# = 9 conditional lines. Credit is min(20, 9) = 9; the other 11 are a deletion,
-# so the cap tightens by 11 to 22 and headroom is 22 - 13 = 9.
+# = 9 conditional lines. Only the 5 body lines survive, so the credit is 5 and the
+# other 15 are a deletion: the cap tightens by 15 to 18 and headroom is 18 - 13 = 5.
+# These numbers were 9 / 11 / 22 until PR #88 round 7, which is section 33's defect
+# showing up here at four times the size -- the old reading credited beta's four
+# NEW frontmatter lines as surviving instruction lines. Strictly tighter now.
 { echo "---"; echo "paths:"; echo "  - \"q-system/output/**\""; echo "---"
   echo "# Beta Rule (ENFORCED)"; echo
   echo "The deterministic half is \`beta-lint.py\`."; echo
   echo "Beta line 1."; echo; echo "Beta line 2."; echo; echo "Beta line 3."
 } > "$R7/.claude/rules/beta.md"
 audit_rc "$R7"
-check_num "cap tightened by the gutted half" 22 "$(cap_of "$R7")"
-check "credit is only the surviving lines" 0 "scoped: beta.md (9)" "$AUDIT_RC" "$AUDIT_OUT"
-check "headroom is the credited amount" 0 "headroom 9" "$AUDIT_RC" "$AUDIT_OUT"
+check_num "cap tightened by the gutted half" 18 "$(cap_of "$R7")"
+check "credit is only the surviving body lines" 0 "scoped: beta.md (5)" "$AUDIT_RC" "$AUDIT_OUT"
+check "headroom is the credited amount" 0 "headroom 5" "$AUDIT_RC" "$AUDIT_OUT"
 
 echo "== 10. a pre-ASK-285 baseline upgrades without moving the gate"
 R8=$(mktemp -d); mk_fixture "$R8"
@@ -367,7 +370,9 @@ mkdir -p "$(dirname "$MUT")"
 python3 - "$AUDIT" "$MUT" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
-needle = "        elif name in conditional:\n            after = min(before, conditional[name])\n"
+needle = ("        elif name in conditional:\n"
+          "            after = scoped_credit(before, prev_body.get(name, before),\n"
+          "                                  body.get(name, 0))\n")
 assert needle in src, "deleted_lines classifier moved; update the mutation"
 open(sys.argv[2], "w").write(src.replace(
     needle, "        elif name in conditional:\n            after = 0\n", 1))
@@ -1074,6 +1079,96 @@ case "$AUDIT_OUT" in
   *"always-on total 13 -> 34"*) bad "mutant still names the real total; the mutation does not reach the fix" ;;
   *) ok "mutant reports the cap as the previous total" ;;
 esac
+AUDIT="$AUDIT_SAVE"
+
+echo "== 33. scoping frontmatter cannot hide deleted body lines"
+# PR #88 round 7, minor. Every count here is substantive-lines-of-the-file, and a
+# scoping block is four substantive lines of its own ("---", "paths:", the glob,
+# "---"). So scoping INFLATES the file's count by four at the same moment the rule
+# leaves the always-on set. The scoped credit was min(before, after), and `after`
+# carried that inflation, so up to four deleted BODY lines fitted underneath it:
+# they never tightened the cap and became permanent headroom instead. Headroom is
+# the one thing this accounting must never mint.
+R27=$(mktemp -d); mk_fixture "$R27"
+audit_rc "$R27"                                   # bootstrap: cap 33, total 33
+check_num "cap before the scoping step" 33 "$(cap_of "$R27")"
+# Scope beta AND gut four of its body lines in one step. 4 frontmatter + 1 heading
+# + 1 lint line + 14 body = 20 counted lines, exactly the 20 it was counted for
+# while always-on, so a whole-file compare sees nothing gone at all.
+{ echo "---"; echo "paths:"; echo "  - \"q-system/output/**\""; echo "---"
+  echo "# Beta Rule (ENFORCED)"; echo
+  echo "The deterministic half is \`beta-lint.py\`."; echo
+  for i in $(seq 1 14); do echo "Beta line $i."; echo; done
+} > "$R27/.claude/rules/beta.md"
+audit_rc "$R27"
+check_num "the four gutted body lines tighten the cap" 29 "$(cap_of "$R27")"
+check "headroom is only what actually survived" 0 "headroom 16" "$AUDIT_RC" "$AUDIT_OUT"
+case "$AUDIT_OUT" in
+  *"headroom 20"*) bad "scoping frontmatter minted headroom for four deleted lines" ;;
+  *) ok "the scoping block is not credited as surviving instruction lines" ;;
+esac
+# The consequence, end to end: with 4 minted lines the tree can spend headroom it
+# never had. Under the honest cap of 29 a 17-line append is over budget and the
+# commit-time gate has to refuse it.
+for i in $(seq 1 17); do printf '\nAlpha overflow line %s.\n' "$i" >> "$R27/.claude/rules/alpha.md"; done
+audit_rc "$R27"                                   # total 3 + 27 = 30 vs cap 29
+check "an append past the surviving headroom is refused" 1 "RATCHET FAIL" "$AUDIT_RC" "$AUDIT_OUT"
+check "and it names the cap the deletion set" 1 "cap 29 exceeded by 1" "$AUDIT_RC" "$AUDIT_OUT"
+
+# Negative control 1: scoping with the body INTACT still banks the whole rule. The
+# fix must charge the missing body, not the frontmatter it grew.
+R28=$(mktemp -d); mk_fixture "$R28"
+audit_rc "$R28"
+scope_rule "$R28" beta.md "q-system/output/**"
+audit_rc "$R28"
+check_num "a clean scoping still holds the cap" 33 "$(cap_of "$R28")"
+check "a clean scoping still banks every line" 0 "headroom 20" "$AUDIT_RC" "$AUDIT_OUT"
+
+# Negative control 2: a baseline recorded BEFORE this fix carries no body counts.
+# The fallback reads the whole recorded count as body, which can over-charge a rule
+# that already had frontmatter -- it never mints. Here it lands on the same 29.
+R29=$(mktemp -d); mk_fixture "$R29"
+audit_rc "$R29"
+python3 - "$R29/$BASE_REL" <<'PY'
+import json, sys
+b = json.load(open(sys.argv[1]))
+b.pop("always_on_body", None)
+json.dump(b, open(sys.argv[1], "w"), indent=2)
+PY
+{ echo "---"; echo "paths:"; echo "  - \"q-system/output/**\""; echo "---"
+  echo "# Beta Rule (ENFORCED)"; echo
+  echo "The deterministic half is \`beta-lint.py\`."; echo
+  for i in $(seq 1 14); do echo "Beta line $i."; echo; done
+} > "$R29/.claude/rules/beta.md"
+audit_rc "$R29"
+check_num "a pre-fix baseline still charges the deletion" 29 "$(cap_of "$R29")"
+
+echo "== 34. mutation: credit the scoped rule its whole new count -> section 33 goes RED"
+# A regression case never watched fail is not known to catch anything, and the ref
+# hatch only reaches the previous commit. This puts the pre-fix compare back in
+# place: the scoped credit is the whole file again, frontmatter included.
+MUTB=$(mktemp -d)/mutant-scopedbody.py
+mkdir -p "$(dirname "$MUTB")"
+python3 - "$AUDIT" "$MUTB" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "    return max(0, before - max(0, body_before - body_after))\n"
+assert needle in src, "scoped_credit moved; update the mutation"
+open(sys.argv[2], "w").write(src.replace(needle, "    return before\n", 1))
+PY
+RM8=$(mktemp -d); AUDIT_SAVE="$AUDIT"; AUDIT="$MUTB"; mk_fixture "$RM8"
+audit_rc "$RM8"
+{ echo "---"; echo "paths:"; echo "  - \"q-system/output/**\""; echo "---"
+  echo "# Beta Rule (ENFORCED)"; echo
+  echo "The deterministic half is \`beta-lint.py\`."; echo
+  for i in $(seq 1 14); do echo "Beta line $i."; echo; done
+} > "$RM8/.claude/rules/beta.md"
+audit_rc "$RM8"
+if [ "$(cap_of "$RM8")" = "29" ]; then
+  bad "mutant still charges the deletion; the mutation does not reach the fix"
+else
+  ok "mutant banks the four deleted lines as headroom (cap $(cap_of "$RM8"))"
+fi
 AUDIT="$AUDIT_SAVE"
 
 echo

@@ -19,5 +19,24 @@
     "token-discipline.md": 37,
     "voice-enforcement.md": 20,
     "wiring-check.md": 44
+  },
+  "always_on_body": {
+    "audhd-interaction.md": 13,
+    "auto-detection.md": 23,
+    "dogfood-gate.md": 38,
+    "fable-discipline-auto-invoke.md": 23,
+    "founder-notifications.md": 30,
+    "model-allocation.md": 27,
+    "no-orphan-findings.md": 37,
+    "quick-plan.md": 14,
+    "rca-mode.md": 27,
+    "security.md": 8,
+    "self-healing-retry.md": 40,
+    "skill-hook-pairing.md": 23,
+    "social-reaction-gate.md": 13,
+    "sycophancy-core.md": 32,
+    "token-discipline.md": 32,
+    "voice-enforcement.md": 17,
+    "wiring-check.md": 44
   }
 }
