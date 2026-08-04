@@ -20,7 +20,7 @@ Date: 2026-08-04. Branch: `worktree-judgment-compiler`. Every row is "ran X, got
 
 | # | What | Result |
 |---|---|---|
-| R-1 | v1 calibration self-test | `SELFTEST PASS: scoring changes, schema and coverage enforced, blind export clean` |
+| R-1 | v1 calibration self-test | `SELFTEST PASS`. **Caveat added post-merge:** `founder-judge-calibration.py` is NOT on `main` — it exists only on branch `sana/ask-361` (added in 60feec5). R-1/R-2 were run while the primary checkout sat on that branch, so the result was real but is not reproducible from `main` without that branch. Re-verified post-merge by extracting the script from `sana/ask-361` and running it against the merged tree: both still PASS. |
 | R-2 | v1 dataset verification | `VERIFY PASS: 50 unique cases, 20/20/10 balance, all source hashes match` |
 | R-3 | full prd-os suite | `422 passed, 1 skipped` (was 399 + 1 before this work; +23 new, zero regressions) |
 | R-8 | mutation test | 17 single-invariant corruptions applied to a copy; **16 killed**. The one survivor is a defensive build-time assert no normal path reaches, labelled as such in the code; its enforced half is the read-side check (test_n7). |
@@ -130,3 +130,34 @@ is required to reach instances. NOT run from this worktree (it would sync a
 branch state to the whole fleet). Sequence at merge: merge to main → run
 `kipi check` from the primary checkout → `kipi update --dry` → `kipi update` →
 refresh the marketplace clone (sp-fe57de2d).
+
+
+## Post-merge: the definitive `kipi check` result (2026-08-04, on merged main)
+
+Merged as 429e8ef. Run from the primary checkout on `main`, as this report
+required:
+
+- **`kipi check` exits 1, and never reaches the capability gate.** It stops at
+  stage 1, `remote-coverage-check.py`, which RED-flags stray `~/projects/kipi-wt-*`
+  directories that are not git repos.
+- **Not caused by this work.** `remote-coverage-check.py` returns exit 2 both on
+  merged main and at the pre-merge commit (429e8ef~1), and PR #97 does not touch
+  that file. Verified by running both.
+- The capability gate was therefore exercised separately, on a full clone of the
+  branch: `test_judgment_compiler.py` ran and passed among 114 tests; the gate's
+  2 REDs were 60s timeouts in `test-review-invoker-provenance.sh` and
+  `test-updater-issue-sequence.py`, neither touched by this branch and both
+  failing on the main checkout too.
+
+**So: `kipi check` green is still NOT claimed, and now cannot be until the stray
+worktree directories are tracked or declared.** That is a fleet-hygiene item
+that predates this PR.
+
+## Post-merge verification that DID pass on main
+
+| Check | Result on merged main |
+|---|---|
+| `pytest plugins/prd-os/tests/` | 434 passed, 1 skipped |
+| `kipi judgment selftest` | SELFTEST PASS |
+| v1 self-test + dataset verify | PASS (script extracted from `sana/ask-361`; see the R-1 caveat) |
+| prd-os version on main | 0.12.0 |
