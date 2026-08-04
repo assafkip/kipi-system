@@ -1258,11 +1258,15 @@ def cross_check_findings(cfg: Config, records: list[dict],
     either a truncation the anchor missed or a capture that silently failed.
 
     `since` filters by finding resolved_at and exists for the DIAGNOSTIC
-    caller, which passes an explicit --since. The approval gate no longer uses
-    it at all: it scopes with `prd_id` and decides exemption from the PRD's own
-    creation date, because `resolved_at` is a mutable field on a hand-editable
-    file (PR #101 rounds 2, 7 and 8 were all that one defect; see
-    prd_runner._prd_predates_floor).
+    caller, which passes an explicit --since. The approval gate does not use it
+    at all: it scopes with `prd_id` and requires a receipt UNCONDITIONALLY.
+
+    Three shapes of date inference were tried and all failed the same way --
+    `resolved_at` (PR #101 rounds 2/7/8, a mutable strippable field), then the
+    PRD id's creation date (PR #102), then hardening that date against
+    impossible values. The last one still exempted every FUTURE decision on an
+    old PRD. `prd_runner._judgment_receipt_gate` therefore reads no date at
+    all, and this docstring names no helper for doing so, because none exists.
     """
     # Map to the LATEST recorded human disposition, not merely to "a receipt
     # exists". Identity-only coverage let a receipt for an earlier decision

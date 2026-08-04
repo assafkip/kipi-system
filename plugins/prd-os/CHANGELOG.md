@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.3] - 2026-08-04
+
+### Fixed (Codex review, PR #102 round 3 minor — sp-9dc72a7e)
+`cross_check_findings` documented the deleted PRD-date exemption and pointed at
+`prd_runner._prd_predates_floor`, a function that no longer exists. A docstring
+naming a deleted helper is a false claim about the code, and the next reader
+would have gone looking for it. Rewritten to state what the gate actually does
+(no date logic at all) and to record why all three date shapes failed. Zero
+references to the dead names remain in either script.
+
 ## [0.15.2] - 2026-08-04
 
 ### Changed
