@@ -171,6 +171,13 @@ SYSTEM_OWNED_PATHS=(
   "q-system/memory/.sycophancy-monthly-stamp"
   "q-system/.q-system/claude-integrity-baseline.json"
   ".claude/state/stop-gate-firings.json"
+  # plugins/ is a kipi-update DESTINATION -- the updater rsyncs it from the
+  # skeleton and overwrites it, so a dirty plugins/ tree is by definition this
+  # system's output, not founder work. Named explicitly because the case that
+  # motivated this change (travel-agent carrying a STAGED plugins/memory-lifecycle
+  # tree from an earlier run) was otherwise still blocked by the very fix that
+  # cited it (Codex review, PR #98).
+  "plugins"
 )
 FAILED_NAMES=""
 
@@ -1176,12 +1183,23 @@ PY
     if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
       echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
-      git add -- "${sys_owned_dirty[@]}" 2>/dev/null || true
-      git commit -q --no-verify -m "chore: commit system-written state before skeleton sync
+      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
+      # with no pathspec commits everything ALREADY STAGED, so a founder with
+      # staged work would have had it swept into this infra commit -- the exact
+      # thing the guard below exists to prevent, reintroduced by the fix for it
+      # (Codex review, PR #98). With a pathspec, only these paths are committed
+      # no matter what else sits in the index.
+      #
+      # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
+      # gate wants a Linear id, and this is the sanctioned hatch that gets
+      # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
+      # to land a commit in their repo is not ours to do.
+      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
 
 These files are written by the fleet itself (sycophancy stamp, integrity
-baseline, hook state). Committing them here keeps the updater from being
-blocked by its own exhaust; founder work is never included." 2>/dev/null || true
+baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
+updater from being blocked by its own exhaust; founder work is never included
+because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
     fi
 
     # Refuse tracked work in progress. The updater owns only its scoped sync
