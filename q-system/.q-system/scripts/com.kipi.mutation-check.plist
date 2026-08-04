@@ -5,18 +5,25 @@
      WEEKLY, NOT PER-COMMIT, ON PURPOSE. Every mutant is a full suite run and
      test-severity-floor alone is budgeted 420s, so the whole pass is minutes.
      A per-commit cost of that size gets a gate switched off, and a gate that is
-     off protects nothing. The property it checks -- can this test still fail --
+     off protects nothing. The property it checks (can this test still fail)
      decays over weeks of edits, not between two commits.
 
-     --require pins the gate suites by name: a suite quietly losing its
+     The `require` flag pins the gate suites by name: a suite quietly losing its
      `mutants` list would otherwise read as a clean run, because absence is
      invisible to an exit code unless something asks for it.
 
      THE CHECKER'S OWN SUITE IS PINNED TOO (PR #81 review round 2, minor).
      It was the one suite left off the list, so deleting every mutant
-     declaration from test-mutation-check kept the scheduled run green -- the
+     declaration from test-mutation-check kept the scheduled run green. The
      tool that exists to notice a safety test going toothless could go
      toothless itself, unwatched, in the job that watches everything else.
+
+     test-review-gate-no-fake-green joined the list when it landed on main
+     (ASK-312, PR #89). The DoR named it from the start; it did not exist when
+     this branch opened, so it arrived by merge rather than by scope creep. It
+     guards the single required check that stands in for human review on a
+     self-merging loop, which makes it the suite whose going toothless costs
+     the most.
 
      TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
      by install-plist.sh (the openloops-heartbeat placeholder convention, ASK-191).
@@ -47,6 +54,8 @@
     <string>test-capability-map-wiring</string>
     <string>--require</string>
     <string>test-mutation-check</string>
+    <string>--require</string>
+    <string>test-review-gate-no-fake-green</string>
     <string>--json</string>
     <string>__HOME__/.config/kipi/mutation-check.json</string>
   </array>

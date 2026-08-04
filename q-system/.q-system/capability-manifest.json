@@ -590,7 +590,25 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "mutants": [
+        {
+          "id": "verdict-block-accepts-the-echoed-template",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "    open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 \"\\n\"\n",
+          "replace": "    open && /^END FINDINGS/ { last = buf $0 \"\\n\"\n",
+          "why": "the prompt's own findings TEMPLATE echoed back has rows and zero severities; accepting it as a block is the ASK-312 fake-green, where a reviewer that declined to start filled the one required check"
+        },
+        {
+          "id": "verdict-decline-never-fires",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "  tail=\"$(_text_after_last_findings_block \"$f\")\"\n  [ -n \"$tail\" ] || return 1\n",
+          "replace": "  return 1\n",
+          "why": "the suite's own note measured this leaving review_is_usable GREEN because the block rule masked it; the separate half-assertions exist to kill it, so this mutant is what proves they have teeth"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
