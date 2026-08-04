@@ -86,6 +86,17 @@ Recorded in the PRD (N-15..N-20) and the CHANGELOG.
 
 ## Honest gaps — NOT claimed as wired
 
+0. **Capability gate: my test passes; the gate is RED on two unrelated tests.**
+   Fresh full-clone run of the final branch state: `declared: 116 tests`,
+   `tests: ran=114`, and `plugins/prd-os/tests/test_judgment_compiler.py` is
+   among those that ran and is NOT in the failure list. The 2 REDs are 60s
+   TIMEOUTS in `test-review-invoker-provenance.sh` and
+   `test-updater-issue-sequence.py`. Neither is touched by this branch
+   (`git diff origin/main...HEAD` shows zero hits), both fail on the main
+   checkout too (exit 127, missing interpreter/dependency), and the last commit
+   to either is dd8318a (ASK-221). Pre-existing, not caused here — but the gate
+   is red, so `kipi check` green is still NOT claimed.
+
 1. **`kipi check` is not fully green, and was not green before this change.**
    - Stage 1 `remote-coverage-check.py` exits 2 on the *main checkout* too
      (untracked sibling worktrees with no remote). Pre-existing, unrelated.
