@@ -2,6 +2,22 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.1] - 2026-08-04
+
+### Added — the fail-soft judge call is now countable
+`/prd-triage` continues without `--judge-run` when the judge call fails, so a
+model outage costs a calibration case rather than an author's ability to close
+findings. That trade is right, but it failed SILENTLY: nothing counted human
+receipts carrying no judge, so a judge erroring on every triage for a month was
+indistinguishable from "not enough triage volume yet" — both leave `cases` short
+of 50 with a red gate and no way to tell which. That is the same silent-hole
+class this whole feature exists to close, and the same shape as 41c0876.
+
+`evaluate` now reports `unjudged_decision_rate` (human receipts with no judge
+block / human receipts) and gates on it via `zero_unjudged_decisions`. Threshold
+is literally zero, matching `zero_gate_bypasses`: a tolerance here would be a
+budget for losing calibration cases to an outage.
+
 ## [0.15.0] - 2026-08-04
 
 ### Added — the judge runner, the producer that never existed (sp-320d30e3)

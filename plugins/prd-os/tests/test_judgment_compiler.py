@@ -2099,3 +2099,42 @@ def test_every_receipt_populating_flag_has_a_production_caller():
         "these flags are defined and consumed but no production caller passes "
         "them, so the field each one feeds can never be populated outside "
         f"tests: {orphaned}")
+
+
+class TestFailSoftJudgeStaysCountable:
+    """`/prd-triage` continues without `--judge-run` when the judge call fails,
+    so a model outage never blocks an author from closing findings. That is the
+    right trade, but silent fail-soft would recreate the exact hole this issue
+    exists to close: a judge erroring on every triage for a month would be
+    indistinguishable from "not enough triage volume yet" -- both show `cases`
+    short of 50 and a red gate, with no way to tell which. Same argument as
+    41c0876, where a documented release condition was computed but never read.
+    """
+
+    def test_a_triage_with_no_judge_is_counted_and_gated(
+            self, judgment_repo, run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1",
+            "accepted").returncode == 0
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["unjudged_decision_rate"] == 1.0, report
+        gate = report["release_gates"]["zero_unjudged_decisions"]
+        assert gate["passed"] is False, gate
+        assert report["release_gates"]["passed"] is False
+
+    def test_a_judged_triage_leaves_the_rate_at_zero(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Negative self-test: the counter must be able to read zero, or it is
+        just a constant that happens to look like a metric."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run)).returncode == 0
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["unjudged_decision_rate"] == 0.0, report
+        assert report["release_gates"][
+            "zero_unjudged_decisions"]["passed"] is True

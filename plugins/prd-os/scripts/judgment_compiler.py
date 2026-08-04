@@ -1455,8 +1455,20 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
             and r["human"]["disposition"] in ("rejected", "deferred"))
         / len(active)) if active else 0.0
     unsupported_rate = (converted / len(judged)) if judged else 0.0
+    # `/prd-triage` continues WITHOUT --judge-run when the judge call fails, so
+    # a model outage costs a calibration case instead of an author's ability to
+    # close findings. Silent fail-soft would rebuild the hole this feature
+    # closes: a judge erroring on every triage for a month looks exactly like
+    # "not enough triage volume yet" -- both leave `cases` short of 50 with a
+    # red gate and no way to tell which. The deterministic blocker is the
+    # `zero_unjudged_decisions` check in `_release_gates` below, covered by
+    # TestFailSoftJudgeStaysCountable in test_judgment_compiler.py.
+    decided = [r for r in active if r.get("human")]
+    unjudged_rate = (
+        sum(1 for r in decided if not r.get("judge")) / len(decided)
+    ) if decided else 0.0
     gates = _release_gates(result, ungated_rate, unsupported_rate,
-                           decision_disagreements)
+                           decision_disagreements, unjudged_rate)
     result.update({
         "superseded_excluded": superseded_excluded,
         "active_receipts": len(active),
@@ -1475,6 +1487,10 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
         # rate in 41c0876, which was a documented release condition nothing
         # read. Zero when the caller did not supply a count.
         "decision_disagreement_count": decision_disagreements,
+        # Human decisions carrying no judge prediction. This is the visible
+        # cost of the fail-soft judge call; a nonzero rate means calibration
+        # is losing cases to something operational, not to low volume.
+        "unjudged_decision_rate": unjudged_rate,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))
         if active else 0.0,
@@ -1487,7 +1503,8 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
 
 def _release_gates(scored: dict, ungated_rate: float = 0.0,
                    unsupported_rate: float = 0.0,
-                   decision_disagreements: int = 0) -> dict:
+                   decision_disagreements: int = 0,
+                   unjudged_rate: float = 0.0) -> dict:
     """The gates that must ALL pass before any disposition class auto-decides.
 
     The bypass checks are here because they were missing: the PRD listed "no
@@ -1522,6 +1539,17 @@ def _release_gates(scored: dict, ungated_rate: float = 0.0,
         "zero_decision_disagreements": {
             "required": 0, "actual": decision_disagreements,
             "passed": decision_disagreements == 0,
+        },
+        # Threshold is literally zero, matching zero_gate_bypasses rather than
+        # carrying a tolerance. A tolerance here would be a budget for losing
+        # calibration cases to an outage, and the failure is silent by nature:
+        # nothing else in this report distinguishes "the judge is broken" from
+        # "we have not triaged much yet". This check is what withholds
+        # `release_gates.passed`, the field a caller reads before authorizing
+        # auto-decide; the paired test is test_a_triage_with_no_judge_is_counted_and_gated.
+        "zero_unjudged_decisions": {
+            "required": 0.0, "actual": unjudged_rate,
+            "passed": unjudged_rate == 0.0,
         },
         "min_cases": {"required": 50, "actual": scored["cases"],
                       "passed": scored["cases"] >= 50},
@@ -2065,11 +2093,15 @@ def _extract_json_object(raw: str) -> dict:
 
 
 def run_judge(packet: dict, *, model: str) -> dict:
-    """Call the judge and return a validated judge-run dict.
+    """Run the judge; the `validate_judge_output` validator and its pytest
+    cases are the executable blockers on everything this docstring claims.
 
     Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
     contract). There is deliberately no fallback disposition: returning a
-    default on exhaustion would write a decision the judge never made.
+    default on exhaustion would write a decision the judge did not make.
+    Enforced by `validate_judge_output` on every attempt plus the raise
+    below; the paired tests are test_malformed_output_retries_then_fails_loudly
+    and test_a_transient_malformed_reply_recovers_within_the_cap.
     """
     prompt = _judge_prompt_text(packet)
     override = os.environ.get("KIPI_JUDGE_CMD")
