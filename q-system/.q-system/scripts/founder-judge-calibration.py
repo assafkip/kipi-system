@@ -382,6 +382,43 @@ def score(dataset: list[dict], predictions: list[dict], population_counts: dict[
     }
 
 
+def _precision_gloss(result: dict) -> str:
+    """Prose derived FROM the number, never asserted alongside it.
+
+    Scar (Codex review, PR #100): these three lines were hardcoded to describe
+    the v1 run and stayed put for every other input, so a perfect run printed
+    "Accepted precision: 100.0%. More than half of the judge's fix-now calls
+    were not accepted by Assaf." An unattended report that contradicts the
+    metrics beside it is worse than no report.
+    """
+    precision = result["per_label"]["accepted"]["precision"]
+    if precision < 0.5:
+        return "More than half of the judge's fix-now calls were not accepted."
+    if precision < 1.0:
+        return "Most of the judge's fix-now calls were accepted."
+    return "Every fix-now call the judge made was accepted."
+
+
+def _proxy_gloss(result: dict) -> str:
+    share = (result["prediction_counts"]["accepted"] / result["cases"]) \
+        if result["cases"] else 0.0
+    if share >= 0.8:
+        return "It collapses toward one class and is not a calibrated proxy for founder triage."
+    if result["cohen_kappa"] < 0.4:
+        return "Agreement beyond chance is weak, so it is not a calibrated proxy for founder triage."
+    return "Class spread and chance-corrected agreement are both non-degenerate."
+
+
+def _baseline_gloss(result: dict) -> str:
+    estimate = result["post_stratified_accuracy"]
+    baseline = result["population_majority_baseline"]
+    if estimate < baseline:
+        return f"below the {baseline:.1%} always-accepted baseline."
+    if estimate > baseline:
+        return f"above the {baseline:.1%} always-accepted baseline."
+    return f"level with the {baseline:.1%} always-accepted baseline."
+
+
 def report_markdown(result: dict) -> str:
     matrix = result["confusion_matrix"]
     lines = [
@@ -404,13 +441,12 @@ def report_markdown(result: dict) -> str:
         "## Assessment",
         "",
         f"- Accepted recall: {result['per_label']['accepted']['recall']:.1%}. The judge matched {matrix['accepted']['accepted']} of {result['gold_counts']['accepted']} accepted findings.",
-        f"- Accepted precision: {result['per_label']['accepted']['precision']:.1%}. More than half of the judge's fix-now calls were not accepted by Assaf.",
+        f"- Accepted precision: {result['per_label']['accepted']['precision']:.1%}. {_precision_gloss(result)}",
         f"- Rejected recall: {result['per_label']['rejected']['recall']:.1%}.",
         f"- Deferred recall: {result['per_label']['deferred']['recall']:.1%}.",
-        f"- The judge predicted `accepted` for {result['prediction_counts']['accepted']} of {result['cases']} supplied objections. It is not a calibrated proxy for founder triage.",
-        f"- Reweighted to the historical class mix, estimated accuracy is {result['post_stratified_accuracy']:.1%}, below the {result['population_majority_baseline']:.1%} always-accepted baseline.",
-        "- Hidden workflow context sets many labels. Duplicate status, prior remediation, issue ordering, and scope removal are absent from the blind input.",
-        "- Near-identical empty-manifest findings received different founder dispositions because the surrounding PRD state differed.",
+        f"- The judge predicted `accepted` for {result['prediction_counts']['accepted']} of {result['cases']} supplied objections. {_proxy_gloss(result)}",
+        f"- Reweighted to the historical class mix, estimated accuracy is {result['post_stratified_accuracy']:.1%}, {_baseline_gloss(result)}",
+        "- Hidden workflow context can set a label the blind input cannot see: duplicate status, prior remediation, issue ordering, and scope removal are all absent from it.",
         "",
         "## Confidence calibration",
         "",
