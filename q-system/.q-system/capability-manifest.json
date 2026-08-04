@@ -62,6 +62,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
@@ -202,14 +206,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -315,6 +311,14 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
@@ -396,6 +400,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -405,10 +413,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -432,6 +436,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/tests/test_fable_escalation.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
       "runner": "python3"
     },
@@ -446,6 +454,22 @@
     {
       "path": "q-system/.q-system/scripts/test/test-autocommit-replay-2026-08-02.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

@@ -509,23 +509,67 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
-# A codex answer is usable only if it carries a COMPLETE machine-readable block.
-# A truncated review that green-lights a PR nobody read is the worst outcome
-# available in this script.
+# --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
+# Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
+# The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
+# audhd-executive-function, and fable-discipline skills", firing SessionStart and
+# UserPromptSubmit hooks, and then applying the founder's own "state your planned
+# approach and wait for OK before executing" rule TO ITS OWN REVIEW. It answered
+# with a plan in 12 seconds and reviewed nothing. sp-df1a458f is what that did to
+# the gate downstream: the echoed prompt template became the findings block.
 #
-# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# THE REVIEWER'S WHOLE VALUE IS THAT IT IS NOT US. A reviewer wearing the author's
+# skills, voice rules and hooks is not the independent second opinion this engine
+# exists to buy -- it is the same mental model with a different model id, which is
+# the correlated-blind-spot problem the codex engine was chosen to escape.
+#
+# THE CWD ISOLATION DOES NOT COVER IT. `-C $REVIEW_ROOT` already runs the review in
+# a detached worktree and the round-1 artifact shows the same config loading anyway:
+# it resolves from the USER HOME, not from the project directory, so no amount of
+# cwd isolation reaches it.
+#
+# WHAT THIS FLAG ACTUALLY BUYS, MEASURED, NOT ASSUMED (2026-08-03, same prompt run
+# twice against codex v0.146.0 from a neutral cwd):
+#     without the flag:  12 `hook: ` lines   -- SessionStart/UserPromptSubmit/Stop
+#     with the flag:      0 `hook: ` lines
+# The hooks are the layer that injected the plan-and-await instruction, and they
+# are gone. It is NOT total isolation: the "Skill descriptions were shortened to
+# fit the 2% skills context budget" warning appears in BOTH runs, so codex can
+# still SEE the skill catalogue with the flag set. Claiming this severs skills
+# would be an overclaim; captured separately rather than asserted here.
+#
+# NOT `--disable skills`: that flag does not exist on this codex build and errors
+# with "Unknown feature flag: skills", which would send every review down the Opus
+# fallback and mark the gate DEGRADED fleet-wide.
+#
+# sp-df1a458f's guard is the backstop either way: if a future codex build finds a
+# new road to the same behaviour, review_is_usable refuses the stream instead of
+# letting it fill a required check.
+
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block
+# AND is actually a review. A truncated -- or unstarted -- stream that green-lights
+# a PR nobody read is the worst outcome available in this script.
+#
+# THE PREDICATE LIVES IN THE LIB, next to the reader that defines it
 # (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
 # "complete": both markers, anywhere, in any order. That passes a review whose
 # only complete block is a quoted prior round while the real trailing block is
 # truncated -- unusable stays off, the gate goes green, and the verdict comes from
 # findings the review itself withdrew. One definition, one reader.
-review_has_complete_findings_block() {
-  has_complete_findings_block "$1"
-}
+#
+# IT NOW ASKS review_is_usable, WHICH IS A WIDER QUESTION (sp-df1a458f). Block
+# completeness alone said YES to a stream where the model answered "Reply `OK`
+# and I'll execute exactly that plan" and the only complete block was the
+# PROMPT'S OWN echoed template. Both dispatch sites below call this, and the
+# second one -- the Opus fallback -- is where this exact class hid last time.
+# No local wrapper: both sites call review_is_usable directly. The wrapper existed
+# only to forward to the lib, and a forwarder is one more place the two dispatch
+# paths can be made to disagree about the same file.
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
 # cry-wolf failure: it trains the operator to skim, which costs the real alert
@@ -557,7 +601,7 @@ if [ "$ENGINE" != "codex" ]; then
     exit "$rc"
   fi
 elif run_engine codex "$REVIEW"; then
-  if review_has_complete_findings_block "$REVIEW"; then
+  if review_is_usable "$REVIEW"; then
     note_degraded_transition 0
     echo "$(TS) review written: $REVIEW"
   else
@@ -589,7 +633,7 @@ else
     # block, which derives APPROVE and would post state=success on the REQUIRED
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
-    if review_has_complete_findings_block "$REVIEW"; then
+    if review_is_usable "$REVIEW"; then
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
       REVIEW_UNUSABLE=1
@@ -621,9 +665,16 @@ if [ "$REVIEW_UNUSABLE" = "1" ]; then
   VERDICT=""
   echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
 elif [ -n "$DERIVED_VERDICT" ]; then
-  VERDICT="$DERIVED_VERDICT"
+  # A DISAGREEMENT MAY NEVER RESOLVE TOWARD APPROVAL (ASK-312). This used to read
+  # VERDICT="$DERIVED_VERDICT" unconditionally, printing a NOTE and proceeding --
+  # which twice turned a reviewer's own "REQUEST CHANGES" into APPROVE and posted
+  # kipi/reviewer-approved=success on a PR nobody had read. resolve_verdict takes
+  # the harsher of the two, so the severity floor still overrides a reviewer that
+  # logged a blocker and then said APPROVE, while silence can no longer overrule a
+  # reviewer that said stop.
+  VERDICT="$(resolve_verdict "$STATED_VERDICT" "$DERIVED_VERDICT")"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
-    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
+    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; taking the harsher: '$VERDICT'"
   fi
 else
   VERDICT="$STATED_VERDICT"
@@ -646,15 +697,48 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
+# DID A REVIEW ACTUALLY HAPPEN, PERSISTED (sp-2a832233, ASK-352). The record used
+# to store only a PATH to the review, and the review files rotate, so every
+# consumer downstream had to re-derive usability from a file it does not own --
+# or, in practice, guess from the verdict.
+#
+# THE VERDICT DOES NOT ANSWER IT. Measured across all 79 records on 2026-08-03:
+# 13 were unusable and they carry the whole range of verdicts. `APPROVE` on 11 of
+# them (all merged); `REQUEST CHANGES` on #80 and #83; empty on #89. The
+# REQUEST CHANGES pair is the expensive one: the reviewer's `stated` verdict was
+# read out of the PROMPT'S OWN echoed grading rule, so a record that says an
+# objection was raised is indistinguishable from one where nobody read the code.
+# Both post `state: failure`, and a selector that sees only `failure` sends a
+# never-reviewed PR to REWORK with no findings to work from.
+#
+# ASKED HERE, NOT REUSED FROM $REVIEW_UNUSABLE. That flag is set on the codex and
+# fallback paths only -- the `ENGINE != codex` primary path never evaluates
+# usability at all -- so reading it would record `usable: true` for a path that
+# never checked, which is the fabricated-evidence direction. One call, the same
+# predicate on the same file the verdict came from, covering all three paths.
+#
+# RECORD-ONLY, DELIBERATELY. This changes no gate. $VERDICT is computed above and
+# is not touched here, so no PR's outcome moves on this commit; the consumer that
+# acts on the key is the selector (review-redrive.py), which is a separate change
+# with its own cap. Widening a gate as a side effect of adding a field is how a
+# fleet-wide refusal ships unannounced.
+if review_is_usable "$REVIEW"; then REVIEW_USABLE=1; else REVIEW_USABLE=0; fi
+
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
+(pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
+ engine, invoker, usable) = sys.argv[1:14]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
            "invoker": invoker,
+           # A real boolean, not "1"/"0". A JSON string "0" is TRUTHY in every
+           # consumer language here, so a truthiness read of the wrong shape
+           # would call every phantom review usable -- the exact inversion this
+           # key exists to prevent.
+           "usable": usable == "1",
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
