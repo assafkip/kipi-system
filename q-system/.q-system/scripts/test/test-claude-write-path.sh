@@ -633,6 +633,91 @@ assert_allow "reading a glob beside a re-baseline (READ_ONLY holds)" \
 assert_allow "indirect expansion alone still hands off to Layer 2" \
   'P=.claude; V=P; touch ${!V}/rules/pwn.md'
 
+# --- round 10: READ_ONLY held eight programs that can write ------------------
+# The finding named `awk`. The defect was the CLAIM: "programs that cannot write
+# to a path they are given", asserted over a set holding awk, sed, sort, uniq,
+# tree, xxd, yq and find -- with an inner READER_WRITE_FLAGS table that knew
+# `sed -i` but not `sed 'w FILE'`, and `find -delete` but not `find -fprint`.
+assert_block "awk writes through system()" \
+  "awk 'BEGIN{system(\"touch .claude/settings.json\")}'"
+assert_block "awk writes through a pipe to a command" \
+  "awk 'BEGIN{print \"x\" | \"tee .claude/settings.json\"}'"
+assert_block "awk carries the path in -v, program text does the write" \
+  "awk -v f=.claude/settings.json 'BEGIN{print \"x\" > f}'"
+assert_block "sed writes with w, no -i in sight" \
+  "sed -n 'w .claude/settings.json' /etc/hosts"
+assert_block "sed writes with s///w" \
+  "sed 's/a/b/w .claude/settings.json' /etc/hosts"
+assert_block "find writes with -fprint" \
+  "find /tmp -name x -fprint .claude/settings.json"
+assert_block "sort writes with -o" \
+  "sort -o .claude/settings.json /dev/null"
+assert_block "uniq's second positional is its output file" \
+  "uniq /dev/null .claude/settings.json"
+assert_block "xxd's second positional is its output file" \
+  "xxd /dev/null .claude/settings.json"
+assert_block "tree writes with -o" \
+  "tree -o .claude/settings.json ."
+assert_block "yq writes with -i" \
+  "yq -i '.a=1' .claude/settings.json"
+assert_block "a reader-write beside a same-command re-baseline" \
+  "sort -o .claude/settings.json /dev/null; python3 $TRIP --baseline"
+
+# The NAMED COST of dropping them, pinned so it stays a measurement. A plain
+# READ through one of these blocks too; that is the fail-closed direction this
+# file's header chooses. The escape hatch is the next two asserts.
+assert_block "plain awk read of a .claude path" \
+  "awk '{print \$1}' .claude/settings.json"
+assert_block "plain sed read of a .claude path" \
+  "sed -n 1p .claude/settings.json"
+assert_block "plain find over .claude" \
+  "find .claude -name '*.md'"
+assert_allow "escape hatch: pipe a .claude file into awk" \
+  "cat .claude/settings.json | awk '{print \$1}'"
+assert_allow "escape hatch: pipe a .claude file into sed" \
+  "cat .claude/settings.json | sed -n 1p"
+
+# --- round 10: a path GLUED TO A FLAG ---------------------------------------
+# Not awk-specific and not in the finding: every writer in the system could
+# attach its target to a flag and walk past the `-`-leading token skip.
+assert_block "long flag with an attached .claude value" \
+  "sort --output=.claude/settings.json /dev/null"
+assert_block "short flag with an attached .claude value" \
+  "sort -o.claude/settings.json /dev/null"
+assert_block "cp --target-directory= into .claude" \
+  "cp --target-directory=.claude /etc/hosts"
+assert_allow "a flag value that is not a path" \
+  "python3 script.py --desc=see-the-guard-notes"
+assert_allow "a flag value naming an UNRELATED tree's .claude (round-5 pin)" \
+  "sort --output=/tmp/unrelated-tree/.claude/settings.json /dev/null"
+
+# --- round 10: READ_ONLY membership is pinned, not free to grow --------------
+# The set is only sound while every member has NO file-writing channel on ANY
+# command line. That property is checkable once and then stays checked -- but
+# only if adding a name is a reviewed act. Same intent the file already states
+# for GIT_READ_ONLY ("so nobody completes the set later by pattern-matching on
+# the word read-only"); this makes it a test rather than a comment.
+_ro_expected="ag basename cat cmp column cut df diff dirname du echo egrep fgrep file grep head jq ls md5 md5sum nl od printf pwd readlink realpath rg sha256sum shasum stat tail test type wc which"
+_ro_actual="$(python3 - "$GUARD" <<'PY'
+import importlib.util, sys
+p = sys.argv[1]
+spec = importlib.util.spec_from_file_location("guard", p)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(" ".join(sorted(mod.READ_ONLY)))
+PY
+)"
+if [ "$_ro_actual" = "$_ro_expected" ]; then
+  PASS=$((PASS+1)); echo "  ok   READ_ONLY membership is exactly the pinned set"
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL READ_ONLY membership changed"
+  echo "       want: $(printf '%s' "$_ro_expected" | tr -d '\n' | tr -s ' ')"
+  echo "       got:  $_ro_actual"
+  echo "       Adding a name here asserts it has NO file-writing channel on ANY"
+  echo "       command line. Establish that, then update this pin in the same change."
+fi
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
