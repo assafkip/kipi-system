@@ -253,7 +253,23 @@ ok "a decline carrying a REAL prior-round block is still UNUSABLE"
 # the same chokepoint; the fallback path is where this class last hid (ASK-221).
 AGENT="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 [ -f "$AGENT" ] || fail "pr-review-agent.sh not found at $AGENT"
-CALLS="$(grep -c 'review_is_usable "\$REVIEW"' "$AGENT")"
+# COUNTED AT THE DISPATCH SITES, NOT FILE-WIDE (ASK-352). This was
+# `grep -c 'review_is_usable "$REVIEW"'` against a literal 2, which is a count of
+# the predicate ANYWHERE in the file. That is wrong in both directions: two calls
+# in unrelated places satisfied it while a dispatch site went ungated, and adding
+# a legitimate NON-dispatch call broke it. ASK-352 added exactly such a call --
+# the verdict record now persists whether the review was usable -- and this gate
+# went red reporting "3 of its 2 dispatch sites", which is not a sentence about
+# anything real.
+#
+# A dispatch site is defined by what makes it one: it is the guard immediately
+# after a `run_engine` invocation. Anchoring there keeps the guarantee exact --
+# both engine paths must gate -- and stops the gate counting calls that are not
+# dispatch decisions at all. Widening it to `-ge 2` would have been the easy fix
+# and the wrong one: it would pass a file where one dispatch site was ungated and
+# two record-keeping calls made up the number.
+CALLS="$(grep -A8 'run_engine \(codex\|claude\) "\$REVIEW"' "$AGENT" \
+           | grep -c 'if review_is_usable "\$REVIEW"')"
 [ "$CALLS" = "2" ] \
   || fail "pr-review-agent.sh gates on review_is_usable at $CALLS of its 2 dispatch sites
       (the codex path and the Opus fallback). A site still calling the old predicate accepts
