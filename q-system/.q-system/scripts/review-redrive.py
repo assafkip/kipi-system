@@ -104,6 +104,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -304,6 +305,41 @@ def flag(cand):
                                   cand["pr"], (cand["head_sha"] or "nohead")[:12])
 
 
+def reviewer_live(pr):
+    """True if pr-review-agent.sh is reviewing THIS PR in the process table now.
+
+    THE SYMMETRIC GATE TO converge_live, AND IT WAS MISSING (codex round 4 on
+    PR #91, major). `mark-dispatched` claims the attempt flag the instant a
+    re-review is handed out; pr-review-agent.sh then runs for 3-8 minutes. Every
+    heartbeat inside that window read the flag as set, called the one attempt
+    spent, and escalated -- paging about an outcome that did not exist yet. And
+    because escalate() is once per PR per action per sha, THE FALSE PAGE ATE THE
+    REAL ONE: the actual result, whatever it turned out to be, could never page.
+
+    converge_live's own docstring already named this hazard ("a false page that
+    also burns the once-per-signature flag is not [recoverable]"). REWORK was
+    gated on it from the start and REREVIEW never was -- two paths, one guarded,
+    which is this repo's recurring class.
+
+    AN UNREADABLE TABLE ANSWERS TRUE, the same direction converge_live errs in
+    and for the same reason. Reading "I cannot see the process table" as
+    "nothing is running" is the direction that FIRES the false page, and the
+    false page is the unrecoverable outcome; skipping one heartbeat is not.
+    """
+    table = CI.process_table()
+    if table is None:
+        sys.stderr.write(
+            "review-redrive: could not read the process table -- treating the "
+            "reviewer as live, offering nothing.\n")
+        return True
+    # `(?:\s|$)` with MULTILINE so a live review of PR #1010 does not read as a
+    # review of #101 -- the same boundary converge_live's pattern guards for
+    # `--issue ASK-29` against `ASK-295`.
+    pattern = re.compile(
+        r"pr-review-agent\.sh\s+%s(?:\s|$)" % re.escape(str(pr)), re.MULTILINE)
+    return bool(pattern.search(table))
+
+
 def escalate_flag(cand):
     return "review_escalated_%s_pr%s_%s" % (
         cand["action"].replace("-", ""), cand["pr"],
@@ -360,14 +396,28 @@ def cmd_select(cands, show_all):
 
     path = CI.attempts_path()
     for c in cands:
+        # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
+        # launches a different long-running process, so each needs its own
+        # liveness question -- but the reason is one reason, and the ledger read
+        # below must not be reached while the work it reports on is still going.
+        #
         # A rework becomes a converge on the issue, so a converge already live for
         # it means the work is in flight and offering it would cost the fresh pick
-        # its slot (ci-redrive PR #73 r2, finding 2). A re-review launches the
-        # reviewer, not a converge, so it is not gated on that.
+        # its slot (ci-redrive PR #73 r2, finding 2).
         if c["action"] == REWORK and CI.converge_live(c["issue"]):
             sys.stderr.write(
                 "review-redrive: %s PR #%s needs rework but a converge for it is "
                 "already live -- not offering it.\n" % (c["issue"], c["pr"]))
+            continue
+        # A re-review launches pr-review-agent.sh on the PR, not a converge on the
+        # issue, so it asks the process table a different question -- and for a
+        # while it asked none at all. The comment that used to sit here said a
+        # re-review "is not gated on that" and stopped, reading the absence of the
+        # converge gate as a decision rather than a gap. See reviewer_live.
+        if c["action"] == REREVIEW and reviewer_live(c["pr"]):
+            sys.stderr.write(
+                "review-redrive: %s PR #%s needs re-review but a reviewer for it "
+                "is already live -- not offering it.\n" % (c["issue"], c["pr"]))
             continue
         # A READ. NOT ci-redrive's `ledger_recorded`, which is a WRITE wearing a
         # reader's name: it calls `claim-flag` and answers True on rc 0 (just

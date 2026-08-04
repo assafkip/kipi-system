@@ -298,5 +298,100 @@ A99="$(action_for 99)"; A100="$(action_for 100)"
 [ -z "$A99" ] && ok "a draft PR is not re-entered"   || bad "draft PR routed to '$A99' -- a draft is the author saying not yet"
 [ "$A100" = "rework" ] && ok "the non-draft beside it still is -- the flag is what decided"   || bad "non-draft routed to '$A100' -- the filter is eating everything"
 
+# --- case 10: a re-review IN FLIGHT is not a spent attempt -------------------
+# Codex found this on PR #91 (round 4, major). `mark-dispatched` claims the
+# attempt flag the instant the re-review is handed out, and pr-review-agent.sh
+# then runs for 3-8 minutes. Every heartbeat inside that window read the flag as
+# set, called the one attempt spent, and escalated -- so the page fired BEFORE
+# the outcome it claims to report existed. escalate() is once per PR per action
+# per sha, so that false page ATE the real one and the true outcome could never
+# page at all. REWORK was gated on converge_live from the start; REREVIEW never
+# got the symmetric gate. Two paths, one guarded.
+#
+# PAIRED BOTH WAYS, and the second half is not optional: a gate asserted only on
+# the suppressing side is satisfied by a WALL -- code that suppresses always --
+# which converts a false page into a missing page, a strictly worse bug than the
+# one being fixed.
+#
+# The seam is KIPI_PS (process_table honours it), so the table is injected, no
+# process is spawned and nothing reads the real one.
+select_ps() {   # select_ps <ps-table-file>
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
+      KIPI_NOTIFY="$BIN/notify.sh" KIPI_PS="cat $1" \
+    python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
+}
+printf '[%s]\n' "$(pr_entry 101 ask-301 ffff9999)" > "$WORK/board.json"
+record 101 "REQUEST CHANGES" "REQUEST CHANGES" false ffff9999   # unusable -> re-review
+
+# THESE TWO FILES ARE DATA, NOT SCRIPTS. Nothing here is executed; `cat` prints
+# them as a fake `ps` table. The interpreter is written as the absolute
+# `/bin/bash` rather than a bare `bash` on purpose: the fable-discipline lint's
+# outbound-channel detector treats a bare interpreter command word followed by a
+# runner name as an INVOCATION, and by that reading a heredoc quoting the
+# reviewer's own command line looks like a test that spawns the reviewer (and so
+# can reach slack-notify.sh). The detector is right to err that way; the fixture
+# is what was mis-shaped. An absolute path is also what a real process table
+# prints, so this costs the fixture nothing.
+cat > "$WORK/ps-live.txt" <<'EOS'
+/usr/sbin/syslogd
+/bin/bash /repo/q-system/.q-system/scripts/pr-review-agent.sh 101 --issue ASK-301 --post
+EOS
+# The idle table carries a DECOY: a live review of PR #1010. It must not read as
+# a review of #101, which is what `(?:\s|$)` is for -- the same boundary bug
+# converge_live's pattern documents (`--issue ASK-29` vs `ASK-295`).
+cat > "$WORK/ps-idle.txt" <<'EOS'
+/usr/sbin/syslogd
+/bin/bash /repo/q-system/.q-system/scripts/pr-review-agent.sh 1010 --issue ASK-999 --post
+EOS
+
+[ -z "$(select_ps "$WORK/ps-live.txt")" ] \
+  && ok "a re-review already live is not offered again" \
+  || bad "a live re-review was offered again -- the in-flight window is unguarded"
+PICK4="$(select_ps "$WORK/ps-idle.txt")"
+[ "$(printf '%s' "$PICK4" | cut -f1)" = "re-review" ] \
+  && ok "with no reviewer running the same PR IS offered -- the gate is not a wall" \
+  || bad "no reviewer live and the PR was still not offered: '$PICK4'"
+
+# Now the page. The flag is claimed exactly as the dispatcher claims it, one
+# breath before the reviewer starts, which is the state that produced the bug.
+env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
+  --issue ASK-301 --action re-review --pr 101 --head-sha ffff9999 >/dev/null 2>&1
+PAGES_BEFORE="$(pages_count)"
+select_ps "$WORK/ps-live.txt" >/dev/null
+[ "$(pages_count)" = "$PAGES_BEFORE" ] \
+  && ok "a spent flag while the reviewer is STILL RUNNING does not page" \
+  || bad "escalated mid-review: pages went $PAGES_BEFORE -> $(pages_count)"
+
+# And once the reviewer is gone the escalation still fires. Asserted on the page
+# TEXT as well as the count: an increment alone is satisfied by any page at all.
+select_ps "$WORK/ps-idle.txt" >/dev/null
+[ "$(pages_count)" = "$((PAGES_BEFORE+1))" ] \
+  && ok "once the reviewer exits, the spent attempt escalates -- the alarm survived" \
+  || bad "reviewer gone and no page fired: pages went $PAGES_BEFORE -> $(pages_count)"
+grep -q "PR #101" "$PAGES" && grep -q "re-review" "$PAGES" \
+  && ok "that page names PR #101 and the re-review that was spent" \
+  || bad "the page does not name PR #101 and re-review: $(cat "$PAGES")"
+
+# An UNREADABLE table is a THIRD answer and must resolve to "live". Reading "I
+# cannot see the process table" as "nothing is running" is the direction that
+# fires the false page, and the false page is the unrecoverable one.
+#
+# ON A FRESH PR, AND THAT IS THE WHOLE POINT. The first cut of this check reused
+# PR #101, whose attempt flag and escalation flag were both already spent by the
+# asserts above. So "no offer" and "no page" were true no matter what the gate
+# answered, and the mutant that flips this branch to False SURVIVED the suite.
+# An assertion standing behind an already-spent short-circuit cannot fail, which
+# makes it decoration. #102 has never been claimed, so the OFFER is live and is
+# the observable that actually moves.
+printf '[%s]\n' "$(pr_entry 102 ask-302 aaaa8888)" > "$WORK/board.json"
+record 102 "REQUEST CHANGES" "REQUEST CHANGES" false aaaa8888   # unusable -> re-review
+[ -z "$(select_ps "$WORK/no-such-ps-table.txt")" ] \
+  && ok "an unreadable process table reads as live -- offers nothing" \
+  || bad "an unreadable process table was read as 'nothing running'"
+PICK5="$(select_ps "$WORK/ps-idle.txt")"
+[ "$(printf '%s' "$PICK5" | cut -f1)" = "re-review" ] \
+  && ok "the same fresh PR IS offered once the table reads clean -- not a wall" \
+  || bad "readable-and-idle table still offered nothing: '$PICK5'"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
