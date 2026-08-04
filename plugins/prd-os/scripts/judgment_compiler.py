@@ -1072,10 +1072,11 @@ def _tip_errors(records: list[dict], tip: dict | None,
         # so verify/evaluate/policy-candidates all trust a tail that could be
         # silently truncated back to the anchor later and still pass. Verify
         # cannot claim the chain is intact when it has not checked all of it.
-        # Recoverable, not corrupt: `reanchor` re-covers the tail. Re-anchoring
-        # can only ever EXTEND coverage — a deletion shows up as the branch
-        # above first, and forged appends are caught by the chain walk, not the
-        # anchor — so the repair cannot launder tampering.
+        # Recoverable, not corrupt: `reanchor` re-covers the tail, and it only
+        # accepts this one state (an anchor that exists and under-counts). It
+        # refuses a truncation and refuses a missing anchor, because without a
+        # baseline it cannot tell the two apart — see cmd_reanchor, where the
+        # first version of exactly that reasoning was wrong.
         return [f"ledger has {len(records) - tip['count']} receipt(s) BEYOND "
                 f"the tip anchor ({len(records)} present, {tip['count']} "
                 "anchored): the tail is outside deletion detection. If the "
@@ -1688,14 +1689,30 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
 def cmd_reanchor(cfg: Config, args: argparse.Namespace) -> int:
     """Re-cover a legitimate unanchored tail (crash between append and anchor).
 
-    Refuses when the CHAIN itself is broken, so this can never be used to bless
-    a tampered ledger: it only ever extends anchor coverage over receipts that
-    already verify, and a deletion presents as a truncation (fewer records than
-    the anchor), which is not a state this repairs.
+    ONE repairable state: an anchor that EXISTS and under-counts. Everything
+    else is refused.
+
+    The first version of this claimed it "can never launder tampering" and was
+    wrong — Codex review round 3 falsified that citation with an executed repro.
+    It filtered every "tip anchor" error out of the chain check, including the
+    missing-anchor error, so deleting the anchor AND truncating the ledger, then
+    running reanchor, wrote a fresh anchor over the surviving prefix and made
+    the deletion permanent. Without the old anchor there is no baseline, so this
+    command cannot tell a legitimate tail from a truncation and must not guess.
+    `verify --cross-check` reads the findings ledgers — a source this writer does
+    not own — and is the way to establish what SHOULD be there.
     """
     with ledger_lock(cfg):
         records = read_ledger(ledger_path(cfg))
         tip = read_tip(tip_path(cfg))
+        if tip is None and records:
+            raise ValidationError(
+                f"refusing to reanchor {len(records)} receipt(s) with NO existing "
+                "tip anchor: without the old anchor there is no baseline, so "
+                "this cannot prove the retained chain is complete rather than "
+                "truncated. Establish the truth first with "
+                "`kipi judgment verify --cross-check`, which reads the findings "
+                "ledgers independently.")
         if tip is not None and len(records) < tip["count"]:
             raise ValidationError(
                 f"refusing to reanchor a TRUNCATED ledger: {len(records)} "

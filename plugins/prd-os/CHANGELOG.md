@@ -2,6 +2,21 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.6] - 2026-08-04
+
+### Fixed (Codex review round 3, PR #97)
+- **`reanchor` could bless a truncated ledger when the anchor was missing.**
+  The round-1 implementation filtered every "tip anchor" error out of its chain
+  check — including the MISSING-anchor error — so deleting the anchor AND
+  truncating, then reanchoring, wrote a fresh anchor over the surviving prefix
+  and made the deletion permanent. This falsified that function's own comment
+  claiming it "can never launder tampering"; the comment is now corrected
+  rather than quietly dropped. Reanchor repairs exactly one state (an anchor
+  that exists and under-counts) and refuses a missing anchor over a non-empty
+  ledger, pointing at `verify --cross-check` — the independent source — to
+  establish what should be there. An empty ledger with no anchor stays a clean
+  no-op, so a fresh repo is not made to cry wolf.
+
 ## [0.11.5] - 2026-08-04
 
 ### Fixed (Codex review round 2, PR #97)

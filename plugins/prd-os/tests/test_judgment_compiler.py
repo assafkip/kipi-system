@@ -657,6 +657,30 @@ class TestChainIntegrity:
         assert "TRUNCATED" in proc.stderr
         assert run_judgment(judgment_repo, "verify").returncode == 2
 
+    def test_reanchor_refuses_when_the_anchor_is_missing_entirely(
+            self, judgment_repo):
+        """Codex round 3, executed repro: deleting the anchor AND truncating,
+        then reanchoring, wrote a fresh anchor over the surviving prefix and
+        made the deletion permanent. Without the old anchor there is no
+        baseline, so this state is not repairable — it is refused."""
+        two_receipts(judgment_repo)
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        path.write_text(path.read_text().splitlines()[0] + "\n")  # truncate
+        (judgment_repo / ".prd-os" / "judgments-tip.json").unlink()  # and hide
+        proc = run_judgment(judgment_repo, "reanchor")
+        assert proc.returncode == 2
+        assert "NO existing" in proc.stderr
+        assert "cross-check" in proc.stderr
+        # and the ledger is still reported as unverifiable, not blessed
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+
+    def test_reanchor_on_a_fresh_empty_repo_is_a_no_op(self, judgment_repo):
+        """An empty ledger with no anchor is a genuinely fresh repo: nothing to
+        prove, so refusing here would be crying wolf."""
+        proc = run_judgment(judgment_repo, "reanchor")
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["reanchored"] == 0
+
     def test_reanchor_refuses_a_broken_chain(self, judgment_repo):
         two_receipts(judgment_repo)
         path = judgment_repo / ".prd-os" / "judgments.jsonl"
