@@ -907,6 +907,63 @@ class TestEvaluate:
         assert gates["passed"] is False  # 4 cases, 75% << thresholds
         assert gates["min_cases"]["required"] == 50
 
+    def test_release_gates_fail_when_any_decision_bypassed_the_evidence_gate(self):
+        """Codex review round 5, executed repro: 60 otherwise-perfect cases plus
+        ONE reason-code-less rejection returned release_gates.passed == True
+        with a nonzero ungated rate. `passed` is the field that would authorize
+        automation, and the PRD lists zero bypasses as a release condition, so
+        a caller could enable auto-decide on known-invalid calibration data.
+
+        Built with the module's own in-memory fixtures (no repo, no tmp dir) so
+        it runs anywhere the selftest does."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("jc_gate", JUDGMENT)
+        jc = importlib.util.module_from_spec(spec)
+        sys.modules["jc_gate"] = jc
+        spec.loader.exec_module(jc)
+
+        shapes = [("accepted", "fix-now", "valid-fix-now"),
+                  ("rejected", "invalid", "invalid-finding"),
+                  ("deferred", "defer", "defer-ordering")]
+        records = []
+        for index in range(60):
+            human, workflow, code = shapes[index % 3]
+            packet = jc._fixture_packet(index)
+            run = {"model": "m", "prompt_sha256": "0" * 64,
+                   "review_run_id": str(index),
+                   "input_sha256": packet["packet_sha256"],
+                   "output": {"technical_validity": "valid",
+                              "technical_reason": "ok",
+                              "workflow_disposition": workflow,
+                              "workflow_reason_code": code,
+                              "evidence_refs": [], "missing_context": [],
+                              "confidence": 1.0}}
+            records.append(jc.build_receipt(
+                packet, disposition=human, actor="human", reason_code=code,
+                evidence_refs=[], rationale=None, judge_run=run,
+                supersedes=None, existing=records))
+
+        clean = jc.evaluate(records)
+        assert clean["cases"] == 60
+        assert clean["ungated_decision_rate"] == 0.0
+        assert clean["release_gates"]["passed"] is True, (
+            "a perfect 60-case set must be able to pass, or the gate is "
+            "unpassable and this test proves nothing")
+
+        # ...now one ungated decision, and nothing else changes.
+        packet = jc._fixture_packet(999)
+        records.append(jc.build_receipt(
+            packet, disposition="rejected", actor="human", reason_code=None,
+            evidence_refs=[], rationale="ungated", judge_run=None,
+            supersedes=None, existing=records))
+        dirty = jc.evaluate(records)
+        assert dirty["ungated_decision_rate"] > 0
+        assert dirty["release_gates"]["zero_gate_bypasses"]["passed"] is False
+        assert dirty["release_gates"]["passed"] is False, (
+            "release gates reported PASSED over a ledger containing a decision "
+            "that skipped the evidence gate")
+
     def test_superseded_receipts_are_excluded(self, judgment_repo):
         recs = two_receipts(judgment_repo)  # second supersedes first
         proc = run_judgment(judgment_repo, "evaluate")

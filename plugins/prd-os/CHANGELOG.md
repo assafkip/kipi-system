@@ -2,6 +2,27 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.12.0] - 2026-08-04
+
+### Fixed (Codex review round 5, PR #97)
+- **`release_gates.passed` could return True over a ledger containing decisions
+  that bypassed the evidence gate.** The PRD listed "no schema or evidence-gate
+  bypasses" as a release condition and no code read it: `_release_gates` was
+  called before the bypass rates were even computed. Executed repro: 60 perfect
+  cases plus one reason-code-less rejection returned `passed=True` with
+  `ungated_decision_rate=0.016`. Since `passed` is the field that authorizes
+  auto-decide, a caller could have enabled automation on known-invalid
+  calibration data. Two gates added (`zero_gate_bypasses`,
+  `zero_unsupported_judge_dispositions`) and the rates are now computed before
+  the gates that read them. Minor version bump: the evaluate output gains
+  fields and previously-passing gate sets can now legitimately fail.
+
+### Note on the review process
+- Codex round 5 observed that this defect lived in code unchanged since the
+  first feature commit, and concluded rounds 1-4 were miscalibrated. Recorded
+  rather than argued with: four review passes and a mutation run all cleared a
+  gate that never read its own documented condition.
+
 ## [0.11.6] - 2026-08-04
 
 ### Fixed (Codex review round 3, PR #97)

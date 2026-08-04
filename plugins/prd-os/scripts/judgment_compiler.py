@@ -1342,7 +1342,16 @@ def evaluate(records: list[dict]) -> dict:
         if record.get("human"):
             disposition = record["human"]["disposition"]
             population[disposition] = population.get(disposition, 0) + 1
-    gates = _release_gates(result)
+    # Computed BEFORE the gates, because the gates read them. They used to be
+    # computed into the result dict after _release_gates had already run, which
+    # is how a documented release condition ended up unenforced.
+    ungated_rate = (
+        sum(1 for r in active
+            if r.get("human") and r["human"]["reason_code"] is None
+            and r["human"]["disposition"] in ("rejected", "deferred"))
+        / len(active)) if active else 0.0
+    unsupported_rate = (converted / len(judged)) if judged else 0.0
+    gates = _release_gates(result, ungated_rate, unsupported_rate)
     result.update({
         "superseded_excluded": superseded_excluded,
         "active_receipts": len(active),
@@ -1351,14 +1360,9 @@ def evaluate(records: list[dict]) -> dict:
         if judged else 0.0,
         "needs_human_count": needs_human,
         # Decisions carrying no reason code skipped the evidence gate entirely
-        # (the code is what the requirements key off). Reported so the size of
-        # that known bypass is a number rather than an assumption.
-        "ungated_decision_rate": (
-            sum(1 for r in active
-                if r.get("human") and r["human"]["reason_code"] is None
-                and r["human"]["disposition"] in ("rejected", "deferred"))
-            / len(active)) if active else 0.0,
-        "unsupported_disposition_rate": (converted / len(judged)) if judged else 0.0,
+        # (the code is what the requirements key off). Reported AND gated.
+        "ungated_decision_rate": ungated_rate,
+        "unsupported_disposition_rate": unsupported_rate,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))
         if active else 0.0,
@@ -1369,8 +1373,35 @@ def evaluate(records: list[dict]) -> dict:
     return result
 
 
-def _release_gates(scored: dict) -> dict:
+def _release_gates(scored: dict, ungated_rate: float = 0.0,
+                   unsupported_rate: float = 0.0) -> dict:
+    """The gates that must ALL pass before any disposition class auto-decides.
+
+    The bypass checks are here because they were missing: the PRD listed "no
+    schema or evidence-gate bypasses" as a release condition and nothing read
+    it, so `release_gates.passed` could return True over a ledger containing
+    decisions that skipped the gate entirely (Codex review round 5, executed
+    repro: 60 clean cases + 1 ungated -> passed=True, ungated_rate=0.016).
+    A caller trusting that field would enable automation on known-invalid
+    calibration data. A gate nobody reads is not a gate.
+    """
     checks = {
+        # An ungated decision is one whose reason code was omitted, which is
+        # what keys the evidence requirements — so the evidence gate never ran
+        # for it. Any nonzero rate means the calibration set contains decisions
+        # the gate did not cover, and the release condition is literally zero.
+        "zero_gate_bypasses": {
+            "required": 0.0, "actual": ungated_rate,
+            "passed": ungated_rate == 0.0,
+        },
+        # Distinct from a bypass: this counts judge recommendations the gate
+        # CAUGHT and converted to needs-human. The gate working, not failing.
+        # Reported as a gate anyway because a judge that keeps proposing
+        # unsupported dispositions is not ready to decide unattended.
+        "zero_unsupported_judge_dispositions": {
+            "required": 0.0, "actual": unsupported_rate,
+            "passed": unsupported_rate == 0.0,
+        },
         "min_cases": {"required": 50, "actual": scored["cases"],
                       "passed": scored["cases"] >= 50},
         "exact_agreement": {"required": 0.88, "actual": scored["exact_agreement"],
