@@ -397,6 +397,29 @@ def _run(path, op, rest, ts):
         (issue,) = _args(op, rest, 1)
         _mutate(path, lambda d: op_clear(d, issue, ("drift_rounds", "drift_paged", "last_drift")))
         return 0
+    if op == "clear-flag":                # clear-flag <issue> <flag>
+        # THE UNDO FOR A FLAG CLAIMED BY MISTAKE, and it exists because one was
+        # (ASK-352). review-redrive.py's `select` was documented read-only and
+        # called ci-redrive's `ledger_recorded`, which is a WRITE wearing a
+        # reader's name -- it runs claim-flag and answers True on rc 0 (just
+        # claimed) as well as rc 1 (already claimed). One read-only invocation
+        # claimed 14 flags, and a claimed flag suppresses the dispatch it stands
+        # for, so 13 PRs were silently made ineligible for a redrive that had
+        # never happened.
+        #
+        # Without this op the only remedies were hand-editing the ledger --
+        # around the single writer and the lock, which is how two runs corrupt it
+        # -- or renaming the flag scheme to strand the bad rows as permanent
+        # garbage. Both are worse than an op that goes through _mutate like
+        # every other write. Same family as clear-conflict / clear-drift /
+        # clear-automerge above.
+        #
+        # Idempotent: clearing an unset flag is 0 and writes nothing meaningful,
+        # so a caller does not have to know the current state to be correct.
+        issue, flag = _args(op, rest, 2)
+        _mutate(path, lambda d: op_clear(d, issue, (flag,)))
+        return 0
+
     if op == "claim-flag":                # claim-flag <issue> <flag> -> 0 first time, 1 after
         issue, flag = _args(op, rest, 2)
         claimed = _mutate(path, lambda d: op_claim(d, issue, flag))
