@@ -2,6 +2,18 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.11.3] - 2026-08-04
+
+### Testing
+- Pinned the shared-ledger-root behavior with a test. During this PRD's own
+  dogfood run, a sandbox that had copied a `.git` directory wrote its receipts
+  into the MAIN checkout's ledger — `_ledger_root` follows
+  `git rev-parse --git-common-dir`, which is the intended shared-across-worktrees
+  behavior, but it surprises exactly where it hurts. The behavior was right and
+  the harness was wrong; a test now states which, and `capture` reports the
+  resolved ledger path in its output so the operator can see where a receipt
+  actually landed.
+
 ## [0.11.2] - 2026-08-04
 
 ### Testing

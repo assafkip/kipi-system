@@ -1072,6 +1072,34 @@ class TestConcurrency:
         assert proc.returncode == 0, proc.stderr
 
 
+class TestLedgerRoot:
+    def test_ledger_follows_the_git_common_dir_not_the_config_root(
+            self, judgment_repo, run_findings_writer):
+        """The ledger is SHARED across a worktree set on purpose, so its
+        location follows `git rev-parse --git-common-dir`, NOT the config's
+        repo_root. Pinned because that is surprising in exactly the way that
+        bites: during this PRD's own dogfood run a sandbox that had copied a
+        `.git` directory wrote its receipts into the MAIN checkout's ledger.
+        The behavior was correct; the harness was wrong. A test states which."""
+        proc = run_judgment(judgment_repo, "assemble", "--prd", PRD_ID,
+                            "--finding", "finding-1", "--output",
+                            str(judgment_repo / "p.json"))
+        assert proc.returncode == 0, proc.stderr
+        assert capture(judgment_repo, judgment_repo / "p.json").returncode == 0
+        # fake_repo's .git is a plain directory with no git metadata, so
+        # rev-parse fails and _ledger_root falls back to repo_root.
+        assert (judgment_repo / ".prd-os" / "judgments.jsonl").is_file()
+
+    def test_ledger_path_is_reported_so_the_operator_can_see_it(
+            self, judgment_repo):
+        packet_path, _ = assemble_packet(judgment_repo)
+        proc = capture(judgment_repo, packet_path)
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(proc.stdout)
+        assert payload["path"].endswith("judgments.jsonl")
+        assert str(judgment_repo) in payload["path"]
+
+
 class TestReadOnly:
     def test_selftest_passes(self, judgment_repo):
         proc = run_judgment(judgment_repo, "--selftest")
