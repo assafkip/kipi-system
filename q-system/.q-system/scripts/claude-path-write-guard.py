@@ -40,23 +40,55 @@ import re
 import shlex
 import sys
 
-# Programs that cannot write to a path they are given. Small and stable by
-# design. Anything not here is assumed write-capable.
+# Programs with NO file-writing channel on ANY command line. That is the exact
+# property this exemption asserts, and it is what the next person adding a name
+# here has to establish -- not "this is usually used as a read".
+#
+# SCAR (review finding, round 10): the set used to say "programs that cannot
+# write to a path they are given" while holding eight programs that can, and the
+# file's answer for two of them was READER_WRITE_FLAGS -- an inner enumeration of
+# the write FORMS of `sed` and `find`. That inner list is precisely the fail-open
+# surface this file's header warns about. It knew `sed -i` and missed
+# `sed 'w FILE'`; it knew `find -delete` and missed `find -fprint`; and it never
+# covered `awk` at all, despite the comment above it naming "awk-into-a-file".
+# Enumerating a program's write forms is out-guessing its manual forever.
+# Enumerating programs with no write channel at all is a claim that can be
+# checked once and stays checked, and a mistake in it is a false BLOCK.
+#
+# Dropped, each with the channel that disqualifies it:
+#   awk, sed    a PROGRAM TEXT that writes -- see SCRIPT_ARG_INTERPRETERS
+#   sort        -o FILE / --output=FILE
+#   uniq, xxd   the SECOND positional argument is the output file
+#   tree        -o FILE
+#   yq          -i (in place)
+#   find        -delete / -exec / -execdir / -ok / -fprint / -fls / -fprintf
+#   less, more  `+'s FILE'` runs the pager's save command at startup
+#
+# test-claude-write-path.sh pins this exact membership, so a later addition is a
+# reviewed decision and not a quiet one.
 READ_ONLY = {
     "cat", "ls", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag",
-    "wc", "stat", "file", "diff", "cmp", "awk", "sed", "cut", "sort", "uniq",
+    "wc", "stat", "file", "diff", "cmp", "cut",
     "md5", "md5sum", "shasum", "sha256sum", "basename", "dirname", "realpath",
     "readlink", "test", "echo", "printf", "pwd", "which", "type", "du", "df",
-    "jq", "yq", "column", "less", "more", "nl", "od", "xxd", "tree", "find",
+    "jq", "column", "nl", "od",
 }
 
-# `sed -i` and `awk`-into-a-file are the two readers that can write. `find` can
-# too (-delete / -exec). Handled explicitly below rather than dropped from the
-# allowlist, because their read forms are common in normal work.
-READER_WRITE_FLAGS = {
-    "sed": re.compile(r"(^|\s)-[a-zA-Z]*i"),
-    "find": re.compile(r"(^|\s)(-delete|-exec|-execdir|-ok)"),
-}
+# Programs whose first non-flag argument is a PROGRAM in another language rather
+# than a path, and that write THROUGH that program text: awk's `system()`,
+# `print > "f"` and `print | "cmd"`; sed's `w FILE`, `W FILE` and `s///w FILE`.
+#
+# This file already holds exactly this principle for python/perl/node -- "an
+# interpreter carries its target INSIDE a code string, where component-wise path
+# resolution cannot see it" (see SHELL_SINKS / INLINE_CODE_FLAGS below). awk and
+# sed differ only in that their script is POSITIONAL, so no inline-code flag
+# announces it; they were misfiled as readers because they default to printing.
+#
+# The verdict for these depends on ZERO awk/sed grammar, which is the point: a
+# `.claude` mention anywhere in the STAGE is a block. Stage, not statement, so
+# the escape hatch stays open -- pipe the file in and the interpreter's own stage
+# names no path at all. See _stage(), the only reader.
+SCRIPT_ARG_INTERPRETERS = {"awk", "gawk", "mawk", "nawk", "sed", "ed"}
 
 # git subcommands that only read. Any other git subcommand touching .claude/ is
 # treated as write-capable (checkout, restore, apply, clean, mv, rm...).
@@ -826,6 +858,28 @@ def _analyse_statements(command, cwd, layer2_blind=False):
     return None
 
 
+def _flag_values(token):
+    """The path candidates hiding inside a flag token (review finding, round 10).
+
+    A flag is not a path, which is why `_stage()` skips `-`-leading tokens. But a
+    value ATTACHES to a flag two ways and only two ways, so this needs no table
+    of which flags take a path:
+
+        --output=.claude/x   the part after the first `=`
+        -o.claude/x          the dash-stripped token minus its flag letter
+
+    Both candidates go through the same resolve()/hits_claude() as any other
+    token, so an unrelated tree's `.claude/` stays out of scope
+    (`--output=/tmp/other/.claude/x` is still allowed; the round-5 pin holds).
+    Ordinary flags yield harmless garbage: `-rn` gives `rn` and `n`, neither of
+    which resolves anywhere near `.claude`.
+    """
+    body = token.lstrip("-")
+    if "=" in token:
+        return [token.split("=", 1)[1]]
+    return [body, body[1:]] if body else []
+
+
 def _is_sanctioned(tokens):
     """True only if the command actually EXECUTES a sanctioned entrypoint.
 
@@ -1009,6 +1063,24 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     if _is_sanctioned(tokens):
         return ok
 
+    # A PROGRAM TEXT this parser cannot read, in a stage that mentions .claude/
+    # (review finding, round 10). `awk 'BEGIN{system("touch .claude/x")}'` and
+    # `sed -n 'w .claude/x' f` both write, and neither shows a path token to
+    # resolve or a write flag to match -- the target is inside the script.
+    #
+    # Deliberately NOT a parse of awk/sed: this parser cannot read those
+    # languages, so it refuses to authorize based on them. Same posture round 9
+    # reached for shell expansions, one layer over.
+    #
+    # Scoped to `seg` (this ONE pipeline stage), not the whole statement, which
+    # is what keeps the escape hatch open and pinned as an allow:
+    #     cat .claude/settings.json | awk '{print $1}'
+    # stage 2 mentions no .claude, so it passes; the path is stage 1's, where
+    # `cat` is a genuine reader.
+    if prog in SCRIPT_ARG_INTERPRETERS and ".claude" in seg:
+        return ("%r runs a program text this parser cannot read, and that text "
+                "mentions .claude/" % prog)
+
     # A token carrying a NEWLINE is a text payload, not a path: a commit message,
     # a --body, a heredoc line. Real filesystem arguments do not contain one.
     # Resolving them as paths is what blocked `git commit -m "<message quoting
@@ -1023,8 +1095,14 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     # redirects and interpreter code strings, are matched against the raw segment
     # further down and are NOT affected by this: `python3 -c "<multi-line code
     # touching .claude>"` stays blocked, and probe_guard.py pins it.
-    paths = [resolve(a, effective_cwd, assigns) for a in args
-             if not a.startswith("-") and "\n" not in a]
+    # A flag token is not skipped outright any more (review finding, round 10):
+    # its ATTACHED value is a path when it is one. See _flag_values().
+    candidates = []
+    for a in args:
+        if "\n" in a:
+            continue
+        candidates.extend(_flag_values(a) if a.startswith("-") else [a])
+    paths = [resolve(a, effective_cwd, assigns) for a in candidates]
     touches = [p for p in paths if p and hits_claude(p, session_cwd)]
     touches += _unanchored_unwatched(args, effective_cwd, assigns, layer2_blind)
 
@@ -1058,10 +1136,10 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
             return ok
         return "git %s targets .claude/: %s" % (sub or "?", touches[0])
 
+    # No inner write-form table any more (review finding, round 10): a member of
+    # READ_ONLY has no file-writing channel in any form, so there is nothing left
+    # to match against. A program that grew one leaves the set instead.
     if prog in READ_ONLY:
-        pat = READER_WRITE_FLAGS.get(prog)
-        if pat and pat.search(seg):
-            return "%r used in its writing form on .claude/: %s" % (prog, touches[0])
         return ok
 
     return "%r would write inside .claude/: %s" % (prog, touches[0])
