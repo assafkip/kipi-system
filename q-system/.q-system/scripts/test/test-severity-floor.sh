@@ -2145,9 +2145,16 @@ ERROR: Your workspace is out of credits. Add credits to continue.
 
 # mk_engine_stubs <dir> <headRefOid> <codex-mode> <codex-body>
 #   codex-mode: ok | fail (non-zero exit) | empty (exit 0, no output)
-# The claude stub always emits $APPROVE_REVIEW, so a `success` status on a codex
-# run can only have come from the Opus fallback -- which is what makes the
-# degraded cases readable at all.
+# The claude stub emits $APPROVE_REVIEW, so a `success` status on a codex run can
+# only have come from the Opus fallback -- which is what makes the degraded cases
+# readable at all.
+#
+# THE FALLBACK CAN ALSO FAIL, and until round 4 no fixture could express that.
+# The claude stub is steered by two files written AFTER this helper rather than by
+# a fifth positional argument, so every existing case keeps its exact call and
+# behaviour: `$d/claude-body.txt` is what it says, and `$d/claude-fail` (if it
+# exists) makes it die the way a dropped stream does. A default-healthy fallback
+# is what let "the Opus fallback filled the slot" be paged before Opus ever ran.
 mk_engine_stubs() {
   local d="$1" oid="$2" mode="$3" body="$4"
   mkdir -p "$d/bin" "$d/home"
@@ -2161,6 +2168,7 @@ EOF
   cat > "$d/bin/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$d/claude-calls.log"
+[ -f "$d/claude-fail" ] && { echo "claude: stream disconnected before first token" >&2; exit 1; }
 cat "$d/claude-body.txt"
 EOF
   cat > "$d/bin/codex" <<EOF
@@ -2308,20 +2316,34 @@ ok "the founder is paged exactly once on the transition into degraded mode"
 # "answered with nothing parseable" branch -- which by design does NOT fall back
 # -- and the Opus fallback promised at the top of pr-review-agent.sh never fired.
 # Not "fired and failed": NEVER, since the day it was written.
-# Consequences on disk: 0-byte reviews pr-66-20260802-092103.md and
+# Consequences on disk: unusable reviews pr-66-20260802-092103.md and
 # pr-67-20260802-092225.md, degraded.state=1 (the system NOTICED), and
 # ~/.config/kipi/pr-reviews/claude/ which did not exist at all. Both PRs sat on
 # kipi/reviewer-approved=failure, CI-green, unmergeable.
+#
+# THOSE TWO ARTIFACTS ARE 7,724 BYTES EACH, NOT ZERO (codex round 4 on PR #86,
+# minor). This header said "0-byte reviews" while the preamble block above it says
+# there is no such thing as a 0-byte codex artifact and Q4D below measures the
+# same two files at 7,724 bytes. Three statements about one pair of files, two of
+# them agreeing and this one not: a reader has no way to tell which is the
+# measurement. "0-byte" was the first write-up's GUESS, made before anyone opened
+# the files, and it is the guess that shipped the half-fix Q4D exists to close.
+# It is corrected here rather than deleted because the wrong number is the whole
+# reason the emptiness predicate looked sufficient.
 #
 # Same defect class as 2026-08-01: two failure modes genuinely different in the
 # world, identical in the signal being read. An outage and a garbage answer
 # cannot be told apart by an exit code.
 #
 # THE CONTRACT THESE CASES PIN. The discriminator is EVIDENCE, never the exit
-# code: an outage produces NO CONTENT AT ALL, a garbage answer produces content
-# that does not parse.
-#   Q4  empty output      -> OUTAGE  -> Opus fills the slot, marked DEGRADED
+# code: an outage never took an assistant turn, a garbage answer took its turn and
+# then said something that does not parse. (The first cut of this line read "an
+# outage produces NO CONTENT AT ALL" -- same wrong measurement as the paragraph
+# above, and Q4D is the case that disproves it.)
+#   Q4  empty output         -> OUTAGE  -> Opus fills the slot, marked DEGRADED
+#   Q4D real out-of-credits  -> OUTAGE  -> same, on the payload actually observed
 #   Q4B content, unparseable -> GARBAGE -> UNSTATED, NO fallback, nothing invented
+#   Q4E/Q4F the fallback itself fails -> the PAGE says so; nothing claims a filled slot
 # Q4B is the rule that must NOT move. Filling the slot with an Opus approval over
 # an attempted-but-unreadable review invents a verdict for a review that said
 # nothing, and a fabricated green is worse than a blocked merge.
@@ -2456,6 +2478,107 @@ grep -qi 'credit\|never actually reviewed\|no assistant turn\|produced no' "$Q4D
   || fail "the page does not say WHY codex is down, so the operator reading it at 3am cannot tell
       a billing outage from a crash. Page was: $(cat "$Q4D/pages.txt" 2>/dev/null)"
 ok "the out-of-credits page names the outage, not just 'codex failed'"
+
+# THE POSITIVE HALF of the Q4E/Q4F pair below. Those two assert the page must NOT
+# claim a filled slot when the fallback did not fill it; on their own that passes
+# just as well if the claim is deleted from every page. Here the fallback really
+# did fill the slot, so the page has to SAY so -- which is what makes the absence
+# in Q4E/Q4F evidence about the outcome rather than about the wording.
+#
+# THE TWO NEEDLES ARE MUTUALLY EXCLUSIVE SUBSTRINGS, not one phrase and its
+# negation. A plain `filled the slot` matches "nothing filled the slot" as
+# happily as "the fallback filled the slot" -- the first cut of Q4E asserted
+# exactly that and failed against a page whose text was already correct. So the
+# affirmative needle carries its subject (`fallback filled the slot`) and the
+# denial carries its own (`nothing filled the slot`); neither string can appear
+# inside the other, so each case pins one outcome and rejects the other two.
+grep -qi 'fallback filled the slot' "$Q4D/pages.txt" 2>/dev/null \
+  || fail "the fallback DID fill $CODEX_CONTEXT and the page never says so, so the operator cannot
+      tell this run from one where nothing filled the gate. Page was: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+grep -qi 'nothing filled' "$Q4D/pages.txt" 2>/dev/null \
+  && fail "the page denies filling a slot the fallback DID fill: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+ok "a fallback that really filled the slot says so in the page"
+
+# --- Q4E. CODEX IS DOWN AND THE OPUS FALLBACK DIES TOO -----------------------
+# FOUND BY CODEX ON 2026-08-03 reviewing PR #86 (major, pr-review-agent.sh:697).
+# The outage page was fired BEFORE `run_engine claude` and said "the Opus fallback
+# filled the slot and the status is marked DEGRADED" unconditionally. When the
+# fallback then died, the reviewer exited before posting anything, so the one
+# artifact the operator gets -- the page -- reported a filled gate over a PR with
+# no status at all. That is worse than silence: silence sends someone to look.
+#
+# The reviewer STILL exits non-zero here and STILL posts nothing; absent is not
+# approved and that is unchanged. What this case pins is that the page tells the
+# truth about which of the three outcomes happened.
+Q4E="$W2/eng-fallback-dead"
+mk_engine_stubs "$Q4E" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+: > "$Q4E/claude-fail"
+run_engine_reviewer "$Q4E" --post --engine codex
+
+[ -s "$Q4E/claude-calls.log" ] \
+  || fail "the fallback was never even attempted, so this case cannot say anything about what
+      happens when it fails. claude saw: $(cat "$Q4E/claude-calls.log" 2>/dev/null)"
+[ -z "$(status_call "$Q4E")" ] \
+  || fail "a commit status was posted even though NO review exists: $(status_call "$Q4E").
+      Absent is not approved, and neither is a status over a review nobody wrote."
+ok "codex down + a dead Opus fallback posts no status at all"
+
+[ "$(pages_in "$Q4E")" = "1" ] \
+  || fail "expected EXACTLY 1 page when both engines are down, got $(pages_in "$Q4E"):
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+grep -qi 'fallback filled the slot' "$Q4E/pages.txt" 2>/dev/null \
+  && fail "THE DEFECT CODEX FOUND: the page claims 'the Opus fallback filled the slot and the
+      status is marked DEGRADED' when the fallback DIED and no status was posted at all. The page
+      is fired before run_engine claude, so it reports an outcome that has not happened yet, and
+      the operator reads a healthy-enough gate over a PR nothing is holding. Page was:
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+ok "a dead fallback is never paged as a filled slot"
+
+grep -qi 'no status\|also failed\|nothing filled' "$Q4E/pages.txt" 2>/dev/null \
+  || fail "the page does not say the fallback ALSO failed and nothing filled the gate, so the
+      operator has no way to know this PR needs a human. Page was:
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+ok "the both-engines-down page says nothing filled the gate"
+
+# --- Q4F. CODEX IS DOWN AND THE FALLBACK ANSWERS UNPARSEABLY -----------------
+# The third outcome, and the quiet one: `claude` exits 0, so the pre-fix page
+# still said "filled the slot", but the review carries no complete FINDINGS block,
+# so REVIEW_UNUSABLE holds and the status goes out UNSTATED (failure). The gate is
+# HELD, not filled. A page that says otherwise sends the operator past the one PR
+# that is actually stuck.
+Q4F="$W2/eng-fallback-unusable"
+mk_engine_stubs "$Q4F" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+# Reuse the truncated shape rather than inventing one: an unclosed FINDINGS block
+# is the fallback failure mode the reviewer's own comment names (a stream that
+# died one line in), and it is the one that would otherwise derive APPROVE.
+printf '%s' '## VERDICT: APPROVE
+
+FINDINGS:
+' > "$Q4F/claude-body.txt"
+run_engine_reviewer "$Q4F" --post --engine codex
+CALL="$(status_call "$Q4F")"
+
+printf '%s' "$CALL" | grep -q 'state=success' \
+  && fail "the Opus fallback emitted an unclosed FINDINGS block and $CODEX_CONTEXT still went
+      green. An empty range derives APPROVE, so a truncated fallback would release the PR the
+      outage was holding. Call was: $CALL"
+ok "an unparseable Opus fallback never posts state=success"
+
+[ "$(pages_in "$Q4F")" = "1" ] \
+  || fail "expected EXACTLY 1 page, got $(pages_in "$Q4F"):
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+grep -qi 'fallback filled the slot' "$Q4F/pages.txt" 2>/dev/null \
+  && fail "THE SAME DEFECT, quieter: the fallback exited 0 but said nothing parseable, so the
+      status went out UNSTATED and the gate is HELD -- while the page announces a filled slot.
+      Page was:
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+ok "an unparseable fallback is never paged as a filled slot"
+
+grep -qi 'unstated\|held\|nothing filled' "$Q4F/pages.txt" 2>/dev/null \
+  || fail "the page does not say the verdict is UNSTATED and the PR is held, so the operator
+      cannot tell this from a working degraded review. Page was:
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+ok "the unparseable-fallback page says the gate is held, not filled"
 
 # --- Q4C. NEGATIVE SELF-TEST: break the fallback trigger, the outage goes red --
 # Q4 asserts a fallback fires. On its own that assertion could pass for reasons

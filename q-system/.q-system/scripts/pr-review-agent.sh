@@ -694,8 +694,26 @@ else
   fi
   mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
   echo "$(TS) codex is unusable: $CODEX_DOWN_WHY. Running the Opus fallback so $STATUS_CONTEXT does not wedge. Codex output kept at: $REVIEW.codex-failed" >&2
-  note_degraded_transition 1 \
-    "$CODEX_DOWN_WHY, so the Opus fallback filled the slot and the status is marked DEGRADED"
+  # THE PAGE REPORTS THE OUTCOME, SO IT IS SENT AFTER THERE IS ONE (codex round 4
+  # on PR #86, major). It used to fire HERE, one line above `run_engine claude`,
+  # saying "the Opus fallback filled the slot and the status is marked DEGRADED"
+  # -- a claim about work that had not started. Three outcomes are reachable from
+  # this branch and only one of them fills anything:
+  #
+  #   fallback writes a complete review -> $STATUS_CONTEXT goes green, DEGRADED
+  #   fallback answers unparseably      -> UNSTATED (failure): the gate is HELD
+  #   fallback dies                     -> the script exits: NO status is posted
+  #
+  # In the last two the page was the operator's only artifact and it announced a
+  # filled gate over a PR nothing was holding, which reads as "handled" and sends
+  # them past the one PR that needs them. The page fires exactly once either way
+  # -- including on the death path, BEFORE the exit, because a both-engines-down
+  # run that says nothing at all is the silence this whole notifier exists to end.
+  #
+  # $FALLBACK_OUTCOME is assembled per branch and the page is sent from ONE place
+  # per branch rather than once at the bottom: the death path has to exit with the
+  # fallback's rc, and threading that around a shared tail is how a page gets
+  # skipped on the branch that most needs it.
   if run_engine claude "$REVIEW"; then
     # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
     # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
@@ -703,14 +721,19 @@ else
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
     if review_has_complete_findings_block "$REVIEW"; then
+      FALLBACK_OUTCOME="so the Opus fallback filled the slot and the status is marked DEGRADED"
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
       REVIEW_UNUSABLE=1
+      FALLBACK_OUTCOME="and the Opus fallback ALSO produced no complete FINDINGS block, so nothing filled the slot: the verdict is UNSTATED and the PR is HELD, not released"
       echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
     fi
+    note_degraded_transition 1 "$CODEX_DOWN_WHY, $FALLBACK_OUTCOME"
   else
     rc=$?
     echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+    note_degraded_transition 1 \
+      "$CODEX_DOWN_WHY, and the Opus fallback ALSO failed (rc=$rc), so nothing filled the slot and NO status is posted at all -- this PR is waiting on a human"
     exit "$rc"
   fi
 fi

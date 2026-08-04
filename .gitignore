@@ -108,3 +108,18 @@ q-system/output/capability-maps/
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
 q-system/output/claude-integrity/
+
+# SESSION SCRATCH AT THE REPO ROOT (ASK-287, codex round 4 on PR #86).
+# `auto-commit.py` is an unattended Stop-hook safety net: it stages whatever is
+# dirty and commits it with `[no-issue: ...]`, so anything an agent drops beside
+# the repo root during a review round lands in the PUBLIC repo with no reviewer
+# and no reference. Round 3 of this issue shipped four of them that way
+# (.commitmsg-ask287, .red-repro.sh, probe-bogus.txt, probe-ok.txt).
+# Ignoring is the deterministic block rather than a note in a rule: `git add`
+# honors this file, so the safety net physically cannot pick these up again,
+# and no agent has to remember to clean up after itself.
+# Anchored with a leading `/` so only the ROOT is covered -- a probe fixture that
+# legitimately belongs to a test directory keeps being tracked.
+/.commitmsg*
+/.red-repro.sh
+/probe-*.txt
