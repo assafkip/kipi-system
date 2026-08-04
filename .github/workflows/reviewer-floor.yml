@@ -1,0 +1,48 @@
+name: Reviewer Floor
+
+# Turn an ABSENT reviewer verdict into a FAILING one, on the PR (ASK-361).
+#
+# `kipi/reviewer-approved` is a REQUIRED context on main, but its only producer
+# (pr-review-agent.sh) runs off a 15-minute launchd poll on ONE Mac keyed on a
+# LINEAR ISSUE -- it has no PR-open trigger and no push trigger. `validate` runs
+# on `pull_request`. So the two required contexts have completely different
+# liveness, and the reviewer's is routinely absent: measured 2026-08-03, PRs #88,
+# #69, #50 and #23 each carried ZERO reviewer statuses at their head.
+#
+# Absence is why `enforce_admins` could not be enabled. This job closes that gap
+# by giving the required context a PR-native trigger that can only ever post RED.
+on:
+  pull_request:
+    # synchronize matters most: every push makes a NEW head sha carrying no
+    # statuses at all, which is the ordinary way absence is (re)created.
+    types: [opened, reopened, synchronize]
+
+# Least privilege: this job writes commit statuses and reads nothing else.
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  # NAMED `reviewer-floor`, NOT `kipi/reviewer-approved`. GitHub requires that a
+  # context named as a required check actually report; a job sharing the required
+  # context's name would itself become a second reporter for that slot and race
+  # the real reviewer. The job is the mechanism, the posted STATUS is the slot.
+  reviewer-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Only the floor script is needed; no history is read.
+          fetch-depth: 1
+
+      # THE HEAD SHA, NOT github.sha. On a `pull_request` event github.sha is the
+      # ephemeral MERGE commit, which is not the commit branch protection
+      # evaluates. Posting there would leave the real head untouched and the PR
+      # still wedged on an absent context.
+      - name: Post the floor when no reviewer verdict exists at this head
+        run: bash q-system/.q-system/scripts/reviewer-floor.sh "${{ github.event.pull_request.head.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Makes the {owner}/{repo} placeholders resolve from the event rather
+          # than from git remote parsing.
+          GH_REPO: ${{ github.repository }}

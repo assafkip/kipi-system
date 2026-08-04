@@ -476,6 +476,32 @@ def take_pending_triage(actor):
     return None
 
 
+def _transcript_starved_reason(path):
+    """Why this transcript cannot be triaged from, or None when it can.
+
+    Imports the check from fable-escalate.py rather than restating it, so the
+    hook's cap accounting and the script's call decision can never disagree
+    about what "readable" means. `stop_after=1` keeps it to the first renderable
+    record: this runs inside a 5s hook budget against transcripts that reach
+    5MB.
+
+    FAILS OPEN. Any import or read problem returns None, which spends the call
+    exactly as before this change. A guard that silently SUPPRESSED escalations
+    because its own helper broke would be a worse failure than the one being
+    fixed here -- same shape as the missing-script no-op above.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fable_escalate_check", FABLE_ESCALATE_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        status, _ = module.transcript_status(path, stop_after=1)
+        return None if status == module.TRANSCRIPT_OK else status
+    except Exception:
+        return None
+
+
 def request_escalation(cache, hook_input, trigger, reason, actor):
     """Spawn the triage DETACHED and return a one-line note, or None.
 
@@ -495,13 +521,16 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
         return None
     import subprocess
 
+    transcript = hook_input.get("transcript_path", "") or ""
+    starved_reason = _transcript_starved_reason(transcript)
+
     count = cache.get("fable_escalations", 0)
     capped = count >= _int_env("KIPI_FABLE_CAP", 2)
     args = [
         sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
         "--trigger", trigger,
         "--reason", (reason or "")[:500],
-        "--transcript", hook_input.get("transcript_path", "") or "",
+        "--transcript", transcript,
         "--count", str(count),
         "--pending-file", pending_path(actor),
     ]
@@ -517,6 +546,19 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
             stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         return None
+
+    # A STARVED ESCALATION IS NOT AN ESCALATION, SO IT DOES NOT SPEND A SLOT.
+    # The child still runs, because its job here is to write the receipt row
+    # that says the transcript could not be read; it just will not call the
+    # model. Not incrementing the counter is what keeps FABLE_CAP meaningful:
+    # the cap is what decides whether a human gets paged, and reaching it must
+    # mean "two real triages ran and did not unstick this", never "two packets
+    # went out empty". Measured 2026-08-03: 23 of 27 calls were starved, and
+    # they were what drove the cap to page the founder.
+    if starved_reason:
+        return ("[Cross-model triage skipped: %s. No model call was spent and "
+                "no escalation slot was consumed; the ledger row is the "
+                "receipt.]" % starved_reason)
 
     if capped:
         # Asserts NOTHING about the founder having been reached. The page is

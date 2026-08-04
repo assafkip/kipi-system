@@ -141,6 +141,73 @@ def transcript_tail(path, window=TRANSCRIPT_WINDOW):
     return lines[-window:]
 
 
+def _fixture_refusal():
+    """The single definition of "a suite must not spend a real model call".
+
+    Lives here rather than inline in call_fable because escalate() has to CHECK
+    IT FIRST, ahead of the starvation refusal below. Both refuse the call, so
+    neither can bill anything, but they record different reasons and the fixture
+    reason is the one a suite author needs to see. Ordering it second would have
+    hidden the chokepoint behind starvation for every test that passes an empty
+    transcript_path, which is how most of them are written -- a safety guard
+    that stops being reachable stops being tested, and an untested guard is the
+    one that is broken when it finally matters.
+    """
+    if os.environ.get("KIPI_FABLE_CLAUDE_CMD"):
+        return None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "fixture run: refused to spend a real Fable call"
+    return None
+
+
+TRANSCRIPT_OK = "ok"
+
+
+def transcript_status(path, stop_after=None):
+    """(status, renderable_record_count) for a session transcript.
+
+    WHY THIS IS ITS OWN FUNCTION AND NOT A BOOL INSIDE build_packet.
+    Measured 2026-08-03: 31 escalations ran, and 23 of them sent a packet whose
+    entire session tail was the literal "(transcript unavailable)". Nothing in
+    the ledger said so. The row recorded packet_bytes and a confident-looking
+    diagnosis, and that diagnosis was Fable paraphrasing the trigger line back
+    at us, because the trigger line was the only content in the packet. The
+    empty packets were only findable at all because they are byte-identical
+    (845 for the volume-ceiling reason, 757 for exact-retry), which is a
+    forensic accident, not observability. So the REASON a packet had no
+    transcript is now recorded on the row rather than re-derived from byte
+    sizes by the next person.
+
+    `stop_after` exists for the hook: token-guard runs on a 5s budget and only
+    needs "is there anything at all to read", so it stops at the first
+    renderable record instead of rendering a 5MB transcript.
+    """
+    if not path:
+        return "no transcript path supplied", 0
+    if not os.path.exists(path):
+        return "transcript path does not exist: %s" % path, 0
+    count = 0
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if _render(record):
+                    count += 1
+                    if stop_after and count >= stop_after:
+                        return TRANSCRIPT_OK, count
+    except OSError as exc:
+        return "transcript unreadable: %s" % exc, 0
+    if not count:
+        return "transcript has no renderable records", 0
+    return TRANSCRIPT_OK, count
+
+
 def build_packet(trigger, reason, transcript_path):
     """Header + as much recent tail as fits + the four-section ASK.
 
@@ -212,8 +279,8 @@ def call_fable(packet, timeout):
     # is total in both directions, which is what makes it safe to refuse on.
     # An explicit KIPI_FABLE_CLAUDE_CMD overrides it, because a suite that
     # points at its own stub has already opted out of the live path.
-    if not command and os.environ.get("PYTEST_CURRENT_TEST"):
-        return None, "fixture run: refused to spend a real Fable call"
+    if not command and _fixture_refusal():
+        return None, _fixture_refusal()
 
     command = command or shutil.which("claude")
     if not command or not os.path.exists(command):
@@ -321,8 +388,29 @@ def notify_channel_configured():
         return False
 
 
-def notify_cap(trigger, count):
+def notify_cap(trigger, count, transcript_state=TRANSCRIPT_OK):
     """Page the founder once when cross-model triage did not unstick the run.
+
+    THE PAGE MUST NOT ASSERT A TIER WAS SPENT WHEN IT WAS STARVED.
+    The message this replaced said "Cross-model triage did not unstick it; a
+    human call is next" on every cap, including caps reached entirely by
+    escalations that never had a transcript to read. That is a false claim about
+    what the machine tier tried, and it routes a founder decision off it. The
+    two conditions are now separated:
+
+      transcript readable -> the triage ran on real session input and could not
+                             name the loop. A human call is the honest next step,
+                             so the page goes out.
+      transcript starved  -> no triage ever had input. Nothing about the RUN is
+                             known, only that this machine could not read its own
+                             session. That is a producer defect and a receipt, not
+                             a founder page (founder-notifications.md: do not ping
+                             for status that is not a founder decision).
+
+    NOTE ON THE ONE-ARG CALL, RE-VERIFIED 2026-08-03: slack-notify.sh in this
+    checkout still takes the message as $1 and exposes no --kind classifier, so
+    the classification stays in the message text. Passing --kind here would make
+    the flag the message body.
 
     Returns a record of what is KNOWN, never a bare claim of success.
 
@@ -344,15 +432,25 @@ def notify_cap(trigger, count):
     configured = notify_channel_configured()
     record = {"notify_attempted": False, "notify_exit": None,
               "notify_delivered": False,
-              "notify_channel_configured": configured, "notify_note": None}
+              "notify_channel_configured": configured, "notify_note": None,
+              "cap_basis": ("fed" if transcript_state == TRANSCRIPT_OK
+                            else "starved")}
+
+    if transcript_state != TRANSCRIPT_OK:
+        record["notify_note"] = (
+            "page suppressed: cross-model triage never had input (%s). "
+            "Nothing is known about whether the run is stuck; this is a "
+            "transcript-plumbing defect, recorded not paged." % transcript_state)
+        return record
 
     if not os.path.exists(notify):
         record["notify_note"] = "notifier not found at %s" % notify
         return record
 
-    message = ("agent stuck after %d Fable escalations (last trigger: %s). "
-               "Cross-model triage did not unstick it; a human call is next."
-               % (count, trigger))
+    message = ("agent stuck after %d Fable escalations, each of which ran on a "
+               "real session transcript (last trigger: %s). Cross-model triage "
+               "read the session and could not name the loop; a human call is "
+               "next." % (count, trigger))
     try:
         proc = subprocess.run(["bash", notify, message], timeout=20,
                               capture_output=True, text=True)
@@ -404,17 +502,26 @@ def write_pending(path, trigger, triage):
 def escalate(trigger, reason, transcript_path, count, capped_notified,
              pending_file=""):
     result = {"triage": None, "escalated": False, "capped": False,
-              "notified": False, "delivered": False, "failure": None}
+              "notified": False, "delivered": False, "failure": None,
+              "starved": False}
 
     cap = _int_env("KIPI_FABLE_CAP", DEFAULT_CAP)
     if count >= cap:
         result["capped"] = True
         result["failure"] = "cap reached (%d)" % cap
+        # The page's honesty is decided HERE, off the transcript this cap fired
+        # on, not off an invariant maintained in another file. token-guard is
+        # what keeps starved escalations from counting toward the cap, but a
+        # page that asserts the machine tier was spent must not depend on a
+        # caller upholding that for its truth.
+        cap_state, _ = transcript_status(transcript_path)
         row = {"ts": _now(), "trigger": trigger, "capped": True,
                "fable_ok": False, "failure": result["failure"],
+               "transcript_status": cap_state,
+               "transcript_path": transcript_path or "",
                "call_timeout_s": 0, "next_path_taken": None}
         if not capped_notified:
-            record = notify_cap(trigger, count)
+            record = notify_cap(trigger, count, cap_state)
             row.update(record)
             # `notified` now means ATTEMPTED, and delivery is its own field.
             # Collapsing the two is what made the old row a false receipt.
@@ -427,6 +534,38 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
                         "notify_channel_configured": configured,
                         "notify_note": "already paged for this episode"})
         log_row(row)
+        return result
+
+    # STARVED ESCALATIONS DO NOT SPEND A CALL AND DO NOT SPEND A CAP SLOT.
+    # Measured 2026-08-03: of 27 attempted calls, 23 went out on a packet with
+    # zero transcript records. 8 of those 23 then burned the full 45s timeout,
+    # while 0 of the 4 packets that DID carry a tail timed out -- so the empty
+    # packets were not cheap, they were the expensive ones. Worse, two of them
+    # were enough to hit FABLE_CAP and page the founder with a message asserting
+    # the machine tier had been spent. It had not been spent, it had been
+    # starved, and those are different conditions with different next actions.
+    # A triage that cannot read its input has nothing to add to the refusal, so
+    # the correct move is to refuse the call and record why.
+    status, records = transcript_status(transcript_path)
+    if status != TRANSCRIPT_OK:
+        result["failure"] = "starved: %s" % status
+        result["starved"] = True
+        log_row({
+            "ts": _now(),
+            "trigger": trigger,
+            "reason": (reason or "")[:300],
+            "fable_ok": False,
+            "starved": True,
+            "call_spent": False,
+            "failure": result["failure"],
+            "transcript_status": status,
+            "transcript_records": 0,
+            "transcript_path": transcript_path or "",
+            "duration_s": 0,
+            "diagnosis": "",
+            "next_path_taken": None,
+            "capped": False,
+        })
         return result
 
     packet = build_packet(trigger, reason, transcript_path)
@@ -442,6 +581,11 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         "packet_sha256": hashlib.sha256(packet.encode()).hexdigest(),
         "packet_bytes": len(packet.encode()),
         "fable_ok": triage is not None,
+        "starved": False,
+        "call_spent": True,
+        "transcript_status": status,
+        "transcript_records": records,
+        "transcript_path": transcript_path or "",
         "failure": failure,
         "duration_s": duration,
         "diagnosis": (triage or "")[:1500],
@@ -481,6 +625,7 @@ def report():
         print("no escalations recorded (%s)" % directory)
         return
     total = 0
+    starved = 0
     for name in sorted(os.listdir(directory)):
         if not name.endswith(".jsonl"):
             continue
@@ -492,6 +637,8 @@ def report():
             except ValueError:
                 continue
             total += 1
+            if row.get("starved"):
+                starved += 1
             status = "ok" if row.get("fable_ok") else (
                 row.get("failure") or "failed")
             print("%s  %-16s %-6.6ss  %s" % (
@@ -510,7 +657,13 @@ def report():
                          row.get("notify_delivered"),
                          " (%s)" % row["notify_note"]
                          if row.get("notify_note") else ""))
-    print("%d escalation(s) in %s" % (total, directory))
+            # A starved row is the one a reader would otherwise mistake for a
+            # thin triage. It names the plumbing failure instead.
+            if row.get("starved"):
+                print("    STARVED: no call spent, no cap slot used (%s)"
+                      % row.get("transcript_status"))
+    print("%d escalation(s) in %s (%d starved: never had a transcript to read)"
+          % (total, directory, starved))
 
 
 def main():
