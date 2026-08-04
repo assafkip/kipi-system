@@ -625,6 +625,22 @@ def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
     try:
         records = judgment_compiler.read_ledger(
             judgment_compiler.ledger_path(cfg))
+        # VERIFY before trusting. read_ledger only parses JSON, so without this
+        # a receipt appended by hand -- right prd_id, right finding_id, right
+        # disposition, broken chain -- satisfied the gate and authorized
+        # approval (Codex, PR #101 round 3). A hash chain no consumer checks is
+        # decoration; the gate is the consumer that matters.
+        chain_errors = judgment_compiler.verify_ledger(
+            records, judgment_compiler.read_tip(
+                judgment_compiler.tip_path(cfg)))
+        if chain_errors:
+            return 2, (
+                "approval blocked: the judgment ledger does not verify, so its "
+                "receipts cannot be trusted as evidence:\n  "
+                + "\n  ".join(chain_errors[:5])
+                + ("\n  ..." if len(chain_errors) > 5 else "")
+                + "\n\nRun `kipi judgment verify` for the full report.\n"
+            )
         raw_missing = judgment_compiler.cross_check_findings(
             cfg, records, JUDGMENT_RECEIPT_FLOOR)
     except Exception as exc:

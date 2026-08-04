@@ -2,6 +2,16 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.13.3] - 2026-08-04
+
+### Fixed (Codex review, PR #101 round 3)
+- **The approval gate trusted receipts it never verified.** It called
+  `read_ledger` (JSON parse only) and never `verify_ledger`, so a receipt
+  appended by hand -- correct prd_id, finding_id and disposition, broken chain
+  -- authorized approval. A hash chain no consumer checks is decoration, and
+  this gate is the consumer that matters. It now verifies the chain and tip
+  first and refuses on any integrity error.
+
 ## [0.13.2] - 2026-08-04
 
 ### Fixed (Codex review, PR #101 round 2)

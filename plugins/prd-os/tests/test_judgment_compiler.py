@@ -1441,6 +1441,9 @@ class TestReceiptGateFailsClosed:
 
         monkeypatch.setattr(jc, "ledger_path", lambda cfg: Path("/dev/null"))
         monkeypatch.setattr(jc, "read_ledger", lambda p: [])
+        monkeypatch.setattr(jc, "tip_path", lambda cfg: Path("/dev/null"))
+        monkeypatch.setattr(jc, "read_tip", lambda p: None)
+        monkeypatch.setattr(jc, "verify_ledger", lambda r, tip=None: [])
         monkeypatch.setattr(jc, "cross_check_findings", lambda c, r, s: [
             "prd-alpha-2/finding-1: dispositioned but no judgment receipt exists"])
         assert runner._judgment_receipt_gate(object(), "prd-alpha")[0] == 0
@@ -1501,3 +1504,33 @@ class TestGateChecksTheDecisionNotJustTheFinding:
         proc = run_judgment(judgment_repo, "verify", "--cross-check",
                             "--since", "2026-01-01T00:00:00Z")
         assert proc.returncode == 0, proc.stderr
+
+
+class TestGateVerifiesBeforeTrusting:
+    def test_forged_receipt_does_not_authorize_approval(self, judgment_repo,
+                                                        run_findings_writer):
+        """Codex PR #101 r3: the gate parsed receipts but never verified the
+        chain, so a hand-appended receipt with the right ids authorized
+        approval. A hash chain no consumer checks is decoration."""
+        assert run_findings_writer(judgment_repo, "set-disposition", PRD_ID,
+                                   "finding-1", "accepted").returncode == 0
+        path = judgment_repo / ".prd-os" / "judgments.jsonl"
+        real = read_ledger(judgment_repo)[0]
+        forged = json.loads(json.dumps(real))
+        forged["finding"]["finding_id"] = "finding-2"
+        forged["prev_receipt_sha256"] = "0" * 64          # chain broken
+        path.write_text(path.read_text() + json.dumps(
+            forged, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False) + "\n")
+        assert run_judgment(judgment_repo, "verify").returncode == 2
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "pr_gate_v", SCRIPTS_DIR / "prd_runner.py")
+        runner = importlib.util.module_from_spec(spec)
+        sys.modules["pr_gate_v"] = runner
+        spec.loader.exec_module(runner)
+        import config as cfgmod
+        cfg = cfgmod.load(judgment_repo)
+        code, message = runner._judgment_receipt_gate(cfg, PRD_ID)
+        assert code == 2, "a forged receipt authorized approval"
+        assert "does not verify" in message
