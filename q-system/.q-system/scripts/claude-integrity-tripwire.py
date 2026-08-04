@@ -92,6 +92,36 @@ EXTRA_WATCHED = (
 BASELINE_REL = os.path.join("q-system", ".q-system", "claude-integrity-baseline.json")
 QUARANTINE_REL = os.path.join("q-system", "output", "claude-integrity", "quarantine")
 
+# "This tree has been armed at least once." Written beside the baseline by
+# save_baseline(), never removed by this script.
+#
+# SCAR (review finding, PR #85 round 11, BLOCKER): a MISSING baseline was
+# indistinguishable from a fresh instance, so verify() armed silently on
+# whatever it found. Delete the baseline and tamper `.claude/` before the next
+# hook fires, and the tamper becomes the sanctioned state, permanently, at exit
+# 0 -- with `--check` then answering `clean`. Layer 1 closes the shape where
+# both halves are VISIBLE in one Bash command (_voids_layer2), but it
+# structurally cannot see inside `bash evil.sh`: no `.claude` mention, no
+# baseline mention, no rebaseliner in the command it is handed. Only this layer
+# can notice, and only if it remembers it was armed.
+#
+# NOT IN THE WATCH SET, deliberately. A watched marker that this script creates
+# would land as `added` against the baseline that preceded it, --enforce would
+# delete it, the next run would recreate it, and the flap would page forever.
+# Its only job is existence.
+#
+# GITIGNORED, for the round-2 reason: committed state propagates fleet-wide via
+# `kipi update`, so a committed marker would make every fresh instance claim
+# prior arming and page SECURITY on its first run -- the exact outage round 2
+# was about.
+#
+# HONEST BOUND, stated rather than hidden: an attacker who removes the marker
+# too (or a `git clean -fdX`, which removes both because both are ignored) is
+# back to a fresh tree and arms silently. This raises one unwatched `rm` to two
+# named paths; it does not make local state undeletable by a local attacker.
+# Captured as spillover, not claimed as closed.
+ARMED_MARKER_REL = os.path.join("q-system", ".q-system", ".claude-integrity-armed")
+
 
 def default_root():
     # <root>/q-system/.q-system/scripts/this-file.py -> up 3.
@@ -224,7 +254,33 @@ def save_baseline(root, entries, last_alarm=""):
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
+    mark_armed(root)
     return path
+
+
+def mark_armed(root):
+    """Record that this tree has been armed at least once.
+
+    BEST EFFORT BY DESIGN. A marker we cannot write must never break the write
+    that matters, so this swallows its errors: the cost of a missed marker is a
+    silent re-arm, which is exactly the pre-fix behaviour and never worse than
+    it. A raise here would turn a read-only-parent nuisance into a failed
+    baseline, which is the guard breaking the thing it guards."""
+    path = os.path.join(root, ARMED_MARKER_REL)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("armed %s -- claude-integrity-tripwire.py (ASK-291). "
+                     "Presence means: a missing baseline on this tree is a "
+                     "REMOVED backstop, not a fresh instance.\n"
+                     % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    except Exception:
+        pass
+
+
+def was_armed(root):
+    """True if this tree has ever had a baseline written. See ARMED_MARKER_REL."""
+    return os.path.exists(os.path.join(root, ARMED_MARKER_REL))
 
 
 LOCK_WAIT_DEFAULT = 10.0
@@ -689,6 +745,32 @@ def verify(root, args):
     """Diff the tree against its sanctioned baseline, then report (--check) or
     act (--enforce). Always called with the baseline lock held."""
     baseline = load_baseline(root)
+    if baseline is None and was_armed(root):
+        # NOT a first run. This tree HAS been armed, and its baseline is gone.
+        #
+        # SCAR (review finding, PR #85 round 11, BLOCKER). Arming here is what
+        # made `rm <baseline>` a permanent, silent disarm: the very next pass
+        # recorded whatever `.claude/` happened to contain -- including a tamper
+        # written in the same breath -- as the sanctioned state, returned 0, and
+        # answered `clean` forever after. The measurement in the finding was
+        # `trusted_sha=pwned`, `first_enforce_rc=0`, `second_enforce_rc=0`.
+        #
+        # We do NOT re-arm and we do NOT revert. There is no trusted state left
+        # to revert TO, and inventing one from the current tree is the defect
+        # itself. Alarm, exit non-zero, and name the one deliberate act that
+        # restores service.
+        #
+        # STICKY ON PURPOSE: every later pass takes this same branch until a
+        # human runs --baseline. Round 5's lesson was that a hold the next
+        # session silently converts into a sanction was never a hold.
+        notify(root, "SECURITY: .claude integrity baseline is MISSING on a tree "
+                     "that was armed. The backstop was removed; the tree is "
+                     "UNVERIFIED until re-baselined deliberately.")
+        print("BASELINE MISSING on an armed tree -- refusing to re-arm on an "
+              "unverified tree. Inspect .claude/ and the two guard scripts, then "
+              "run this script with --baseline to sanction the current state.",
+              file=sys.stderr)
+        return 2
     if baseline is None:
         # FIRST RUN IN THIS INSTANCE -> arm silently, do not alarm.
         #

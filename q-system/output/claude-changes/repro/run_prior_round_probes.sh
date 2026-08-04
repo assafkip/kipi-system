@@ -4,7 +4,8 @@
 # sweep is a script (same reason the patchers are scripts).
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-for p in probe_round7_findings.sh probe_round8_findings.sh probe_round9_findings.sh probe_round10_findings.sh; do
+for p in probe_round7_findings.sh probe_round8_findings.sh probe_round9_findings.sh \
+         probe_round10_findings.sh probe_round11_findings.sh; do
   printf '%-32s ' "$p"
   bash "$p" 2>&1 | tail -1
 done

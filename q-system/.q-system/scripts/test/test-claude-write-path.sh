@@ -718,6 +718,64 @@ else
   echo "       command line. Establish that, then update this pin in the same change."
 fi
 
+# F11 BLOCKER (round 11): Layer 1 protects Layer 2's baseline file, so the two
+# layers must agree on WHERE that file is. They name it independently -- the
+# tripwire owns BASELINE_REL, the guard needs its own copy because importing the
+# tripwire into a PreToolUse hook would put Layer 2's whole module on the
+# critical path of every Bash call. Two copies that silently disagree would turn
+# the entire round-11 check off with no visible failure: _voids_layer2 would
+# scan for a filename that never appears. Same reasoning as the EXCLUDED_DIRS
+# pin above -- two layers disagreeing about what they guard is worse than either
+# bound alone.
+_paths="$(python3 - "$(dirname "$GUARD")" <<'PY'
+import importlib.util, os, sys
+d = sys.argv[1]
+def load(n, p):
+    spec = importlib.util.spec_from_file_location(n, p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+l1 = load("l1", os.path.join(d, "claude-path-write-guard.py"))
+l2 = load("l2", os.path.join(d, "claude-integrity-tripwire.py"))
+print("EQUAL" if l1.LAYER2_BASELINE_REL == l2.BASELINE_REL else
+      "DIFFER l1=%s l2=%s" % (l1.LAYER2_BASELINE_REL, l2.BASELINE_REL))
+print("NAMEOK" if l1.LAYER2_BASELINE_NAME == os.path.basename(l2.BASELINE_REL)
+      else "NAMEBAD %s" % l1.LAYER2_BASELINE_NAME)
+PY
+)"
+case "$_paths" in
+  "EQUAL"*"NAMEOK"*)
+    pass "L1 LAYER2_BASELINE_REL == L2 BASELINE_REL (and the basename matches)" ;;
+  *)
+    fail "L1 and L2 disagree about the baseline path -- round 11's check is inert"
+    echo "       $_paths"
+    echo "       _voids_layer2() scans stage text for LAYER2_BASELINE_NAME. If that"
+    echo "       name is not the tripwire's actual baseline filename, the scan never"
+    echo "       matches and the round-11 blocker is open again, silently." ;;
+esac
+
+# F11 BLOCKER (round 11), the Layer 2 half: the armed marker must NOT be in the
+# watch set. If it ever is, --enforce sees it as `added` against the baseline
+# that preceded it, deletes it, the next run recreates it, and the flap pages
+# forever -- a self-inflicted version of the round-2 daily-alarm outage.
+_marker_watched="$(python3 - "$(dirname "$GUARD")" <<'PY'
+import importlib.util, os, sys, tempfile
+d = sys.argv[1]
+spec = importlib.util.spec_from_file_location("l2", os.path.join(d, "claude-integrity-tripwire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+root = tempfile.mkdtemp()
+os.makedirs(os.path.join(root, ".claude", "rules"))
+open(os.path.join(root, ".claude", "rules", "r.md"), "w").write("x")
+m.mark_armed(root)
+print("WATCHED" if m.ARMED_MARKER_REL in m.watch_set(root) else "UNWATCHED")
+print("PRESENT" if m.was_armed(root) else "ABSENT")
+PY
+)"
+case "$_marker_watched" in
+  "UNWATCHED"*"PRESENT"*)
+    pass "armed marker is written, and is deliberately NOT watched (no flap)" ;;
+  *)
+    fail "armed marker watch-set/creation invariant broken: $_marker_watched" ;;
+esac
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

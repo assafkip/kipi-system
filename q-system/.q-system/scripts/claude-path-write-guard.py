@@ -35,6 +35,7 @@ Exit contract: 2 = block (stderr is fed back to Claude), 0 = allow.
 """
 
 import json
+import fnmatch
 import os
 import re
 import shlex
@@ -139,6 +140,20 @@ SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
 # the other -- so the next person editing one list does not silently change the
 # other. See _rebaselines_layer2(), which is the only reader.
 REBASELINERS = SANCTIONED
+
+# Layer 2's baseline, named here because Layer 1 is the only thing that can
+# protect it. Every other piece of Layer 2's machinery is watched BY the
+# baseline -- both guard scripts are in the tripwire's EXTRA_WATCHED, so
+# deleting one lands as `removed` on the next tool call (round-2 scar). The
+# baseline is the one piece that cannot watch itself, which is exactly why
+# round 11's blocker went through it.
+#
+# Kept in sync with claude-integrity-tripwire.py's BASELINE_REL by a test, not
+# by hope: two files disagreeing about where the baseline lives would silently
+# turn this whole check off.
+LAYER2_BASELINE_REL = os.path.join(
+    "q-system", ".q-system", "claude-integrity-baseline.json")
+LAYER2_BASELINE_NAME = os.path.basename(LAYER2_BASELINE_REL)
 
 # Statement boundaries only. A single `|` is deliberately NOT a boundary: a
 # pipeline is one unit of intent, and splitting it severs the path from the
@@ -795,7 +810,7 @@ def analyse(command, cwd):
     # Computed ONCE over the whole command, never per body: a substitution body
     # names no sanctioned program of its own, so a per-body flag would read False
     # for `<tripwire> --register x <(touch $UNSET/.claude/rules/pwn.md)`.
-    blind = _rebaselines_layer2(command)
+    blind = _voids_layer2(command, cwd)
     for body in extract_substitutions(command):
         reason = _analyse_statements(body, cwd, blind)
         if reason:
@@ -919,8 +934,59 @@ def _program_names(tokens):
     return cands
 
 
-def _rebaselines_layer2(command):
-    """True if ANY stage of this command rewrites Layer 2's baseline.
+def _could_name_baseline(token, cwd, assigns, baseline_abs):
+    """True if `token` could name Layer 2's baseline file.
+
+    NOT a check for a writer. The question is reach: if this command can NAME
+    the baseline, Layer 1 cannot promise the baseline still exists when the
+    PostToolUse hook fires, and every handoff that depends on it is void.
+
+    ASKED COMPONENT-WISE, because that is what a path is. Pass 1 bounded a glob
+    by its flat literal prefix and `.$P/settings.json` produced the prefix "."
+    -- which anchors to cwd, and every relative path starts with cwd. That made
+    the check fire on nearly everything, and the permanent suite caught it: case
+    D1 is PINNED as a Layer 1 MISS (it is the proof Layer 2 is load-bearing), and
+    it started blocking. A shell glob does not cross `/`; `*` matches within ONE
+    component. So:
+
+      - a component holding an EXPANSION (`$`, backtick, brace) could be any
+        single component. Unknowable, so it does not veto -- it is skipped,
+      - a component holding a GLOB is fnmatch-ed against the baseline's
+        component at that position. Precise, no filesystem access, no guessing,
+      - a LITERAL component must be equal, and
+      - FEWER components than the baseline means a CONTAINING DIRECTORY, so
+        `rm -rf q-system` reaches the baseline and is treated as such. MORE
+        components names something strictly deeper, which the baseline is not.
+
+    A token that is ENTIRELY expansions still returns True only if every one of
+    its components is unknowable AND it is no deeper than the baseline -- the
+    unanchorable `.claude` write (`${!V}/rules/pwn.md`) fails at its second
+    component (`rules` != `.q-system`), which is what keeps the round-8/9 handoff
+    allow alive instead of collapsing every handoff into a block."""
+    raw = _subst(unquote(token), assigns)
+    if not raw or raw.startswith("-"):
+        return False
+    if not os.path.isabs(raw):
+        raw = os.path.join(cwd, raw)
+    parts = [p for p in os.path.normpath(raw).split(os.sep) if p not in ("", ".")]
+    base_parts = [p for p in baseline_abs.split(os.sep) if p not in ("", ".")]
+    if not parts or len(parts) > len(base_parts):
+        return False
+    for got, want in zip(parts, base_parts):
+        if UNRESOLVED.search(got) or "{" in got or "}" in got:
+            continue  # an expansion can be any single component
+        if NOT_A_LITERAL.search(got):
+            if not fnmatch.fnmatchcase(want, got):
+                return False
+        elif got != want:
+            return False
+    return True
+
+
+def _voids_layer2(command, cwd=None):
+    """True if ANY stage of this command could leave Layer 2 unable to catch
+    what Layer 1 is handing off to it -- by REWRITING its baseline (round 8) or
+    by REACHING the baseline file at all (round 11).
 
     WHY THIS EXISTS (review finding, PR #85 round 8, BLOCKER). Layer 1 hands an
     UNANCHORABLE `.claude/` write to Layer 2 -- `resolve()` returns None, the
@@ -956,15 +1022,50 @@ def _rebaselines_layer2(command):
 
     Substitution bodies are searched too: `--register` hidden in a `<(...)` still
     erases the baseline.
+
+    ROUND 11 (BLOCKER): the same handoff is voided by DELETING the baseline, and
+    the program test could never see it -- `rm` is not a sanctioned applier, and
+    the baseline lives OUTSIDE `.claude/` so no `.claude` component appears in
+    the delete. Measured, 9 shapes at rc=0 (probe_round11_findings.sh phases
+    1-2): rm, mv, `: >`, `echo >`, a variable holding the path, a basename glob,
+    a process substitution, `python3 -c "os.remove(...)"`, and an absolute path.
+
+    THE VERB IS NOT THE QUESTION. Enumerating what can unlink a file is the
+    fail-open surface this file's header warns about and round 10 deleted a
+    whole table for. Both new tests are about the PATH:
+
+      - the baseline's FILENAME appearing in a stage's text. Zero grammar, so
+        `rm`, `mv`, a redirect and an interpreter code string all fall to it
+        identically -- each one has to NAME the file.
+      - a TOKEN that could name the baseline (_could_name_baseline), which
+        bounds globs by their literal prefix and catches `rm -rf q-system` by
+        directory containment.
+
+    THE COST IS THE SAME ONE ROUND 8 PRICED, and it is only ever charged
+    alongside an unanchorable `.claude/` write: mentioning the baseline in such
+    a command blocks. The escape hatch is unchanged and free -- two Bash calls,
+    between which Layer 2 runs and re-arms on the clean tree, which is exactly
+    what the handoff assumes. Reading or deleting the baseline in a command with
+    NO unanchorable `.claude/` write is untouched, pinned as allows in phase 3.
     """
+    baseline_abs = os.path.normpath(os.path.join(cwd or os.getcwd(),
+                                                 LAYER2_BASELINE_REL))
     for text in [command] + extract_substitutions(command):
         for stmt in split_outside_quotes(strip_heredocs(text), STATEMENT_OPS):
             for stage in split_outside_quotes(stmt, ("|",)):
+                if LAYER2_BASELINE_NAME in stage:
+                    return True
                 try:
                     tokens = shlex.split(stage, comments=True)
                 except ValueError:
                     tokens = stage.split()
                 if any(c in REBASELINERS for c in _program_names(tokens)):
+                    return True
+                assigns = dict(a.groups() for a in
+                               (ASSIGN.match(t) for t in tokens) if a)
+                if any(_could_name_baseline(t, cwd or os.getcwd(), assigns,
+                                            baseline_abs)
+                       for t in tokens):
                     return True
     return False
 
@@ -1164,13 +1265,15 @@ def main():
             ".claude/ wires every hook, rule and agent; an agent that writes there can "
             "disable its own gates. Use the sanctioned path: a proposal applied by "
             "apply-claude-changes.sh (additive-only, ratcheted, auto-reverting).\n" % reason)
-        if _rebaselines_layer2(command):
+        if _voids_layer2(command, cwd):
             sys.stderr.write(
-                "This command also RE-BASELINES Layer 2 (%s), so a .claude/ path this "
-                "parser cannot anchor has no backstop left and fails closed instead of "
-                "being handed off (ASK-291 round 8). If the block is unexpected, run the "
-                "two halves as SEPARATE Bash calls -- Layer 2 then runs between them, "
-                "which is what the handoff assumes.\n" % ", ".join(REBASELINERS))
+                "This command also VOIDS Layer 2 -- it re-baselines it (%s) or it "
+                "reaches its baseline file (%s) -- so a .claude/ path this parser "
+                "cannot anchor has no backstop left and fails closed instead of being "
+                "handed off (ASK-291 rounds 8 and 11). If the block is unexpected, run "
+                "the two halves as SEPARATE Bash calls -- Layer 2 then runs between "
+                "them, which is what the handoff assumes.\n"
+                % (", ".join(REBASELINERS), LAYER2_BASELINE_REL))
         return 2
     return 0
 
