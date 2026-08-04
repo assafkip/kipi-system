@@ -144,9 +144,34 @@ bool}`. `human` when present: `{"actor", "decided_at", "disposition":
 
 Integrity: `receipt_id` is content-derived (sha256 of the canonical record
 minus `receipt_id`); `prev_receipt_sha256` chains each line to the previous
-line's canonical hash (first = null). `verify` re-walks the chain and fails on
-mutation, reorder, duplicate id, broken link, schema violation, unknown enum,
-or non-finite/out-of-range confidence.
+line's canonical hash (first = null); `sequence` is a monotonic 1-based
+position. `verify` re-walks the chain and fails on mutation, reorder, deletion,
+duplicate id, broken link, schema violation, unknown enum, or
+non-finite/out-of-range confidence.
+
+**Deletion needs a second mechanism (found by self-attack, 2026-08-04, before
+ship).** A prev-hash chain proves each retained line follows the previous one.
+It cannot prove the chain is COMPLETE, because any prefix of a valid chain is
+itself a valid chain: `head -1 judgments.jsonl` returned `VERIFY PASS` on a
+2-receipt ledger. Three independent checks close it:
+
+1. `sequence` must equal the line's position — catches middle deletion and
+   reordering.
+2. Tip anchor `.prd-os/judgments-tip.json` (`count`, `last_receipt_sha256`,
+   `last_receipt_id`, `updated_at`), rewritten on every append — catches tail
+   truncation, whole-file deletion, and last-receipt replacement. Written after
+   the ledger append, so a crash between the two under-counts, which is
+   deliberately not an error (a crashed write must not raise a truncation
+   alarm). A missing anchor does not hard-fail: ledgers predating it still
+   verify, because absence is not a claim.
+3. `verify --cross-check` requires a receipt for every dispositioned finding,
+   read from the findings ledgers — a source the judgment writer does not own,
+   so it survives a writer that is wrong about itself. `--since` floors it so
+   pre-feature findings do not report as thousands of false gaps.
+
+**Honest boundary:** the anchor shares a writer with the ledger, so this is
+tamper-EVIDENT (accidental truncation, crashed write, partial sync, naive
+edit), not tamper-proof. Only `--cross-check` is independent.
 
 **Judge output contract (exact fields, no extras):**
 
@@ -350,6 +375,12 @@ isolation; fixtures derived from the real producer schemas, not invented).
 | N-12 | historical v1 case presented as context-complete | `evaluate` refuses records lacking a context packet hash (reconstructed-context marker impossible: schema has no path to inject v1 rows) |
 | N-13 | policy candidate with no counterexample search | candidate validation fails |
 | N-14 | policy candidate self-install | no promote/install path exists; grep-tree test proves module never writes gates.jsonl/hooks/settings |
+| N-15 | tail truncation (drop last receipt) | `verify` exits 2 naming the count mismatch |
+| N-16 | whole-ledger deletion | `verify` exits 2 |
+| N-17 | middle-receipt deletion | `verify` exits 2 (sequence contiguity) |
+| N-18 | last receipt replaced with a re-hashed forgery | `verify` exits 2 naming the tip anchor |
+| N-19 | tip anchor missing (legacy ledger) | `verify` passes — absence is not a claim, no hard-fail on upgrade |
+| N-20 | dispositioned finding with no receipt | `verify --cross-check` exits 2; `--since` floor excludes pre-feature findings |
 
 Negative-fire checks (rules must NOT fire): legacy `set-disposition` without
 `--reason-code` still succeeds (receipt records honest null);
