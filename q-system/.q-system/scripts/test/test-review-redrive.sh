@@ -276,5 +276,27 @@ PICK3="$(select_one)"
   && ok "a new head sha is offered again -- the cap is per sha, not permanent" \
   || bad "after a push the PR was not re-offered: '$PICK3'"
 
+# --- case 9: a draft is the author saying not yet ----------------------------
+# The docstring claimed drafts were excluded and the code did not do it (codex
+# round 2 on PR #91). Paired against a non-draft that is otherwise identical, so
+# a selector that ignores the flag cannot pass by luck, and a selector that
+# returns nothing at all cannot pass either.
+python3 - "$WORK/board.json" <<'PYEOF'
+import json, sys
+draft = {"number": 99, "headRefName": "sana/ask-299", "headRefOid": "eeee1111",
+         "url": "https://example.invalid/pr/99", "title": "wip (ASK-299)",
+         "isDraft": True,
+         "statusCheckRollup": [{"__typename": "StatusContext",
+                                "context": "kipi/codex-approved", "state": "FAILURE"}]}
+ready = dict(draft, number=100, headRefName="sana/ask-300", headRefOid="eeee2222",
+             url="https://example.invalid/pr/100", title="done (ASK-300)", isDraft=False)
+json.dump([draft, ready], open(sys.argv[1], "w"))
+PYEOF
+record 99  "REQUEST CHANGES" "REQUEST CHANGES" true eeee1111
+record 100 "REQUEST CHANGES" "REQUEST CHANGES" true eeee2222
+A99="$(action_for 99)"; A100="$(action_for 100)"
+[ -z "$A99" ] && ok "a draft PR is not re-entered"   || bad "draft PR routed to '$A99' -- a draft is the author saying not yet"
+[ "$A100" = "rework" ] && ok "the non-draft beside it still is -- the flag is what decided"   || bad "non-draft routed to '$A100' -- the filter is eating everything"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

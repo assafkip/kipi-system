@@ -257,6 +257,18 @@ def classify(record, head_sha):
 def candidates(repo_dir, records_dir):
     out = []
     for pr_obj in CI.list_prs(repo_dir):
+        # A DRAFT IS THE AUTHOR SAYING NOT YET, and re-entering one spends a
+        # converge round or a codex call on a tree nobody asked to be judged.
+        #
+        # THE DOCSTRING CLAIMED THIS AND THE CODE DID NOT DO IT (codex round 2 on
+        # PR #91, minor). It also claimed "same rule as ci-redrive", and
+        # ci-redrive does not filter drafts either -- it fetches `isDraft` in
+        # PR_FIELDS and never reads it. So the comment was wrong twice, which is
+        # the exact defect class this whole selector exists because of: ci-redrive
+        # excluded the reviewer slots on the strength of a sentence asserting
+        # something no code did. Captured separately for ci-redrive's own copy.
+        if pr_obj.get("isDraft"):
+            continue
         attributed = CI.attribute(pr_obj)
         if attributed is None:
             continue
