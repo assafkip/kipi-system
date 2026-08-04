@@ -949,6 +949,10 @@ def _could_name_baseline(token, cwd, assigns):
     it started blocking. A shell glob does not cross `/`; `*` matches within ONE
     component. So:
 
+      - the token is rebased onto each GUARDED ROOT, never onto the cwd, because
+        `LAYER2_BASELINE_REL` is root-relative and comparing it against a
+        cwd-relative path silently switched this whole check off for every
+        session below the root (round 12 BLOCKER),
       - a component holding an EXPANSION (`$`, backtick, brace) could be any
         single component. Unknowable, so it does not veto -- it is skipped,
       - a component holding a GLOB is fnmatch-ed against the baseline's
@@ -968,25 +972,53 @@ def _could_name_baseline(token, cwd, assigns):
     raw = _subst(unquote(token), assigns)
     if not raw or raw.startswith("-"):
         return False
-    # RELATIVE TO cwd, never absolute. Comparing absolute paths let the cwd
-    # components match literally on both sides, which handed every token under
-    # cwd the "concrete agreement" the check below demands without it having
-    # earned any (pass 2). The question is only about the tail below the root.
-    if os.path.isabs(raw):
-        rel = os.path.relpath(os.path.normpath(raw), cwd)
-    else:
-        rel = os.path.normpath(raw)
-    parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+    known_cwd = bool(cwd) and cwd != UNKNOWN_CWD
+    # HOW MANY COMPONENTS THE TOKEN ITSELF SUPPLIED (review finding, round 12).
+    # `..` consumes a cwd component instead of adding one, so the token's own
+    # components are always the LAST `own` of the rebased path. An absolute token
+    # supplied all of them; so does a relative token read with no cwd, which is
+    # read as root-relative. `_agrees` is where this count earns its keep.
+    own = None
+    if not os.path.isabs(raw) and known_cwd:
+        own = len([p for p in os.path.normpath(raw).split(os.sep)
+                   if p not in ("", ".", "..")])
     base_parts = [p for p in LAYER2_BASELINE_REL.split(os.sep) if p not in ("", ".")]
-    if not parts or parts[0] == ".." or len(parts) > len(base_parts):
-        return False
-    # REACH REQUIRES EVIDENCE. An unknowable component (an expansion, a brace)
-    # cannot veto -- it really could be anything -- but it cannot AGREE either.
-    # Pass 2 let a token made entirely of unknowable components fall out of this
-    # loop having compared nothing and return True, which blocked `{print $1}`
-    # (an awk program text) as though it named the baseline.
-    concrete_matches = 0
-    for got, want in zip(parts, base_parts):
+    for root in guarded_roots(cwd if known_cwd else None):
+        if os.path.isabs(raw):
+            full = os.path.normpath(raw)
+        elif known_cwd:
+            full = os.path.normpath(os.path.join(cwd, raw))
+        else:
+            full = os.path.normpath(os.path.join(root, raw))
+        parts = [p for p in os.path.relpath(full, root).split(os.sep)
+                 if p not in ("", ".")]
+        if not parts or parts[0] == ".." or len(parts) > len(base_parts):
+            continue  # above this root, or strictly deeper than the baseline
+        first_own = 0 if own is None else max(0, len(parts) - own)
+        if _agrees(parts, base_parts, first_own):
+            return True
+    return False
+
+
+def _agrees(parts, base_parts, first_own):
+    """Component-wise agreement between a ROOT-REBASED token and the baseline.
+
+    REACH REQUIRES EVIDENCE. An unknowable component (an expansion, a brace)
+    cannot veto -- it really could be anything -- but it cannot AGREE either.
+    Round 11 pass 2 let a token made entirely of unknowable components fall out
+    of this loop having compared nothing and return True, which blocked
+    `{print $1}` (an awk program text) as though it named the baseline.
+
+    `first_own` is where the TOKEN's own components start; anything before it came
+    from the cwd the token was rebased against. Those still have to MATCH -- a cwd
+    that is not on the baseline's path means nothing under it can reach the
+    baseline by a relative name -- but they are NOT evidence, because the token
+    did not supply them. Counting them is round 11 pass 2's defect arriving
+    through a new door: from `<root>/q-system` the padded path of `{print $1}` is
+    `q-system/{print $1}`, whose first component agrees with the baseline's
+    perfectly and was written by nobody."""
+    evidence = 0
+    for i, (got, want) in enumerate(zip(parts, base_parts)):
         if UNRESOLVED.search(got) or "{" in got or "}" in got:
             continue
         if NOT_A_LITERAL.search(got):
@@ -994,8 +1026,9 @@ def _could_name_baseline(token, cwd, assigns):
                 return False
         elif got != want:
             return False
-        concrete_matches += 1
-    return concrete_matches > 0
+        if i >= first_own:
+            evidence += 1
+    return evidence > 0
 
 
 def _voids_layer2(command, cwd=None):
