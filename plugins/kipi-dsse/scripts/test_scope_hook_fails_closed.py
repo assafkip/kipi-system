@@ -227,3 +227,29 @@ def test_stop_gate_writes_no_bypass_row_while_it_is_still_refusing(repo: Path):
     _clear_receipts(repo)
     assert _stop(repo, {}).returncode == 2
     assert not (repo / ".prd-os/gate-bypasses.jsonl").exists()
+
+
+def test_scope_gate_fails_closed_when_the_runner_errors(monkeypatch, tmp_path):
+    """A gate whose failure mode is "permit" is not a gate.
+
+    This returned ALLOW until Codex round 4 produced a repro: a runner timeout
+    silently disabled scope enforcement for the rest of the session. The suite
+    in this file claimed the gate fails closed while never testing its error
+    path -- the claim and the code disagreed, and only the claim was tested.
+    """
+    import io as _io, json as _json, sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "hooks"))
+    import scope_hook as h
+
+    payload = {"tool_name": "Edit",
+               "tool_input": {"file_path": "src/disallowed.py"},
+               "cwd": str(tmp_path)}
+    monkeypatch.setattr(h, "_outside_repo", lambda path, cwd: False)
+
+    def _boom(*a, **k):
+        raise TimeoutError("runner timed out")
+
+    monkeypatch.setattr(h.subprocess, "run", _boom)
+    monkeypatch.setattr(_sys, "stdin", _io.StringIO(_json.dumps(payload)))
+    assert h.main() == 2, "runner error allowed the edit through unchecked"

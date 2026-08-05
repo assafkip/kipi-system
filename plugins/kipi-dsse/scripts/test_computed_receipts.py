@@ -532,3 +532,29 @@ class TestCommandFilesMatchTheCLI:
         finally:
             sys.path.pop(0)
         assert not missing, f"receipt fields with no computing verb: {missing}"
+
+
+def test_amend_clears_review_completions_not_only_the_receipt(loaded_issue: Path):
+    """Codex round 4, with a repro. Clearing `reviewed` while leaving the
+    per-kind completions in place is not a reset: the next single
+    `complete-review` sees the OTHER kind still marked complete from the
+    pre-amend scope and re-earns a two-review receipt for one review."""
+    for kind in ("standard", "adversarial"):
+        assert _issue(loaded_issue, "record-review", kind).returncode == 0
+        assert _issue(loaded_issue, "complete-review", kind,
+                      "--verdict", "approve").returncode == 0
+    assert _receipts(loaded_issue)["reviewed"], "precondition: receipt earned"
+
+    spec = loaded_issue / ".prd-os/issues/probe-1.md"
+    spec.write_text(spec.read_text().replace(
+        'allowed_files:\n  - README.md', 'allowed_files:\n  - README.md\n  - extra.md'))
+    assert _issue(loaded_issue, "amend", "--reason", "scope changed").returncode == 0
+    assert not _receipts(loaded_issue).get("reviewed"), "amend left the receipt"
+
+    assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+    proc = _issue(loaded_issue, "complete-review", "standard", "--verdict", "ok")
+    assert proc.returncode == 0, proc.stderr
+    assert not _receipts(loaded_issue).get("reviewed"), (
+        "one review after an amend re-earned the receipt; the adversarial pass "
+        "never ran against the amended scope"
+    )

@@ -815,6 +815,12 @@ def cmd_amend(paths: Paths, args: argparse.Namespace) -> int:
     receipts = state.setdefault("receipts", {k: None for k in RECEIPT_FIELDS})
     receipts["verified"] = None
     receipts["reviewed"] = None
+    # The per-kind completions are WHY `reviewed` can be rewritten, so clearing
+    # the receipt without clearing them is not a reset. Codex round 4, with a
+    # repro: after an amend, `complete-review standard` alone saw adversarial
+    # still "completed" from the pre-amend scope and re-earned the receipt --
+    # a two-review receipt for one review, against the NEW scope.
+    state["review_completions"] = {}
     entry = {
         "timestamp": _now_iso(),
         "reason": reason,

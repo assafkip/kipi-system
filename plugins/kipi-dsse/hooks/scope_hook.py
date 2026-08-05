@@ -138,8 +138,22 @@ def main() -> int:
             text=True,
             timeout=5,
         )
-    except Exception:
-        return 0
+    except Exception as exc:
+        # FAIL CLOSED. This returned 0 (ALLOW) until Codex round 4 produced a
+        # repro: a runner timeout silently disabled scope enforcement, and the
+        # edit went through. A gate whose failure mode is "permit" is not a
+        # gate -- and this branch shipped test_scope_hook_fails_closed.py
+        # claiming the opposite while never testing the error path.
+        #
+        # The edit is refused, not lost: the message says how to re-run, and
+        # a genuinely broken runner surfaces immediately instead of quietly
+        # approving every out-of-scope write for the rest of the session.
+        sys.stderr.write(
+            f"DSSE scope gate could not run ({type(exc).__name__}: {exc}); "
+            "refusing the edit rather than allowing it unchecked.\n"
+            "Re-run once the runner responds, or clear the active issue if "
+            "there is no issue in flight.\n")
+        return 2
 
     if result.returncode == 2:
         sys.stderr.write(result.stderr or "DSSE scope block\n")
