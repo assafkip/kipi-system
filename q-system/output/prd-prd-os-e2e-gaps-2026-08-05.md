@@ -1,8 +1,16 @@
 ---
-status: draft
+status: shipped
 ---
 
 # PRD: prd-os end-to-end gaps found by adversarial execution
+
+> **Shipped 2026-08-05 at plugin 0.17.0** (commit `83281891`). All five changes
+> plus Change 6 landed. Founder decisions taken: archive hard-blocks with no
+> `--force`; the `.gitignore` write was built rather than the claim deleted;
+> Change 5 re-applied here on 0.16.6 rather than carried on the stale branch.
+> Five mutations against the committed baseline, all killed. `kipi check` /
+> capability gate NOT run — both refuse to execute from a `.claude/worktrees`
+> copy, so that verification belongs to the primary checkout after merge.
 
 **Date:** 2026-08-05
 **Author:** Claude (Opus 5), from the founder's standing adversarial-tester prompt

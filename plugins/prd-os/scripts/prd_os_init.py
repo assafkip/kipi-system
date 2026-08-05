@@ -32,6 +32,35 @@ from config import (  # noqa: E402
 )
 
 
+IGNORE_ENTRY = ".claude/state/"
+IGNORE_COMMENT = "# prd-os runtime session state (never commit)"
+
+
+def ensure_state_dir_ignored(repo_root: Path) -> bool:
+    """Append the runtime-state ignore entry to .gitignore, idempotently.
+
+    SKILL.md and README.md both promised the bootstrap did this. It did not:
+    the script wrote config.json and nothing else, so the stated non-negotiable
+    "Runtime state is never committed" had no blocker at all. Measured in a
+    virgin repo 2026-08-05 -- `git check-ignore .claude/state/active-prd.json`
+    returned nothing after a successful init.
+
+    Returns True when an entry was added, False when one was already present.
+    Appends; never rewrites a .gitignore the repo already owns.
+    """
+    gitignore = repo_root / ".gitignore"
+    existing = gitignore.read_text() if gitignore.is_file() else ""
+    # Match the path, not the exact line: `.claude/state/`, `.claude/state`,
+    # and `/.claude/state/` all already ignore it, and appending a fourth
+    # spelling would be the duplicate this guard exists to avoid.
+    for line in existing.splitlines():
+        if line.split("#", 1)[0].strip().strip("/") == ".claude/state":
+            return False
+    prefix = "" if existing == "" or existing.endswith("\n") else "\n"
+    gitignore.write_text(f"{existing}{prefix}{IGNORE_COMMENT}\n{IGNORE_ENTRY}\n")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", help="override repo root discovery")
@@ -49,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     except RepoRootNotFoundError as exc:
         sys.stderr.write(f"prd-os init: {exc}\n")
         return 2
+
+    # Before the config early-return on purpose: repos initialized by an older
+    # version never got this entry, and skipping it there would leave exactly
+    # the repos that need repairing unprotected.
+    ensure_state_dir_ignored(repo_root)
 
     config_path = repo_root / CONFIG_RELPATH
     if config_path.is_file() and not args.force:

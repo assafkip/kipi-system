@@ -5,11 +5,13 @@ description: PRD creation and PRD execution operating system. Use when the found
 
 # prd-os
 
-Formal, repo-native workflow for PRD creation and PRD execution inside Claude Code. Codex is the review gate at both phases.
+Formal, repo-native workflow for PRD creation and PRD execution inside Claude Code. An independent reviewer is the gate at both phases: Codex, or a Claude senior-staff-engineer subagent when Codex is unavailable.
+
+Whichever reviewer ran is recorded in the findings ledger as `codex-review`, `codex-adversarial`, `claude-review`, or `claude-adversarial`. Stamping one for another puts false provenance in a repo whose thesis is receipts. Enforcement is partial and the boundary matters: the `REVIEWER_SOURCES` validator in `findings_writer.py` refuses any value outside that set (so `manual` and `plan` cannot fill a review gate), but no checker can tell which of the four actually ran. That last step is a model decision with no gate behind it.
 
 ## Status
 
-Scaffold only at plugin version `0.1.0`. This skill describes the target system so Claude knows what is coming; the implementation lands in later steps. Until the commands and runner scripts ship, do not claim the workflow is operational.
+Operational. Plugin version is authoritative in `.claude-plugin/plugin.json`; the state machines, commands, and gates below are shipped and enforced by the runner scripts. `CHANGELOG.md` carries the per-version history.
 
 ## State machines
 
@@ -17,22 +19,26 @@ PRD: `idea -> draft -> in-review -> draft (on revise) -> approved -> archived`.
 
 Issue: `open -> in-progress -> closed`. Receipts required between approve and close: `verified`, `reviewed`, `findings_triaged`.
 
-## Commands (once wired)
+## Commands
 
-PRD side: `/prd-start`, `/prd-review`, `/prd-revise`, `/prd-approve`, `/prd-split`.
+PRD side (this plugin): `/prd-start`, `/prd-review`, `/prd-triage`, `/prd-approve`, `/prd-split`, `/prd-archive`, `/prd-personas`, `/prd-map`.
 
-Issue side: `/issue-start <id>`, `/issue-approve`, `/issue-verify`, `/issue-review`, `/issue-closeout`.
+There is no `/prd-revise` command. A PRD returns to `draft` via `prd_runner.py advance draft` after triage.
+
+Issue side ships in the **`kipi-dsse` plugin**, not this one: `/issue-start <id>`, `/issue-approve`, `/issue-verify`, `/issue-review`, `/issue-closeout`, `/issue-amend`. The two plugins share the `.prd-os/` state directory and the findings ledger.
 
 Bootstrap: `/prd-os-init` (runs once per repo to scaffold `.prd-os/` and register hooks).
+
+Ledger CLI (no slash command; run through `kipi judgment <subcommand>`): the Judgment Compiler freezes decision-time workflow context for each triage decision into an append-only hash-chained receipt ledger. See `scripts/judgment_compiler.py` and the operator guide.
 
 ## Non-negotiables
 
 - PRD drafting must not drift into implementation. Scope enforcement restricts edits to the PRD file during drafting.
 - Issue planning stays in `open` status. The stop-gate does not arm until `/issue-approve` transitions to `in-progress`.
 - Empty `allowed_files` means deny-all except the active spec itself (control-plane carve-out). This is a fixed contract; do not propose allow-all behavior.
-- Every Codex finding gets a disposition before approve or closeout. The dispositions are `must-fix`, `optional`, `deferred`, or `rejected-with-reason`. No finding may be left unset.
+- Every finding gets a disposition before approve or closeout. The enum is exactly `pending`, `accepted`, `rejected`, `deferred` (`DISPOSITIONS` in `findings_writer.py`); the writer refuses anything else. No finding may be left `pending`. `rejected` and `deferred` require `--rationale`.
 - Concurrent PRD and issue contexts are blocked. `/prd-start` refuses if an issue is `in-progress`; `/issue-start` refuses if a PRD is `in-review`.
-- Codex never edits. Claude is the sole editor. Codex runs through `/codex:review` and `/codex:adversarial-review` and returns findings for Claude to triage.
+- The reviewer never edits. Claude is the sole editor. Codex runs through `/codex:review` and `/codex:adversarial-review` and returns findings for Claude to triage; a Claude reviewer subagent runs read-only under the same contract.
 - Runtime state (`.claude/state/active-{prd,issue}.json`) is never committed. The bootstrap command adds the state directory to `.gitignore`.
 - Out-of-scope findings are never dropped. A `deferred` disposition auto-creates an open spillover item, and `gates run` stays red until it is resolved. See Spillover below.
 
@@ -56,11 +62,15 @@ Plugin (portable): commands, runner scripts, hooks, templates, review rubric, fi
 
 Repo (local): `.prd-os/config.json`, `.prd-os/prds/`, `.prd-os/issues/`, `.prd-os/findings/`, `.claude/state/`.
 
-## What to do right now (pre-implementation)
+Ledger files (`spillover.jsonl`, `gates.jsonl`, `judgments.jsonl`) resolve to the shared worktree ledger root, so parallel worktrees write to one ledger rather than diverging copies.
 
-The plugin is not yet wired. If the founder asks to run `/prd-start`, `/prd-review`, or any `/prd-*` command, say explicitly that the command does not exist yet and point to the current build step in `CHANGELOG.md`. Do not simulate the workflow with ad-hoc markdown.
+## Execution discipline
 
-For issue execution, continue using the existing `.claude/commands/issue-*.md` commands until the plugin-scoped replacements land and are proven in parallel.
+`fable-discipline` is this plugin's execution-discipline layer (recon before edit, verify against a copy with a negative self-test, single-writer chokepoints, scar-anchored why-comments). `/issue-start` loads it for PRD/DSSE work; the `fable-discipline-auto-invoke` rule loads it for everything else. Its deterministic slice (test isolation) is enforced by the `fable-discipline-lint` hook in this plugin's `hooks.json`.
+
+## Load-path warning
+
+These commands run from the marketplace clone (`~/.claude/plugins/marketplaces/<mp>/`), not from a project's `plugins/` directory. An edit to a project copy is inert until the clone is refreshed. Confirm which copy is live before relying on a change to command or skill text.
 
 ## Upgrade policy
 

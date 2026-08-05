@@ -153,7 +153,12 @@ def cmd_new(cfg: Config, args: argparse.Namespace) -> int:
     title = args.title or slug.replace("-", " ").title()
     owner = args.owner or os.environ.get("USER", "unknown")
     created_at = _now_iso()
-    prd_id = f"prd-{slug}-{created_at[:10]}"
+    # Strip a slug's own `prd-` before prefixing. An unconditional prefix made
+    # `new prd-thing` produce `prd-prd-thing-<date>`, and the reported id is the
+    # one findings_writer requires -- a caller that reused its slug got
+    # "PRD spec not found" (virgin-repo run, 2026-08-05).
+    base_slug = slug[4:] if slug.startswith("prd-") else slug
+    prd_id = f"prd-{base_slug}-{created_at[:10]}"
     spec_path = cfg.prds_dir / f"{prd_id}.md"
     if spec_path.exists():
         sys.stderr.write(f"PRD spec already exists: {spec_path}\n")
@@ -342,6 +347,10 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stderr.write(err)
         return rc
+    rc, err = _archive_spillover_gate(cfg)
+    if rc != 0:
+        sys.stderr.write(err)
+        return rc
     spec_path = cfg.repo_root / state["spec_path"]
     text = spec_path.read_text()
     new_text = re.sub(r"(?m)^status:\s*.+$", "status: archived", text, count=1)
@@ -354,6 +363,35 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     _propose_skeptic_antipatterns_best_effort(cfg, archived_id)
     print(json.dumps({"archived": archived_id}))
     return 0
+
+
+def _archive_spillover_gate(cfg: Config) -> tuple[int, str]:
+    """Refuse archive while any spillover item is open.
+
+    `no-orphan-findings.md` states the ledger "cannot be forgotten" and names
+    `gates run` the enforcement of last resort. It was never wired into the one
+    terminal step. Measured 2026-08-05 in a virgin repo: `gates run` exited 1
+    GATE RED on `sp-0b8645ad` and `archive` exited 0 in the same repo, in the
+    same moment. The only thing holding the line was prose in
+    `commands/prd-archive.md` asking the model to check first -- prompt-only
+    enforcement, which q-system/CLAUDE.md core rule 3 forbids.
+
+    Deliberately no --force hatch: the two documented exits (resolve against a
+    closed issue, or --void with a recorded reason) already cover every real
+    case, and a third would be the hand-clear the rule refuses.
+    """
+    openv = _spillover_open(cfg)
+    if not openv:
+        return 0, ""
+    detail = "\n".join(
+        f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})"
+        for r in openv
+    )
+    return 2, (
+        f"refusing to archive: {len(openv)} open spillover item(s)\n{detail}\n"
+        "Resolve each via `prd_runner.py spillover resolve <id> "
+        "--resolution-ref <closed-issue>` or `--void \"<reason>\"`.\n"
+    )
 
 
 def _propose_skeptic_antipatterns_best_effort(cfg: Config, prd_id: str) -> None:
