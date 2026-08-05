@@ -138,8 +138,14 @@ def test_archive_refuses_while_a_spillover_item_is_open(virgin: Path):
     _init(virgin)
     assert _run(virgin, "prd_runner.py", "new", "gated", "--title", "T").returncode == 0
     assert _run(virgin, "prd_runner.py", "advance", "draft").returncode == 0
+    # Blocking severity so the `gates run` precondition below still holds:
+    # since 2026-08-05 the standing gate blocks only on blocker/major/high.
+    # ARCHIVE is deliberately stricter and refuses on ANY open item -- it is a
+    # terminal closeout, and no-orphan-findings.md requires every item the work
+    # touched to be reported there. Two different jobs, two different bars.
     added = _run(virgin, "prd_runner.py", "spillover", "add",
-                 "--source", "gated", "--desc", "an open item")
+                 "--source", "gated", "--desc", "an open item",
+                 "--severity", "major")
     assert added.returncode == 0, added.stderr
 
     gates = _run(virgin, "prd_runner.py", "gates", "run")

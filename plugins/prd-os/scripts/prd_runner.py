@@ -1477,6 +1477,19 @@ def cmd_spillover(cfg: Config, args) -> int:
     return 2
 
 
+# Severities that turn the standing gate RED. Approved PRD
+# prd-spillover-current-state-2026-07-24, goal 5: "make `gates run` identify
+# pre-existing debt separately from new debt". Before this, every open item was
+# one undifferentiated red group; the ledger reached 550 open and the gate had
+# been red for months, which teaches everyone to step over it -- strictly worse
+# than no gate, because it launders "we have enforcement".
+#
+# `minor`/`low`/`medium` are REPORTED, never silent. The 533 sitting at the
+# `minor` DEFAULT are untriaged rather than assessed, which the report says
+# out loud instead of implying they were judged small.
+SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
+
+
 def cmd_gates(cfg: Config, args) -> int:
     """gates list prints the registry; gates run executes regression gates from
     the repo root (operator-authored shell commands, the same trust boundary
@@ -1546,17 +1559,33 @@ def cmd_gates(cfg: Config, args) -> int:
     # Out-of-scope findings are part of the standing re-proof: an open spillover
     # item turns the gate RED until it is resolved against a closed issue.
     openv = _spillover_open(cfg)
-    if openv:
-        names = ", ".join(r["id"] for r in openv)
-        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
-        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
-        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
+    blocking = [r for r in openv if (r.get("severity") or "").lower()
+                in SPILLOVER_BLOCKING_SEVERITIES]
+    reported = [r for r in openv if r not in blocking]
+    if blocking:
+        names = ", ".join(r["id"] for r in blocking)
+        detail = "\n".join(f"  {r['id']} [{r.get('severity')}]: {r.get('description', '')[:90]} (src {r.get('source')})" for r in blocking)
+        print(f"[RED] spillover: {len(blocking)} open blocking-severity item(s): {names}")
+        failures.append(("spillover", f"{len(blocking)} open blocking-severity spillover item(s):\n{detail}\n"
                                       f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    if reported:
+        # Reported, never silent. These do not block, but a bucket nobody can
+        # see is how 533 of them accumulated. `--severity` DEFAULTS to minor, so
+        # a defaulted item is indistinguishable from one assessed as minor --
+        # the label says "untriaged" rather than laundering "nobody looked" as
+        # "we judged it small".
+        ids = ", ".join(r["id"] for r in reported[:10])
+        more = f" (+{len(reported) - 10} more)" if len(reported) > 10 else ""
+        print(f"[REPORT] spillover: {len(reported)} open minor-or-untriaged "
+              f"item(s), not blocking: {ids}{more}")
+        print("  Triage with `prd_runner.py spillover triage`; raise one with "
+              "`spillover add --severity major|blocker`.")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} regression gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; "
+          f"no blocking-severity spillover")
     return 0
 
 

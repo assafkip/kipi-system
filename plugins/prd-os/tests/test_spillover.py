@@ -97,13 +97,56 @@ def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
-def test_gates_run_red_while_spillover_open(repo):
-    # No registered gates at all, but an open spillover item must still make the
-    # STANDING re-proof fail. This is the can't-be-forgotten property.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+def test_gates_run_red_while_a_blocking_severity_item_is_open(repo):
+    # No registered gates at all, but an open BLOCKING-severity spillover item
+    # must still make the STANDING re-proof fail. The can't-be-forgotten
+    # property, now scoped to severities that were actually assessed.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        "--severity", "major")
     g = run(repo, "gates", "run")
-    assert g.returncode != 0, "gates run stayed green with an open spillover item"
+    assert g.returncode != 0, "gates run stayed green with an open major item"
     assert "sp1" in (g.stdout + g.stderr)
+
+
+def test_gates_run_is_green_but_reports_a_minor_item(repo):
+    """The contract change (approved PRD prd-spillover-current-state-2026-07-24,
+    goal 5: "make gates run identify pre-existing debt separately from new
+    debt").
+
+    Every open item used to turn the gate red as one undifferentiated group. It
+    reached 550 open and stayed red for months, which teaches everyone to step
+    over it -- worse than no gate, because it launders "we have enforcement".
+
+    A minor item is now REPORTED and does not block."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+        "--severity", "minor")
+    g = run(repo, "gates", "run")
+    assert g.returncode == 0, (
+        f"a minor item still blocks the gate: {g.stdout}{g.stderr}")
+    assert "sp-n" in (g.stdout + g.stderr), (
+        "the minor item is not blocking AND not reported -- that is silent, "
+        "which is how 533 of them accumulated unnoticed")
+
+
+def test_the_report_does_not_call_untriaged_items_minor(repo):
+    """`--severity` DEFAULTS to minor, so a defaulted item is indistinguishable
+    from one assessed as minor. 533 of 550 open items sit at that default. The
+    report must not launder "nobody looked at it" as "we judged it small"."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n")
+    out = run(repo, "gates", "run").stdout
+    assert "untriaged" in out.lower(), (
+        f"report presents the default as a real severity judgement: {out}")
+
+
+def test_a_blocking_item_still_blocks_when_minor_items_exist(repo):
+    """Negative-fire: the minor bucket must not swallow the blocking one."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+        "--severity", "minor")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "bad", "--id", "sp-b",
+        "--severity", "blocker")
+    g = run(repo, "gates", "run")
+    assert g.returncode != 0
+    assert "sp-b" in (g.stdout + g.stderr)
 
 
 def test_resolve_refuses_unless_issue_closed(repo):
@@ -194,7 +237,12 @@ def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        # Blocking severity on purpose: this test asserts `gates run` stays
+        # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
+        # on blocker/major/high, so a default-severity item would leave it
+        # green and the assertion would pass for the wrong reason.
+        "--severity", "major")
     _stub_linear(monkeypatch, runner, {"ASK-999": {"type": "started", "name": "In Progress"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-999") != 0
@@ -242,7 +290,12 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
     and a clean ledger, which is exactly the hand-clear this command exists to
     prevent. Refusing keeps the item visible until someone can actually prove it.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        # Blocking severity on purpose: this test asserts `gates run` stays
+        # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
+        # on blocker/major/high, so a default-severity item would leave it
+        # green and the assertion would pass for the wrong reason.
+        "--severity", "major")
     env = dict(os.environ)
     env.pop("KIPI_LINEAR_API_KEY", None)
     env["HOME"] = str(tmp_path / "empty-home")  # no ~/.config/kipi/linear-api-key
@@ -341,3 +394,20 @@ def test_triage_leaves_the_gate_red(repo):
 
     assert run(repo, "spillover", "check").returncode == 1
     assert run(repo, "gates", "run").returncode != 0
+
+
+def test_archive_still_refuses_on_a_minor_item(repo):
+    """The standing gate and the terminal closeout have different bars, and
+    that difference must be pinned or a later reader will "fix" the
+    inconsistency. `gates run` blocks only on blocker/major/high so it can be
+    green day to day. `archive` refuses on ANY open item, because
+    no-orphan-findings.md requires every item the work touched to be reported
+    at closeout."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+        "--severity", "minor")
+    assert run(repo, "gates", "run").returncode == 0, "minor should not block the gate"
+    run(repo, "new", "arch", "--title", "T")
+    run(repo, "advance", "draft")
+    assert run(repo, "archive").returncode != 0, (
+        "archive let a minor spillover item through; closeout must report all"
+    )
