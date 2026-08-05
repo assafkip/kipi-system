@@ -81,9 +81,24 @@ def deletions(itemized: str) -> list[str]:
 def owned_hits(paths: list[str]) -> list[tuple[str, str]]:
     """(path, subtree) for every deletion that touches instance-owned data.
 
-    Matched at ANY depth, not anchored: the whole defect is that the anchor was
-    in the wrong place, so an anchored check here would inherit the bug it
-    exists to catch.
+    Matched at the TRANSFER ROOT or directly under a `q-system/` segment --
+    not at any depth.
+
+    "Any depth" was the first shape, because the defect being fixed was an
+    anchor in the wrong place and an anchored check looked like it would
+    inherit that bug. It over-corrected: `q-system/.q-system/agent-pipeline/
+    templates/deck/output/` is a REAL skeleton-owned directory, so deleting a
+    skeleton file under it refused the sync for every instance in the fleet
+    (Codex, PR #111, with a repro against that live path).
+
+    That is the worse failure. A guard that halts every unattended update gets
+    switched off, and a gate that is off protects nothing -- the same scar
+    `design-auto-invoke.md` already carries.
+
+    Anchoring on `q-system/` instead of on the transfer root keeps the P0
+    catch: the bug was `q-system/my-project/...` appearing when the excludes
+    pointed at `my-project/...`, and BOTH still match here, at any prefix
+    depth (`<anything>/q-system/my-project/...` matches too).
     """
     hits = []
     for path in paths:
@@ -93,9 +108,15 @@ def owned_hits(paths: list[str]) -> list[tuple[str, str]]:
         # real deletion of real data through on the platform this actually runs
         # on. Found by attacking my own guard, 2026-08-05.
         segments = [s.casefold() for s in path.strip("/").split("/")]
+        # An owned name counts at index 0 (destination IS the q-system dir), or
+        # directly after a `q-system` segment (destination is the instance root,
+        # or any deeper prefix). Anywhere else it is skeleton content that
+        # merely shares a name.
+        starts = [0] + [i + 1 for i, seg in enumerate(segments)
+                        if seg == "q-system"]
         for sub in INSTANCE_OWNED:
             parts = [s.casefold() for s in sub.split("/")]
-            for i in range(len(segments) - len(parts) + 1):
+            for i in starts:
                 if segments[i:i + len(parts)] == parts:
                     hits.append((path, sub))
                     break
