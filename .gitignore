@@ -108,3 +108,10 @@ q-system/output/capability-maps/
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
 q-system/output/claude-integrity/
+
+# PR-review scratch trees. 537 of these files were swept into the repo by an
+# unattended `chore: update project files` auto-commit (ec5efddf). Removing them
+# without ignoring the pattern just waits for the next sweep to re-add them.
+.pr*rev*/
+.review-scratch/
+.fable-wt/
