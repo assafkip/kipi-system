@@ -107,3 +107,76 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   and found no link had ever been sent. See `q-system/lessons/prove-a-negative-with-a-live-probe.md`.
 - **Date:** 2026-07-29
 - **Revisit:** Permanent
+
+### RULE-010: A Clean Review Round Is Not Evidence Of Sufficiency
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** When a defect class has produced a finding every round on one surface,
+  restructure regardless of the next round's verdict, and decide it BEFORE that verdict
+  arrives so the outcome cannot shape the decision.
+- **Reason:** For a property enforced at N independent seams, a quiet round means one
+  reviewer did not find the N+1th seam. Blindness was enforced at four seams on the judge
+  and three were wrong. Validated twice: after the override, the very next round found a
+  real hole in the half already called stable and one commit from shipping.
+- **Date:** 2026-08-05
+- **Revisit:** Permanent
+
+### RULE-011: Kill A Defect Class By Deleting The Mechanism
+- **Origin:** [CLAUDE-RECOMMENDED -> MODIFIED]
+- **Decision:** Three successive hardenings of a date inference were retired by deleting
+  the exemption mechanism entirely, so the gate consults no date at all.
+- **Reason:** A creation-date floor exempted every FUTURE decision on any pre-floor PRD;
+  35 of 36 PRDs predated it, making the gate near-permanently inert. The recommendation
+  was mine and the measurement showing it was inert was in hand and misread as "safe".
+  Codex caught it. Before deleting, the protected set was measured, not assumed.
+- **Date:** 2026-08-05
+- **Revisit:** Permanent
+
+### RULE-012: The Runtime Is Not The Repo, And The Clone Is Not The Runtime
+- **Origin:** [CLAUDE-RECOMMENDED -> MODIFIED]
+- **Decision:** Verify the copy that actually loads. Plugins run from a version-pinned
+  cache registered in `installed_plugins.json`, not from the marketplace clone and not
+  from a project's `plugins/` dir. Refreshing the clone alone changes nothing.
+- **Reason:** After two days of merged work, the loaded plugin was version 0.1.0 from
+  April. My acceptance criteria targeted the clone, so following them would have gone
+  green over five-month-old code. Sana found the second layer. Detector shipped
+  (`runtime-plugin-freshness.py`), with the stated gap that version parity alone cannot
+  see commit drift.
+- **Date:** 2026-08-05
+- **Revisit:** When plugin loading changes
+
+### RULE-013: Migration Receipts Carry No Judge Run
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** Re-dispositioning historical decisions to satisfy a receipt gate is done
+  WITHOUT a judge run, so the records satisfy the gate while being excluded from
+  calibration by construction.
+- **Reason:** Freezing today's workflow context against a decision made two months ago
+  manufactures precisely the retroactive artifact the whole system exists to prevent.
+  A receipt with `human` and no `judge` is excluded from scoring by construction.
+- **Date:** 2026-08-05
+- **Revisit:** Permanent
+
+### RULE-014: A Gate's Refusal Is Information, Not An Obstacle
+- **Origin:** [CLAUDE-RECOMMENDED -> MODIFIED]
+- **Decision:** An unbuildable PRD was released with `clear`, not `archive`, after the
+  archive gate refused. Its 8 accepted findings were NOT re-triaged to `rejected` to buy
+  the transition.
+- **Reason:** I recommended archive. Sana ran it to capture the real refusal: the findings
+  lack issue receipts and can never have them, because they INVALIDATE the PRD rather than
+  describe work. Archiving would assert "done and accounted for" about something never
+  built. Re-triaging would have erased a real review's conclusions for a state change.
+  Gate/model mismatch captured as `sp-8c286548` instead of papered over.
+- **Date:** 2026-08-05
+- **Revisit:** When prd-os gains a disposition for self-invalidating findings
+
+### RULE-015: Autonomous Is The Target; CLI Constraints Are Not Blockers
+- **Origin:** [USER-DIRECTED]
+- **Decision:** Rank runtime paths by who drives them. The agent/plugin/scheduled path is
+  the product; a hand-typed CLI is a convenience wrapper. A broken CLI is a footnote, not
+  an incident. "Needs a human decision" is a defective deferral, not a terminal state.
+- **Reason:** Founder, 2026-08-05: "The way this should work is completely autonomous so
+  I dont care about the cli and command constraints." I had elevated a broken CLI to equal
+  status with the agent path that actually executes the work. Safety holds (destructive
+  ops, another session's uncommitted work, irreversible deletions) are NOT overridden by
+  this; they get decided by an agent with evidence rather than escalated as questions.
+- **Date:** 2026-08-05
+- **Revisit:** Permanent
