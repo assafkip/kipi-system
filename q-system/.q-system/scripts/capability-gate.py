@@ -475,6 +475,28 @@ def check_inert_engines(root, manifest, errors, notes):
     fixed point so hook -> script A -> script B chains still count."""
     declared = {e["path"]: e for e in manifest.get("declared_inert", [])}
     base = root / "q-system/.q-system"
+    # plugins/ carries the runnable scripts this fleet actually ships, and the
+    # candidate scan never looked there -- a dead script under plugins/ was
+    # invisible to the one check built to see dead scripts. Widened 2026-08-05
+    # after an adversarial sweep whose every finding lived in that tree.
+    #
+    # REPORT-ONLY for now, on purpose. The change cannot be validated from a
+    # .claude/worktrees copy: calling this function directly against a worktree
+    # reports 28 inert errors with the UNMODIFIED gate, on a repo whose gate is
+    # meant to be green, so surface gathering is unreliable there. Shipping it
+    # BLOCKING on an unvalidatable measurement could red 27 plugin scripts
+    # across 22 governed instances. Notes carry the signal at zero blast
+    # radius; promoting to `errors` is a one-line change once a real run in the
+    # primary checkout confirms the delta is zero (sp-1cb1a348).
+    plugin_candidates = set()
+    for p in (list(root.glob("plugins/*/scripts/**/*.py"))
+              + list(root.glob("plugins/*/hooks/*.py"))
+              + list(root.glob("plugins/*/skills/*/scripts/*.py"))):
+        if p.is_file() and not p.name.startswith(("test_", "test-")) \
+                and not any(part in ("test", "tests") for part in p.parts):
+            text = p.read_text(errors="ignore")
+            if os.access(p, os.X_OK) or "__main__" in text:
+                plugin_candidates.add(p)
     candidates = set()
     for p in list(base.glob("*.py")) + list((base / "scripts").rglob("*.py")):
         if not p.is_file() or p.name.startswith(("test_", "test-")):
@@ -504,6 +526,23 @@ def check_inert_engines(root, manifest, errors, notes):
             continue
         errors.append(f"inert-engine: {rel} has no reference on any wiring surface "
                       "and no declared_inert entry")
+
+    # Same walk over plugins/, reported not enforced (see the note above).
+    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
+    p_wired, changed = set(), True
+    while changed:
+        changed = False
+        for p in sorted(plugin_candidates - p_wired):
+            if p.name in plugin_surface:
+                p_wired.add(p)
+                plugin_surface += "\n" + p.read_text(errors="ignore")
+                changed = True
+    for p in sorted(plugin_candidates - p_wired):
+        rel = str(p.relative_to(root))
+        if rel in declared:
+            continue
+        notes.append(f"INERT-ENGINE (report-only, plugins/): {rel} has no "
+                     "reference on any wiring surface")
 
 
 def main():
