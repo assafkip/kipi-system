@@ -176,23 +176,20 @@ def test_verify_records_the_failing_returncode_not_just_a_refusal(tmp_path: Path
 # findings_triaged <- computed from the ledger
 # ---------------------------------------------------------------------------
 
-def test_triage_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path):
-    """`_count_in_scope_pending` already existed and was used as a close-time
-    gate while the receipt stayed hand-stamped. Same computation, now the
-    writer."""
-    # The ISSUE's findings file, which is what _count_in_scope_pending reads
-    # (`<issue_id>-findings.jsonl`). An earlier draft appended to the PRD's
-    # findings file and a `or next(glob("*.jsonl"))` fallback silently picked
-    # it up, so the test passed against the wrong file. No fallback now: if the
-    # path is wrong the test fails loudly instead of testing something else.
-    # Derived from the runner, not guessed: when config sets `findings_dir`,
-    # Paths appends an `issue/` subdir, so the issue ledger is
-    # `.prd-os/findings/issue/`. A hardcoded guess put the row one directory up
-    # and triage passed while "a pending finding" sat in a file nobody read.
+def _add_pending_finding(repo: Path) -> Path:
+    """Put one pending in-scope finding in the ISSUE's findings ledger.
+
+    The path is DERIVED from the runner, not guessed: when config sets
+    `findings_dir`, `Paths` appends an `issue/` subdir, so the ledger is
+    `.prd-os/findings/issue/`. An earlier draft hardcoded a guess one directory
+    up (and had a `or next(glob("*.jsonl"))` fallback that silently picked the
+    PRD's findings file instead), so the test passed while "a pending finding"
+    sat somewhere nobody read. No fallback: a wrong path now fails loudly.
+    """
     sys.path.insert(0, str(DSSE))
     try:
         import issue_runner
-        target = issue_runner.Paths(loaded_issue).findings_dir / "probe-1-findings.jsonl"
+        target = issue_runner.Paths(repo).findings_dir / "probe-1-findings.jsonl"
     finally:
         sys.path.pop(0)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +197,42 @@ def test_triage_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path)
         "id": "finding-99", "severity": "major", "body": "still pending",
         "disposition": "pending", "source": "claude-review",
     }) + "\n")
+    return target
+
+
+def test_gate_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path):
+    """`cmd_gate`'s pending branch had NO coverage until this test.
+
+    Found by accident: a mutation aimed at `cmd_triage` hit `cmd_gate`'s
+    identical `if pending or bad:` first (replace with count=1) and survived
+    all 58 kipi-dsse tests. The stop gate could stop refusing on pending
+    findings and nothing would notice.
+
+    All three receipts are earned FIRST so the refusal can only come from the
+    pending branch -- otherwise the missing-receipts branch would refuse and
+    this test would pass without ever reaching the line it exists to cover.
+    """
+    assert _issue(loaded_issue, "verify").returncode == 0
+    assert _issue(loaded_issue, "triage").returncode == 0
+    assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+    assert _issue(loaded_issue, "gate").returncode == 0, "precondition: gate green"
+
+    _add_pending_finding(loaded_issue)
+
+    proc = _issue(loaded_issue, "gate")
+    assert proc.returncode != 0, (
+        "stop gate allowed the session to end with an in-scope finding pending"
+    )
+    assert "pending" in (proc.stderr + proc.stdout).lower(), (
+        f"gate refused but did not name the pending findings: {proc.stderr!r}"
+    )
+
+
+def test_triage_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path):
+    """`_count_in_scope_pending` already existed and was used as a close-time
+    gate while the receipt stayed hand-stamped. Same computation, now the
+    writer."""
+    _add_pending_finding(loaded_issue)
 
     proc = _issue(loaded_issue, "triage")
     assert proc.returncode != 0, "triage wrote the receipt with a pending finding"
