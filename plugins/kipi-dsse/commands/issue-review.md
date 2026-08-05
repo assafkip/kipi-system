@@ -80,18 +80,31 @@ Run the required reviews for the active DSSE issue. Execute in order:
    If the adversarial review returned approve with no findings, skip the writer call for this source.
 
 7. If both reviews completed (regardless of verdict, even if findings exist):
-   - For EACH review that returned a verdict, record its completion:
+   - For EACH review that returned a verdict, SAVE THE REVIEWER'S OWN OUTPUT
+     to a file and record the completion against it:
 
    ```bash
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review standard --verdict "<verdict>"
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review adversarial --verdict "<verdict>"
+   mkdir -p .prd-os/reviews
+   # Write the reviewer's raw output verbatim. Do NOT summarise it, and do not
+   # hand-write it from memory -- the file IS the evidence and it is hashed.
+   # A clean pass still writes a file saying it ran and found nothing; an
+   # ABSENT file and a clean review must not look the same.
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review standard \
+     --verdict "<verdict>" --evidence-file .prd-os/reviews/$ISSUE_ID-standard.md
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review adversarial \
+     --verdict "<verdict>" --evidence-file .prd-os/reviews/$ISSUE_ID-adversarial.md
    ```
 
    `record-review` in step 3 / step 5 only CLAIMED the slot; it writes no
    receipt, because at that moment the reviewer had not run. `complete-review`
-   is what writes `reviewed`, and only after a verdict exists to store
-   (Codex, PR #110 round 2: the receipt used to land on the slot claim, so an
-   interrupted review left a valid-looking receipt).
+   hashes the artifact, seals it to the issue, and writes `reviewed` only once
+   EVERY kind has landed. `close` re-checks that seal.
+
+   The boundary, stated plainly: this does not PROVE a reviewer ran -- this
+   command shares a trust boundary with the agent calling it. It makes the
+   receipt a function of a durable artifact instead of a typed string, so an
+   interrupted review, a partial workflow or a summary-from-memory produce NO
+   receipt instead of a green one (Codex, PR #110 rounds 2, 3 and 6).
    - Report: "reviewed receipt recorded at <timestamp>. Findings now belong to `/issue-closeout` triage."
 
 8. If either review failed to complete (Codex error, timeout, parse error):

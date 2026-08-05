@@ -25,9 +25,11 @@ Subcommands:
   allowed-files            Print snapshotted allowed_files as JSON array
   record-review <kind>     CLAIM a review slot (standard|adversarial) under cap.
                            Writes no receipt: the review has not run yet.
-  complete-review <kind> --verdict STR
-                           Record a FINISHED review's verdict and write the
-                           `reviewed` receipt. Refuses if no slot was claimed.
+  complete-review <kind> --verdict STR --evidence-file PATH
+                           Record a FINISHED review: hashes the reviewer's own
+                           output, seals it to the issue, and writes `reviewed`
+                           once EVERY kind has landed. Refuses without a slot,
+                           without an artifact, or on an empty one.
 
 Behavior contract mirrors the pre-plugin runner at
 q-ktlyst/.q-system/scripts/issue-runner.py, with ONE deliberate break (ASK-402):
@@ -596,7 +598,7 @@ def cmd_gate(paths: Paths, args: argparse.Namespace) -> int:
 COMPUTING_VERB = {
     "verified": "verify",
     "findings_triaged": "triage",
-    "reviewed": "complete-review <kind> --verdict <verdict>",
+    "reviewed": "complete-review <kind> --verdict <v> --evidence-file <path>",
 }
 
 
@@ -663,6 +665,40 @@ def _evidence_seal(issue_id: str, evidence: list) -> str:
                        "returncode": e.get("returncode"),
                        "output_sha256": e.get("output_sha256")}
                       for e in evidence]},
+        sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _review_seal(issue_id: str, completions: dict) -> str:
+    """Bind the `reviewed` receipt to the reviewer ARTIFACTS that produced it.
+
+    Same construction as `_evidence_seal`, for the same reason. `verified` was
+    made honest by hashing what the checks actually emitted; `reviewed` kept
+    taking the caller's word (`--verdict "APPROVE"`, checked only for
+    non-emptiness) and Codex minted a receipt from a fabricated string on PR
+    #110 round 6.
+
+    WHAT THIS DOES AND DOES NOT CLAIM -- read before trusting it. It does NOT
+    prove a reviewer ran: `complete-review` shares a trust boundary with the
+    agent that invokes it, so anyone who can write the artifact can write a
+    fake one. Nothing at this layer can close that, and the PRD side does not
+    either (`findings_writer.cmd_record_review` restricts --source to an enum
+    and then stamps `codex_reviewed_at` with nothing verifying a run).
+
+    What it DOES do is make the receipt a function of a durable artifact
+    instead of a typed string, which converts the failure modes that actually
+    occur -- an interrupted review, a partial workflow, a mistaken invocation,
+    an agent summarising from memory -- from "green receipt" into "no receipt".
+    Forgery stops being a typo away and becomes a deliberate act that leaves a
+    file behind. That is the same bar `verified` clears, stated honestly.
+    """
+    payload = json.dumps(
+        {"issue_id": issue_id,
+         "completions": [{"kind": k,
+                          "artifact_sha256": c.get("artifact_sha256"),
+                          "artifact_bytes": c.get("artifact_bytes"),
+                          "verdict": c.get("verdict")}
+                         for k, c in sorted(completions.items())]},
         sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -927,6 +963,26 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
                 "`issue_runner.py verify`.\n")
             return 2
 
+    # Same bar as `verified` above: the receipt must still match the artifacts
+    # that produced it, and every review kind must be present. Without this,
+    # close trusts a field anyone with filesystem access can type.
+    if state["receipts"].get("reviewed"):
+        completions = state.get("review_completions") or {}
+        missing = [k for k in REVIEW_KINDS if k not in completions]
+        if missing:
+            sys.stderr.write(
+                f"cannot close {issue_id}: the reviewed receipt is set but "
+                f"{missing} never completed.\n")
+            return 2
+        if state.get("reviewed_seal") != _review_seal(issue_id, completions):
+            sys.stderr.write(
+                f"cannot close {issue_id}: the reviewed receipt does not match "
+                "its reviewer artifacts.\n"
+                "Either the receipt was written without a review, or the "
+                "recorded evidence was\nedited afterwards. Re-run "
+                "`issue_runner.py complete-review <kind>`.\n")
+            return 2
+
     closed_at = _now_iso()
     receipt = {
         "issue_id": issue_id,
@@ -1164,11 +1220,29 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
     if not (args.verdict or "").strip():
         sys.stderr.write("--verdict must be a non-empty verdict from the reviewer\n")
         return 2
+    # The artifact is the evidence. A verdict typed without one is a claim.
+    artifact = Path(args.evidence_file)
+    if not artifact.is_absolute():
+        artifact = paths.repo_root / artifact
+    if not artifact.is_file():
+        sys.stderr.write(
+            f"--evidence-file does not exist: {artifact}\n"
+            "The reviewer's own output IS the evidence. Write it to a file and "
+            "pass that path;\na clean pass records an explicit "
+            "'ran, found nothing' artifact rather than an absence.\n")
+        return 2
+    blob = artifact.read_bytes()
+    if not blob.strip():
+        sys.stderr.write(f"--evidence-file is empty: {artifact}\n")
+        return 2
     completions = state.setdefault("review_completions", {})
     completions[args.kind] = {
         "verdict": args.verdict,
         "round": claimed,
         "completed_at": _now_iso(),
+        "artifact_path": str(artifact),
+        "artifact_sha256": hashlib.sha256(blob).hexdigest(),
+        "artifact_bytes": len(blob),
     }
     # The receipt attests that THE REVIEW happened, and /issue-review requires
     # two kinds. Writing it after the first completion let `close` report
@@ -1181,6 +1255,7 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
         print(json.dumps({"recorded": args.kind, "verdict": args.verdict,
                           "awaiting": missing, "reviewed": None}))
         return 0
+    state["reviewed_seal"] = _review_seal(state["issue_id"], completions)
     stamp = _write_receipt(paths, state, "reviewed")
     print(json.dumps({"reviewed": state["issue_id"], "kind": args.kind,
                       "verdict": args.verdict, "at": stamp}))
@@ -1264,7 +1339,10 @@ def main(argv: list[str] | None = None) -> int:
     p_complete = sub.add_parser("complete-review")
     p_complete.add_argument("kind")
     p_complete.add_argument("--verdict", required=True,
-                            help="the reviewer's verdict, stored with the receipt")
+                            help="the reviewer's verdict, sealed with the artifact")
+    p_complete.add_argument("--evidence-file", required=True,
+                            help="path to the reviewer's OWN output; hashed and "
+                                 "sealed into the receipt")
     p_complete.set_defaults(func=cmd_complete_review)
 
     p_record = sub.add_parser("record-review")

@@ -230,10 +230,12 @@ def test_gate_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path):
     assert _issue(loaded_issue, "triage").returncode == 0
     assert _issue(loaded_issue, "record-review", "standard").returncode == 0
     assert _issue(loaded_issue, "complete-review", "standard",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard")).returncode == 0
     assert _issue(loaded_issue, "record-review", "adversarial").returncode == 0
     assert _issue(loaded_issue, "complete-review", "adversarial",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "adversarial")).returncode == 0
     assert _issue(loaded_issue, "gate").returncode == 0, "precondition: gate green"
 
     _add_pending_finding(loaded_issue)
@@ -294,7 +296,8 @@ def test_one_completed_kind_does_not_earn_the_reviewed_receipt(loaded_issue: Pat
     """
     assert _issue(loaded_issue, "record-review", "standard").returncode == 0
     proc = _issue(loaded_issue, "complete-review", "standard",
-                  "--verdict", "REQUEST CHANGES")
+                  "--verdict", "REQUEST CHANGES",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
     assert proc.returncode == 0, proc.stderr
     assert not _receipts(loaded_issue).get("reviewed"), (
         "one completed review kind earned the receipt; adversarial never ran"
@@ -307,7 +310,8 @@ def test_completing_every_kind_writes_the_receipt(loaded_issue: Path):
     for kind in ("standard", "adversarial"):
         assert _issue(loaded_issue, "record-review", kind).returncode == 0
         assert _issue(loaded_issue, "complete-review", kind,
-                      "--verdict", "approve").returncode == 0
+                      "--verdict", "approve",
+                      "--evidence-file", _review_artifact(loaded_issue, kind)).returncode == 0
     assert _receipts(loaded_issue)["reviewed"], (
         "every review kind completed and the receipt was still withheld"
     )
@@ -315,14 +319,17 @@ def test_completing_every_kind_writes_the_receipt(loaded_issue: Path):
 
 def test_complete_review_refuses_an_empty_verdict(loaded_issue: Path):
     assert _issue(loaded_issue, "record-review", "standard").returncode == 0
-    proc = _issue(loaded_issue, "complete-review", "standard", "--verdict", "   ")
+    proc = _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "   ",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
     assert proc.returncode != 0, "accepted a blank verdict as a completed review"
 
 
 def test_complete_review_refuses_when_no_slot_was_claimed(loaded_issue: Path):
     """A completion cannot precede the round it belongs to."""
     proc = _issue(loaded_issue, "complete-review", "standard",
-                  "--verdict", "approve")
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
     assert proc.returncode != 0, "completed a review round that was never claimed"
     assert not _receipts(loaded_issue).get("reviewed")
 
@@ -374,9 +381,13 @@ class TestReceiptEvidenceBinding:
     def test_close_refuses_a_hand_written_verified_receipt(self, loaded_issue):
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
-        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
         _issue(loaded_issue, "record-review", "adversarial")
-        _issue(loaded_issue, "complete-review", "adversarial", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "adversarial",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "adversarial"))
         _check_off_deliverables(loaded_issue)
         state_path = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(state_path.read_text())
@@ -394,9 +405,13 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "verify").returncode == 0
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
-        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
         _issue(loaded_issue, "record-review", "adversarial")
-        _issue(loaded_issue, "complete-review", "adversarial", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "adversarial",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "adversarial"))
         _check_off_deliverables(loaded_issue)
         state_path = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(state_path.read_text())
@@ -413,10 +428,12 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "triage").returncode == 0
         assert _issue(loaded_issue, "record-review", "standard").returncode == 0
         assert _issue(loaded_issue, "complete-review", "standard",
-                           "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard")).returncode == 0
         assert _issue(loaded_issue, "record-review", "adversarial").returncode == 0
         assert _issue(loaded_issue, "complete-review", "adversarial",
-                           "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "adversarial")).returncode == 0
         _check_off_deliverables(loaded_issue)
         proc = _issue(loaded_issue, "close")
         assert proc.returncode == 0, (
@@ -431,9 +448,13 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "verify").returncode == 0
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
-        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
         _issue(loaded_issue, "record-review", "adversarial")
-        _issue(loaded_issue, "complete-review", "adversarial", "--verdict", "approve")
+        _issue(loaded_issue, "complete-review", "adversarial",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(loaded_issue, "adversarial"))
         _check_off_deliverables(loaded_issue)
         sp = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(sp.read_text())
@@ -533,6 +554,21 @@ class TestCommandFilesMatchTheCLI:
             sys.path.pop(0)
         assert not missing, f"receipt fields with no computing verb: {missing}"
 
+def _review_artifact(repo, kind: str = "standard") -> str:
+    """A stand-in for the reviewer's own output.
+
+    Fixtures come from producers, and the producer here is "whatever the
+    reviewer printed" -- an opaque blob. What the runner asserts about it is
+    only that it exists, is non-empty, and hashes stably, so a representative
+    blob is the honest fixture rather than a fabricated verdict schema.
+    """
+    d = Path(repo) / ".prd-os/reviews"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{kind}.md"
+    f.write_text(f"# {kind} review\nVERDICT: APPROVE\nno findings\n")
+    return str(f)
+
+
 
 def test_amend_clears_review_completions_not_only_the_receipt(loaded_issue: Path):
     """Codex round 4, with a repro. Clearing `reviewed` while leaving the
@@ -542,7 +578,8 @@ def test_amend_clears_review_completions_not_only_the_receipt(loaded_issue: Path
     for kind in ("standard", "adversarial"):
         assert _issue(loaded_issue, "record-review", kind).returncode == 0
         assert _issue(loaded_issue, "complete-review", kind,
-                      "--verdict", "approve").returncode == 0
+                      "--verdict", "approve",
+                      "--evidence-file", _review_artifact(loaded_issue, kind)).returncode == 0
     assert _receipts(loaded_issue)["reviewed"], "precondition: receipt earned"
 
     spec = loaded_issue / ".prd-os/issues/probe-1.md"
@@ -552,9 +589,110 @@ def test_amend_clears_review_completions_not_only_the_receipt(loaded_issue: Path
     assert not _receipts(loaded_issue).get("reviewed"), "amend left the receipt"
 
     assert _issue(loaded_issue, "record-review", "standard").returncode == 0
-    proc = _issue(loaded_issue, "complete-review", "standard", "--verdict", "ok")
+    proc = _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "ok",
+                  "--evidence-file", _review_artifact(loaded_issue, "standard"))
     assert proc.returncode == 0, proc.stderr
     assert not _receipts(loaded_issue).get("reviewed"), (
         "one review after an amend re-earned the receipt; the adversarial pass "
         "never ran against the amended scope"
     )
+
+
+class TestReviewedIsSealedToTheReviewerArtifact:
+    """`reviewed` was the last receipt taking the caller's word for it.
+
+    Codex round 6, with a repro: `complete-review --verdict APPROVE` minted a
+    valid receipt from a typed string and `close` accepted it. `verified` had
+    already solved this exact problem -- run the work, hash what it emitted,
+    seal it to the issue, re-check the seal at close. This is that, for reviews.
+
+    The boundary is stated in `_review_seal` and is NOT "a reviewer provably
+    ran": this command shares a trust boundary with the agent invoking it.
+    What it buys is that an interrupted review, a partial workflow, or a
+    summary-from-memory yield NO receipt instead of a green one.
+    """
+
+    def test_a_typed_verdict_with_no_artifact_is_refused(self, loaded_issue):
+        """The exact round-6 reproducer."""
+        assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+        proc = _issue(loaded_issue, "complete-review", "standard",
+                      "--verdict", "APPROVE",
+                      "--evidence-file", "does/not/exist.md")
+        assert proc.returncode != 0, "a fabricated verdict minted a receipt"
+        assert not _receipts(loaded_issue).get("reviewed")
+        # A CLEAN refusal, not a crash. Deleting the is_file() guard makes
+        # read_bytes raise, which is also non-zero -- so rc alone cannot tell
+        # "refused" from "blew up", and the mutant survived on exactly that.
+        assert "--evidence-file does not exist" in proc.stderr, proc.stderr
+        assert "Traceback" not in proc.stderr, proc.stderr
+
+    def test_an_empty_artifact_is_refused(self, loaded_issue):
+        """A clean review must write 'ran, found nothing' -- an ABSENCE and a
+        clean pass must not look the same."""
+        blank = Path(loaded_issue) / ".prd-os/reviews/blank.md"
+        blank.parent.mkdir(parents=True, exist_ok=True)
+        blank.write_text("\n   \n")
+        assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+        proc = _issue(loaded_issue, "complete-review", "standard",
+                      "--verdict", "APPROVE", "--evidence-file", str(blank))
+        assert proc.returncode != 0, "an empty artifact counted as a review"
+
+    def _earn(self, repo):
+        for kind in ("standard", "adversarial"):
+            assert _issue(repo, "record-review", kind).returncode == 0
+            assert _issue(repo, "complete-review", kind, "--verdict", "approve",
+                          "--evidence-file", _review_artifact(repo, kind)
+                          ).returncode == 0
+
+    def test_close_refuses_a_reviewed_receipt_whose_evidence_was_edited(self, loaded_issue):
+        """Same bar as the verified seal: the STORE is mutable JSON, and the
+        scope hook only matches Edit|Write|NotebookEdit, so a Bash heredoc
+        writes it unimpeded."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        self._earn(loaded_issue)
+        _check_off_deliverables(loaded_issue)
+
+        sp = Path(loaded_issue) / ".claude/state/active-issue.json"
+        d = json.loads(sp.read_text())
+        d["review_completions"]["standard"]["artifact_sha256"] = "0" * 64
+        sp.write_text(json.dumps(d))
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode != 0, "close accepted a reviewed receipt whose evidence changed"
+
+    def test_close_refuses_when_a_review_kind_never_completed(self, loaded_issue):
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        self._earn(loaded_issue)
+        _check_off_deliverables(loaded_issue)
+
+        sp = Path(loaded_issue) / ".claude/state/active-issue.json"
+        d = json.loads(sp.read_text())
+        del d["review_completions"]["adversarial"]
+        # Re-seal over the REMAINING completion, so the seal check passes and
+        # only the missing-kind check can refuse. Without this the seal caught
+        # it and the missing-kind mutant survived -- the test passed, for the
+        # wrong reason.
+        sys.path.insert(0, str(DSSE))
+        try:
+            import issue_runner
+            d["reviewed_seal"] = issue_runner._review_seal(
+                d["issue_id"], d["review_completions"])
+        finally:
+            sys.path.pop(0)
+        sp.write_text(json.dumps(d))
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode != 0, "close accepted a receipt with a kind missing"
+        assert "adversarial" in proc.stderr, proc.stderr
+
+    def test_an_honestly_earned_reviewed_receipt_still_closes(self, loaded_issue):
+        """The negative half. Without it every assertion above passes by making
+        close refuse unconditionally, which breaks the workflow for everyone."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        self._earn(loaded_issue)
+        _check_off_deliverables(loaded_issue)
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode == 0, (
+            f"honest close refused\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")

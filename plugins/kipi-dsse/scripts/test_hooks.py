@@ -288,10 +288,12 @@ def test_stop_allows_when_all_receipts_present():
         assert _runner(repo, "triage").returncode == 0
         assert _runner(repo, "record-review", "standard").returncode == 0
         assert _runner(repo, "complete-review", "standard",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "standard")).returncode == 0
         assert _runner(repo, "record-review", "adversarial").returncode == 0
         assert _runner(repo, "complete-review", "adversarial",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "adversarial")).returncode == 0
         r = _hook(STOP_GATE, repo, {})
         assert r.returncode == 0, f"all receipts present should allow stop: {r.stderr}"
 
@@ -315,10 +317,12 @@ def test_stop_allows_when_issue_closed():
         assert _runner(repo, "triage").returncode == 0
         assert _runner(repo, "record-review", "standard").returncode == 0
         assert _runner(repo, "complete-review", "standard",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "standard")).returncode == 0
         assert _runner(repo, "record-review", "adversarial").returncode == 0
         assert _runner(repo, "complete-review", "adversarial",
-                       "--verdict", "approve").returncode == 0
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "adversarial")).returncode == 0
         assert _runner(repo, "close").returncode == 0, "close should succeed"
         r = _hook(STOP_GATE, repo, {})
         assert r.returncode == 0, r.stderr
@@ -349,3 +353,18 @@ def test_stop_dormant_when_no_repo_marker():
 if __name__ == "__main__":
     import pytest as _p
     raise SystemExit(_p.main([str(Path(__file__))]))
+
+def _review_artifact(repo, kind: str = "standard") -> str:
+    """A stand-in for the reviewer's own output.
+
+    Fixtures come from producers, and the producer here is "whatever the
+    reviewer printed" -- an opaque blob. What the runner asserts about it is
+    only that it exists, is non-empty, and hashes stably, so a representative
+    blob is the honest fixture rather than a fabricated verdict schema.
+    """
+    d = Path(repo) / ".prd-os/reviews"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{kind}.md"
+    f.write_text(f"# {kind} review\nVERDICT: APPROVE\nno findings\n")
+    return str(f)
+
