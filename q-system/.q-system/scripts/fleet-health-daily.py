@@ -1066,7 +1066,110 @@ def detect_untracked_unwired(_ctx) -> list:
     return out
 
 
+def detect_stale_runtime_plugins(_ctx) -> list:
+    """The RUNNING plugin copy is older than the merged one.
+
+    THE PRODUCTION CALLER for runtime-plugin-freshness.py. Without an entry here
+    the checker was reachable only from its own test, so the capability gate
+    proved it works on fixtures and nothing ever pointed it at real runtime
+    state -- a detector that cannot fire is documentation (codex review of PR
+    #105, blocker). This job is the right surface because the failure is a
+    property of THIS MACHINE at rest, not of any commit: CI has no
+    ~/.claude/plugins to look at, so a CI-only check would be structurally blind.
+
+    REUSES THE CHECKER'S OWN READERS via importlib, the same shape
+    `_paused_labels` uses for the watchdog's ledger. Shelling it and parsing its
+    stderr would be a SECOND definition of "stale" that can drift from the first;
+    importing means the detector and the exit code can never disagree.
+
+    THE BODY DELIBERATELY OMITS THE COMMITS-BEHIND COUNT. `subject` is the dedup
+    key and `finding_hash` covers title + body, so any number that moves on every
+    merge would rewrite the Linear issue daily -- the cry-wolf failure this file
+    already fixed once for the launchd keys. Stale plugin names and dirty file
+    names change only when the CONDITION changes, which is the thing worth
+    re-filing for.
+    """
+    import importlib.util
+
+    checker = HERE / "runtime-plugin-freshness.py"
+    if not checker.is_file():
+        return []
+    spec = importlib.util.spec_from_file_location("rpf", checker)
+    if spec is None or spec.loader is None:
+        return []
+    rpf = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(rpf)
+    except Exception:
+        return []
+
+    root = rpf.DEFAULT_PLUGIN_ROOT
+    registry = root / "installed_plugins.json"
+    marketplace = root / "marketplaces" / "kipi"
+    # Same two quiet paths the checker itself treats as SKIP: a box with no
+    # plugin registry does not run Claude Code plugins, and absence there is not
+    # staleness. Returning [] rather than a finding keeps the two in agreement.
+    if not registry.is_file() or not marketplace.is_dir():
+        return []
+    try:
+        live = rpf.marketplace_versions(marketplace)
+        installed = rpf.installed_versions(registry, "kipi")
+    except ValueError:
+        # Malformed input is the checker's exit 2, not a staleness claim. Filing
+        # a "your plugins are stale" issue off unparseable JSON would be a
+        # fabricated finding.
+        return []
+
+    stale = sorted(
+        f"`{name}` scope={scope} installed **{version}**, marketplace **{live[name]}**"
+        for name, scope, version in installed
+        if live.get(name) and live[name] != version
+    )
+    dirty = sorted(rpf.clone_dirty_tracked(marketplace))
+    if not stale and not dirty:
+        return []
+
+    parts = []
+    if stale:
+        parts.append(
+            "## Installed versions behind the marketplace\n"
+            + "\n".join(f"- {s}" for s in stale)
+        )
+    if dirty:
+        parts.append(
+            "## Hand-edits in the marketplace clone\n"
+            "These exist in the running runtime and nowhere on main. The next "
+            "refresh discards them.\n"
+            + "\n".join(f"- `{f}`" for f in dirty[:10])
+        )
+    parts.append(
+        "## Action\n"
+        "```\nclaude plugin marketplace update kipi\n"
+        "claude plugin update <plugin>@kipi --scope <scope>\n```\n"
+        "The second is not optional: the marketplace update moves the clone, but "
+        "Claude loads the version-keyed cache the registry pins. Recover any "
+        "hand-edit above into a PR before refreshing."
+    )
+    return [{
+        "subject": "runtime-plugin-freshness",
+        "title": "running kipi plugins are older than the merged ones",
+        "body": "\n\n".join(parts),
+    }]
+
+
 DETECTORS = [
+    {
+        "id": "runtime-plugin-stale",
+        "description": "the RUNNING plugin copy is older than the merged one, or hand-edited",
+        "detect": detect_stale_runtime_plugins,
+        "action": "file_issue",
+        "lesson_waived": (
+            "Not a recurring defect class with a lesson to cite -- it is a "
+            "machine-state drift that reappears whenever an install is left "
+            "pinned to an old version. The detector is the durable answer; a "
+            "lesson would only restate it."
+        ),
+    },
     {
         "id": "unwired-untracked",
         "description": "a repo has unwired engines but no audit issue tracking them",

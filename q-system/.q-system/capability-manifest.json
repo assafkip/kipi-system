@@ -263,6 +263,11 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
       "runner": "bash"
     },
