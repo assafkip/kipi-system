@@ -1155,12 +1155,26 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
             f"`record-review {args.kind}` before the reviewer, and "
             f"`complete-review {args.kind}` after it returns.\n")
         return 2
+    if not (args.verdict or "").strip():
+        sys.stderr.write("--verdict must be a non-empty verdict from the reviewer\n")
+        return 2
     completions = state.setdefault("review_completions", {})
     completions[args.kind] = {
         "verdict": args.verdict,
         "round": claimed,
         "completed_at": _now_iso(),
     }
+    # The receipt attests that THE REVIEW happened, and /issue-review requires
+    # two kinds. Writing it after the first completion let `close` report
+    # reviewed work while the adversarial pass had never run -- Codex caught
+    # exactly that, twice (PR #110 rounds 2 and 3). One completion is not the
+    # review; it is half of it.
+    missing = [k for k in REVIEW_KINDS if k not in completions]
+    if missing:
+        _write_state(paths, state)
+        print(json.dumps({"recorded": args.kind, "verdict": args.verdict,
+                          "awaiting": missing, "reviewed": None}))
+        return 0
     stamp = _write_receipt(paths, state, "reviewed")
     print(json.dumps({"reviewed": state["issue_id"], "kind": args.kind,
                       "verdict": args.verdict, "at": stamp}))

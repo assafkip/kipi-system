@@ -347,7 +347,7 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stderr.write(err)
         return rc
-    rc, err = _archive_spillover_gate(cfg)
+    rc, err = _archive_spillover_gate(cfg, state.get("prd_id"))
     if rc != 0:
         sys.stderr.write(err)
         return rc
@@ -365,8 +365,8 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def _archive_spillover_gate(cfg: Config) -> tuple[int, str]:
-    """Refuse archive while any spillover item is open.
+def _archive_spillover_gate(cfg: Config, prd_id: str | None = None) -> tuple[int, str]:
+    """Refuse archive while an item THIS PRD opened is still open.
 
     `no-orphan-findings.md` states the ledger "cannot be forgotten" and names
     `gates run` the enforcement of last resort. It was never wired into the one
@@ -381,6 +381,18 @@ def _archive_spillover_gate(cfg: Config) -> tuple[int, str]:
     case, and a third would be the hand-clear the rule refuses.
     """
     openv = _spillover_open(cfg)
+    # SCOPED TO THIS PRD's OWN ITEMS (Codex, PR #110 round 3, with a repro).
+    # Refusing on the GLOBAL ledger made archive permanently unreachable: 533
+    # items carry the default `minor` severity, `gates run` correctly treats
+    # them as non-blocking, and archive refused on all of them anyway. A
+    # terminal step no run can ever reach is not a gate, it is a wall.
+    #
+    # This is what no-orphan-findings.md actually says -- "report every
+    # spillover item THE WORK TOUCHED" -- not "resolve the fleet's backlog
+    # before any PRD may close". The global backlog is real work; it is not
+    # THIS PRD's exit condition.
+    if prd_id:
+        openv = [r for r in openv if r.get("source") == prd_id]
     if not openv:
         return 0, ""
     detail = "\n".join(
@@ -388,7 +400,8 @@ def _archive_spillover_gate(cfg: Config) -> tuple[int, str]:
         for r in openv
     )
     return 2, (
-        f"refusing to archive: {len(openv)} open spillover item(s)\n{detail}\n"
+        f"refusing to archive: {len(openv)} open spillover item(s) opened by "
+        f"{prd_id or 'this PRD'}\n{detail}\n"
         "Resolve each via `prd_runner.py spillover resolve <id> "
         "--resolution-ref <closed-issue>` or `--void \"<reason>\"`.\n"
     )

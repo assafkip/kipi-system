@@ -403,13 +403,35 @@ def test_archive_still_refuses_on_a_minor_item(repo):
     green day to day. `archive` refuses on ANY open item, because
     no-orphan-findings.md requires every item the work touched to be reported
     at closeout."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
-        "--severity", "minor")
-    assert run(repo, "gates", "run").returncode == 0, "minor should not block the gate"
-    run(repo, "new", "arch", "--title", "T")
+    import json as _json
+    created = run(repo, "new", "arch", "--title", "T")
+    prd_id = _json.loads(created.stdout)["created"]
     run(repo, "advance", "draft")
+    # Sourced from THIS PRD: archive is scoped to the items the work opened.
+    run(repo, "spillover", "add", "--source", prd_id, "--desc", "nit",
+        "--id", "sp-n", "--severity", "minor")
+    assert run(repo, "gates", "run").returncode == 0, "minor should not block the gate"
     assert run(repo, "archive").returncode != 0, (
-        "archive let a minor spillover item through; closeout must report all"
+        "archive let through a minor item THIS PRD opened; closeout must report all"
+    )
+
+
+def test_archive_ignores_a_minor_item_another_prd_opened(repo):
+    """The scope half, added after Codex round 3 produced a repro.
+
+    Refusing on the GLOBAL ledger made archive unreachable: 533 items sit at
+    the default `minor`, so every PRD inherited the fleet's whole backlog as
+    its own exit condition. no-orphan-findings.md says report every item THE
+    WORK TOUCHED, which is what this pins."""
+    import json as _json
+    run(repo, "spillover", "add", "--source", "SOME-OTHER-PRD", "--desc",
+        "unrelated backlog", "--id", "sp-other", "--severity", "minor")
+    created = run(repo, "new", "arch2", "--title", "T")
+    prd_id = _json.loads(created.stdout)["created"]
+    run(repo, "advance", "draft")
+    assert run(repo, "archive").returncode == 0, (
+        "another PRD's open item blocked this archive; the terminal step is "
+        "unreachable whenever the fleet backlog is non-empty"
     )
 
 

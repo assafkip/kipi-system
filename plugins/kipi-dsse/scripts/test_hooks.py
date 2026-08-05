@@ -289,6 +289,9 @@ def test_stop_allows_when_all_receipts_present():
         assert _runner(repo, "record-review", "standard").returncode == 0
         assert _runner(repo, "complete-review", "standard",
                        "--verdict", "approve").returncode == 0
+        assert _runner(repo, "record-review", "adversarial").returncode == 0
+        assert _runner(repo, "complete-review", "adversarial",
+                       "--verdict", "approve").returncode == 0
         r = _hook(STOP_GATE, repo, {})
         assert r.returncode == 0, f"all receipts present should allow stop: {r.stderr}"
 
@@ -312,6 +315,9 @@ def test_stop_allows_when_issue_closed():
         assert _runner(repo, "triage").returncode == 0
         assert _runner(repo, "record-review", "standard").returncode == 0
         assert _runner(repo, "complete-review", "standard",
+                       "--verdict", "approve").returncode == 0
+        assert _runner(repo, "record-review", "adversarial").returncode == 0
+        assert _runner(repo, "complete-review", "adversarial",
                        "--verdict", "approve").returncode == 0
         assert _runner(repo, "close").returncode == 0, "close should succeed"
         r = _hook(STOP_GATE, repo, {})

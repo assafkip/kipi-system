@@ -72,6 +72,8 @@ def _drive_close(repo, issue_id):
     _runner(repo, "record-review", "standard")
     # Claiming the slot no longer writes `reviewed`; completing it does.
     _runner(repo, "complete-review", "standard", "--verdict", "approve")
+    _runner(repo, "record-review", "adversarial")
+    _runner(repo, "complete-review", "adversarial", "--verdict", "approve")
     return _runner(repo, "close")
 
 

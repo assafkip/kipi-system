@@ -136,7 +136,9 @@ def test_archive_refuses_while_a_spillover_item_is_open(virgin: Path):
     in the same moment -- the only thing holding the line was prose in
     commands/prd-archive.md asking the model to check."""
     _init(virgin)
-    assert _run(virgin, "prd_runner.py", "new", "gated", "--title", "T").returncode == 0
+    created = _run(virgin, "prd_runner.py", "new", "gated", "--title", "T")
+    assert created.returncode == 0
+    prd_id = json.loads(created.stdout)["created"]
     assert _run(virgin, "prd_runner.py", "advance", "draft").returncode == 0
     # Blocking severity so the `gates run` precondition below still holds:
     # since 2026-08-05 the standing gate blocks only on blocker/major/high.
@@ -144,7 +146,7 @@ def test_archive_refuses_while_a_spillover_item_is_open(virgin: Path):
     # terminal closeout, and no-orphan-findings.md requires every item the work
     # touched to be reported there. Two different jobs, two different bars.
     added = _run(virgin, "prd_runner.py", "spillover", "add",
-                 "--source", "gated", "--desc", "an open item",
+                 "--source", prd_id, "--desc", "an open item",
                  "--severity", "major")
     assert added.returncode == 0, added.stderr
 

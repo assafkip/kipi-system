@@ -2,6 +2,22 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.22.0] - 2026-08-05
+
+### Fixed - archive was scoped to the whole fleet's backlog, so it was unreachable
+
+Codex, PR #110 round 3, with a reproducer: `gates run` correctly treats `minor`
+as non-blocking, while `archive` refused on ANY open spillover item. 533 items
+sit at the default `minor` severity, so every PRD inherited the fleet's entire
+backlog as its own exit condition and the terminal step could never be reached.
+A gate no run can pass is not a gate, it is a wall.
+
+`_archive_spillover_gate` now refuses only on items whose `source` is the PRD
+being archived. That is what no-orphan-findings.md actually says -- report every
+item THE WORK TOUCHED -- rather than "resolve the fleet's backlog before any PRD
+may close". Pinned both ways: it still refuses on its own minor item, and no
+longer refuses on another PRD's.
+
 ## [0.21.0] - 2026-08-05
 
 ### Fixed - an unrecognized severity read as "minor" and the gate went green

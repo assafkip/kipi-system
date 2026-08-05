@@ -69,6 +69,8 @@ def _drive_close(repo, issue_id):
     _runner(repo, "triage")
     _runner(repo, "record-review", "standard")
     _runner(repo, "complete-review", "standard", "--verdict", "approve")
+    _runner(repo, "record-review", "adversarial")
+    _runner(repo, "complete-review", "adversarial", "--verdict", "approve")
     return _runner(repo, "close")
 
 
