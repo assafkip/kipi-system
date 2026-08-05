@@ -83,6 +83,38 @@ jobs:
         env:
           CI: true
 
+      # ASK-210. linear-worker.sh stops the agent at "open a PR, do not merge --
+      # closeout runs through /issue-verify and /issue-closeout", and nothing
+      # invoked that closeout: on 2026-07-27 seven agent PRs merged with ZERO
+      # entries in .prd-os/receipts.jsonl. This step makes the absence fatal.
+      #
+      # --branch, not --pr: github.head_ref is already the head branch, so the
+      # gate needs neither gh nor a token. Only sana/ask-<n> branches are gated;
+      # human and chore PRs pass with an explicit "not gated" line.
+      #
+      # Both values arrive via env, never interpolated into the script body: a
+      # backtick is a legal git ref character and `git check-ref-format --branch
+      # 'sana/ask-1`id`'` accepts it, so `${{ github.head_ref }}` inline would
+      # execute inside the double quotes. No incremental blast radius today
+      # (this job already runs PR-authored code), so this is hardening, not a
+      # patched hole -- but a ref name is attacker-controlled and belongs in env.
+      #
+      # --head-sha is the PR head, NOT `git rev-parse HEAD`: actions/checkout
+      # checks out the merge commit on a pull_request event, so HEAD is not what
+      # the contributor pushed. Without it the gate only checks that a receipt
+      # exists, and a single closeout would clear every later REWORK push to the
+      # same branch (linear-worker.sh reuses branch + PR across rounds).
+      # fetch-depth: 0 above is what makes the ancestry probe possible.
+      - name: Receipt gate (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 q-system/.q-system/scripts/pr-receipt-gate.py \
+            --branch "$HEAD_REF" --head-sha "$HEAD_SHA"
+        env:
+          CI: true
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
       - name: Check for protected file changes
         if: github.event_name == 'pull_request'
         run: |
