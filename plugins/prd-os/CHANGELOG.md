@@ -2,6 +2,23 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.5] - 2026-08-04
+
+### Documented — a consequence of 0.16.4 that must not be misread
+
+This is deliberate, and it is the price of citation integrity. A blind judge can
+only predict what the packet lets it honestly evidence; a human has tools and
+keeps the full decision space. Concretely, `owned-by-other-prd` is reachable by
+a human and unreachable by the judge.
+
+One consequence to read correctly: `unsupported_disposition_rate` now carries a
+permanent nonzero floor that is a CAPABILITY BOUNDARY, not judge quality. A
+structurally unreachable conversion and an evidentially unsupported one render
+identically in that metric today. Do not chase the floor as a model problem.
+Captured as `sp-4d545276` (split the two in `evaluate`, and keep the structural
+floor out of `_release_gates`), alongside `sp-f1d9c2b1`, which is the same
+reading defect on a different metric.
+
 ## [0.16.4] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 9) — citation provenance, the CLASS
