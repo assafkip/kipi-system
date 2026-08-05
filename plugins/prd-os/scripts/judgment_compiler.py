@@ -977,13 +977,52 @@ def capture_episode(cfg: Config, packet: dict, **kwargs) -> dict:
         existing = read_ledger(path)
         record = build_receipt(packet, existing=existing, **kwargs)
         append_receipt(path, record)
-    # Anchor AFTER the append. If the process dies between the two the anchor
-    # under-counts, and an under-counting anchor is deliberately NOT an error
-    # (see _tip_errors) so a crashed write never manufactures a truncation
-    # alarm. Anchoring first would do the opposite: claim a receipt that was
-    # never written, and fail every later verify.
-        write_tip(tip_path(cfg), existing + [record])
+        # THE POINT OF NO RETURN. Everything above is validated and reversible;
+        # everything below is DERIVED and recomputable. Nothing past this line
+        # may raise, because an append-only ledger cannot participate in a
+        # rollback-based transaction: a caller that rolls back its own write on
+        # a post-append failure reports refusal for a decision that is already
+        # durable, and leaves a phantom receipt (Codex major, PR #103 round 6 —
+        # the THIRD distinct defect in this one transaction).
+        #
+        # Anchor AFTER the append: anchoring first would claim a receipt that
+        # was never written and fail every later verify.
+        _write_anchor_or_warn(cfg, existing + [record])
     return record
+
+
+def _write_anchor_or_warn(cfg: Config, records: list[dict]) -> bool:
+    """Write the tip anchor. RECOVER FORWARD, never roll back.
+
+    The anchor is a pure function of the ledger (count + last hash), so a
+    failed anchor write is not a lost transaction — it is a stale derived
+    artifact. One bounded inline retry, because the anchor exists for deletion
+    detection and a hash chain cannot detect truncation on its own, so every
+    minute it is stale is a minute the tail sits outside that detection.
+
+    Bounded at one retry and NEVER escalates to a refusal: a hanging or failing
+    repair must not wedge a triage whose decision already succeeded. On failure
+    the state is self-describing — `verify` reports "receipt(s) BEYOND the tip
+    anchor" and names `reanchor` as the repair, so the recovery path is owned
+    by tools that already exist rather than by this writer.
+    """
+    for attempt in (1, 2):
+        try:
+            write_tip(tip_path(cfg), records)
+            return True
+        except OSError as exc:
+            last = exc
+    sys.stderr.write(
+        f"WARNING: the decision was captured but the tip anchor could not be "
+        f"written ({last}). The receipt IS durable and the findings file is "
+        f"correct; only the anchor is stale, so the ledger tail is temporarily "
+        f"outside deletion detection. Run `kipi judgment verify` to see the "
+        f"anchor state: `reanchor` repairs an anchor that EXISTS and "
+        f"under-counts, but deliberately refuses a MISSING anchor (with no "
+        f"baseline it cannot tell a crashed write from a truncation), which "
+        f"is the state when this is the first receipt. "
+        f"This is NOT a failed decision and was not rolled back.\n")
+    return False
 
 
 def capture_from_triage(cfg: Config, prd_id: str, finding: dict, *,

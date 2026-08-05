@@ -2,6 +2,44 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.2] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 6) — an append-only ledger cannot roll back
+Third distinct defect in one transaction. The sequence was mutate findings ->
+append receipt -> write anchor, with rollback-of-findings as the failure path.
+Rollback cannot undo an append, so any failure after the append left a phantom
+receipt in the append-only ledger while the command reported refusal for a
+decision that had already taken effect.
+
+The root cause was the rollback model, not the anchor write. `capture_episode`
+now RECOVERS FORWARD past the append: the append is the single irreversible
+step, everything before it is validated and reversible, and everything after
+it is derived and recomputable. The tip anchor is a pure function of the
+ledger (count + last hash), so a failed anchor write is a stale derived
+artifact, not a lost transaction.
+
+`_write_anchor_or_warn` makes one bounded inline repair attempt and never
+escalates to a refusal: exit 0, findings and ledger agree, the receipt is
+durable, and only the anchor is stale.
+
+### Also corrected
+The warning names `verify` for inspection, not `reanchor` unconditionally.
+`reanchor` repairs an anchor that EXISTS and under-counts but deliberately
+refuses a MISSING anchor (with no baseline it cannot tell a crashed write from
+a truncation), which is exactly the state when the failure hits the first
+receipt. The first draft of the warning gave advice that would have been
+refused in that case.
+
+A stale docstring in `capture_episode` claiming an under-counting anchor is
+"deliberately NOT an error" was removed; PR #97 changed that, and `verify` now
+reports receipts beyond the anchor.
+
+### Tests
+`TestNoPhantomReceiptWhenTheAnchorWriteFails` INDUCES the failure (a directory
+occupying the tip path makes the write raise OSError) rather than asserting
+about it. Proven red against a mutant restoring the raise-and-roll-back
+behaviour: 2/2 red, 2/2 green restored.
+
 ## [0.16.1] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 5) — the disposition transaction lost updates

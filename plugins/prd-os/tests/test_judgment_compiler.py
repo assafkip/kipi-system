@@ -2639,3 +2639,71 @@ class TestDispositionTransactionIsOneCriticalSection:
                              "finding-2": "accepted"}, (
                 "a concurrent disposition was silently reverted while both "
                 f"writers reported success (round {round_index}): {final}")
+
+
+class TestNoPhantomReceiptWhenTheAnchorWriteFails:
+    """Codex MAJOR, PR #103 round 6 — the THIRD distinct defect in this one
+    transaction (after the write-to-receipt gap and the lost update).
+
+    Root cause is not the anchor write. An APPEND-ONLY ledger cannot
+    participate in a ROLLBACK-based transaction: the sequence was mutate
+    findings -> append receipt -> write anchor, with rollback-of-findings as
+    the failure path, and rollback cannot undo an append. So every failure
+    after the append left the two artifacts disagreeing and the command
+    reporting refusal for a decision that had already taken effect.
+
+    The fix is to recover FORWARD past the append. The anchor is a pure
+    function of the ledger, so an anchor failure is a stale derived artifact,
+    not a lost transaction. The failure is INDUCED here (a directory occupying
+    the tip path makes the write raise OSError), not asserted about.
+    """
+
+    def _break_the_anchor_path(self, repo):
+        jc = _load_module("jc_anchor", "judgment_compiler.py")
+        tip = jc.tip_path(_cfg_for(repo))
+        tip.parent.mkdir(parents=True, exist_ok=True)
+        tip.mkdir()          # a directory here makes write_tip raise OSError
+        return jc
+
+    def test_a_failed_anchor_write_does_not_refuse_or_orphan_the_decision(
+            self, judgment_repo, run_findings_writer):
+        jc = self._break_the_anchor_path(judgment_repo)
+        proc = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--rationale", "the decision stands")
+        assert proc.returncode == 0, (
+            "a stale ANCHOR is not a failed decision; the receipt is durable "
+            f"and must not be reported as a refusal:\n{proc.stderr}")
+        assert "verify" in proc.stderr and "reanchor" in proc.stderr, (
+            "the warning must name the inspection and repair path: "
+            + proc.stderr)
+        # The findings file kept the decision (no rollback past the append).
+        path, rows = _findings_rows(judgment_repo)
+        target = next(r for r in rows if r["id"] == "finding-1")
+        assert target["disposition"] == "accepted", (
+            f"the decision was rolled back despite being durable: {target}")
+        # And the receipt is present, so the two artifacts AGREE.
+        ledger = read_ledger(judgment_repo)
+        assert len(ledger) == 1, f"expected exactly one receipt, got {ledger}"
+        assert ledger[0]["finding"]["finding_id"] == "finding-1"
+
+    def test_verify_reports_the_stale_anchor_so_it_is_not_silent(
+            self, judgment_repo, run_findings_writer):
+        """Exit 0 plus a stderr warning is only complete if something detects
+        the stale anchor LATER -- a warning in an unattended run is lost."""
+        self._break_the_anchor_path(judgment_repo)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--rationale", "the decision stands").returncode == 0
+        verify = run_judgment(judgment_repo, "verify")
+        assert verify.returncode != 0, "a stale anchor must not verify clean"
+        combined = verify.stdout + verify.stderr
+        # Assert the PROPERTY (the anchor problem is reported and named), not
+        # one message. Which message fires depends on whether an anchor
+        # already existed: a first-receipt failure leaves the anchor MISSING,
+        # a later one leaves it UNDER-COUNTING. Both must be loud; only the
+        # second is repairable by `reanchor`, which refuses a missing anchor
+        # because it cannot tell a crashed write from a truncation.
+        assert "anchor" in combined, combined
+        assert ("MISSING" in combined or "BEYOND the tip anchor" in combined), \
+            combined
