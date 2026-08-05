@@ -12,17 +12,30 @@ Subcommands:
   status                   Print active issue + receipt state
   scope <path>             Exit 0 if path is in allowed_files (or carve-out), exit 2 otherwise
   gate                     Exit 0 if stop is allowed, exit 2 if gate blocks
-  mark <receipt>           Set a receipt timestamp (verified|reviewed|findings_triaged)
+  mark <receipt>           REFUSES (exit 2). A receipt is written only by the code
+                           that computed it; the error names the verb to run.
+  verify                   Run every required_check from the snapshot, store the
+                           evidence, write the `verified` receipt if all pass
+  triage                   Recompute in-scope pending/invalid findings, write the
+                           `findings_triaged` receipt only when both are zero
   approve                  Flip spec status open -> in-progress; reset stale receipts
   amend --reason STR       Re-snapshot spec scope, clear verified+reviewed receipts, log amendment
   close                    Verify all receipts; flip status=closed; flush amendments to spec footer; clear state
   clear                    Clear active state (for abandoned work)
   allowed-files            Print snapshotted allowed_files as JSON array
-  record-review <kind>     Increment review round counter (standard|adversarial) under cap
+  record-review <kind>     Increment review round counter (standard|adversarial)
+                           under cap AND write the `reviewed` receipt for that
+                           round -- one verb, so counter and receipt cannot drift
 
 Behavior contract mirrors the pre-plugin runner at
-q-ktlyst/.q-system/scripts/issue-runner.py. Exit codes, stderr messages, and
-stdout JSON are preserved so existing commands and hooks see the same behavior.
+q-ktlyst/.q-system/scripts/issue-runner.py, with ONE deliberate break (ASK-402):
+`mark` used to stamp any receipt and exit 0, so a receipt could be asserted by
+code that had computed nothing. It now refuses. Every other subcommand keeps its
+exit codes, stderr messages, and stdout JSON.
+
+A caller still on `mark` is BROKEN, not degraded, and that is the point -- the
+refusal names its replacement verb. `test_command_files_do_not_call_refused_verbs`
+in test_computed_receipts.py holds the shipped command markdown to the same line.
 """
 
 from __future__ import annotations

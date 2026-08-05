@@ -2,6 +2,35 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.19.0] - 2026-08-05
+
+### Fixed — two promises with no code behind them, in this plugin's own docs
+
+`README.md` and `skills/prd-os/SKILL.md` both stated that `/prd-os-init`
+"registers hooks in `.claude/settings.json`". `prd_os_init.py` contains no such
+code and never did. Found while reviewing the branch whose entire thesis is that
+a promise recorded in prose is invisible to every gate we own; the PRD listed
+`README.md` in its Files Modified table and never touched it.
+
+Both claims are now deleted rather than implemented: writing to a host repo's
+settings.json has fleet-wide blast radius and belongs in its own issue, not as a
+side effect of making a doc true.
+
+`README.md` also still carried the scaffold-era "No command files yet / No hooks
+wired yet" list, false since roughly 0.5.0.
+
+### Changed
+
+`test_docs_do_not_carry_scaffold_era_text` (was `test_skill_...`) now reads
+`README.md` as well as `SKILL.md`. The detector built to catch prose-without-code
+had been pointed at one of the two files carrying the promise.
+
+## [0.18.0] - 2026-08-05
+
+Shipped with no entry of its own; recorded here after the fact. Carried the
+virgin-repo lifecycle fixes of PR #110 (computed receipts, the kipi-update
+deletion guard, judgment-compiler cross-check on by default).
+
 ## [0.17.0] - 2026-08-05
 
 ### Added — the verification layer that was missing

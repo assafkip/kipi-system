@@ -1,5 +1,5 @@
 ---
-description: Triage Codex findings via per-finding dispositions, mark findings_triaged, close the active issue
+description: Triage Codex findings via per-finding dispositions, record findings_triaged, close the active issue
 ---
 
 **Autonomy contract.** This step is agent-handled, not founder-gated. Once every pending in-scope finding has a non-pending disposition (accepted/rejected/deferred) AND every accepted patch has been applied with required_checks green, close the issue automatically without founder confirmation. The founder is notified post-closeout via the final report (step 6). Founder-gated steps remain: `/issue-approve`, `/prd-approve`, `/prd-split` commit, and any mid-issue scope amendment. Disposition rationale text and patch correctness still need to meet the merge-blocker rules in step 3. Autonomy is about removing the gate prompt, not lowering the bar.
@@ -50,12 +50,22 @@ Close the active DSSE issue. Execute in order:
 
    Must print `0`. If non-zero, the gate will block close. Re-triage the remaining findings.
 
-5. Mark and close:
+5. Record triage, then close. Run these as two separate steps and STOP if the
+   first one exits non-zero -- there is no `set -e` here, so a failed `triage`
+   would otherwise fall through into `close` and produce a confusing second
+   failure at the receipt gate:
 
    ```bash
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" mark findings_triaged
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" triage
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" close
    ```
+
+   `triage` recomputes the pending/invalid counts from the findings ledger and
+   writes the `findings_triaged` receipt only when both are zero. It replaces
+   `mark findings_triaged`, which refuses by design (ASK-402): the count was
+   always computed, while the receipt was hand-stamped, so the two could
+   disagree. If `triage` exits 2 it names what is still pending -- go back to
+   step 3 and disposition those findings.
 
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 

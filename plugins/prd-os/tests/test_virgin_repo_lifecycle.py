@@ -217,19 +217,52 @@ def test_every_prd_command_on_disk_is_documented_in_the_skill():
     assert not missing, f"commands ship but the skill never mentions them: {missing}"
 
 
+# Both files make promises to a reader. Checking only one is how the
+# "registers hooks" claim survived to 0.18.0: the PRD listed README.md in its
+# own Files Modified table, never touched it, and no test read it (ASK-402).
+PROMISE_DOCS = ("skills/prd-os/SKILL.md", "README.md")
+
+
+@pytest.mark.parametrize("doc", PROMISE_DOCS)
 @pytest.mark.parametrize("stale", [
     "Scaffold only",
     "not yet wired",
     "does not exist yet",
     "must-fix",
     ".claude/commands/issue-",
+    "No hooks wired yet",
+    "No runner scripts yet",
+    "No command files yet",
+    # The exact promise phrasings, not the bare words: the corrected docs say
+    # "does NOT register hooks", which must stay legal.
+    "and register hooks",
+    "registers hooks in",
 ])
-def test_skill_does_not_carry_scaffold_era_text(stale: str):
-    """The skill shipped through 0.1.0 -> 0.16.6 still telling every model the
-    plugin was unwired, listing a command that never shipped, and teaching a
-    disposition enum findings_writer.DISPOSITIONS rejects."""
-    body = (SCRIPTS.parent / "skills/prd-os/SKILL.md").read_text()
-    assert stale not in body, f"SKILL.md still carries scaffold-era text: {stale!r}"
+def test_docs_do_not_carry_scaffold_era_text(doc: str, stale: str):
+    """These shipped through 0.1.0 -> 0.17.0 telling every model the plugin was
+    unwired, listing a command that never shipped, teaching a disposition enum
+    findings_writer.DISPOSITIONS rejects, and promising a hook registration
+    `prd_os_init.py` has never contained."""
+    body = (SCRIPTS.parent / doc).read_text()
+    assert stale not in body, f"{doc} still carries scaffold-era text: {stale!r}"
+
+
+def test_promised_bootstrap_behavior_exists_in_the_bootstrap_script():
+    """The docs may only promise what the script can do.
+
+    Kept as an executable pairing rather than a prose rule: `.gitignore` IS
+    implemented, hook registration is NOT, and the two claims sat one clause
+    apart in the same sentence."""
+    src = (SCRIPTS / "prd_os_init.py").read_text()
+    body = "\n".join((SCRIPTS.parent / d).read_text() for d in PROMISE_DOCS)
+    if "settings.json" not in src:
+        assert "settings.json` idempotently" not in body, (
+            "docs promise idempotent settings.json hook registration; "
+            "prd_os_init.py has no settings.json code"
+        )
+    # The half that IS real must stay real.
+    assert "ensure_state_dir_ignored" in src
+    assert ".gitignore" in body
 
 
 def test_skill_disposition_vocabulary_matches_the_writer(virgin: Path):

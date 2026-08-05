@@ -27,7 +27,7 @@ There is no `/prd-revise` command. A PRD returns to `draft` via `prd_runner.py a
 
 Issue side ships in the **`kipi-dsse` plugin**, not this one: `/issue-start <id>`, `/issue-approve`, `/issue-verify`, `/issue-review`, `/issue-closeout`, `/issue-amend`. The two plugins share the `.prd-os/` state directory and the findings ledger.
 
-Bootstrap: `/prd-os-init` (runs once per repo to scaffold `.prd-os/` and register hooks).
+Bootstrap: `/prd-os-init` (runs once per repo to scaffold `.prd-os/`, write `config.json`, and add the runtime state dir to `.gitignore`). It does NOT register hooks -- that claim shipped through 0.17.0 with no code behind it (ASK-402). Hooks come from this plugin's `hooks/hooks.json` when the plugin is enabled.
 
 Ledger CLI (no slash command; run through `kipi judgment <subcommand>`): the Judgment Compiler freezes decision-time workflow context for each triage decision into an append-only hash-chained receipt ledger. See `scripts/judgment_compiler.py` and the operator guide.
 

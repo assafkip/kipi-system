@@ -24,6 +24,7 @@ Fixtures come from producers: the issue spec under test is rendered by
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -390,3 +391,74 @@ class TestReceiptEvidenceBinding:
             "identical evidence seals identically across issues; a seal earned "
             "on one issue would validate another"
         )
+
+
+# ---------------------------------------------------------------------------
+# The shipped command markdown IS the production caller.
+# ---------------------------------------------------------------------------
+
+
+class TestCommandFilesMatchTheCLI:
+    """The suite can be green while the shipped workflow is broken.
+
+    Found in review of PR #110 (ASK-402). Making `mark` refuse was correct, and
+    every test above was migrated to the computing verbs -- so the suite went
+    green. But `commands/*.md` is what an agent actually executes, and all three
+    lifecycle commands still said `mark`. `/issue-verify` and `/issue-closeout`
+    had NO path to their receipt at all: neither called `verify` or `triage`.
+
+    Tests that call the CLI directly can never see this. Nothing read the
+    command files, so the contract change was proven in Python and shipped
+    broken in markdown. This class is the missing reader.
+    """
+
+    COMMANDS = sorted((DSSE.parent / "commands").glob("*.md"))
+    # An INVOCATION, not a mention: prose explaining that `mark verified`
+    # refuses is correct and must stay legal. Only `issue_runner.py mark`
+    # is a call.
+    INVOKES_MARK = re.compile(r'issue_runner\.py"?\s+mark\b')
+
+    def test_the_command_directory_was_actually_found(self):
+        """Guard the guard: a bad glob makes every test below vacuously pass."""
+        assert self.COMMANDS, f"no command files under {DSSE.parent / 'commands'}"
+        names = {p.name for p in self.COMMANDS}
+        assert {"issue-verify.md", "issue-review.md", "issue-closeout.md"} <= names
+
+    @pytest.mark.parametrize("path", COMMANDS, ids=lambda p: p.name)
+    def test_command_files_do_not_call_refused_verbs(self, path):
+        offenders = [
+            f"{path.name}:{n}: {line.strip()}"
+            for n, line in enumerate(path.read_text().splitlines(), 1)
+            if self.INVOKES_MARK.search(line)
+        ]
+        assert not offenders, (
+            "command markdown invokes `mark`, which exits 2 by design:\n  "
+            + "\n  ".join(offenders)
+        )
+
+    @pytest.mark.parametrize("name,verb", [
+        ("issue-verify.md", "verify"),
+        ("issue-closeout.md", "triage"),
+        ("issue-review.md", "record-review"),
+    ])
+    def test_each_command_calls_the_verb_that_writes_its_receipt(self, name, verb):
+        """Removing the broken call is not enough; the receipt must still be
+        reachable. Without this, deleting `mark findings_triaged` would leave
+        `/issue-closeout` unable to ever close an issue."""
+        text = (DSSE.parent / "commands" / name).read_text()
+        assert re.search(rf'issue_runner\.py"?\s+{re.escape(verb)}\b', text), (
+            f"{name} never calls `{verb}`, so its receipt cannot be produced"
+        )
+
+    def test_every_refused_receipt_field_has_a_computing_verb(self):
+        """Derived from the code, not restated: if a field is added to
+        RECEIPT_FIELDS without a computing verb, the refusal message would
+        KeyError instead of teaching."""
+        sys.path.insert(0, str(DSSE))
+        try:
+            import issue_runner
+            missing = [f for f in issue_runner.RECEIPT_FIELDS
+                       if f not in issue_runner.COMPUTING_VERB]
+        finally:
+            sys.path.pop(0)
+        assert not missing, f"receipt fields with no computing verb: {missing}"
