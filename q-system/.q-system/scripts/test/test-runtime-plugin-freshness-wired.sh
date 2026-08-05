@@ -101,12 +101,21 @@ CASES = (
      "\ndef clone_commits_behind(marketplace):\n    return 3\n", False),
     # Unreadable state must not read as healthy state.
     ("broken", "0.16.6", "0.16.6", "", True),
+    # Installed but retired from the marketplace: still loaded at runtime.
+    ("retired", "0.16.6", "0.16.6", "", False),
 )
 for label, inst, mkt, extra, corrupt in CASES:
     with tempfile.TemporaryDirectory() as td:
         build(td, inst, mkt)
         if corrupt:
             (Path(td) / "installed_plugins.json").write_text("{not json at all")
+        if label == "retired":
+            # A plugin the registry still installs but the marketplace no longer
+            # ships. Same producer shape, one extra key.
+            reg = Path(td) / "installed_plugins.json"
+            data = json.loads(reg.read_text())
+            data["plugins"]["ghost-plugin@kipi"] = [{"scope": "user", "version": "0.4.0"}]
+            reg.write_text(json.dumps(data))
         fh = load("fh", os.path.join(S, "fleet-health-daily.py"))
         # THE SEAM IS fh.HERE. The detector resolves the checker as
         # `HERE / "runtime-plugin-freshness.py"` and imports it fresh, so the
@@ -154,6 +163,9 @@ print(json.dumps({
     "broken_subject": sub("broken"),
     "nochecker_count": len(out["nochecker"]),
     "nochecker_subject": sub("nochecker"),
+    "retired_count": len(out["retired"]),
+    "retired_subject": sub("retired"),
+    "retired_names_ghost": bool(out["retired"]) and "ghost-plugin" in out["retired"][0]["body"],
 }))
 PY
 )"
@@ -208,6 +220,105 @@ get() { printf '%s' "$RESULT" | python3 -c "import json,sys;print(json.load(sys.
 [ "$(get nochecker_subject)" = "runtime-plugin-freshness-unreadable" ] \
   && ok "the missing-checker finding uses the cannot-run subject" \
   || bad "nochecker subject was '$(get nochecker_subject)'"
+
+
+# --- a retired plugin is still running code (codex round 4, major) -----------
+[ "$(get retired_count)" = "1" ] \
+  && ok "a plugin installed but absent from the marketplace produces a finding" \
+  || bad "retired plugin produced $(get retired_count) findings (want 1) -- retired code keeps running unreported"
+
+[ "$(get retired_names_ghost)" = "True" ] \
+  && ok "the retired finding names the plugin" \
+  || bad "the retired finding does not name the plugin, so it is not actionable"
+
+# --- the detector REFRESHES the remote ref itself (codex round 4, major) -----
+# clone_commits_behind reads the ALREADY-FETCHED origin/main. If nothing ever
+# fetches, the clone and its cached remote ref sit at the same commit forever and
+# the count is 0: PASS reported indefinitely while merged plugin code never
+# arrives. The checker deliberately stays off the network (it runs in CI and
+# interactively); the DETECTOR runs unattended on a networked box, so the fetch
+# belongs at that call site.
+#
+# This fixture is the only one here with a REAL git clone and a REAL bare remote.
+# The remote is advanced and the clone is deliberately NOT fetched, so the case
+# can only pass if the detector fetched on its own. Local paths only, no network.
+FETCHRES="$(ROOT="$ROOT" python3 - <<'PY2'
+import importlib.util, json, os, subprocess, tempfile
+from pathlib import Path
+
+root = os.environ["ROOT"]
+S = os.path.join(root, "q-system/.q-system/scripts")
+G = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+
+
+def run(*a, cwd=None):
+    return subprocess.run(list(a), cwd=cwd, capture_output=True, text=True)
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+out = {}
+with tempfile.TemporaryDirectory() as td:
+    root_p = Path(td)
+    bare = root_p / "remote.git"
+    run("git", "init", "-q", "--bare", str(bare))
+    run("git", "-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/main")
+
+    seed = root_p / "seed"
+    seed.mkdir()
+    (seed / "plugins").mkdir()
+    (seed / "plugins" / "seed.md").write_text("a\n")
+    run(*G, "init", "-q", cwd=seed)
+    run(*G, "add", "-A", cwd=seed); run(*G, "commit", "-qm", "base", cwd=seed)
+    run(*G, "push", "-q", str(bare), "HEAD:main", cwd=seed)
+
+    mk = root_p / "marketplaces" / "kipi"
+    mk.parent.mkdir(parents=True)
+    run("git", "clone", "-q", str(bare), str(mk))
+    man = mk / "plugins" / "prd-os" / ".claude-plugin"
+    man.mkdir(parents=True)
+    (man / "plugin.json").write_text(json.dumps({"name": "prd-os", "version": "0.16.6"}))
+    (root_p / "installed_plugins.json").write_text(json.dumps(
+        {"plugins": {"prd-os@kipi": [{"scope": "user", "version": "0.16.6"}]}}))
+
+    # Advance the remote with a PLUGIN commit. The clone is NOT fetched here.
+    (seed / "plugins" / "new.md").write_text("b\n")
+    run(*G, "add", "-A", cwd=seed); run(*G, "commit", "-qm", "plugin change", cwd=seed)
+    run(*G, "push", "-q", str(bare), "HEAD:main", cwd=seed)
+
+    # Sanity: with the STALE cached ref the count must be 0, or the case proves nothing.
+    rpf_probe = load("rpf_probe", os.path.join(S, "runtime-plugin-freshness.py"))
+    out["before_fetch_behind"] = rpf_probe.clone_commits_behind(mk)
+
+    fh = load("fh", os.path.join(S, "fleet-health-daily.py"))
+    src = open(os.path.join(S, "runtime-plugin-freshness.py")).read().replace(
+        'DEFAULT_PLUGIN_ROOT = Path.home() / ".claude" / "plugins"',
+        f'DEFAULT_PLUGIN_ROOT = Path({td!r})')
+    shim = root_p / "shim"; shim.mkdir()
+    (shim / "runtime-plugin-freshness.py").write_text(src)
+    fh.HERE = shim
+    out["findings"] = len(fh.detect_stale_runtime_plugins(None))
+
+print(json.dumps({"before": out["before_fetch_behind"], "findings": out["findings"]}))
+PY2
+)"
+echo "    fetch-case result: $FETCHRES"
+fget() { printf '%s' "$FETCHRES" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
+
+# Precondition. If the cached ref already showed drift, the next assertion would
+# pass without the detector ever fetching, and the case would prove nothing.
+[ "$(fget before)" = "0" ] \
+  && ok "precondition: the un-fetched clone reports 0 behind" \
+  || bad "precondition failed: un-fetched clone reported $(fget before) behind, so the fetch assertion below would be vacuous"
+
+[ "$(fget findings)" = "1" ] \
+  && ok "the detector fetches the remote itself and then sees the merged plugin commit" \
+  || bad "detector produced $(fget findings) findings (want 1) -- without its own fetch it reports PASS forever"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

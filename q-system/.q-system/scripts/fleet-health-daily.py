@@ -1149,6 +1149,19 @@ def detect_stale_runtime_plugins(_ctx) -> list:
         for name, scope, version in installed
         if live.get(name) and live[name] != version
     )
+    # RETIRED PLUGINS ARE STILL RUNNING CODE (codex review round 4, major). A
+    # plugin installed from a marketplace that no longer ships it was skipped by
+    # the comprehension above -- `live.get(name)` is None, so the row fell
+    # through and produced nothing. The checker at least prints a `note` line;
+    # this detector emitted silence, which on the ONE unattended surface means
+    # nobody ever learns that a retired plugin is still loaded. That is the same
+    # class as the version drift this whole thing exists to catch: the runtime is
+    # running code that the merged marketplace does not have.
+    retired = sorted(
+        f"`{name}` scope={scope} installed **{version}**, no longer in the marketplace"
+        for name, scope, version in installed
+        if live.get(name) is None
+    )
     dirty = sorted(rpf.clone_dirty_tracked(marketplace))
     # CLONE-BEHIND IS A REAL CONDITION AND WAS BEING DROPPED (codex review round
     # 2, major). The checker exits 1 on stale OR dirty OR behind; this detector
@@ -1160,9 +1173,32 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     # covers the body, and a number that moves on every merge rewrites the Linear
     # issue daily. That argument was right about the NUMBER and wrong to throw out
     # the SIGNAL. The fact is recorded; the count is not.
+    # REFRESH THE REMOTE REF FIRST, HERE AND NOT IN THE CHECKER (codex review
+    # round 4, major). clone_commits_behind reads the ALREADY-FETCHED
+    # origin/main, so if nothing ever fetches, both the clone and its cached
+    # remote ref sit at the same old commit and the count is 0 forever: PASS
+    # reported indefinitely while merged plugin code never arrives. The
+    # docstring calls the number a FLOOR, which is honest, but a floor that is
+    # always zero is not a detector.
+    #
+    # The checker's no-network rule stays intact and is still right for it: it
+    # runs interactively and in CI, where a gate that reaches the network fails
+    # on a plane and then gets switched off. THIS caller is different -- an
+    # unattended daily job on a networked box -- so the fetch belongs at this
+    # call site, not inside the shared function.
+    #
+    # Best-effort by construction: a failure or timeout leaves the cached ref in
+    # place and the FLOOR semantics apply exactly as before, so being offline
+    # degrades this to the old behaviour instead of breaking the run.
+    if (marketplace / ".git").exists():
+        try:
+            subprocess.run(["git", "-C", str(marketplace), "fetch", "--quiet", "origin", "main"],
+                           capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
     behind = rpf.clone_commits_behind(marketplace)
     is_behind = bool(behind)
-    if not stale and not dirty and not is_behind:
+    if not stale and not retired and not dirty and not is_behind:
         return []
 
     parts = []
@@ -1170,6 +1206,14 @@ def detect_stale_runtime_plugins(_ctx) -> list:
         parts.append(
             "## Installed versions behind the marketplace\n"
             + "\n".join(f"- {s}" for s in stale)
+        )
+    if retired:
+        parts.append(
+            "## Installed but no longer in the marketplace\n"
+            "These are still LOADED at runtime while the merged marketplace no "
+            "longer ships them. Either the plugin was retired and the install "
+            "should be removed, or it was renamed and the install should follow.\n"
+            + "\n".join(f"- {r}" for r in retired)
         )
     if dirty:
         parts.append(
