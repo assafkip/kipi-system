@@ -69,7 +69,8 @@ SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
 # lives exactly 3 levels below the root" and nothing ever asserted it. A copy
 # dropped 2 levels deep (.pr28rev/scripts/) overshoots by one and lands OUTSIDE
-# the repo: on 2026-08-04 one resolved to /Users/assafkipnis/projects, which is
+# the repo: on 2026-08-04 one resolved to the checkout's PARENT directory (the
+# one holding every project), which is
 # not a git repo, so `gh pr diff` returned nothing and the model formed a
 # verdict from the prompt alone -- then that empty review was posted as a
 # passing commit status. Measured 2026-08-05: 79 of 102 copies on this box

@@ -2,7 +2,7 @@
 # Pairs with the review-root guard in q-system/.q-system/scripts/pr-review-agent.sh.
 #
 # Scar (2026-08-04): a copy of the review agent at .pr28rev/scripts/ resolved its
-# review root to /Users/assafkipnis/projects -- not a git repo -- so there was no
+# review root to the checkout's PARENT directory -- not a git repo -- so there was no
 # diff, the model formed a verdict from the prompt alone, and that empty review
 # was posted as a passing status. `../../..` assumed a depth nothing asserted.
 #
