@@ -1,5 +1,14 @@
 # Handoff: Judgment Compiler (ASK-363) — updated 2026-08-05
 
+> **Recovered work-product — a point-in-time snapshot, not current documentation.**
+> This file existed only in a dirty checkout and was recovered on 2026-08-05
+> (PR #106, ASK-363). Every claim about system state was true at this document's
+> own date and may not be true now. In particular, "wired" here means *merged in
+> this repository*; whether the RUNNING copy loads it is a separate question that
+> `q-system/.q-system/scripts/runtime-plugin-freshness.py` answers, because the
+> two came apart for a full day during this very build. Read it as a record of
+> what was decided and why, and verify current state against the code.
+
 Supersedes the 2026-08-04 14:51 version, which described a state that no longer
 exists. If you are reading that version anywhere, discard it: it says zero
 receipts exist and that PR #101 is the open question. Both are wrong.

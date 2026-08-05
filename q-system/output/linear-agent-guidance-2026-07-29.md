@@ -1,5 +1,14 @@
 # Linear Agent Guidance — paste into Settings → Agents → Additional guidance
 
+> **Recovered work-product — a point-in-time snapshot, not current documentation.**
+> This file existed only in a dirty checkout and was recovered on 2026-08-05
+> (PR #106, ASK-363). Every claim about system state was true at this document's
+> own date and may not be true now. In particular, "wired" here means *merged in
+> this repository*; whether the RUNNING copy loads it is a separate question that
+> `q-system/.q-system/scripts/runtime-plugin-freshness.py` answers, because the
+> two came apart for a full day during this very build. Read it as a record of
+> what was decided and why, and verify current state against the code.
+
 Everything below the line is the text to paste. It is the reviewer bar from
 `pr-review-agent.sh` (the persona, the severity anchors, and the reproducer rule),
 rewritten for Linear's native agent-guidance surface so every Codex run inherits

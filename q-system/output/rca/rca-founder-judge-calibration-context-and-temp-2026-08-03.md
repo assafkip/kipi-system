@@ -1,5 +1,14 @@
 # RCA: Founder-judge benchmark passed locally but did not survive read-only review
 
+> **Recovered work-product — a point-in-time snapshot, not current documentation.**
+> This file existed only in a dirty checkout and was recovered on 2026-08-05
+> (PR #106, ASK-363). Every claim about system state was true at this document's
+> own date and may not be true now. In particular, "wired" here means *merged in
+> this repository*; whether the RUNNING copy loads it is a separate question that
+> `q-system/.q-system/scripts/runtime-plugin-freshness.py` answers, because the
+> two came apart for a full day during this very build. Read it as a record of
+> what was decided and why, and verify current state against the code.
+
 **Date:** 2026-08-03
 **Trigger:** Read-only Codex methodology review of the completed 50-case run
 **Surface-fix commit:** pending
