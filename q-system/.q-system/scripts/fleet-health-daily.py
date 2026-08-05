@@ -1091,17 +1091,38 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     """
     import importlib.util
 
+    # A DETECTOR THAT CANNOT RUN SAYS SO. Every `return []` below used to cover
+    # the checker being missing or unimportable, which is the silent-disable
+    # shape: the job stays green because the thing that would have failed it
+    # never loaded, and quiet is indistinguishable from healthy (codex review of
+    # PR #105 round 2, major, raised against the ValueError twin of this path).
+    # A distinct subject keeps it from colliding with a real staleness finding.
+    def _broken(reason: str) -> list:
+        return [{
+            "subject": "runtime-plugin-freshness-unreadable",
+            "title": "the runtime plugin freshness detector could not run",
+            "body": (
+                f"`detect_stale_runtime_plugins` could not evaluate runtime state: {reason}\n\n"
+                "While this is true the fleet has NO check that the running plugins "
+                "are the merged ones -- the failure mode that made the Judgment "
+                "Compiler unreachable for a day. Absence of a finding here is not "
+                "evidence the runtime is fresh.\n\n"
+                "## Action\nRun `python3 q-system/.q-system/scripts/runtime-plugin-freshness.py` "
+                "by hand and fix what it reports, then confirm this issue stops re-filing."
+            ),
+        }]
+
     checker = HERE / "runtime-plugin-freshness.py"
     if not checker.is_file():
-        return []
+        return _broken(f"the checker is missing at {checker}")
     spec = importlib.util.spec_from_file_location("rpf", checker)
     if spec is None or spec.loader is None:
-        return []
+        return _broken(f"python could not build an import spec for {checker}")
     rpf = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(rpf)
-    except Exception:
-        return []
+    except Exception as exc:
+        return _broken(f"importing the checker raised {type(exc).__name__}")
 
     root = rpf.DEFAULT_PLUGIN_ROOT
     registry = root / "installed_plugins.json"
@@ -1114,11 +1135,14 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     try:
         live = rpf.marketplace_versions(marketplace)
         installed = rpf.installed_versions(registry, "kipi")
-    except ValueError:
-        # Malformed input is the checker's exit 2, not a staleness claim. Filing
-        # a "your plugins are stale" issue off unparseable JSON would be a
-        # fabricated finding.
-        return []
+    except ValueError as exc:
+        # Malformed input is the checker's exit 2, and it is NOT a staleness
+        # claim -- filing "your plugins are stale" off unparseable JSON would be
+        # a fabricated finding. But returning [] made unreadable state look
+        # exactly like healthy state, which disables the detector silently
+        # (codex review round 2, major). Report the inability, not a staleness
+        # verdict: separate subject, separate title, no invented severity.
+        return _broken(f"the plugin registry or a manifest is unreadable ({exc})")
 
     stale = sorted(
         f"`{name}` scope={scope} installed **{version}**, marketplace **{live[name]}**"
@@ -1126,7 +1150,19 @@ def detect_stale_runtime_plugins(_ctx) -> list:
         if live.get(name) and live[name] != version
     )
     dirty = sorted(rpf.clone_dirty_tracked(marketplace))
-    if not stale and not dirty:
+    # CLONE-BEHIND IS A REAL CONDITION AND WAS BEING DROPPED (codex review round
+    # 2, major). The checker exits 1 on stale OR dirty OR behind; this detector
+    # honoured only the first two, so a plugin commit that changes runtime code
+    # WITHOUT bumping a manifest version never fired -- and that is the common
+    # shape, since not every merge bumps a version.
+    #
+    # The reason it was dropped was body churn: `behind` is a COUNT, finding_hash
+    # covers the body, and a number that moves on every merge rewrites the Linear
+    # issue daily. That argument was right about the NUMBER and wrong to throw out
+    # the SIGNAL. The fact is recorded; the count is not.
+    behind = rpf.clone_commits_behind(marketplace)
+    is_behind = bool(behind)
+    if not stale and not dirty and not is_behind:
         return []
 
     parts = []
@@ -1141,6 +1177,15 @@ def detect_stale_runtime_plugins(_ctx) -> list:
             "These exist in the running runtime and nowhere on main. The next "
             "refresh discards them.\n"
             + "\n".join(f"- `{f}`" for f in dirty[:10])
+        )
+    if is_behind:
+        parts.append(
+            "## The marketplace clone is behind `origin/main`\n"
+            "Merged plugin commits are not in the running clone. This fires even "
+            "when every installed VERSION matches, because a plugin commit can "
+            "change runtime code without bumping a manifest version.\n\n"
+            "The commit count is deliberately not printed: it would move on every "
+            "merge and rewrite this issue daily. Run the checker for the number."
         )
     parts.append(
         "## Action\n"

@@ -90,9 +90,23 @@ def build(plugin_root, installed_version, marketplace_version):
 
 
 out = {}
-for label, inst, mkt in (("stale", "0.1.0", "0.16.6"), ("fresh", "0.16.6", "0.16.6")):
+# label, installed, marketplace, extra source appended to the shim, corrupt-registry
+CASES = (
+    ("stale",  "0.1.0",  "0.16.6", "", False),
+    ("fresh",  "0.16.6", "0.16.6", "", False),
+    # A plugin commit that changes runtime code WITHOUT bumping a version: every
+    # installed version matches, and the clone is still behind origin/main. The
+    # detector dropped this signal entirely until codex round 2 caught it.
+    ("behind", "0.16.6", "0.16.6",
+     "\ndef clone_commits_behind(marketplace):\n    return 3\n", False),
+    # Unreadable state must not read as healthy state.
+    ("broken", "0.16.6", "0.16.6", "", True),
+)
+for label, inst, mkt, extra, corrupt in CASES:
     with tempfile.TemporaryDirectory() as td:
         build(td, inst, mkt)
+        if corrupt:
+            (Path(td) / "installed_plugins.json").write_text("{not json at all")
         fh = load("fh", os.path.join(S, "fleet-health-daily.py"))
         # THE SEAM IS fh.HERE. The detector resolves the checker as
         # `HERE / "runtime-plugin-freshness.py"` and imports it fresh, so the
@@ -105,17 +119,41 @@ for label, inst, mkt in (("stale", "0.1.0", "0.16.6"), ("fresh", "0.16.6", "0.16
             'DEFAULT_PLUGIN_ROOT = Path.home() / ".claude" / "plugins"',
             f'DEFAULT_PLUGIN_ROOT = Path({td!r})')
         assert f'Path({td!r})' in src, "the DEFAULT_PLUGIN_ROOT patch did not apply"
+        if extra:
+            before = src
+            src = src + extra
+            assert src != before, "the shim override did not apply"
         shim = Path(td) / "shim"
         shim.mkdir()
         (shim / "runtime-plugin-freshness.py").write_text(src)
         fh.HERE = shim
         out[label] = fh.detect_stale_runtime_plugins(None)
 
+# The missing-checker case needs no plugin root at all: point HERE at an empty dir.
+with tempfile.TemporaryDirectory() as td:
+    fh = load("fh", os.path.join(S, "fleet-health-daily.py"))
+    empty = Path(td) / "empty"
+    empty.mkdir()
+    fh.HERE = empty
+    out["nochecker"] = fh.detect_stale_runtime_plugins(None)
+
+
+def sub(label):
+    return out[label][0]["subject"] if out[label] else ""
+
+
 print(json.dumps({
     "stale_count": len(out["stale"]),
-    "stale_subject": out["stale"][0]["subject"] if out["stale"] else "",
+    "stale_subject": sub("stale"),
     "stale_body_has_versions": bool(out["stale"]) and "0.16.6" in out["stale"][0]["body"] and "0.1.0" in out["stale"][0]["body"],
     "fresh_count": len(out["fresh"]),
+    "behind_count": len(out["behind"]),
+    "behind_subject": sub("behind"),
+    "behind_body_has_count": bool(out["behind"]) and "3" in out["behind"][0]["body"],
+    "broken_count": len(out["broken"]),
+    "broken_subject": sub("broken"),
+    "nochecker_count": len(out["nochecker"]),
+    "nochecker_subject": sub("nochecker"),
 }))
 PY
 )"
@@ -138,6 +176,38 @@ get() { printf '%s' "$RESULT" | python3 -c "import json,sys;print(json.load(sys.
 [ "$(get fresh_count)" = "0" ] \
   && ok "a matching runtime produces NO finding" \
   || bad "a matching runtime still produced $(get fresh_count) findings -- the detector always fires, which is the same as never"
+
+# --- clone-behind drift, versions all matching (codex round 2, major) --------
+[ "$(get behind_count)" = "1" ] \
+  && ok "a clone behind origin/main fires even when every version matches" \
+  || bad "clone-behind produced $(get behind_count) findings (want 1) -- a plugin commit that does not bump a version is invisible"
+
+[ "$(get behind_subject)" = "runtime-plugin-freshness" ] \
+  && ok "the behind finding shares the staleness subject (one issue, not two)" \
+  || bad "behind subject was '$(get behind_subject)'"
+
+# The COUNT must stay out of the body: finding_hash covers the body, so a number
+# that moves on every merge rewrites the Linear issue daily.
+[ "$(get behind_body_has_count)" = "False" ] \
+  && ok "the behind body records the fact, not the churning commit count" \
+  || bad "the behind body contains the commit count -- that rewrites the issue on every merge"
+
+# --- unreadable state must not read as healthy state (codex round 2, major) --
+[ "$(get broken_count)" = "1" ] \
+  && ok "an unreadable plugin registry produces a finding, not silence" \
+  || bad "malformed registry produced $(get broken_count) findings (want 1) -- silence is indistinguishable from healthy"
+
+[ "$(get broken_subject)" = "runtime-plugin-freshness-unreadable" ] \
+  && ok "the cannot-run finding has its own subject, so it cannot pose as a staleness verdict" \
+  || bad "broken subject was '$(get broken_subject)'"
+
+[ "$(get nochecker_count)" = "1" ] \
+  && ok "a missing checker produces a finding, not silence" \
+  || bad "a missing checker produced $(get nochecker_count) findings (want 1) -- the detector would disable itself quietly"
+
+[ "$(get nochecker_subject)" = "runtime-plugin-freshness-unreadable" ] \
+  && ok "the missing-checker finding uses the cannot-run subject" \
+  || bad "nochecker subject was '$(get nochecker_subject)'"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
