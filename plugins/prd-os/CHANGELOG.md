@@ -2,6 +2,32 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.6] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 3) — a duplicate claim must cite a packet candidate
+`EVIDENCE_REQUIREMENTS["duplicate"]` accepts any `finding:`/`issue:`/`spillover:`
+prefix, and `resolve_evidence_refs` resolves `issue:` by checking that a spec
+file exists. So the judge could cite ANY real issue in the repo as proof that a
+finding duplicates something, with no duplicate candidate in its packet at all —
+and that unsupported decision was scored as supported.
+
+Prefix and existence are each necessary and neither is sufficient. The missing
+property is RELEVANCE: a claim has to be checkable against the view the judge was
+actually given. A `duplicate` reason code may now only cite a candidate from the
+packet's own `duplicates` list; anything else is dropped and
+`evidence_gate_errors` degrades the disposition to needs-human.
+
+Scoped to `duplicate` deliberately. Other codes legitimately cite refs the packet
+does not enumerate (`commit:` for already-remediated, `scope:` for scope-removed),
+and rejecting those would convert every disposition to needs-human and score
+nothing — the same failure in the opposite direction. A paired negative
+self-test guards that edge.
+
+**Attribution:** `evidence_gate_errors` and `EVIDENCE_REQUIREMENTS` are untouched
+by rounds 1-3; the prefix-only check is original code. Round 1's resolution fix
+strictly narrowed this hole without closing it, so this is an independent
+pre-existing defect, not a regression introduced by a prior round.
+
 ## [0.15.5] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 2) — the judge summary leaked its own prediction

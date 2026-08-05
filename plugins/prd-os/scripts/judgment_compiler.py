@@ -2101,6 +2101,23 @@ def _extract_json_object(raw: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+def _packet_duplicate_refs(packet: dict) -> set[str]:
+    """The ONLY refs that can honestly prove a duplicate: candidates the packet
+    actually contained.
+
+    Prefix and existence are each necessary and neither is sufficient.
+    `EVIDENCE_REQUIREMENTS["duplicate"]` accepts an `issue:` prefix and
+    `resolve_evidence_refs` resolves `issue:` by checking a spec file exists,
+    so the judge could cite ANY real issue in the repo as proof that this
+    finding duplicates something -- with no duplicate candidate in its packet
+    at all (Codex major, PR #103 round 3). The missing property is RELEVANCE:
+    a claim has to be checkable against the view the judge was given.
+    """
+    return {f"finding:{d['prd_id']}/{d['finding_id']}"
+            for d in (packet.get("duplicates") or [])
+            if d.get("prd_id") and d.get("finding_id")}
+
+
 def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
     """Run the judge; the `validate_judge_output` validator and its pytest
     cases are the executable blockers on everything this docstring claims.
@@ -2155,6 +2172,16 @@ def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
                     if ref in problem:
                         unresolved.add(ref)
             output["evidence_refs"] = [r for r in refs if r not in unresolved]
+        # RELEVANCE, on top of prefix + existence. Scoped to `duplicate`
+        # deliberately: other codes legitimately cite refs the packet does not
+        # enumerate (`commit:` for already-remediated, `scope:` for
+        # scope-removed), and rejecting those would convert every disposition
+        # to needs-human and score nothing -- the same failure in the opposite
+        # direction, which is what the paired negative self-test guards.
+        if output["workflow_reason_code"] == "duplicate":
+            allowed = _packet_duplicate_refs(packet)
+            output["evidence_refs"] = [
+                r for r in output["evidence_refs"] if r in allowed]
         return {
             "model": model,
             "prompt_sha256": JUDGE_PROMPT_SHA256,

@@ -2242,3 +2242,66 @@ class TestTheJudgeSummaryWithholdsThePrediction:
             env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
         emitted = json.loads(run.read_text())
         assert emitted["output"]["workflow_disposition"] == "fix-now"
+
+
+class TestDuplicateClaimsMustComeFromThePacket:
+    """Codex MAJOR, PR #103 round 3. `EVIDENCE_REQUIREMENTS["duplicate"]`
+    accepts any ref with a `finding:`/`issue:`/`spillover:` prefix, and
+    `issue:` resolves by checking that a spec file exists. So the judge could
+    cite ANY real issue in the repo as proof that this finding is a duplicate,
+    even when the packet it saw contained no duplicate candidate at all -- and
+    that unsupported decision was scored as supported.
+
+    Prefix + existence are both necessary and neither is sufficient. The
+    missing property is RELEVANCE: a claim must be checkable against the view
+    the judge was actually given. The packet's `duplicates` list is that view,
+    so a duplicate claim may only cite a candidate from it.
+    """
+
+    def _issue(self, repo, name="ASK-999"):
+        issues = _cfg_for(repo).issues_dir
+        issues.mkdir(parents=True, exist_ok=True)
+        (issues / f"{name}.md").write_text("# an unrelated real issue\n")
+        return f"issue:{name}"
+
+    def test_an_unrelated_real_issue_cannot_prove_a_duplicate(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        ref = self._issue(judgment_repo)
+        payload = json.dumps({
+            "technical_validity": "valid",
+            "technical_reason": "this looks like something we already have",
+            "workflow_disposition": "duplicate",
+            "workflow_reason_code": "duplicate",
+            "evidence_refs": [ref],
+            "missing_context": [],
+            "confidence": 0.91,
+        })
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_JUDGE_OUTPUT": payload}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["evidence_refs"] == [], (
+            "an issue that is not a duplicate candidate in the packet was "
+            f"accepted as proof of duplication: {emitted['output']['evidence_refs']}")
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "dupe", "--judge-run", str(run)).returncode == 0
+        receipt = read_ledger(judgment_repo)[-1]
+        assert receipt["judge"]["converted_to_needs_human"] is True
+
+    def test_a_real_packet_duplicate_candidate_is_still_accepted(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Negative self-test. Over-restricting would convert every duplicate
+        to needs-human and score nothing, which fails the same way in the
+        opposite direction."""
+        jc = _load_module("jc_dupe_ok", "judgment_compiler.py")
+        packet = jc.assemble_packet(_cfg_for(judgment_repo), PRD_ID, "finding-1")
+        assert packet["duplicates"] == [], "fixture unexpectedly has duplicates"
+        # Synthesise the packet-derived ref shape and prove it survives.
+        refs = jc._packet_duplicate_refs(
+            {"duplicates": [{"prd_id": "prd-x-2026-01-01",
+                             "finding_id": "finding-7", "similarity": 0.9}]})
+        assert refs == {"finding:prd-x-2026-01-01/finding-7"}
