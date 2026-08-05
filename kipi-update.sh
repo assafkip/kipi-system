@@ -1376,6 +1376,24 @@ PY
         # patterns also matched inside the nested q-system/q-system/ shadow copy
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete
         # the shadow tree -- "not empty, cannot delete" on every update.
+        # FAIL-CLOSED BACKSTOP (sp-737ce1ae, sp-10cf4f76). The excludes above
+        # are ANCHORED to the transfer root, so they only protect the instance
+        # when the destination IS its q-system dir. Reproduced 2026-08-05: with
+        # a null `subtree_prefix` the destination is the instance ROOT, and an
+        # instance still keeping its data under q-system/ has that data one
+        # level below where the excludes point -- the dry run itemizes
+        # `*deleting q-system/my-project/...` and nothing stops it.
+        #
+        # Re-anchoring the excludes fixes that variant; this catches the CLASS.
+        # Any future layout, prefix, or registry drift that moves the
+        # destination re-opens the same hole, and the failure mode is deleted
+        # founder data with no error. So: ask rsync what it plans to delete,
+        # and refuse if any of it is instance-owned at any depth.
+        if ! rsync -ain --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
+            $(rsync_owned_excludes) 2>/dev/null \
+            | python3 "$SCRIPT_DIR/kipi-update-deletion-guard.py"; then
+          abandon_instance "  ERROR: q-system sync would delete instance-owned data; refusing" && continue
+        fi
         if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
             $(rsync_owned_excludes) 2>/dev/null; then
           abandon_instance "  ERROR: q-system sync failed" && continue
