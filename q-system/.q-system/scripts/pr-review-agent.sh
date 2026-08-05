@@ -65,6 +65,47 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
+# lives exactly 3 levels below the root" and nothing ever asserted it. A copy
+# dropped 2 levels deep (.pr28rev/scripts/) overshoots by one and lands OUTSIDE
+# the repo: on 2026-08-04 one resolved to /Users/assafkipnis/projects, which is
+# not a git repo, so `gh pr diff` returned nothing and the model formed a
+# verdict from the prompt alone -- then that empty review was posted as a
+# passing commit status. Measured 2026-08-05: 79 of 102 copies on this box
+# resolve SKEL to a non-repo.
+#
+# Every downstream check that could have caught it degrades to "warn and
+# proceed" (a reviewer that cannot fetch should not wedge the loop), and codex's
+# own repo check is disabled by --skip-git-repo-check. So the assertion has to
+# be here, at the point of resolution, and it has to REFUSE. Reviewing nothing
+# and reporting APPROVE is worse than not running: it manufactures evidence.
+#
+# Compares against the toplevel rather than just `rev-parse` succeeding, because
+# a path merely INSIDE a repo would otherwise pass while reviewing a subtree.
+#
+# Both sides are resolved to PHYSICAL paths before comparing. `pwd` keeps
+# symlinks while git reports the real path, so on macOS a repo under /var
+# resolves to /var/... on one side and /private/var/... on the other and a naive
+# string compare refuses a perfectly good canonical checkout. A guard that false
+# -refuses gets switched off, and a gate that is off protects nothing. Caught by
+# this guard's own test on first run (2026-08-05).
+_SKEL_TOPLEVEL="$(git -C "$SKEL" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_SKEL_TOPLEVEL" ]; then
+  _SKEL_TOPLEVEL="$(cd "$_SKEL_TOPLEVEL" 2>/dev/null && pwd -P || echo "$_SKEL_TOPLEVEL")"
+fi
+_SKEL_PHYS="$(cd "$SKEL" && pwd -P)"
+if [ -z "$_SKEL_TOPLEVEL" ] || [ "$_SKEL_TOPLEVEL" != "$_SKEL_PHYS" ]; then
+  echo "REFUSING: resolved review root is not a git repository root." >&2
+  echo "  script:        ${BASH_SOURCE[0]}" >&2
+  echo "  resolved root: $SKEL" >&2
+  echo "  git toplevel:  ${_SKEL_TOPLEVEL:-<not a git repository>}" >&2
+  echo "This script must live exactly 3 levels below the repo root" >&2
+  echo "(<repo>/q-system/.q-system/scripts/). Run the canonical copy, not a" >&2
+  echo "copy inside a review-scratch tree." >&2
+  exit 2
+fi
+unset _SKEL_TOPLEVEL _SKEL_PHYS
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
 TIMEOUT_SECONDS=2400
