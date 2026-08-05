@@ -447,5 +447,40 @@ drget() { printf '%s' "$DRIFT" | python3 -c "import json,sys;print(json.load(sys
   && ok "a plugin whose files did NOT change reports no drift, though the clone advanced" \
   || bad "beta reported $(drget beta) (want 0) -- this is the docs-only false alarm rebuilt"
 
+# --- git failure text is redacted and bounded (round 7, severity refuted) ----
+# The credential-leak BLOCKER did not reproduce on git 2.54 (both failure paths
+# strip userinfo before printing; both were executed). The underlying shape is
+# still real: unbounded, server-influenced text in a permanent issue. Redacting
+# here rather than trusting a git version to keep doing it.
+SAFE="$(ROOT="$ROOT" python3 - <<'PY6'
+import importlib.util, json, os
+S=os.path.join(os.environ["ROOT"],"q-system/.q-system/scripts")
+sp=importlib.util.spec_from_file_location("fh",os.path.join(S,"fleet-health-daily.py"))
+fh=importlib.util.module_from_spec(sp); sp.loader.exec_module(fh)
+leaky = "fatal: unable to access 'https://user:ghp_SECRET999@host/x.git/': boom"
+long_ = "remote: " + "x"*400
+print(json.dumps({
+  "redacted": "ghp_SECRET999" not in fh._safe_git_error(leaky,"",1),
+  "kept_host": "host/x.git" in fh._safe_git_error(leaky,"",1),
+  "bounded": len(fh._safe_git_error(long_,"",1)) <= 203,
+  "empty_falls_back": fh._safe_git_error("","",128) == "git fetch exited 128",
+}))
+PY6
+)"
+echo "    redaction result: $SAFE"
+sfget() { printf '%s' "$SAFE" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
+[ "$(sfget redacted)" = "True" ] \
+  && ok "userinfo is stripped from git failure text before it is published" \
+  || bad "a token survived into the published field"
+[ "$(sfget kept_host)" = "True" ] \
+  && ok "the host and path survive, so the message stays diagnosable" \
+  || bad "redaction ate the useful part of the message"
+[ "$(sfget bounded)" = "True" ] \
+  && ok "a 400-char server line is bounded before it reaches a permanent issue" \
+  || bad "unbounded server text reaches the issue body"
+[ "$(sfget empty_falls_back)" = "True" ] \
+  && ok "empty output falls back to the exit code, not an empty reason" \
+  || bad "empty git output produced an empty reason"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

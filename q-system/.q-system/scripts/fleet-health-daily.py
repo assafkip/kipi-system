@@ -1066,6 +1066,34 @@ def detect_untracked_unwired(_ctx) -> list:
     return out
 
 
+def _safe_git_error(stderr: str, stdout: str, rc: int) -> str:
+    """One line of git failure text, safe to publish in a permanent issue.
+
+    Codex review round 7 called publishing raw stderr a credential-leak blocker.
+    That specific claim did NOT reproduce on git 2.54: with a remote of the form
+    https://user:TOKEN@host/x.git, both likely failure paths strip the
+    credentials before printing ("fatal: Authentication failed for
+    'https://github.com/...'"; "fatal: unable to access
+    'https://nonexistent.invalid/x.git/'"). Verified by executing both.
+
+    The severity is refuted; the underlying shape is not. This field is
+    externally influenced text of unbounded length -- `remote:` lines are
+    whatever the server chose to send -- and it lands in a permanent Linear
+    issue. Git's redaction is a behaviour of a git version, not a guarantee this
+    code is entitled to rely on, so the redaction is done here too rather than
+    trusted upstream. Defence in depth on a cheap line, not an admission that
+    the blocker held.
+    """
+    text = (stderr or stdout or "").strip().splitlines()
+    if not text:
+        return f"git fetch exited {rc}"
+    line = text[-1]
+    # Strip any userinfo in a URL: scheme://<anything>@host -> scheme://host.
+    line = re.sub(r"(\w+://)[^/\s@]*@", r"\1", line)
+    # Bound it. A permanent record does not carry a server's essay.
+    return (line[:200] + "...") if len(line) > 200 else line
+
+
 def detect_stale_runtime_plugins(_ctx) -> list:
     """The RUNNING plugin copy is older than the merged one.
 
@@ -1228,8 +1256,7 @@ def detect_stale_runtime_plugins(_ctx) -> list:
                 ["git", "-C", str(marketplace), "fetch", "--quiet", "origin", "main"],
                 capture_output=True, text=True, timeout=60)
             if proc.returncode != 0:
-                detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-                fetch_error = detail[-1] if detail else f"git fetch exited {proc.returncode}"
+                fetch_error = _safe_git_error(proc.stderr, proc.stdout, proc.returncode)
         except subprocess.TimeoutExpired:
             fetch_error = "git fetch timed out after 60s"
         except (OSError, subprocess.SubprocessError) as exc:
