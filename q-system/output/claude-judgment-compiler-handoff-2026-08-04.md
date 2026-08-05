@@ -21,14 +21,31 @@ The missing layer is the decision context required to calibrate that judge again
 
 We tested whether finding text and severity alone could predict Assaf's final workflow disposition. The result was conclusive: they cannot.
 
-Read these artifacts before designing anything:
+Read these artifacts before designing anything. **In the repo:**
 
 - `q-system/output/founder-judge-calibration-v1-report.md`
-- `q-system/output/founder-judge-calibration-v1.jsonl`
-- `q-system/output/founder-judge-calibration-v1-run.json`
 - `q-system/.q-system/scripts/founder-judge-calibration.py`
 - `q-system/output/rca/rca-founder-judge-calibration-context-and-temp-2026-08-03.md`
 - `q-system/output/prd-founder-judge-calibration-2026-08-03.md`
+
+**Local run output, NOT in the repo** — these two are the frozen dataset and the
+hash-bound run receipt. They live only on the machine that ran v1:
+
+- `q-system/output/founder-judge-calibration-v1.jsonl` (ignored by `.gitignore:36`, `*.jsonl`)
+- `q-system/output/founder-judge-calibration-v1-run.json` (ignored by `.gitignore:17`, `q-system/output/*.json`)
+
+So **the v1 benchmark cannot be re-verified or re-run from a fresh clone**, and
+the numbers below are read from the report, not reproducible by a reader who does
+not have those two files. Do not write a plan whose first step assumes otherwise.
+
+That exclusion is deliberate, not an oversight in the recovery (codex review of
+PR #106, major). Each dataset row carries a `founder_rationale` free-text field —
+Assaf's own words on 50 real triage decisions — and this repo is PUBLIC. Two
+standing ignore rules already cover run output; overriding both to publish
+founder free-text is a blast-radius decision that earns its own issue, not a
+side effect of recovering work-product docs. If v1 must become reproducible, the
+options are a redacted dataset (drop `founder_rationale`, keep the labels) or a
+private location the checker can point at. Both are real work; neither is this PR.
 
 The verified v1 result:
 
@@ -371,4 +388,3 @@ At completion, report only:
 Do not claim the judge is calibrated before prospective evidence meets the gates.
 
 ---
-
