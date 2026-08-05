@@ -2571,3 +2571,71 @@ class TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld:
         assert jc.evidence_gate_errors(
             "duplicate", None, ["finding:prd-other-2026-01-01/finding-9"],
             empty), "an empty citable set must fail the duplicate gate"
+
+
+class TestDispositionTransactionIsOneCriticalSection:
+    """Codex MAJOR, PR #103 round 5. The lock started AFTER `_load_findings`,
+    so it serialised stale snapshots rather than the transaction.
+
+    Two concurrent dispositions each loaded the same snapshot, each mutated its
+    own finding in its own copy, and each wrote the WHOLE list back. The second
+    silently reverted the first while both processes exited 0 and both receipts
+    recorded success -- lost disposition state, invisible to both writers.
+
+    This reproducer drives the REAL `set-disposition` CLI in two concurrent
+    processes against a real findings file. The review's own repro stubbed
+    seven seams (`_load_findings`, `ledger_lock`, `assemble_packet`,
+    `capture_from_triage`, `_write_all`, `_validate_record`,
+    `validate_triage_decision`), which cannot distinguish a real race from one
+    manufactured by its own harness. Measured before the fix: 6/6 runs lost an
+    update. After: 6/6 clean.
+    """
+
+    def test_concurrent_dispositions_do_not_lose_an_update(
+            self, fake_repo, write_config):
+        import concurrent.futures
+        prd = "prd-race-2026-08-04"
+        write_config(fake_repo, {"config_schema_version": 1})
+        findings_dir = fake_repo / ".prd-os" / "findings"
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        rows = [{"id": f"finding-{i}", "prd_id": prd, "source": "manual",
+                 "severity": "minor", "disposition": "pending",
+                 "body": f"body {i}", "created_at": "2026-08-04T00:00:00Z"}
+                for i in (1, 2)]
+        path = findings_dir / f"{prd}-findings.jsonl"
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                                for r in rows))
+        writer = SCRIPTS_DIR / "findings_writer.py"
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(fake_repo),
+                   # KIPI_JUDGMENT_CAPTURE=0 on purpose: the pre-fix code used
+                   # a nullcontext on this branch, so it had NO serialisation
+                   # at all. The race is a property of the read-modify-write,
+                   # not of receipt capture.
+                   KIPI_JUDGMENT_CAPTURE="0")
+
+        def run(finding_id):
+            return subprocess.run(
+                [sys.executable, str(writer), "set-disposition", prd,
+                 finding_id, "accepted", "--rationale", f"r-{finding_id}"],
+                cwd=str(fake_repo), env=env, capture_output=True, text=True)
+
+        # ITERATED, because a lost update is a RACE: one attempt wins or
+        # loses on timing alone. A single-shot version of this test passed
+        # against the unfixed file on its first run and failed on the next --
+        # flaky in BOTH directions, and therefore worthless as a regression
+        # guard. Eight rounds makes the red reliable (each round independently
+        # loses an update roughly half the time on the unfixed code) while the
+        # green stays deterministic: the fix admits no losing interleaving.
+        for round_index in range(8):
+            path.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                                    for r in rows))
+            with concurrent.futures.ThreadPoolExecutor(2) as pool:
+                results = list(pool.map(run, ["finding-1", "finding-2"]))
+            assert all(r.returncode == 0 for r in results), \
+                [r.stderr for r in results]
+            final = {json.loads(line)["id"]: json.loads(line)["disposition"]
+                     for line in path.read_text().splitlines() if line.strip()}
+            assert final == {"finding-1": "accepted",
+                             "finding-2": "accepted"}, (
+                "a concurrent disposition was silently reverted while both "
+                f"writers reported success (round {round_index}): {final}")

@@ -518,64 +518,63 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                 sys.stderr.write(f"{gate_error}\n")
             return 2
     path = _findings_path(cfg, args.prd_id)
-    try:
-        recs = _load_findings(path)
-    except ValueError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 2
-    target = None
-    for rec in recs:
-        if rec.get("id") == args.finding_id:
-            target = rec
-            break
-    if target is None:
-        sys.stderr.write(f"finding not found: {args.finding_id}\n")
-        return 2
-    target["disposition"] = args.disposition
-    if getattr(args, "covered_by", "") and args.covered_by.strip():
-        # umbrella coverage: this finding is owned by a phase PRD
-        target["covered_by"] = args.covered_by.strip()
-    if args.rationale and args.rationale.strip():
-        target["rationale"] = args.rationale.strip()
-    elif args.disposition == "pending":
-        target.pop("rationale", None)
-    if args.disposition == "pending":
-        target.pop("resolved_at", None)
-    else:
-        target["resolved_at"] = _now_iso()
-    try:
-        _validate_record(target, f"{path}:{args.finding_id}")
-    except ValueError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 2
-    # Snapshot BEFORE the write so a failed capture can restore it. Mirrors the
-    # rollback cmd_add already does for its stamp step. Without this, any
-    # capture failure that the fail-fast pre-check cannot see (a stale packet, a
-    # bad --judge-run, an unresolvable evidence ref, an OSError on the shared
-    # ledger) left the findings file saying "rejected" with no receipt — the
-    # exact divergence `verify --cross-check` exists to detect, manufactured by
-    # our own primary write path (review 2026-08-04).
-    pre_findings_bytes = path.read_bytes() if path.is_file() else None
-    # ONE critical section over the findings write AND the receipt (sp-0c725cde,
-    # a defect in merged code). Previously `_write_all` published the
-    # disposition and only then did capture_from_triage take `ledger_lock`
-    # internally. The approval gate reads the ledger UNDER that lock (PR #101
-    # round 4), so a gate landing in the gap saw a dispositioned finding with no
-    # receipt and false-blocked work that was completing normally. Reproduced
-    # with an out-of-process observer that acquired the lock mid-persist and
-    # reported `dispositioned=1 receipts=0`. `ledger_lock` is re-entrant per
-    # thread precisely so the capture below can take it again.
-    import contextlib
+    # ONE critical section over the READ, the mutation AND the write (Codex
+    # major, PR #103 round 5). The lock used to start after `_load_findings`,
+    # so two concurrent dispositions each loaded the same snapshot, each
+    # mutated its own finding in its own copy, and each wrote the WHOLE list
+    # back: the second silently reverted the first while both receipts
+    # recorded success. Serialising stale snapshots is not serialising the
+    # transaction. The round-5 reproducer returned final_dispositions
+    # {'finding-1': 'accepted', 'finding-2': 'pending'} with two accepted
+    # receipts -- lost disposition state, invisible to both writers.
+    #
+    # Taken UNCONDITIONALLY. The previous judgment-disabled branch used a
+    # nullcontext, reasoning that with no receipt coming there is no window to
+    # close. That reasoning was about the write-to-receipt observation gap
+    # (sp-0c725cde) and does NOT extend to lost updates, which happen with or
+    # without a receipt. `ledger_lock` is re-entrant per thread, so the
+    # capture below can take it again.
+    import judgment_compiler
 
-    if judgment_enabled:
-        import judgment_compiler
-
-        persist_lock = judgment_compiler.ledger_lock(cfg)
-    else:
-        # No receipt is coming, so there is no window to close and no reason to
-        # serialise unrelated triage on the shared ledger lock.
-        persist_lock = contextlib.nullcontext()
-    with persist_lock:
+    with judgment_compiler.ledger_lock(cfg):
+        try:
+            recs = _load_findings(path)
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        target = None
+        for rec in recs:
+            if rec.get("id") == args.finding_id:
+                target = rec
+                break
+        if target is None:
+            sys.stderr.write(f"finding not found: {args.finding_id}\n")
+            return 2
+        target["disposition"] = args.disposition
+        if getattr(args, "covered_by", "") and args.covered_by.strip():
+            # umbrella coverage: this finding is owned by a phase PRD
+            target["covered_by"] = args.covered_by.strip()
+        if args.rationale and args.rationale.strip():
+            target["rationale"] = args.rationale.strip()
+        elif args.disposition == "pending":
+            target.pop("rationale", None)
+        if args.disposition == "pending":
+            target.pop("resolved_at", None)
+        else:
+            target["resolved_at"] = _now_iso()
+        try:
+            _validate_record(target, f"{path}:{args.finding_id}")
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        # Snapshot BEFORE the write so a failed capture can restore it. Mirrors the
+        # rollback cmd_add already does for its stamp step. Without this, any
+        # capture failure that the fail-fast pre-check cannot see (a stale packet, a
+        # bad --judge-run, an unresolvable evidence ref, an OSError on the shared
+        # ledger) left the findings file saying "rejected" with no receipt — the
+        # exact divergence `verify --cross-check` exists to detect, manufactured by
+        # our own primary write path (review 2026-08-04).
+        pre_findings_bytes = path.read_bytes() if path.is_file() else None
         # Assemble BEFORE the write, inside the lock. The receipt must freeze
         # decision-time context, and the judge assembled its packet while this
         # finding was still pending. Assembling after the write dropped every

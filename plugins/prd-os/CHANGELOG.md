@@ -2,6 +2,40 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.1] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 5) — the disposition transaction lost updates
+`cmd_set_disposition` acquired the ledger lock AFTER `_load_findings`, so it
+serialised stale snapshots instead of the read-modify-write transaction. Two
+concurrent dispositions each loaded the same snapshot, each mutated its own
+finding in its own copy, and each wrote the WHOLE list back: the second
+silently reverted the first while both processes exited 0 and both receipts
+recorded success. Lost disposition state, invisible to both writers.
+
+The lock now opens before the load and closes after the receipt append, so the
+read, mutation, packet assembly, findings write and receipt append are one
+critical section.
+
+Taken UNCONDITIONALLY. The judgment-disabled branch previously used a
+`nullcontext`, reasoning that with no receipt coming there was no window to
+close. That reasoning was about the write-to-receipt observation gap
+(sp-0c725cde) and does not extend to lost updates, which happen with or
+without a receipt — the reproducer demonstrates the race with
+`KIPI_JUDGMENT_CAPTURE=0`, on the branch that had no lock at all.
+
+### Tests
+`TestDispositionTransactionIsOneCriticalSection` drives the real
+`set-disposition` CLI in two concurrent processes against a real findings file.
+The review's own reproducer stubbed seven seams, which cannot distinguish a
+real race from one manufactured by its harness.
+
+The case is ITERATED eight rounds. A lost update is a race: a single attempt
+wins or loses on timing alone, and the single-shot first version passed against
+the unfixed file on one run and failed on the next — flaky in both directions
+and worthless as a guard. Eight rounds make the red reliable (3/3 runs red
+pre-fix) while the green stays deterministic (3/3 green post-fix), because the
+fix admits no losing interleaving.
+
 ## [0.16.0] - 2026-08-04
 
 ### Changed — one constructor for the judge's view, replacing four seams
