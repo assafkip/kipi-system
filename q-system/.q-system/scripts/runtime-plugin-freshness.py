@@ -120,6 +120,76 @@ def clone_commits_behind(marketplace: Path) -> int | None:
         return None
 
 
+def installed_commits(registry: Path, marketplace_name: str) -> dict[str, str]:
+    """name -> gitCommitSha for every entry from this marketplace.
+
+    THE PRODUCER EMITS THIS AND WE WERE THROWING IT AWAY (codex review round 6,
+    major). Measured on the real ~/.claude/plugins/installed_plugins.json: every
+    entry carries `gitCommitSha`, the exact commit the installed copy was built
+    from. Version parity cannot see past it -- on this box `kipi-ops@kipi` sits
+    at 8a38de80 while the clone is at 021dd2b7, with the version string equal on
+    both sides. That is precisely the layer-2 staleness this checker exists for,
+    and it was invisible.
+
+    It was invisible because the fixture was invented rather than copied from the
+    producer, so the shape under test had no such field. Same scar as the mutex
+    whose fixture used a key no producer emits.
+
+    Last write wins per plugin: a plugin installed at both user and project scope
+    has one cache entry per scope, and either being stale is the same finding.
+    """
+    data = _load_json(registry, "installed_plugins.json")
+    plugins = data.get("plugins")
+    if not isinstance(plugins, dict):
+        return {}
+    out: dict[str, str] = {}
+    suffix = "@" + marketplace_name
+    for key, entries in plugins.items():
+        if not key.endswith(suffix) or not isinstance(entries, list):
+            continue
+        name = key[: -len(suffix)]
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("gitCommitSha"):
+                out[name] = str(entry["gitCommitSha"])
+    return out
+
+
+def plugin_commits_since(marketplace: Path, name: str, sha: str) -> int | None:
+    """Commits touching plugins/<name>/ between `sha` and the clone HEAD.
+
+    SCOPED PER PLUGIN, which is what makes this exact rather than a heuristic. A
+    bare `installed sha != clone HEAD` comparison would fire for every plugin the
+    moment the clone advanced by any commit -- the docs-only false alarm that
+    round 3 correctly rejected, rebuilt in a new place. Asking whether THIS
+    plugin's own subtree changed between the two commits has no such failure
+    mode: zero means the installed copy is byte-identical for this plugin, even
+    if the clone moved on for unrelated reasons.
+
+    None when unknowable (missing clone, unknown sha after a force-push or a
+    shallow clone). Unknown is never reported as drift -- inventing a finding
+    from an unresolvable object is the fabricated-evidence direction.
+    """
+    if not (marketplace / ".git").exists():
+        return None
+    try:
+        if subprocess.run(["git", "-C", str(marketplace), "cat-file", "-e", f"{sha}^{{commit}}"],
+                          capture_output=True, timeout=30).returncode != 0:
+            return None
+        proc = subprocess.run(
+            ["git", "-C", str(marketplace), "rev-list", "--count", f"{sha}..HEAD",
+             "--", f"plugins/{name}/"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
 def clone_dirty_tracked(marketplace: Path) -> list[str]:
     """Tracked files with uncommitted edits in the clone. [] if unknowable.
 

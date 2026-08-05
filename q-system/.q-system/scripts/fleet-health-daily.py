@@ -1163,6 +1163,26 @@ def detect_stale_runtime_plugins(_ctx) -> list:
         if live.get(name) is None
     )
     dirty = sorted(rpf.clone_dirty_tracked(marketplace))
+    # COMMIT-LEVEL DRIFT, the thing version parity structurally cannot see
+    # (codex review round 6, major). Each installed entry records the commit it
+    # was built from; if this plugin's own subtree moved since then, the loaded
+    # copy is not the merged one even though both sides report the same version
+    # string. Per-plugin scoping is what keeps it exact -- see
+    # plugin_commits_since for why a bare sha comparison rebuilds the docs-only
+    # false alarm round 3 rejected.
+    drifted = []
+    try:
+        commits = rpf.installed_commits(registry, "kipi")
+    except ValueError:
+        commits = {}
+    for name, sha in sorted(commits.items()):
+        n = rpf.plugin_commits_since(marketplace, name, sha)
+        if n:
+            drifted.append(
+                f"`{name}` installed from **{sha[:12]}**, and its own files changed "
+                f"in {'a later commit' if n == 1 else 'later commits'} on the clone"
+            )
+
     # CLONE-BEHIND IS A REAL CONDITION AND WAS BEING DROPPED (codex review round
     # 2, major). The checker exits 1 on stale OR dirty OR behind; this detector
     # honoured only the first two, so a plugin commit that changes runtime code
@@ -1221,7 +1241,7 @@ def detect_stale_runtime_plugins(_ctx) -> list:
             "ref and cannot be trusted")
     behind = rpf.clone_commits_behind(marketplace)
     is_behind = bool(behind)
-    if not stale and not retired and not dirty and not is_behind:
+    if not stale and not retired and not drifted and not dirty and not is_behind:
         return []
 
     parts = []
@@ -1237,6 +1257,13 @@ def detect_stale_runtime_plugins(_ctx) -> list:
             "longer ships them. Either the plugin was retired and the install "
             "should be removed, or it was renamed and the install should follow.\n"
             + "\n".join(f"- {r}" for r in retired)
+        )
+    if drifted:
+        parts.append(
+            "## Installed from a commit whose plugin files have since changed\n"
+            "Version parity cannot see this: the version string matches on both "
+            "sides while the loaded copy predates the plugin's own changes.\n"
+            + "\n".join(f"- {d}" for d in drifted)
         )
     if dirty:
         parts.append(

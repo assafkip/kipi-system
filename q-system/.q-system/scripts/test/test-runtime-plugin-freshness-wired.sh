@@ -399,5 +399,53 @@ dsget() { printf '%s' "$DIRTYSCOPE" | python3 -c "import json,sys;print(json.loa
   && ok "a tracked edit INSIDE plugins/ is still reported" \
   || bad "an edit inside plugins/ reported $(dsget inside) -- the scoping went too far"
 
+# --- commit-level drift the version string cannot show (round 6, major) ------
+# The producer records gitCommitSha per installed entry; we were discarding it.
+# Both directions in one fixture: plugin A's files change after its installed
+# sha (must fire), plugin B's do not (must stay silent even though the clone
+# advanced). The second half is what stops this becoming the docs-only false
+# alarm round 3 rejected.
+DRIFT="$(ROOT="$ROOT" python3 - <<'PY5'
+import importlib.util, json, os, subprocess, tempfile
+from pathlib import Path
+root=os.environ["ROOT"]; S=os.path.join(root,"q-system/.q-system/scripts")
+G=["git","-c","user.email=t@t.t","-c","user.name=t","-c","commit.gpgsign=false"]
+def run(*a,cwd=None): return subprocess.run(list(a),cwd=cwd,capture_output=True,text=True)
+def load(n,p):
+    sp=importlib.util.spec_from_file_location(n,p);m=importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(m);return m
+with tempfile.TemporaryDirectory() as td:
+    rp=Path(td); mk=rp/"marketplaces"/"kipi"; mk.mkdir(parents=True)
+    for name in ("alpha","beta"):
+        d=mk/"plugins"/name/".claude-plugin"; d.mkdir(parents=True)
+        (d/"plugin.json").write_text(json.dumps({"name":name,"version":"1.0.0"}))
+        (mk/"plugins"/name/"commands.md").write_text("v1\n")
+    run(*G,"init","-q",cwd=mk); run(*G,"add","-A",cwd=mk); run(*G,"commit","-qm","base",cwd=mk)
+    base=run("git","-C",str(mk),"rev-parse","HEAD").stdout.strip()
+    # alpha's own files change AFTER the installed sha; beta's do not.
+    (mk/"plugins"/"alpha"/"commands.md").write_text("v2\n")
+    run(*G,"add","-A",cwd=mk); run(*G,"commit","-qm","alpha changes",cwd=mk)
+    # Versions are IDENTICAL on both sides for both plugins.
+    (rp/"installed_plugins.json").write_text(json.dumps({"plugins":{
+        "alpha@kipi":[{"scope":"user","version":"1.0.0","gitCommitSha":base}],
+        "beta@kipi":[{"scope":"user","version":"1.0.0","gitCommitSha":base}]}}))
+    rpf=load("rpf",os.path.join(S,"runtime-plugin-freshness.py"))
+    commits=rpf.installed_commits(rp/"installed_plugins.json","kipi")
+    res={n: rpf.plugin_commits_since(mk,n,sha) for n,sha in commits.items()}
+    print(json.dumps({"sha_read":len(commits),"alpha":res.get("alpha"),"beta":res.get("beta")}))
+PY5
+)"
+echo "    drift result: $DRIFT"
+drget() { printf '%s' "$DRIFT" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
+[ "$(drget sha_read)" = "2" ] \
+  && ok "gitCommitSha is read from the producer shape (both entries)" \
+  || bad "read $(drget sha_read) shas (want 2) -- the producer field is being discarded"
+[ "$(drget alpha)" = "1" ] \
+  && ok "a plugin whose own files changed since its installed sha reports drift" \
+  || bad "alpha reported $(drget alpha) (want 1) -- commit-level drift is invisible behind an equal version string"
+[ "$(drget beta)" = "0" ] \
+  && ok "a plugin whose files did NOT change reports no drift, though the clone advanced" \
+  || bad "beta reported $(drget beta) (want 0) -- this is the docs-only false alarm rebuilt"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
