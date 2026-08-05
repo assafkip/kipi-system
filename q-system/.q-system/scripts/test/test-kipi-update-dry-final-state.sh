@@ -107,6 +107,10 @@ mkdir -p \
 cp "$ROOT/kipi-update.sh" "$SKELETON/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" \
   "$SKELETON/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$SKELETON/kipi-update-deletion-guard.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$SKELETON/kipi-update-deletion-guard.py"
 cp "$ROOT/kipi-settings-merge.py" "$SKELETON/kipi-settings-merge.py"
 # A valid skeleton ships the propagation leak gate: kipi-update.sh is
 # fail-closed on it, so a fixture without it aborts before any sync.

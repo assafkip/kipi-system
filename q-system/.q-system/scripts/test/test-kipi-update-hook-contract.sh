@@ -25,6 +25,10 @@ make_fixture() {
   cp "$UPDATER" "$skeleton/kipi-update.sh"
   cp "$ROOT/kipi-update-preserve-scan.py" \
     "$skeleton/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$skeleton/kipi-update-deletion-guard.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$skeleton/kipi-update-deletion-guard.py"
   cp "$ROOT/kipi-settings-merge.py" "$skeleton/kipi-settings-merge.py"
   cp "$ROOT/settings-template.json" "$skeleton/settings-template.json"
   # A valid skeleton ships the propagation leak gate: kipi-update.sh is

@@ -34,6 +34,7 @@ printf '*\n' > "$SK/plugins/demo/.venv/.gitignore"   # uv writes this itself
 printf '#!/Users/someone-else/bin/python\n' > "$SK/plugins/demo/.venv/bin/activate"
 cp "$SCRIPT" "$SK/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK/kipi-update-deletion-guard.py"
 # A valid skeleton ships the propagation leak gate: kipi-update.sh is
 # fail-closed on it, so a fixture without it aborts before any sync.
 mkdir -p "$SK/q-system/.q-system/scripts" "$SK/q-system/.q-system/state"
