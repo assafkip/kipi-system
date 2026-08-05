@@ -654,10 +654,29 @@ _registry_ids = {d["id"] for d in _fh.DETECTORS}
 check("every detector the watchdog files under is in fleet-health's registry",
       sorted(set(wd.LINEAR_DETECTOR_BY_KIND.values()) - _registry_ids), [])
 
-if failures:
-    print("FAIL:")
-    for line in failures:
-        print(f"  - {line}")
-    sys.exit(1)
-print("PASS: all launchd-health-check logic checks green")
-sys.exit(0)
+# Guarded because this file is named test_*.py and pytest IMPORTS such files
+# during collection. A module-level sys.exit() raised SystemExit mid-import,
+# which pytest reports as INTERNALERROR and which aborts the whole run -- so a
+# repo-wide `pytest` sweep died here, on the one file out of fifteen
+# self-tests that exited at import rather than under a __main__ guard.
+#
+# The canonical runner is unchanged: the capability manifest runs this with
+# python3, where __name__ == "__main__" and the exit codes still carry.
+def _report() -> int:
+    if failures:
+        print("FAIL:")
+        for line in failures:
+            print(f"  - {line}")
+        return 1
+    print("PASS: all launchd-health-check logic checks green")
+    return 0
+
+
+def test_launchd_health_check_logic():
+    """Pytest entry point: same assertions, surfaced as one test."""
+    assert not failures, "launchd-health-check logic failures:\n  - " + \
+        "\n  - ".join(failures)
+
+
+if __name__ == "__main__":
+    sys.exit(_report())
