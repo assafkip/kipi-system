@@ -105,6 +105,27 @@ def clone_commits_behind(marketplace: Path) -> int | None:
         return None
 
 
+def clone_dirty_tracked(marketplace: Path) -> list[str]:
+    """Tracked files with uncommitted edits in the clone. [] if unknowable.
+
+    Tracked only, on purpose: untracked .bak files are the debris of in-place
+    editing and are noise, while a modified TRACKED file is content that exists
+    in the runtime and nowhere else.
+    """
+    if not (marketplace / ".git").exists():
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(marketplace), "diff", "--name-only", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [l for l in proc.stdout.splitlines() if l.strip()]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Fail when a running plugin is older than the merged one.")
     ap.add_argument("--plugin-root", default=str(DEFAULT_PLUGIN_ROOT),
@@ -150,6 +171,21 @@ def main(argv: list[str] | None = None) -> int:
 
     behind = clone_commits_behind(marketplace)
     problems = list(stale)
+
+    # Direct edits to the live runtime. Third recurrence on 2026-08-05: a
+    # `Least-code bias` rule was hand-added to fable-discipline's SKILL.md in the
+    # clone and existed nowhere on main, and two older drift stashes (2026-06-21,
+    # 2026-07-01) sit behind it in the same clone. Patching the running copy
+    # works, which is exactly why people do it, and the next refresh silently
+    # discards it. A stash is a place to put the loss, not a mechanism that
+    # prevents it -- so the detector goes here.
+    dirty = clone_dirty_tracked(marketplace)
+    if dirty:
+        problems.append(
+            f"  EDITED marketplace clone has uncommitted edits to {len(dirty)} tracked file(s); "
+            "they will be discarded on the next refresh:"
+        )
+        problems.extend(f"           {f}" for f in dirty[:10])
     if behind:
         problems.append(
             f"  BEHIND marketplace clone is {behind} commit(s) behind origin/main "

@@ -99,4 +99,21 @@ run_check "$D"
 [ "$RC" -eq 1 ] || fail "clone behind origin/main must exit 1 even with version parity, got $RC: $OUT"
 case "$OUT" in *BEHIND*) :;; *) fail "behind-clone case did not print BEHIND: $OUT";; esac
 
+# --- a hand-edited clone is RED even when versions agree --------------------
+# The 2026-08-05 shape: someone patches the running copy, it works, and the next
+# refresh discards it. Tracked edits only; untracked .bak debris must stay quiet.
+D="$(mkroot prd-os 0.16.5 0.16.5)"
+MP2="$D/marketplaces/kipi"
+( cd "$MP2" && G init -q && G add -A && G commit -qm base )
+printf '\n7. Least-code bias.\n' >> "$MP2/plugins/prd-os/.claude-plugin/plugin.json.doc" 2>/dev/null || true
+printf '{"name":"prd-os","version":"0.16.5","x":1}\n' > "$MP2/plugins/prd-os/.claude-plugin/plugin.json"
+run_check "$D"
+[ "$RC" -eq 1 ] || fail "hand-edited clone must exit 1, got $RC: $OUT"
+case "$OUT" in *EDITED*) :;; *) fail "hand-edited clone did not print EDITED: $OUT";; esac
+# untracked debris alone must NOT trip it
+( cd "$MP2" && G checkout -q -- . )
+: > "$MP2/plugins/prd-os/commands.md.pre-autonomous.bak"
+run_check "$D"
+[ "$RC" -eq 0 ] || fail "untracked .bak debris must not trip the clone-edit check, got $RC: $OUT"
+
 echo "PASS: version parity RED on a stale pin (the 2026-08-05 shape) and on drift either direction; clone-behind RED under parity; SKIP printed not silent; malformed registry exit 2"
