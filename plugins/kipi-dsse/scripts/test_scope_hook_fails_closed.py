@@ -152,3 +152,78 @@ def test_absolute_in_repo_path_blocks_from_either_directory(repo: Path, tmp_path
     target = str(repo / "src/secret.py")
     assert _hook(_edit(target, repo), run_from=repo).returncode == 2
     assert _hook(_edit(target, repo), run_from=elsewhere).returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# Stop gate: the exhaustion loop-break must be COUNTED, not silent
+# ---------------------------------------------------------------------------
+
+STOP_GATE = DSSE.parent / "hooks/stop_gate.py"
+
+
+def _stop(repo: Path, payload: dict):
+    env = dict(os.environ)
+    env.pop("ISSUE_GATE_OFF", None)
+    env["CLAUDE_PROJECT_DIR"] = str(repo)
+    return subprocess.run([sys.executable, str(STOP_GATE)], cwd=repo,
+                          input=json.dumps(payload), capture_output=True,
+                          text=True, env=env)
+
+
+def _clear_receipts(repo: Path) -> None:
+    state = repo / ".claude/state/active-issue.json"
+    d = json.loads(state.read_text())
+    d["receipts"] = {k: None for k in d.get("receipts", {})}
+    state.write_text(json.dumps(d, indent=2))
+
+
+def test_stop_gate_refuses_while_receipts_are_missing(repo: Path):
+    """Control: the gate does its job on the first firings."""
+    subprocess.run([sys.executable, str(DSSE / "issue_runner.py"), "approve"],
+                   cwd=repo, capture_output=True)
+    _clear_receipts(repo)
+    assert _stop(repo, {}).returncode == 2
+
+
+def test_stop_gate_exhaustion_is_recorded_not_silent(repo: Path):
+    """The exhaustion is a legitimate loop-break -- a Stop hook that blocks
+    forever hangs the session, and `stop_hook_active` (the documented primary
+    break) is honored, so this backup is rare. What it must not be is SILENT.
+
+    Measured 2026-08-05: after 3 firings the gate allows the session to end
+    with all three receipts missing, and the only trace is a counter in
+    `.claude/state/`, which is ephemeral per-session state, not a ledger. A
+    session can end un-receipted and nothing durable records that it did.
+
+    Same shape as ISSUE_GATE_OFF, so the same fix: one countable row.
+    """
+    subprocess.run([sys.executable, str(DSSE / "issue_runner.py"), "approve"],
+                   cwd=repo, capture_output=True)
+    _clear_receipts(repo)
+    for _ in range(3):
+        assert _stop(repo, {}).returncode == 2
+    exhausted = _stop(repo, {})
+    assert exhausted.returncode == 0, "precondition: the 4th firing exhausts"
+
+    ledger = repo / ".prd-os/gate-bypasses.jsonl"
+    assert ledger.is_file(), (
+        "the gate let a session end with missing receipts and left no durable "
+        "record"
+    )
+    rows = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+    row = rows[-1]
+    assert row["env"] == "stop-gate-exhaustion"
+    assert row.get("issue_id") == "probe-1"
+    assert row.get("missing_receipts"), (
+        "the row does not say WHAT was missing, so it cannot be audited later"
+    )
+
+
+def test_stop_gate_writes_no_bypass_row_while_it_is_still_refusing(repo: Path):
+    """Negative-fire: only the exhaustion is a bypass. A refusal is the gate
+    working, and counting it would drown the real signal."""
+    subprocess.run([sys.executable, str(DSSE / "issue_runner.py"), "approve"],
+                   cwd=repo, capture_output=True)
+    _clear_receipts(repo)
+    assert _stop(repo, {}).returncode == 2
+    assert not (repo / ".prd-os/gate-bypasses.jsonl").exists()

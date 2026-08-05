@@ -93,12 +93,58 @@ def _read_stdin_payload() -> dict:
         return {}
 
 
+def _active_issue_state() -> dict:
+    try:
+        path = _repo_root() / ".claude/state/active-issue.json"
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _record_bypass(reason: str) -> None:
+    """One countable row per session that ended without its receipts.
+
+    The exhaustion below is a legitimate loop-break: a Stop hook that blocks
+    forever hangs the session. What it must not be is SILENT. Measured
+    2026-08-05 -- after 3 firings the gate allows the session to end with all
+    three receipts missing, and the only trace was a counter in
+    `.claude/state/`, which is ephemeral per-session state that `_clear_firings`
+    wipes on the next green run. Nothing durable recorded that work ended
+    un-receipted, so nobody could ever count how often it happens.
+
+    Same shape and same fix as ISSUE_GATE_OFF on the runner side: append to
+    `.prd-os/gate-bypasses.jsonl` (the linear-bypass pattern). Never raises --
+    bookkeeping must not break the gate.
+    """
+    try:
+        state = _active_issue_state()
+        receipts = state.get("receipts") or {}
+        ledger = _repo_root() / ".prd-os/gate-bypasses.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "env": reason,
+                "issue_id": state.get("issue_id"),
+                "missing_receipts": sorted(k for k, v in receipts.items() if not v),
+                "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }, sort_keys=True) + "\n")
+    except Exception as exc:
+        sys.stderr.write(f"warning: could not record stop-gate bypass: {exc}\n")
+
+
 def main() -> int:
     payload = _read_stdin_payload()
     if payload.get("stop_hook_active") is True:
+        # Not a bypass: Claude Code's own re-entrancy signal, and the gate has
+        # already had its say earlier in the same Stop chain.
         return 0
 
     if os.environ.get("ISSUE_GATE_OFF") == "1":
+        # Recorded here as well as in the runner: this returns BEFORE the
+        # runner is ever invoked, so the runner-side ledger row would never be
+        # written for a session silenced at the Stop hook.
+        if _active_issue_state().get("issue_id"):
+            _record_bypass("ISSUE_GATE_OFF")
         return 0
 
     try:
@@ -128,6 +174,7 @@ def main() -> int:
     })
 
     if count > MAX_SAME_SIGNATURE_FIRINGS:
+        _record_bypass("stop-gate-exhaustion")
         sys.stderr.write(
             f"DSSE stop gate: already notified {count - 1} times with same state. "
             "Exhausted -- allowing session end. Complete the DSSE flow to reset, "
