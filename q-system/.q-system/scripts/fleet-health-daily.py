@@ -1066,46 +1066,6 @@ def detect_untracked_unwired(_ctx) -> list:
     return out
 
 
-def _safe_git_error(stderr: str, stdout: str, rc: int) -> str:
-    """A CLASSIFICATION of a git failure. Never the failure text itself.
-
-    Three rounds landed here and the third is the one that settles it:
-
-      r7 blocker: "raw stderr leaks credentials". The credential half did NOT
-                  reproduce on git 2.54 -- both likely paths strip userinfo
-                  before printing -- so I refuted the severity and added a
-                  userinfo regex as defence in depth.
-      r8 blocker: credentials in a QUERY STRING survive that regex. Verified:
-                  `https://host/x.git?access_token=ghp_SECRET` passes straight
-                  through, as does an OAuth `?code=` in a `remote:` line.
-
-    r8 is right, and the correct conclusion is not a better regex. Sanitising an
-    unbounded, externally-controlled string is a game the sanitiser loses one
-    vector at a time, and each round of it ships a new hole into a permanent,
-    undeletable Linear issue. So NO part of git's output is published. The issue
-    carries the exit code and, when a known condition is recognisable, a constant
-    string WE own -- the input is matched against, never echoed.
-
-    The diagnosis is not lost, it is relocated: the operator runs the checker by
-    hand and reads the real error locally, where it is not published anywhere.
-    """
-    blob = f"{stderr or ''}\n{stdout or ''}".lower()
-    # Match against the input; emit only our own constants. Nothing from `blob`
-    # reaches the return value, which is the property that makes this terminal.
-    for needle, label in (
-        ("could not resolve host", "the host could not be resolved"),
-        ("authentication failed", "authentication failed"),
-        ("permission denied", "permission was denied"),
-        ("repository not found", "the repository was not found"),
-        ("timed out", "the connection timed out"),
-        ("connection refused", "the connection was refused"),
-        ("ssl", "an SSL/TLS error"),
-    ):
-        if needle in blob:
-            return f"{label} (git fetch exited {rc})"
-    return f"git fetch exited {rc}"
-
-
 def detect_stale_runtime_plugins(_ctx) -> list:
     """The RUNNING plugin copy is older than the merged one.
 
@@ -1122,12 +1082,21 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     stderr would be a SECOND definition of "stale" that can drift from the first;
     importing means the detector and the exit code can never disagree.
 
-    THE BODY DELIBERATELY OMITS THE COMMITS-BEHIND COUNT. `subject` is the dedup
-    key and `finding_hash` covers title + body, so any number that moves on every
-    merge would rewrite the Linear issue daily -- the cry-wolf failure this file
-    already fixed once for the launchd keys. Stale plugin names and dirty file
-    names change only when the CONDITION changes, which is the thing worth
-    re-filing for.
+    SCOPE, AND WHAT THIS DELIBERATELY DOES NOT DETECT. This covers the two
+    conditions readable from the registry alone: an installed version that does
+    not match the marketplace, and a plugin still installed after the marketplace
+    stopped shipping it. It does NOT detect commit-level drift -- a plugin whose
+    files changed without a version bump reports the SAME version string on both
+    sides and is invisible here. Measured on this box: kipi-ops@kipi reports
+    1.2.0 from commit 8a38de80 while the clone sits at 021dd2b7. That gap is real
+    and is tracked in sp-54384f8f, which carries the split-out drift detection.
+    Nine review rounds produced seven defects, every one of them in that surface,
+    so it ships separately rather than holding this wiring hostage.
+
+    `subject` is the dedup key and `finding_hash` covers title + body, so the body
+    carries only names that change when the CONDITION changes -- never a count
+    that moves on every merge, which is the cry-wolf failure this file already
+    fixed once for the launchd keys.
     """
     import importlib.util
 
@@ -1167,11 +1136,33 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     root = rpf.DEFAULT_PLUGIN_ROOT
     registry = root / "installed_plugins.json"
     marketplace = root / "marketplaces" / "kipi"
-    # Same two quiet paths the checker itself treats as SKIP: a box with no
-    # plugin registry does not run Claude Code plugins, and absence there is not
-    # staleness. Returning [] rather than a finding keeps the two in agreement.
-    if not registry.is_file() or not marketplace.is_dir():
+    # NO REGISTRY = this box does not run Claude Code plugins at all. Absence
+    # there is genuinely not staleness, and the checker treats it as SKIP too.
+    if not registry.is_file():
         return []
+    # A MISSING MARKETPLACE IS ONLY QUIET IF NOTHING IS INSTALLED FROM IT (codex
+    # review round 9, major). This used to be folded into the line above, so a
+    # registry that still lists kipi plugins with the marketplace directory gone
+    # returned [] -- reported healthy while those plugins keep loading from cache
+    # with nothing left to compare them against. Same silent-disable shape the
+    # unreadable-registry and missing-checker paths were already corrected for;
+    # this was the third door into it.
+    #
+    # The discriminator is whether anything is actually installed from this
+    # marketplace. Nothing installed -> genuinely nothing to say. Something
+    # installed with no marketplace -> we cannot answer the question, and saying
+    # so is the whole contract of the cannot-run subject.
+    if not marketplace.is_dir():
+        try:
+            still_installed = rpf.installed_versions(registry, "kipi")
+        except ValueError as exc:
+            return _broken(f"the plugin registry is unreadable ({exc})")
+        if not still_installed:
+            return []
+        return _broken(
+            f"{len(still_installed)} kipi plugin(s) are installed but the "
+            f"marketplace directory is missing at {marketplace}, so the running "
+            "copies cannot be compared against anything")
     try:
         live = rpf.marketplace_versions(marketplace)
         installed = rpf.installed_versions(registry, "kipi")
@@ -1202,85 +1193,7 @@ def detect_stale_runtime_plugins(_ctx) -> list:
         for name, scope, version in installed
         if live.get(name) is None
     )
-    dirty = sorted(rpf.clone_dirty_tracked(marketplace))
-    # COMMIT-LEVEL DRIFT, the thing version parity structurally cannot see
-    # (codex review round 6, major). Each installed entry records the commit it
-    # was built from; if this plugin's own subtree moved since then, the loaded
-    # copy is not the merged one even though both sides report the same version
-    # string. Per-plugin scoping is what keeps it exact -- see
-    # plugin_commits_since for why a bare sha comparison rebuilds the docs-only
-    # false alarm round 3 rejected.
-    drifted = []
-    try:
-        commits = rpf.installed_commits(registry, "kipi")
-    except ValueError:
-        commits = {}
-    for name, sha in sorted(commits.items()):
-        n = rpf.plugin_commits_since(marketplace, name, sha)
-        if n:
-            drifted.append(
-                f"`{name}` installed from **{sha[:12]}**, and its own files changed "
-                f"in {'a later commit' if n == 1 else 'later commits'} on the clone"
-            )
-
-    # CLONE-BEHIND IS A REAL CONDITION AND WAS BEING DROPPED (codex review round
-    # 2, major). The checker exits 1 on stale OR dirty OR behind; this detector
-    # honoured only the first two, so a plugin commit that changes runtime code
-    # WITHOUT bumping a manifest version never fired -- and that is the common
-    # shape, since not every merge bumps a version.
-    #
-    # The reason it was dropped was body churn: `behind` is a COUNT, finding_hash
-    # covers the body, and a number that moves on every merge rewrites the Linear
-    # issue daily. That argument was right about the NUMBER and wrong to throw out
-    # the SIGNAL. The fact is recorded; the count is not.
-    # REFRESH THE REMOTE REF FIRST, HERE AND NOT IN THE CHECKER (codex review
-    # round 4, major). clone_commits_behind reads the ALREADY-FETCHED
-    # origin/main, so if nothing ever fetches, both the clone and its cached
-    # remote ref sit at the same old commit and the count is 0 forever: PASS
-    # reported indefinitely while merged plugin code never arrives. The
-    # docstring calls the number a FLOOR, which is honest, but a floor that is
-    # always zero is not a detector.
-    #
-    # The checker's no-network rule stays intact and is still right for it: it
-    # runs interactively and in CI, where a gate that reaches the network fails
-    # on a plane and then gets switched off. THIS caller is different -- an
-    # unattended daily job on a networked box -- so the fetch belongs at this
-    # call site, not inside the shared function.
-    #
-    # Best-effort by construction: a failure or timeout leaves the cached ref in
-    # place and the FLOOR semantics apply exactly as before, so being offline
-    # degrades this to the old behaviour instead of breaking the run.
-    # A FETCH THAT KEEPS FAILING IS NOT A QUIET DEGRADE (codex review round 5,
-    # major). The first cut swallowed every failure, so an expired credential or
-    # a removed remote left the cached origin/main frozen and this detector
-    # reported nothing forever -- the same PASS-forever hole the fetch was added
-    # to close, one layer out. Silence about an inability is the defect class
-    # this detector has now been corrected for three times (unreadable registry,
-    # missing checker, and here), so the fix is the same one: say it, with the
-    # cannot-run subject, instead of returning nothing.
-    #
-    # A transient blip self-clears: the subject is stable, so it is one issue
-    # rather than a page per run, and the next successful fetch stops re-filing.
-    fetch_error = ""
-    if (marketplace / ".git").exists():
-        try:
-            proc = subprocess.run(
-                ["git", "-C", str(marketplace), "fetch", "--quiet", "origin", "main"],
-                capture_output=True, text=True, timeout=60)
-            if proc.returncode != 0:
-                fetch_error = _safe_git_error(proc.stderr, proc.stdout, proc.returncode)
-        except subprocess.TimeoutExpired:
-            fetch_error = "git fetch timed out after 60s"
-        except (OSError, subprocess.SubprocessError) as exc:
-            fetch_error = f"git fetch raised {type(exc).__name__}"
-    if fetch_error:
-        return _broken(
-            "the marketplace clone's remote could not be refreshed "
-            f"({fetch_error}), so 'behind origin/main' is computed from a cached "
-            "ref and cannot be trusted")
-    behind = rpf.clone_commits_behind(marketplace)
-    is_behind = bool(behind)
-    if not stale and not retired and not drifted and not dirty and not is_behind:
+    if not stale and not retired:
         return []
 
     parts = []
@@ -1296,29 +1209,6 @@ def detect_stale_runtime_plugins(_ctx) -> list:
             "longer ships them. Either the plugin was retired and the install "
             "should be removed, or it was renamed and the install should follow.\n"
             + "\n".join(f"- {r}" for r in retired)
-        )
-    if drifted:
-        parts.append(
-            "## Installed from a commit whose plugin files have since changed\n"
-            "Version parity cannot see this: the version string matches on both "
-            "sides while the loaded copy predates the plugin's own changes.\n"
-            + "\n".join(f"- {d}" for d in drifted)
-        )
-    if dirty:
-        parts.append(
-            "## Hand-edits in the marketplace clone\n"
-            "These exist in the running runtime and nowhere on main. The next "
-            "refresh discards them.\n"
-            + "\n".join(f"- `{f}`" for f in dirty[:10])
-        )
-    if is_behind:
-        parts.append(
-            "## The marketplace clone is behind `origin/main`\n"
-            "Merged plugin commits are not in the running clone. This fires even "
-            "when every installed VERSION matches, because a plugin commit can "
-            "change runtime code without bumping a manifest version.\n\n"
-            "The commit count is deliberately not printed: it would move on every "
-            "merge and rewrite this issue daily. Run the checker for the number."
         )
     parts.append(
         "## Action\n"
