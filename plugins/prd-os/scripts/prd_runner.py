@@ -1488,6 +1488,26 @@ def cmd_spillover(cfg: Config, args) -> int:
 # `minor` DEFAULT are untriaged rather than assessed, which the report says
 # out loud instead of implying they were judged small.
 SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
+# Everything the gate is willing to call NON-blocking. Anything outside the union
+# of these two tuples is treated as BLOCKING, not as minor.
+#
+# Codex, PR #110 round 2, with a reproducer: `spillover add --severity critical`
+# was accepted, stored verbatim, reported as "minor-or-untriaged", and the gate
+# returned green. The word a human reaches for under pressure ("critical",
+# "urgent", "sev1") is exactly the one the allowlist did not contain, so the
+# louder the label the quieter the gate got. Fail-closed here and validate at the
+# CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
+SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+SPILLOVER_KNOWN_SEVERITIES = (
+    SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+
+
+def _is_blocking_severity(value: str) -> bool:
+    """Unknown severities block. See SPILLOVER_NONBLOCKING_SEVERITIES."""
+    sev = (value or "").strip().lower()
+    if not sev:
+        return False  # absent == the documented `minor` default, not unknown
+    return sev not in SPILLOVER_NONBLOCKING_SEVERITIES
 
 
 def cmd_gates(cfg: Config, args) -> int:
@@ -1559,8 +1579,7 @@ def cmd_gates(cfg: Config, args) -> int:
     # Out-of-scope findings are part of the standing re-proof: an open spillover
     # item turns the gate RED until it is resolved against a closed issue.
     openv = _spillover_open(cfg)
-    blocking = [r for r in openv if (r.get("severity") or "").lower()
-                in SPILLOVER_BLOCKING_SEVERITIES]
+    blocking = [r for r in openv if _is_blocking_severity(r.get("severity"))]
     reported = [r for r in openv if r not in blocking]
     if blocking:
         names = ", ".join(r["id"] for r in blocking)
@@ -1623,7 +1642,10 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--source", required=True, help="originating prd-id or issue-id")
     sp_add.add_argument("--desc", required=True, help="what the out-of-scope finding is")
     sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
-    sp_add.add_argument("--severity", default="minor")
+    # choices, so the CLI refuses an unrecognized severity at the door rather
+    # than storing it and letting the gate mis-bucket it (Codex, PR #110 r2).
+    sp_add.add_argument("--severity", default="minor",
+                        choices=SPILLOVER_KNOWN_SEVERITIES)
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")

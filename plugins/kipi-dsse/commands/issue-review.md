@@ -80,18 +80,24 @@ Run the required reviews for the active DSSE issue. Execute in order:
    If the adversarial review returned approve with no findings, skip the writer call for this source.
 
 7. If both reviews completed (regardless of verdict, even if findings exist):
-   - Do NOT call anything extra here. The `reviewed` receipt was already
-     written by the `record-review` calls in step 3 and step 5 -- the verb that
-     records the round is the verb that writes the receipt, so the counter and
-     the receipt can no longer disagree (ASK-402). `mark reviewed` refuses by
-     design; calling it here only produces a spurious exit 2.
+   - For EACH review that returned a verdict, record its completion:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review standard --verdict "<verdict>"
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review adversarial --verdict "<verdict>"
+   ```
+
+   `record-review` in step 3 / step 5 only CLAIMED the slot; it writes no
+   receipt, because at that moment the reviewer had not run. `complete-review`
+   is what writes `reviewed`, and only after a verdict exists to store
+   (Codex, PR #110 round 2: the receipt used to land on the slot claim, so an
+   interrupted review left a valid-looking receipt).
    - Report: "reviewed receipt recorded at <timestamp>. Findings now belong to `/issue-closeout` triage."
 
 8. If either review failed to complete (Codex error, timeout, parse error):
-   - Report the failure honestly. Note that `record-review` writes the
-     `reviewed` receipt per ROUND, so if the standard review already recorded
-     its round the receipt exists even though the adversarial round did not
-     complete. Say so explicitly rather than implying both ran.
+   - Do NOT call `complete-review` for a review that did not return a verdict.
+     Its slot stays claimed and its receipt stays unwritten, which is the
+     honest record: the round was spent, the review did not finish.
    - Note: the slot was already claimed in step 3 / step 5. Re-running `/issue-review` will hit the cap. Tell the founder to retry with `ISSUE_ALLOW_REVIEW_REPEAT=1` if the failure was transient.
    - Report the failure mode. Stop.
 

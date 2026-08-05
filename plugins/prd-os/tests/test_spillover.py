@@ -411,3 +411,58 @@ def test_archive_still_refuses_on_a_minor_item(repo):
     assert run(repo, "archive").returncode != 0, (
         "archive let a minor spillover item through; closeout must report all"
     )
+
+
+# ---------------------------------------------------------------------------
+# An unrecognized severity must never read as "minor".
+# Codex, PR #110 round 2, with a reproducer: `--severity critical` was stored
+# verbatim, reported as minor-or-untriaged, and the gate returned green.
+# ---------------------------------------------------------------------------
+
+
+def _load_runner():
+    import importlib.util
+    from pathlib import Path as _P
+    path = _P(__file__).resolve().parents[1] / "scripts/prd_runner.py"
+    spec = importlib.util.spec_from_file_location("prd_runner_sev", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("severity", ["critical", "urgent", "sev1", "P0", "BLOCKER!"])
+def test_unknown_severity_is_treated_as_blocking(severity):
+    """Fail-closed. The word a human reaches for under pressure is exactly the
+    one the allowlist did not contain, so the louder the label the quieter the
+    gate got."""
+    mod = _load_runner()
+    assert mod._is_blocking_severity(severity), (
+        f"{severity!r} was classified non-blocking; an unknown severity must block"
+    )
+
+
+@pytest.mark.parametrize("severity", ["minor", "low", "medium", "MINOR", " Low "])
+def test_known_nonblocking_severities_still_do_not_block(severity):
+    """The negative half: without this the fix could pass by blocking on
+    everything, which is the permanently-red gate it replaced."""
+    mod = _load_runner()
+    assert not mod._is_blocking_severity(severity)
+
+
+@pytest.mark.parametrize("severity", ["blocker", "major", "high"])
+def test_blocking_severities_still_block(severity):
+    mod = _load_runner()
+    assert mod._is_blocking_severity(severity)
+
+
+def test_cli_refuses_an_unrecognized_severity_at_the_door():
+    """Fail-closed in the gate is the backstop; the CLI should never store it."""
+    import subprocess, sys
+    from pathlib import Path as _P
+    runner = _P(__file__).resolve().parents[1] / "scripts/prd_runner.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner), "spillover", "add", "--source", "t",
+         "--desc", "d", "--severity", "critical"],
+        capture_output=True, text=True)
+    assert proc.returncode != 0, "CLI accepted an unrecognized severity"
+    assert "critical" in (proc.stderr + proc.stdout)

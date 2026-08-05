@@ -12,7 +12,8 @@ The rule these tests pin:
 
   verified          <- `verify` RUNS required_checks and records rc per command
   findings_triaged  <- `triage` COMPUTES pending==0 from the findings ledger
-  reviewed          <- `record-review` writes it when a review round is recorded
+  reviewed          <- `complete-review` writes it AFTER a review returns a verdict
+                       (`record-review` only claims the slot; the review has not run yet)
 
 The counter-examples that prove this was always achievable, all pre-existing:
 `prd_runner.py gates run` subprocesses each bypass_check and reads the return
@@ -141,7 +142,7 @@ def test_mark_refuses_every_receipt_field(loaded_issue: Path, receipt: str):
 @pytest.mark.parametrize("receipt,verb", [
     ("verified", "verify"),
     ("findings_triaged", "triage"),
-    ("reviewed", "record-review"),
+    ("reviewed", "complete-review"),
 ])
 def test_mark_names_the_verb_that_computes_it(loaded_issue: Path, receipt, verb):
     """A refusal that does not teach the replacement gets routed around."""
@@ -228,6 +229,8 @@ def test_gate_refuses_while_an_in_scope_finding_is_pending(loaded_issue: Path):
     assert _issue(loaded_issue, "verify").returncode == 0
     assert _issue(loaded_issue, "triage").returncode == 0
     assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+    assert _issue(loaded_issue, "complete-review", "standard",
+                       "--verdict", "approve").returncode == 0
     assert _issue(loaded_issue, "gate").returncode == 0, "precondition: gate green"
 
     _add_pending_finding(loaded_issue)
@@ -262,13 +265,39 @@ def test_triage_writes_the_receipt_when_nothing_is_pending(loaded_issue: Path):
 # reviewed <- written by the verb that records the review
 # ---------------------------------------------------------------------------
 
-def test_record_review_writes_the_reviewed_receipt(loaded_issue: Path):
+def test_record_review_claims_the_slot_without_writing_the_receipt(loaded_issue: Path):
+    """Claiming a slot is not completing a review.
+
+    Codex found the inverse shipped (PR #110 round 2, with a reproducer):
+    `record-review` wrote `reviewed` while /issue-review calls it BEFORE the
+    reviewer runs. An interrupted review then left a valid-looking receipt and
+    `close` accepted it -- the exact defect this module exists to prevent,
+    reintroduced by its own fix.
+    """
     assert not _receipts(loaded_issue).get("reviewed")
     proc = _issue(loaded_issue, "record-review", "standard")
     assert proc.returncode == 0, proc.stderr
-    assert _receipts(loaded_issue)["reviewed"], (
-        "recording a review round did not write the receipt it attests to"
+    assert not _receipts(loaded_issue).get("reviewed"), (
+        "claiming a review slot wrote the receipt; the reviewer has not run yet"
     )
+
+
+def test_complete_review_writes_the_receipt_after_a_verdict(loaded_issue: Path):
+    assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+    proc = _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "REQUEST CHANGES")
+    assert proc.returncode == 0, proc.stderr
+    assert _receipts(loaded_issue)["reviewed"], (
+        "completing a review did not write the receipt it attests to"
+    )
+
+
+def test_complete_review_refuses_when_no_slot_was_claimed(loaded_issue: Path):
+    """A completion cannot precede the round it belongs to."""
+    proc = _issue(loaded_issue, "complete-review", "standard",
+                  "--verdict", "approve")
+    assert proc.returncode != 0, "completed a review round that was never claimed"
+    assert not _receipts(loaded_issue).get("reviewed")
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +347,7 @@ class TestReceiptEvidenceBinding:
     def test_close_refuses_a_hand_written_verified_receipt(self, loaded_issue):
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
+        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
         _check_off_deliverables(loaded_issue)
         state_path = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(state_path.read_text())
@@ -335,6 +365,7 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "verify").returncode == 0
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
+        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
         _check_off_deliverables(loaded_issue)
         state_path = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(state_path.read_text())
@@ -350,6 +381,8 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "verify").returncode == 0
         assert _issue(loaded_issue, "triage").returncode == 0
         assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+        assert _issue(loaded_issue, "complete-review", "standard",
+                           "--verdict", "approve").returncode == 0
         _check_off_deliverables(loaded_issue)
         proc = _issue(loaded_issue, "close")
         assert proc.returncode == 0, (
@@ -364,6 +397,7 @@ class TestReceiptEvidenceBinding:
         assert _issue(loaded_issue, "verify").returncode == 0
         _issue(loaded_issue, "triage")
         _issue(loaded_issue, "record-review", "standard")
+        _issue(loaded_issue, "complete-review", "standard", "--verdict", "approve")
         _check_off_deliverables(loaded_issue)
         sp = loaded_issue / ".claude/state/active-issue.json"
         d = json.loads(sp.read_text())
@@ -439,7 +473,7 @@ class TestCommandFilesMatchTheCLI:
     @pytest.mark.parametrize("name,verb", [
         ("issue-verify.md", "verify"),
         ("issue-closeout.md", "triage"),
-        ("issue-review.md", "record-review"),
+        ("issue-review.md", "complete-review"),
     ])
     def test_each_command_calls_the_verb_that_writes_its_receipt(self, name, verb):
         """Removing the broken call is not enough; the receipt must still be

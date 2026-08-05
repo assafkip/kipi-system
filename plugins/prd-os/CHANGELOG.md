@@ -2,6 +2,22 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.21.0] - 2026-08-05
+
+### Fixed - an unrecognized severity read as "minor" and the gate went green
+
+Codex, PR #110 round 2, with a reproducer: `spillover add --severity critical`
+was accepted, stored verbatim, reported as "minor-or-untriaged", and `gates run`
+returned 0. The allowlist named only blocker/major/high, so the word a human
+reaches for under pressure ("critical", "urgent", "sev1") was exactly the one
+that silenced the gate -- the louder the label, the quieter it got.
+
+Now fail-closed: `_is_blocking_severity` blocks anything outside an explicit
+NON-blocking set, plus argparse `choices` so the CLI refuses it at the door
+rather than storing it for the gate to mis-bucket. The non-blocking half is
+asserted separately, so the fix cannot pass by blocking on everything -- that
+would be the permanently-red gate 0.19.0 replaced.
+
 ## [0.19.0] - 2026-08-05
 
 ### Fixed — two promises with no code behind them, in this plugin's own docs

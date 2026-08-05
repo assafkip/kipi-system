@@ -70,6 +70,8 @@ def _drive_close(repo, issue_id):
     _runner(repo, "verify")
     _runner(repo, "triage")
     _runner(repo, "record-review", "standard")
+    # Claiming the slot no longer writes `reviewed`; completing it does.
+    _runner(repo, "complete-review", "standard", "--verdict", "approve")
     return _runner(repo, "close")
 
 

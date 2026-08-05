@@ -23,9 +23,11 @@ Subcommands:
   close                    Verify all receipts; flip status=closed; flush amendments to spec footer; clear state
   clear                    Clear active state (for abandoned work)
   allowed-files            Print snapshotted allowed_files as JSON array
-  record-review <kind>     Increment review round counter (standard|adversarial)
-                           under cap AND write the `reviewed` receipt for that
-                           round -- one verb, so counter and receipt cannot drift
+  record-review <kind>     CLAIM a review slot (standard|adversarial) under cap.
+                           Writes no receipt: the review has not run yet.
+  complete-review <kind> --verdict STR
+                           Record a FINISHED review's verdict and write the
+                           `reviewed` receipt. Refuses if no slot was claimed.
 
 Behavior contract mirrors the pre-plugin runner at
 q-ktlyst/.q-system/scripts/issue-runner.py, with ONE deliberate break (ASK-402):
@@ -594,7 +596,7 @@ def cmd_gate(paths: Paths, args: argparse.Namespace) -> int:
 COMPUTING_VERB = {
     "verified": "verify",
     "findings_triaged": "triage",
-    "reviewed": "record-review <kind>",
+    "reviewed": "complete-review <kind> --verdict <verdict>",
 }
 
 
@@ -1111,17 +1113,57 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         )
         return 2
     rounds[args.kind] = current + 1
-    # The verb that records the review round is the verb that writes the
-    # receipt attesting a review happened. Previously the counter moved here
-    # and the receipt was stamped separately by `mark reviewed`, so the two
-    # could disagree and nothing noticed.
-    _write_receipt(paths, state, "reviewed")
+    # CLAIMS THE SLOT. Deliberately does NOT write the `reviewed` receipt.
+    #
+    # It did, for one commit, and Codex caught it with a reproducer (PR #110
+    # round 2): /issue-review claims the slot BEFORE the reviewer runs, so the
+    # receipt landed on a review that had not happened yet. An interrupted or
+    # errored review then left a valid-looking `reviewed` receipt and close
+    # accepted it. That is the exact class this file exists to kill -- a receipt
+    # written by code that computed nothing -- reintroduced by the fix for it.
+    #
+    # Claiming a slot and completing a review are two facts. `complete-review`
+    # writes the receipt, and only after a verdict is durably recorded.
+    _write_state(paths, state)
     print(json.dumps({
         "kind": args.kind,
         "round": rounds[args.kind],
         "cap": cap,
         "capped": rounds[args.kind] >= cap,
     }))
+    return 0
+
+
+def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
+    """Record that a review actually finished, then write the `reviewed` receipt.
+
+    The receipt is a function of a durably-stored verdict, never of intent to
+    review. Refuses if no slot was claimed for this kind, so the completion can
+    never precede the round it belongs to.
+    """
+    if args.kind not in REVIEW_KINDS:
+        sys.stderr.write(f"kind must be one of {REVIEW_KINDS}; got {args.kind!r}\n")
+        return 2
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    claimed = (state.get("review_rounds") or {}).get(args.kind, 0)
+    if not claimed:
+        sys.stderr.write(
+            f"no {args.kind} review round was claimed; run "
+            f"`record-review {args.kind}` before the reviewer, and "
+            f"`complete-review {args.kind}` after it returns.\n")
+        return 2
+    completions = state.setdefault("review_completions", {})
+    completions[args.kind] = {
+        "verdict": args.verdict,
+        "round": claimed,
+        "completed_at": _now_iso(),
+    }
+    stamp = _write_receipt(paths, state, "reviewed")
+    print(json.dumps({"reviewed": state["issue_id"], "kind": args.kind,
+                      "verdict": args.verdict, "at": stamp}))
     return 0
 
 
@@ -1198,6 +1240,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("close").set_defaults(func=cmd_close)
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     sub.add_parser("allowed-files").set_defaults(func=cmd_allowed_files)
+
+    p_complete = sub.add_parser("complete-review")
+    p_complete.add_argument("kind")
+    p_complete.add_argument("--verdict", required=True,
+                            help="the reviewer's verdict, stored with the receipt")
+    p_complete.set_defaults(func=cmd_complete_review)
 
     p_record = sub.add_parser("record-review")
     p_record.add_argument("kind", help="standard|adversarial")
