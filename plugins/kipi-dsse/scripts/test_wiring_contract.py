@@ -47,7 +47,11 @@ def _write_spec(repo, issue_id, allowed_files):
         "priority: p0\n"
         f"allowed_files: {allow}\n"
         "disallowed_files: []\n"
-        "required_checks: []\n"
+        # A real passing check: `verify` refuses an empty list, because a
+        # receipt meaning "the checks ran and passed" must not be issuable
+        # when there were none (prd_split.py already refused empty lists at
+        # split time for the same reason; this fixture bypasses split).
+        "required_checks:\n  - python3 -c \"print('ok')\"\n"
         "required_reviews: []\n"
         "---\n\n"
         f"{_MARKER}\n\nFixture.\n"
@@ -57,8 +61,13 @@ def _write_spec(repo, issue_id, allowed_files):
 def _drive_close(repo, issue_id):
     _runner(repo, "load", issue_id)
     _runner(repo, "approve")
-    for r in ("verified", "reviewed", "findings_triaged"):
-        _runner(repo, "mark", r)
+    # Earn the receipts through the verbs that compute them. `mark <receipt>`
+    # was removed 2026-08-05: it wrote a receipt on the caller's word, which is
+    # the class "code that RECORDS a claim it never COMPUTED". Tests now take
+    # the production path, so this precondition is a real one.
+    _runner(repo, "verify")
+    _runner(repo, "triage")
+    _runner(repo, "record-review", "standard")
     return _runner(repo, "close")
 
 

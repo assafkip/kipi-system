@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -514,8 +515,31 @@ def cmd_scope(paths: Paths, args: argparse.Namespace) -> int:
     return 2
 
 
+def _record_gate_bypass(paths: Paths, env_name: str) -> None:
+    """Every override leaves a countable row (the linear-bypass pattern).
+
+    ISSUE_GATE_OFF is agent-settable, which breaks the fleet's own "an agent
+    cannot set it for itself" principle. A process cannot make its own env
+    un-settable, so the honest fallback is to make each use visible rather
+    than silent.
+    """
+    try:
+        state = _read_state(paths)
+        ledger = paths.repo_root / ".prd-os/gate-bypasses.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "env": env_name,
+                "issue_id": state.get("issue_id"),
+                "at": _now_iso(),
+            }, sort_keys=True) + "\n")
+    except OSError as exc:  # never let bookkeeping break the gate itself
+        sys.stderr.write(f"warning: could not record gate bypass: {exc}\n")
+
+
 def cmd_gate(paths: Paths, args: argparse.Namespace) -> int:
     if os.environ.get("ISSUE_GATE_OFF") == "1":
+        _record_gate_bypass(paths, "ISSUE_GATE_OFF")
         return 0
     state = _read_state(paths)
     issue_id = state.get("issue_id")
@@ -554,17 +578,125 @@ def cmd_gate(paths: Paths, args: argparse.Namespace) -> int:
     return 0
 
 
+COMPUTING_VERB = {
+    "verified": "verify",
+    "findings_triaged": "triage",
+    "reviewed": "record-review <kind>",
+}
+
+
+def _write_receipt(paths: Paths, state: dict, field: str, extra: dict | None = None) -> str:
+    """The ONLY writer of a receipt. Callers must have computed the fact first.
+
+    Private on purpose: every caller lives in this module, immediately after
+    the code that produced the evidence. There is no CLI verb that reaches it
+    without doing the work.
+    """
+    stamp = _now_iso()
+    state["receipts"][field] = stamp
+    if extra:
+        state.update(extra)
+    _write_state(paths, state)
+    return stamp
+
+
 def cmd_mark(paths: Paths, args: argparse.Namespace) -> int:
+    """Refuse. Kept as a subcommand so old callers get a teaching error.
+
+    THE CLASS (founder, 2026-08-05): code that RECORDS a claim it never
+    COMPUTED. Proven against the shipped runner in a virgin repo -- `mark
+    verified`, `mark reviewed`, `mark findings_triaged` each exited 0 with zero
+    work done, and the resulting receipts were byte-identical to honest ones.
+    A receipt that can be asserted is not a receipt.
+
+    Deleting the subcommand outright would surface as "invalid choice", which
+    teaches nothing; this names the verb that computes each field.
+    """
     if args.receipt not in RECEIPT_FIELDS:
         sys.stderr.write(f"unknown receipt: {args.receipt}\n")
         return 2
+    verb = COMPUTING_VERB[args.receipt]
+    sys.stderr.write(
+        f"refusing to mark {args.receipt!r}: a receipt is written only by the "
+        f"code that computed it.\n"
+        f"Run `issue_runner.py {verb}` -- it does the work and records the "
+        f"evidence in the same step.\n"
+    )
+    return 2
+
+
+def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
+    """Run every required_check, record rc + output hash, write the receipt.
+
+    The snapshot (taken at load) is the source, not the live spec: a spec
+    edited mid-issue must not silently change what "verified" attested to.
+    Evidence is recorded whether the run passes or fails -- a red run that
+    stores nothing teaches nothing on the next read.
+    """
     state = _read_state(paths)
     if not state.get("issue_id"):
         sys.stderr.write("no active issue\n")
         return 2
-    state["receipts"][args.receipt] = _now_iso()
-    _write_state(paths, state)
-    print(json.dumps({"marked": args.receipt, "at": state["receipts"][args.receipt]}))
+    checks = state.get("required_checks_snapshot") or []
+    evidence = []
+    for command in checks:
+        result = subprocess.run(command, shell=True, cwd=paths.repo_root,
+                                capture_output=True, text=True)
+        blob = (result.stdout or "") + (result.stderr or "")
+        evidence.append({
+            "command": command,
+            "returncode": result.returncode,
+            "output_sha256": hashlib.sha256(blob.encode("utf-8")).hexdigest(),
+            "ran_at": _now_iso(),
+        })
+    failed = [e for e in evidence if e["returncode"] != 0]
+    state["verified_evidence"] = evidence
+    if failed:
+        _write_state(paths, state)  # keep the evidence; withhold the receipt
+        for e in failed:
+            sys.stderr.write(f"check FAILED (rc={e['returncode']}): {e['command']}\n")
+        sys.stderr.write(
+            f"{len(failed)} of {len(evidence)} required_check(s) failed; "
+            "no verified receipt written.\n")
+        return 2
+    if not checks:
+        # An empty check list cannot attest to anything. Refusing keeps the
+        # receipt meaning "the checks ran and passed" rather than "there were
+        # none", which is the same hand-wave in a different shape.
+        sys.stderr.write(
+            "no required_checks in the spec snapshot; nothing to verify. "
+            "Add a check to the issue spec, or amend the spec if it is wrong.\n")
+        return 2
+    stamp = _write_receipt(paths, state, "verified")
+    print(json.dumps({"verified": state["issue_id"], "at": stamp,
+                      "checks_run": len(evidence)}))
+    return 0
+
+
+def cmd_triage(paths: Paths, args: argparse.Namespace) -> int:
+    """Compute triage completeness from the findings ledger, then write.
+
+    `_count_in_scope_pending` already existed and was already used as a
+    close-time gate -- the computation was there while the receipt stayed
+    hand-stamped. Same function, now the writer.
+    """
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        sys.stderr.write("no active issue\n")
+        return 2
+    pending, bad = _count_in_scope_pending(paths, issue_id)
+    if pending or bad:
+        msgs = []
+        if pending:
+            msgs.append(f"{pending} in-scope finding(s) still pending")
+        if bad:
+            msgs.append(f"{len(bad)} finding(s) with invalid disposition: {bad[:3]}")
+        sys.stderr.write(
+            f"cannot record findings_triaged for {issue_id}: {'; '.join(msgs)}.\n")
+        return 2
+    stamp = _write_receipt(paths, state, "findings_triaged")
+    print(json.dumps({"findings_triaged": issue_id, "at": stamp}))
     return 0
 
 
@@ -925,7 +1057,11 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         )
         return 2
     rounds[args.kind] = current + 1
-    _write_state(paths, state)
+    # The verb that records the review round is the verb that writes the
+    # receipt attesting a review happened. Previously the counter moved here
+    # and the receipt was stamped separately by `mark reviewed`, so the two
+    # could disagree and nothing noticed.
+    _write_receipt(paths, state, "reviewed")
     print(json.dumps({
         "kind": args.kind,
         "round": rounds[args.kind],
@@ -995,6 +1131,9 @@ def main(argv: list[str] | None = None) -> int:
     p_mark = sub.add_parser("mark")
     p_mark.add_argument("receipt")
     p_mark.set_defaults(func=cmd_mark)
+
+    sub.add_parser("verify").set_defaults(func=cmd_verify)
+    sub.add_parser("triage").set_defaults(func=cmd_triage)
 
     sub.add_parser("approve").set_defaults(func=cmd_approve)
 

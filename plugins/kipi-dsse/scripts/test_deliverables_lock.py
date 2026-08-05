@@ -51,7 +51,9 @@ def _write_spec(repo, issue_id, count=None, deliverables_md=""):
         "priority: p0\n"
         "allowed_files:\n  - src/tracked.py\n"
         "disallowed_files: []\n"
-        "required_checks: []\n"
+        # `verify` refuses an empty check list (a receipt cannot attest that
+        # nothing ran), so the fixture carries a real passing check.
+        "required_checks:\n  - python3 -c \"print('ok')\"\n"
         "required_reviews: []\n"
         f"{count_line}"
         "---\n\n"
@@ -63,8 +65,11 @@ def _write_spec(repo, issue_id, count=None, deliverables_md=""):
 def _drive_close(repo, issue_id):
     _runner(repo, "load", issue_id)
     _runner(repo, "approve")
-    for r in ("verified", "reviewed", "findings_triaged"):
-        _runner(repo, "mark", r)
+    # Receipts are earned, not stamped: `mark <receipt>` was removed
+    # 2026-08-05 (it recorded a claim it never computed).
+    _runner(repo, "verify")
+    _runner(repo, "triage")
+    _runner(repo, "record-review", "standard")
     return _runner(repo, "close")
 
 

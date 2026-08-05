@@ -36,7 +36,8 @@ allowed_files:
   - src/a.py
 disallowed_files:
   - src/secret.py
-required_checks: []
+required_checks:
+  - python3 -c "print('ok')"
 required_reviews: []
 ---
 {_MARKER}
@@ -119,7 +120,8 @@ allowed_files:
   - src/*
 disallowed_files:
   - src/secret.py
-required_checks: []
+required_checks:
+  - python3 -c "print('ok')"
 required_reviews: []
 ---
 {_MARKER}
@@ -280,8 +282,11 @@ def test_stop_exhaustion_allows_after_max_firings():
 def test_stop_allows_when_all_receipts_present():
     with tempfile.TemporaryDirectory() as d:
         repo = _new_repo(d)
-        for receipt in ("verified", "reviewed", "findings_triaged"):
-            assert _runner(repo, "mark", receipt).returncode == 0, receipt
+        # Earned, not stamped: `mark <receipt>` was removed 2026-08-05 because
+        # it recorded a claim it never computed.
+        assert _runner(repo, "verify").returncode == 0
+        assert _runner(repo, "triage").returncode == 0
+        assert _runner(repo, "record-review", "standard").returncode == 0
         r = _hook(STOP_GATE, repo, {})
         assert r.returncode == 0, f"all receipts present should allow stop: {r.stderr}"
 
@@ -301,8 +306,9 @@ def test_stop_allows_when_issue_closed():
         (issues / "issue-a.md").write_text(_SPEC)
         assert _runner(repo, "load", "issue-a").returncode == 0
         assert _runner(repo, "approve").returncode == 0
-        for receipt in ("verified", "reviewed", "findings_triaged"):
-            assert _runner(repo, "mark", receipt).returncode == 0
+        assert _runner(repo, "verify").returncode == 0
+        assert _runner(repo, "triage").returncode == 0
+        assert _runner(repo, "record-review", "standard").returncode == 0
         assert _runner(repo, "close").returncode == 0, "close should succeed"
         r = _hook(STOP_GATE, repo, {})
         assert r.returncode == 0, r.stderr
