@@ -2305,3 +2305,59 @@ class TestDuplicateClaimsMustComeFromThePacket:
             {"duplicates": [{"prd_id": "prd-x-2026-01-01",
                              "finding_id": "finding-7", "similarity": 0.9}]})
         assert refs == {"finding:prd-x-2026-01-01/finding-7"}
+
+
+class TestBindingSurvivesTheDispositionWrite:
+    """Codex MAJOR, PR #103 round 4. The plan's load-bearing design claim was
+    "packet_hash excludes assembled_at and packet_sha256, so the judge can
+    assemble independently and still bind". The exclusion is real; the
+    conclusion did not follow.
+
+    `findings_xref.cross_reference` computes candidates ONLY for findings whose
+    disposition is currently `pending` (findings_xref.py:186-188). So the judge
+    assembles while the finding is pending and sees cross-PRD duplicates;
+    `_write_all` then sets the disposition; `capture_from_triage` reassembles,
+    the candidates are gone, the hash moves, and `_load_judge_run` refuses the
+    run as stale. Every finding with a cross-PRD duplicate candidate is
+    therefore un-capturable with a judge run.
+
+    The earlier binding test passed because the fixture had NO duplicates -- it
+    asserted the property on the one input that could not exercise it.
+    """
+
+    def _prior_prd_with_a_matching_finding(self, repo, body):
+        prior = "prd-prior-2026-07-01"
+        path = repo / FINDINGS_REL / f"{prior}-findings.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "id": "finding-1", "prd_id": prior, "source": "codex-review",
+            "severity": "major", "body": body, "disposition": "rejected",
+            "rationale": "we decided against this before",
+            "created_at": "2026-07-01T00:00:00Z",
+            "resolved_at": "2026-07-02T00:00:00Z",
+        }) + "\n")
+        return prior
+
+    def test_a_cross_prd_duplicate_candidate_does_not_break_capture(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        _, rows = _findings_rows(judgment_repo)
+        self._prior_prd_with_a_matching_finding(judgment_repo, rows[0]["body"])
+
+        jc = _load_module("jc_bind", "judgment_compiler.py")
+        packet = jc.assemble_packet(_cfg_for(judgment_repo), PRD_ID, "finding-1")
+        assert packet["duplicates"], (
+            "fixture failed to produce a cross-PRD duplicate candidate, so "
+            "this test cannot exercise the defect")
+
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        disp = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run))
+        assert disp.returncode == 0, (
+            "a finding with a cross-PRD duplicate candidate could not be "
+            f"captured with its judge run:\n{disp.stderr}")
+        assert len(read_ledger(judgment_repo)) == 1

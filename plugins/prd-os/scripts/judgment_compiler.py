@@ -971,11 +971,33 @@ def capture_episode(cfg: Config, packet: dict, **kwargs) -> dict:
 def capture_from_triage(cfg: Config, prd_id: str, finding: dict, *,
                         actor: str, reason_code: str | None,
                         evidence_refs: list[str], rationale: str | None,
-                        judge_run_path: str | None) -> dict:
-    """Called by findings_writer.cmd_set_disposition after the disposition
-    write. Assembles context inline; the caller pre-validated the evidence
-    gate via validate_triage_decision (fail-fast, before any mutation)."""
-    packet = assemble_packet(cfg, prd_id, finding["id"])
+                        judge_run_path: str | None,
+                        packet: dict | None = None) -> dict:
+    """Called by findings_writer.cmd_set_disposition around the disposition
+    write. The caller pre-validated the evidence gate via
+    validate_triage_decision (fail-fast, before any mutation).
+
+    `packet` is supplied by the caller and assembled BEFORE the findings write.
+    Assembling it here, after the write, was wrong twice over (Codex major, PR
+    #103 round 4):
+
+    1. It broke the judge binding outright. `findings_xref.cross_reference`
+       computes duplicate candidates ONLY for findings that are currently
+       `pending` (findings_xref.py:186-188). The judge assembles while the
+       finding is pending and sees cross-PRD candidates; by the time this ran,
+       the disposition was written, the candidates were gone, the packet hash
+       had moved, and `_load_judge_run` refused the run as stale. Every finding
+       with a cross-PRD duplicate was un-capturable with a judge run.
+    2. It froze the wrong moment. A receipt exists to freeze DECISION-TIME
+       context, and decision time is before the decision is applied.
+
+    The plan claimed independent assembly was safe because `packet_hash`
+    excludes `assembled_at` and `packet_sha256`. That exclusion is real, but
+    the conclusion needed the state to be UNCHANGED between assemblies, and the
+    disposition write is exactly a change to that state.
+    """
+    if packet is None:
+        packet = assemble_packet(cfg, prd_id, finding["id"])
     judge_run = None
     if judge_run_path:
         judge_run = _load_judge_run(Path(judge_run_path), packet)

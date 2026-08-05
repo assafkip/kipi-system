@@ -2,6 +2,30 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.15.7] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 4) — the judge binding was broken outright
+`capture_from_triage` assembled the context packet AFTER the disposition write.
+`findings_xref.cross_reference` computes duplicate candidates only for findings
+whose disposition is currently `pending`, so the judge assembled while the
+finding was pending and saw cross-PRD candidates, and by capture time those
+candidates were gone, the packet hash had moved, and `_load_judge_run` refused
+the run as stale. **Every finding with a cross-PRD duplicate candidate was
+un-capturable with a judge run.**
+
+The packet is now assembled BEFORE the write, inside the same critical section,
+and passed into `capture_from_triage`. That fixes the binding and is also the
+semantically correct moment: a receipt freezes DECISION-TIME context, and
+decision time is before the decision is applied.
+
+**On the design claim this falsifies.** The plan held that the judge could
+assemble independently because `packet_hash` excludes `assembled_at` and
+`packet_sha256`. That exclusion is real and was verified. The conclusion did not
+follow: it needed the underlying state to be UNCHANGED between the two
+assemblies, and the disposition write is precisely a change to that state. The
+earlier binding test passed because its fixture had no duplicates — it asserted
+the property on the one input incapable of exercising it.
+
 ## [0.15.6] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 3) — a duplicate claim must cite a packet candidate

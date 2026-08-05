@@ -576,6 +576,22 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
         # serialise unrelated triage on the shared ledger lock.
         persist_lock = contextlib.nullcontext()
     with persist_lock:
+        # Assemble BEFORE the write, inside the lock. The receipt must freeze
+        # decision-time context, and the judge assembled its packet while this
+        # finding was still pending. Assembling after the write dropped every
+        # cross-PRD duplicate candidate (they are computed for pending findings
+        # only) and moved the packet hash, so any finding with one could not be
+        # captured with a judge run at all (Codex major, PR #103 round 4).
+        decision_packet = None
+        if judgment_enabled:
+            try:
+                decision_packet = judgment_compiler.assemble_packet(
+                    cfg, args.prd_id, args.finding_id)
+            except (judgment_compiler.ValidationError, OSError) as exc:
+                sys.stderr.write(
+                    f"judgment context could not be assembled: {exc}\n"
+                    "findings file unchanged.\n")
+                return 2
         _write_all(path, recs)
         # INSIDE the lock, with the write above: that pairing is the whole
         # point of the critical section. The receipt still lands before
@@ -596,6 +612,7 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                     # from the round-5 fingerprint fix).
                     rationale=(target.get("rationale") or "").strip() or None,
                     judge_run_path=getattr(args, "judge_run", None),
+                    packet=decision_packet,
                 )
             except (judgment_compiler.ValidationError, OSError) as exc:
                 rolled_back = _rollback_findings(path, pre_findings_bytes)
