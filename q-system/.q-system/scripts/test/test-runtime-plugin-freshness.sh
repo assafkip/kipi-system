@@ -93,11 +93,31 @@ MP="$D/marketplaces/kipi"
 # reinstate the fixture manifest the checkout replaced, then advance the remote
 mkdir -p "$MP/plugins/prd-os/.claude-plugin"
 printf '{"name":"prd-os","version":"0.16.5"}\n' > "$MP/plugins/prd-os/.claude-plugin/plugin.json"
-( cd "$SEED" && printf 'b\n' > b.md && G add -A && G commit -qm ahead && G push -q "$BARE" HEAD:main )
+# The commit that advances the remote must touch plugins/, because that is the
+# only subtree whose contents become the runtime. See the docs-only case below.
+( cd "$SEED" && mkdir -p plugins/prd-os && printf 'b\n' > plugins/prd-os/commands.md \
+  && G add -A && G commit -qm "ahead (plugin code)" && G push -q "$BARE" HEAD:main )
 ( cd "$MP" && G fetch -q origin )   # remote ref now ahead; clone HEAD is not
 run_check "$D"
-[ "$RC" -eq 1 ] || fail "clone behind origin/main must exit 1 even with version parity, got $RC: $OUT"
+[ "$RC" -eq 1 ] || fail "clone behind origin/main by a PLUGIN commit must exit 1 even with version parity, got $RC: $OUT"
 case "$OUT" in *BEHIND*) :;; *) fail "behind-clone case did not print BEHIND: $OUT";; esac
+
+# --- a DOCS-ONLY commit ahead must NOT report the runtime as stale -----------
+# Codex review of PR #105 round 3, major: the count was over HEAD..origin/main
+# with no pathspec, so a docs-only merge -- the most common commit in this repo
+# -- reported the running plugins as stale. That is a permanent false Linear
+# alert, and a detector that cries wolf gets switched off. This is the case that
+# keeps the `-- plugins/` pathspec honest; without it the run below exits 1.
+( cd "$MP" && G checkout -q -B main origin/main )
+mkdir -p "$MP/plugins/prd-os/.claude-plugin"
+printf '{"name":"prd-os","version":"0.16.5"}\n' > "$MP/plugins/prd-os/.claude-plugin/plugin.json"
+run_check "$D"
+[ "$RC" -eq 0 ] || fail "precondition: clone caught up should be green, got $RC: $OUT"
+( cd "$SEED" && printf 'readme\n' > README.md && G add -A && G commit -qm "docs only" && G push -q "$BARE" HEAD:main )
+( cd "$MP" && G fetch -q origin )
+run_check "$D"
+[ "$RC" -eq 0 ] || fail "a DOCS-ONLY commit ahead must not report stale plugins, got $RC: $OUT"
+case "$OUT" in *BEHIND*) fail "docs-only commit printed BEHIND -- the pathspec is not filtering: $OUT";; esac
 
 # --- a hand-edited clone is RED even when versions agree --------------------
 # The 2026-08-05 shape: someone patches the running copy, it works, and the next

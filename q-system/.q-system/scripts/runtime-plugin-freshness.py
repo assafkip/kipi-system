@@ -87,12 +87,27 @@ def clone_commits_behind(marketplace: Path) -> int | None:
     Deliberately does NOT fetch. A gate that reaches the network is a gate that
     fails on a plane and then gets switched off. This reads the already-fetched
     remote ref, so the number is a FLOOR, never an overstatement.
+
+    COUNTS ONLY COMMITS THAT TOUCH `plugins/`. It used to count every commit on
+    origin/main, which made a docs-only merge -- the most common commit in this
+    repo -- report the RUNNING PLUGINS as stale. That is a permanent false alarm
+    on a detector that files a Linear issue, and a gate that cries wolf is a gate
+    someone switches off.
+
+    This is the resolution of a real disagreement across two review rounds, not a
+    revert of either. Round 2 said dropping the behind-signal entirely was wrong,
+    because a plugin commit can change runtime code WITHOUT bumping a manifest
+    version and version-parity alone would miss it. Round 3 said the signal as
+    built fires on changes that cannot affect a plugin. Both are true of a
+    whole-repo count and neither is true once the count is scoped to the only
+    subtree whose contents become the runtime.
     """
     if not (marketplace / ".git").exists():
         return None
     try:
         proc = subprocess.run(
-            ["git", "-C", str(marketplace), "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "-C", str(marketplace), "rev-list", "--count",
+             "HEAD..origin/main", "--", "plugins/"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
