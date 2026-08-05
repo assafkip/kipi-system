@@ -447,40 +447,47 @@ drget() { printf '%s' "$DRIFT" | python3 -c "import json,sys;print(json.load(sys
   && ok "a plugin whose files did NOT change reports no drift, though the clone advanced" \
   || bad "beta reported $(drget beta) (want 0) -- this is the docs-only false alarm rebuilt"
 
-# --- git failure text is redacted and bounded (round 7, severity refuted) ----
-# The credential-leak BLOCKER did not reproduce on git 2.54 (both failure paths
-# strip userinfo before printing; both were executed). The underlying shape is
-# still real: unbounded, server-influenced text in a permanent issue. Redacting
-# here rather than trusting a git version to keep doing it.
+# --- git failure text is NEVER echoed, only classified (round 8, blocker) ----
+# r7 added a userinfo regex; r8 proved credentials in a QUERY STRING survive it
+# (`?access_token=`, an OAuth `?code=`). The fix is not a better regex: nothing
+# from git's output reaches the published string at all. This case feeds the
+# known leak vectors AND a canary that appears in no constant we emit, so any
+# future re-introduction of echoing fails here.
 SAFE="$(ROOT="$ROOT" python3 - <<'PY6'
 import importlib.util, json, os
 S=os.path.join(os.environ["ROOT"],"q-system/.q-system/scripts")
 sp=importlib.util.spec_from_file_location("fh",os.path.join(S,"fleet-health-daily.py"))
 fh=importlib.util.module_from_spec(sp); sp.loader.exec_module(fh)
-leaky = "fatal: unable to access 'https://user:ghp_SECRET999@host/x.git/': boom"
-long_ = "remote: " + "x"*400
+CANARY="ZZCANARY7788"
+vectors=[
+  f"fatal: unable to access 'https://host/x.git?access_token={CANARY}': Could not resolve host",
+  f"fatal: unable to access 'https://user:{CANARY}@host/x.git': boom",
+  f"remote: see https://host/cb?code={CANARY}&state=1",
+  "remote: "+CANARY*40,
+]
+outs=[fh._safe_git_error(v,"",128) for v in vectors]
 print(json.dumps({
-  "redacted": "ghp_SECRET999" not in fh._safe_git_error(leaky,"",1),
-  "kept_host": "host/x.git" in fh._safe_git_error(leaky,"",1),
-  "bounded": len(fh._safe_git_error(long_,"",1)) <= 203,
-  "empty_falls_back": fh._safe_git_error("","",128) == "git fetch exited 128",
+  "any_canary": any(CANARY in o for o in outs),
+  "max_len": max(len(o) for o in outs),
+  "classified": fh._safe_git_error("fatal: Could not resolve host: x","",128),
+  "unknown_falls_back": fh._safe_git_error("something totally novel","",9),
 }))
 PY6
 )"
-echo "    redaction result: $SAFE"
+echo "    no-echo result: $SAFE"
 sfget() { printf '%s' "$SAFE" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
-[ "$(sfget redacted)" = "True" ] \
-  && ok "userinfo is stripped from git failure text before it is published" \
-  || bad "a token survived into the published field"
-[ "$(sfget kept_host)" = "True" ] \
-  && ok "the host and path survive, so the message stays diagnosable" \
-  || bad "redaction ate the useful part of the message"
-[ "$(sfget bounded)" = "True" ] \
-  && ok "a 400-char server line is bounded before it reaches a permanent issue" \
-  || bad "unbounded server text reaches the issue body"
-[ "$(sfget empty_falls_back)" = "True" ] \
-  && ok "empty output falls back to the exit code, not an empty reason" \
-  || bad "empty git output produced an empty reason"
+[ "$(sfget any_canary)" = "False" ] \
+  && ok "no byte of git output reaches the published string (4 leak vectors incl. query-string creds)" \
+  || bad "a canary from git output survived into the published field"
+[ "$(sfget max_len)" -le 80 ] 2>/dev/null \
+  && ok "the published string is bounded by construction, not by truncation" \
+  || bad "published string grew to $(sfget max_len) chars -- it is echoing input"
+[ "$(sfget classified)" = "the host could not be resolved (git fetch exited 128)" ] \
+  && ok "a recognised condition still yields a useful, self-owned classification" \
+  || bad "classification wrong: $(sfget classified)"
+[ "$(sfget unknown_falls_back)" = "git fetch exited 9" ] \
+  && ok "an unrecognised failure reports the exit code, never the text" \
+  || bad "unknown failure produced: $(sfget unknown_falls_back)"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

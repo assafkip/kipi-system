@@ -1067,31 +1067,43 @@ def detect_untracked_unwired(_ctx) -> list:
 
 
 def _safe_git_error(stderr: str, stdout: str, rc: int) -> str:
-    """One line of git failure text, safe to publish in a permanent issue.
+    """A CLASSIFICATION of a git failure. Never the failure text itself.
 
-    Codex review round 7 called publishing raw stderr a credential-leak blocker.
-    That specific claim did NOT reproduce on git 2.54: with a remote of the form
-    https://user:TOKEN@host/x.git, both likely failure paths strip the
-    credentials before printing ("fatal: Authentication failed for
-    'https://github.com/...'"; "fatal: unable to access
-    'https://nonexistent.invalid/x.git/'"). Verified by executing both.
+    Three rounds landed here and the third is the one that settles it:
 
-    The severity is refuted; the underlying shape is not. This field is
-    externally influenced text of unbounded length -- `remote:` lines are
-    whatever the server chose to send -- and it lands in a permanent Linear
-    issue. Git's redaction is a behaviour of a git version, not a guarantee this
-    code is entitled to rely on, so the redaction is done here too rather than
-    trusted upstream. Defence in depth on a cheap line, not an admission that
-    the blocker held.
+      r7 blocker: "raw stderr leaks credentials". The credential half did NOT
+                  reproduce on git 2.54 -- both likely paths strip userinfo
+                  before printing -- so I refuted the severity and added a
+                  userinfo regex as defence in depth.
+      r8 blocker: credentials in a QUERY STRING survive that regex. Verified:
+                  `https://host/x.git?access_token=ghp_SECRET` passes straight
+                  through, as does an OAuth `?code=` in a `remote:` line.
+
+    r8 is right, and the correct conclusion is not a better regex. Sanitising an
+    unbounded, externally-controlled string is a game the sanitiser loses one
+    vector at a time, and each round of it ships a new hole into a permanent,
+    undeletable Linear issue. So NO part of git's output is published. The issue
+    carries the exit code and, when a known condition is recognisable, a constant
+    string WE own -- the input is matched against, never echoed.
+
+    The diagnosis is not lost, it is relocated: the operator runs the checker by
+    hand and reads the real error locally, where it is not published anywhere.
     """
-    text = (stderr or stdout or "").strip().splitlines()
-    if not text:
-        return f"git fetch exited {rc}"
-    line = text[-1]
-    # Strip any userinfo in a URL: scheme://<anything>@host -> scheme://host.
-    line = re.sub(r"(\w+://)[^/\s@]*@", r"\1", line)
-    # Bound it. A permanent record does not carry a server's essay.
-    return (line[:200] + "...") if len(line) > 200 else line
+    blob = f"{stderr or ''}\n{stdout or ''}".lower()
+    # Match against the input; emit only our own constants. Nothing from `blob`
+    # reaches the return value, which is the property that makes this terminal.
+    for needle, label in (
+        ("could not resolve host", "the host could not be resolved"),
+        ("authentication failed", "authentication failed"),
+        ("permission denied", "permission was denied"),
+        ("repository not found", "the repository was not found"),
+        ("timed out", "the connection timed out"),
+        ("connection refused", "the connection was refused"),
+        ("ssl", "an SSL/TLS error"),
+    ):
+        if needle in blob:
+            return f"{label} (git fetch exited {rc})"
+    return f"git fetch exited {rc}"
 
 
 def detect_stale_runtime_plugins(_ctx) -> list:
