@@ -109,6 +109,18 @@ def _receipts(repo: Path) -> dict:
     return json.loads(_issue(repo, "status").stdout).get("receipts", {})
 
 
+def _check_off_deliverables(repo: Path) -> None:
+    """Tick the spec's deliverable boxes.
+
+    `close` enforces a deliverables lock: the count snapshotted at approve must
+    match the boxes checked under `## Deliverables`. That is a real gate, and a
+    fixture that skips it makes an honest close look refused -- which is how
+    this helper was found.
+    """
+    spec = repo / ".prd-os/issues/probe-1.md"
+    spec.write_text(spec.read_text().replace("- [ ]", "- [x]"))
+
+
 # ---------------------------------------------------------------------------
 # The rule: no standalone mark verb
 # ---------------------------------------------------------------------------
@@ -280,3 +292,101 @@ def test_gate_without_the_override_writes_no_bypass_row(loaded_issue: Path):
     """Negative-fire: the ledger must count real bypasses only."""
     _issue(loaded_issue, "gate")
     assert not (loaded_issue / ".prd-os/gate-bypasses.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# A receipt must be bound to the evidence that produced it
+# ---------------------------------------------------------------------------
+#
+# The computed-receipt work made the WRITE PATH honest: `mark` refuses, and
+# verify/triage/record-review each compute before they record. The STORE stayed
+# plain mutable JSON. Proven 2026-08-05 by hand-writing
+# `.claude/state/active-issue.json` -- receipts.verified set to a timestamp,
+# read straight back through `status`, issue closeable.
+#
+# issue_runner already knew: _workflow_control_plane_paths excludes the state
+# file from agent-editable paths precisely because it "would allow synthetic
+# receipts". But that only blocks the Edit/Write TOOLS -- the scope hook's
+# matcher is Edit|Write|NotebookEdit, so a Bash heredoc writes it unimpeded.
+#
+# The binding uses the evidence `verify` already records (command + returncode
+# + output_sha256). A receipt whose evidence does not hash to its seal is not a
+# receipt.
+
+class TestReceiptEvidenceBinding:
+    def test_close_refuses_a_hand_written_verified_receipt(self, loaded_issue):
+        _issue(loaded_issue, "triage")
+        _issue(loaded_issue, "record-review", "standard")
+        _check_off_deliverables(loaded_issue)
+        state_path = loaded_issue / ".claude/state/active-issue.json"
+        d = json.loads(state_path.read_text())
+        d["receipts"]["verified"] = "2026-01-01T00:00:00Z"   # never ran a check
+        state_path.write_text(json.dumps(d))
+
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode != 0, (
+            "closed on a receipt that was typed into the state file"
+        )
+        assert "evidence" in (proc.stderr + proc.stdout).lower()
+
+    def test_close_refuses_when_the_evidence_is_edited_after_the_fact(self, loaded_issue):
+        """The seal must cover the evidence CONTENT, not merely its presence."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        _issue(loaded_issue, "triage")
+        _issue(loaded_issue, "record-review", "standard")
+        _check_off_deliverables(loaded_issue)
+        state_path = loaded_issue / ".claude/state/active-issue.json"
+        d = json.loads(state_path.read_text())
+        d["verified_evidence"][0]["returncode"] = 0
+        d["verified_evidence"][0]["command"] = "echo pretend-this-ran"
+        state_path.write_text(json.dumps(d))
+
+        assert _issue(loaded_issue, "close").returncode != 0
+
+    def test_an_honestly_earned_receipt_still_closes(self, loaded_issue):
+        """Negative-fire. Without this, refusing every close satisfies both
+        assertions above and breaks the workflow for everyone."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        assert _issue(loaded_issue, "record-review", "standard").returncode == 0
+        _check_off_deliverables(loaded_issue)
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode == 0, (
+            f"honest close refused rc={proc.returncode}\n"
+            f"STDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")
+
+    def test_editing_only_the_output_hash_is_caught(self, loaded_issue):
+        """Mutation found this gap: the evidence-edit test above changed
+        `command` and `returncode`, so a seal covering only those two would
+        have passed it. The output hash is what ties the receipt to what the
+        check actually PRINTED."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        _issue(loaded_issue, "triage")
+        _issue(loaded_issue, "record-review", "standard")
+        _check_off_deliverables(loaded_issue)
+        sp = loaded_issue / ".claude/state/active-issue.json"
+        d = json.loads(sp.read_text())
+        d["verified_evidence"][0]["output_sha256"] = "0" * 64
+        sp.write_text(json.dumps(d))
+        assert _issue(loaded_issue, "close").returncode != 0
+
+    def test_a_seal_cannot_be_lifted_from_another_issue(self, loaded_issue):
+        """Mutation found this too. Without the issue id in the payload, a seal
+        earned on issue A validates identical evidence on issue B -- and
+        `required_checks` are often identical across issues in one PRD, which
+        is exactly when it would matter."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        sp = loaded_issue / ".claude/state/active-issue.json"
+        d = json.loads(sp.read_text())
+        seal, evidence = d["verified_seal"], d["verified_evidence"]
+
+        sys.path.insert(0, str(DSSE))
+        try:
+            import issue_runner
+            other = issue_runner._evidence_seal("some-other-issue", evidence)
+        finally:
+            sys.path.pop(0)
+        assert other != seal, (
+            "identical evidence seals identically across issues; a seal earned "
+            "on one issue would validate another"
+        )

@@ -625,6 +625,33 @@ def cmd_mark(paths: Paths, args: argparse.Namespace) -> int:
     return 2
 
 
+def _evidence_seal(issue_id: str, evidence: list) -> str:
+    """A hash binding the `verified` receipt to the evidence that produced it.
+
+    The write path was made honest first (`mark` refuses; verify/triage/
+    record-review compute). The STORE stayed plain mutable JSON, so a receipt
+    could still be typed straight into `.claude/state/active-issue.json` and
+    read back as genuine -- proven 2026-08-05. issue_runner already excluded
+    that file from agent-EDITABLE paths for exactly this reason, but the scope
+    hook only matches Edit|Write|NotebookEdit, so a Bash heredoc writes it
+    unimpeded.
+
+    Seals the CONTENT, not the presence: command, returncode and output hash of
+    every check, plus the issue id so a seal cannot be lifted between issues.
+    Not a secret-keyed MAC -- anyone who can run this module can recompute it.
+    It raises forgery from "edit one field" to "recompute the seal too", and
+    pairs with the append-only judgment ledger for the tamper-evident story.
+    """
+    payload = json.dumps(
+        {"issue_id": issue_id,
+         "evidence": [{"command": e.get("command"),
+                       "returncode": e.get("returncode"),
+                       "output_sha256": e.get("output_sha256")}
+                      for e in evidence]},
+        sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
     """Run every required_check, record rc + output hash, write the receipt.
 
@@ -667,6 +694,7 @@ def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
             "no required_checks in the spec snapshot; nothing to verify. "
             "Add a check to the issue spec, or amend the spec if it is wrong.\n")
         return 2
+    state["verified_seal"] = _evidence_seal(state["issue_id"], evidence)
     stamp = _write_receipt(paths, state, "verified")
     print(json.dumps({"verified": state["issue_id"], "at": stamp,
                       "checks_run": len(evidence)}))
@@ -863,6 +891,19 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
                 f"under '## Deliverables' ({listed} listed). Check off what "
                 "shipped, or amend the spec via /issue-amend (founder-gated).\n"
             )
+            return 2
+
+    # The `verified` receipt must still match the evidence that produced it.
+    # Without this, close trusts a field anyone with filesystem access can type.
+    if state["receipts"].get("verified"):
+        expected = _evidence_seal(issue_id, state.get("verified_evidence") or [])
+        if state.get("verified_seal") != expected:
+            sys.stderr.write(
+                f"cannot close {issue_id}: the verified receipt does not match "
+                "its evidence.\n"
+                "Either the receipt was written without running the checks, or "
+                "the recorded\nevidence was edited afterwards. Re-run "
+                "`issue_runner.py verify`.\n")
             return 2
 
     closed_at = _now_iso()
