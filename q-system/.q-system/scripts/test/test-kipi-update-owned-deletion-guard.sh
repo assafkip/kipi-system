@@ -70,6 +70,16 @@ check "unowned path at depth is allowed" "$?" "0"
 printf '*deleting   memoryless/notes.md\n' | python3 "$GUARD" 2>/dev/null
 check "substring of an owned name is NOT a match" "$?" "0"
 
+# --- 5b. bypasses found by attacking THIS guard ----------------------------
+# Every one of these passed before hardening. Kept as regressions because they
+# are the shapes a reader would not think to check.
+printf '*deleting   q-system/My-Project/x.md\n' | python3 "$GUARD" 2>/dev/null
+check "case variant is caught (macOS FS is case-insensitive)" "$?" "2"
+printf '*deleting   Q-SYSTEM/MEMORY/x.md\n' | python3 "$GUARD" 2>/dev/null
+check "fully-uppercased owned path is caught" "$?" "2"
+printf 'deleting   q-system/my-project/x.md\n' | python3 "$GUARD" 2>/dev/null
+check "bare 'deleting' (no asterisk) is caught" "$?" "2"
+
 # --- 6. empty input --------------------------------------------------------
 printf '' | python3 "$GUARD" 2>/dev/null
 check "no deletions planned is allowed" "$?" "0"

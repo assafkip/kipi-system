@@ -42,6 +42,7 @@ Reads the itemized dry-run on stdin. Emits the offending paths on stderr.
 
 from __future__ import annotations
 
+import re
 import sys
 
 # Kept in sync with INSTANCE_OWNED_SUBTREES in kipi-update.sh. Duplicated
@@ -60,15 +61,20 @@ INSTANCE_OWNED = (
 )
 
 
+# Verified against the rsync on this machine (openrsync, protocol 29):
+# `rsync -ain --delete` emits `*deleting <path>` per removal. The bare
+# `deleting <path>` form is accepted too -- it costs one alternation and the
+# failure mode of missing it is deleted founder data.
+_DELETING = re.compile(r"^\*?deleting\s+(?P<path>.+?)\s*$")
+
+
 def deletions(itemized: str) -> list[str]:
     """The paths rsync says it will delete, from its own itemized output."""
     out = []
     for line in itemized.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("*deleting"):
-            path = stripped[len("*deleting"):].strip()
-            if path:
-                out.append(path)
+        m = _DELETING.match(line.strip())
+        if m and m.group("path"):
+            out.append(m.group("path"))
     return out
 
 
@@ -81,9 +87,14 @@ def owned_hits(paths: list[str]) -> list[tuple[str, str]]:
     """
     hits = []
     for path in paths:
-        segments = path.strip("/").split("/")
+        # Case-FOLDED. macOS is case-insensitive by default, so
+        # `q-system/My-Project/` and `q-system/my-project/` are the SAME
+        # directory on the founder's machine -- a case-exact match would let a
+        # real deletion of real data through on the platform this actually runs
+        # on. Found by attacking my own guard, 2026-08-05.
+        segments = [s.casefold() for s in path.strip("/").split("/")]
         for sub in INSTANCE_OWNED:
-            parts = sub.split("/")
+            parts = [s.casefold() for s in sub.split("/")]
             for i in range(len(segments) - len(parts) + 1):
                 if segments[i:i + len(parts)] == parts:
                     hits.append((path, sub))
@@ -95,6 +106,13 @@ def owned_hits(paths: list[str]) -> list[tuple[str, str]]:
 
 
 def main() -> int:
+    # NOTE ON EMPTY INPUT. No deletions planned is the NORMAL case, so empty
+    # stdin exits 0 and cannot be made to fail closed here without refusing
+    # every healthy sync. The failure it cannot distinguish -- rsync itself
+    # erroring and producing nothing -- is caught at the call site instead:
+    # kipi-update.sh runs `set -o pipefail`, so a failed rsync fails the whole
+    # pipeline and the caller abandons the instance. A caller WITHOUT pipefail
+    # would be unsafe; that is why the wiring test asserts the call site.
     hits = owned_hits(deletions(sys.stdin.read()))
     if not hits:
         return 0
