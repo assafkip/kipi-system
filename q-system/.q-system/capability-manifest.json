@@ -492,6 +492,11 @@
       "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
       "runner": "python3",
       "timeout_s": 180
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
+      "runner": "python3",
+      "timeout_s": 120
     }
   ],
   "required_data": [],
