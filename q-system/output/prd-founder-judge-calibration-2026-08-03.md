@@ -78,6 +78,21 @@ well a fresh judge predicts Assaf's triage decisions.
 | `q-system/output/founder-judge-calibration-v1-report.md` | Add | 73 | 0 |
 | `q-system/output/founder-judge-calibration-v1-run.json` | Add | 29 | 0 |
 
+**Only `founder-judge-calibration.py` and `...-v1-report.md` are in the repo.**
+The other five rows are run output and are excluded by standing ignore rules
+(`.gitignore:36` `*.jsonl`, `.gitignore:17` `q-system/output/*.json`). They exist
+on the machine that ran v1 and nowhere else, so **the v1 benchmark cannot be
+re-verified or re-run from a clone** — `founder-judge-calibration.py verify
+--dataset .../founder-judge-calibration-v1.jsonl` exits 1 there.
+
+That is deliberate, not a gap in the recovery (codex review of PR #106, major,
+raised twice). Each dataset row carries a `founder_rationale` free-text field —
+Assaf's own words on 50 real triage decisions — and this repo is PUBLIC.
+Overriding two standing run-output ignore rules to publish founder free-text is a
+blast-radius decision that earns its own issue. To make v1 reproducible: publish a
+redacted dataset (drop `founder_rationale`, keep the labels), or point the checker
+at a private location.
+
 ## 6. Test Cases
 
 | # | Type | Scenario | Input | Expected | Pass Criteria |

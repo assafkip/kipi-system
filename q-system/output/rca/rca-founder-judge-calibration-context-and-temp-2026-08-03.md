@@ -62,6 +62,16 @@ not independently auditable.
 - Ran the corrected blind input through `codex exec` with session `019fcb14-613e-7dd0-a3d0-8da1e4fdfc9a`. Result: 50 schema-valid predictions and a hash-bound run receipt.
 - Scored the corrected run. Result: 20/50 exact agreement, 35.0% balanced accuracy, kappa 0.032, and 10-bin confidence error 0.522.
 
+**These runs happened; they are not reproducible from a clone.** The dataset
+(`...-v1.jsonl`) and the run receipt (`...-v1-run.json`) are run output excluded
+by `.gitignore:36` (`*.jsonl`) and `.gitignore:17` (`q-system/output/*.json`), so
+the `verify` line above exits 1 for anyone who does not have the original
+machine's files. The record is kept in the past tense on purpose — deleting a
+true verification because its artifact is not publishable would be the worse
+error — but do not read it as an instruction a reader can follow. Why the
+artifacts stay out, and the two ways to make v1 reproducible, are in
+`q-system/output/prd-founder-judge-calibration-2026-08-03.md` section 5.
+
 ## Contributing factors
 
 - The historical ledger is 76.6% accepted, while the stress test is deliberately balanced at 20/20/10.
