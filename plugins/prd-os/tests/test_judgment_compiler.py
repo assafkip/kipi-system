@@ -190,19 +190,35 @@ class TestGapRepros:
         proc = run_judgment(judgment_repo, "verify")
         assert proc.returncode == 0, proc.stderr
 
-    def test_g2_technical_validity_and_workflow_disposition_are_separate(self, judgment_repo):
-        """G-2: a technically valid finding recorded as a workflow duplicate."""
+    def test_g2_technical_validity_and_workflow_disposition_are_separate(
+            self, judgment_repo, run_findings_writer):
+        """G-2: a technically valid finding recorded as a workflow duplicate.
+
+        The cited duplicate is a REAL second finding, produced by
+        findings_writer, so the packet actually contains the candidate. The
+        original version cited finding-1 as its own duplicate against a
+        zero-duplicate packet; `judge_view`'s citable set now (correctly)
+        refuses that, and the test was only ever green because relevance went
+        unchecked (ASK-363 judge_view refactor)."""
+        assert run_findings_writer(
+            judgment_repo, "add", PRD_ID, "--source", "codex-review",
+            stdin_text=json.dumps([{"severity": "major",
+                                    "body": "the fixture gate can be bypassed"}]),
+        ).returncode == 0
         packet_path, packet = assemble_packet(judgment_repo)
+        assert packet["duplicates"], "fixture must carry a duplicate candidate"
+        dupe = packet["duplicates"][0]
+        ref = f"finding:{dupe['prd_id']}/{dupe['finding_id']}"
         judge = make_judge_run(
             packet, disposition="duplicate", reason_code="duplicate",
-            evidence=[f"finding:{PRD_ID}/finding-1"],
+            evidence=[ref],
         )
         judge_path = judgment_repo / "judge.json"
         judge_path.write_text(json.dumps(judge))
         proc = capture(
             judgment_repo, packet_path, "--judge-run", str(judge_path),
             "--reason-code", "duplicate",
-            "--evidence", f"finding:{PRD_ID}/finding-1",
+            "--evidence", ref,
             disposition="rejected",
         )
         assert proc.returncode == 0, proc.stderr
@@ -1925,3 +1941,1036 @@ def test_the_cross_check_runs_under_the_writer_lock(judgment_repo, monkeypatch):
     assert seen[0] >= 1, (
         "cross_check_findings ran with the writer lock released; a concurrent "
         "triage in that window false-blocks approval")
+
+
+# ---------------------------------------------------------------------------
+# The judge runner: the producer that never existed (ASK-363, sp-320d30e3)
+# ---------------------------------------------------------------------------
+
+# Stand-in for the LLM. The judge shells out, so the seam is the COMMAND, set
+# via KIPI_JUDGE_CMD. A test must never make a real model call: it would be
+# slow, nondeterministic, and billed.
+_JUDGE_STUB = '''
+import json, os, sys
+sys.stdin.read()
+n = int(os.environ.get("STUB_CALL_COUNT_FILE_BUMP", "0"))
+counter = os.environ.get("STUB_COUNTER")
+if counter:
+    prior = 0
+    if os.path.exists(counter):
+        prior = int(open(counter).read() or "0")
+    open(counter, "w").write(str(prior + 1))
+    n = prior + 1
+bad = os.environ.get("STUB_BAD_UNTIL")
+if bad and n <= int(bad):
+    sys.stdout.write("not json at all")
+    raise SystemExit(0)
+sys.stdout.write(os.environ.get("STUB_JUDGE_OUTPUT") or json.dumps({
+    "technical_validity": "valid",
+    "technical_reason": "the fixture gate can be bypassed as described",
+    "workflow_disposition": "fix-now",
+    "workflow_reason_code": "valid-fix-now",
+    "evidence_refs": [],
+    "missing_context": [],
+    "confidence": 0.82,
+}))
+'''
+
+
+@pytest.fixture
+def judge_stub(tmp_path):
+    path = tmp_path / "judge_stub.py"
+    path.write_text(_JUDGE_STUB)
+    return f"{sys.executable} {path}"
+
+
+class TestJudgeRunnerClosesTheProductionGap:
+    """No judge-run PRODUCER existed in production code.
+
+    `/prd-triage` never passed `--judge-run`, and `evaluate` counts a
+    calibration case only when a receipt carries BOTH `judge` and `human`. So
+    every triage wrote a human-only receipt, `judged` stayed empty forever, and
+    all four release gates were unreachable by construction. ~90 tests passed on
+    that path because every one of them hand-built the judge run -- the
+    "a gate's input needs a production producer, not just a test" class,
+    recurring.
+    """
+
+    def test_production_triage_yields_a_judged_case(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """THE reproducer: drive the real production path end to end and ask
+        `evaluate` whether it scored anything. Zero before the producer."""
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run), env_extra={"KIPI_JUDGE_CMD": judge_stub})
+        assert proc.returncode == 0, proc.stderr
+        disp = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run))
+        assert disp.returncode == 0, disp.stderr
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["judged_receipts"] == 1, (
+            "a full production-path triage still scored zero calibration "
+            f"cases: {report['judged_receipts']}")
+        assert report["cases"] == 1
+
+    def test_judge_run_binds_to_an_independently_assembled_packet(
+            self, judgment_repo, tmp_path, judge_stub):
+        """The hard design question: the judge assembles its own packet and
+        `capture` assembles another. They bind because `packet_hash` excludes
+        `assembled_at` and `packet_sha256`, so two assemblies of unchanged
+        state hash identically. If that ever stops being true, no judged
+        receipt can be written at all."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        emitted = json.loads(run.read_text())
+        _, packet = assemble_packet(judgment_repo)  # a SEPARATE assembly
+        assert emitted["input_sha256"] == packet["packet_sha256"]
+
+    def test_the_judge_is_invoked_with_tools_disabled(self):
+        """`duplicates[].source` is a filesystem path to a findings file and
+        `prior_receipts` lists receipt ids. A judge that can open files reads
+        prior HUMAN dispositions straight out of both, and the calibration set
+        becomes a measure of its own leakage."""
+        jc = _load_module("jc_judge_argv", "judgment_compiler.py")
+        argv = jc._judge_argv("claude-opus-5")
+        # `--tools ""` is the AVAILABILITY control -- `claude --help`: "Use ""
+        # to disable all tools". `--allowedTools` is a permission ALLOWLIST and
+        # does not remove availability, so the first version of this test
+        # asserted the wrong flag and encoded the very bug it was meant to
+        # prevent (Codex, PR #103 round 1).
+        assert "--tools" in argv, argv
+        assert argv[argv.index("--tools") + 1] == "", (
+            f"tools must be disabled: {argv}")
+
+    def test_malformed_output_retries_then_fails_loudly(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Bounded retry (3, per the self-healing-retry contract) and then a
+        LOUD failure. No silent fallback to a default disposition: a fabricated
+        prediction poisons the calibration set worse than a missing one."""
+        counter = tmp_path / "calls.txt"
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_COUNTER": str(counter),
+                       "STUB_BAD_UNTIL": "99"})
+        assert proc.returncode == 2, proc.stdout
+        assert int(counter.read_text()) == 3, "retry must be bounded at 3"
+        assert not run.exists(), "a failed judge must not write a run file"
+
+    def test_a_transient_malformed_reply_recovers_within_the_cap(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Negative self-test for the retry: the cap must not be a hard fail."""
+        counter = tmp_path / "calls.txt"
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_COUNTER": str(counter),
+                       "STUB_BAD_UNTIL": "2"})
+        assert proc.returncode == 0, proc.stderr
+        assert int(counter.read_text()) == 3
+        assert json.loads(run.read_text())["output"]["confidence"] == 0.82
+
+    def test_the_prompt_is_pinned_by_hash(self):
+        """A judge whose prompt is tuned after seeing disagreements stops being
+        an independent predictor. `prompt_sha256` is required on every run, so a
+        changed prompt is a visible discontinuity in the ledger: cases either
+        side of it are different experiments and must not be pooled."""
+        jc = _load_module("jc_judge_prompt", "judgment_compiler.py")
+        assert jc.JUDGE_PROMPT_SHA256 == hashlib.sha256(
+            jc.JUDGE_PROMPT.encode("utf-8")).hexdigest()
+        assert jc._prompt_hash("a different prompt") != jc.JUDGE_PROMPT_SHA256
+
+    def test_the_packet_handed_to_the_judge_carries_no_label(
+            self, judgment_repo, run_findings_writer):
+        """Blindness is the dataset. Assert on the REAL packet text the judge
+        receives, after a disposition exists to leak."""
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "a distinctive rationale string",
+            env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
+        jc = _load_module("jc_judge_blind", "judgment_compiler.py")
+        cfg = _cfg_for(judgment_repo)
+        text = jc._judge_prompt_text(jc.assemble_packet(cfg, PRD_ID, "finding-1"))
+        assert "a distinctive rationale string" not in text
+        assert "rejected" not in text
+
+
+# Flags whose ABSENCE leaves a receipt field permanently null. Each maps to the
+# receipt field it is the only production input for.
+RECEIPT_POPULATING_FLAGS = {
+    "--judge-run": "receipt.judge — the calibration half of every scored case",
+    "--reason-code": "receipt.human.reason_code — keys the evidence gate",
+    "--evidence": "receipt.human.evidence_refs",
+}
+
+
+def test_every_receipt_populating_flag_has_a_production_caller():
+    """MECHANICAL detector for a class that has now produced a defect twice.
+
+    "A consumer without a production producer is dead wiring, and tests that
+    supply the consumer's input verify the consumer's logic while hiding that
+    the wiring is dead." `--judge-run` was defined on two argparse parsers,
+    consumed by `_load_judge_run`, scored by `evaluate`, and covered by ~90
+    tests that each hand-built the judge run -- while NO production caller ever
+    passed it. `judged` was therefore empty forever and all four release gates
+    were unreachable.
+
+    Definition sites are deliberately NOT the corpus: an `add_argument` call
+    proves a flag exists, which is exactly the thing that was never in doubt.
+    The corpus is the set of places production actually INVOKES these scripts —
+    the slash commands and the `kipi` dispatcher. This test fails on a flag
+    nothing calls, which is the shape the class always takes.
+    """
+    corpus = "\n".join(
+        [p.read_text() for p in sorted((PLUGIN_ROOT / "commands").glob("*.md"))]
+        + [(PLUGIN_ROOT.parents[1] / "kipi").read_text()])
+    orphaned = {flag: field for flag, field in RECEIPT_POPULATING_FLAGS.items()
+                if flag not in corpus}
+    assert not orphaned, (
+        "these flags are defined and consumed but no production caller passes "
+        "them, so the field each one feeds can never be populated outside "
+        f"tests: {orphaned}")
+
+
+class TestFailSoftJudgeStaysCountable:
+    """`/prd-triage` continues without `--judge-run` when the judge call fails,
+    so a model outage never blocks an author from closing findings. That is the
+    right trade, but silent fail-soft would recreate the exact hole this issue
+    exists to close: a judge erroring on every triage for a month would be
+    indistinguishable from "not enough triage volume yet" -- both show `cases`
+    short of 50 and a red gate, with no way to tell which. Same argument as
+    41c0876, where a documented release condition was computed but never read.
+    """
+
+    def test_a_triage_with_no_judge_is_counted_and_gated(
+            self, judgment_repo, run_findings_writer):
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1",
+            "accepted").returncode == 0
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["unjudged_decision_rate"] == 1.0, report
+        gate = report["release_gates"]["zero_unjudged_decisions"]
+        assert gate["passed"] is False, gate
+        assert report["release_gates"]["passed"] is False
+
+    def test_a_judged_triage_leaves_the_rate_at_zero(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Negative self-test: the counter must be able to read zero, or it is
+        just a constant that happens to look like a metric."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run)).returncode == 0
+        report = json.loads(run_judgment(judgment_repo, "evaluate").stdout)
+        assert report["unjudged_decision_rate"] == 0.0, report
+        assert report["release_gates"][
+            "zero_unjudged_decisions"]["passed"] is True
+
+
+    def test_a_fabricated_judge_evidence_ref_is_dropped_and_downgraded(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Codex MAJOR, PR #103 round 1. Judge refs were checked for SYNTAX and
+        never RESOLVED, so an invented-but-well-formed citation satisfied the
+        evidence gate and was stored as a supported decision that release gates
+        then counted.
+
+        Worse than a missed check: the judge prompt TOLD the model its refs
+        would be resolved by `resolve_evidence_refs`, and that sentence was also
+        what I used to satisfy the prompt-only-enforcement guard. A gate cleared
+        with an untrue claim about my own code.
+        """
+        run = tmp_path / "judge-run.json"
+        fabricated = json.dumps({
+            "technical_validity": "valid",
+            "technical_reason": "looks like a duplicate of something",
+            "workflow_disposition": "duplicate",
+            "workflow_reason_code": "duplicate",
+            "evidence_refs": ["finding:prd-does-not-exist/finding-999"],
+            "missing_context": [],
+            "confidence": 0.9,
+        })
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_JUDGE_OUTPUT": fabricated}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["evidence_refs"] == [], (
+            "an unresolvable citation must not survive into the run: "
+            f"{emitted['output']['evidence_refs']}")
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "dupe", "--judge-run", str(run)).returncode == 0
+        receipt = read_ledger(judgment_repo)[-1]
+        assert receipt["judge"]["converted_to_needs_human"] is True, (
+            "a disposition left unsupported after dropping a fabricated ref "
+            "must degrade to needs-human, not stand as supported")
+
+
+class TestTheJudgeSummaryWithholdsThePrediction:
+    """Codex MAJOR, PR #103 round 2. `cmd_judge` printed
+    `workflow_disposition` in its stdout summary. `/prd-triage` runs that
+    command in the founder's interactive session, so the prediction landed in
+    the transcript BEFORE they set a disposition -- the precise contamination
+    the blindness rule exists to stop. A founder who sees the prediction and
+    agrees inflates measured agreement, and the calibration set stops measuring
+    anything.
+
+    The original code shipped the leak and a `note` field telling the reader
+    not to show it. Prose was doing a job that belongs to code: the fix is to
+    not emit the value at all.
+    """
+
+    def test_stdout_does_not_carry_the_predicted_disposition(
+            self, judgment_repo, tmp_path, judge_stub):
+        run = tmp_path / "judge-run.json"
+        proc = run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run), env_extra={"KIPI_JUDGE_CMD": judge_stub})
+        assert proc.returncode == 0, proc.stderr
+        # The stub predicts fix-now / valid-fix-now.
+        for leak in ("fix-now", "valid-fix-now", "technical_validity"):
+            assert leak not in proc.stdout, (
+                f"the judge summary leaked {leak!r} into the transcript the "
+                f"founder reads before deciding:\n{proc.stdout}")
+
+    def test_the_run_file_still_records_the_prediction(
+            self, judgment_repo, tmp_path, judge_stub):
+        """Negative self-test: withheld from the TRANSCRIPT, not discarded.
+        A judge whose prediction never reaches the ledger scores nothing."""
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["workflow_disposition"] == "fix-now"
+
+
+class TestDuplicateClaimsMustComeFromThePacket:
+    """Codex MAJOR, PR #103 round 3. `EVIDENCE_REQUIREMENTS["duplicate"]`
+    accepts any ref with a `finding:`/`issue:`/`spillover:` prefix, and
+    `issue:` resolves by checking that a spec file exists. So the judge could
+    cite ANY real issue in the repo as proof that this finding is a duplicate,
+    even when the packet it saw contained no duplicate candidate at all -- and
+    that unsupported decision was scored as supported.
+
+    Prefix + existence are both necessary and neither is sufficient. The
+    missing property is RELEVANCE: a claim must be checkable against the view
+    the judge was actually given. The packet's `duplicates` list is that view,
+    so a duplicate claim may only cite a candidate from it.
+    """
+
+    def _issue(self, repo, name="ASK-999"):
+        issues = _cfg_for(repo).issues_dir
+        issues.mkdir(parents=True, exist_ok=True)
+        (issues / f"{name}.md").write_text("# an unrelated real issue\n")
+        return f"issue:{name}"
+
+    def test_an_unrelated_real_issue_cannot_prove_a_duplicate(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        ref = self._issue(judgment_repo)
+        payload = json.dumps({
+            "technical_validity": "valid",
+            "technical_reason": "this looks like something we already have",
+            "workflow_disposition": "duplicate",
+            "workflow_reason_code": "duplicate",
+            "evidence_refs": [ref],
+            "missing_context": [],
+            "confidence": 0.91,
+        })
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub,
+                       "STUB_JUDGE_OUTPUT": payload}).returncode == 0
+        emitted = json.loads(run.read_text())
+        assert emitted["output"]["evidence_refs"] == [], (
+            "an issue that is not a duplicate candidate in the packet was "
+            f"accepted as proof of duplication: {emitted['output']['evidence_refs']}")
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "rejected",
+            "--rationale", "dupe", "--judge-run", str(run)).returncode == 0
+        receipt = read_ledger(judgment_repo)[-1]
+        assert receipt["judge"]["converted_to_needs_human"] is True
+
+    def test_a_real_packet_duplicate_candidate_is_still_accepted(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        """Negative self-test. Over-restricting would convert every duplicate
+        to needs-human and score nothing, which fails the same way in the
+        opposite direction."""
+        jc = _load_module("jc_dupe_ok", "judgment_compiler.py")
+        packet = jc.assemble_packet(_cfg_for(judgment_repo), PRD_ID, "finding-1")
+        assert packet["duplicates"] == [], "fixture unexpectedly has duplicates"
+        # `_packet_duplicate_refs` is subsumed by `judge_view`, which derives
+        # the citable set for ALL nine prefixes from one view (ASK-363).
+        packet["duplicates"] = [{"prd_id": "prd-x-2026-01-01",
+                                 "finding_id": "finding-7", "similarity": 0.9,
+                                 "source": "some/ledger.jsonl"}]
+        _, citable = jc.judge_view(packet)
+        assert "finding:prd-x-2026-01-01/finding-7" in citable
+
+
+class TestBindingSurvivesTheDispositionWrite:
+    """Codex MAJOR, PR #103 round 4. The plan's load-bearing design claim was
+    "packet_hash excludes assembled_at and packet_sha256, so the judge can
+    assemble independently and still bind". The exclusion is real; the
+    conclusion did not follow.
+
+    `findings_xref.cross_reference` computes candidates ONLY for findings whose
+    disposition is currently `pending` (findings_xref.py:186-188). So the judge
+    assembles while the finding is pending and sees cross-PRD duplicates;
+    `_write_all` then sets the disposition; `capture_from_triage` reassembles,
+    the candidates are gone, the hash moves, and `_load_judge_run` refuses the
+    run as stale. Every finding with a cross-PRD duplicate candidate is
+    therefore un-capturable with a judge run.
+
+    The earlier binding test passed because the fixture had NO duplicates -- it
+    asserted the property on the one input that could not exercise it.
+    """
+
+    def _prior_prd_with_a_matching_finding(self, repo, body):
+        prior = "prd-prior-2026-07-01"
+        path = repo / FINDINGS_REL / f"{prior}-findings.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "id": "finding-1", "prd_id": prior, "source": "codex-review",
+            "severity": "major", "body": body, "disposition": "rejected",
+            "rationale": "we decided against this before",
+            "created_at": "2026-07-01T00:00:00Z",
+            "resolved_at": "2026-07-02T00:00:00Z",
+        }) + "\n")
+        return prior
+
+    def test_a_cross_prd_duplicate_candidate_does_not_break_capture(
+            self, judgment_repo, tmp_path, run_findings_writer, judge_stub):
+        _, rows = _findings_rows(judgment_repo)
+        self._prior_prd_with_a_matching_finding(judgment_repo, rows[0]["body"])
+
+        jc = _load_module("jc_bind", "judgment_compiler.py")
+        packet = jc.assemble_packet(_cfg_for(judgment_repo), PRD_ID, "finding-1")
+        assert packet["duplicates"], (
+            "fixture failed to produce a cross-PRD duplicate candidate, so "
+            "this test cannot exercise the defect")
+
+        run = tmp_path / "judge-run.json"
+        assert run_judgment(
+            judgment_repo, "judge", "--prd", PRD_ID, "--finding", "finding-1",
+            "--output", str(run),
+            env_extra={"KIPI_JUDGE_CMD": judge_stub}).returncode == 0
+        disp = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--judge-run", str(run))
+        assert disp.returncode == 0, (
+            "a finding with a cross-PRD duplicate candidate could not be "
+            f"captured with its judge run:\n{disp.stderr}")
+        assert len(read_ledger(judgment_repo)) == 1
+
+
+# ---------------------------------------------------------------------------
+# judge_view: ONE constructor for the judge's view + its citable set
+# (ASK-363 / PR #103 refactor, replacing four independent seams)
+# ---------------------------------------------------------------------------
+
+# Field names that carry a triage LABEL, or point at a file that carries one.
+# Table-driven so reintroducing any of them is caught by name, wherever it is
+# spliced into the packet.
+LABEL_BEARING_FIELDS = (
+    "disposition", "rationale", "resolved_at", "triaged_at", "triaged_by",
+    "human", "judge", "workflow_disposition",
+)
+# (block, key) pairs where a `source` value is a filesystem PATH into a ledger
+# that carries other findings' dispositions. `review.source` ("codex-review")
+# and `scope.source` ("<prd>.md#Scope") are NOT paths into a label store and
+# are deliberately kept: `scope.source` is the only citable proof of scope.
+LABEL_POINTER_ROWS = ("duplicates", "remediation")
+
+# The verified nine-prefix classification. `closed` names the view field the
+# refs come from; the two refused kinds have no source in the packet at all.
+CITABLE_TABLE = {
+    "finding:": "duplicates",
+    "judgment:": "prior_receipts",
+    "prd:": "related_prds",
+    "receipt:": "remediation[].issue_id",
+    "commit:": "remediation[].commit_sha",
+    "scope:": "scope.source",
+}
+# `issue:` MOVED here from CITABLE_TABLE (Codex round 9). Its only source is
+# `issue_state.issue_id`, the globally ACTIVE issue -- ambient, identical for
+# every finding in the run -- and `duplicate` is a relational code. See
+# CITABLE_REF_PROVENANCE in judgment_compiler.py. This edit is the point of the
+# table: the survival criterion below still holds every remaining kind to
+# proving it is citable, so removing one kind cannot quietly become "refuse
+# everything".
+REFUSED_PREFIXES = ("spillover:", "test:", "issue:")
+
+
+def _rich_packet(repo):
+    """A packet with EVERY citable source populated.
+
+    Rows use the exact shapes `_assemble_duplicates` / `_assemble_remediation`
+    emit (read from the assemblers, not invented). A zero-duplicate fixture is
+    how an earlier hash-binding test passed while testing nothing.
+    """
+    jc = _load_module(f"jc_rich_{id(repo)}", "judgment_compiler.py")
+    packet = jc.assemble_packet(_cfg_for(repo), PRD_ID, "finding-1")
+    packet["duplicates"] = [{
+        "prd_id": "prd-other-2026-01-01", "finding_id": "finding-9",
+        "similarity": 0.91,
+        "source": "POINTER-DUPES-LEDGER.jsonl"}]
+    packet["related_prds"] = ["prd-other-2026-01-01"]
+    packet["prior_receipts"] = ["jr-00000001"]
+    packet["issue_state"]["issue_id"] = "ASK-555"
+    packet["remediation"] = [{
+        "issue_id": "ASK-556", "finding_id": "finding-1",
+        "closed_at": "2026-01-01T00:00:00Z", "commit_sha": "a" * 40,
+        "source": "POINTER-RECEIPTS-LEDGER.jsonl:7"}]
+    packet["repo_state"]["commit_sha"] = "b" * 40   # HEAD, must NOT be citable
+    packet["scope"] = {"source": ".prd-os/prds/x.md#Scope", "sha256": "c" * 64}
+    return jc, packet
+
+
+def _expected_ref(prefix, packet):
+    return {
+        "finding:": "finding:prd-other-2026-01-01/finding-9",
+        "judgment:": "judgment:jr-00000001",
+        "prd:": "prd:prd-other-2026-01-01",
+        "issue:": "issue:ASK-555",
+        "receipt:": "receipt:ASK-556",
+        "commit:": "commit:" + "a" * 40,
+        "scope:": "scope:.prd-os/prds/x.md#Scope",
+    }[prefix]
+
+
+class TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld:
+    """PR #103 rounds 1-4 found five majors, every one in the same dimension:
+    the judge's blindness and citation integrity. Blindness was enforced at
+    four independent seams (tool availability, prompt content, stdout, evidence
+    refs) and three failed. A property enforced at N sites is not a chokepoint,
+    so a fifth review round would only have told us the reviewer had not yet
+    found the next insufficient guard. `judge_view` is the single writer.
+    """
+
+    # --- Property 1: the perceivable view ---------------------------------
+
+    @pytest.mark.parametrize("field", LABEL_BEARING_FIELDS)
+    def test_no_label_bearing_field_survives_into_the_view(
+            self, judgment_repo, field):
+        """Splice the label into every block and prove the ALLOWLIST drops it.
+
+        Red at 85d4a46: the old builder deep-copied the packet and popped one
+        known pointer, so `packet["finding"]["rationale"]` reached the prompt
+        verbatim. A findings ledger record really does carry that field."""
+        jc, packet = _rich_packet(judgment_repo)
+        marker = f"LEAKED-{field.upper()}"
+        for block in ("finding", "review", "repo_state", "prd_state",
+                      "issue_state", "scope"):
+            packet[block][field] = marker
+        for block in ("duplicates", "remediation"):
+            for row in packet[block]:
+                row[field] = marker
+        view, _ = jc.judge_view(packet)
+        rendered = json.dumps(view, sort_keys=True)
+        assert marker not in rendered, f"{field!r} reached the judge"
+        assert f'"{field}"' not in rendered, f"key {field!r} reached the judge"
+
+    @pytest.mark.parametrize("block", LABEL_POINTER_ROWS)
+    def test_no_row_source_pointer_survives_into_the_view(
+            self, judgment_repo, block):
+        """`duplicates[].source` and `remediation[].source` are paths into
+        ledgers that carry OTHER findings' human dispositions. A judge that
+        could open one reads the labels straight out."""
+        jc, packet = _rich_packet(judgment_repo)
+        view, _ = jc.judge_view(packet)
+        rendered = json.dumps(view, sort_keys=True)
+        assert "POINTER-" not in rendered, rendered
+        assert all("source" not in row for row in view[block]), view[block]
+
+    def test_the_view_spec_covers_every_field_the_assembler_emits(
+            self, judgment_repo):
+        """Self-enumerating guard. An allowlist silently drops a NEW packet
+        field, which is the safe direction, but it must be a decision someone
+        made rather than an omission nobody noticed."""
+        jc, packet = _rich_packet(judgment_repo)
+        assert set(jc.JUDGE_VIEW_SPEC) == set(packet), (
+            "packet fields and JUDGE_VIEW_SPEC have diverged: "
+            f"{set(packet) ^ set(jc.JUDGE_VIEW_SPEC)}")
+
+    # --- Property 2: the citable set --------------------------------------
+
+    @pytest.mark.parametrize("prefix", sorted(CITABLE_TABLE))
+    def test_a_ref_outside_the_citable_set_is_refused(
+            self, judgment_repo, prefix):
+        """One case per CLOSED prefix: a well-formed ref of the right kind that
+        the view does not contain. Red at 85d4a46 for every prefix whose
+        resolver merely checked existence -- any real PRD, issue, path or
+        commit in the repo satisfied the gate."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        outsider = prefix + "not-in-the-view-at-all"
+        assert outsider not in citable
+        assert jc.evidence_gate_errors(None, None, [outsider], citable) == \
+            jc.evidence_gate_errors(None, None, [], citable)
+
+    @pytest.mark.parametrize("prefix", REFUSED_PREFIXES)
+    def test_the_refused_kinds_are_never_citable(
+            self, judgment_repo, prefix):
+        """Principled, not a default. `spillover:` has no block in the packet
+        and nothing enumerates test paths, so the judge cannot honestly cite
+        either; `issue:` has a source but an AMBIENT one, which cannot evidence
+        a relational claim. `duplicate` keeps `finding:` and
+        `already-remediated` keeps `receipt:`/`commit:`, all finding-dependent.
+        `owned-by-other-prd` is now unsatisfiable on the judge path and
+        converts to needs-human -- named in TestCitationProvenance, not
+        silent."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert not any(r.startswith(prefix) for r in citable), citable
+
+    def test_head_is_not_citable_but_a_remediation_commit_is(
+            self, judgment_repo):
+        """`repo_state.commit_sha` is the CURRENT commit and always exists, so
+        an existence check let a judge cite HEAD as proof of the very
+        remediation under review. Only `remediation[].commit_sha` counts."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert "commit:" + "a" * 40 in citable, "remediation commit must count"
+        assert "commit:" + "b" * 40 not in citable, "HEAD must not be citable"
+
+    # --- The negative self-test (acceptance criterion) --------------------
+
+    @pytest.mark.parametrize("prefix", sorted(CITABLE_TABLE))
+    def test_every_closed_kind_survives(self, judgment_repo, prefix):
+        """THE acceptance criterion, table-driven over all nine prefixes (seven
+        here, two in the refused test above).
+
+        With the carve-out empty, "refuse everything" would pass every
+        membership test trivially while converting every disposition to
+        needs-human and scoring ZERO calibration cases -- the same failure in
+        the opposite direction. Each closed kind must be proven to SURVIVE."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert _expected_ref(prefix, packet) in citable, (
+            f"{prefix} was derivable from the view but is not citable; "
+            "over-refusal scores zero cases")
+
+    def test_the_survival_check_can_actually_fail(self, judgment_repo):
+        """Negative self-test OF the negative self-test. An empty citable set
+        is exactly what "refuse everything" produces; prove the survival
+        assertion above goes red against it rather than passing vacuously."""
+        _, packet = _rich_packet(judgment_repo)
+        empty: frozenset = frozenset()
+        for prefix in CITABLE_TABLE:
+            assert _expected_ref(prefix, packet) not in empty
+        # and the same mutant must be caught by the gate, not silently allowed
+        jc = _load_module("jc_mutant_gate", "judgment_compiler.py")
+        assert jc.evidence_gate_errors(
+            "duplicate", None, ["finding:prd-other-2026-01-01/finding-9"],
+            empty), "an empty citable set must fail the duplicate gate"
+
+
+class TestDispositionTransactionIsOneCriticalSection:
+    """Codex MAJOR, PR #103 round 5. The lock started AFTER `_load_findings`,
+    so it serialised stale snapshots rather than the transaction.
+
+    Two concurrent dispositions each loaded the same snapshot, each mutated its
+    own finding in its own copy, and each wrote the WHOLE list back. The second
+    silently reverted the first while both processes exited 0 and both receipts
+    recorded success -- lost disposition state, invisible to both writers.
+
+    This reproducer drives the REAL `set-disposition` CLI in two concurrent
+    processes against a real findings file. The review's own repro stubbed
+    seven seams (`_load_findings`, `ledger_lock`, `assemble_packet`,
+    `capture_from_triage`, `_write_all`, `_validate_record`,
+    `validate_triage_decision`), which cannot distinguish a real race from one
+    manufactured by its own harness. Measured before the fix: 6/6 runs lost an
+    update. After: 6/6 clean.
+    """
+
+    def test_concurrent_dispositions_do_not_lose_an_update(
+            self, fake_repo, write_config):
+        import concurrent.futures
+        prd = "prd-race-2026-08-04"
+        write_config(fake_repo, {"config_schema_version": 1})
+        findings_dir = fake_repo / ".prd-os" / "findings"
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        rows = [{"id": f"finding-{i}", "prd_id": prd, "source": "manual",
+                 "severity": "minor", "disposition": "pending",
+                 "body": f"body {i}", "created_at": "2026-08-04T00:00:00Z"}
+                for i in (1, 2)]
+        path = findings_dir / f"{prd}-findings.jsonl"
+        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                                for r in rows))
+        writer = SCRIPTS_DIR / "findings_writer.py"
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(fake_repo),
+                   # KIPI_JUDGMENT_CAPTURE=0 on purpose: the pre-fix code used
+                   # a nullcontext on this branch, so it had NO serialisation
+                   # at all. The race is a property of the read-modify-write,
+                   # not of receipt capture.
+                   KIPI_JUDGMENT_CAPTURE="0")
+
+        def run(finding_id):
+            return subprocess.run(
+                [sys.executable, str(writer), "set-disposition", prd,
+                 finding_id, "accepted", "--rationale", f"r-{finding_id}"],
+                cwd=str(fake_repo), env=env, capture_output=True, text=True)
+
+        # ITERATED, because a lost update is a RACE: one attempt wins or
+        # loses on timing alone. A single-shot version of this test passed
+        # against the unfixed file on its first run and failed on the next --
+        # flaky in BOTH directions, and therefore worthless as a regression
+        # guard. Eight rounds makes the red reliable (each round independently
+        # loses an update roughly half the time on the unfixed code) while the
+        # green stays deterministic: the fix admits no losing interleaving.
+        for round_index in range(8):
+            path.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                                    for r in rows))
+            with concurrent.futures.ThreadPoolExecutor(2) as pool:
+                results = list(pool.map(run, ["finding-1", "finding-2"]))
+            assert all(r.returncode == 0 for r in results), \
+                [r.stderr for r in results]
+            final = {json.loads(line)["id"]: json.loads(line)["disposition"]
+                     for line in path.read_text().splitlines() if line.strip()}
+            assert final == {"finding-1": "accepted",
+                             "finding-2": "accepted"}, (
+                "a concurrent disposition was silently reverted while both "
+                f"writers reported success (round {round_index}): {final}")
+
+
+class TestNoPhantomReceiptWhenTheAnchorWriteFails:
+    """Codex MAJOR, PR #103 round 6 — the THIRD distinct defect in this one
+    transaction (after the write-to-receipt gap and the lost update).
+
+    Root cause is not the anchor write. An APPEND-ONLY ledger cannot
+    participate in a ROLLBACK-based transaction: the sequence was mutate
+    findings -> append receipt -> write anchor, with rollback-of-findings as
+    the failure path, and rollback cannot undo an append. So every failure
+    after the append left the two artifacts disagreeing and the command
+    reporting refusal for a decision that had already taken effect.
+
+    The fix is to recover FORWARD past the append. The anchor is a pure
+    function of the ledger, so an anchor failure is a stale derived artifact,
+    not a lost transaction. The failure is INDUCED here (a directory occupying
+    the tip path makes the write raise OSError), not asserted about.
+    """
+
+    def _break_the_anchor_path(self, repo):
+        jc = _load_module("jc_anchor", "judgment_compiler.py")
+        tip = jc.tip_path(_cfg_for(repo))
+        tip.parent.mkdir(parents=True, exist_ok=True)
+        tip.mkdir()          # a directory here makes write_tip raise OSError
+        return jc
+
+    def test_a_failed_anchor_write_does_not_refuse_or_orphan_the_decision(
+            self, judgment_repo, run_findings_writer):
+        jc = self._break_the_anchor_path(judgment_repo)
+        proc = run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--rationale", "the decision stands")
+        assert proc.returncode == 0, (
+            "a stale ANCHOR is not a failed decision; the receipt is durable "
+            f"and must not be reported as a refusal:\n{proc.stderr}")
+        assert "verify" in proc.stderr and "reanchor" in proc.stderr, (
+            "the warning must name the inspection and repair path: "
+            + proc.stderr)
+        # The findings file kept the decision (no rollback past the append).
+        path, rows = _findings_rows(judgment_repo)
+        target = next(r for r in rows if r["id"] == "finding-1")
+        assert target["disposition"] == "accepted", (
+            f"the decision was rolled back despite being durable: {target}")
+        # And the receipt is present, so the two artifacts AGREE.
+        ledger = read_ledger(judgment_repo)
+        assert len(ledger) == 1, f"expected exactly one receipt, got {ledger}"
+        assert ledger[0]["finding"]["finding_id"] == "finding-1"
+
+    def test_verify_reports_the_stale_anchor_so_it_is_not_silent(
+            self, judgment_repo, run_findings_writer):
+        """Exit 0 plus a stderr warning is only complete if something detects
+        the stale anchor LATER -- a warning in an unattended run is lost."""
+        self._break_the_anchor_path(judgment_repo)
+        assert run_findings_writer(
+            judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
+            "--rationale", "the decision stands").returncode == 0
+        verify = run_judgment(judgment_repo, "verify")
+        assert verify.returncode != 0, "a stale anchor must not verify clean"
+        combined = verify.stdout + verify.stderr
+        # Assert the PROPERTY (the anchor problem is reported and named), not
+        # one message. Which message fires depends on whether an anchor
+        # already existed: a first-receipt failure leaves the anchor MISSING,
+        # a later one leaves it UNDER-COUNTING. Both must be loud; only the
+        # second is repairable by `reanchor`, which refuses a missing anchor
+        # because it cannot tell a crashed write from a truncation.
+        assert "anchor" in combined, combined
+        assert ("MISSING" in combined or "BEYOND the tip anchor" in combined), \
+            combined
+
+
+# ---------------------------------------------------------------------------
+# Judge output: disposition / reason-code pair consistency
+# ---------------------------------------------------------------------------
+
+
+def _load_jc(name: str = "jc_pairs"):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, JUDGMENT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _judge_output(code: str, disposition: str) -> dict:
+    return {"technical_validity": "valid", "technical_reason": "ok",
+            "workflow_disposition": disposition, "workflow_reason_code": code,
+            "evidence_refs": [], "missing_context": [], "confidence": 1.0}
+
+
+class TestJudgeOutputPairConsistency:
+    """`validate_judge_output` used to accept any code with any disposition.
+
+    Severity is MINOR and the record says so: the escalation to major named
+    "allows unsupported predictions into release-gate scoring", and that
+    consequence does not hold -- `evidence_gate_errors` keys off BOTH fields,
+    so a contradictory pair whose either half requires evidence is refused,
+    degraded to needs-human, and dropped by `JUDGE_TO_LEGACY[...] is None`
+    before any metric sees it. What DOES survive is narrower: a pair whose
+    halves both happen to require no evidence reaches `_override_pattern_key`,
+    where an agreeing disposition with a mismatched code reads as an override
+    and can manufacture a policy candidate out of an agreement.
+    """
+
+    def test_a_contradictory_twin_pair_is_rejected(self):
+        """The bad case, watched failing before the check existed."""
+        jc = _load_jc()
+        with pytest.raises(jc.ValidationError) as excinfo:
+            jc.validate_judge_output(_judge_output("duplicate", "fix-now"),
+                                     "judge run")
+        assert "duplicate" in str(excinfo.value)
+        assert "fix-now" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "code", [c for c in _load_jc("jc_pairs_ids").REASON_CODES
+                 if c in _load_jc("jc_pairs_ids").WORKFLOW_DISPOSITIONS])
+    def test_every_twin_code_rejects_every_other_disposition(self, code):
+        """The rule has to bite for each twin, not just the one Codex named."""
+        jc = _load_jc()
+        for disposition in jc.WORKFLOW_DISPOSITIONS:
+            if disposition == code or jc.JUDGE_TO_LEGACY[disposition] is None:
+                continue
+            with pytest.raises(jc.ValidationError):
+                jc.validate_judge_output(_judge_output(code, disposition),
+                                         "judge run")
+
+    def test_every_legitimate_pair_still_passes(self):
+        """THE half that matters. An over-strict contradiction check would
+        convert real judge output into errors and score nothing, which is a
+        worse failure than the one being fixed. The legitimate space is
+        table-driven off the module's own enums so it cannot drift:
+
+        - a twin code (one whose name is also a disposition) pairs with its
+          own disposition, plus the needs-human sink;
+        - a non-twin code is UNCONSTRAINED, because neither REASON_CODES nor
+          WORKFLOW_DISPOSITIONS states what it refines and inventing that
+          mapping today would be a second hand-maintained table.
+        """
+        jc = _load_jc()
+        twins = set(jc.REASON_CODES) & set(jc.WORKFLOW_DISPOSITIONS)
+        checked = 0
+        for code in jc.REASON_CODES:
+            for disposition in jc.WORKFLOW_DISPOSITIONS:
+                if code in twins and disposition != code \
+                        and jc.JUDGE_TO_LEGACY[disposition] is not None:
+                    continue
+                jc.validate_judge_output(_judge_output(code, disposition),
+                                         "judge run")
+                checked += 1
+        assert checked >= len(jc.REASON_CODES), checked
+
+    def test_the_gate_conversion_output_still_validates(self):
+        """The conversion path is the pair check's real over-strictness trap.
+
+        `_judge_block_from_run` rewrites workflow_disposition to needs-human
+        and deliberately LEAVES the original reason code, so every converted
+        receipt carries a non-matching pair. It is legitimate by construction:
+        needs-human maps to None in JUDGE_TO_LEGACY, so it is excluded from
+        scoring, and `converted_from` records what it was.
+        """
+        jc = _load_jc()
+        packet = jc._fixture_packet(0)
+        run = {"model": "m", "prompt_sha256": "0" * 64, "review_run_id": "r",
+               "input_sha256": packet["packet_sha256"],
+               "output": _judge_output("duplicate", "duplicate")}
+        block = jc._judge_block_from_run(run, frozenset())
+        assert block["converted_to_needs_human"] is True
+        assert block["converted_from"] == "duplicate"
+        assert block["output"]["workflow_reason_code"] == "duplicate"
+        assert block["output"]["workflow_disposition"] == "needs-human"
+        jc._validate_judge_block(block, "receipt")
+
+    def test_the_enums_stay_in_sync(self):
+        """The anti-drift device: the pair rule is derived from the two
+        existing enums plus JUDGE_TO_LEGACY, so those three must agree."""
+        jc = _load_jc()
+        assert set(jc.WORKFLOW_DISPOSITIONS) == set(jc.JUDGE_TO_LEGACY)
+        assert set(jc.REASON_CODES) & set(jc.WORKFLOW_DISPOSITIONS), \
+            "no twin codes left: the pair rule would be a no-op"
+
+
+# ---------------------------------------------------------------------------
+# Citation provenance: the CLASS behind rounds 3-9, enumerated
+# ---------------------------------------------------------------------------
+
+
+def _maximal_packet(jc):
+    """Every citable source populated at once, so one call to `_citable_refs`
+    exercises all nine grammar prefixes instead of one per test."""
+    packet = jc._fixture_packet(0)
+    packet["issue_state"]["issue_id"] = "ASK-ACTIVE-UNRELATED"
+    packet["duplicates"] = [{"prd_id": "prd-other", "finding_id": "finding-9",
+                             "similarity": 0.9}]
+    packet["related_prds"] = ["prd-other"]
+    packet["prior_receipts"] = ["jr-0000000000000001"]
+    packet["remediation"] = [{"issue_id": "ASK-111", "finding_id": "finding-1",
+                              "closed_at": "2026-01-01T00:00:00Z",
+                              "commit_sha": "a" * 40}]
+    packet["scope"] = {"source": "docs/scope.md#s1", "sha256": "b" * 64}
+    packet["packet_sha256"] = jc.packet_hash(packet)
+    return packet
+
+
+class TestCitationProvenance:
+    """Rounds 3-9 each killed ONE guard of one class; the class kept moving one
+    field over. `commit:<HEAD>` for `already-remediated` (round 3), then
+    `issue:<active issue>` for `duplicate` (round 9, reintroduced by 83e3877).
+
+    The rule is relational-vs-documentary, not always-exists: a code asserting
+    a relationship to a specific other entity needs a finding-dependent source;
+    a code invoking a document may cite an ambient one, which is why `scope:`
+    is legitimate and must keep working.
+    """
+
+    def test_every_grammar_prefix_is_classified(self):
+        """No unclassified prefix, or the enumeration has a blind spot."""
+        jc = _load_jc("jc_prov")
+        grammar = set(jc.EVIDENCE_REF_RE.pattern.split("(")[1]
+                      .split(")")[0].split("|"))
+        assert grammar == {p.rstrip(":") for p in jc.CITABLE_REF_PROVENANCE}
+        assert set(jc.RELATIONAL_REASON_CODES) | \
+            set(jc.DOCUMENTARY_REASON_CODES) == set(jc.EVIDENCE_REQUIREMENTS)
+
+    def test_the_derived_forbidden_set_is_what_we_think(self):
+        """The check ON the classification: a rule derived to catch `issue:`
+        must also reproduce the two holes already closed by hand. If it did
+        not, the axis would be wrong."""
+        jc = _load_jc("jc_prov")
+        assert set(jc.FORBIDDEN_CITABLE_PREFIXES) == {
+            "issue:", "spillover:", "test:"}
+
+    # getattr, not attribute access: the parametrize runs at COLLECTION, so a
+    # hard reference makes this whole FILE uncollectable against a pre-fix
+    # checkout -- which is exactly when you need to watch the case fail.
+    @pytest.mark.parametrize("prefix", sorted(
+        getattr(_load_jc("jc_prov_ids"), "CITABLE_REF_PROVENANCE", None)
+        or {"finding:", "judgment:", "prd:", "issue:", "receipt:", "commit:",
+            "scope:", "spillover:", "test:"}))
+    def test_no_ambient_source_reaches_the_citable_set(self, prefix):
+        """Table-driven over all nine prefixes against a MAXIMAL packet: every
+        source populated, so a prefix that leaks has nowhere to hide."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        emitted = [r for r in citable if r.startswith(prefix)]
+        if prefix in jc.FORBIDDEN_CITABLE_PREFIXES:
+            assert emitted == [], f"{prefix} leaked into the citable set"
+        else:
+            assert jc.CITABLE_REF_PROVENANCE[prefix] == "finding-dependent" \
+                or prefix == "scope:"
+
+    def test_documentary_codes_keep_their_ambient_source(self):
+        """THE over-strictness half. `scope:` is ambient and legitimate: the
+        claim is 'this falls outside that documented scope', not 'this is the
+        same thing as that entity'. A rule keyed on always-exists would have
+        broken `scope-removed` / `out-of-scope` and scored nothing."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        assert "scope:docs/scope.md#s1" in citable
+        for code in jc.DOCUMENTARY_REASON_CODES:
+            assert jc.evidence_gate_errors(
+                code, None, ["scope:docs/scope.md#s1"], citable) == []
+
+    def test_relational_codes_keep_a_finding_dependent_route(self):
+        """Refusing everything would pass a membership test trivially while
+        scoring zero cases. Each relational code that still HAS a source must
+        still be satisfiable from the maximal packet."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        for code, refs in (("duplicate", ["finding:prd-other/finding-9"]),
+                           ("already-remediated", ["receipt:ASK-111"]),
+                           ("superseded", ["judgment:jr-0000000000000001"])):
+            assert jc.evidence_gate_errors(code, None, refs, citable) == [], code
+
+    def test_owned_by_other_prd_is_unsatisfiable_on_the_judge_path(self):
+        """Named, not silent. Its `issue:` group has no finding-dependent
+        source left, so it always converts to needs-human. Inventing a source
+        (reusing a remediation row's issue_id) would rebuild the hole."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        errors = jc.evidence_gate_errors(
+            "owned-by-other-prd", None,
+            ["prd:prd-other", "issue:ASK-111"], citable)
+        assert errors and "issue:" in errors[0]
+
+    def test_the_round_9_reproducer_no_longer_scores(self):
+        """Codex round 9, executed: a zero-duplicate packet cited the globally
+        active issue and entered scoring as a supported duplicate
+        (converted=False, scored_cases=1, exact_agreement=1.0)."""
+        jc = _load_jc("jc_prov")
+        packet = jc._fixture_packet(0)
+        packet["issue_state"]["issue_id"] = "ASK-ACTIVE-UNRELATED"
+        packet["duplicates"] = []
+        packet["related_prds"] = []
+        packet["packet_sha256"] = jc.packet_hash(packet)
+        output = {"technical_validity": "valid", "technical_reason": "dupe",
+                  "workflow_disposition": "duplicate",
+                  "workflow_reason_code": "duplicate",
+                  "evidence_refs": ["issue:ASK-ACTIVE-UNRELATED"],
+                  "missing_context": [], "confidence": 1.0}
+        run = {"model": "stub", "prompt_sha256": "0" * 64,
+               "input_sha256": packet["packet_sha256"], "output": output}
+        receipt = jc.build_receipt(
+            packet, disposition="rejected", actor="founder",
+            reason_code="duplicate",
+            evidence_refs=["issue:ASK-ACTIVE-UNRELATED"], rationale="dupe",
+            judge_run=run, supersedes=None, existing=[])
+        assert receipt["judge"]["converted_to_needs_human"] is True
+        assert receipt["judge"]["output"]["workflow_disposition"] == "needs-human"
+        assert receipt["judge"]["output"]["evidence_refs"] == []
+        scored = jc.evaluate([receipt])
+        assert scored["cases"] == 0
+        assert scored["exact_agreement"] == 0.0
+
+    def test_the_class_guard_can_actually_fire(self):
+        """Negative self-test. A guard that has never been watched refusing is
+        not a guard. Widen the forbidden set and confirm a ref the builder DOES
+        emit trips it."""
+        jc = _load_jc("jc_prov")
+        packet = _maximal_packet(jc)
+        jc.FORBIDDEN_CITABLE_PREFIXES = frozenset({"finding:"})
+        with pytest.raises(jc.ValidationError) as excinfo:
+            jc.judge_view(packet)
+        assert "ambient refs for a relational reason code" in str(excinfo.value)
+        assert "finding:prd-other/finding-9" in str(excinfo.value)

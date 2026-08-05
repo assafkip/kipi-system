@@ -2,6 +2,401 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.5] - 2026-08-04
+
+### Documented — a consequence of 0.16.4 that must not be misread
+
+This is deliberate, and it is the price of citation integrity. A blind judge can
+only predict what the packet lets it honestly evidence; a human has tools and
+keeps the full decision space. Concretely, `owned-by-other-prd` is reachable by
+a human and unreachable by the judge.
+
+One consequence to read correctly: `unsupported_disposition_rate` now carries a
+permanent nonzero floor that is a CAPABILITY BOUNDARY, not judge quality. A
+structurally unreachable conversion and an evidentially unsupported one render
+identically in that metric today. Do not chase the floor as a model problem.
+Captured as `sp-4d545276` (split the two in `evaluate`, and keep the structural
+floor out of `_release_gates`), alongside `sp-f1d9c2b1`, which is the same
+reading defect on a different metric.
+
+## [0.16.4] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 9) — citation provenance, the CLASS
+
+`_citable_refs` admitted `issue:<issue_state.issue_id>` to the judge's citable
+set. That id comes from `cfg.active_issue_state_path` — the GLOBALLY ACTIVE
+issue — and has no relationship to `duplicates[]`. Since
+`EVIDENCE_REQUIREMENTS["duplicate"]` accepts an `issue:` prefix, a packet with
+zero duplicate candidates could cite the always-present active issue and be
+scored as a supported duplicate. Introduced by `83e3877`, which also deleted
+the comment documenting the hole, and missed by rounds 7 and 8.
+
+Rounds 3-9 each killed ONE guard of one class and the class moved one field
+over. This closes the class instead of the instance:
+
+> A reason code asserting a relationship to a SPECIFIC OTHER ENTITY must cite a
+> ref whose source VARIES WITH THE FINDING. An AMBIENT source — identical for
+> every finding in the run — cannot prove such a relationship.
+
+The axis is relational-vs-documentary, NOT always-exists. `scope-removed` /
+`out-of-scope` are documentary ("this falls outside that documented scope"),
+so an always-present `scope:` is correct evidence and keeps working. An
+always-exists rule would have broken them and scored nothing.
+
+`CITABLE_REF_PROVENANCE` classifies all nine grammar prefixes next to
+`_citable_refs`; `FORBIDDEN_CITABLE_PREFIXES` is derived from it crossed with
+the relational codes' requirement groups, and a guard inside `_citable_refs`
+refuses any emitted ref carrying one. The check ON the classification: a rule
+derived to catch `issue:` reproduces `spillover:` and `test:`, the two holes
+already closed by hand — derived set is exactly `{issue:, spillover:, test:}`.
+
+Enumeration result: no instance beyond `issue:`. Every other source
+(`finding:`, `judgment:`, `prd:`, `receipt:`, `commit:`) traces to an assembler
+taking `finding_id`. First exhaustive check of this surface.
+
+### Behavior changes, both intended and loud
+- `duplicate` keeps ONE honest route on the judge path, `finding:`, from a real
+  `duplicates[]` candidate.
+- `owned-by-other-prd` is now UNSATISFIABLE on the judge path — its `issue:`
+  group has no finding-dependent source, so it converts to needs-human.
+  Inventing a source (reusing a remediation row's issue_id) would rebuild the
+  hole. The HUMAN path is untouched: `citable=None` there, a human has tools.
+
+### Evidence
+Codex's own reproducer, before → after: `converted false → true`,
+`stored_disposition duplicate → needs-human`, `scored_cases 1 → 0`,
+`exact_agreement 1.0 → 0.0`. New tests red against the pre-fix script with
+`assert not True` and `assert False is True`. 531 passed / 1 skipped.
+
+## [0.16.3] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 8) — contradictory judge pairs
+`validate_judge_output` accepted any `workflow_reason_code` with any
+`workflow_disposition`, so a judge could return reason `duplicate` on a
+`fix-now` decision and the record would keep both.
+
+The rule is DERIVED from the enums already in the file rather than from a new
+table: a reason code whose name is also a workflow disposition
+(`duplicate`, `already-remediated`, `scope-removed`, `out-of-scope`,
+`needs-human`) must carry that disposition. Codes with no disposition twin are
+left unconstrained on purpose — nothing in `REASON_CODES` or
+`WORKFLOW_DISPOSITIONS` states what they refine, and a guessed mapping would
+reject real judge output and score zero calibration cases. Captured as
+`sp-9755c728`.
+
+Abstentions are exempt, keyed on `JUDGE_TO_LEGACY[disposition] is None` rather
+than the literal `needs-human`: the evidence-gate conversion in
+`_judge_block_from_run` rewrites the disposition and deliberately keeps the
+original code, so every converted receipt carries a non-matching pair. Those
+are excluded from scoring before any metric reads them.
+
+A module-level invariant now refuses to import when `WORKFLOW_DISPOSITIONS`
+and `JUDGE_TO_LEGACY` disagree, because the pair rule reads both.
+
+### Severity note
+Round 7 filed this as minor (`sp-33e98c0b`); round 8 escalated it to major on
+the consequence "allows unsupported predictions into release-gate scoring".
+That consequence was tested and does not hold — `evidence_gate_errors` takes
+the disposition as well as the code, so a contradictory pair whose either half
+requires evidence is refused, degraded to `needs-human`, and dropped by
+`JUDGE_TO_LEGACY[...] is None` before scoring. The measured residual is
+narrower: a pair whose halves both require no evidence reaches
+`_override_pattern_key`, where an agreeing disposition with a mismatched code
+reads as an override and can manufacture a policy candidate out of an
+agreement. Real, bounded, minor. Fixed on those grounds.
+
+## [0.16.2] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 6) — an append-only ledger cannot roll back
+Third distinct defect in one transaction. The sequence was mutate findings ->
+append receipt -> write anchor, with rollback-of-findings as the failure path.
+Rollback cannot undo an append, so any failure after the append left a phantom
+receipt in the append-only ledger while the command reported refusal for a
+decision that had already taken effect.
+
+The root cause was the rollback model, not the anchor write. `capture_episode`
+now RECOVERS FORWARD past the append: the append is the single irreversible
+step, everything before it is validated and reversible, and everything after
+it is derived and recomputable. The tip anchor is a pure function of the
+ledger (count + last hash), so a failed anchor write is a stale derived
+artifact, not a lost transaction.
+
+`_write_anchor_or_warn` makes one bounded inline repair attempt and never
+escalates to a refusal: exit 0, findings and ledger agree, the receipt is
+durable, and only the anchor is stale.
+
+### Also corrected
+The warning names `verify` for inspection, not `reanchor` unconditionally.
+`reanchor` repairs an anchor that EXISTS and under-counts but deliberately
+refuses a MISSING anchor (with no baseline it cannot tell a crashed write from
+a truncation), which is exactly the state when the failure hits the first
+receipt. The first draft of the warning gave advice that would have been
+refused in that case.
+
+A stale docstring in `capture_episode` claiming an under-counting anchor is
+"deliberately NOT an error" was removed; PR #97 changed that, and `verify` now
+reports receipts beyond the anchor.
+
+### Tests
+`TestNoPhantomReceiptWhenTheAnchorWriteFails` INDUCES the failure (a directory
+occupying the tip path makes the write raise OSError) rather than asserting
+about it. Proven red against a mutant restoring the raise-and-roll-back
+behaviour: 2/2 red, 2/2 green restored.
+
+## [0.16.1] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 5) — the disposition transaction lost updates
+`cmd_set_disposition` acquired the ledger lock AFTER `_load_findings`, so it
+serialised stale snapshots instead of the read-modify-write transaction. Two
+concurrent dispositions each loaded the same snapshot, each mutated its own
+finding in its own copy, and each wrote the WHOLE list back: the second
+silently reverted the first while both processes exited 0 and both receipts
+recorded success. Lost disposition state, invisible to both writers.
+
+The lock now opens before the load and closes after the receipt append, so the
+read, mutation, packet assembly, findings write and receipt append are one
+critical section.
+
+Taken UNCONDITIONALLY. The judgment-disabled branch previously used a
+`nullcontext`, reasoning that with no receipt coming there was no window to
+close. That reasoning was about the write-to-receipt observation gap
+(sp-0c725cde) and does not extend to lost updates, which happen with or
+without a receipt — the reproducer demonstrates the race with
+`KIPI_JUDGMENT_CAPTURE=0`, on the branch that had no lock at all.
+
+### Tests
+`TestDispositionTransactionIsOneCriticalSection` drives the real
+`set-disposition` CLI in two concurrent processes against a real findings file.
+The review's own reproducer stubbed seven seams, which cannot distinguish a
+real race from one manufactured by its harness.
+
+The case is ITERATED eight rounds. A lost update is a race: a single attempt
+wins or loses on timing alone, and the single-shot first version passed against
+the unfixed file on one run and failed on the next — flaky in both directions
+and worthless as a guard. Eight rounds make the red reliable (3/3 runs red
+pre-fix) while the green stays deterministic (3/3 green post-fix), because the
+fix admits no losing interleaving.
+
+## [0.16.0] - 2026-08-04
+
+### Changed — one constructor for the judge's view, replacing four seams
+PR #103 went through four adversarial Codex rounds that found five majors,
+every one in the same dimension: the judge's blindness and citation integrity.
+Blindness was enforced at four independent seams and three failed — tool
+availability (`--allowedTools` is a permission allowlist, not an availability
+control), prompt content (`duplicates[].source` survived), stdout (a note
+saying "do not show this" instead of not emitting it), and evidence refs (a
+syntax check, then existence, but never relevance). A property enforced at N
+sites is not a chokepoint, and a fifth clean round would not have proved
+sufficiency — only that the reviewer had not yet found the next insufficient
+guard. This applies fable-discipline's single-writer rule to an invariant
+instead of a data path.
+
+`judge_view(packet) -> (view, citable)` is now the single writer of both:
+
+- **The perceivable view** is built from the `JUDGE_VIEW_SPEC` ALLOWLIST, not
+  by deep-copying the packet and popping known pointers. A field a future
+  assembler starts copying is invisible by default. `duplicates[].source` and
+  `remediation[].source` (paths into ledgers carrying other findings' human
+  dispositions) are both absent; `scope.source` is kept because it is the only
+  citable proof of scope.
+- **The citable set** is the closed set of refs derivable from that same view.
+  Relevance stops being a rule to enforce and becomes structural: you can only
+  cite what you were shown. Membership is strictly stronger than the two layers
+  it replaces — a ref in the set necessarily exists, because the view was
+  assembled from real state.
+
+All nine accepted prefixes are classified: `finding:`, `judgment:`, `prd:`,
+`issue:`, `receipt:`, `commit:` and `scope:` are closed over view fields, so
+the existence-only carve-out is EMPTY. `spillover:` and `test:` are refused by
+construction — no spillover block exists in the packet and nothing enumerates
+test paths, so the judge cannot honestly cite either. Nothing is stranded:
+`duplicate` keeps `finding:`/`issue:` and `already-remediated` keeps
+`receipt:`/`commit:`.
+
+`repo_state.commit_sha` is deliberately NOT citable. It is the CURRENT commit
+and always exists, so an existence check accepted `commit:<HEAD>` as proof of
+the very remediation under review. Only `remediation[].commit_sha` counts.
+
+`run_judge` no longer takes a `Config`: with citations checked by membership,
+nothing in it needs to open the repo. `_judge_block_from_run` takes the citable
+set too, so a hand-written `--judge-run` file cannot smuggle a non-citable ref
+into a receipt. `_packet_duplicate_refs` and the per-ref resolution inside
+`run_judge` are deleted as subsumed.
+
+### Tests
+29 new cases in `TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld`, all
+table-driven, each mutation-proven to fail for the reason it names:
+blacklist-pop instead of allowlist kills 10, making HEAD citable kills exactly
+1, and "refuse everything" kills the 8 survival cases while leaving the
+refusal cases green. The survival table over all nine prefixes is the
+acceptance criterion: with an empty carve-out, "refuse everything" would pass a
+membership test trivially while converting every disposition to needs-human and
+scoring zero calibration cases.
+
+Two pre-existing tests were fixed rather than the gate weakened: the G-2 case
+cited finding-1 as its own duplicate against a zero-duplicate packet (green
+only because relevance went unchecked) and now carries a real producer-written
+duplicate candidate.
+
+## [0.15.7] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 4) — the judge binding was broken outright
+`capture_from_triage` assembled the context packet AFTER the disposition write.
+`findings_xref.cross_reference` computes duplicate candidates only for findings
+whose disposition is currently `pending`, so the judge assembled while the
+finding was pending and saw cross-PRD candidates, and by capture time those
+candidates were gone, the packet hash had moved, and `_load_judge_run` refused
+the run as stale. **Every finding with a cross-PRD duplicate candidate was
+un-capturable with a judge run.**
+
+The packet is now assembled BEFORE the write, inside the same critical section,
+and passed into `capture_from_triage`. That fixes the binding and is also the
+semantically correct moment: a receipt freezes DECISION-TIME context, and
+decision time is before the decision is applied.
+
+**On the design claim this falsifies.** The plan held that the judge could
+assemble independently because `packet_hash` excludes `assembled_at` and
+`packet_sha256`. That exclusion is real and was verified. The conclusion did not
+follow: it needed the underlying state to be UNCHANGED between the two
+assemblies, and the disposition write is precisely a change to that state. The
+earlier binding test passed because its fixture had no duplicates — it asserted
+the property on the one input incapable of exercising it.
+
+## [0.15.6] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 3) — a duplicate claim must cite a packet candidate
+`EVIDENCE_REQUIREMENTS["duplicate"]` accepts any `finding:`/`issue:`/`spillover:`
+prefix, and `resolve_evidence_refs` resolves `issue:` by checking that a spec
+file exists. So the judge could cite ANY real issue in the repo as proof that a
+finding duplicates something, with no duplicate candidate in its packet at all —
+and that unsupported decision was scored as supported.
+
+Prefix and existence are each necessary and neither is sufficient. The missing
+property is RELEVANCE: a claim has to be checkable against the view the judge was
+actually given. A `duplicate` reason code may now only cite a candidate from the
+packet's own `duplicates` list; anything else is dropped and
+`evidence_gate_errors` degrades the disposition to needs-human.
+
+Scoped to `duplicate` deliberately. Other codes legitimately cite refs the packet
+does not enumerate (`commit:` for already-remediated, `scope:` for scope-removed),
+and rejecting those would convert every disposition to needs-human and score
+nothing — the same failure in the opposite direction. A paired negative
+self-test guards that edge.
+
+**Attribution:** `evidence_gate_errors` and `EVIDENCE_REQUIREMENTS` are untouched
+by rounds 1-3; the prefix-only check is original code. Round 1's resolution fix
+strictly narrowed this hole without closing it, so this is an independent
+pre-existing defect, not a regression introduced by a prior round.
+
+## [0.15.5] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 2) — the judge summary leaked its own prediction
+`cmd_judge` printed `workflow_disposition` in its stdout summary. `/prd-triage`
+runs that command inside the founder's interactive session, so the prediction
+landed in the transcript they read BEFORE setting a disposition — the exact
+contamination the blindness rule exists to prevent. A founder who sees the
+prediction and agrees inflates measured agreement, and the calibration set stops
+measuring anything.
+
+The original shipped the leak AND a `note` field telling the reader not to show
+it. That is prose doing a job that belongs to code: the value was already on
+screen by the time anyone read the warning. The summary now withholds the
+prediction; the run file still records it, and `set-disposition --judge-run`
+consumes it without displaying it.
+
+## [0.15.4] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 1) — two majors, both dataset-integrity
+- **The judge was not actually blind.** `_judge_argv` passed `--allowedTools ""`,
+  which is a permission ALLOWLIST and does not remove tool availability. The
+  availability control is `--tools ""` (`claude --help`: "Use "" to disable all
+  tools"). The paired test asserted the wrong flag, so it encoded the bug rather
+  than catching it — a test can only protect the property it actually names.
+- **Judge citations were never resolved.** `validate_judge_output` checks ref
+  SYNTAX, so an invented but well-formed ref like `finding:prd-nope/finding-999`
+  satisfied the evidence gate and was stored as a supported decision that the
+  release gates counted. Judge refs now go through `resolve_evidence_refs`, which
+  opens each one; unresolvable refs are DROPPED rather than retried, leaving
+  `evidence_gate_errors` to degrade the disposition to needs-human — the gate
+  working, already counted as `converted_to_needs_human`.
+
+  This one was self-inflicted twice over: the judge prompt promised that refs are
+  resolved by `resolve_evidence_refs`, and that same sentence was what satisfied
+  the prompt-only-enforcement guard. A gate cleared with an untrue claim about
+  our own code. The claim is now true.
+
+## [0.15.3] - 2026-08-04
+
+### Fixed (Codex review, PR #102 round 3 minor — sp-9dc72a7e)
+`cross_check_findings` documented the deleted PRD-date exemption and pointed at
+`prd_runner._prd_predates_floor`, a function that no longer exists. A docstring
+naming a deleted helper is a false claim about the code, and the next reader
+would have gone looking for it. Rewritten to state what the gate actually does
+(no date logic at all) and to record why all three date shapes failed. Zero
+references to the dead names remain in either script.
+
+## [0.15.2] - 2026-08-04
+
+### Changed
+- Restacked the judge runner onto the 0.14.2 receipt gate (no date exemption, cross-check under the writer lock). No behaviour change in the judge runner itself.
+
+## [0.15.1] - 2026-08-04
+
+### Added — the fail-soft judge call is now countable
+`/prd-triage` continues without `--judge-run` when the judge call fails, so a
+model outage costs a calibration case rather than an author's ability to close
+findings. That trade is right, but it failed SILENTLY: nothing counted human
+receipts carrying no judge, so a judge erroring on every triage for a month was
+indistinguishable from "not enough triage volume yet" — both leave `cases` short
+of 50 with a red gate and no way to tell which. That is the same silent-hole
+class this whole feature exists to close, and the same shape as 41c0876.
+
+`evaluate` now reports `unjudged_decision_rate` (human receipts with no judge
+block / human receipts) and gates on it via `zero_unjudged_decisions`. Threshold
+is literally zero, matching `zero_gate_bypasses`: a tolerance here would be a
+budget for losing calibration cases to an outage.
+
+## [0.15.0] - 2026-08-04
+
+### Added — the judge runner, the producer that never existed (sp-320d30e3)
+The Judgment Compiler's entire evaluation half was unreachable. `_load_judge_run`
+and `--judge-run` existed, `evaluate` counted a calibration case only when a
+receipt carried BOTH `judge` and `human`, and NO production code ever wrote a
+judge run: `/prd-triage` never passed the flag. Every triage produced a
+human-only receipt, `judged` stayed empty forever, and all four release gates
+(50 cases, 88% agreement, kappa 0.80, per-class recall) were unreachable by
+construction. ~90 tests passed on that path because every one of them
+hand-built the judge run.
+
+- **`kipi judgment judge --prd <id> --finding <id> --output <f>`** assembles the
+  packet, calls one LLM through `claude -p`, validates the reply against the
+  existing `validate_judge_output`, and writes a judge run. Wired into
+  `/prd-triage`, which now passes `--judge-run`.
+- **The judge runs with tools OFF.** `duplicates[].source` is a path to a
+  findings file and `prior_receipts` lists receipt ids; a judge that can open
+  files reads prior HUMAN dispositions out of both, and the calibration set
+  stops measuring prediction and starts measuring leakage. `source` is also
+  dropped from the prompt text (not the packet, so the hash still binds).
+- **Bounded retry (3), then a loud failure.** No fallback disposition: a
+  fabricated prediction poisons the calibration set worse than a missing one.
+  A failed judge writes no run file at all.
+- **The prompt is pinned by `prompt_sha256`**, a required receipt field, so
+  tuning the prompt after seeing disagreements is a visible discontinuity in
+  the ledger rather than a silent redefinition of the experiment.
+- The model is pinned and recorded on each run, so a model change shows up in
+  the ledger instead of confounding a kappa shift.
+- `/prd-triage` degrades rather than blocks: if the judge call fails, triage
+  continues without `--judge-run`. A model outage costs one calibration case,
+  never an author's ability to close findings.
+
+### Added — mechanical detector for a class that has now bitten twice
+`test_every_receipt_populating_flag_has_a_production_caller` fails when a flag
+that is the sole production input to a receipt field is passed by no slash
+command and no `kipi` dispatcher path. Definition sites are deliberately not the
+corpus: an `add_argument` proves the flag exists, which was never in doubt. Run
+red before the fix, naming `--judge-run` exactly.
+
 ## [0.14.2] - 2026-08-04
 
 ### Fixed (Codex review, PR #102 round 2) — BLOCKER: the floor exempted the future

@@ -49,6 +49,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -111,6 +112,26 @@ JUDGE_TO_LEGACY = {
     "defer": "deferred",
     "needs-human": None,  # excluded from automation metrics
 }
+if set(WORKFLOW_DISPOSITIONS) != set(JUDGE_TO_LEGACY):
+    raise RuntimeError(  # pragma: no cover - import-time invariant
+        "WORKFLOW_DISPOSITIONS and JUDGE_TO_LEGACY disagree; the pair check "
+        "below is derived from both and would silently weaken")
+# A reason code whose NAME is also a workflow disposition denotes the same
+# concept in the enums' OWN vocabulary, so the pair is checkable without
+# writing a second code->disposition table -- and a second hand-maintained
+# table would drift from these, a defect class this file has already fixed
+# more than once. `duplicate` reasoning cannot end in a `fix-now` decision.
+#
+# The non-twin codes (valid-fix-now, owned-by-other-prd, superseded, defer-*,
+# invalid-finding, insufficient-context) are left UNCONSTRAINED on purpose.
+# Nothing in these tables states what they refine, so a rule covering them
+# would be semantics invented at review time; getting one wrong rejects real
+# judge output and scores zero calibration cases, which is worse than the hole
+# it closes. `owned-by-other-prd` is the live example: pairing it with
+# `out-of-scope` would union that disposition's `scope:` requirement onto its
+# own `prd:`+`issue:`, stranding the code behind a ref the judge's view has no
+# reason to carry. The remainder is captured as sp-9755c728, not dropped.
+TWIN_REASON_CODES = frozenset(REASON_CODES) & frozenset(WORKFLOW_DISPOSITIONS)
 
 RECEIPT_FIELDS = frozenset((
     "schema_version", "receipt_id", "sequence", "captured_at", "finding",
@@ -348,8 +369,19 @@ def _validate_evidence_refs(refs, where: str) -> None:
 
 
 def evidence_gate_errors(reason_code: str | None, disposition: str | None,
-                         refs: list[str]) -> list[str]:
-    """Which required reference prefixes are missing for this decision."""
+                         refs: list[str],
+                         citable: frozenset[str] | None = None) -> list[str]:
+    """Which required reference prefixes are missing for this decision.
+
+    `citable` is the closed set from `judge_view`. When supplied (the JUDGE
+    path), a ref outside it is not evidence at all and is discarded before the
+    prefix requirements are counted -- so an unsupported decision degrades to
+    needs-human instead of being scored as supported. Left None for the HUMAN
+    path: a human has tools and may legitimately cite something the judge's
+    view never contained.
+    """
+    if citable is not None:
+        refs = [r for r in refs if r in citable]
     requirements: list[tuple[str, ...]] = []
     for key in (reason_code, disposition):
         for group in EVIDENCE_REQUIREMENTS.get(key or "", ()):  # type: ignore[arg-type]
@@ -383,6 +415,22 @@ def validate_judge_output(output: dict, where: str) -> None:
         raise ValidationError(
             f"{where}: workflow_reason_code must be one of the canonical "
             f"reason codes; got {output['workflow_reason_code']!r}")
+    code = output["workflow_reason_code"]
+    disposition = output["workflow_disposition"]
+    # The needs-human EXEMPTION is not a softening: `_judge_block_from_run`
+    # rewrites the disposition to needs-human on an evidence-gate conversion
+    # and deliberately keeps the original code (`converted_from` records what
+    # it was), so every converted receipt carries a non-matching pair. It is
+    # safe by the same table the rule is derived from -- JUDGE_TO_LEGACY maps
+    # it to None, so it is excluded from scoring before any metric sees it.
+    # Keyed on that None rather than the literal string so the exemption
+    # follows the table if another abstention is ever added.
+    if code in TWIN_REASON_CODES and disposition != code \
+            and JUDGE_TO_LEGACY[disposition] is not None:
+        raise ValidationError(
+            f"{where}: workflow_reason_code {code!r} contradicts "
+            f"workflow_disposition {disposition!r} -- a reason code that names "
+            f"a disposition must carry that disposition, or an abstention")
     if not isinstance(output["technical_reason"], str):
         raise ValidationError(f"{where}: technical_reason must be a string")
     _validate_evidence_refs(output["evidence_refs"], where)
@@ -812,7 +860,11 @@ def _load_judge_run(path: Path, packet: dict) -> dict:
     return raw
 
 
-def _judge_block_from_run(run: dict) -> dict:
+def _judge_block_from_run(run: dict, citable: frozenset[str]) -> dict:
+    """`citable` comes from `judge_view` on the SAME packet this receipt
+    freezes. Gating here as well as in `run_judge` is not a second seam: it is
+    the one authoritative gate, because a receipt can be captured from a
+    hand-written `--judge-run` file that never went through `run_judge`."""
     output = dict(run["output"])
     # Two hashes, because the stored output is not always the emitted one:
     # raw_output_sha256 attests what the judge actually said, output_sha256
@@ -823,7 +875,9 @@ def _judge_block_from_run(run: dict) -> dict:
     converted_from = None
     gate = evidence_gate_errors(output["workflow_reason_code"],
                                 output["workflow_disposition"],
-                                output["evidence_refs"])
+                                output["evidence_refs"], citable)
+    output["evidence_refs"] = [r for r in output["evidence_refs"]
+                               if r in citable]
     if gate:
         # PRD Change 4: an unsupported JUDGE recommendation degrades to
         # needs-human (advisory contract). A human decision hard-fails instead.
@@ -905,7 +959,8 @@ def build_receipt(packet: dict, *, disposition: str,
         "related_prds": frozen["related_prds"],
         "prior_receipts": frozen["prior_receipts"],
         "missing_context": sorted(set(missing_context)),
-        "judge": _judge_block_from_run(judge_run) if judge_run else None,
+        "judge": _judge_block_from_run(judge_run, judge_view(packet)[1])
+        if judge_run else None,
         "human": {
             "actor": actor,
             "decided_at": _now_iso(),
@@ -958,23 +1013,84 @@ def capture_episode(cfg: Config, packet: dict, **kwargs) -> dict:
         existing = read_ledger(path)
         record = build_receipt(packet, existing=existing, **kwargs)
         append_receipt(path, record)
-    # Anchor AFTER the append. If the process dies between the two the anchor
-    # under-counts, and an under-counting anchor is deliberately NOT an error
-    # (see _tip_errors) so a crashed write never manufactures a truncation
-    # alarm. Anchoring first would do the opposite: claim a receipt that was
-    # never written, and fail every later verify.
-        write_tip(tip_path(cfg), existing + [record])
+        # THE POINT OF NO RETURN. Everything above is validated and reversible;
+        # everything below is DERIVED and recomputable. Nothing past this line
+        # may raise, because an append-only ledger cannot participate in a
+        # rollback-based transaction: a caller that rolls back its own write on
+        # a post-append failure reports refusal for a decision that is already
+        # durable, and leaves a phantom receipt (Codex major, PR #103 round 6 —
+        # the THIRD distinct defect in this one transaction).
+        #
+        # Anchor AFTER the append: anchoring first would claim a receipt that
+        # was never written and fail every later verify.
+        _write_anchor_or_warn(cfg, existing + [record])
     return record
+
+
+def _write_anchor_or_warn(cfg: Config, records: list[dict]) -> bool:
+    """Write the tip anchor. RECOVER FORWARD, never roll back.
+
+    The anchor is a pure function of the ledger (count + last hash), so a
+    failed anchor write is not a lost transaction — it is a stale derived
+    artifact. One bounded inline retry, because the anchor exists for deletion
+    detection and a hash chain cannot detect truncation on its own, so every
+    minute it is stale is a minute the tail sits outside that detection.
+
+    Bounded at one retry and NEVER escalates to a refusal: a hanging or failing
+    repair must not wedge a triage whose decision already succeeded. On failure
+    the state is self-describing — `verify` reports "receipt(s) BEYOND the tip
+    anchor" and names `reanchor` as the repair, so the recovery path is owned
+    by tools that already exist rather than by this writer.
+    """
+    for attempt in (1, 2):
+        try:
+            write_tip(tip_path(cfg), records)
+            return True
+        except OSError as exc:
+            last = exc
+    sys.stderr.write(
+        f"WARNING: the decision was captured but the tip anchor could not be "
+        f"written ({last}). The receipt IS durable and the findings file is "
+        f"correct; only the anchor is stale, so the ledger tail is temporarily "
+        f"outside deletion detection. Run `kipi judgment verify` to see the "
+        f"anchor state: `reanchor` repairs an anchor that EXISTS and "
+        f"under-counts, but deliberately refuses a MISSING anchor (with no "
+        f"baseline it cannot tell a crashed write from a truncation), which "
+        f"is the state when this is the first receipt. "
+        f"This is NOT a failed decision and was not rolled back.\n")
+    return False
 
 
 def capture_from_triage(cfg: Config, prd_id: str, finding: dict, *,
                         actor: str, reason_code: str | None,
                         evidence_refs: list[str], rationale: str | None,
-                        judge_run_path: str | None) -> dict:
-    """Called by findings_writer.cmd_set_disposition after the disposition
-    write. Assembles context inline; the caller pre-validated the evidence
-    gate via validate_triage_decision (fail-fast, before any mutation)."""
-    packet = assemble_packet(cfg, prd_id, finding["id"])
+                        judge_run_path: str | None,
+                        packet: dict | None = None) -> dict:
+    """Called by findings_writer.cmd_set_disposition around the disposition
+    write. The caller pre-validated the evidence gate via
+    validate_triage_decision (fail-fast, before any mutation).
+
+    `packet` is supplied by the caller and assembled BEFORE the findings write.
+    Assembling it here, after the write, was wrong twice over (Codex major, PR
+    #103 round 4):
+
+    1. It broke the judge binding outright. `findings_xref.cross_reference`
+       computes duplicate candidates ONLY for findings that are currently
+       `pending` (findings_xref.py:186-188). The judge assembles while the
+       finding is pending and sees cross-PRD candidates; by the time this ran,
+       the disposition was written, the candidates were gone, the packet hash
+       had moved, and `_load_judge_run` refused the run as stale. Every finding
+       with a cross-PRD duplicate was un-capturable with a judge run.
+    2. It froze the wrong moment. A receipt exists to freeze DECISION-TIME
+       context, and decision time is before the decision is applied.
+
+    The plan claimed independent assembly was safe because `packet_hash`
+    excludes `assembled_at` and `packet_sha256`. That exclusion is real, but
+    the conclusion needed the state to be UNCHANGED between assemblies, and the
+    disposition write is exactly a change to that state.
+    """
+    if packet is None:
+        packet = assemble_packet(cfg, prd_id, finding["id"])
     judge_run = None
     if judge_run_path:
         judge_run = _load_judge_run(Path(judge_run_path), packet)
@@ -1257,11 +1373,15 @@ def cross_check_findings(cfg: Config, records: list[dict],
     either a truncation the anchor missed or a capture that silently failed.
 
     `since` filters by finding resolved_at and exists for the DIAGNOSTIC
-    caller, which passes an explicit --since. The approval gate no longer uses
-    it at all: it scopes with `prd_id` and decides exemption from the PRD's own
-    creation date, because `resolved_at` is a mutable field on a hand-editable
-    file (PR #101 rounds 2, 7 and 8 were all that one defect; see
-    prd_runner._prd_predates_floor).
+    caller, which passes an explicit --since. The approval gate does not use it
+    at all: it scopes with `prd_id` and requires a receipt UNCONDITIONALLY.
+
+    Three shapes of date inference were tried and all failed the same way --
+    `resolved_at` (PR #101 rounds 2/7/8, a mutable strippable field), then the
+    PRD id's creation date (PR #102), then hardening that date against
+    impossible values. The last one still exempted every FUTURE decision on an
+    old PRD. `prd_runner._judgment_receipt_gate` therefore reads no date at
+    all, and this docstring names no helper for doing so, because none exists.
     """
     # Map to the LATEST recorded human disposition, not merely to "a receipt
     # exists". Identity-only coverage let a receipt for an earlier decision
@@ -1454,8 +1574,20 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
             and r["human"]["disposition"] in ("rejected", "deferred"))
         / len(active)) if active else 0.0
     unsupported_rate = (converted / len(judged)) if judged else 0.0
+    # `/prd-triage` continues WITHOUT --judge-run when the judge call fails, so
+    # a model outage costs a calibration case instead of an author's ability to
+    # close findings. Silent fail-soft would rebuild the hole this feature
+    # closes: a judge erroring on every triage for a month looks exactly like
+    # "not enough triage volume yet" -- both leave `cases` short of 50 with a
+    # red gate and no way to tell which. The deterministic blocker is the
+    # `zero_unjudged_decisions` check in `_release_gates` below, covered by
+    # TestFailSoftJudgeStaysCountable in test_judgment_compiler.py.
+    decided = [r for r in active if r.get("human")]
+    unjudged_rate = (
+        sum(1 for r in decided if not r.get("judge")) / len(decided)
+    ) if decided else 0.0
     gates = _release_gates(result, ungated_rate, unsupported_rate,
-                           decision_disagreements)
+                           decision_disagreements, unjudged_rate)
     result.update({
         "superseded_excluded": superseded_excluded,
         "active_receipts": len(active),
@@ -1474,6 +1606,10 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
         # rate in 41c0876, which was a documented release condition nothing
         # read. Zero when the caller did not supply a count.
         "decision_disagreement_count": decision_disagreements,
+        # Human decisions carrying no judge prediction. This is the visible
+        # cost of the fail-soft judge call; a nonzero rate means calibration
+        # is losing cases to something operational, not to low volume.
+        "unjudged_decision_rate": unjudged_rate,
         "missing_context_rate": (
             sum(1 for r in active if r["missing_context"]) / len(active))
         if active else 0.0,
@@ -1486,7 +1622,8 @@ def evaluate(records: list[dict], decision_disagreements: int = 0) -> dict:
 
 def _release_gates(scored: dict, ungated_rate: float = 0.0,
                    unsupported_rate: float = 0.0,
-                   decision_disagreements: int = 0) -> dict:
+                   decision_disagreements: int = 0,
+                   unjudged_rate: float = 0.0) -> dict:
     """The gates that must ALL pass before any disposition class auto-decides.
 
     The bypass checks are here because they were missing: the PRD listed "no
@@ -1521,6 +1658,17 @@ def _release_gates(scored: dict, ungated_rate: float = 0.0,
         "zero_decision_disagreements": {
             "required": 0, "actual": decision_disagreements,
             "passed": decision_disagreements == 0,
+        },
+        # Threshold is literally zero, matching zero_gate_bypasses rather than
+        # carrying a tolerance. A tolerance here would be a budget for losing
+        # calibration cases to an outage, and the failure is silent by nature:
+        # nothing else in this report distinguishes "the judge is broken" from
+        # "we have not triaged much yet". This check is what withholds
+        # `release_gates.passed`, the field a caller reads before authorizing
+        # auto-decide; the paired test is test_a_triage_with_no_judge_is_counted_and_gated.
+        "zero_unjudged_decisions": {
+            "required": 0.0, "actual": unjudged_rate,
+            "passed": unjudged_rate == 0.0,
         },
         "min_cases": {"required": 50, "actual": scored["cases"],
                       "passed": scored["cases"] >= 50},
@@ -1731,7 +1879,7 @@ def selftest() -> int:
             "evidence_refs": [], "missing_context": [], "confidence": 0.9,
         },
     }
-    block = _judge_block_from_run(judge_run)
+    block = _judge_block_from_run(judge_run, judge_view(packet)[1])
     expect(block["output"]["workflow_disposition"] == "needs-human",
            "unsupported judge disposition converts to needs-human")
     expect(block["converted_to_needs_human"] is True, "conversion is flagged")
@@ -1941,6 +2089,444 @@ def cmd_policy_candidates(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Judge runner: the PRODUCER (ASK-363, sp-320d30e3)
+# ---------------------------------------------------------------------------
+#
+# This half of the compiler shipped with a consumer and no producer.
+# `_load_judge_run` and the `--judge-run` flag existed, `evaluate` counted a
+# calibration case only when a receipt carried BOTH `judge` and `human`, and
+# NOTHING in production ever wrote a judge run: `/prd-triage` never passed the
+# flag. So every triage wrote a human-only receipt, `judged` stayed empty
+# forever, and all four release gates were unreachable by construction. ~90
+# tests passed on that path because each of them hand-built the judge run --
+# the recurring "a gate's input needs a production producer, not just a test"
+# class. This is the missing write site.
+
+JUDGE_MODEL_DEFAULT = "claude-opus-5"
+
+# The prompt is CONTENT, and its hash is a required receipt field, so tuning it
+# after seeing disagreements shows up in the ledger as a discontinuity instead
+# of silently redefining the experiment. Cases either side of a prompt change
+# are different experiments and must not be pooled.
+JUDGE_PROMPT = """\
+You are adjudicating one code-review finding for a PRD triage system.
+
+You are given a frozen context packet as JSON. Decide, from that packet ALONE,
+how the finding should be dispositioned. You have no tools and cannot open
+files; if the packet does not contain what you need, say so in missing_context
+and use the needs-human disposition rather than guessing.
+
+Reply with ONE JSON object and nothing else. Exactly these fields:
+
+  technical_validity    one of: valid, invalid, uncertain
+  technical_reason      one sentence, plain text
+  workflow_disposition  one of: fix-now, already-remediated, duplicate,
+                        scope-removed, out-of-scope, defer, invalid, needs-human
+  workflow_reason_code  one of: valid-fix-now, already-remediated, duplicate,
+                        owned-by-other-prd, scope-removed, out-of-scope,
+                        superseded, defer-dependency, defer-ordering,
+                        invalid-finding, insufficient-context, needs-human
+  evidence_refs         list of "kind:value" refs (finding:, issue:, prd:,
+                        receipt:, judgment:, commit:, test:, scope:,
+                        spillover:). Use [] if you cannot cite a real one.
+  missing_context       list of strings naming what the packet lacked
+  confidence            number in [0,1]
+
+Do not invent an evidence ref. Refs are resolved by the `resolve_evidence_refs`
+function, which OPENS each one rather than pattern-matching it, and
+`evidence_gate_errors` converts an unsupported disposition to needs-human. A
+fabricated citation therefore cannot pass; it only costs you the case. An empty
+list is the honest answer when you cannot cite something real.
+"""
+# The paragraph above is not prompt-only enforcement: the executable blockers
+# it names are `resolve_evidence_refs` (opens every ref, exit 2 on a miss),
+# `evidence_gate_errors` (downgrades unsupported dispositions), and
+# `validate_judge_output`, which `run_judge` calls on every attempt before a
+# run file is written. The prompt merely tells the judge what the code will do.
+
+
+def _prompt_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+JUDGE_PROMPT_SHA256 = _prompt_hash(JUDGE_PROMPT)
+
+JUDGE_MAX_ATTEMPTS = 3
+
+
+def _judge_argv(model: str) -> list[str]:
+    """The real invocation: `claude -p`, no tools.
+
+    TOOLS OFF is a dataset requirement, not a hardening nicety. The packet's
+    `duplicates[].source` is a filesystem path to a findings file and
+    `prior_receipts` lists receipt ids; a judge that can open files reads prior
+    HUMAN dispositions straight out of both, and the calibration set stops
+    measuring prediction and starts measuring leakage.
+
+    `claude -p` is the established LLM client in this fleet (no API key, rides
+    the founder's subscription). The model is pinned and recorded on the run:
+    unpinned headless jobs here silently rode a cheaper model and burned 3% of
+    a weekly budget in an hour, and an unrecorded model change would confound a
+    kappa shift with a capability shift.
+    """
+    # `--tools ""` is the AVAILABILITY control; `claude --help` states: "Use
+    # "" to disable all tools". The first version used `--allowedTools ""`,
+    # which is a permission ALLOWLIST and does not remove availability -- the
+    # judge kept its tools and the paired test asserted the wrong flag, so the
+    # test encoded the bug instead of catching it (Codex, PR #103 round 1).
+    return ["claude", "-p", "--model", model, "--tools", ""]
+
+
+# --- The judge's view of the world: ONE constructor -------------------------
+#
+# WHY ONE FUNCTION. Blindness and citation integrity were previously enforced
+# at four independent seams and three of them failed, each caught a round
+# later: `--allowedTools ""` is a permission ALLOWLIST and does not remove
+# availability (round 1); the prompt still carried `duplicates[].source`
+# (round 2); the summary printed the prediction next to a note asking the
+# reader not to look at it (round 2); and a syntactically valid ref that merely
+# EXISTED counted as relevant evidence (round 3). A property enforced at N
+# sites is not a chokepoint, and a clean review round would not have proved
+# sufficiency -- it would only mean the reviewer had not yet found the next
+# insufficient guard. This applies fable-discipline's single-writer rule to an
+# invariant instead of a data path.
+#
+# ALLOWLIST, never a blacklist-pop. The old builder deep-copied the whole
+# packet and popped one known pointer, so anything a future assembler starts
+# copying is visible by default -- and a findings ledger record DOES carry
+# `disposition` and `rationale`. Executed reproducer (test_zz_repro R1, red at
+# 85d4a46): splicing `rationale` into `packet["finding"]` put the string
+# verbatim into the prompt.
+JUDGE_VIEW_SPEC: dict[str, tuple[str, ...] | None] = {
+    # None = a scalar or a list of scalars, shown as-is (carries no label).
+    "packet_schema_version": None,
+    "assembled_at": None,
+    "packet_sha256": None,
+    "finding": ("prd_id", "finding_id", "severity", "body", "body_sha256"),
+    "review": ("source", "review_run_id"),
+    "repo_state": ("branch", "commit_sha", "dirty"),
+    "prd_state": ("path", "sha256", "status", "revision"),
+    "issue_state": ("issue_id", "manifest_sha256", "issue_order"),
+    "scope": ("source", "sha256"),
+    # `source` is dropped from BOTH row types. Each is a filesystem path into a
+    # ledger (`<findings>.jsonl`, `<receipts>.jsonl:<line>`) that carries OTHER
+    # findings' human dispositions -- useful only to a reader that can open it,
+    # which the judge must not be able to do. The citable set below is how the
+    # judge refers to one of these rows without ever holding a path.
+    "duplicates": ("prd_id", "finding_id", "similarity"),
+    "remediation": ("issue_id", "finding_id", "closed_at", "commit_sha"),
+    "related_prds": None,
+    "prior_receipts": None,
+    "missing_context": None,
+}
+
+
+# --- Citation PROVENANCE: the class, enumerated ----------------------------
+#
+# Rounds 3-9 each killed ONE insufficient guard belonging to one class, and
+# each time the class moved one field over instead of dying. The class:
+#
+#   A reason code that asserts a relationship to a SPECIFIC OTHER ENTITY must
+#   cite a ref whose source VARIES WITH THE FINDING. An AMBIENT source -- one
+#   whose value is identical for every finding in the run -- can never prove
+#   such a relationship, because it is present whether or not the relationship
+#   holds.
+#
+# `commit:<HEAD>` was this bug for `already-remediated` (round 3; killed by
+# taking commits only from remediation rows). `issue:<active issue>` was the
+# SAME bug for `duplicate`: 83e3877 added it to the citable set below and
+# deleted the comment that had documented the hole, and rounds 7-9 reviewed
+# narrower things over the top of it (Codex round 9, executed repro: a packet
+# with `duplicates == []` cited the active issue and scored as a supported
+# duplicate, converted=False, exact_agreement=1.0).
+#
+# "Does the field always exist?" is the WRONG rule and would condemn `scope:`.
+# `scope-removed` / `out-of-scope` are DOCUMENTARY: the claim is "this falls
+# outside that documented scope", not "this is the same thing as that specific
+# entity". An always-present scope section is correct evidence for a
+# documentary claim. The axis is relational-vs-documentary, not always-exists.
+#
+# The two refusals already documented below (`spillover:`, `test:`) fall out of
+# this table rather than being special cases, which is the check on the
+# classification: a rule derived to catch `issue:` reproduces the two holes
+# that were already closed by hand.
+RELATIONAL_REASON_CODES = frozenset((
+    "duplicate",            # which duplicate?
+    "already-remediated",   # which remediation?
+    "owned-by-other-prd",   # which PRD, which issue?
+    "superseded",           # which judgment?
+))
+DOCUMENTARY_REASON_CODES = frozenset((
+    "scope-removed", "out-of-scope",
+))
+# Every source that feeds `_citable_refs`, traced to the assembler that fills
+# it. "finding-dependent" = the assembler takes finding_id (or derives from
+# something that did). "ambient" = same value for every finding in the run.
+# "absent" = the packet carries no source for it at all.
+CITABLE_REF_PROVENANCE = {
+    "finding:": "finding-dependent",    # duplicates[] rows, per finding_id
+    "judgment:": "finding-dependent",   # ledger filtered by finding_id
+    "prd:": "finding-dependent",        # derived from duplicates[]
+    "receipt:": "finding-dependent",    # remediation rows, per finding_id
+    "commit:": "finding-dependent",     # remediation rows, per finding_id
+    "scope:": "ambient",                # _assemble_scope, per PRD
+    "issue:": "ambient",                # cfg.active_issue_state_path
+    "spillover:": "absent",             # no spillover block in the packet
+    "test:": "absent",                  # nothing enumerates test paths
+}
+
+
+def _relational_prefixes() -> frozenset[str]:
+    out: set[str] = set()
+    for code in RELATIONAL_REASON_CODES:
+        for group in EVIDENCE_REQUIREMENTS.get(code, ()):
+            out.update(group)
+    return frozenset(out)
+
+
+# A prefix that can satisfy a RELATIONAL requirement must never be emitted from
+# a non-finding-dependent source. Derived, so a source added later with ambient
+# provenance is caught the day it is added instead of in round N+1.
+FORBIDDEN_CITABLE_PREFIXES = _relational_prefixes() & frozenset(
+    p for p, kind in CITABLE_REF_PROVENANCE.items()
+    if kind != "finding-dependent")
+if set(EVIDENCE_REF_RE.pattern.split("(")[1].split(")")[0].split("|")) != {
+        p.rstrip(":") for p in CITABLE_REF_PROVENANCE}:
+    raise RuntimeError(  # pragma: no cover - import-time invariant
+        "CITABLE_REF_PROVENANCE does not classify every prefix in the evidence "
+        "ref grammar; an unclassified prefix is an unchecked citation route")
+
+
+def _citable_refs(view: dict) -> frozenset[str]:
+    """The closed set of refs derivable from the view the judge was shown.
+
+    Relevance stops being a rule somebody has to enforce and becomes
+    structural: you can only cite what you were shown. Every accepted prefix in
+    EVIDENCE_REQUIREMENTS is accounted for here, and the two with no source in
+    the packet -- `spillover:` (no spillover block exists) and `test:` (nothing
+    enumerates test paths) -- are therefore refused BY CONSTRUCTION rather than
+    by a special case. Both refusals are principled, not defaults: the judge
+    cannot see either kind, so it cannot honestly cite either.
+
+    `issue:` joins them, for the same structural reason rather than as a third
+    special case: its only source is the GLOBALLY ACTIVE issue, which is
+    ambient, and `duplicate` is relational (see CITABLE_REF_PROVENANCE). Two
+    consequences, both loud and both intended:
+
+    - `duplicate` keeps ONE honest route on the judge path, `finding:`, taken
+      from a real `duplicates[]` candidate. `already-remediated` still keeps
+      two (`receipt:`, `commit:`), both from remediation rows.
+    - `owned-by-other-prd` becomes UNSATISFIABLE on the judge path: it requires
+      an `issue:` group that now has no finding-dependent source, so it always
+      converts to needs-human. That is the gate working. The packet contains no
+      honest way for a blind judge to name WHICH issue owns a finding, and
+      inventing one (e.g. reusing a remediation row's issue_id) would rebuild
+      exactly the hole this table closes. The HUMAN path is untouched --
+      `evidence_gate_errors` is called with citable=None there, because a human
+      has tools.
+    """
+    refs: set[str] = set()
+    for row in view["duplicates"]:
+        if row.get("prd_id") and row.get("finding_id"):
+            refs.add(f"finding:{row['prd_id']}/{row['finding_id']}")
+    for receipt_id in view["prior_receipts"]:
+        if receipt_id:
+            refs.add(f"judgment:{receipt_id}")
+    for prd_id in view["related_prds"]:
+        if prd_id:
+            refs.add(f"prd:{prd_id}")
+    # NO `issue:` HERE. `issue_state.issue_id` is the globally active issue and
+    # is AMBIENT: it is present for every finding in the run, so it cannot
+    # evidence a relationship to a specific other entity. Emitting it let a
+    # packet with `duplicates == []` cite it and score as a supported duplicate
+    # (Codex round 9). This is the same shape as the `commit:<HEAD>` refusal
+    # below, which is why the guard after the loop enforces the CLASS instead
+    # of this one field.
+    for row in view["remediation"]:
+        if row.get("issue_id"):
+            refs.add(f"receipt:{row['issue_id']}")
+        # ONLY a remediation row's commit. `repo_state.commit_sha` is the
+        # CURRENT commit and is deliberately NOT a source here: it always
+        # exists, so an existence check accepted `commit:<HEAD>` as proof that
+        # the finding was already remediated -- a judge citing HEAD as its own
+        # remediation (test_zz_repro R2/R4, red at 85d4a46).
+        if row.get("commit_sha"):
+            refs.add(f"commit:{row['commit_sha']}")
+    if view["scope"].get("source") and view["scope"]["source"] != "unknown":
+        refs.add(f"scope:{view['scope']['source']}")
+    # The CLASS guard, not a check on any one field: nothing that could satisfy
+    # a relational requirement may reach the citable set from an ambient
+    # source. A future assembler that starts emitting one trips this here,
+    # rather than being found by a reviewer N rounds later.
+    leaked = sorted(r for r in refs
+                    if any(r.startswith(p) for p in FORBIDDEN_CITABLE_PREFIXES))
+    if leaked:
+        raise ValidationError(
+            "citable set admits ambient refs for a relational reason code: "
+            f"{leaked}")
+    return frozenset(refs)
+
+
+def judge_view(packet: dict) -> tuple[dict, frozenset[str]]:
+    """Construct the judge's ENTIRE view of the world, and the closed set of
+    refs derivable from it. The single writer of both properties.
+
+    Returns (view, citable). The view is what gets rendered into the prompt;
+    `citable` is the only set of refs a decision built on that view may cite.
+    Neither is hashed into anything, so this does not touch `packet_sha256` and
+    the `input_sha256` binding is unaffected.
+    """
+    view: dict = {}
+    for key, allowed in JUDGE_VIEW_SPEC.items():
+        value = packet.get(key)
+        if allowed is None:
+            view[key] = copy.deepcopy(value)
+        elif isinstance(value, list):
+            view[key] = [{k: row[k] for k in allowed if k in row}
+                         for row in value if isinstance(row, dict)]
+        elif isinstance(value, dict):
+            view[key] = {k: value[k] for k in allowed if k in value}
+        else:
+            view[key] = copy.deepcopy(value)
+    return view, _citable_refs(view)
+
+
+def _judge_prompt_text(packet: dict) -> str:
+    """Prompt = instructions + the JUDGE VIEW as text (never the raw packet)."""
+    view, _ = judge_view(packet)
+    return (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
+            + json.dumps(view, indent=2, sort_keys=True))
+
+
+def _extract_json_object(raw: str) -> dict:
+    """Parse the model's reply. EXTRACTION only, never repair.
+
+    A tolerant parser that patches missing fields would fabricate a prediction,
+    and a fabricated prediction poisons the calibration set worse than a
+    missing one. So this only strips fences and slices the outermost object;
+    anything still malformed raises and burns a retry.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\n", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValidationError("judge reply contained no JSON object")
+    return json.loads(text[start:end + 1])
+
+
+def run_judge(packet: dict, *, model: str) -> dict:
+    """Run the judge; the `validate_judge_output` validator and its pytest
+    cases are the executable blockers on everything this docstring claims.
+
+    Takes no Config: since citations are checked by MEMBERSHIP in the set
+    `judge_view` derives from the packet, nothing here needs to open the repo.
+    That is the point of the refactor -- the packet is the whole world.
+
+    Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
+    contract). There is deliberately no fallback disposition: returning a
+    default on exhaustion would write a decision the judge did not make.
+    Enforced by `validate_judge_output` on every attempt plus the raise
+    below; the paired tests are test_malformed_output_retries_then_fails_loudly
+    and test_a_transient_malformed_reply_recovers_within_the_cap.
+    """
+    view, citable = judge_view(packet)
+    prompt = (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
+              + json.dumps(view, indent=2, sort_keys=True))
+    override = os.environ.get("KIPI_JUDGE_CMD")
+    argv = shlex.split(override) if override else _judge_argv(model)
+    failures = []
+    for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
+        try:
+            proc = subprocess.run(argv, input=prompt, capture_output=True,
+                                  text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"attempt {attempt}: invocation failed: {exc}")
+            continue
+        if proc.returncode != 0:
+            failures.append(
+                f"attempt {attempt}: judge exited {proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:200]}")
+            continue
+        try:
+            output = _extract_json_object(proc.stdout)
+            validate_judge_output(output, "judge run")
+        except (ValidationError, json.JSONDecodeError) as exc:
+            failures.append(f"attempt {attempt}: {exc}")
+            continue
+        # ONE membership test, against the closed set derived from the SAME
+        # view the judge was shown. This replaces two earlier layers that each
+        # turned out to be insufficient on their own: prefix-matching alone let
+        # an invented-but-well-formed ref through (round 1), and
+        # prefix+existence let a real-but-irrelevant one through -- any real
+        # issue in the repo "proved" a duplicate (round 3). Membership is
+        # strictly stronger than both: a ref that is in the set necessarily
+        # exists, because the view was assembled from real state.
+        #
+        # Non-citable refs are DROPPED rather than retried: a model that cannot
+        # cite something it was shown will not do better on attempt 2, and the
+        # honest outcome is an unsupported disposition. Dropping leaves
+        # `evidence_gate_errors` to convert it to needs-human, which is the
+        # gate WORKING and is already counted as `converted_to_needs_human`.
+        # The negative self-test over all nine prefixes is what stops this
+        # becoming "refuse everything", which would pass a membership test
+        # trivially while scoring zero calibration cases.
+        output["evidence_refs"] = [r for r in (output.get("evidence_refs") or [])
+                                   if r in citable]
+        return {
+            "model": model,
+            "prompt_sha256": JUDGE_PROMPT_SHA256,
+            "input_sha256": packet["packet_sha256"],
+            "output": output,
+        }
+    raise ValidationError(
+        f"judge produced no valid output in {JUDGE_MAX_ATTEMPTS} attempts:\n  "
+        + "\n  ".join(failures)
+        + "\nRefusing to write a run. A fabricated prediction is worse than a "
+          "missing one: it enters the calibration set as if a judge had made "
+          "it.")
+
+
+def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
+    packet = assemble_packet(cfg, args.prd, args.finding)
+    model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
+        or JUDGE_MODEL_DEFAULT
+    run = run_judge(packet, model=model)
+    # Written only on success, and only after validation, so a failed judge
+    # leaves no partial file for a later `--judge-run` to pick up.
+    destination = Path(args.output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(run, indent=2, sort_keys=True),
+                           encoding="utf-8")
+    # The PREDICTION IS DELIBERATELY ABSENT from this summary (Codex major, PR
+    # #103 round 2). `/prd-triage` runs this command inside the founder's
+    # interactive session, so anything printed here lands in the transcript
+    # they read BEFORE setting a disposition. A founder who sees the prediction
+    # and agrees inflates measured agreement, and the calibration set stops
+    # measuring anything.
+    #
+    # The first version printed `workflow_disposition` alongside a `note`
+    # saying not to show it. That is prose doing a job that belongs to code:
+    # the value was already on screen by the time anyone read the warning. The
+    # prediction lives in the run file, which `set-disposition --judge-run`
+    # consumes without displaying. Paired test:
+    # TestTheJudgeSummaryWithholdsThePrediction.
+    print(json.dumps({
+        "path": str(destination),
+        "model": run["model"],
+        "prompt_sha256": run["prompt_sha256"],
+        "input_sha256": run["input_sha256"],
+        "prediction": "withheld until the disposition is set",
+    }, indent=2))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true")
@@ -1975,6 +2561,15 @@ def main(argv: list[str]) -> int:
                                "finding (independent completeness check)")
     p_verify.add_argument("--since", help="ISO timestamp floor for --cross-check")
     p_verify.set_defaults(func=cmd_verify)
+
+    p_judge = sub.add_parser("judge")
+    p_judge.add_argument("--prd", required=True)
+    p_judge.add_argument("--finding", required=True)
+    p_judge.add_argument("--output", required=True)
+    p_judge.add_argument("--model", default=None,
+                         help="override the pinned judge model (recorded on "
+                              "the run so a change is visible in the ledger)")
+    p_judge.set_defaults(func=cmd_judge)
 
     p_evaluate = sub.add_parser("evaluate")
     p_evaluate.set_defaults(func=cmd_evaluate)
