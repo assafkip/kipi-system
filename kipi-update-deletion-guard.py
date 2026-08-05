@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Refuse a q-system sync whose --delete would remove instance-owned data.
+
+WHY THIS EXISTS (sp-737ce1ae, sp-10cf4f76). kipi-update.sh syncs the skeleton's
+q-system/ into each instance with `rsync -a --delete`, protecting instance data
+with ANCHORED excludes (`--exclude=/my-project/`). An anchored exclude is
+relative to the TRANSFER ROOT, so it only lines up when the destination IS the
+instance's q-system dir.
+
+Reproduced 2026-08-05: with `subtree_prefix` null the destination is the
+instance ROOT, so an instance that still keeps its data under `q-system/` has
+that data one level below where the excludes point. The dry run then itemizes
+
+    *deleting   q-system/my-project/current-state.md
+    *deleting   q-system/memory/last-handoff.md
+    *deleting   q-system/canonical/decisions.md
+
+and none of `--exclude=/my-project/` etc. matches, because they anchor at
+`q-system/my-project/`'s PARENT. `reddit-build-radar` is a real registry entry
+with a null prefix.
+
+WHY A GUARD AND NOT ONLY AN EXCLUDE FIX. Re-anchoring the excludes fixes this
+variant. It does not fix the class: any future layout, prefix, or registry drift
+that moves the destination re-opens the same hole silently, and the failure mode
+is deleted founder data with no error. This reads the deletions rsync ACTUALLY
+plans, from rsync's own itemized output, and matches instance-owned names at ANY
+depth. It is the fail-closed backstop; the excludes remain the first line.
+
+It also covers sp-10cf4f76 (a tracked instance-only script inside the synced
+tree, which the untracked-file snapshot never protected), because a deletion is
+a deletion whatever git thinks of the file.
+
+Exit codes:
+    0  no instance-owned deletion planned (sync may proceed)
+    2  at least one planned deletion touches instance-owned data (ABORT)
+
+Usage:
+    rsync -ain --delete SRC DEST <excludes> | python3 kipi-update-deletion-guard.py
+
+Reads the itemized dry-run on stdin. Emits the offending paths on stderr.
+"""
+
+from __future__ import annotations
+
+import sys
+
+# Kept in sync with INSTANCE_OWNED_SUBTREES in kipi-update.sh. Duplicated
+# deliberately rather than sourced: this script must stay runnable standalone
+# (that is what makes it testable without building a skeleton fixture), and a
+# drift between the two lists is caught by
+# test-kipi-update-owned-deletion-guard.sh, which reads BOTH.
+INSTANCE_OWNED = (
+    "my-project",
+    "canonical",
+    "memory",
+    "output",
+    "research",
+    ".q-system/data",
+    ".q-system/agent-pipeline/bus",
+)
+
+
+def deletions(itemized: str) -> list[str]:
+    """The paths rsync says it will delete, from its own itemized output."""
+    out = []
+    for line in itemized.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("*deleting"):
+            path = stripped[len("*deleting"):].strip()
+            if path:
+                out.append(path)
+    return out
+
+
+def owned_hits(paths: list[str]) -> list[tuple[str, str]]:
+    """(path, subtree) for every deletion that touches instance-owned data.
+
+    Matched at ANY depth, not anchored: the whole defect is that the anchor was
+    in the wrong place, so an anchored check here would inherit the bug it
+    exists to catch.
+    """
+    hits = []
+    for path in paths:
+        segments = path.strip("/").split("/")
+        for sub in INSTANCE_OWNED:
+            parts = sub.split("/")
+            for i in range(len(segments) - len(parts) + 1):
+                if segments[i:i + len(parts)] == parts:
+                    hits.append((path, sub))
+                    break
+            else:
+                continue
+            break
+    return hits
+
+
+def main() -> int:
+    hits = owned_hits(deletions(sys.stdin.read()))
+    if not hits:
+        return 0
+    sys.stderr.write(
+        f"REFUSING SYNC: rsync --delete would remove {len(hits)} "
+        "instance-owned path(s):\n"
+    )
+    for path, sub in hits[:20]:
+        sys.stderr.write(f"  {path}   (instance-owned: {sub}/)\n")
+    if len(hits) > 20:
+        sys.stderr.write(f"  ... and {len(hits) - 20} more\n")
+    sys.stderr.write(
+        "\nThis means the destination and the anchored --exclude patterns "
+        "disagree about\nwhere the instance's q-system lives (sp-737ce1ae). "
+        "Check the instance's\n`subtree_prefix` in instance-registry.json "
+        "against its real layout.\n"
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
