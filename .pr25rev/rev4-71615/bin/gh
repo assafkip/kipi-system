@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-case "$*" in
-  "pr list"*)                            echo 903 ;;
-  "pr view 903 --json mergeStateStatus"*) echo DIRTY ;;
-esac
-exit 0

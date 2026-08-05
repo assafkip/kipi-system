@@ -1,3 +1,0 @@
-2026-07-27T23:19:52Z worker: 1 ready issue(s) (owner:sana, has a DoR, not owner:assaf)
-2026-07-27T23:19:52Z skip ASK-AAA: /Users/assafkipnis/projects/kipi-system/.pr25rev/rev4-71615/s2/worktrees/ask-aaa is missing PR #902's commits and cannot be moved onto them -- the tree holds 1 commit(s) that exist nowhere else. Refusing a round that would force-push over the PR. A human resolves this one: /Users/assafkipnis/projects/kipi-system/.pr25rev/rev4-71615/s2/worktrees/ask-aaa
-2026-07-27T23:19:52Z worker: run complete
