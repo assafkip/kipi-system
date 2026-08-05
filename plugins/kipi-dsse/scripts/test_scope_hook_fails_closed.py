@@ -253,3 +253,46 @@ def test_scope_gate_fails_closed_when_the_runner_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(h.subprocess, "run", _boom)
     monkeypatch.setattr(_sys, "stdin", _io.StringIO(_json.dumps(payload)))
     assert h.main() == 2, "runner error allowed the edit through unchecked"
+
+
+@pytest.mark.parametrize("rc", [1, 3, 127, -1])
+def test_scope_gate_fails_closed_on_any_non_verdict_exit(monkeypatch, tmp_path, rc):
+    """Only 0 allows; only 2 is a real scope refusal.
+
+    Round 4 closed the raised-exception path and stopped there. Codex round 5
+    showed the hole open one step over: a runner that CRASHES exits 1, which is
+    not an exception in this process, and the hook read it as allow. Two
+    spellings of one failure; closing either alone closes nothing.
+    """
+    import io as _io, json as _json, sys as _sys, subprocess as _sp
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "hooks"))
+    import scope_hook as h
+
+    payload = {"tool_name": "Edit",
+               "tool_input": {"file_path": "src/disallowed.py"},
+               "cwd": str(tmp_path)}
+    monkeypatch.setattr(h, "_outside_repo", lambda path, cwd: False)
+    monkeypatch.setattr(
+        h.subprocess, "run",
+        lambda *a, **k: _sp.CompletedProcess(a[0] if a else [], rc, "", "boom"))
+    monkeypatch.setattr(_sys, "stdin", _io.StringIO(_json.dumps(payload)))
+    assert h.main() == 2, f"runner exit {rc} was treated as permission to edit"
+
+
+def test_scope_gate_still_allows_on_a_clean_in_scope_verdict(monkeypatch, tmp_path):
+    """The negative half: the fix must not block everything."""
+    import io as _io, json as _json, sys as _sys, subprocess as _sp
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "hooks"))
+    import scope_hook as h
+
+    payload = {"tool_name": "Edit",
+               "tool_input": {"file_path": "src/allowed.py"},
+               "cwd": str(tmp_path)}
+    monkeypatch.setattr(h, "_outside_repo", lambda path, cwd: False)
+    monkeypatch.setattr(
+        h.subprocess, "run",
+        lambda *a, **k: _sp.CompletedProcess(a[0] if a else [], 0, "", ""))
+    monkeypatch.setattr(_sys, "stdin", _io.StringIO(_json.dumps(payload)))
+    assert h.main() == 0, "an in-scope edit was blocked"

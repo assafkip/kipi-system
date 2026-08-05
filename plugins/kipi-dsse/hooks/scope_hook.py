@@ -155,10 +155,24 @@ def main() -> int:
             "there is no issue in flight.\n")
         return 2
 
+    # ONLY exit 0 allows. 2 is the runner's "out of scope" refusal; anything
+    # else is a BROKEN runner, and a broken enforcement runner must not read as
+    # permission to edit.
+    #
+    # Round 4 fixed the raised-exception path and stopped there; Codex round 5
+    # showed the hole was still open one step over, because an ordinary crash
+    # (import error, unhandled traceback) exits 1, not an exception in THIS
+    # process. Two spellings of the same failure, and only one was closed.
+    if result.returncode == 0:
+        return 0
     if result.returncode == 2:
         sys.stderr.write(result.stderr or "DSSE scope block\n")
         return 2
-    return 0
+    sys.stderr.write(
+        f"DSSE scope gate runner exited {result.returncode} (not a scope "
+        "verdict); refusing the edit rather than allowing it unchecked.\n"
+        f"{result.stderr or ''}")
+    return 2
 
 
 if __name__ == "__main__":
