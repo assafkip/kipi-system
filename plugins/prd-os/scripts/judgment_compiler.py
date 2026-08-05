@@ -349,8 +349,19 @@ def _validate_evidence_refs(refs, where: str) -> None:
 
 
 def evidence_gate_errors(reason_code: str | None, disposition: str | None,
-                         refs: list[str]) -> list[str]:
-    """Which required reference prefixes are missing for this decision."""
+                         refs: list[str],
+                         citable: frozenset[str] | None = None) -> list[str]:
+    """Which required reference prefixes are missing for this decision.
+
+    `citable` is the closed set from `judge_view`. When supplied (the JUDGE
+    path), a ref outside it is not evidence at all and is discarded before the
+    prefix requirements are counted -- so an unsupported decision degrades to
+    needs-human instead of being scored as supported. Left None for the HUMAN
+    path: a human has tools and may legitimately cite something the judge's
+    view never contained.
+    """
+    if citable is not None:
+        refs = [r for r in refs if r in citable]
     requirements: list[tuple[str, ...]] = []
     for key in (reason_code, disposition):
         for group in EVIDENCE_REQUIREMENTS.get(key or "", ()):  # type: ignore[arg-type]
@@ -813,7 +824,11 @@ def _load_judge_run(path: Path, packet: dict) -> dict:
     return raw
 
 
-def _judge_block_from_run(run: dict) -> dict:
+def _judge_block_from_run(run: dict, citable: frozenset[str]) -> dict:
+    """`citable` comes from `judge_view` on the SAME packet this receipt
+    freezes. Gating here as well as in `run_judge` is not a second seam: it is
+    the one authoritative gate, because a receipt can be captured from a
+    hand-written `--judge-run` file that never went through `run_judge`."""
     output = dict(run["output"])
     # Two hashes, because the stored output is not always the emitted one:
     # raw_output_sha256 attests what the judge actually said, output_sha256
@@ -824,7 +839,9 @@ def _judge_block_from_run(run: dict) -> dict:
     converted_from = None
     gate = evidence_gate_errors(output["workflow_reason_code"],
                                 output["workflow_disposition"],
-                                output["evidence_refs"])
+                                output["evidence_refs"], citable)
+    output["evidence_refs"] = [r for r in output["evidence_refs"]
+                               if r in citable]
     if gate:
         # PRD Change 4: an unsupported JUDGE recommendation degrades to
         # needs-human (advisory contract). A human decision hard-fails instead.
@@ -906,7 +923,8 @@ def build_receipt(packet: dict, *, disposition: str,
         "related_prds": frozen["related_prds"],
         "prior_receipts": frozen["prior_receipts"],
         "missing_context": sorted(set(missing_context)),
-        "judge": _judge_block_from_run(judge_run) if judge_run else None,
+        "judge": _judge_block_from_run(judge_run, judge_view(packet)[1])
+        if judge_run else None,
         "human": {
             "actor": actor,
             "decided_at": _now_iso(),
@@ -1786,7 +1804,7 @@ def selftest() -> int:
             "evidence_refs": [], "missing_context": [], "confidence": 0.9,
         },
     }
-    block = _judge_block_from_run(judge_run)
+    block = _judge_block_from_run(judge_run, judge_view(packet)[1])
     expect(block["output"]["workflow_disposition"] == "needs-human",
            "unsupported judge disposition converts to needs-human")
     expect(block["converted_to_needs_human"] is True, "conversion is flagged")
@@ -2085,20 +2103,119 @@ def _judge_argv(model: str) -> list[str]:
     return ["claude", "-p", "--model", model, "--tools", ""]
 
 
-def _judge_prompt_text(packet: dict) -> str:
-    """Prompt = instructions + the packet as TEXT.
+# --- The judge's view of the world: ONE constructor -------------------------
+#
+# WHY ONE FUNCTION. Blindness and citation integrity were previously enforced
+# at four independent seams and three of them failed, each caught a round
+# later: `--allowedTools ""` is a permission ALLOWLIST and does not remove
+# availability (round 1); the prompt still carried `duplicates[].source`
+# (round 2); the summary printed the prediction next to a note asking the
+# reader not to look at it (round 2); and a syntactically valid ref that merely
+# EXISTED counted as relevant evidence (round 3). A property enforced at N
+# sites is not a chokepoint, and a clean review round would not have proved
+# sufficiency -- it would only mean the reviewer had not yet found the next
+# insufficient guard. This applies fable-discipline's single-writer rule to an
+# invariant instead of a data path.
+#
+# ALLOWLIST, never a blacklist-pop. The old builder deep-copied the whole
+# packet and popped one known pointer, so anything a future assembler starts
+# copying is visible by default -- and a findings ledger record DOES carry
+# `disposition` and `rationale`. Executed reproducer (test_zz_repro R1, red at
+# 85d4a46): splicing `rationale` into `packet["finding"]` put the string
+# verbatim into the prompt.
+JUDGE_VIEW_SPEC: dict[str, tuple[str, ...] | None] = {
+    # None = a scalar or a list of scalars, shown as-is (carries no label).
+    "packet_schema_version": None,
+    "assembled_at": None,
+    "packet_sha256": None,
+    "finding": ("prd_id", "finding_id", "severity", "body", "body_sha256"),
+    "review": ("source", "review_run_id"),
+    "repo_state": ("branch", "commit_sha", "dirty"),
+    "prd_state": ("path", "sha256", "status", "revision"),
+    "issue_state": ("issue_id", "manifest_sha256", "issue_order"),
+    "scope": ("source", "sha256"),
+    # `source` is dropped from BOTH row types. Each is a filesystem path into a
+    # ledger (`<findings>.jsonl`, `<receipts>.jsonl:<line>`) that carries OTHER
+    # findings' human dispositions -- useful only to a reader that can open it,
+    # which the judge must not be able to do. The citable set below is how the
+    # judge refers to one of these rows without ever holding a path.
+    "duplicates": ("prd_id", "finding_id", "similarity"),
+    "remediation": ("issue_id", "finding_id", "closed_at", "commit_sha"),
+    "related_prds": None,
+    "prior_receipts": None,
+    "missing_context": None,
+}
 
-    `duplicates[].source` is dropped here. It is a path, useful only to a
-    reader that can open it, and the judge must not be able to. Dropping it
-    from the PROMPT does not touch the packet or its hash, so the binding to
-    `input_sha256` is unaffected -- the judge simply never sees a pointer to
-    the labels.
+
+def _citable_refs(view: dict) -> frozenset[str]:
+    """The closed set of refs derivable from the view the judge was shown.
+
+    Relevance stops being a rule somebody has to enforce and becomes
+    structural: you can only cite what you were shown. Every accepted prefix in
+    EVIDENCE_REQUIREMENTS is accounted for here, and the two with no source in
+    the packet -- `spillover:` (no spillover block exists) and `test:` (nothing
+    enumerates test paths) -- are therefore refused BY CONSTRUCTION rather than
+    by a special case. Both refusals are principled, not defaults: the judge
+    cannot see either kind, so it cannot honestly cite either. Nothing is
+    stranded, because `duplicate` keeps two honest routes (`finding:`,
+    `issue:`) and `already-remediated` keeps two (`receipt:`, `commit:`).
     """
-    shown = copy.deepcopy(packet)
-    for duplicate in shown.get("duplicates") or []:
-        duplicate.pop("source", None)
+    refs: set[str] = set()
+    for row in view["duplicates"]:
+        if row.get("prd_id") and row.get("finding_id"):
+            refs.add(f"finding:{row['prd_id']}/{row['finding_id']}")
+    for receipt_id in view["prior_receipts"]:
+        if receipt_id:
+            refs.add(f"judgment:{receipt_id}")
+    for prd_id in view["related_prds"]:
+        if prd_id:
+            refs.add(f"prd:{prd_id}")
+    if view["issue_state"].get("issue_id"):
+        refs.add(f"issue:{view['issue_state']['issue_id']}")
+    for row in view["remediation"]:
+        if row.get("issue_id"):
+            refs.add(f"receipt:{row['issue_id']}")
+        # ONLY a remediation row's commit. `repo_state.commit_sha` is the
+        # CURRENT commit and is deliberately NOT a source here: it always
+        # exists, so an existence check accepted `commit:<HEAD>` as proof that
+        # the finding was already remediated -- a judge citing HEAD as its own
+        # remediation (test_zz_repro R2/R4, red at 85d4a46).
+        if row.get("commit_sha"):
+            refs.add(f"commit:{row['commit_sha']}")
+    if view["scope"].get("source") and view["scope"]["source"] != "unknown":
+        refs.add(f"scope:{view['scope']['source']}")
+    return frozenset(refs)
+
+
+def judge_view(packet: dict) -> tuple[dict, frozenset[str]]:
+    """Construct the judge's ENTIRE view of the world, and the closed set of
+    refs derivable from it. The single writer of both properties.
+
+    Returns (view, citable). The view is what gets rendered into the prompt;
+    `citable` is the only set of refs a decision built on that view may cite.
+    Neither is hashed into anything, so this does not touch `packet_sha256` and
+    the `input_sha256` binding is unaffected.
+    """
+    view: dict = {}
+    for key, allowed in JUDGE_VIEW_SPEC.items():
+        value = packet.get(key)
+        if allowed is None:
+            view[key] = copy.deepcopy(value)
+        elif isinstance(value, list):
+            view[key] = [{k: row[k] for k in allowed if k in row}
+                         for row in value if isinstance(row, dict)]
+        elif isinstance(value, dict):
+            view[key] = {k: value[k] for k in allowed if k in value}
+        else:
+            view[key] = copy.deepcopy(value)
+    return view, _citable_refs(view)
+
+
+def _judge_prompt_text(packet: dict) -> str:
+    """Prompt = instructions + the JUDGE VIEW as text (never the raw packet)."""
+    view, _ = judge_view(packet)
     return (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
-            + json.dumps(shown, indent=2, sort_keys=True))
+            + json.dumps(view, indent=2, sort_keys=True))
 
 
 def _extract_json_object(raw: str) -> dict:
@@ -2123,26 +2240,13 @@ def _extract_json_object(raw: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
-def _packet_duplicate_refs(packet: dict) -> set[str]:
-    """The ONLY refs that can honestly prove a duplicate: candidates the packet
-    actually contained.
-
-    Prefix and existence are each necessary and neither is sufficient.
-    `EVIDENCE_REQUIREMENTS["duplicate"]` accepts an `issue:` prefix and
-    `resolve_evidence_refs` resolves `issue:` by checking a spec file exists,
-    so the judge could cite ANY real issue in the repo as proof that this
-    finding duplicates something -- with no duplicate candidate in its packet
-    at all (Codex major, PR #103 round 3). The missing property is RELEVANCE:
-    a claim has to be checkable against the view the judge was given.
-    """
-    return {f"finding:{d['prd_id']}/{d['finding_id']}"
-            for d in (packet.get("duplicates") or [])
-            if d.get("prd_id") and d.get("finding_id")}
-
-
-def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
+def run_judge(packet: dict, *, model: str) -> dict:
     """Run the judge; the `validate_judge_output` validator and its pytest
     cases are the executable blockers on everything this docstring claims.
+
+    Takes no Config: since citations are checked by MEMBERSHIP in the set
+    `judge_view` derives from the packet, nothing here needs to open the repo.
+    That is the point of the refactor -- the packet is the whole world.
 
     Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
     contract). There is deliberately no fallback disposition: returning a
@@ -2151,7 +2255,9 @@ def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
     below; the paired tests are test_malformed_output_retries_then_fails_loudly
     and test_a_transient_malformed_reply_recovers_within_the_cap.
     """
-    prompt = _judge_prompt_text(packet)
+    view, citable = judge_view(packet)
+    prompt = (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
+              + json.dumps(view, indent=2, sort_keys=True))
     override = os.environ.get("KIPI_JUDGE_CMD")
     argv = shlex.split(override) if override else _judge_argv(model)
     failures = []
@@ -2173,37 +2279,25 @@ def run_judge(cfg: Config, packet: dict, *, model: str) -> dict:
         except (ValidationError, json.JSONDecodeError) as exc:
             failures.append(f"attempt {attempt}: {exc}")
             continue
-        # RESOLVE the citations, do not merely pattern-match them (Codex major,
-        # PR #103 round 1). `validate_judge_output` checks SYNTAX, so an
-        # invented but well-formed ref like `finding:prd-nope/finding-999`
-        # satisfied the evidence gate and was stored as a supported decision
-        # that the release gates then counted. The judge prompt promises this
-        # resolution happens; until now that promise was false.
+        # ONE membership test, against the closed set derived from the SAME
+        # view the judge was shown. This replaces two earlier layers that each
+        # turned out to be insufficient on their own: prefix-matching alone let
+        # an invented-but-well-formed ref through (round 1), and
+        # prefix+existence let a real-but-irrelevant one through -- any real
+        # issue in the repo "proved" a duplicate (round 3). Membership is
+        # strictly stronger than both: a ref that is in the set necessarily
+        # exists, because the view was assembled from real state.
         #
-        # Unresolvable refs are DROPPED rather than retried: a model that
-        # cannot cite something real will not do better on attempt 2, and the
-        # honest outcome is an unsupported disposition. Dropping them leaves
-        # `evidence_gate_errors` to convert the disposition to needs-human,
-        # which is the gate WORKING and is already counted as
-        # `converted_to_needs_human`.
-        refs = list(output.get("evidence_refs") or [])
-        if refs:
-            unresolved = set()
-            for problem in resolve_evidence_refs(cfg, refs):
-                for ref in refs:
-                    if ref in problem:
-                        unresolved.add(ref)
-            output["evidence_refs"] = [r for r in refs if r not in unresolved]
-        # RELEVANCE, on top of prefix + existence. Scoped to `duplicate`
-        # deliberately: other codes legitimately cite refs the packet does not
-        # enumerate (`commit:` for already-remediated, `scope:` for
-        # scope-removed), and rejecting those would convert every disposition
-        # to needs-human and score nothing -- the same failure in the opposite
-        # direction, which is what the paired negative self-test guards.
-        if output["workflow_reason_code"] == "duplicate":
-            allowed = _packet_duplicate_refs(packet)
-            output["evidence_refs"] = [
-                r for r in output["evidence_refs"] if r in allowed]
+        # Non-citable refs are DROPPED rather than retried: a model that cannot
+        # cite something it was shown will not do better on attempt 2, and the
+        # honest outcome is an unsupported disposition. Dropping leaves
+        # `evidence_gate_errors` to convert it to needs-human, which is the
+        # gate WORKING and is already counted as `converted_to_needs_human`.
+        # The negative self-test over all nine prefixes is what stops this
+        # becoming "refuse everything", which would pass a membership test
+        # trivially while scoring zero calibration cases.
+        output["evidence_refs"] = [r for r in (output.get("evidence_refs") or [])
+                                   if r in citable]
         return {
             "model": model,
             "prompt_sha256": JUDGE_PROMPT_SHA256,
@@ -2222,7 +2316,7 @@ def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
     packet = assemble_packet(cfg, args.prd, args.finding)
     model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
         or JUDGE_MODEL_DEFAULT
-    run = run_judge(cfg, packet, model=model)
+    run = run_judge(packet, model=model)
     # Written only on success, and only after validation, so a failed judge
     # leaves no partial file for a later `--judge-run` to pick up.
     destination = Path(args.output)

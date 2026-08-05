@@ -2,6 +2,68 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.0] - 2026-08-04
+
+### Changed — one constructor for the judge's view, replacing four seams
+PR #103 went through four adversarial Codex rounds that found five majors,
+every one in the same dimension: the judge's blindness and citation integrity.
+Blindness was enforced at four independent seams and three failed — tool
+availability (`--allowedTools` is a permission allowlist, not an availability
+control), prompt content (`duplicates[].source` survived), stdout (a note
+saying "do not show this" instead of not emitting it), and evidence refs (a
+syntax check, then existence, but never relevance). A property enforced at N
+sites is not a chokepoint, and a fifth clean round would not have proved
+sufficiency — only that the reviewer had not yet found the next insufficient
+guard. This applies fable-discipline's single-writer rule to an invariant
+instead of a data path.
+
+`judge_view(packet) -> (view, citable)` is now the single writer of both:
+
+- **The perceivable view** is built from the `JUDGE_VIEW_SPEC` ALLOWLIST, not
+  by deep-copying the packet and popping known pointers. A field a future
+  assembler starts copying is invisible by default. `duplicates[].source` and
+  `remediation[].source` (paths into ledgers carrying other findings' human
+  dispositions) are both absent; `scope.source` is kept because it is the only
+  citable proof of scope.
+- **The citable set** is the closed set of refs derivable from that same view.
+  Relevance stops being a rule to enforce and becomes structural: you can only
+  cite what you were shown. Membership is strictly stronger than the two layers
+  it replaces — a ref in the set necessarily exists, because the view was
+  assembled from real state.
+
+All nine accepted prefixes are classified: `finding:`, `judgment:`, `prd:`,
+`issue:`, `receipt:`, `commit:` and `scope:` are closed over view fields, so
+the existence-only carve-out is EMPTY. `spillover:` and `test:` are refused by
+construction — no spillover block exists in the packet and nothing enumerates
+test paths, so the judge cannot honestly cite either. Nothing is stranded:
+`duplicate` keeps `finding:`/`issue:` and `already-remediated` keeps
+`receipt:`/`commit:`.
+
+`repo_state.commit_sha` is deliberately NOT citable. It is the CURRENT commit
+and always exists, so an existence check accepted `commit:<HEAD>` as proof of
+the very remediation under review. Only `remediation[].commit_sha` counts.
+
+`run_judge` no longer takes a `Config`: with citations checked by membership,
+nothing in it needs to open the repo. `_judge_block_from_run` takes the citable
+set too, so a hand-written `--judge-run` file cannot smuggle a non-citable ref
+into a receipt. `_packet_duplicate_refs` and the per-ref resolution inside
+`run_judge` are deleted as subsumed.
+
+### Tests
+29 new cases in `TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld`, all
+table-driven, each mutation-proven to fail for the reason it names:
+blacklist-pop instead of allowlist kills 10, making HEAD citable kills exactly
+1, and "refuse everything" kills the 8 survival cases while leaving the
+refusal cases green. The survival table over all nine prefixes is the
+acceptance criterion: with an empty carve-out, "refuse everything" would pass a
+membership test trivially while converting every disposition to needs-human and
+scoring zero calibration cases.
+
+Two pre-existing tests were fixed rather than the gate weakened: the G-2 case
+cited finding-1 as its own duplicate against a zero-duplicate packet (green
+only because relevance went unchecked) and now carries a real producer-written
+duplicate candidate.
+
 ## [0.15.7] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 4) — the judge binding was broken outright

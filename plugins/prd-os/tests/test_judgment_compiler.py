@@ -190,19 +190,35 @@ class TestGapRepros:
         proc = run_judgment(judgment_repo, "verify")
         assert proc.returncode == 0, proc.stderr
 
-    def test_g2_technical_validity_and_workflow_disposition_are_separate(self, judgment_repo):
-        """G-2: a technically valid finding recorded as a workflow duplicate."""
+    def test_g2_technical_validity_and_workflow_disposition_are_separate(
+            self, judgment_repo, run_findings_writer):
+        """G-2: a technically valid finding recorded as a workflow duplicate.
+
+        The cited duplicate is a REAL second finding, produced by
+        findings_writer, so the packet actually contains the candidate. The
+        original version cited finding-1 as its own duplicate against a
+        zero-duplicate packet; `judge_view`'s citable set now (correctly)
+        refuses that, and the test was only ever green because relevance went
+        unchecked (ASK-363 judge_view refactor)."""
+        assert run_findings_writer(
+            judgment_repo, "add", PRD_ID, "--source", "codex-review",
+            stdin_text=json.dumps([{"severity": "major",
+                                    "body": "the fixture gate can be bypassed"}]),
+        ).returncode == 0
         packet_path, packet = assemble_packet(judgment_repo)
+        assert packet["duplicates"], "fixture must carry a duplicate candidate"
+        dupe = packet["duplicates"][0]
+        ref = f"finding:{dupe['prd_id']}/{dupe['finding_id']}"
         judge = make_judge_run(
             packet, disposition="duplicate", reason_code="duplicate",
-            evidence=[f"finding:{PRD_ID}/finding-1"],
+            evidence=[ref],
         )
         judge_path = judgment_repo / "judge.json"
         judge_path.write_text(json.dumps(judge))
         proc = capture(
             judgment_repo, packet_path, "--judge-run", str(judge_path),
             "--reason-code", "duplicate",
-            "--evidence", f"finding:{PRD_ID}/finding-1",
+            "--evidence", ref,
             disposition="rejected",
         )
         assert proc.returncode == 0, proc.stderr
@@ -2300,11 +2316,13 @@ class TestDuplicateClaimsMustComeFromThePacket:
         jc = _load_module("jc_dupe_ok", "judgment_compiler.py")
         packet = jc.assemble_packet(_cfg_for(judgment_repo), PRD_ID, "finding-1")
         assert packet["duplicates"] == [], "fixture unexpectedly has duplicates"
-        # Synthesise the packet-derived ref shape and prove it survives.
-        refs = jc._packet_duplicate_refs(
-            {"duplicates": [{"prd_id": "prd-x-2026-01-01",
-                             "finding_id": "finding-7", "similarity": 0.9}]})
-        assert refs == {"finding:prd-x-2026-01-01/finding-7"}
+        # `_packet_duplicate_refs` is subsumed by `judge_view`, which derives
+        # the citable set for ALL nine prefixes from one view (ASK-363).
+        packet["duplicates"] = [{"prd_id": "prd-x-2026-01-01",
+                                 "finding_id": "finding-7", "similarity": 0.9,
+                                 "source": "some/ledger.jsonl"}]
+        _, citable = jc.judge_view(packet)
+        assert "finding:prd-x-2026-01-01/finding-7" in citable
 
 
 class TestBindingSurvivesTheDispositionWrite:
@@ -2361,3 +2379,195 @@ class TestBindingSurvivesTheDispositionWrite:
             "a finding with a cross-PRD duplicate candidate could not be "
             f"captured with its judge run:\n{disp.stderr}")
         assert len(read_ledger(judgment_repo)) == 1
+
+
+# ---------------------------------------------------------------------------
+# judge_view: ONE constructor for the judge's view + its citable set
+# (ASK-363 / PR #103 refactor, replacing four independent seams)
+# ---------------------------------------------------------------------------
+
+# Field names that carry a triage LABEL, or point at a file that carries one.
+# Table-driven so reintroducing any of them is caught by name, wherever it is
+# spliced into the packet.
+LABEL_BEARING_FIELDS = (
+    "disposition", "rationale", "resolved_at", "triaged_at", "triaged_by",
+    "human", "judge", "workflow_disposition",
+)
+# (block, key) pairs where a `source` value is a filesystem PATH into a ledger
+# that carries other findings' dispositions. `review.source` ("codex-review")
+# and `scope.source` ("<prd>.md#Scope") are NOT paths into a label store and
+# are deliberately kept: `scope.source` is the only citable proof of scope.
+LABEL_POINTER_ROWS = ("duplicates", "remediation")
+
+# The verified nine-prefix classification. `closed` names the view field the
+# refs come from; the two refused kinds have no source in the packet at all.
+CITABLE_TABLE = {
+    "finding:": "duplicates",
+    "judgment:": "prior_receipts",
+    "prd:": "related_prds",
+    "issue:": "issue_state.issue_id",
+    "receipt:": "remediation[].issue_id",
+    "commit:": "remediation[].commit_sha",
+    "scope:": "scope.source",
+}
+REFUSED_PREFIXES = ("spillover:", "test:")
+
+
+def _rich_packet(repo):
+    """A packet with EVERY citable source populated.
+
+    Rows use the exact shapes `_assemble_duplicates` / `_assemble_remediation`
+    emit (read from the assemblers, not invented). A zero-duplicate fixture is
+    how an earlier hash-binding test passed while testing nothing.
+    """
+    jc = _load_module(f"jc_rich_{id(repo)}", "judgment_compiler.py")
+    packet = jc.assemble_packet(_cfg_for(repo), PRD_ID, "finding-1")
+    packet["duplicates"] = [{
+        "prd_id": "prd-other-2026-01-01", "finding_id": "finding-9",
+        "similarity": 0.91,
+        "source": "POINTER-DUPES-LEDGER.jsonl"}]
+    packet["related_prds"] = ["prd-other-2026-01-01"]
+    packet["prior_receipts"] = ["jr-00000001"]
+    packet["issue_state"]["issue_id"] = "ASK-555"
+    packet["remediation"] = [{
+        "issue_id": "ASK-556", "finding_id": "finding-1",
+        "closed_at": "2026-01-01T00:00:00Z", "commit_sha": "a" * 40,
+        "source": "POINTER-RECEIPTS-LEDGER.jsonl:7"}]
+    packet["repo_state"]["commit_sha"] = "b" * 40   # HEAD, must NOT be citable
+    packet["scope"] = {"source": ".prd-os/prds/x.md#Scope", "sha256": "c" * 64}
+    return jc, packet
+
+
+def _expected_ref(prefix, packet):
+    return {
+        "finding:": "finding:prd-other-2026-01-01/finding-9",
+        "judgment:": "judgment:jr-00000001",
+        "prd:": "prd:prd-other-2026-01-01",
+        "issue:": "issue:ASK-555",
+        "receipt:": "receipt:ASK-556",
+        "commit:": "commit:" + "a" * 40,
+        "scope:": "scope:.prd-os/prds/x.md#Scope",
+    }[prefix]
+
+
+class TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld:
+    """PR #103 rounds 1-4 found five majors, every one in the same dimension:
+    the judge's blindness and citation integrity. Blindness was enforced at
+    four independent seams (tool availability, prompt content, stdout, evidence
+    refs) and three failed. A property enforced at N sites is not a chokepoint,
+    so a fifth review round would only have told us the reviewer had not yet
+    found the next insufficient guard. `judge_view` is the single writer.
+    """
+
+    # --- Property 1: the perceivable view ---------------------------------
+
+    @pytest.mark.parametrize("field", LABEL_BEARING_FIELDS)
+    def test_no_label_bearing_field_survives_into_the_view(
+            self, judgment_repo, field):
+        """Splice the label into every block and prove the ALLOWLIST drops it.
+
+        Red at 85d4a46: the old builder deep-copied the packet and popped one
+        known pointer, so `packet["finding"]["rationale"]` reached the prompt
+        verbatim. A findings ledger record really does carry that field."""
+        jc, packet = _rich_packet(judgment_repo)
+        marker = f"LEAKED-{field.upper()}"
+        for block in ("finding", "review", "repo_state", "prd_state",
+                      "issue_state", "scope"):
+            packet[block][field] = marker
+        for block in ("duplicates", "remediation"):
+            for row in packet[block]:
+                row[field] = marker
+        view, _ = jc.judge_view(packet)
+        rendered = json.dumps(view, sort_keys=True)
+        assert marker not in rendered, f"{field!r} reached the judge"
+        assert f'"{field}"' not in rendered, f"key {field!r} reached the judge"
+
+    @pytest.mark.parametrize("block", LABEL_POINTER_ROWS)
+    def test_no_row_source_pointer_survives_into_the_view(
+            self, judgment_repo, block):
+        """`duplicates[].source` and `remediation[].source` are paths into
+        ledgers that carry OTHER findings' human dispositions. A judge that
+        could open one reads the labels straight out."""
+        jc, packet = _rich_packet(judgment_repo)
+        view, _ = jc.judge_view(packet)
+        rendered = json.dumps(view, sort_keys=True)
+        assert "POINTER-" not in rendered, rendered
+        assert all("source" not in row for row in view[block]), view[block]
+
+    def test_the_view_spec_covers_every_field_the_assembler_emits(
+            self, judgment_repo):
+        """Self-enumerating guard. An allowlist silently drops a NEW packet
+        field, which is the safe direction, but it must be a decision someone
+        made rather than an omission nobody noticed."""
+        jc, packet = _rich_packet(judgment_repo)
+        assert set(jc.JUDGE_VIEW_SPEC) == set(packet), (
+            "packet fields and JUDGE_VIEW_SPEC have diverged: "
+            f"{set(packet) ^ set(jc.JUDGE_VIEW_SPEC)}")
+
+    # --- Property 2: the citable set --------------------------------------
+
+    @pytest.mark.parametrize("prefix", sorted(CITABLE_TABLE))
+    def test_a_ref_outside_the_citable_set_is_refused(
+            self, judgment_repo, prefix):
+        """One case per CLOSED prefix: a well-formed ref of the right kind that
+        the view does not contain. Red at 85d4a46 for every prefix whose
+        resolver merely checked existence -- any real PRD, issue, path or
+        commit in the repo satisfied the gate."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        outsider = prefix + "not-in-the-view-at-all"
+        assert outsider not in citable
+        assert jc.evidence_gate_errors(None, None, [outsider], citable) == \
+            jc.evidence_gate_errors(None, None, [], citable)
+
+    @pytest.mark.parametrize("prefix", REFUSED_PREFIXES)
+    def test_the_two_refused_kinds_are_never_citable(
+            self, judgment_repo, prefix):
+        """Principled, not a default: no spillover block exists in the packet
+        and nothing enumerates test paths, so the judge cannot honestly cite
+        either. Nothing is stranded -- `duplicate` keeps `finding:`/`issue:`
+        and `already-remediated` keeps `receipt:`/`commit:`."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert not any(r.startswith(prefix) for r in citable), citable
+
+    def test_head_is_not_citable_but_a_remediation_commit_is(
+            self, judgment_repo):
+        """`repo_state.commit_sha` is the CURRENT commit and always exists, so
+        an existence check let a judge cite HEAD as proof of the very
+        remediation under review. Only `remediation[].commit_sha` counts."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert "commit:" + "a" * 40 in citable, "remediation commit must count"
+        assert "commit:" + "b" * 40 not in citable, "HEAD must not be citable"
+
+    # --- The negative self-test (acceptance criterion) --------------------
+
+    @pytest.mark.parametrize("prefix", sorted(CITABLE_TABLE))
+    def test_every_closed_kind_survives(self, judgment_repo, prefix):
+        """THE acceptance criterion, table-driven over all nine prefixes (seven
+        here, two in the refused test above).
+
+        With the carve-out empty, "refuse everything" would pass every
+        membership test trivially while converting every disposition to
+        needs-human and scoring ZERO calibration cases -- the same failure in
+        the opposite direction. Each closed kind must be proven to SURVIVE."""
+        jc, packet = _rich_packet(judgment_repo)
+        _, citable = jc.judge_view(packet)
+        assert _expected_ref(prefix, packet) in citable, (
+            f"{prefix} was derivable from the view but is not citable; "
+            "over-refusal scores zero cases")
+
+    def test_the_survival_check_can_actually_fail(self, judgment_repo):
+        """Negative self-test OF the negative self-test. An empty citable set
+        is exactly what "refuse everything" produces; prove the survival
+        assertion above goes red against it rather than passing vacuously."""
+        _, packet = _rich_packet(judgment_repo)
+        empty: frozenset = frozenset()
+        for prefix in CITABLE_TABLE:
+            assert _expected_ref(prefix, packet) not in empty
+        # and the same mutant must be caught by the gate, not silently allowed
+        jc = _load_module("jc_mutant_gate", "judgment_compiler.py")
+        assert jc.evidence_gate_errors(
+            "duplicate", None, ["finding:prd-other-2026-01-01/finding-9"],
+            empty), "an empty citable set must fail the duplicate gate"
