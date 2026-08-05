@@ -62,9 +62,19 @@ echo 'income scanner' > "$D/inst/q-system/my-project/scripts/scan.py"
 dry "$D/arch/q-system/" "$D/inst/" | python3 "$GUARD" 2>/dev/null
 check "instance-only script under an owned subtree is REFUSED" "$?" "2"
 
-# --- 5. depth independence -------------------------------------------------
+# --- 5. anchored on q-system/, at any PREFIX depth -------------------------
+# Was "matched at ANY depth". That over-corrected: `.q-system/agent-pipeline/
+# templates/deck/output/` is a REAL skeleton-owned directory, so a skeleton
+# deletion under it refused the sync for the whole fleet (Codex, PR #111).
+# A guard that halts every unattended update gets switched off.
+printf '*deleting   instances/foo/q-system/memory/last-handoff.md\n' | python3 "$GUARD" 2>/dev/null
+check "owned subtree under q-system/ at any PREFIX depth is REFUSED" "$?" "2"
+printf '*deleting   memory/last-handoff.md\n' | python3 "$GUARD" 2>/dev/null
+check "owned subtree at the transfer ROOT is REFUSED" "$?" "2"
+printf '*deleting   q-system/.q-system/agent-pipeline/templates/deck/output/x.html\n' | python3 "$GUARD" 2>/dev/null
+check "REAL skeleton-owned nested output/ is ALLOWED (no false fleet block)" "$?" "0"
 printf '*deleting   a/b/c/memory/last-handoff.md\n' | python3 "$GUARD" 2>/dev/null
-check "owned subtree matched at ANY depth" "$?" "2"
+check "an owned NAME not under q-system/ is skeleton content, allowed" "$?" "0"
 printf '*deleting   q-system/methodology/modes.md\n' | python3 "$GUARD" 2>/dev/null
 check "unowned path at depth is allowed" "$?" "0"
 printf '*deleting   memoryless/notes.md\n' | python3 "$GUARD" 2>/dev/null
