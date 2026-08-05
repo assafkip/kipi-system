@@ -2,6 +2,55 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.4] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 9) — citation provenance, the CLASS
+
+`_citable_refs` admitted `issue:<issue_state.issue_id>` to the judge's citable
+set. That id comes from `cfg.active_issue_state_path` — the GLOBALLY ACTIVE
+issue — and has no relationship to `duplicates[]`. Since
+`EVIDENCE_REQUIREMENTS["duplicate"]` accepts an `issue:` prefix, a packet with
+zero duplicate candidates could cite the always-present active issue and be
+scored as a supported duplicate. Introduced by `83e3877`, which also deleted
+the comment documenting the hole, and missed by rounds 7 and 8.
+
+Rounds 3-9 each killed ONE guard of one class and the class moved one field
+over. This closes the class instead of the instance:
+
+> A reason code asserting a relationship to a SPECIFIC OTHER ENTITY must cite a
+> ref whose source VARIES WITH THE FINDING. An AMBIENT source — identical for
+> every finding in the run — cannot prove such a relationship.
+
+The axis is relational-vs-documentary, NOT always-exists. `scope-removed` /
+`out-of-scope` are documentary ("this falls outside that documented scope"),
+so an always-present `scope:` is correct evidence and keeps working. An
+always-exists rule would have broken them and scored nothing.
+
+`CITABLE_REF_PROVENANCE` classifies all nine grammar prefixes next to
+`_citable_refs`; `FORBIDDEN_CITABLE_PREFIXES` is derived from it crossed with
+the relational codes' requirement groups, and a guard inside `_citable_refs`
+refuses any emitted ref carrying one. The check ON the classification: a rule
+derived to catch `issue:` reproduces `spillover:` and `test:`, the two holes
+already closed by hand — derived set is exactly `{issue:, spillover:, test:}`.
+
+Enumeration result: no instance beyond `issue:`. Every other source
+(`finding:`, `judgment:`, `prd:`, `receipt:`, `commit:`) traces to an assembler
+taking `finding_id`. First exhaustive check of this surface.
+
+### Behavior changes, both intended and loud
+- `duplicate` keeps ONE honest route on the judge path, `finding:`, from a real
+  `duplicates[]` candidate.
+- `owned-by-other-prd` is now UNSATISFIABLE on the judge path — its `issue:`
+  group has no finding-dependent source, so it converts to needs-human.
+  Inventing a source (reusing a remediation row's issue_id) would rebuild the
+  hole. The HUMAN path is untouched: `citable=None` there, a human has tools.
+
+### Evidence
+Codex's own reproducer, before → after: `converted false → true`,
+`stored_disposition duplicate → needs-human`, `scored_cases 1 → 0`,
+`exact_agreement 1.0 → 0.0`. New tests red against the pre-fix script with
+`assert not True` and `assert False is True`. 531 passed / 1 skipped.
+
 ## [0.16.3] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 8) — contradictory judge pairs

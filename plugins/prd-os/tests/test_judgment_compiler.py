@@ -2405,12 +2405,18 @@ CITABLE_TABLE = {
     "finding:": "duplicates",
     "judgment:": "prior_receipts",
     "prd:": "related_prds",
-    "issue:": "issue_state.issue_id",
     "receipt:": "remediation[].issue_id",
     "commit:": "remediation[].commit_sha",
     "scope:": "scope.source",
 }
-REFUSED_PREFIXES = ("spillover:", "test:")
+# `issue:` MOVED here from CITABLE_TABLE (Codex round 9). Its only source is
+# `issue_state.issue_id`, the globally ACTIVE issue -- ambient, identical for
+# every finding in the run -- and `duplicate` is a relational code. See
+# CITABLE_REF_PROVENANCE in judgment_compiler.py. This edit is the point of the
+# table: the survival criterion below still holds every remaining kind to
+# proving it is citable, so removing one kind cannot quietly become "refuse
+# everything".
+REFUSED_PREFIXES = ("spillover:", "test:", "issue:")
 
 
 def _rich_packet(repo):
@@ -2521,12 +2527,16 @@ class TestJudgeViewIsTheOnlyConstructorOfTheJudgesWorld:
             jc.evidence_gate_errors(None, None, [], citable)
 
     @pytest.mark.parametrize("prefix", REFUSED_PREFIXES)
-    def test_the_two_refused_kinds_are_never_citable(
+    def test_the_refused_kinds_are_never_citable(
             self, judgment_repo, prefix):
-        """Principled, not a default: no spillover block exists in the packet
+        """Principled, not a default. `spillover:` has no block in the packet
         and nothing enumerates test paths, so the judge cannot honestly cite
-        either. Nothing is stranded -- `duplicate` keeps `finding:`/`issue:`
-        and `already-remediated` keeps `receipt:`/`commit:`."""
+        either; `issue:` has a source but an AMBIENT one, which cannot evidence
+        a relational claim. `duplicate` keeps `finding:` and
+        `already-remediated` keeps `receipt:`/`commit:`, all finding-dependent.
+        `owned-by-other-prd` is now unsatisfiable on the judge path and
+        converts to needs-human -- named in TestCitationProvenance, not
+        silent."""
         jc, packet = _rich_packet(judgment_repo)
         _, citable = jc.judge_view(packet)
         assert not any(r.startswith(prefix) for r in citable), citable
@@ -2819,3 +2829,148 @@ class TestJudgeOutputPairConsistency:
         assert set(jc.WORKFLOW_DISPOSITIONS) == set(jc.JUDGE_TO_LEGACY)
         assert set(jc.REASON_CODES) & set(jc.WORKFLOW_DISPOSITIONS), \
             "no twin codes left: the pair rule would be a no-op"
+
+
+# ---------------------------------------------------------------------------
+# Citation provenance: the CLASS behind rounds 3-9, enumerated
+# ---------------------------------------------------------------------------
+
+
+def _maximal_packet(jc):
+    """Every citable source populated at once, so one call to `_citable_refs`
+    exercises all nine grammar prefixes instead of one per test."""
+    packet = jc._fixture_packet(0)
+    packet["issue_state"]["issue_id"] = "ASK-ACTIVE-UNRELATED"
+    packet["duplicates"] = [{"prd_id": "prd-other", "finding_id": "finding-9",
+                             "similarity": 0.9}]
+    packet["related_prds"] = ["prd-other"]
+    packet["prior_receipts"] = ["jr-0000000000000001"]
+    packet["remediation"] = [{"issue_id": "ASK-111", "finding_id": "finding-1",
+                              "closed_at": "2026-01-01T00:00:00Z",
+                              "commit_sha": "a" * 40}]
+    packet["scope"] = {"source": "docs/scope.md#s1", "sha256": "b" * 64}
+    packet["packet_sha256"] = jc.packet_hash(packet)
+    return packet
+
+
+class TestCitationProvenance:
+    """Rounds 3-9 each killed ONE guard of one class; the class kept moving one
+    field over. `commit:<HEAD>` for `already-remediated` (round 3), then
+    `issue:<active issue>` for `duplicate` (round 9, reintroduced by 83e3877).
+
+    The rule is relational-vs-documentary, not always-exists: a code asserting
+    a relationship to a specific other entity needs a finding-dependent source;
+    a code invoking a document may cite an ambient one, which is why `scope:`
+    is legitimate and must keep working.
+    """
+
+    def test_every_grammar_prefix_is_classified(self):
+        """No unclassified prefix, or the enumeration has a blind spot."""
+        jc = _load_jc("jc_prov")
+        grammar = set(jc.EVIDENCE_REF_RE.pattern.split("(")[1]
+                      .split(")")[0].split("|"))
+        assert grammar == {p.rstrip(":") for p in jc.CITABLE_REF_PROVENANCE}
+        assert set(jc.RELATIONAL_REASON_CODES) | \
+            set(jc.DOCUMENTARY_REASON_CODES) == set(jc.EVIDENCE_REQUIREMENTS)
+
+    def test_the_derived_forbidden_set_is_what_we_think(self):
+        """The check ON the classification: a rule derived to catch `issue:`
+        must also reproduce the two holes already closed by hand. If it did
+        not, the axis would be wrong."""
+        jc = _load_jc("jc_prov")
+        assert set(jc.FORBIDDEN_CITABLE_PREFIXES) == {
+            "issue:", "spillover:", "test:"}
+
+    # getattr, not attribute access: the parametrize runs at COLLECTION, so a
+    # hard reference makes this whole FILE uncollectable against a pre-fix
+    # checkout -- which is exactly when you need to watch the case fail.
+    @pytest.mark.parametrize("prefix", sorted(
+        getattr(_load_jc("jc_prov_ids"), "CITABLE_REF_PROVENANCE", None)
+        or {"finding:", "judgment:", "prd:", "issue:", "receipt:", "commit:",
+            "scope:", "spillover:", "test:"}))
+    def test_no_ambient_source_reaches_the_citable_set(self, prefix):
+        """Table-driven over all nine prefixes against a MAXIMAL packet: every
+        source populated, so a prefix that leaks has nowhere to hide."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        emitted = [r for r in citable if r.startswith(prefix)]
+        if prefix in jc.FORBIDDEN_CITABLE_PREFIXES:
+            assert emitted == [], f"{prefix} leaked into the citable set"
+        else:
+            assert jc.CITABLE_REF_PROVENANCE[prefix] == "finding-dependent" \
+                or prefix == "scope:"
+
+    def test_documentary_codes_keep_their_ambient_source(self):
+        """THE over-strictness half. `scope:` is ambient and legitimate: the
+        claim is 'this falls outside that documented scope', not 'this is the
+        same thing as that entity'. A rule keyed on always-exists would have
+        broken `scope-removed` / `out-of-scope` and scored nothing."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        assert "scope:docs/scope.md#s1" in citable
+        for code in jc.DOCUMENTARY_REASON_CODES:
+            assert jc.evidence_gate_errors(
+                code, None, ["scope:docs/scope.md#s1"], citable) == []
+
+    def test_relational_codes_keep_a_finding_dependent_route(self):
+        """Refusing everything would pass a membership test trivially while
+        scoring zero cases. Each relational code that still HAS a source must
+        still be satisfiable from the maximal packet."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        for code, refs in (("duplicate", ["finding:prd-other/finding-9"]),
+                           ("already-remediated", ["receipt:ASK-111"]),
+                           ("superseded", ["judgment:jr-0000000000000001"])):
+            assert jc.evidence_gate_errors(code, None, refs, citable) == [], code
+
+    def test_owned_by_other_prd_is_unsatisfiable_on_the_judge_path(self):
+        """Named, not silent. Its `issue:` group has no finding-dependent
+        source left, so it always converts to needs-human. Inventing a source
+        (reusing a remediation row's issue_id) would rebuild the hole."""
+        jc = _load_jc("jc_prov")
+        _view, citable = jc.judge_view(_maximal_packet(jc))
+        errors = jc.evidence_gate_errors(
+            "owned-by-other-prd", None,
+            ["prd:prd-other", "issue:ASK-111"], citable)
+        assert errors and "issue:" in errors[0]
+
+    def test_the_round_9_reproducer_no_longer_scores(self):
+        """Codex round 9, executed: a zero-duplicate packet cited the globally
+        active issue and entered scoring as a supported duplicate
+        (converted=False, scored_cases=1, exact_agreement=1.0)."""
+        jc = _load_jc("jc_prov")
+        packet = jc._fixture_packet(0)
+        packet["issue_state"]["issue_id"] = "ASK-ACTIVE-UNRELATED"
+        packet["duplicates"] = []
+        packet["related_prds"] = []
+        packet["packet_sha256"] = jc.packet_hash(packet)
+        output = {"technical_validity": "valid", "technical_reason": "dupe",
+                  "workflow_disposition": "duplicate",
+                  "workflow_reason_code": "duplicate",
+                  "evidence_refs": ["issue:ASK-ACTIVE-UNRELATED"],
+                  "missing_context": [], "confidence": 1.0}
+        run = {"model": "stub", "prompt_sha256": "0" * 64,
+               "input_sha256": packet["packet_sha256"], "output": output}
+        receipt = jc.build_receipt(
+            packet, disposition="rejected", actor="founder",
+            reason_code="duplicate",
+            evidence_refs=["issue:ASK-ACTIVE-UNRELATED"], rationale="dupe",
+            judge_run=run, supersedes=None, existing=[])
+        assert receipt["judge"]["converted_to_needs_human"] is True
+        assert receipt["judge"]["output"]["workflow_disposition"] == "needs-human"
+        assert receipt["judge"]["output"]["evidence_refs"] == []
+        scored = jc.evaluate([receipt])
+        assert scored["cases"] == 0
+        assert scored["exact_agreement"] == 0.0
+
+    def test_the_class_guard_can_actually_fire(self):
+        """Negative self-test. A guard that has never been watched refusing is
+        not a guard. Widen the forbidden set and confirm a ref the builder DOES
+        emit trips it."""
+        jc = _load_jc("jc_prov")
+        packet = _maximal_packet(jc)
+        jc.FORBIDDEN_CITABLE_PREFIXES = frozenset({"finding:"})
+        with pytest.raises(jc.ValidationError) as excinfo:
+            jc.judge_view(packet)
+        assert "ambient refs for a relational reason code" in str(excinfo.value)
+        assert "finding:prd-other/finding-9" in str(excinfo.value)

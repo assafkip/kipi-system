@@ -2222,6 +2222,82 @@ JUDGE_VIEW_SPEC: dict[str, tuple[str, ...] | None] = {
 }
 
 
+# --- Citation PROVENANCE: the class, enumerated ----------------------------
+#
+# Rounds 3-9 each killed ONE insufficient guard belonging to one class, and
+# each time the class moved one field over instead of dying. The class:
+#
+#   A reason code that asserts a relationship to a SPECIFIC OTHER ENTITY must
+#   cite a ref whose source VARIES WITH THE FINDING. An AMBIENT source -- one
+#   whose value is identical for every finding in the run -- can never prove
+#   such a relationship, because it is present whether or not the relationship
+#   holds.
+#
+# `commit:<HEAD>` was this bug for `already-remediated` (round 3; killed by
+# taking commits only from remediation rows). `issue:<active issue>` was the
+# SAME bug for `duplicate`: 83e3877 added it to the citable set below and
+# deleted the comment that had documented the hole, and rounds 7-9 reviewed
+# narrower things over the top of it (Codex round 9, executed repro: a packet
+# with `duplicates == []` cited the active issue and scored as a supported
+# duplicate, converted=False, exact_agreement=1.0).
+#
+# "Does the field always exist?" is the WRONG rule and would condemn `scope:`.
+# `scope-removed` / `out-of-scope` are DOCUMENTARY: the claim is "this falls
+# outside that documented scope", not "this is the same thing as that specific
+# entity". An always-present scope section is correct evidence for a
+# documentary claim. The axis is relational-vs-documentary, not always-exists.
+#
+# The two refusals already documented below (`spillover:`, `test:`) fall out of
+# this table rather than being special cases, which is the check on the
+# classification: a rule derived to catch `issue:` reproduces the two holes
+# that were already closed by hand.
+RELATIONAL_REASON_CODES = frozenset((
+    "duplicate",            # which duplicate?
+    "already-remediated",   # which remediation?
+    "owned-by-other-prd",   # which PRD, which issue?
+    "superseded",           # which judgment?
+))
+DOCUMENTARY_REASON_CODES = frozenset((
+    "scope-removed", "out-of-scope",
+))
+# Every source that feeds `_citable_refs`, traced to the assembler that fills
+# it. "finding-dependent" = the assembler takes finding_id (or derives from
+# something that did). "ambient" = same value for every finding in the run.
+# "absent" = the packet carries no source for it at all.
+CITABLE_REF_PROVENANCE = {
+    "finding:": "finding-dependent",    # duplicates[] rows, per finding_id
+    "judgment:": "finding-dependent",   # ledger filtered by finding_id
+    "prd:": "finding-dependent",        # derived from duplicates[]
+    "receipt:": "finding-dependent",    # remediation rows, per finding_id
+    "commit:": "finding-dependent",     # remediation rows, per finding_id
+    "scope:": "ambient",                # _assemble_scope, per PRD
+    "issue:": "ambient",                # cfg.active_issue_state_path
+    "spillover:": "absent",             # no spillover block in the packet
+    "test:": "absent",                  # nothing enumerates test paths
+}
+
+
+def _relational_prefixes() -> frozenset[str]:
+    out: set[str] = set()
+    for code in RELATIONAL_REASON_CODES:
+        for group in EVIDENCE_REQUIREMENTS.get(code, ()):
+            out.update(group)
+    return frozenset(out)
+
+
+# A prefix that can satisfy a RELATIONAL requirement must never be emitted from
+# a non-finding-dependent source. Derived, so a source added later with ambient
+# provenance is caught the day it is added instead of in round N+1.
+FORBIDDEN_CITABLE_PREFIXES = _relational_prefixes() & frozenset(
+    p for p, kind in CITABLE_REF_PROVENANCE.items()
+    if kind != "finding-dependent")
+if set(EVIDENCE_REF_RE.pattern.split("(")[1].split(")")[0].split("|")) != {
+        p.rstrip(":") for p in CITABLE_REF_PROVENANCE}:
+    raise RuntimeError(  # pragma: no cover - import-time invariant
+        "CITABLE_REF_PROVENANCE does not classify every prefix in the evidence "
+        "ref grammar; an unclassified prefix is an unchecked citation route")
+
+
 def _citable_refs(view: dict) -> frozenset[str]:
     """The closed set of refs derivable from the view the judge was shown.
 
@@ -2231,9 +2307,24 @@ def _citable_refs(view: dict) -> frozenset[str]:
     the packet -- `spillover:` (no spillover block exists) and `test:` (nothing
     enumerates test paths) -- are therefore refused BY CONSTRUCTION rather than
     by a special case. Both refusals are principled, not defaults: the judge
-    cannot see either kind, so it cannot honestly cite either. Nothing is
-    stranded, because `duplicate` keeps two honest routes (`finding:`,
-    `issue:`) and `already-remediated` keeps two (`receipt:`, `commit:`).
+    cannot see either kind, so it cannot honestly cite either.
+
+    `issue:` joins them, for the same structural reason rather than as a third
+    special case: its only source is the GLOBALLY ACTIVE issue, which is
+    ambient, and `duplicate` is relational (see CITABLE_REF_PROVENANCE). Two
+    consequences, both loud and both intended:
+
+    - `duplicate` keeps ONE honest route on the judge path, `finding:`, taken
+      from a real `duplicates[]` candidate. `already-remediated` still keeps
+      two (`receipt:`, `commit:`), both from remediation rows.
+    - `owned-by-other-prd` becomes UNSATISFIABLE on the judge path: it requires
+      an `issue:` group that now has no finding-dependent source, so it always
+      converts to needs-human. That is the gate working. The packet contains no
+      honest way for a blind judge to name WHICH issue owns a finding, and
+      inventing one (e.g. reusing a remediation row's issue_id) would rebuild
+      exactly the hole this table closes. The HUMAN path is untouched --
+      `evidence_gate_errors` is called with citable=None there, because a human
+      has tools.
     """
     refs: set[str] = set()
     for row in view["duplicates"]:
@@ -2245,8 +2336,13 @@ def _citable_refs(view: dict) -> frozenset[str]:
     for prd_id in view["related_prds"]:
         if prd_id:
             refs.add(f"prd:{prd_id}")
-    if view["issue_state"].get("issue_id"):
-        refs.add(f"issue:{view['issue_state']['issue_id']}")
+    # NO `issue:` HERE. `issue_state.issue_id` is the globally active issue and
+    # is AMBIENT: it is present for every finding in the run, so it cannot
+    # evidence a relationship to a specific other entity. Emitting it let a
+    # packet with `duplicates == []` cite it and score as a supported duplicate
+    # (Codex round 9). This is the same shape as the `commit:<HEAD>` refusal
+    # below, which is why the guard after the loop enforces the CLASS instead
+    # of this one field.
     for row in view["remediation"]:
         if row.get("issue_id"):
             refs.add(f"receipt:{row['issue_id']}")
@@ -2259,6 +2355,16 @@ def _citable_refs(view: dict) -> frozenset[str]:
             refs.add(f"commit:{row['commit_sha']}")
     if view["scope"].get("source") and view["scope"]["source"] != "unknown":
         refs.add(f"scope:{view['scope']['source']}")
+    # The CLASS guard, not a check on any one field: nothing that could satisfy
+    # a relational requirement may reach the citable set from an ambient
+    # source. A future assembler that starts emitting one trips this here,
+    # rather than being found by a reviewer N rounds later.
+    leaked = sorted(r for r in refs
+                    if any(r.startswith(p) for p in FORBIDDEN_CITABLE_PREFIXES))
+    if leaked:
+        raise ValidationError(
+            "citable set admits ambient refs for a relational reason code: "
+            f"{leaked}")
     return frozenset(refs)
 
 
