@@ -131,7 +131,18 @@ def clone_dirty_tracked(marketplace: Path) -> list[str]:
         return []
     try:
         proc = subprocess.run(
-            ["git", "-C", str(marketplace), "diff", "--name-only", "HEAD"],
+            # SCOPED TO plugins/, for the same reason clone_commits_behind is
+            # (codex review round 5, major). Unscoped, ANY tracked edit anywhere
+            # in the clone -- a README, a workflow file -- reported the RUNNING
+            # PLUGINS as hand-edited, which is a permanent false Linear finding.
+            #
+            # Enumerated rather than patched at the cited line: scoping
+            # clone_commits_behind in round 4 left its twin here unscoped, which
+            # is how the same defect came back one round later wearing a
+            # different function name. These are the only two git queries in
+            # this module that walk the clone, and both are now scoped.
+            ["git", "-C", str(marketplace), "diff", "--name-only", "HEAD",
+             "--", "plugins/"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):

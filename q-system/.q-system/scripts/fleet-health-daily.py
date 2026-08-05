@@ -1190,12 +1190,35 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     # Best-effort by construction: a failure or timeout leaves the cached ref in
     # place and the FLOOR semantics apply exactly as before, so being offline
     # degrades this to the old behaviour instead of breaking the run.
+    # A FETCH THAT KEEPS FAILING IS NOT A QUIET DEGRADE (codex review round 5,
+    # major). The first cut swallowed every failure, so an expired credential or
+    # a removed remote left the cached origin/main frozen and this detector
+    # reported nothing forever -- the same PASS-forever hole the fetch was added
+    # to close, one layer out. Silence about an inability is the defect class
+    # this detector has now been corrected for three times (unreadable registry,
+    # missing checker, and here), so the fix is the same one: say it, with the
+    # cannot-run subject, instead of returning nothing.
+    #
+    # A transient blip self-clears: the subject is stable, so it is one issue
+    # rather than a page per run, and the next successful fetch stops re-filing.
+    fetch_error = ""
     if (marketplace / ".git").exists():
         try:
-            subprocess.run(["git", "-C", str(marketplace), "fetch", "--quiet", "origin", "main"],
-                           capture_output=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            pass
+            proc = subprocess.run(
+                ["git", "-C", str(marketplace), "fetch", "--quiet", "origin", "main"],
+                capture_output=True, text=True, timeout=60)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                fetch_error = detail[-1] if detail else f"git fetch exited {proc.returncode}"
+        except subprocess.TimeoutExpired:
+            fetch_error = "git fetch timed out after 60s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            fetch_error = f"git fetch raised {type(exc).__name__}"
+    if fetch_error:
+        return _broken(
+            "the marketplace clone's remote could not be refreshed "
+            f"({fetch_error}), so 'behind origin/main' is computed from a cached "
+            "ref and cannot be trusted")
     behind = rpf.clone_commits_behind(marketplace)
     is_behind = bool(behind)
     if not stale and not retired and not dirty and not is_behind:

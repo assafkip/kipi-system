@@ -320,5 +320,84 @@ fget() { printf '%s' "$FETCHRES" | python3 -c "import json,sys;print(json.load(s
   && ok "the detector fetches the remote itself and then sees the merged plugin commit" \
   || bad "detector produced $(fget findings) findings (want 1) -- without its own fetch it reports PASS forever"
 
+# --- a FAILING fetch is reported, never swallowed (codex round 5, major) -----
+# Same fixture shape as the fetch case, but the remote is made unreachable after
+# cloning. Swallowing the failure leaves a frozen cached ref and PASS forever.
+FETCHFAIL="$(ROOT="$ROOT" python3 - <<'PY3'
+import importlib.util, json, os, shutil, subprocess, tempfile
+from pathlib import Path
+root = os.environ["ROOT"]; S = os.path.join(root, "q-system/.q-system/scripts")
+G = ["git","-c","user.email=t@t.t","-c","user.name=t","-c","commit.gpgsign=false"]
+def run(*a, cwd=None): return subprocess.run(list(a), cwd=cwd, capture_output=True, text=True)
+def load(n,p):
+    sp=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(m); return m
+with tempfile.TemporaryDirectory() as td:
+    rp=Path(td); bare=rp/"remote.git"
+    run("git","init","-q","--bare",str(bare)); run("git","-C",str(bare),"symbolic-ref","HEAD","refs/heads/main")
+    seed=rp/"seed"; (seed/"plugins").mkdir(parents=True)
+    (seed/"plugins"/"seed.md").write_text("a\n")
+    run(*G,"init","-q",cwd=seed); run(*G,"add","-A",cwd=seed)
+    run(*G,"commit","-qm","base",cwd=seed); run(*G,"push","-q",str(bare),"HEAD:main",cwd=seed)
+    mk=rp/"marketplaces"/"kipi"; mk.parent.mkdir(parents=True)
+    run("git","clone","-q",str(bare),str(mk))
+    man=mk/"plugins"/"prd-os"/".claude-plugin"; man.mkdir(parents=True)
+    (man/"plugin.json").write_text(json.dumps({"name":"prd-os","version":"0.16.6"}))
+    (rp/"installed_plugins.json").write_text(json.dumps(
+        {"plugins":{"prd-os@kipi":[{"scope":"user","version":"0.16.6"}]}}))
+    # Make the remote unreachable AFTER cloning: fetch must now fail.
+    shutil.rmtree(bare)
+    fh=load("fh",os.path.join(S,"fleet-health-daily.py"))
+    src=open(os.path.join(S,"runtime-plugin-freshness.py")).read().replace(
+        'DEFAULT_PLUGIN_ROOT = Path.home() / ".claude" / "plugins"',
+        f'DEFAULT_PLUGIN_ROOT = Path({td!r})')
+    shim=rp/"shim"; shim.mkdir(); (shim/"runtime-plugin-freshness.py").write_text(src)
+    fh.HERE=shim
+    f=fh.detect_stale_runtime_plugins(None)
+    print(json.dumps({"count":len(f),"subject":f[0]["subject"] if f else ""}))
+PY3
+)"
+echo "    fetch-failure result: $FETCHFAIL"
+ffget() { printf '%s' "$FETCHFAIL" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
+[ "$(ffget count)" = "1" ] \
+  && ok "a failing fetch produces a finding, not silence" \
+  || bad "failing fetch produced $(ffget count) findings (want 1) -- a frozen cached ref reports PASS forever"
+[ "$(ffget subject)" = "runtime-plugin-freshness-unreadable" ] \
+  && ok "the fetch-failure finding uses the cannot-run subject" \
+  || bad "fetch-failure subject was '$(ffget subject)'"
+
+# --- a tracked edit OUTSIDE plugins/ is not runtime drift (round 5, major) ---
+DIRTYSCOPE="$(ROOT="$ROOT" python3 - <<'PY4'
+import importlib.util, json, os, subprocess, tempfile
+from pathlib import Path
+root=os.environ["ROOT"]; S=os.path.join(root,"q-system/.q-system/scripts")
+G=["git","-c","user.email=t@t.t","-c","user.name=t","-c","commit.gpgsign=false"]
+def run(*a,cwd=None): return subprocess.run(list(a),cwd=cwd,capture_output=True,text=True)
+def load(n,p):
+    sp=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(m); return m
+out={}
+for label, edit in (("outside","README.md"), ("inside","plugins/prd-os/commands.md")):
+    with tempfile.TemporaryDirectory() as td:
+        rp=Path(td); mk=rp/"marketplaces"/"kipi"; mk.mkdir(parents=True)
+        (mk/"README.md").write_text("r\n")
+        (mk/"plugins"/"prd-os").mkdir(parents=True)
+        (mk/"plugins"/"prd-os"/"commands.md").write_text("c\n")
+        run(*G,"init","-q",cwd=mk); run(*G,"add","-A",cwd=mk); run(*G,"commit","-qm","base",cwd=mk)
+        (mk/edit).write_text("EDITED\n")   # tracked edit, uncommitted
+        rpf=load("rpf",os.path.join(S,"runtime-plugin-freshness.py"))
+        out[label]=rpf.clone_dirty_tracked(mk)
+print(json.dumps({"outside":len(out["outside"]),"inside":len(out["inside"])}))
+PY4
+)"
+echo "    dirty-scope result: $DIRTYSCOPE"
+dsget() { printf '%s' "$DIRTYSCOPE" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])" 2>/dev/null; }
+[ "$(dsget outside)" = "0" ] \
+  && ok "a tracked edit OUTSIDE plugins/ is not reported as runtime drift" \
+  || bad "an edit outside plugins/ reported $(dsget outside) dirty file(s) -- permanent false finding"
+[ "$(dsget inside)" = "1" ] \
+  && ok "a tracked edit INSIDE plugins/ is still reported" \
+  || bad "an edit inside plugins/ reported $(dsget inside) -- the scoping went too far"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
