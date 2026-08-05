@@ -2707,3 +2707,115 @@ class TestNoPhantomReceiptWhenTheAnchorWriteFails:
         assert "anchor" in combined, combined
         assert ("MISSING" in combined or "BEYOND the tip anchor" in combined), \
             combined
+
+
+# ---------------------------------------------------------------------------
+# Judge output: disposition / reason-code pair consistency
+# ---------------------------------------------------------------------------
+
+
+def _load_jc(name: str = "jc_pairs"):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, JUDGMENT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _judge_output(code: str, disposition: str) -> dict:
+    return {"technical_validity": "valid", "technical_reason": "ok",
+            "workflow_disposition": disposition, "workflow_reason_code": code,
+            "evidence_refs": [], "missing_context": [], "confidence": 1.0}
+
+
+class TestJudgeOutputPairConsistency:
+    """`validate_judge_output` used to accept any code with any disposition.
+
+    Severity is MINOR and the record says so: the escalation to major named
+    "allows unsupported predictions into release-gate scoring", and that
+    consequence does not hold -- `evidence_gate_errors` keys off BOTH fields,
+    so a contradictory pair whose either half requires evidence is refused,
+    degraded to needs-human, and dropped by `JUDGE_TO_LEGACY[...] is None`
+    before any metric sees it. What DOES survive is narrower: a pair whose
+    halves both happen to require no evidence reaches `_override_pattern_key`,
+    where an agreeing disposition with a mismatched code reads as an override
+    and can manufacture a policy candidate out of an agreement.
+    """
+
+    def test_a_contradictory_twin_pair_is_rejected(self):
+        """The bad case, watched failing before the check existed."""
+        jc = _load_jc()
+        with pytest.raises(jc.ValidationError) as excinfo:
+            jc.validate_judge_output(_judge_output("duplicate", "fix-now"),
+                                     "judge run")
+        assert "duplicate" in str(excinfo.value)
+        assert "fix-now" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "code", [c for c in _load_jc("jc_pairs_ids").REASON_CODES
+                 if c in _load_jc("jc_pairs_ids").WORKFLOW_DISPOSITIONS])
+    def test_every_twin_code_rejects_every_other_disposition(self, code):
+        """The rule has to bite for each twin, not just the one Codex named."""
+        jc = _load_jc()
+        for disposition in jc.WORKFLOW_DISPOSITIONS:
+            if disposition == code or jc.JUDGE_TO_LEGACY[disposition] is None:
+                continue
+            with pytest.raises(jc.ValidationError):
+                jc.validate_judge_output(_judge_output(code, disposition),
+                                         "judge run")
+
+    def test_every_legitimate_pair_still_passes(self):
+        """THE half that matters. An over-strict contradiction check would
+        convert real judge output into errors and score nothing, which is a
+        worse failure than the one being fixed. The legitimate space is
+        table-driven off the module's own enums so it cannot drift:
+
+        - a twin code (one whose name is also a disposition) pairs with its
+          own disposition, plus the needs-human sink;
+        - a non-twin code is UNCONSTRAINED, because neither REASON_CODES nor
+          WORKFLOW_DISPOSITIONS states what it refines and inventing that
+          mapping today would be a second hand-maintained table.
+        """
+        jc = _load_jc()
+        twins = set(jc.REASON_CODES) & set(jc.WORKFLOW_DISPOSITIONS)
+        checked = 0
+        for code in jc.REASON_CODES:
+            for disposition in jc.WORKFLOW_DISPOSITIONS:
+                if code in twins and disposition != code \
+                        and jc.JUDGE_TO_LEGACY[disposition] is not None:
+                    continue
+                jc.validate_judge_output(_judge_output(code, disposition),
+                                         "judge run")
+                checked += 1
+        assert checked >= len(jc.REASON_CODES), checked
+
+    def test_the_gate_conversion_output_still_validates(self):
+        """The conversion path is the pair check's real over-strictness trap.
+
+        `_judge_block_from_run` rewrites workflow_disposition to needs-human
+        and deliberately LEAVES the original reason code, so every converted
+        receipt carries a non-matching pair. It is legitimate by construction:
+        needs-human maps to None in JUDGE_TO_LEGACY, so it is excluded from
+        scoring, and `converted_from` records what it was.
+        """
+        jc = _load_jc()
+        packet = jc._fixture_packet(0)
+        run = {"model": "m", "prompt_sha256": "0" * 64, "review_run_id": "r",
+               "input_sha256": packet["packet_sha256"],
+               "output": _judge_output("duplicate", "duplicate")}
+        block = jc._judge_block_from_run(run, frozenset())
+        assert block["converted_to_needs_human"] is True
+        assert block["converted_from"] == "duplicate"
+        assert block["output"]["workflow_reason_code"] == "duplicate"
+        assert block["output"]["workflow_disposition"] == "needs-human"
+        jc._validate_judge_block(block, "receipt")
+
+    def test_the_enums_stay_in_sync(self):
+        """The anti-drift device: the pair rule is derived from the two
+        existing enums plus JUDGE_TO_LEGACY, so those three must agree."""
+        jc = _load_jc()
+        assert set(jc.WORKFLOW_DISPOSITIONS) == set(jc.JUDGE_TO_LEGACY)
+        assert set(jc.REASON_CODES) & set(jc.WORKFLOW_DISPOSITIONS), \
+            "no twin codes left: the pair rule would be a no-op"

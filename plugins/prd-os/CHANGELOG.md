@@ -2,6 +2,43 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.16.3] - 2026-08-04
+
+### Fixed (Codex review, PR #103 round 8) — contradictory judge pairs
+`validate_judge_output` accepted any `workflow_reason_code` with any
+`workflow_disposition`, so a judge could return reason `duplicate` on a
+`fix-now` decision and the record would keep both.
+
+The rule is DERIVED from the enums already in the file rather than from a new
+table: a reason code whose name is also a workflow disposition
+(`duplicate`, `already-remediated`, `scope-removed`, `out-of-scope`,
+`needs-human`) must carry that disposition. Codes with no disposition twin are
+left unconstrained on purpose — nothing in `REASON_CODES` or
+`WORKFLOW_DISPOSITIONS` states what they refine, and a guessed mapping would
+reject real judge output and score zero calibration cases. Captured as
+`sp-9755c728`.
+
+Abstentions are exempt, keyed on `JUDGE_TO_LEGACY[disposition] is None` rather
+than the literal `needs-human`: the evidence-gate conversion in
+`_judge_block_from_run` rewrites the disposition and deliberately keeps the
+original code, so every converted receipt carries a non-matching pair. Those
+are excluded from scoring before any metric reads them.
+
+A module-level invariant now refuses to import when `WORKFLOW_DISPOSITIONS`
+and `JUDGE_TO_LEGACY` disagree, because the pair rule reads both.
+
+### Severity note
+Round 7 filed this as minor (`sp-33e98c0b`); round 8 escalated it to major on
+the consequence "allows unsupported predictions into release-gate scoring".
+That consequence was tested and does not hold — `evidence_gate_errors` takes
+the disposition as well as the code, so a contradictory pair whose either half
+requires evidence is refused, degraded to `needs-human`, and dropped by
+`JUDGE_TO_LEGACY[...] is None` before scoring. The measured residual is
+narrower: a pair whose halves both require no evidence reaches
+`_override_pattern_key`, where an agreeing disposition with a mismatched code
+reads as an override and can manufacture a policy candidate out of an
+agreement. Real, bounded, minor. Fixed on those grounds.
+
 ## [0.16.2] - 2026-08-04
 
 ### Fixed (Codex review, PR #103 round 6) — an append-only ledger cannot roll back

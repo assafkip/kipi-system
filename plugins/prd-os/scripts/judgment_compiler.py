@@ -112,6 +112,26 @@ JUDGE_TO_LEGACY = {
     "defer": "deferred",
     "needs-human": None,  # excluded from automation metrics
 }
+if set(WORKFLOW_DISPOSITIONS) != set(JUDGE_TO_LEGACY):
+    raise RuntimeError(  # pragma: no cover - import-time invariant
+        "WORKFLOW_DISPOSITIONS and JUDGE_TO_LEGACY disagree; the pair check "
+        "below is derived from both and would silently weaken")
+# A reason code whose NAME is also a workflow disposition denotes the same
+# concept in the enums' OWN vocabulary, so the pair is checkable without
+# writing a second code->disposition table -- and a second hand-maintained
+# table would drift from these, a defect class this file has already fixed
+# more than once. `duplicate` reasoning cannot end in a `fix-now` decision.
+#
+# The non-twin codes (valid-fix-now, owned-by-other-prd, superseded, defer-*,
+# invalid-finding, insufficient-context) are left UNCONSTRAINED on purpose.
+# Nothing in these tables states what they refine, so a rule covering them
+# would be semantics invented at review time; getting one wrong rejects real
+# judge output and scores zero calibration cases, which is worse than the hole
+# it closes. `owned-by-other-prd` is the live example: pairing it with
+# `out-of-scope` would union that disposition's `scope:` requirement onto its
+# own `prd:`+`issue:`, stranding the code behind a ref the judge's view has no
+# reason to carry. The remainder is captured as sp-9755c728, not dropped.
+TWIN_REASON_CODES = frozenset(REASON_CODES) & frozenset(WORKFLOW_DISPOSITIONS)
 
 RECEIPT_FIELDS = frozenset((
     "schema_version", "receipt_id", "sequence", "captured_at", "finding",
@@ -395,6 +415,22 @@ def validate_judge_output(output: dict, where: str) -> None:
         raise ValidationError(
             f"{where}: workflow_reason_code must be one of the canonical "
             f"reason codes; got {output['workflow_reason_code']!r}")
+    code = output["workflow_reason_code"]
+    disposition = output["workflow_disposition"]
+    # The needs-human EXEMPTION is not a softening: `_judge_block_from_run`
+    # rewrites the disposition to needs-human on an evidence-gate conversion
+    # and deliberately keeps the original code (`converted_from` records what
+    # it was), so every converted receipt carries a non-matching pair. It is
+    # safe by the same table the rule is derived from -- JUDGE_TO_LEGACY maps
+    # it to None, so it is excluded from scoring before any metric sees it.
+    # Keyed on that None rather than the literal string so the exemption
+    # follows the table if another abstention is ever added.
+    if code in TWIN_REASON_CODES and disposition != code \
+            and JUDGE_TO_LEGACY[disposition] is not None:
+        raise ValidationError(
+            f"{where}: workflow_reason_code {code!r} contradicts "
+            f"workflow_disposition {disposition!r} -- a reason code that names "
+            f"a disposition must carry that disposition, or an abstention")
     if not isinstance(output["technical_reason"], str):
         raise ValidationError(f"{where}: technical_reason must be a string")
     _validate_evidence_refs(output["evidence_refs"], where)
