@@ -680,3 +680,70 @@ def test_triage_does_not_cry_downgrade_over_a_raise(repo):
     out = run(repo, "spillover", "triage").stdout
     assert "severity raised" in out, out
     assert "LOWERED" not in out, f"a raise was reported as a downgrade:\n{out}"
+
+
+def test_concurrent_resolve_and_reclassify_cannot_resurrect(repo):
+    """Codex, PR #112, with an executed repro.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, and `_read_spillover` is last-write-wins on the WHOLE record. The
+    interleaving is: reclassify reads (status=open), resolve appends
+    (status=resolved), reclassify appends its STALE copy (status=open) -- and
+    a resolved item is back in the standing gate.
+
+    Stress rather than a staged interleave: the race is between two OS
+    processes, so there is no seam to patch. 25 rounds reproduces it reliably
+    without the lock; the loop is the reproducer.
+    """
+    import concurrent.futures as cf
+    resurrected = []
+    for n in range(25):
+        sid = f"sp-race{n}"
+        run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+            "--id", sid, "--severity", "minor")
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            a = ex.submit(run, repo, "spillover", "resolve", sid, "--void", "not real")
+            b = ex.submit(run, repo, "spillover", "reclassify", sid,
+                          "--severity", "blocker", "--reason", "raising it")
+            a.result(); b.result()
+        rec = json.loads([l for l in _ledger_lines(repo)
+                          if json.loads(l).get("id") == sid][-1])
+        if rec.get("status") == "open":
+            resurrected.append((sid, rec.get("severity")))
+    assert not resurrected, (
+        f"{len(resurrected)}/25 resolved items were resurrected into the gate "
+        f"by a concurrent reclassify: {resurrected[:5]}")
+
+
+@pytest.mark.parametrize("before,after,expect", [
+    ("blocker", "high", "LOWERED"),      # blocker is MORE severe than high
+    ("high", "blocker", "severity raised"),
+    ("major", "minor", "LOWERED"),
+    ("minor", "major", "severity raised"),
+])
+def test_triage_labels_the_direction_correctly(repo, before, after, expect):
+    """The first rank was built by concatenating the two MEMBERSHIP tuples,
+    which are not ordered by severity: `blocker` is index 0 of its tuple and
+    `high` index 2, so `blocker -> high` reported as a RAISE (Codex, minor).
+    A membership set is not a scale."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-dir", "--severity", before)
+    run(repo, "spillover", "reclassify", "sp-dir", "--severity", after,
+        "--reason", "direction probe")
+    out = run(repo, "spillover", "triage").stdout
+    assert expect in out, f"{before} -> {after} not reported as {expect}:\n{out}"
+    if expect == "severity raised":
+        assert "LOWERED" not in out, f"{before} -> {after} called a downgrade:\n{out}"
+
+
+def test_every_known_severity_has_a_rank(repo):
+    """A severity missing from the order defaults to -1 and silently reads as
+    the least severe thing there is."""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "pr_rank", _P(__file__).resolve().parents[1] / "scripts/prd_runner.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    missing = [s for s in m.SPILLOVER_KNOWN_SEVERITIES
+               if s not in m.SPILLOVER_SEVERITY_ORDER]
+    assert not missing, f"known severities absent from the rank order: {missing}"

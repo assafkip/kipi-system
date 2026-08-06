@@ -38,6 +38,8 @@ layer in step 6 where both runners are orchestrated.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -1260,6 +1262,36 @@ def _spillover_open(cfg: Config) -> list:
     return [r for r in _read_spillover(cfg).values() if r.get("status") == "open"]
 
 
+@contextlib.contextmanager
+def _spillover_lock(cfg: Config):
+    """Serialize read-modify-append on the ledger across PROCESSES.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, while `_read_spillover` is last-write-wins on the WHOLE record. So
+    two concurrent runs interleave as: reclassify reads (status=open), resolve
+    appends (status=resolved), reclassify appends its stale copy (status=open)
+    -- and the resolved item is RESURRECTED into the standing gate. Codex found
+    it on PR #112 with an executed reproducer.
+
+    This is the single-writer chokepoint rule applied where it was skipped: two
+    writers to one file is a corruption waiting for a race. The lock spans the
+    READ as well as the write, because a lock around the append alone still
+    lets the stale copy be formed.
+
+    A sibling .lock file rather than the ledger itself: flock on the ledger
+    would be released by any unrelated reader closing its own handle.
+    """
+    path = _spillover_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with lock_path.open("w") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _spillover_append(cfg: Config, record: dict) -> None:
     path = _spillover_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1419,8 +1451,13 @@ def _print_reclassifications(items: list) -> None:
     gate's reported bucket -- but the ACT of demoting it is the thing an
     operator needs to see, because that is what moved the gate.
     """
-    rank = {s: i for i, s in enumerate(
-        SPILLOVER_NONBLOCKING_SEVERITIES + SPILLOVER_BLOCKING_SEVERITIES)}
+    # EXPLICIT order. The first version built this by concatenating
+    # NONBLOCKING + BLOCKING, which assumed those tuples were ordered by
+    # severity. They are not -- `blocker` sits at index 0 of its tuple and
+    # `high` at 2 -- so `blocker -> high` reported as a RAISE and
+    # `low -> minor` as a gate-affecting downgrade (Codex, PR #112, minor).
+    # A membership set is not a scale; reusing one as a scale is the bug.
+    rank = {s: i for i, s in enumerate(SPILLOVER_SEVERITY_ORDER)}
     changed = [r for r in items if r.get("reclassified_from")]
     if not changed:
         return
@@ -1484,24 +1521,27 @@ def cmd_spillover(cfg: Config, args) -> int:
                 "--reason is required: a severity change with no stated reason "
                 "is the hand-clear this ledger refuses everywhere else.\n")
             return 2
-        items = _read_spillover(cfg)
-        current = items.get(args.id)
-        if current is None:
-            sys.stderr.write(
-                f"unknown spillover id: {args.id!r}. Reclassify never creates an "
-                "item -- a typo must not invent open work.\n")
-            return 2
-        # Carry the whole prior record forward and move ONE field, so a
-        # reclassify can never drop the description or resolve by side effect.
-        new_rec = dict(current)
-        prior = current.get("severity")
-        new_rec.update({
-            "severity": severity,
-            "reclassified_at": _now_iso(),
-            "reclassified_from": prior,
-            "reclassify_reason": args.reason,
-        })
-        _spillover_append(cfg, new_rec)
+        # READ AND APPEND UNDER ONE LOCK. Reading outside it lets a concurrent
+        # `resolve` land between the two and be overwritten by this stale copy.
+        with _spillover_lock(cfg):
+            items = _read_spillover(cfg)
+            current = items.get(args.id)
+            if current is None:
+                sys.stderr.write(
+                    f"unknown spillover id: {args.id!r}. Reclassify never creates an "
+                    "item -- a typo must not invent open work.\n")
+                return 2
+            # Carry the whole prior record forward and move ONE field, so a
+            # reclassify can never drop the description or resolve by side effect.
+            new_rec = dict(current)
+            prior = current.get("severity")
+            new_rec.update({
+                "severity": severity,
+                "reclassified_at": _now_iso(),
+                "reclassified_from": prior,
+                "reclassify_reason": args.reason,
+            })
+            _spillover_append(cfg, new_rec)
         print(json.dumps({"id": args.id, "severity": severity,
                           "was": prior, "status": new_rec.get("status")}))
         return 0
@@ -1543,33 +1583,40 @@ def cmd_spillover(cfg: Config, args) -> int:
         _print_reclassifications(openv)
         return 0
     if sub == "resolve":
-        rec = _read_spillover(cfg).get(args.id)
-        if not rec:
-            sys.stderr.write(f"unknown spillover id: {args.id}\n")
-            return 2
-        if not args.resolution_ref and not args.void:
-            sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
-            return 2
-        new = dict(rec)
-        if args.void:
-            new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
-        else:
-            try:
-                evidence = _verify_resolution_ref(cfg, args.resolution_ref)
-            except LinearRefError as exc:
-                sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+        # Same chokepoint as reclassify. This read-modify-append was
+        # ALREADY unlocked before PR #112; reclassify only added a third
+        # writer to it. A `with` block, not a manual enter/exit: two of
+        # the refusal paths below return early and would leak the lock.
+        with _spillover_lock(cfg):
+            # Same chokepoint as reclassify: this read-modify-append was already
+            # unlocked before PR #112: reclassify only added a third writer to it.
+            rec = _read_spillover(cfg).get(args.id)
+            if not rec:
+                sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
-            new.update(status="resolved", resolution_ref=args.resolution_ref,
-                       resolved_at=_now_iso(), **evidence)
-            if args.evidence:
-                # Operator-supplied context (PR, merge commit). Recorded for the
-                # next reader, never consulted above: it is a note attached to a
-                # verified resolution, not a substitute for verifying one.
-                new["resolution_evidence"] = args.evidence
-        _spillover_append(cfg, new)
-        print(json.dumps({"id": args.id, "status": "resolved"}))
-        return 0
-    sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
+            if not args.resolution_ref and not args.void:
+                sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
+                return 2
+            new = dict(rec)
+            if args.void:
+                new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
+            else:
+                try:
+                    evidence = _verify_resolution_ref(cfg, args.resolution_ref)
+                except LinearRefError as exc:
+                    sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                    return 2
+                new.update(status="resolved", resolution_ref=args.resolution_ref,
+                           resolved_at=_now_iso(), **evidence)
+                if args.evidence:
+                    # Operator-supplied context (PR, merge commit). Recorded for the
+                    # next reader, never consulted above: it is a note attached to a
+                    # verified resolution, not a substitute for verifying one.
+                    new["resolution_evidence"] = args.evidence
+            _spillover_append(cfg, new)
+            print(json.dumps({"id": args.id, "status": "resolved"}))
+            return 0
+        sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
     return 2
 
 
@@ -1594,6 +1641,10 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # louder the label the quieter the gate got. Fail-closed here and validate at the
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+# Least -> most severe. Separate from the membership tuples above ON PURPOSE:
+# those answer "does this block?", this answers "which way did it move?", and
+# conflating the two is how `blocker -> high` read as a raise.
+SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
 
