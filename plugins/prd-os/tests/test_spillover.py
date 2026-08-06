@@ -97,6 +97,17 @@ def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
+def _ledger_lines(repo):
+    """Raw ledger lines, for asserting append-only behaviour.
+
+    A missing file is zero events, not an error: a refused command must leave
+    no ledger at all, and that is a state this helper has to be able to report.
+    """
+    path = repo / ".prd-os" / "spillover.jsonl"
+    if not path.is_file():
+        return []
+    return [l for l in path.read_text().splitlines() if l.strip()]
+
 def test_gates_run_red_while_a_blocking_severity_item_is_open(repo):
     # No registered gates at all, but an open BLOCKING-severity spillover item
     # must still make the STANDING re-proof fail. The can't-be-forgotten
@@ -488,3 +499,109 @@ def test_cli_refuses_an_unrecognized_severity_at_the_door():
         capture_output=True, text=True)
     assert proc.returncode != 0, "CLI accepted an unrecognized severity"
     assert "critical" in (proc.stderr + proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# reclassify: correct a severity through a NEW event, never a mutation
+# ---------------------------------------------------------------------------
+#
+# 549 of 559 open items sit at the `minor` DEFAULT, i.e. untriaged. `gates run`
+# now blocks only on blocker/major/high, so triaging that backlog is the work
+# that makes the gate mean something -- and there was no verb to do it with.
+# `add`, `list`, `check`, `triage` (read-only), `resolve`. Nothing could raise
+# an item.
+#
+# Shape per the approved PRD prd-spillover-current-state-2026-07-24: "correct
+# severity through new events only", "preserve append-only history", "editing
+# or deleting prior spillover events" is an explicit non-goal.
+
+def test_reclassify_raises_severity_and_blocks_the_gate(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "real bug", "--id", "sp1")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: minor is not blocking"
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "deletes founder data on an empty-prefix instance")
+    assert r.returncode == 0, r.stderr
+    assert run(repo, "gates", "run").returncode != 0, (
+        "reclassify to major did not make the standing gate block"
+    )
+
+
+def test_reclassify_appends_and_never_rewrites_history(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    before = _ledger_lines(repo)
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "high", "--reason", "why")
+    after = _ledger_lines(repo)
+    assert after[:len(before)] == before, "reclassify rewrote prior events"
+    assert len(after) == len(before) + 1, "reclassify did not append exactly one event"
+    assert json.loads(after[-1])["severity"] == "high"
+
+
+def test_reclassify_records_the_reason(repo):
+    """A severity change with no stated reason is the hand-clear this ledger
+    refuses everywhere else."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    bad = run(repo, "spillover", "reclassify", "sp1", "--severity", "major")
+    assert bad.returncode != 0, "reclassify accepted a severity change with no reason"
+    ok = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+             "--reason", "it can delete data")
+    assert ok.returncode == 0
+    assert "it can delete data" in _ledger_lines(repo)[-1]
+
+
+def test_reclassify_refuses_an_unknown_severity(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "urgent",
+            "--reason", "x")
+    assert r.returncode != 0, "unknown severity accepted; the gate reads this field"
+
+
+def test_reclassify_refuses_an_unknown_id(repo):
+    """Negative-fire: a typo must not silently create a new open item.
+
+    Asserts the MESSAGE, not just a nonzero exit. Mutation showed exit-code-only
+    could not tell a clean refusal from a TypeError crash -- dropping the guard
+    made `dict(None)` raise, which is also nonzero, so the test passed while the
+    behaviour was a stack trace."""
+    r = run(repo, "spillover", "reclassify", "sp-nope", "--severity", "major",
+            "--reason", "x")
+    assert r.returncode != 0, "reclassify invented an item that never existed"
+    assert "unknown spillover id" in r.stderr, (
+        f"refused, but not cleanly -- stderr was: {r.stderr!r}")
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+    assert not _ledger_lines(repo), "a refused reclassify still wrote an event"
+
+
+def test_reclassify_refuses_a_whitespace_only_reason(repo):
+    """argparse `required=True` already rejects a MISSING --reason, so the
+    in-code check is only reachable via whitespace. Mutation proved the earlier
+    test never exercised it: deleting the check left the suite green because
+    argparse fired first."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "   ")
+    assert r.returncode != 0, "a whitespace-only reason was accepted as a reason"
+    assert "--reason is required" in r.stderr
+
+
+def test_reclassify_preserves_status_and_description(repo):
+    """Only severity moves. A reclassify that drops the description would make
+    the ledger unreadable, and one that flips status would resolve by side
+    effect."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "the original text",
+        "--id", "sp1")
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "major", "--reason", "r")
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["description"] == "the original text"
+    assert rec["status"] == "open"
+    assert rec["source"] == "s"
+
+
+def test_reclassify_can_lower_severity_too(repo):
+    """Triage runs both ways: an over-flagged item must be demotable, or the
+    only safe move is to leave everything blocking."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1",
+        "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "minor",
+        "--reason", "reread it: cosmetic, no data path")
+    assert run(repo, "gates", "run").returncode == 0

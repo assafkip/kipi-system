@@ -1423,6 +1423,49 @@ def cmd_spillover(cfg: Config, args) -> int:
         })
         print(json.dumps({"id": sid, "status": "open"}))
         return 0
+    if sub == "reclassify":
+        # Correct a severity through a NEW EVENT, never a mutation. Approved
+        # PRD prd-spillover-current-state-2026-07-24: "correct severity through
+        # new events only", "preserve append-only history"; editing a prior
+        # event is an explicit non-goal there.
+        #
+        # This verb did not exist, and its absence was the real blocker on the
+        # backlog: 549 of 559 open items sit at the `minor` DEFAULT (untriaged,
+        # not assessed), `gates run` blocks only on blocker/major/high, and
+        # nothing could raise or lower an item once written.
+        severity = (args.severity or "").strip().lower()
+        if severity not in SPILLOVER_KNOWN_SEVERITIES:
+            sys.stderr.write(
+                f"--severity must be one of {SPILLOVER_KNOWN_SEVERITIES}; "
+                f"got {args.severity!r}. The standing gate reads this field, so "
+                "an unknown value would silently stop blocking.\n")
+            return 2
+        if not (args.reason or "").strip():
+            sys.stderr.write(
+                "--reason is required: a severity change with no stated reason "
+                "is the hand-clear this ledger refuses everywhere else.\n")
+            return 2
+        items = _read_spillover(cfg)
+        current = items.get(args.id)
+        if current is None:
+            sys.stderr.write(
+                f"unknown spillover id: {args.id!r}. Reclassify never creates an "
+                "item -- a typo must not invent open work.\n")
+            return 2
+        # Carry the whole prior record forward and move ONE field, so a
+        # reclassify can never drop the description or resolve by side effect.
+        new_rec = dict(current)
+        prior = current.get("severity")
+        new_rec.update({
+            "severity": severity,
+            "reclassified_at": _now_iso(),
+            "reclassified_from": prior,
+            "reclassify_reason": args.reason,
+        })
+        _spillover_append(cfg, new_rec)
+        print(json.dumps({"id": args.id, "severity": severity,
+                          "was": prior, "status": new_rec.get("status")}))
+        return 0
     if sub == "list":
         items = list(_read_spillover(cfg).values())
         if args.open_only:
@@ -1662,6 +1705,13 @@ def main(argv: list[str] | None = None) -> int:
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
+    sp_recl = spill_sub.add_parser(
+        "reclassify", help="correct an item's severity via a new append-only event")
+    sp_recl.add_argument("id")
+    sp_recl.add_argument("--severity", required=True)
+    sp_recl.add_argument("--reason", required=True,
+                         help="why the severity is wrong; recorded on the event")
+
     spill_sub.add_parser("check")
     spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
     sp_res = spill_sub.add_parser("resolve")
