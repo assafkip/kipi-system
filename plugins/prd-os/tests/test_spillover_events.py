@@ -236,6 +236,53 @@ def test_a_valid_ledger_still_folds_and_reports_open_items(repo: Path):
     assert "sp-open0001" in result.stderr and "sp-open0002" in result.stderr
 
 
+@pytest.mark.parametrize("status", ["open", "resolved", "promoted", "triaged"])
+def test_every_status_in_the_FLEET_is_readable(repo: Path, status):
+    """Read tolerance measured across ALL 10 ledgers in the fleet, not one.
+
+    prd-os is a kipi-update/marketplace-propagated plugin, so the population is
+    every repo it ships to. Measured 2026-08-06:
+      kipi-system  open/resolved/promoted   (promoted: 7)
+      cole-gtm     open/resolved/triaged    (triaged: 65)
+      8 others     open/resolved
+
+    The first version of this validator derived KNOWN_STATUSES from kipi-system
+    alone and would have raised on cole-gtm line 227, taking EVERY prd-os
+    command in that repo down -- including `spillover list`, the only command
+    that could show an operator what went wrong. The module docstring claimed
+    this exact lesson had been applied; it had been applied to one ledger.
+    """
+    write_ledger(repo, event(id="sp-st000001", status=status))
+    result = run(repo, "spillover", "check")
+    assert result.returncode in (0, 1), (
+        f"status {status!r} is live somewhere in the fleet but was refused.\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+@pytest.mark.parametrize("status", ["promoted", "triaged"])
+def test_a_legacy_status_is_readable_but_NOT_appendable(repo: Path, status):
+    """Read tolerance must not become write permission.
+
+    `_spillover_open` filters `status == "open"`, so appending `promoted` or
+    `triaged` would take an item out of the standing gate WITHOUT going through
+    `resolve --resolution-ref <closed-issue>` or `resolve --void <reason>`.
+    no-orphan-findings.md says there are exactly two ways out of the ledger;
+    sharing one status set between read and write would validate a third.
+
+    These values exist only as residue from retired tooling -- no code in the
+    plugin writes either one.
+    """
+    runner, cfg = _cfg_for(repo)
+    write_ledger(repo, event(id="sp-keep0001"))
+    before = ledger(repo).read_bytes()
+    with pytest.raises(runner.SpilloverLedgerError):
+        runner._spillover_append(cfg, {"id": "sp-new00001", "status": status,
+                                       "description": "d", "severity": "minor",
+                                       "source": "s", "created_at": "t"})
+    assert ledger(repo).read_bytes() == before, \
+        f"a refused {status!r} append still modified the ledger"
+
+
 def test_every_status_and_severity_the_live_ledger_uses_is_accepted(repo: Path):
     """Fail-closed must not brick the real fleet ledger.
 

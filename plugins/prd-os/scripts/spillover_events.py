@@ -37,14 +37,39 @@ from __future__ import annotations
 
 import json
 
-# The statuses the ledger actually uses, MEASURED from `.prd-os/spillover.jsonl`
-# on 2026-08-06 across all 860 events: open 715, resolved 139, promoted 7.
+# READ vs WRITE are DIFFERENT SETS. Conflating them is two separate bugs.
 #
-# `promoted` appears nowhere in the parent PRD's event list. A validator written
-# from the PRD alone would have refused those 7 live records and taken every
-# prd-os command down the moment it shipped. Read the population before making a
-# reader fail closed on it.
-KNOWN_STATUSES = ("open", "resolved", "promoted")
+# READABLE: measured across ALL TEN spillover ledgers in the fleet on
+# 2026-08-06, not one. prd-os is a kipi-update / marketplace-propagated plugin,
+# so its population is every repo it ships to:
+#     kipi-system  open 741, resolved 145, promoted 7
+#     cole-gtm     open 149, resolved 104, TRIAGED 65
+#     8 others     open / resolved only
+#
+# The first version of this constant was derived from kipi-system alone. Run
+# against cole-gtm it raised at line 227 on `status: "triaged"`, which would
+# have taken EVERY prd-os command in that repo down -- including `spillover
+# list`, the one command that could show an operator what went wrong. That is a
+# total outage of the tool, not a degraded gate.
+#
+# The bitter part: the docstring above already stated this exact lesson
+# ("a validator written from the PRD alone would have refused those 7 live
+# records"). The lesson was applied to ONE ledger and then written up as though
+# it had been applied to the population. `promoted` was found by reading
+# kipi-system; `triaged` needed one more file. Measure the population the code
+# SHIPS TO, not the one you happen to be standing in.
+READABLE_STATUSES = ("open", "resolved", "promoted", "triaged")
+
+# APPENDABLE is deliberately NARROWER. `_spillover_open` filters
+# `status == "open"`, so appending `promoted` or `triaged` would remove an item
+# from the standing gate WITHOUT going through `resolve --resolution-ref
+# <closed-issue>` or `resolve --void <reason>`. no-orphan-findings.md says there
+# are exactly two ways out of the ledger; one shared status set would have
+# validated a third, silently, as a side effect of read tolerance.
+#
+# Tolerating history is not the same as permitting it. No code in this plugin
+# writes either legacy value -- both are residue from retired tooling.
+APPENDABLE_STATUSES = ("open", "resolved")
 
 
 class SpilloverLedgerError(Exception):
@@ -83,10 +108,11 @@ def validate_for_append(record, path) -> dict:
     refuse loudly instead of skipping silently. Single-write durability belongs
     to finding-7 (`scs-concurrent-append-lock`); this is validation only.
     """
-    return validate_event(record, f"{path} (refusing to append)", "new event")
+    return validate_event(record, f"{path} (refusing to append)", "new event",
+                          allowed=APPENDABLE_STATUSES)
 
 
-def validate_event(record, path, lineno: int) -> dict:
+def validate_event(record, path, lineno, allowed=READABLE_STATUSES) -> dict:
     """Return `record` if it is a structurally valid event, else raise.
 
     Ordered cheapest-check-first, and each raise names the offending value so
@@ -103,11 +129,11 @@ def validate_event(record, path, lineno: int) -> dict:
             "event has no usable `id`. An id-less item is unaddressable: it can "
             "never be resolved or voided, so it can never leave the ledger"))
     status = record.get("status")
-    if status not in KNOWN_STATUSES:
+    if status not in allowed:
         raise SpilloverLedgerError(_describe(
             path, lineno,
             f"unknown status {status!r} on {item_id}; expected one of "
-            f"{list(KNOWN_STATUSES)}. The gate branches on this field, so an "
+            f"{list(allowed)}. The gate branches on this field, so an "
             "unrecognised value would decide the exit code by accident"))
     return record
 
@@ -130,7 +156,7 @@ def fold_ledger_text(text: str, path) -> dict:
                 path, lineno,
                 f"invalid JSON ({exc.msg}). A torn write or a hand-edit here "
                 "would otherwise silently remove a finding from the gate")) from exc
-        validate_event(record, path, lineno)
+        validate_event(record, path, lineno, allowed=READABLE_STATUSES)
         # Last occurrence in FILE order wins. Not sorted, not timestamp-keyed.
         items[record["id"]] = record
     return items
