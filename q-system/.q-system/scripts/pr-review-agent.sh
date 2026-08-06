@@ -786,15 +786,53 @@ echo "  verdict: ${VERDICT:-unstated}"
 # fleet-wide refusal ships unannounced.
 if review_is_usable "$REVIEW"; then REVIEW_USABLE=1; else REVIEW_USABLE=0; fi
 
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" <<'PY'
+# WHICH MODEL ACTUALLY WROTE THIS REVIEW (sp-8379cd52). `engine` is the FLAG the
+# run was invoked with, not the author. On the DEGRADED path codex never answered
+# and Opus wrote the review, yet the record still said `"engine": "codex"` -- so
+# the human-facing surfaces told the truth (the status description and the Linear
+# comment both say DEGRADED out loud) while the MACHINE-READABLE record that
+# converge.sh:36 and linear-worker.sh:76 gate on claimed a second lab reviewed
+# code that second lab never saw. Measured 2026-08-02 on PR #66 and #67 during a
+# codex out-of-credits outage: both records read `engine: codex`, both reviews
+# were Opus. That is the sp-a72a9567 false-provenance shape aimed at the gating
+# reader instead of the human one, which is the worse direction.
+#
+# DERIVED, NEVER BRANCHED. This reads existing state and adds nothing to the
+# control flow above -- deliberately. The fallback trigger is the one path in this
+# script where a wrong edit posts an unearned green, so the provenance fix is not
+# allowed to touch it. $DEGRADED is set at exactly one place (the outage branch),
+# so deriving from it cannot disagree with what actually ran.
+REVIEWED_BY="$CODEX_MODEL"
+[ "$ENGINE" = "claude" ] && REVIEWED_BY="$CLAUDE_MODEL"
+[ "$DEGRADED" = "1" ] && REVIEWED_BY="$CLAUDE_MODEL"
+# `set -e` IS OFF IN THIS SCRIPT (line 64 is `set -uo pipefail`) and these two
+# lines depend on that. Under `set -e` a false `[ ... ] && assign` is an AND-list
+# whose final status is 1, which exits the shell -- so turning on -e here would
+# abort every healthy codex review right before its record is written. If -e is
+# ever added, these become if/fi first.
+#
+# IT SITS BELOW review_is_usable ON PURPOSE. test-review-degraded-provenance.sh
+# extracts this block by awk range, anchored `^REVIEWED_BY="\$CODEX_MODEL"$` ..
+# `^PY$`, and executes it in a bare subshell to drive the SHIPPED writer instead
+# of a copy. Moving this above the `if review_is_usable` line pulls that function
+# call into the extracted range, where it is undefined -- the writer would die,
+# no record would be written, and the suite would report a break in the test
+# rather than the defect. Keep the derivation adjacent to the python3 call.
+
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
- engine, invoker, usable) = sys.argv[1:14]
+ engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
+           # reviewed_by is the model that produced the prose; engine is the flag
+           # the run was asked for. On the fallback those disagree, and that
+           # disagreement IS the record of the outage.
+           "reviewed_by": reviewed_by,
+           "degraded": degraded == "1",
            "invoker": invoker,
            # A real boolean, not "1"/"0". A JSON string "0" is TRUTHY in every
            # consumer language here, so a truthiness read of the wrong shape
