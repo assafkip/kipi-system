@@ -1,7 +1,7 @@
 ---
 id: scs-validated-event-fold
 title: Implement the validated latest-event fold
-status: open
+status: closed
 priority: p2
 parent_prd: prd-spillover-current-state-2026-07-24
 allowed_files:
@@ -91,4 +91,58 @@ it (outside the contract slice). Fourth amendment, recorded like the others.
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Implement the validated latest-event fold
+- [x] Implement the validated latest-event fold
+
+## Amendments
+
+### 2026-08-06T17:06:42Z
+Reason: prd_runner.py moved to allowed_files: the validated fold must replace the silent JSONDecodeError skip in _read_spillover, the single chokepoint every ledger reader goes through. Without it the module ships inert.
+
+Before:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'plugins/prd-os/scripts/prd_runner.py', 'q-system/**', '.git/**']
+
+After:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+### 2026-08-06T17:38:00Z
+Reason: findings_writer.py + its test added: this issue already owns the ledger write path (validate_for_append gating _spillover_append). findings_writer calls that same chokepoint and feeds it a body truncated to 120 chars, writing structurally-valid but information-lossy events. sp-9f11cf69. Second amendment, recorded loudly so scope drift is visible.
+
+Before:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+After:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py', 'plugins/prd-os/scripts/findings_writer.py', 'plugins/prd-os/tests/test_findings_writer_body.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+### 2026-08-06T17:46:06Z
+Reason: WIRING CORRECTION: required_checks was missing test_findings_writer_body.py, which amendment 2 added to allowed_files. The truncation guard would have shipped as a test no gate runs. No new files or behaviour.
+
+Before:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py', 'plugins/prd-os/scripts/findings_writer.py', 'plugins/prd-os/tests/test_findings_writer_body.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+After:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py', 'plugins/prd-os/scripts/findings_writer.py', 'plugins/prd-os/tests/test_findings_writer_body.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py', 'python3 -m pytest -q plugins/prd-os/tests/test_findings_writer_body.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+### 2026-08-06T18:05:48Z
+Reason: WIRING CORRECTION: bypass_check -k filter selected 6 of 23 tests and omitted the security-property test plus all write-validation, fleet-status and decode tests. Now runs both test files in full. No new files or behaviour.
+
+Before:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py', 'plugins/prd-os/scripts/findings_writer.py', 'plugins/prd-os/tests/test_findings_writer_body.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py', 'python3 -m pytest -q plugins/prd-os/tests/test_findings_writer_body.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
+
+After:
+- allowed_files: ['plugins/prd-os/scripts/spillover_events.py', 'plugins/prd-os/schemas/spillover-event.schema.json', 'plugins/prd-os/tests/test_spillover_events.py', 'plugins/prd-os/scripts/prd_runner.py', 'plugins/prd-os/scripts/findings_writer.py', 'plugins/prd-os/tests/test_findings_writer_body.py']
+- required_checks: ['python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py', 'python3 -m pytest -q plugins/prd-os/tests/test_findings_writer_body.py']
+- disallowed_files: ['.prd-os/spillover.jsonl', 'q-system/**', '.git/**']
