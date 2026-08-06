@@ -463,8 +463,8 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
     prd_runner's ledger helpers so there is one definition of the format.
     Scar: `deferred` used to be a silent drop -- a rationale and then gone."""
     from prd_runner import (  # sibling script
-        FINDING_TO_LEDGER_SEVERITY, _read_spillover, _spillover_append,
-        _spillover_lock)
+        FINDING_TO_LEDGER_SEVERITY, SEVERITY_SOURCE_EXPLICIT, _read_spillover,
+        _spillover_append, _spillover_lock)
 
     sid = f"defer-{prd_id}-{finding['id']}"
     # READ AND APPEND UNDER ONE LOCK, the same chokepoint `resolve` and
@@ -484,11 +484,11 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
     # Stated rather than implied.
     with _spillover_lock(cfg):
         _sync_locked(cfg, prd_id, finding, sid, _read_spillover, _spillover_append,
-                     FINDING_TO_LEDGER_SEVERITY)
+                     FINDING_TO_LEDGER_SEVERITY, SEVERITY_SOURCE_EXPLICIT)
 
 
 def _sync_locked(cfg, prd_id, finding, sid, _read_spillover, _spillover_append,
-                 ledger_severity) -> None:
+                 ledger_severity, severity_source_explicit) -> None:
     """The read-modify-append itself. Split out so the lock above is a plain
     `with` block rather than an indent-shifting wrapper around 30 lines."""
     existing = _read_spillover(cfg).get(sid)
@@ -515,6 +515,20 @@ def _sync_locked(cfg, prd_id, finding, sid, _read_spillover, _spillover_append,
             # so the most trivial finding in the system reddened the gate.
             "severity": ledger_severity.get(
                 finding.get("severity", "minor"), finding.get("severity", "minor")),
+            # EXPLICIT: this severity came from a REVIEWER, translated. Without
+            # this the row read `unknown`, the bucket that means "predates the
+            # field", so the most-assessed rows in the ledger counted as the
+            # least-examined. Measured the day ASK-430 shipped: 2 assessed / 0
+            # untriaged / 598 unknown, and every reviewer deferral from then on
+            # would have landed in that 598 (ASK-465).
+            #
+            # PASSED IN, not restated. This function takes the constant as an
+            # argument so the value derives from prd_runner, which owns this
+            # ledger and its vocabulary. A literal "explicit" here would pass
+            # every test but the derivation one and drift the first time the
+            # vocabulary changes -- the same trap FINDING_TO_LEDGER_SEVERITY's
+            # placement comment describes.
+            "severity_source": severity_source_explicit,
             "status": "open", "created_at": _now_iso(),
         })
     # `pending` is NOT in DECIDED_DISPOSITIONS, and its absence is the fix. This

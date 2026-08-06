@@ -531,7 +531,8 @@ def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -
     # which is what a disabled backstop should look like.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
     from config import load as load_config
-    from prd_runner import _read_spillover, _spillover_append, _spillover_lock
+    from prd_runner import (SEVERITY_SOURCE_EXPLICIT, _read_spillover,
+                            _spillover_append, _spillover_lock)
 
     cfg = load_config(repo_root, strict=True)
     sid = f"defer-{issue_id}-{finding['id']}"
@@ -572,6 +573,19 @@ def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -
                 # the gate's non-blocking bucket and a `nit` turns it red.
                 "severity": LEDGER_SEVERITY.get(
                     finding.get("severity", "minor"), finding.get("severity", "minor")),
+                # EXPLICIT, and IMPORTED from prd_runner rather than restated.
+                # A reviewer assigned this severity; without the stamp the row
+                # reads `unknown`, the bucket meaning "predates the field", so
+                # the most-assessed rows counted as the least-examined (ASK-465).
+                #
+                # The import direction is one-way and load-bearing: prd-os owns
+                # this ledger, so this consumer imports from it. Note the
+                # LEDGER_SEVERITY dict above is a LOCAL duplicate of prd-os's
+                # FINDING_TO_LEDGER_SEVERITY -- a real pre-existing derivation
+                # split, deliberately left alone here. The fix for that one is
+                # also to import from the owner, never to make prd-os import
+                # this copy.
+                "severity_source": SEVERITY_SOURCE_EXPLICIT,
                 "status": "open", "created_at": _now_iso(),
             })
         # `pending` is NOT here, and its absence is the fix. This branch used to

@@ -1659,6 +1659,14 @@ def cmd_spillover(cfg: Config, args) -> int:
             return 0
         print(f"{len(openv)} open spillover item(s)")
         _print_spillover_groups(openv, "severity", "severity")
+        # PROVENANCE IS A GROUPING HERE TOO. `gates run` splits its report into
+        # assessed / untriaged / unknown and then tells the operator to "Triage
+        # with `prd_runner.py spillover triage`" -- and arriving here used to
+        # drop the distinction the report had just made, at the exact moment
+        # somebody acts on it. A legacy row has no key and renders as "(unset)",
+        # which is the honest label: not assessed, and not a claim that nobody
+        # looked (ASK-465).
+        _print_spillover_groups(openv, "severity_source", "severity_source")
         _print_spillover_groups(openv, "source", "source")
         _print_reclassifications(openv)
         return 0
