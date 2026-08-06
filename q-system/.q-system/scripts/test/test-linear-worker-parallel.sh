@@ -128,7 +128,12 @@ run_worker() {
   echo "$?" > "$WORK/$label.rc"
 }
 
-worked_count() { grep -c . "$WORK/worked.txt" 2>/dev/null || echo 0; }
+# `grep -c` prints 0 AND exits 1 on a zero count, so a bare `|| echo 0`
+# APPENDED a second 0 and the value became "0\n0": that breaks `-eq` with
+# "integer expression expected" and makes a legitimate `= "0"` assertion
+# fail on correct behaviour. `| head -1` keeps whichever 0 arrived first.
+# Missing file: grep prints nothing and the fallback supplies the only 0.
+worked_count() { { grep -c . "$WORK/worked.txt" 2>/dev/null || echo 0; } | head -1; }
 
 # --- 1. TWO DIFFERENT ISSUES, CONCURRENTLY: both must reach the work phase ---
 # A is held inside its work phase while B runs start-to-finish, so this is the
