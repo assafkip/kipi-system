@@ -8,21 +8,30 @@ Verify the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm an issue is loaded. If `issue_id` is null, stop and tell the founder to run `/issue-start <issue-id>` first.
 
-2. Read the spec's `required_checks` list (already in the status output's loaded spec, or re-load the spec file directly).
+2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" verify`.
 
-3. Run every check in the list, one at a time, from the repo root. For each:
-   - Echo the command before running.
-   - Run it via `Bash`.
-   - Capture exit code and the last ~20 lines of output.
+   This ONE command is the whole step. It runs every check in the spec
+   snapshot itself, records each check's exit code and an output hash as
+   evidence, and writes the verified receipt only if all of them exit 0.
 
-4. If every check exits 0:
-   - Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" mark verified`.
+   Do NOT run the checks by hand first. `verify` runs them from the snapshot
+   taken at `/issue-start`, which is the thing the receipt attests to; a check
+   you ran yourself from the live spec can differ from that snapshot, and the
+   receipt would then describe a run nobody made. There is no way to record
+   this receipt without running the checks -- `mark verified` refuses by
+   design (ASK-402).
+
+3. If `verify` exits 0:
    - Report: "verified receipt recorded at <timestamp>."
-   - List the checks that ran, one per line.
+   - Read `checks` from its JSON output and list them, one per line
+     (`checks_run` is the count).
 
-5. If any check fails:
-   - Do NOT call `mark verified`.
-   - Report which check failed, its exit code, and the relevant output.
+4. If `verify` exits 2:
+   - It already printed which check failed and its exit code. Report that.
+   - The evidence is stored even on a red run; the receipt is withheld.
+   - An empty `required_checks` list also exits 2. That is not a passing
+     issue, it is a spec with nothing to attest to: tell the founder to add a
+     check or amend the spec.
    - Stop. Do not attempt to fix silently. Tell the founder.
 
 Do not run `/codex:review` here. That is `/issue-review`.

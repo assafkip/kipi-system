@@ -487,6 +487,26 @@
       "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
       "runner": "bash",
       "timeout_s": 300
+    },
+    {
+      "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
+      "runner": "python3",
+      "timeout_s": 120
     }
   ],
   "required_data": [],

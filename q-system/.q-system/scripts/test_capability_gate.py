@@ -223,6 +223,25 @@ def sec_wiring():
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("wiring: declared_inert passes with note", rc == 0 and "DECLARED-INERT" in out)
+    # plugins/ is scanned but REPORT-ONLY: it must surface as a note and must
+    # NOT fail the gate, because the widening could not be validated from a
+    # worktree (sp-1cb1a348). Both halves are asserted -- a note-only check
+    # that silently became blocking would red 27 scripts across 22 instances.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/dead-plugin-engine.py")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: unwired plugin engine is REPORTED",
+              "dead-plugin-engine.py" in out and "report-only" in out)
+        check("wiring: unwired plugin engine does NOT fail the gate", rc == 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/wired-plugin-engine.py")
+        hooks = root / "plugins/prd-os/hooks"; hooks.mkdir(parents=True, exist_ok=True)
+        (hooks / "hooks.json").write_text('{"c": "wired-plugin-engine.py"}')
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: wired plugin engine is not reported",
+              rc == 0 and "wired-plugin-engine.py" not in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         engine(root, "q-system/.q-system/scripts/hooked-engine.py")

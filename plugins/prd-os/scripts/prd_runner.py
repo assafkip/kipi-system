@@ -153,7 +153,12 @@ def cmd_new(cfg: Config, args: argparse.Namespace) -> int:
     title = args.title or slug.replace("-", " ").title()
     owner = args.owner or os.environ.get("USER", "unknown")
     created_at = _now_iso()
-    prd_id = f"prd-{slug}-{created_at[:10]}"
+    # Strip a slug's own `prd-` before prefixing. An unconditional prefix made
+    # `new prd-thing` produce `prd-prd-thing-<date>`, and the reported id is the
+    # one findings_writer requires -- a caller that reused its slug got
+    # "PRD spec not found" (virgin-repo run, 2026-08-05).
+    base_slug = slug[4:] if slug.startswith("prd-") else slug
+    prd_id = f"prd-{base_slug}-{created_at[:10]}"
     spec_path = cfg.prds_dir / f"{prd_id}.md"
     if spec_path.exists():
         sys.stderr.write(f"PRD spec already exists: {spec_path}\n")
@@ -342,6 +347,10 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stderr.write(err)
         return rc
+    rc, err = _archive_spillover_gate(cfg, state.get("prd_id"))
+    if rc != 0:
+        sys.stderr.write(err)
+        return rc
     spec_path = cfg.repo_root / state["spec_path"]
     text = spec_path.read_text()
     new_text = re.sub(r"(?m)^status:\s*.+$", "status: archived", text, count=1)
@@ -354,6 +363,48 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     _propose_skeptic_antipatterns_best_effort(cfg, archived_id)
     print(json.dumps({"archived": archived_id}))
     return 0
+
+
+def _archive_spillover_gate(cfg: Config, prd_id: str | None = None) -> tuple[int, str]:
+    """Refuse archive while an item THIS PRD opened is still open.
+
+    `no-orphan-findings.md` states the ledger "cannot be forgotten" and names
+    `gates run` the enforcement of last resort. It was never wired into the one
+    terminal step. Measured 2026-08-05 in a virgin repo: `gates run` exited 1
+    GATE RED on `sp-0b8645ad` and `archive` exited 0 in the same repo, in the
+    same moment. The only thing holding the line was prose in
+    `commands/prd-archive.md` asking the model to check first -- prompt-only
+    enforcement, which q-system/CLAUDE.md core rule 3 forbids.
+
+    Deliberately no --force hatch: the two documented exits (resolve against a
+    closed issue, or --void with a recorded reason) already cover every real
+    case, and a third would be the hand-clear the rule refuses.
+    """
+    openv = _spillover_open(cfg)
+    # SCOPED TO THIS PRD's OWN ITEMS (Codex, PR #110 round 3, with a repro).
+    # Refusing on the GLOBAL ledger made archive permanently unreachable: 533
+    # items carry the default `minor` severity, `gates run` correctly treats
+    # them as non-blocking, and archive refused on all of them anyway. A
+    # terminal step no run can ever reach is not a gate, it is a wall.
+    #
+    # This is what no-orphan-findings.md actually says -- "report every
+    # spillover item THE WORK TOUCHED" -- not "resolve the fleet's backlog
+    # before any PRD may close". The global backlog is real work; it is not
+    # THIS PRD's exit condition.
+    if prd_id:
+        openv = [r for r in openv if r.get("source") == prd_id]
+    if not openv:
+        return 0, ""
+    detail = "\n".join(
+        f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})"
+        for r in openv
+    )
+    return 2, (
+        f"refusing to archive: {len(openv)} open spillover item(s) opened by "
+        f"{prd_id or 'this PRD'}\n{detail}\n"
+        "Resolve each via `prd_runner.py spillover resolve <id> "
+        "--resolution-ref <closed-issue>` or `--void \"<reason>\"`.\n"
+    )
 
 
 def _propose_skeptic_antipatterns_best_effort(cfg: Config, prd_id: str) -> None:
@@ -1439,6 +1490,39 @@ def cmd_spillover(cfg: Config, args) -> int:
     return 2
 
 
+# Severities that turn the standing gate RED. Approved PRD
+# prd-spillover-current-state-2026-07-24, goal 5: "make `gates run` identify
+# pre-existing debt separately from new debt". Before this, every open item was
+# one undifferentiated red group; the ledger reached 550 open and the gate had
+# been red for months, which teaches everyone to step over it -- strictly worse
+# than no gate, because it launders "we have enforcement".
+#
+# `minor`/`low`/`medium` are REPORTED, never silent. The 533 sitting at the
+# `minor` DEFAULT are untriaged rather than assessed, which the report says
+# out loud instead of implying they were judged small.
+SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
+# Everything the gate is willing to call NON-blocking. Anything outside the union
+# of these two tuples is treated as BLOCKING, not as minor.
+#
+# Codex, PR #110 round 2, with a reproducer: `spillover add --severity critical`
+# was accepted, stored verbatim, reported as "minor-or-untriaged", and the gate
+# returned green. The word a human reaches for under pressure ("critical",
+# "urgent", "sev1") is exactly the one the allowlist did not contain, so the
+# louder the label the quieter the gate got. Fail-closed here and validate at the
+# CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
+SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+SPILLOVER_KNOWN_SEVERITIES = (
+    SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+
+
+def _is_blocking_severity(value: str) -> bool:
+    """Unknown severities block. See SPILLOVER_NONBLOCKING_SEVERITIES."""
+    sev = (value or "").strip().lower()
+    if not sev:
+        return False  # absent == the documented `minor` default, not unknown
+    return sev not in SPILLOVER_NONBLOCKING_SEVERITIES
+
+
 def cmd_gates(cfg: Config, args) -> int:
     """gates list prints the registry; gates run executes regression gates from
     the repo root (operator-authored shell commands, the same trust boundary
@@ -1508,17 +1592,32 @@ def cmd_gates(cfg: Config, args) -> int:
     # Out-of-scope findings are part of the standing re-proof: an open spillover
     # item turns the gate RED until it is resolved against a closed issue.
     openv = _spillover_open(cfg)
-    if openv:
-        names = ", ".join(r["id"] for r in openv)
-        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
-        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
-        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
+    blocking = [r for r in openv if _is_blocking_severity(r.get("severity"))]
+    reported = [r for r in openv if r not in blocking]
+    if blocking:
+        names = ", ".join(r["id"] for r in blocking)
+        detail = "\n".join(f"  {r['id']} [{r.get('severity')}]: {r.get('description', '')[:90]} (src {r.get('source')})" for r in blocking)
+        print(f"[RED] spillover: {len(blocking)} open blocking-severity item(s): {names}")
+        failures.append(("spillover", f"{len(blocking)} open blocking-severity spillover item(s):\n{detail}\n"
                                       f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    if reported:
+        # Reported, never silent. These do not block, but a bucket nobody can
+        # see is how 533 of them accumulated. `--severity` DEFAULTS to minor, so
+        # a defaulted item is indistinguishable from one assessed as minor --
+        # the label says "untriaged" rather than laundering "nobody looked" as
+        # "we judged it small".
+        ids = ", ".join(r["id"] for r in reported[:10])
+        more = f" (+{len(reported) - 10} more)" if len(reported) > 10 else ""
+        print(f"[REPORT] spillover: {len(reported)} open minor-or-untriaged "
+              f"item(s), not blocking: {ids}{more}")
+        print("  Triage with `prd_runner.py spillover triage`; raise one with "
+              "`spillover add --severity major|blocker`.")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} regression gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; "
+          f"no blocking-severity spillover")
     return 0
 
 
@@ -1556,7 +1655,10 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--source", required=True, help="originating prd-id or issue-id")
     sp_add.add_argument("--desc", required=True, help="what the out-of-scope finding is")
     sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
-    sp_add.add_argument("--severity", default="minor")
+    # choices, so the CLI refuses an unrecognized severity at the door rather
+    # than storing it and letting the gate mis-bucket it (Codex, PR #110 r2).
+    sp_add.add_argument("--severity", default="minor",
+                        choices=SPILLOVER_KNOWN_SEVERITIES)
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")

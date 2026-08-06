@@ -2,6 +2,140 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.22.0] - 2026-08-05
+
+### Fixed - archive was scoped to the whole fleet's backlog, so it was unreachable
+
+Codex, PR #110 round 3, with a reproducer: `gates run` correctly treats `minor`
+as non-blocking, while `archive` refused on ANY open spillover item. 533 items
+sit at the default `minor` severity, so every PRD inherited the fleet's entire
+backlog as its own exit condition and the terminal step could never be reached.
+A gate no run can pass is not a gate, it is a wall.
+
+`_archive_spillover_gate` now refuses only on items whose `source` is the PRD
+being archived. That is what no-orphan-findings.md actually says -- report every
+item THE WORK TOUCHED -- rather than "resolve the fleet's backlog before any PRD
+may close". Pinned both ways: it still refuses on its own minor item, and no
+longer refuses on another PRD's.
+
+## [0.21.0] - 2026-08-05
+
+### Fixed - an unrecognized severity read as "minor" and the gate went green
+
+Codex, PR #110 round 2, with a reproducer: `spillover add --severity critical`
+was accepted, stored verbatim, reported as "minor-or-untriaged", and `gates run`
+returned 0. The allowlist named only blocker/major/high, so the word a human
+reaches for under pressure ("critical", "urgent", "sev1") was exactly the one
+that silenced the gate -- the louder the label, the quieter it got.
+
+Now fail-closed: `_is_blocking_severity` blocks anything outside an explicit
+NON-blocking set, plus argparse `choices` so the CLI refuses it at the door
+rather than storing it for the gate to mis-bucket. The non-blocking half is
+asserted separately, so the fix cannot pass by blocking on everything -- that
+would be the permanently-red gate 0.19.0 replaced.
+
+## [0.19.0] - 2026-08-05
+
+### Fixed — two promises with no code behind them, in this plugin's own docs
+
+`README.md` and `skills/prd-os/SKILL.md` both stated that `/prd-os-init`
+"registers hooks in `.claude/settings.json`". `prd_os_init.py` contains no such
+code and never did. Found while reviewing the branch whose entire thesis is that
+a promise recorded in prose is invisible to every gate we own; the PRD listed
+`README.md` in its Files Modified table and never touched it.
+
+Both claims are now deleted rather than implemented: writing to a host repo's
+settings.json has fleet-wide blast radius and belongs in its own issue, not as a
+side effect of making a doc true.
+
+`README.md` also still carried the scaffold-era "No command files yet / No hooks
+wired yet" list, false since roughly 0.5.0.
+
+### Changed
+
+`test_docs_do_not_carry_scaffold_era_text` (was `test_skill_...`) now reads
+`README.md` as well as `SKILL.md`. The detector built to catch prose-without-code
+had been pointed at one of the two files carrying the promise.
+
+## [0.18.0] - 2026-08-05
+
+Shipped with no entry of its own; recorded here after the fact. Carried the
+virgin-repo lifecycle fixes of PR #110 (computed receipts, the kipi-update
+deletion guard, judgment-compiler cross-check on by default).
+
+## [0.17.0] - 2026-08-05
+
+### Added — the verification layer that was missing
+
+`tests/test_virgin_repo_lifecycle.py`. Every other check in this plugin reads a
+diff, a spec, or this repo's own tree with fixtures that presume the kipi
+layout. A promise with NO implementation behind it appears in none of them:
+mutation testing cannot kill a check that does not exist, and a diff reviewer
+cannot see code that was never written. This test `git init`s a repo holding one
+README, drives the documented lifecycle by subprocess, and asserts on exit codes
+and on-disk effects. It imports none of the shared fixtures on purpose, and
+scrubs `CLAUDE_PROJECT_DIR` / `KIPI_HOME` / `QROOT` so paths cannot resolve to
+the developer's own checkout.
+
+Two of its assertions are self-maintaining rather than string greps: the
+documented command list is compared against `commands/prd-*.md` on disk, and the
+documented disposition vocabulary against `findings_writer.DISPOSITIONS`. Both
+fail when either side drifts.
+
+Registered in `q-system/.q-system/capability-manifest.json` so the silent-absence
+gate notices if it ever stops running.
+
+### Fixed — four promises with no code behind them
+
+All four were found by running 0.16.6 in a virgin repo (PRD
+`prd-prd-os-e2e-gaps-2026-08-05.md`), and all four were observed RED before the
+fix: 12 of 14 new checks failed against the pre-change tree.
+
+- **`/prd-os-init` did not write the `.gitignore` entry it promised in two
+  files.** SKILL.md ("The bootstrap command adds the state directory to
+  `.gitignore`") and README.md both claimed it; `prd_os_init.py` wrote
+  `config.json` and returned. Executed proof: `git check-ignore -v
+  .claude/state/active-prd.json` returned nothing after a successful init, so
+  the stated non-negotiable "runtime state is never committed" had no blocker.
+  `ensure_state_dir_ignored()` now appends it, idempotent by PATH rather than by
+  line (`.claude/state`, `.claude/state/` and `/.claude/state/` all count as
+  present), and runs BEFORE the config early-return so repos initialized by an
+  older version are repaired rather than skipped.
+- **`archive` succeeded while the standing gate was RED.** `cmd_archive` ran
+  `_archive_coverage_gate` and `_manifest_status_gate` and never consulted
+  spillover, so `gates run` exited 1 `GATE RED` and `archive` exited 0 on the
+  same repo in the same moment. `no-orphan-findings.md` calls that ledger
+  unforgettable; what actually held the line was two lines of prose in
+  `commands/prd-archive.md`. `_archive_spillover_gate` is the blocker. No
+  `--force` hatch: resolve-against-a-closed-issue and `--void` already cover
+  every real exit, and a third would be the hand-clear the rule refuses.
+- **The "portable core" wrote a kipi tree into any repo.**
+  `PROPOSAL_DIR_RELPATH = "q-system/output/skeptic-proposals"` was hardcoded, so
+  archiving a PRD grew a `q-system/` tree wherever you were — reproduced in a
+  repo whose entire content was one README. Now config
+  `skeptic_proposals_dir`, default `.prd-os/skeptic-proposals`. Audit result:
+  this was the only writer outside the documented split; every other path
+  resolves through config.
+- **`new prd-thing` produced `prd-prd-thing-<date>`.** The prefix was
+  unconditional, and since the reported id is what `findings_writer` requires, a
+  caller that reused its own slug got "PRD spec not found" (hit live during the
+  run).
+
+### Also
+`skills/prd-os/SKILL.md` re-applied here: it was corrected on a branch 13
+commits behind main, so main kept shipping scaffold-era text through 0.16.6.
+
+### Verification
+545 passed, 1 skipped. Five mutations against the committed baseline, all
+KILLED: archive gate removed, gitignore write removed, bloat path restored,
+double-prefix restored, idempotency guard disabled. The 2 of 14 checks that
+passed pre-fix are the negative-fire pair (archive still works with no open
+items; the reported id round-trips), which is what makes the other 12 evidence
+rather than noise.
+
+Minor bump: config gains a key and archive can now legitimately refuse where it
+previously passed.
+
 ## [0.16.5] - 2026-08-04
 
 ### Documented — a consequence of 0.16.4 that must not be misread

@@ -1962,7 +1962,19 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
     candidate_records = read_ledger(candidates_path(cfg))
     errors.extend(verify_candidates(
         candidate_records, {r.get("receipt_id") for r in records}))
-    if getattr(args, "cross_check", False):
+    # Cross-check runs BY DEFAULT (changed 2026-08-05). It is the only check
+    # here that reads a source the judgment writer does not own, and it is the
+    # only one that catches the single attack the hash chain cannot: truncate
+    # the tail AND rewrite the tip anchor to agree. Measured by attack in a
+    # virgin repo -- five tamper attempts are caught by the chain and the
+    # anchor; that sixth passed at rc=0 printing "chain intact".
+    #
+    # Leaving it behind an opt-in flag meant the command a person naturally
+    # runs was the command that reassured them wrongly. The documented
+    # "tamper-evident, not tamper-proof" boundary was always honest; the defect
+    # was invocation, not design.
+    cross_checked = not getattr(args, "no_cross_check", False)
+    if cross_checked:
         # The diagnostic reports BOTH classes as errors. Only the approval gate
         # demotes a disagreement to a warning; `verify` is where you go to see
         # everything, so narrowing it here would hide the drift entirely.
@@ -1985,8 +1997,12 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 2
+    # The PASS line names which checks actually ran. A pass that does not say
+    # what it checked is the same reassurance problem one level up: "chain
+    # intact" was literally true on a forged ledger.
+    scope = "cross-checked" if cross_checked else "cross-check skipped"
     print(f"VERIFY PASS: {len(records)} receipt(s), "
-          f"{len(candidate_records)} candidate(s), chain intact")
+          f"{len(candidate_records)} candidate(s), chain intact, {scope}")
     return 0
 
 
@@ -2555,10 +2571,17 @@ def main(argv: list[str]) -> int:
     p_verify = sub.add_parser("verify")
     p_verify.add_argument("--packet")
     p_verify.add_argument("--receipt-id", dest="receipt_id")
+    # --cross-check is now the DEFAULT and the flag is a no-op, kept so every
+    # existing caller, doc line and runbook keeps working unchanged.
     p_verify.add_argument("--cross-check", action="store_true",
                           dest="cross_check",
-                          help="also require a receipt for every dispositioned "
-                               "finding (independent completeness check)")
+                          help="no-op: the independent completeness check now "
+                               "runs by default (kept for compatibility)")
+    p_verify.add_argument("--no-cross-check", action="store_true",
+                          dest="no_cross_check",
+                          help="skip the independent completeness check; the "
+                               "chain alone cannot catch a truncation whose "
+                               "tip anchor was rewritten to match")
     p_verify.add_argument("--since", help="ISO timestamp floor for --cross-check")
     p_verify.set_defaults(func=cmd_verify)
 

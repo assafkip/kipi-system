@@ -611,16 +611,27 @@ class TestChainIntegrity:
 
     def test_cross_check_flags_a_dispositioned_finding_with_no_receipt(
             self, judgment_repo, run_findings_writer):
-        """Independent completeness source: findings_writer's own ledger."""
+        """Independent completeness source: findings_writer's own ledger.
+
+        Contract change 2026-08-05: the cross-check now runs BY DEFAULT, so
+        plain `verify` catches this too. This test previously asserted
+        `plain.returncode == 0` -- the chain alone is fine, because an empty
+        chain is a valid chain -- which is exactly the reassurance the default
+        was changed to stop giving. The old behaviour is still reachable, and
+        is asserted here so the opt-out cannot rot.
+        """
         assert run_findings_writer(
             judgment_repo, "set-disposition", PRD_ID, "finding-1", "accepted",
             env_extra={"KIPI_JUDGMENT_CAPTURE": "0"}).returncode == 0
         assert read_ledger(judgment_repo) == []
-        plain = run_judgment(judgment_repo, "verify")
-        assert plain.returncode == 0  # chain itself is fine (it is empty)
-        crossed = run_judgment(judgment_repo, "verify", "--cross-check")
-        assert crossed.returncode == 2
-        assert "no judgment receipt" in crossed.stderr
+
+        chain_only = run_judgment(judgment_repo, "verify", "--no-cross-check")
+        assert chain_only.returncode == 0  # the chain itself is fine (empty)
+
+        for flags in (("verify",), ("verify", "--cross-check")):
+            crossed = run_judgment(judgment_repo, *flags)
+            assert crossed.returncode == 2, f"{flags} missed the gap"
+            assert "no judgment receipt" in crossed.stderr
 
     def test_cross_check_since_floor_excludes_legacy_findings(
             self, judgment_repo, run_findings_writer):
@@ -2974,3 +2985,122 @@ class TestCitationProvenance:
             jc.judge_view(packet)
         assert "ambient refs for a relational reason code" in str(excinfo.value)
         assert "finding:prd-other/finding-9" in str(excinfo.value)
+
+
+# --- helpers for TestCrossCheckRunsByDefault -------------------------------
+
+def _run_verify(repo: Path, *flags: str):
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS_DIR / "judgment_compiler.py"), "verify", *flags],
+        cwd=repo, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def _prd(repo: Path, *args: str, stdin: str | None = None):
+    script = "findings_writer.py" if args[0] in ("add", "set-disposition") else "prd_runner.py"
+    r = subprocess.run([sys.executable, str(SCRIPTS_DIR / script), *args],
+                       cwd=repo, capture_output=True, text=True, input=stdin)
+    assert r.returncode == 0, f"{args}: {r.stderr}"
+    return r
+
+
+def _repo_with_two_receipts(tmp_path: Path) -> Path:
+    """Two receipts written through the real triage chokepoint.
+
+    Not hand-built: a hand-built ledger tests my idea of the format, and the
+    forgery below has to be indistinguishable from a real ledger to mean
+    anything.
+    """
+    repo = tmp_path / "jrepo"
+    repo.mkdir()
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t.co"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", *cmd], cwd=repo, capture_output=True)
+    (repo / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "i"], cwd=repo, capture_output=True)
+    subprocess.run([sys.executable, str(SCRIPTS_DIR / "prd_os_init.py")],
+                   cwd=repo, capture_output=True)
+    out = _prd(repo, "new", "probe", "--title", "T").stdout
+    prd_id = json.loads(out)["created"]
+    _prd(repo, "advance", "draft")
+    _prd(repo, "add", prd_id, "--source", "claude-review",
+         stdin='[{"severity":"major","body":"f1"},{"severity":"minor","body":"f2"}]')
+    for fid in ("finding-1", "finding-2"):
+        _prd(repo, "set-disposition", prd_id, fid, "accepted",
+             "--reason-code", "valid-fix-now", "--actor", "t")
+    return repo
+
+
+def _forge_truncation(repo: Path) -> None:
+    """Drop the last receipt AND rewrite the tip anchor so it agrees.
+
+    The only attack that survives the hash chain, because any prefix of a valid
+    chain is itself a valid chain and the anchor shares a writer with the
+    ledger.
+    """
+    ledger = repo / ".prd-os/judgments.jsonl"
+    tip = repo / ".prd-os/judgments-tip.json"
+    lines = ledger.read_text().splitlines()
+    assert len(lines) >= 2, "fixture needs 2 receipts to truncate one"
+    ledger.write_text(lines[0] + "\n")
+    t = json.loads(tip.read_text())
+    t["count"] = 1
+    t["last_receipt_sha256"] = hashlib.sha256(lines[0].encode()).hexdigest()
+    t["last_receipt_id"] = json.loads(lines[0])["receipt_id"]
+    tip.write_text(json.dumps(t))
+
+
+# ---------------------------------------------------------------------------
+# The independent check must run by DEFAULT, and say so when it cannot
+# ---------------------------------------------------------------------------
+#
+# Measured by attack 2026-08-05 in a virgin repo: five tamper attempts (tail
+# truncation, whole-ledger deletion, field mutation, receipt reorder, anchor
+# deletion) are all caught by plain `verify`. The sixth -- truncate the tail
+# AND rewrite the tip anchor so it agrees -- passes plain `verify` at rc=0
+# printing "chain intact", and is caught ONLY by `--cross-check`.
+#
+# That boundary is honestly documented ("tamper-EVIDENT, not tamper-proof; only
+# --cross-check is independent"). The defect is INVOCATION: the one attack that
+# survives is the one the default command does not look for, so the command a
+# person naturally runs is the command that reassures them wrongly.
+
+class TestCrossCheckRunsByDefault:
+    def test_forged_truncation_is_caught_without_passing_the_flag(self, tmp_path):
+        repo = _repo_with_two_receipts(tmp_path)
+        _forge_truncation(repo)
+        rc, out, err = _run_verify(repo)
+        assert rc == 2, (
+            "plain `verify` reported the forged ledger as intact; the only "
+            f"attack that survives the hash chain is invisible by default. {out}"
+        )
+
+    def test_explicit_flag_still_works(self, tmp_path):
+        repo = _repo_with_two_receipts(tmp_path)
+        _forge_truncation(repo)
+        assert _run_verify(repo, "--cross-check")[0] == 2
+
+    def test_opt_out_restores_the_old_behaviour(self, tmp_path):
+        """An escape hatch is required: a repo mid-migration, or one whose
+        findings ledger is unreadable, must still be able to check the chain
+        alone rather than being blocked with no path forward."""
+        repo = _repo_with_two_receipts(tmp_path)
+        _forge_truncation(repo)
+        rc, out, _ = _run_verify(repo, "--no-cross-check")
+        assert rc == 0 and "chain intact" in out
+
+    def test_clean_ledger_still_passes_by_default(self, tmp_path):
+        """Negative-fire. Without this, a verify that always exits 2 would
+        satisfy every assertion above."""
+        repo = _repo_with_two_receipts(tmp_path)
+        rc, out, err = _run_verify(repo)
+        assert rc == 0, f"default cross-check broke the honest path: {err}"
+        assert "2 receipt(s)" in out
+
+    def test_pass_line_states_whether_the_independent_check_ran(self, tmp_path):
+        """A PASS that does not say what it checked is the same reassurance
+        problem one level up."""
+        repo = _repo_with_two_receipts(tmp_path)
+        assert "cross-checked" in _run_verify(repo)[1]
+        assert "cross-check skipped" in _run_verify(repo, "--no-cross-check")[1]
