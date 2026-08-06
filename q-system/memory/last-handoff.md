@@ -1,136 +1,92 @@
-# Last handoff — 2026-07-26 (continuation session)
+# Last handoff — 2026-08-06
 
-Tracking epic **ASK-113**. PR #10 **merged to main** (`05af553`), 7 commits.
-Everything below was verified by running it, not by reading it.
+Tracking **ASK-402** (related: ASK-363). All three PRs merged to main [verified: `gh pr view 110|111|112 --json state,mergedAt` — all MERGED].
+Numbers below carry their source on their own line; anything marked `imported`
+came from Sana's report and was NOT re-run by me.
 
-## Carried forward from the earlier 2026-07-26 session (still true)
+## What this session was
 
-- **Goal 1, a Linear project per instance repo: DONE.** 25 of 25 (24 instances +
-  the skeleton). A fleet-wide re-plan creates zero projects.
-- **Goals 2 and 3, deterministic creation on build: SHIPPED** as queue-and-drain.
-  No Linear API key exists, so bash cannot reach the MCP server; capture is local
-  and offline, the agent drains it.
-- **Goal 5, overlap/collision analysis: SHIPPED** (`capability-overlap.py`).
-- **Goal 6, SDLC standard: WRITTEN**, adjustments recorded in its Part 0.
-- **Goal 4: still NOT STARTED.** Triage every issue in every project (done /
-  needs work / recorded, with evidence): 61 pre-existing kipi-system issues, 45
-  in cole-GTM.
-- **29 of 31 planned Linear issues remain uncreated.** Resumable:
-  `kipi linear status` says which repos are done without querying Linear.
-- Dedup key `<repo-slug>/<capability-slug>`, written into each Linear
-  description as `<!-- kipi-key: ... -->`. **Never drop that marker.**
+A research doc on "adversarial AI code review" was pasted for comparison against
+prd-os. My first review concluded "we already have that" — wrong, because it
+compared architectures by READING. The founder pushed back: his own
+adversarial-tester prompt had previously found a long list of real breakage
+[provenance: explicit_statement]. Everything below came from EXECUTING the
+system in virgin repos instead.
 
-## Founder decisions this session
+## Shipped
 
-- **Q2 (branch-protection bypass):** fix the 5 tests, make the gate real.
-- **Sequencing:** updater tests first, then the claim-lock.
-- **Merge:** merge PR #10 with the admin bypass, containment failure and all.
+| PR | What |
+|---|---|
+| #111 | **P0 data-loss.** `kipi update`'s rsync `--delete` could remove `my-project/`, `memory/`, `canonical/`: the anchored excludes only line up when the destination IS the instance's q-system dir. `kipi-update-deletion-guard.py` reads what rsync actually plans to delete and refuses. [verified: ran a real `kipi update` against a fixture — without the guard `my-project/current-state.md` and `memory/last-handoff.md` were DESTROYED; with it, refused and intact] |
+| #110 | prd-os delivers what it promises: `/prd-os-init` writes the `.gitignore` entry it claimed, `archive` consults spillover, the "portable core" stops writing `q-system/` into any repo, receipts are computed not stamped, `verify` cross-checks by default. Plus `test_virgin_repo_lifecycle.py`. [verified: most new checks RED against the pre-change tree] |
+| #112 | `grep -c ... \|\| echo 0` is not a zero-safe count [verified: `grep -rn 'grep -c .* \|\| echo 0' test/*.sh`]. Plus `spillover reclassify`. |
 
-## What shipped
+Suite green at merge, validator ALL PASS [provenance: imported — Sana's figure from its post-merge run; I did not re-run it].
 
-| Commit | What |
-|--------|------|
-| `226cf6f` | CI: git identity + `fetch-depth: 0` + track the receipts ledger |
-| `c307bed` | Close discipline into the SDLC standard §3.1 / §5 |
-| `a6ba923` | Instance identity out of 2 scar comments |
-| `d26b425` | Slice 0: truthful reviewer provenance (`claude-*` sources) |
-| `7c0fccb` | Slice B: the agent claim-lock |
-| `f32bfbd` | Adversarial review fixes: 2 blockers + 8 more |
+## The class the founder named <!-- pin -->
 
-## The 5 updater CI failures — fixed
+**Code that RECORDS a claim it never COMPUTED** [provenance: explicit_statement].
+Named after `mark verified` was shown to succeed with zero checks run
+[verified: ran `mark verified|reviewed|findings_triaged` in a virgin repo, exit 0
+each, no work done]. Rule adopted: *there is no standalone "mark it done" verb —
+whoever does the work writes the receipt, and the receipt carries the evidence.*
+This contradicted `q-system/CLAUDE.md` rule 3 (enforcement requires executable
+code), which is why it mattered.
 
-The prior session's theory (`sp-d29346e9`, "pytest skips the hidden
-`q-system/.q-system/` dir") was **wrong**: `capability-gate.py:303` runs tests by
-convention, not pytest discovery.
+## Open, nothing blocking them
 
-Two causes, not five. **No git identity on the runner** (4 of 5):
-`kipi-update.sh:705` commits with none, the ubuntu runner's user has an empty
-gecos field, and `kipi-update.sh:1289` `abandon_instance ... && continue` is
-*upstream* of the plugins rsync at 1393 — so one missing identity produced four
-unrelated-looking symptoms. And **`.gitignore`'s blanket `*.jsonl`** hid
-`.prd-os/receipts.jsonl`, the ledger `test-updater-issue-sequence.py:101` audits.
+- Most spillover items sit at the `minor` DEFAULT — untriaged, not assessed; only a handful block [verified: `prd_runner.py gates run`, this session]. Sana's call: triage needs a RULE (archived-source + fixed-shape bulk-triaged, the rest read), not a hand pass. Its own issue.
+- **`sp-80a93612`** — Codex hit its usage limit mid-review, resets in a few days [provenance: imported — Sana]. The last rounds ran on the Opus fallback: same model family as Sana, correlated blind spots. Codex never saw `_spillover_lock`, `_print_reclassifications`, or the rank/degrade work. Re-run when credit returns.
+- Minor items from Sana's review of the prd-os PR, none hand-cleared [provenance: imported — Sana; not independently counted].
+- **Stale worktree** `.claude/worktrees/deletion-guard` — needs pruning. A
+  delete, so founder-gated.
 
-Local macOS **cannot** reproduce this: its git guesses an identity from the
-passwd gecos field. Three failed reproducer attempts are recorded in
-`q-system/output/plans/ci-validate-green-2026-07-26.md` — do not retry them.
+## Working agreement established this session <!-- pin -->
 
-## Two lessons worth carrying forward
+[provenance: explicit_statement — all four stated by the founder in-session]
 
-**1. A fixture invented by the author tests nothing.** The claim-lock's remote
-half read `state`; `mcp__linear__get_issue` emits `status` + `statusType`. That
-remote check is the ONLY cover for a cross-checkout collision and it granted
-unconditionally — while the suite stayed green, because the fixture was
-hand-rolled from the same mental model as the code. Fixtures are now the verbatim
-captured payload. Prefer `statusType` over the status NAME: teams rename states.
+- **Sana owns the build.** Engineering decisions route to Sana, never the
+  founder. Founder authorizes publish / spend / delete only.
+- **Do not stop at a boundary.** Repeatedly, an obstacle to ONE part was mistaken
+  for an obstacle to the whole ("design-level", "blocked on primary checkout",
+  "kipi check is blocked", "one thing left" against the open ledger). Each
+  collapsed when pushed on.
+- **Do not commit to a branch under active review.** One such push cost Sana a
+  reviewer refusal and a wasted round.
+- **Do not re-derive.** The severity plan I proposed already existed, approved, in `.prd-os/prds/prd-spillover-current-state*.md` [verified: read it]. Search that directory first.
 
-**2. `\s` matches a newline even under `re.M`.** `^reviewed_by:\s*.*$` ate the
-FOLLOWING frontmatter line when the value was empty. Driven to a real exploit:
-eating `findings_path:` made the gate report "no findings" and a PRD with an
-untriaged BLOCKER advanced to `approved`, exit 0. Use `[^\n]*`.
+## The lessons <!-- pin -->
 
-## The claim lock (how to use it)
+**A test that passes proves nothing until you have watched it fail.** Observed
+across two agents in one day [verified: each item below was reproduced by
+mutation, not inferred]:
+- An end-to-end test passed with the guard deleted (the instance was skipped
+  earlier for an unrelated reason).
+- An unknown-id test asserted only a nonzero exit — removing the guard made
+  `dict(None)` raise TypeError, also nonzero, so it passed while the behaviour
+  was a stack trace.
+- A reason check was satisfied by argparse firing first, so deleting the check
+  changed nothing.
+- A tamper test changed a file's LENGTH, so a `hash != x OR bytes != y` guard
+  passed on the byte half and the hash half never ran [provenance: imported].
+- A mutation harness reported all-survived because an unquoted `-k` meant "no
+  tests ran". A harness that cannot run the tests reports perfect survival.
 
-```
-kipi linear claim ASK-nnn --agent <name> --session <id>   # BEFORE branching; exit 3 = refused
-kipi linear claims                                        # who holds this tree
-kipi linear release ASK-nnn --agent <name> --session <id> # when the PR opens
-```
+**A membership set is not a scale** [provenance: imported — Sana]. It built a
+severity rank from `NONBLOCKING + BLOCKING` assuming the tuples encoded order.
+`blocker` is the first entry of its own tuple, so a demotion read as a raise.
 
-- Identity is **(agent, session)**, never agent alone — two sessions both named
-  "claude" were both granted, the exact `53f2eeb` scar. `KIPI_SESSION_ID` /
-  `CLAUDE_SESSION_ID` are honored.
-- **The resource is the working tree, not the issue.** A separate git worktree is
-  the remedy for a refusal, not `--break-stale`.
-- `--break-stale` is a compare-and-swap: needs `--holder <session>` naming the
-  exact claim you looked at.
-- Remote half: pass the verbatim `mcp__linear__get_issue` response as
-  `--remote-state`. Unrecognized shapes fail closed.
+**A writer with no reader is the same defect one level up** [provenance:
+imported — Sana]. `reclassify` recorded `reclassified_from` and
+`reclassify_reason` and nothing displayed them — the one action that can stop the
+gate blocking appeared in no report.
 
-## Still open — `validate` is NOT green
+**Components that survive attack enumerate their own limits.** `fable-discipline-lint`
+(CATCHES/SKIPS/MISSES), `prd_map` ("facts-only"), the judgment compiler
+("tamper-EVIDENT, not tamper-proof") [verified: probed each; my expectations were
+wrong, not theirs]. Every component that failed claimed something in prose that
+no code did.
 
-One pre-existing failure, ASK-58/ASK-59: semantic containment. The headline
-number misleads. Of ~11,800 findings, **all but 46 are
-`unclassified_populated_record`**, which `prd-prevent-fact-fanout-2026-07-25.md:83`
-says must never block. The **46 real** ones:
+## Counts
 
-`source_identity` 25 · `pricing` 11 · `client_identity` 4 ·
-`sourced_interaction` 3 · `case_proof_gap` 3
-
-Unchanged this session. **The bypass on `main` stands until these are resolved.**
-That PRD has founder decisions already pending, so it was captured
-(`sp-88d889b5`), not started.
-
-## Open spillover
-
-- `sp-5375bc44` — `guarded_commit` still ambient-identity-dependent for the fleet
-  updater itself (launchd runs with a minimal env). Fixed at the CI layer only.
-- `sp-b386aba4` — `codex_reviewed_at` key is still vendor-named; renaming needs a
-  read-either/write-new compatibility window.
-- `sp-88d889b5` — `validate-separation.py:609` blocks on warn-only records,
-  hiding the actionable 46 behind ~11,800.
-- Pre-existing: `sp-7b123c14`, `sp-cfc861f1`, `sp-333f81b4`, `sp-3cb2e575`,
-  `sp-d29346e9`, `sp-2ae4df51`.
-
-## Correction on record
-
-`a6ba923`'s message claimed removing instance names from comments closed a leak.
-**False.** `instance-registry.json`, `INSTANCES.md` and `kipi-update.sh` publish
-all 24 instance names with absolute home paths in the same public repo. Net leak
-reduction: zero. The PROPAGATION argument stands on its own and is why the change
-was kept (`q-system/.q-system/scripts/` rsyncs to every instance).
-
-## Verification, as run (on merged main)
-
-```
-capability-gate.py             GREEN, ran=61   (was 59)
-test-linear-claim.sh           30 checks       (was 21)
-test-receipts-ledger-check.sh   5 checks, 12 leak shapes blocked
-pytest plugins/prd-os/tests/   318 passed, 1 skipped
-validate-separation.py 1       1 FAIL (pre-existing containment), PASS 68
-```
-
-## Not done
-
-`/prd-review` never ran as a prd-os ceremony — there is no active PRD; the work
-was built directly and reviewed by three adversarial subagents instead. If the
-prd-os receipt trail matters for this work, it needs a retro-PRD.
+Tallies of defects fixed, false leads killed, and self-inflicted bugs caught are in the session transcript and the PR bodies [provenance: inferred — my own running count, never recomputed from a ledger; do not quote as measured].
