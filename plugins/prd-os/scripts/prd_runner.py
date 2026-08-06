@@ -1710,6 +1710,29 @@ SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker"
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
 
+# How a FINDINGS-WRITER severity maps into THIS ledger's vocabulary. Lives here,
+# with the ledger it translates into, because both findings writers
+# (prd-os findings_writer, kipi-dsse issue_findings) fan `deferred` findings into
+# the same file and a mapping defined twice is a drift waiting to happen
+# (sp-a05c37a4 records the lock version of exactly that mistake).
+#
+# `nit` is the load-bearing entry. It is a legal severity for BOTH writers and is
+# absent from SPILLOVER_KNOWN_SEVERITIES, and `_is_blocking_severity` treats an
+# unknown severity as BLOCKING -- correct and deliberate (ASK-402: `critical` used
+# to read as minor and green the gate). The two facts compose badly: deferring the
+# LEAST important finding a reviewer can file turned the standing gate RED
+# fleet-wide until a human hand-resolved the row. The gate got louder the less the
+# finding mattered.
+#
+# Translate at the boundary rather than widening the allowlist: `nit` is the
+# findings writers' word, and the ledger should not have to learn it.
+FINDING_TO_LEDGER_SEVERITY = {
+    "blocker": "blocker",
+    "major": "major",
+    "minor": "minor",
+    "nit": "minor",
+}
+
 
 def _is_blocking_severity(value: str) -> bool:
     """Unknown severities block. See SPILLOVER_NONBLOCKING_SEVERITIES."""

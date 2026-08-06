@@ -66,6 +66,9 @@ from spillover_events import SpilloverLedgerError  # noqa: E402
 
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
+# Dispositions that CLOSE a defer-* spillover item. `pending` is deliberately
+# absent; see _sync_locked. Mirrors kipi-dsse issue_findings.DECIDED_DISPOSITIONS.
+DECIDED_DISPOSITIONS = ("accepted", "rejected")
 SOURCES = (
     "codex-review",
     "codex-adversarial",
@@ -459,9 +462,35 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
     issue; moving the finding off `deferred` clears the item. Reuses
     prd_runner's ledger helpers so there is one definition of the format.
     Scar: `deferred` used to be a silent drop -- a rationale and then gone."""
-    from prd_runner import _read_spillover, _spillover_append  # sibling script
+    from prd_runner import (  # sibling script
+        FINDING_TO_LEDGER_SEVERITY, _read_spillover, _spillover_append,
+        _spillover_lock)
 
     sid = f"defer-{prd_id}-{finding['id']}"
+    # READ AND APPEND UNDER ONE LOCK, the same chokepoint `resolve` and
+    # `reclassify` take and the one this fan-out skipped. The idempotency check
+    # below is a read-then-append, so across PROCESSES every concurrent caller
+    # read "no such item" and every one appended. Measured on the kipi-dsse twin
+    # before its lock: 4 concurrent deferrals of ONE finding produced 4 open
+    # rows, every trial. Re-deferral from a RETRYING AGENT is exactly that case.
+    #
+    # This is a DIFFERENT lock from `judgment_compiler.ledger_lock` held by the
+    # caller: that one serializes the FINDINGS file, this one the SPILLOVER
+    # ledger. Two files, two locks, always taken findings-then-spillover, so
+    # there is no cycle to deadlock on.
+    #
+    # "Under one lock" is CONDITIONAL: `_spillover_lock` degrades to unlocked
+    # (loudly) when `.prd-os` is read-only, because taking it must CREATE a file.
+    # Stated rather than implied.
+    with _spillover_lock(cfg):
+        _sync_locked(cfg, prd_id, finding, sid, _read_spillover, _spillover_append,
+                     FINDING_TO_LEDGER_SEVERITY)
+
+
+def _sync_locked(cfg, prd_id, finding, sid, _read_spillover, _spillover_append,
+                 ledger_severity) -> None:
+    """The read-modify-append itself. Split out so the lock above is a plain
+    `with` block rather than an indent-shifting wrapper around 30 lines."""
     existing = _read_spillover(cfg).get(sid)
     if finding.get("disposition") == "deferred":
         if existing and existing.get("status") == "open":
@@ -481,10 +510,21 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
             # The ledger is the artifact people act on; truncate at RENDER time
             # if a view needs it, never at write time.
             "description": f"deferred finding {finding['id']}: {finding.get('body', '')}",
-            "severity": finding.get("severity", "minor"),
+            # TRANSLATED, not raw. A `nit` written through verbatim is unknown
+            # to the ledger and `_is_blocking_severity` fails closed on unknown,
+            # so the most trivial finding in the system reddened the gate.
+            "severity": ledger_severity.get(
+                finding.get("severity", "minor"), finding.get("severity", "minor")),
             "status": "open", "created_at": _now_iso(),
         })
-    elif existing and existing.get("status") == "open":
+    # `pending` is NOT in DECIDED_DISPOSITIONS, and its absence is the fix. This
+    # was a bare `elif existing ...`, firing for every non-deferred value --
+    # including `pending`, the one disposition that needs no --rationale. So
+    # `set-disposition <prd> <finding> pending` was a one-command, unexplained
+    # THIRD way out of a ledger no-orphan-findings.md says has exactly two.
+    # Undeciding is not resolving.
+    elif (finding.get("disposition") in DECIDED_DISPOSITIONS
+          and existing and existing.get("status") == "open"):
         new = dict(existing)
         new.update(status="resolved",
                    void_reason=f"finding re-dispositioned to {finding.get('disposition')}",
