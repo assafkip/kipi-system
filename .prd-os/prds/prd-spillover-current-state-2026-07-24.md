@@ -132,6 +132,80 @@ versus new debt.
 - Should the 10,000-event checkpoint threshold become configuration after
   production timing evidence exists?
 
+## AMENDMENT 2026-08-06: the baseline pair is withdrawn (findings 5 and 9)
+
+`scs-baseline-debt-reporting` (finding-5) and `scs-baseline-artifact-proof`
+(finding-9) are moved to `status: withdrawn`. Not deferred: building them as
+specified would make the standing gate LESS safe than it is today. Evidence
+below, all measured 2026-08-06 against `.prd-os/spillover.jsonl`.
+
+**1. The premise moved 17x.** This PRD was written against "73 events, 53 IDs,
+33 effective open items". The ledger now holds 860 events, 713 IDs, 570
+effective open. Inflow is automated and outflow is manual, so a snapshot-shaped
+remedy ages badly by construction.
+
+**2. The exit-neutral bucket the baseline would create already exists, on a
+better axis.** `gates run` gained `SPILLOVER_BLOCKING_SEVERITIES` /
+`SPILLOVER_NONBLOCKING_SEVERITIES` after this PRD was approved (prd_runner.py).
+All 550 `minor` items are ALREADY reported-not-blocking. Baselining them changes
+no exit code, prints a second copy of the same list, and adds a manifest to
+maintain. Goal 5 ("make `gates run` identify pre-existing debt separately from
+new debt") is satisfied on the axis that matters; the remaining gap is not
+old-vs-new.
+
+**3. The decisive one: a baseline built today would turn the gate GREEN over
+every blocking item it currently holds.** All 13 open blocking-severity items
+(2 `blocker`, 10 `major`, 1 `high`) pre-date any manifest that could be written
+now, the oldest from 2026-06-30. The spec says pre-existing debt "remains
+visible but does not change the exit code by itself", so those 13 become
+exit-neutral on the day the baseline lands. That is a bulk hand-clear of exactly
+the findings the gate exists to hold, performed by a mechanism whose stated
+purpose is auditability. `no-orphan-findings.md` says there are only two ways
+out of the ledger, fixed or voided, and "you cannot hand-clear the gate". A
+baseline is a third way with a hash on it.
+
+**4. It does not touch the problem the founder actually named.** The complaint
+is that 550 items sit at the `minor` DEFAULT, meaning untriaged rather than
+assessed. `spillover add` defaults `--severity minor` and records nothing that
+distinguishes a defaulted severity from an assessed one, so the two are
+indistinguishable after the fact. Exactly 1 of 570 open items has ever carried a
+`reclassified_from`. Freezing that population into a reviewed, content-hashed,
+exit-neutral manifest does not triage it; it ratifies "nobody looked" as a
+signed artifact and makes the untriaged state permanent and blessed.
+
+### What replaces them
+
+**finding-10, `scs-severity-provenance` (new, p1).** Record severity provenance
+at write time: `spillover add` stamps `severity_source: "default" | "explicit"`,
+and the gate's REPORT line splits "assessed minor" from "never triaged". This is
+the precondition for any triage rule at all — a rule cannot key on a field whose
+value cannot be distinguished from its default. It is also cheap, it is
+append-only, and it makes the 550 a number that can be driven down and watched.
+
+Deliberately NOT included: any bulk reclassification of the existing 550. A
+mechanical pass that stamps a severity nobody read is the same hand-clear in a
+different coat. The existing population becomes measurable; it does not become
+approved.
+
+### The three open questions, answered
+
+- **Who approves the first pre-existing baseline manifest?** Nobody, because the
+  artifact is withdrawn. The founder decision hiding underneath it is real and is
+  stated plainly in the report accompanying this amendment: making pre-existing
+  debt exit-neutral means authorizing 13 specific blocking findings to stop
+  blocking. That is an authorize-class call, not an engineering one, and it
+  should be taken per-item against named findings rather than as one signature
+  over a list of 570 nobody has read.
+- **What evidence makes a historical fix eligible for void rather than
+  closure?** Unchanged and already coded: `resolve --void <reason>` records a
+  non-item with its rationale; `resolve --resolution-ref` requires a provably
+  closed issue. No new rule needed, so this question is closed as already
+  answered by shipped code.
+- **Should the 10,000-event checkpoint threshold become configuration?**
+  Premature. The ledger is at 860 events and the whole-file read of the live
+  ledger is not a measured cost. `scs-verified-fold-checkpoint` (finding-8) is
+  deferred until a timing measurement exists, per its own risk note.
+
 ## Evidence
 
 - **E1:** `.prd-os/spillover.jsonl`; deterministic fold command run 2026-07-24:

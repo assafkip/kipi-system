@@ -1,7 +1,7 @@
 ---
 id: scs-baseline-artifact-proof
 title: Create the reviewed baseline artifact with event hashes
-status: open
+status: withdrawn
 priority: p2
 parent_prd: prd-spillover-current-state-2026-07-24
 allowed_files:
@@ -35,3 +35,13 @@ Write failing missing-head and changed-effective-event tests first. Record revie
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [ ] Create the reviewed baseline artifact with event hashes
+
+## WITHDRAWN 2026-08-06
+
+See the AMENDMENT section in `.prd-os/prds/prd-spillover-current-state-2026-07-24.md`.
+
+Short version: all 13 currently-open blocking-severity items pre-date any
+baseline that could be written now, so making pre-existing debt exit-neutral
+would turn `gates run` green over 2 open `blocker` and 10 `major` findings.
+That is a bulk hand-clear of the exact items the gate exists to hold.
+Replaced by finding-10 `scs-severity-provenance`.
