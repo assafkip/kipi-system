@@ -62,6 +62,7 @@ from typing import Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
+from spillover_events import SpilloverLedgerError  # noqa: E402
 
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
@@ -741,7 +742,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         sys.stderr.write(f"prd-os config error: {exc}\n")
         return 2
-    return args.func(cfg, args)
+    try:
+        return args.func(cfg, args)
+    except SpilloverLedgerError as exc:
+        # THIS ENTRYPOINT NEEDS ITS OWN HANDLER (found by adversarial probe of
+        # scs-validated-event-fold, before review). `_read_spillover` fails
+        # closed now, and `_sync_spillover_for_finding` calls it. prd_runner's
+        # main() catches this, but findings_writer has its own main() and its
+        # own __main__, so an unreadable ledger escaped here as a traceback --
+        # which exits 1, the same code a normal result uses, leaving a caller
+        # unable to tell corruption from ordinary operation.
+        #
+        # The general rule this is an instance of: making a shared reader
+        # strict obliges EVERY entrypoint that reaches it to handle the
+        # refusal, not only the one where the reader lives.
+        sys.stderr.write(f"spillover ledger unreadable: {exc}\n")
+        return 2
 
 
 if __name__ == "__main__":

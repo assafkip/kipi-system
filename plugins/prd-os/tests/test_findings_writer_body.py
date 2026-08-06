@@ -137,3 +137,36 @@ def test_the_row_still_passes_the_ledger_validator(repo: Path):
     from prd_runner import _read_spillover
     rows = _read_spillover(cfg)  # raises SpilloverLedgerError if invalid
     assert any("finding-77" in k for k in rows)
+
+
+# --------------------------------------------------------------------------
+# Adversarial probe of scs-validated-event-fold, found before review.
+#
+# Making _read_spillover fail closed put a raise on a path that previously
+# always returned. prd_runner.main() catches SpilloverLedgerError and exits 2 --
+# but findings_writer has its OWN main() (and its own __main__), and calls
+# _read_spillover at line 464 and _spillover_append at 468/491.
+#
+# So from THAT entrypoint an unreadable ledger became an uncaught traceback,
+# which exits 1 -- the same code a normal "there are findings" result uses. A
+# caller cannot tell a corrupt ledger from ordinary operation. Same defect class
+# as sp-940e1013: strict reads oblige EVERY entrypoint to handle the refusal,
+# not just the one where the reader lives.
+# --------------------------------------------------------------------------
+
+def test_findings_writer_main_reports_an_unreadable_ledger_as_exit_2(repo, monkeypatch, capsys):
+    fw = _load("findings_writer")
+    sys.path.insert(0, str(SCRIPTS))
+    from spillover_events import SpilloverLedgerError
+
+    def boom(cfg, args):
+        raise SpilloverLedgerError("/x/spillover.jsonl:7: invalid JSON")
+
+    monkeypatch.setattr(fw, "cmd_record_review", boom)
+    rc = fw.main(["--repo-root", str(repo), "record-review", "prd-x", "--source", "s"])
+    err = capsys.readouterr().err
+    assert rc == 2, (
+        f"findings_writer.main() returned {rc} on an unreadable ledger; 2 is the "
+        "refusal code, and an uncaught raise would instead exit 1 -- "
+        "indistinguishable from a normal result")
+    assert "spillover" in err.lower(), f"refusal named no cause: {err!r}"
