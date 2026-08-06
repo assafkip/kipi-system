@@ -40,11 +40,14 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import fnmatch
 import json
 import os
 import re
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -85,10 +88,19 @@ DECIDED_DISPOSITIONS = ("accepted", "rejected")
 #
 # Fixed by translating at the boundary, not by widening the ledger's allowlist:
 # `nit` is this plugin's word and the ledger should not have to learn it.
-# `.get(sev, sev)` on purpose -- an unmapped value passes through and BLOCKS,
-# because fail-closed is still the right direction for something nobody has
-# classified. test_every_issue_severity_maps_into_the_ledger_vocabulary fails the
-# moment a new severity is added here without a translation.
+# `.get(sev, sev)` on purpose -- an unmapped value passes through unchanged and
+# the ledger then treats it as BLOCKING, which is the right direction for
+# something nobody has classified.
+#
+# BE PRECISE ABOUT REACH: `_validate` rejects any severity outside SEVERITIES
+# before a record can reach here, so with all four currently mapped this
+# fallback is UNREACHABLE from the CLI and equivalent to defaulting to "minor".
+# It is a belt for a hand-edited findings file and for the window after a new
+# severity is added. The real guard is
+# test_every_issue_severity_maps_into_the_ledger_vocabulary, which fails the
+# moment a severity is added here without a translation. Adversarial review
+# showed a mutant changing this fallback survives the suite -- correctly, since
+# nothing can reach it.
 LEDGER_SEVERITY = {
     "blocker": "blocker",
     "major": "major",
@@ -165,6 +177,59 @@ def _load(path: Path) -> list[dict]:
                 raise ValueError(f"{path}:{lineno}: not an object")
             out.append(rec)
     return out
+
+
+@contextlib.contextmanager
+def _findings_lock(path: Path):
+    """Serialize read-modify-REWRITE of ONE issue's findings file across processes.
+
+    `_write_all` opens "w", so it truncates. Every mutating command here is
+    `_load` -> mutate -> `_write_all`, which was unlocked, and the findings file
+    is the record of what was decided. Measured on 6 concurrent dispositions of
+    6 DIFFERENT findings, 15 trials:
+        5 trials LOST AN UPDATE -- the command exited 0 and printed its success
+          JSON while the disposition was not on disk, because a concurrent
+          writer rewrote the whole file from a pre-state it had already read.
+        3 trials hit "finding not found" (exit 2) -- a read landed inside
+          another process's truncate and saw an empty file.
+    A silently-dropped triage decision is the exact failure this whole change
+    exists to prevent, and it was in the file the fan-out was protecting.
+
+    Found by the concurrency test written for the SPILLOVER lock: that lock does
+    not cover this, because `_write_all` runs BEFORE the fan-out and on a
+    different file. Two writers to one file is a corruption waiting for a race,
+    and there were two files.
+
+    LOCK ORDER IS ALWAYS findings-then-spillover. The fan-out takes
+    `_spillover_lock` INSIDE this one; nothing takes them in the other order, so
+    there is no cycle to deadlock on.
+
+    DEGRADES, NEVER REFUSES, matching prd_runner._spillover_lock verbatim in
+    intent: taking the lock has to CREATE a file, so it needs write permission
+    on the DIRECTORY, while rewriting the existing findings file needs it only
+    on the FILE. Read-only sandboxes are real here. A lock we cannot take
+    degrades loudly to the behaviour that shipped for months.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+        sys.stderr.write(
+            f"WARNING: could not lock the findings file ({exc}); proceeding "
+            "UNLOCKED.\nA concurrent set-disposition can report success while "
+            "its change is overwritten by another process's stale copy.\n")
+        yield
+        return
+    try:
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
 
 
 def _write_all(path: Path, records: Iterable[dict]) -> None:
@@ -257,6 +322,16 @@ def cmd_add(args: argparse.Namespace) -> int:
         return 2
     repo_root = _resolve_repo_root()
     path = _findings_path(repo_root, args.issue_id)
+    # `add` is the SAME read-modify-rewrite, so it needs the same lock or the
+    # chokepoint is only half a chokepoint: `add` racing `set-disposition` loses
+    # a record just as readily as two dispositions racing each other. It also
+    # derives finding ids from what it read (`_next_id`), so an unlocked add
+    # racing another add mints the SAME id twice.
+    with _findings_lock(path):
+        return _add_locked(args, allowed, raw, path)
+
+
+def _add_locked(args: argparse.Namespace, allowed: list, raw: list, path: Path) -> int:
     try:
         existing = _load(path)
     except ValueError as exc:
@@ -340,6 +415,14 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         return 2
     repo_root = _resolve_repo_root()
     path = _findings_path(repo_root, args.issue_id)
+    # The lock spans the READ, the REWRITE and the fan-out. A lock around the
+    # write alone still lets a stale in-memory copy be formed first, which is
+    # the same reasoning prd_runner._spillover_lock records for reclassify.
+    with _findings_lock(path):
+        return _set_disposition_locked(args, repo_root, path)
+
+
+def _set_disposition_locked(args: argparse.Namespace, repo_root: Path, path: Path) -> int:
     try:
         records = _load(path)
     except ValueError as exc:
@@ -400,13 +483,25 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         # sys.path. The `parents[1]` bug was exactly that. Every reachable
         # failure has the same correct response: un-commit and refuse.
         rolled_back = _rollback_findings(path, pre_findings_bytes)
+        # REMEDIATION DEPENDS ON WHAT FAILED. A fixed "fix the ledger" line sent
+        # the operator to a healthy file whenever the exception came from THIS
+        # code (an ImportError from the sys.path reach into prd-os, a NameError),
+        # and the traceback was swallowed, so the message was unactionable in
+        # exactly the cases that need it most. Adversarial review, ASK-429.
+        ledger_problem = type(exc).__name__ == "SpilloverLedgerError"
         sys.stderr.write(
-            f"spillover ledger not updated for {args.finding_id}: {exc}\n"
+            f"spillover fan-out FAILED for {args.finding_id} "
+            f"[{type(exc).__name__}]: {exc}\n"
             + ("disposition rolled back; findings file unchanged.\n"
                if rolled_back else
                "WARNING: rollback ALSO failed. The finding may now read "
                f"{args.disposition!r} with no spillover item tracking it.\n")
-            + "Fix the ledger, then re-run this command.\n")
+            + ("Fix the ledger, then re-run this command.\n" if ledger_problem else
+               "This is NOT a ledger-content problem: it came from the fan-out "
+               "itself (import path, config, or a defect here). Traceback "
+               "below.\n"))
+        if not ledger_problem:
+            traceback.print_exc()
         return 2
     print(json.dumps({"set": args.finding_id, "disposition": args.disposition}))
     return 0
@@ -443,6 +538,14 @@ def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -
     disposition = finding.get("disposition")
     # READ AND APPEND UNDER ONE LOCK -- the same chokepoint prd_runner's
     # `resolve` and `reclassify` take, skipped here.
+    #
+    # "Under one lock" is CONDITIONAL, and the condition is real: taking the
+    # lock has to CREATE a file, so it needs write permission on the DIRECTORY
+    # while appending needs it only on the FILE. `_spillover_lock` therefore
+    # DEGRADES to unlocked (loudly, on stderr) on a read-only `.prd-os`, which
+    # prd_runner documents as a live environment here. In that case the race
+    # below is back and the command still exits 0. Stated rather than implied,
+    # because the unqualified version of this sentence was wrong.
     #
     # The idempotency check below is a read-then-append, so across PROCESSES
     # every concurrent caller read "no such item" and every one of them
