@@ -17,6 +17,7 @@ disallowed_files:
   - .git/**
 required_checks:
   - python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py
+  - python3 -m pytest -q plugins/prd-os/tests/test_findings_writer_body.py
 required_reviews:
   - prd-os-owner
 bypass_check: "python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py -k 'invalid or duplicate or timestamp'"
@@ -60,6 +61,18 @@ half-finished job. Same file, same chokepoint, same defect class.
 
 Recorded as a SECOND amendment rather than absorbed quietly: two amendments on
 one issue is the point at which scope drift should be visible to a reviewer.
+
+## Amendment 3 2026-08-06: required_checks was missing a shipped test
+
+Amendment 2 added `test_findings_writer_body.py` to allowed_files and NOT to
+required_checks, so the truncation guard would have shipped as a test no gate
+ever runs -- green on my machine, invisible to closeout and to every future
+regression. Caught while re-verifying after amendment 2 cleared the receipt.
+
+This is a WIRING CORRECTION, not new scope: no new files, no new behaviour, the
+test already exists and already passes. Recorded as a third amendment anyway,
+because the alternative is editing required_checks quietly, and the whole point
+of amendment 2's note was that scope changes stay visible to a reviewer.
 
 ## Deliverables
 
