@@ -50,7 +50,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
 from concurrency import ConcurrencyError, assert_no_active_issue  # noqa: E402
-from spillover_events import SpilloverLedgerError, fold_ledger_text  # noqa: E402
+from spillover_events import (  # noqa: E402
+    SpilloverLedgerError, fold_ledger_text, validate_for_append)
 
 
 PRD_STATES = ("idea", "draft", "in-review", "approved", "archived")
@@ -1321,6 +1322,12 @@ def _spillover_lock(cfg: Config):
 def _spillover_append(cfg: Config, record: dict) -> None:
     path = _spillover_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # VALIDATE BEFORE WRITING (sp-940e1013). _read_spillover fails closed now,
+    # so a malformed record reaching the file bricks every prd-os read until
+    # someone hand-edits the ledger. This is the paired half of that change:
+    # strict reads REQUIRE a strict writer. Refusal happens before the open()
+    # so a rejected record leaves the file byte-identical.
+    validate_for_append(record, path)
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
         fh.flush()

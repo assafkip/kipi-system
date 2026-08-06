@@ -154,9 +154,18 @@ new debt") is satisfied on the axis that matters; the remaining gap is not
 old-vs-new.
 
 **3. The decisive one: a baseline built today would turn the gate GREEN over
-every blocking item it currently holds.** All 13 open blocking-severity items
-(2 `blocker`, 10 `major`, 1 `high`) pre-date any manifest that could be written
-now, the oldest from 2026-06-30. The spec says pre-existing debt "remains
+every blocking item it currently holds.** After a same-day recount and two
+verified voids, the set is 12 open blocking-severity items: 9 pre-existing
+(oldest 2026-06-30, including 2 `blocker`) and 3 created 2026-08-06. A manifest
+captures whatever is open when it is written, so all 12 land inside it.
+
+(Correction of record: an earlier draft of this amendment said "all 13
+pre-date any manifest writable now". Both halves were wrong — the count was 14
+at the time, and 3 of those were created that same day, so "pre-existing" was
+11, not 13. The argument survives the recount; the number did not, and a number
+handed to the founder has to be the one that survives a recount.)
+
+The spec says pre-existing debt "remains
 visible but does not change the exit code by itself", so those 13 become
 exit-neutral on the day the baseline lands. That is a bulk hand-clear of exactly
 the findings the gate exists to hold, performed by a mechanism whose stated

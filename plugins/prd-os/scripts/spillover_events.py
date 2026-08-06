@@ -55,11 +55,35 @@ class SpilloverLedgerError(Exception):
     """
 
 
-def _describe(path, lineno: int, problem: str) -> str:
+def _describe(path, lineno, problem: str) -> str:
     return (f"{path}:{lineno}: {problem}\n"
             "The spillover ledger is the standing gate's evidence, so an "
             "unreadable line is refused rather than skipped: skipping one is "
             "indistinguishable from that finding never having existed.")
+
+
+def validate_for_append(record, path) -> dict:
+    """Refuse an invalid record BEFORE it reaches the file (sp-940e1013).
+
+    Making the READ path fail closed created a new foot-gun: a writer that
+    appends a malformed record now bricks every prd-os read until a human edits
+    the ledger by hand. The lenient reader used to absorb a bad write; nothing
+    absorbs it now. So the write path has to refuse, and it has to refuse
+    without touching the file -- an implementation that appends and then raises
+    is the worst of both, because the bad line is on disk AND the caller saw an
+    error.
+
+    Takes NO lock, deliberately. `_spillover_lock` is LOCK_EX on a separate fd
+    and `reclassify` already holds it across its read-modify-append; acquiring
+    it again inside the append would deadlock the process against itself.
+    Validating a record reads nothing, so it needs no lock.
+
+    This does NOT make an append atomic. A crash midway through writing the
+    line still leaves a torn record, which the reader will now (correctly)
+    refuse loudly instead of skipping silently. Single-write durability belongs
+    to finding-7 (`scs-concurrent-append-lock`); this is validation only.
+    """
+    return validate_event(record, f"{path} (refusing to append)", "new event")
 
 
 def validate_event(record, path, lineno: int) -> dict:

@@ -255,3 +255,84 @@ def test_every_status_and_severity_the_live_ledger_uses_is_accepted(repo: Path):
     assert result.returncode == 1, (
         f"a status or severity the live ledger uses was refused.\n"
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+# --------------------------------------------------------------------------
+# 5. sp-940e1013: reads fail closed, so writes must validate.
+#
+# Making _read_spillover strict created a new foot-gun: a writer that appends a
+# malformed record now bricks EVERY prd-os read until a human edits the file by
+# hand. Previously the lenient reader absorbed a bad write. The write path has
+# to refuse first, and it has to refuse WITHOUT touching the file.
+#
+# Validation here takes NO lock on purpose. `_spillover_lock` is LOCK_EX on a
+# separate fd and `reclassify` already holds it across its read-modify-append;
+# acquiring it again inside the append would deadlock the process against
+# itself. Validating a record is pure -- it reads nothing -- so it needs no lock.
+# --------------------------------------------------------------------------
+
+def _cfg_for(repo: Path):
+    runner = _load_runner()
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    from config import load as load_config
+    return runner, load_config(repo, strict=True)
+
+
+@pytest.mark.parametrize("bad,label", [
+    ({"id": "sp-x", "status": "kinda-done", "description": "d"}, "unknown status"),
+    ({"status": "open", "description": "d"}, "no id"),
+    ({"id": "  ", "status": "open", "description": "d"}, "blank id"),
+])
+def test_append_refuses_an_invalid_record_and_leaves_the_ledger_untouched(
+        repo: Path, bad, label):
+    """The refusal must happen BEFORE the write, not after.
+
+    Asserting the exception alone would pass an implementation that appends and
+    then raises -- which is the worst case, since the bad line is now on disk
+    AND the caller saw an error. So this asserts the file's exact bytes.
+    """
+    runner, cfg = _cfg_for(repo)
+    write_ledger(repo, event(id="sp-before01"))
+    before = ledger(repo).read_bytes()
+    with pytest.raises(runner.SpilloverLedgerError):
+        runner._spillover_append(cfg, bad)
+    assert ledger(repo).read_bytes() == before, (
+        f"a refused append ({label}) still modified the ledger")
+
+
+def test_a_refused_append_leaves_the_ledger_readable(repo: Path):
+    """THE property sp-940e1013 is about: a bad write must not brick reads.
+
+    Without write-side validation the malformed record lands, and every
+    subsequent `spillover check` / `gates run` exits 2 on an unreadable ledger
+    until someone hand-edits it.
+    """
+    runner, cfg = _cfg_for(repo)
+    write_ledger(repo, event(id="sp-alive001"))
+    with pytest.raises(runner.SpilloverLedgerError):
+        runner._spillover_append(cfg, {"id": "sp-bad", "status": "nonsense"})
+    result = run(repo, "spillover", "check")
+    assert result.returncode == 1, (
+        "the ledger stopped being readable after a refused append; exit 1 means "
+        f"one open item, which is the healthy state.\nstderr={result.stderr!r}")
+    assert "sp-alive001" in result.stderr
+
+
+def test_a_valid_append_still_writes(repo: Path):
+    """Negative self-test. A validator that refuses everything passes the three
+    tests above and breaks the whole product."""
+    runner, cfg = _cfg_for(repo)
+    write_ledger(repo, event(id="sp-first001"))
+    runner._spillover_append(cfg, json.loads(event(id="sp-second01")))
+    assert "sp-second01" in ledger(repo).read_text()
+    result = run(repo, "spillover", "check")
+    assert result.returncode == 1
+    assert "sp-second01" in result.stderr
+
+
+def test_the_cli_add_path_still_works_end_to_end(repo: Path):
+    """Wiring proof: validation sits on the real CLI write path, not only on a
+    directly-called helper."""
+    result = run(repo, "spillover", "add", "--source", "t", "--desc", "a finding")
+    assert result.returncode == 0, f"add broke: {result.stderr!r}"
+    assert run(repo, "spillover", "check").returncode == 1
