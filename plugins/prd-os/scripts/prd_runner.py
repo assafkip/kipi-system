@@ -1280,16 +1280,41 @@ def _spillover_lock(cfg: Config):
 
     A sibling .lock file rather than the ledger itself: flock on the ledger
     would be released by any unrelated reader closing its own handle.
+
+    DEGRADES, NEVER REFUSES. Taking the lock needs to CREATE a file, so it
+    needs write permission on the DIRECTORY -- while appending to the existing
+    ledger only needs it on the FILE. A read-only `.prd-os` therefore turned a
+    working `resolve` into a PermissionError traceback the moment this lock was
+    added, and read-only sandboxes are real here (every Codex round this
+    session reported one).
+
+    So a lock we cannot take degrades to the unlocked behaviour that shipped
+    for months, loudly, rather than becoming a new hard failure. The race it
+    protects against costs a FALSE RED gate, which is recoverable; refusing to
+    resolve at all is not. Same rule the review gate uses when Codex is down:
+    degrade and say so out loud.
     """
     path = _spillover_path(cfg)
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
-    with lock_path.open("w") as fh:
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+        sys.stderr.write(
+            f"WARNING: could not lock the spillover ledger ({exc}); proceeding "
+            "UNLOCKED.\nA concurrent resolve/reclassify could resurrect a "
+            "resolved item into the standing gate.\n")
+        yield
+        return
+    try:
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
 
 
 def _spillover_append(cfg: Config, record: dict) -> None:

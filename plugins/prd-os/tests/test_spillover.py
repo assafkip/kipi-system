@@ -747,3 +747,30 @@ def test_every_known_severity_has_a_rank(repo):
     missing = [s for s in m.SPILLOVER_KNOWN_SEVERITIES
                if s not in m.SPILLOVER_SEVERITY_ORDER]
     assert not missing, f"known severities absent from the rank order: {missing}"
+
+
+def test_ledger_lock_degrades_when_it_cannot_be_taken(repo):
+    """A lock that cannot be TAKEN must not become a new hard failure.
+
+    Taking it CREATES a file, so it needs write permission on the DIRECTORY,
+    while appending to the existing ledger only needs it on the FILE. Adding
+    the lock therefore turned a working `resolve` into a PermissionError
+    traceback under a read-only `.prd-os` -- and read-only sandboxes are real
+    here. The race it protects against costs a false RED gate, which is
+    recoverable; refusing to resolve at all is not.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-ro", "--severity", "minor")
+    d = Path(repo) / ".prd-os"
+    mode = d.stat().st_mode
+    d.chmod(0o555)
+    try:
+        r = run(repo, "spillover", "resolve", "sp-ro", "--void", "read-only probe")
+    finally:
+        d.chmod(mode)
+    assert "Traceback" not in r.stderr, f"the lock crashed instead of degrading:\n{r.stderr}"
+    assert r.returncode == 0, f"a read-only ledger dir broke resolve: {r.stderr}"
+    assert "could not lock" in r.stderr, (
+        "it degraded SILENTLY -- an unlocked write with no warning is the "
+        "failure mode nobody notices")
+    assert json.loads(_ledger_lines(repo)[-1])["status"] == "resolved"
