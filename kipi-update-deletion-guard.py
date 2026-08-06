@@ -26,9 +26,34 @@ is deleted founder data with no error. This reads the deletions rsync ACTUALLY
 plans, from rsync's own itemized output, and matches instance-owned names at ANY
 depth. It is the fail-closed backstop; the excludes remain the first line.
 
-It also covers sp-10cf4f76 (a tracked instance-only script inside the synced
-tree, which the untracked-file snapshot never protected), because a deletion is
-a deletion whatever git thinks of the file.
+WHAT IT DOES NOT COVER (sp-5e857e2a). This docstring used to claim it "also
+covers sp-10cf4f76 (a tracked instance-only script inside the synced tree)
+because a deletion is a deletion whatever git thinks of the file". THAT WAS
+FALSE and it is the reason the sentence is now this long. `owned_hits` matches
+seven instance-owned DATA-DIRECTORY names; a script is not one of them, so
+
+    *deleting q-system/.q-system/scripts/income-scan.sh   -> exit 0
+
+still passes. That exact path is how the fractional-cxo income scanners died
+silently for six days. A guard that RECORDS a claim it never COMPUTED is worse
+than an obvious gap, because the next reader trusts it -- reading this sentence
+almost caused sp-10cf4f76 to be voided as already-fixed.
+
+sp-10cf4f76 IS STILL OPEN. The class it belongs to -- an instance-created file
+inside the synced tree, whose NAME nobody enumerated in advance -- cannot be
+closed by adding names here, and that is not a matter of effort. Instance-only
+and skeleton-owned files are INTERLEAVED IN THE SAME DIRECTORIES: measured
+2026-08-06, `q-system/.q-system/scripts/` holds 141 skeleton-owned files, and
+the skeleton has deleted 6 files from that directory over its history. Those
+deletions are legitimate propagation. Adding `scripts` to INSTANCE_OWNED would
+refuse every one of them on all 24 instances -- the PR #111 failure mode again,
+and a guard that halts unattended updates gets switched off.
+
+The discriminator therefore cannot be the PATH. It has to be PROVENANCE: did
+the skeleton ever ship this file (legitimate removal) or did the instance
+create it (data loss)? The skeleton's own git history answers that. Designing
+and measuring that inversion is tracked separately; this file deliberately does
+not attempt it.
 
 Exit codes:
     0  no instance-owned deletion planned (sync may proceed)
