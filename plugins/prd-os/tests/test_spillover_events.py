@@ -385,7 +385,7 @@ def test_a_valid_append_still_writes(repo: Path):
 def test_the_cli_add_path_still_works_end_to_end(repo: Path):
     """Wiring proof: validation sits on the real CLI write path, not only on a
     directly-called helper."""
-    result = run(repo, "spillover", "add", "--source", "t", "--desc", "a finding")
+    result = run(repo, "spillover", "add", "--source", "t", "--desc", "a finding in prd_runner.py")
     assert result.returncode == 0, f"add broke: {result.stderr!r}"
     assert run(repo, "spillover", "check").returncode == 1
 

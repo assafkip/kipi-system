@@ -1561,9 +1561,53 @@ def cmd_spillover(cfg: Config, args) -> int:
         # time this line ran, `args.severity` was the string "minor" either way
         # and the distinction had already been erased one frame up. Resolving it
         # here is what makes the provenance observable at all (ASK-430).
+        # REFUSE BEFORE THE FILE IS TOUCHED (ASK-446). A gate that appends and
+        # then errors is the worst of both: the row is on disk AND the caller
+        # saw a failure. Same contract validate_for_append already holds.
+        #
+        # The bypass is deliberate and it is NOT a switch: it needs a stated
+        # reason, and the reason is recorded on the row so `spillover rate` can
+        # count bypasses. A hatch whose use no report shows is an unaudited
+        # hatch with a paper trail nobody opens -- the lesson `reclassify`
+        # already paid for (ASK-402, PR #112).
+        raw_bypass = getattr(args, "unstructured", None)
+        bypass = (raw_bypass or "").strip()
+        if raw_bypass is not None and not bypass:
+            # A BARE --unstructured would be a silent opt-out. The reason is the
+            # only thing that makes this auditable instead of a switch somebody
+            # flips once and forgets.
+            sys.stderr.write(
+                "--unstructured requires a reason explaining why this finding "
+                "is not about one artifact. An unexplained bypass is the "
+                "hand-clear this ledger refuses everywhere else.\n")
+            return 2
+        if raw_bypass is None:
+            if not spillover_actionable_signals(args.desc):
+                sys.stderr.write(
+                    "refusing to add: the description names nothing a reader "
+                    "could act on.\n"
+                    "Name at least one of: a path (plugins/prd-os/scripts/"
+                    "prd_runner.py), a filename, a symbol or function "
+                    "(severity_source, _spillover_lock()), a command "
+                    "(python3 -m pytest ...), a `code span`, or a reference "
+                    "(sp-1234abcd, ASK-446).\n"
+                    "This ledger's problem is that it grows: a row nobody can "
+                    "act on can never leave it.\n"
+                    "If the finding genuinely is not about one artifact, "
+                    "re-run with --unstructured '<why>' and it is recorded and "
+                    "counted.\n")
+                return 2
         chosen = args.severity is not None
         _spillover_append(cfg, {
             "id": sid, "source": args.source, "description": args.desc,
+            # Recorded ONLY when bypassed, so its presence is the signal. A row
+            # that carries this is one somebody consciously chose to write
+            # unstructured, which is a different fact from an unassessed
+            # severity -- hence a separate field and NOT a `severity_source`
+            # value. severity_source describes where the SEVERITY came from;
+            # folding description-structure into it would corrupt the field
+            # ASK-430 just shipped (my call, ASK-446).
+            **({"unstructured_reason": bypass} if bypass else {}),
             "severity": args.severity if chosen else SPILLOVER_DEFAULT_SEVERITY,
             "severity_source": (SEVERITY_SOURCE_EXPLICIT if chosen
                                 else SEVERITY_SOURCE_DEFAULT),
@@ -1624,6 +1668,48 @@ def cmd_spillover(cfg: Config, args) -> int:
             _spillover_append(cfg, new_rec)
         print(json.dumps({"id": args.id, "severity": severity,
                           "was": prior, "status": new_rec.get("status")}))
+        return 0
+    if sub == "rate":
+        # RATE, NOT LEVEL. A gate on the total open count is permanently red,
+        # which teaches everyone to step over it -- the same failure the
+        # severity split was built to fix. The measurable property is
+        # added-minus-resolved over a trailing window, and this REPORTS rather
+        # than refuses: the moment it returns non-zero on a healthy repo it
+        # becomes another number people route around (ASK-446).
+        import datetime as _dt
+        days = getattr(args, "days", None) or 7
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+
+        def _within(stamp) -> bool:
+            if not isinstance(stamp, str) or not stamp.strip():
+                return False
+            try:
+                parsed = _dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            return parsed >= cutoff
+
+        items = list(_read_spillover(cfg).values())
+        added = [r for r in items if _within(r.get("created_at"))]
+        resolved = [r for r in items if _within(r.get("resolved_at"))]
+        bypassed = [r for r in added if r.get("unstructured_reason")]
+        # UNDATED IS PRINTED, NOT DROPPED. A row whose created_at will not parse
+        # is invisible to both counts; saying so is the difference between a
+        # rate and a rate-shaped number.
+        undated = [r for r in items
+                   if not isinstance(r.get("created_at"), str)
+                   or not r.get("created_at", "").strip()]
+        net = len(added) - len(resolved)
+        print(f"spillover rate over {days}d: {len(added)} added, "
+              f"{len(resolved)} resolved, net {net:+d} "
+              f"({len(bypassed)} bypassed the inflow gate)")
+        if undated:
+            print(f"  {len(undated)} row(s) carry no parseable created_at and "
+                  f"are in neither count")
+        print(f"  {len(_spillover_open(cfg))} open in total (level, not rate: "
+              f"reported for context, never gated on)")
         return 0
     if sub == "list":
         items = list(_read_spillover(cfg).values())
@@ -1801,6 +1887,60 @@ def severity_source(record: dict) -> str:
     if isinstance(value, str) and value.strip().lower() in SEVERITY_SOURCE_KNOWN:
         return value.strip().lower()
     return SEVERITY_SOURCE_UNKNOWN
+
+
+# THE INFLOW GATE (ASK-446). The ledger grows without bound and no amount of
+# triage changes that: inflow is automated (every deferred finding fans out),
+# outflow is manual. Measured 2026-08-06: 574 -> 590 open during a single
+# session that was actively RESOLVING items.
+#
+# A slice of the ledger is not untriaged because nobody looked. It is
+# UNTRIAGEABLE because nothing actionable was written down at write time. So the
+# gate sits on the WRITE path, the same shape as evidence_ledger.py refusing a
+# row with no command and no result.
+#
+# CALIBRATED READ-ONLY AGAINST THE LIVE LEDGER before it was written, 603 open
+# non-blocking items:
+#   - names no FILE ARTIFACT (path or filename):  49 (8.1%)
+#   - names NOTHING by the rule below:             6 (1.0%)
+# ASK-446 quotes "77 of 571 (13.5%)". That is the FILE-ARTIFACT measure, not
+# this rule. Recorded so nobody reads this gate as reclaiming 13.5% of the
+# ledger -- it does not. Its value is the rows never written from here on.
+#
+# WHY HYPHENATED NAMES ARE NOT A SIGNAL, though `voice-lint` and
+# `test-severity-floor` are real script names in the refused set: a hyphenated
+# lowercase token is shape-identical to ordinary English ("read-only",
+# "fleet-wide", "per-entry"). Accepting that shape accepts essentially every
+# description and turns the gate into a filter with an opinion. The author's fix
+# is to write the extension or backtick it, which is the capture habit this gate
+# exists to teach -- and `--unstructured` is there for when it genuinely is not
+# about one artifact.
+SPILLOVER_ACTIONABLE_SIGNALS = (
+    ("path", re.compile(r"[\w.\-]+/[\w.\-/]+")),
+    ("filename", re.compile(
+        r"\b[\w\-]+\.(?:py|sh|js|ts|tsx|json|jsonl|md|ya?ml|toml|html|css|sql"
+        r"|txt|plist|cfg|ini)\b")),
+    ("call", re.compile(r"\b\w+\(\)|\b\w+\.\w+\(")),
+    ("code span", re.compile(r"`[^`]+`")),
+    # snake_case / SCREAMING_SNAKE / lowerCamel / UpperCamel. All four are
+    # shapes ordinary prose does not produce by accident.
+    ("symbol", re.compile(
+        r"\b[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+\b"
+        r"|\b[a-z]+[A-Z]\w*\b"
+        r"|\b[A-Z][a-z]+[A-Z]\w*\b")),
+    ("command", re.compile(
+        r"\b(?:python3?|bash|sh|git|npm|npx|pytest|make|curl|rg|grep"
+        r"|launchctl|codex|claude)\s+\S")),
+    ("reference", re.compile(
+        r"\b(?:sp-[0-9a-f]{8}|[A-Z][A-Z0-9]{1,9}-\d+|PR #\d+)\b")),
+)
+
+
+def spillover_actionable_signals(text: str) -> tuple:
+    """Which actionable signals a description carries. Empty tuple == refuse."""
+    body = text or ""
+    return tuple(name for name, rx in SPILLOVER_ACTIONABLE_SIGNALS
+                 if rx.search(body))
 
 
 def spillover_provenance_split(items: list) -> dict:
@@ -1994,6 +2134,16 @@ def main(argv: list[str] | None = None) -> int:
     # argparse does not validate a default against `choices`, so None is safe.
     sp_add.add_argument("--severity", default=None,
                         choices=SPILLOVER_KNOWN_SEVERITIES)
+    # The inflow gate's recorded bypass (ASK-446). Takes a REASON, never a bare
+    # flag: `default=None` distinguishes "not passed" from "passed empty", and
+    # the empty case is refused rather than treated as absent.
+    sp_add.add_argument("--unstructured", default=None,
+                        help="record why this finding names no concrete "
+                             "artifact; bypasses the inflow gate and is counted "
+                             "by `spillover rate`")
+    sp_rate = spill_sub.add_parser(
+        "rate", help="added minus resolved over a trailing window (rate, not level)")
+    sp_rate.add_argument("--days", type=int, default=7)
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")

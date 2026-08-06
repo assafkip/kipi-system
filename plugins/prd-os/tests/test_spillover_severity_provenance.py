@@ -126,7 +126,7 @@ def test_control_add_still_defaults_severity_to_minor(repo: Path):
     default. A test suite that cannot show one thing holding still while another
     moves cannot tell a real failure from a broken harness."""
     assert run(repo, "spillover", "add", "--source", "ctl",
-               "--desc", "control item", "--id", "sp-ctl00001").returncode == 0
+               "--desc", "control item in prd_runner.py", "--id", "sp-ctl00001").returncode == 0
     assert row_by_id(repo, "sp-ctl00001")["severity"] == "minor"
 
 
@@ -136,14 +136,14 @@ def test_control_add_still_defaults_severity_to_minor(repo: Path):
 
 def test_add_without_severity_flag_records_default(repo: Path):
     assert run(repo, "spillover", "add", "--source", "s",
-               "--desc", "no flag passed", "--id", "sp-def00001").returncode == 0
+               "--desc", "no flag passed in prd_runner.py", "--id", "sp-def00001").returncode == 0
     rec = row_by_id(repo, "sp-def00001")
     assert rec["severity"] == "minor"
     assert rec["severity_source"] == "default"
 
 
 def test_add_with_explicit_severity_records_explicit(repo: Path):
-    assert run(repo, "spillover", "add", "--source", "s", "--desc", "flag passed",
+    assert run(repo, "spillover", "add", "--source", "s", "--desc", "flag passed in prd_runner.py",
                "--severity", "major", "--id", "sp-exp00001").returncode == 0
     rec = row_by_id(repo, "sp-exp00001")
     assert rec["severity"] == "major"
@@ -156,9 +156,9 @@ def test_explicit_minor_is_distinguishable_from_defaulted_minor(repo: Path):
     byte-identical apart from id and timestamp, so no routing rule and no report
     could tell them apart -- which is exactly the founder's "550 sit at minor,
     untriaged" claim being unprovable AND unrefutable."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked in prd_runner.py",
         "--id", "sp-aaa00001")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small in prd_runner.py",
         "--severity", "minor", "--id", "sp-bbb00001")
     defaulted = row_by_id(repo, "sp-aaa00001")
     assessed = row_by_id(repo, "sp-bbb00001")
@@ -220,9 +220,9 @@ def test_garbage_provenance_reads_unknown_not_explicit(repo: Path):
 # --------------------------------------------------------------------------
 
 def test_report_splits_assessed_from_never_triaged(repo: Path):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked in prd_runner.py",
         "--id", "sp-nt000001")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small in prd_runner.py",
         "--severity", "minor", "--id", "sp-as000001")
     out = run(repo, "gates", "run").stdout
     assert "minor-or-untriaged" not in out, (
@@ -238,7 +238,7 @@ def test_report_does_not_count_unknown_rows_as_assessed(repo: Path):
     preexisting(repo, "sp-old00003")
     preexisting(repo, "sp-old00004")
     preexisting(repo, "sp-old00005")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "judged small in prd_runner.py",
         "--severity", "minor", "--id", "sp-as000002")
     out = run(repo, "gates", "run").stdout
     assert "1 assessed" in out
@@ -282,7 +282,7 @@ def test_routing_consumer_can_import_the_split_instead_of_re_deriving(repo: Path
 # --------------------------------------------------------------------------
 
 def test_reclassify_stamps_explicit(repo: Path):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "never looked in prd_runner.py",
         "--id", "sp-rec00001")
     assert row_by_id(repo, "sp-rec00001")["severity_source"] == "default"
     result = run(repo, "spillover", "reclassify", "sp-rec00001",

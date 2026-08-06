@@ -244,9 +244,9 @@ def test_writers_derive_the_constant_from_prd_runner(repo, tmp_path, monkeypatch
 
 def test_triage_lens_groups_by_provenance(repo):
     _run(PRD_RUNNER, repo, "spillover", "add", "--source", "s",
-         "--desc", "nobody looked", "--id", "sp-t0000001")
+         "--desc", "nobody looked in prd_runner.py", "--id", "sp-t0000001")
     _run(PRD_RUNNER, repo, "spillover", "add", "--source", "s",
-         "--desc", "judged small", "--severity", "minor", "--id", "sp-t0000002")
+         "--desc", "judged small in prd_runner.py", "--severity", "minor", "--id", "sp-t0000002")
     out = _run(PRD_RUNNER, repo, "spillover", "triage").stdout
     assert "by severity_source" in out, (
         "gates run splits assessed/untriaged/unknown and then points the "

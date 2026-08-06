@@ -146,7 +146,7 @@ def test_archive_refuses_while_a_spillover_item_is_open(virgin: Path):
     # terminal closeout, and no-orphan-findings.md requires every item the work
     # touched to be reported there. Two different jobs, two different bars.
     added = _run(virgin, "prd_runner.py", "spillover", "add",
-                 "--source", prd_id, "--desc", "an open item",
+                 "--source", prd_id, "--desc", "an open item in prd_runner.py",
                  "--severity", "major")
     assert added.returncode == 0, added.stderr
 

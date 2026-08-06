@@ -74,7 +74,7 @@ def _write_issue(repo: Path, issue_id: str, status: str) -> None:
 
 
 def test_add_appends_open_item(repo):
-    r = run(repo, "spillover", "add", "--source", "prd-x", "--desc", "obsidian export skips archived", "--id", "sp1")
+    r = run(repo, "spillover", "add", "--source", "prd-x", "--desc", "obsidian export skips archived in prd_runner.py", "--id", "sp1")
     assert r.returncode == 0, r.stderr
     lines = _ledger(repo).read_text().splitlines()
     assert len(lines) == 1
@@ -83,8 +83,8 @@ def test_add_appends_open_item(repo):
 
 
 def test_add_is_idempotent_by_id(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
     # last-write-wins read collapses to one effective item, still open
     r = run(repo, "spillover", "list", "--json")
     items = json.loads(r.stdout)
@@ -93,7 +93,7 @@ def test_add_is_idempotent_by_id(repo):
 
 def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 0  # empty ledger = green
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
@@ -112,7 +112,7 @@ def test_gates_run_red_while_a_blocking_severity_item_is_open(repo):
     # No registered gates at all, but an open BLOCKING-severity spillover item
     # must still make the STANDING re-proof fail. The can't-be-forgotten
     # property, now scoped to severities that were actually assessed.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1",
         "--severity", "major")
     g = run(repo, "gates", "run")
     assert g.returncode != 0, "gates run stayed green with an open major item"
@@ -129,7 +129,7 @@ def test_gates_run_is_green_but_reports_a_minor_item(repo):
     over it -- worse than no gate, because it launders "we have enforcement".
 
     A minor item is now REPORTED and does not block."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit in prd_runner.py", "--id", "sp-n",
         "--severity", "minor")
     g = run(repo, "gates", "run")
     assert g.returncode == 0, (
@@ -143,7 +143,7 @@ def test_the_report_does_not_call_untriaged_items_minor(repo):
     """`--severity` DEFAULTS to minor, so a defaulted item is indistinguishable
     from one assessed as minor. 533 of 550 open items sit at that default. The
     report must not launder "nobody looked at it" as "we judged it small"."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit in prd_runner.py", "--id", "sp-n")
     out = run(repo, "gates", "run").stdout
     assert "untriaged" in out.lower(), (
         f"report presents the default as a real severity judgement: {out}")
@@ -151,9 +151,9 @@ def test_the_report_does_not_call_untriaged_items_minor(repo):
 
 def test_a_blocking_item_still_blocks_when_minor_items_exist(repo):
     """Negative-fire: the minor bucket must not swallow the blocking one."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit in prd_runner.py", "--id", "sp-n",
         "--severity", "minor")
-    run(repo, "spillover", "add", "--source", "s", "--desc", "bad", "--id", "sp-b",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "bad in prd_runner.py", "--id", "sp-b",
         "--severity", "blocker")
     g = run(repo, "gates", "run")
     assert g.returncode != 0
@@ -161,7 +161,7 @@ def test_a_blocking_item_still_blocks_when_minor_items_exist(repo):
 
 
 def test_resolve_refuses_unless_issue_closed(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     _write_issue(repo, "iss-1", status="in-progress")
     bad = run(repo, "spillover", "resolve", "sp1", "--resolution-ref", "iss-1")
     assert bad.returncode != 0, "resolve accepted a non-closed issue"
@@ -175,13 +175,13 @@ def test_resolve_refuses_unless_issue_closed(repo):
 
 
 def test_resolve_refuses_unknown_issue(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1", "--resolution-ref", "nope")
     assert bad.returncode != 0
 
 
 def test_void_resolves_with_recorded_reason(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "not real", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "not real in prd_runner.py", "--id", "sp1")
     ok = run(repo, "spillover", "resolve", "sp1", "--void", "duplicate of sp0")
     assert ok.returncode == 0, ok.stderr
     assert run(repo, "spillover", "check").returncode == 0
@@ -190,7 +190,7 @@ def test_void_resolves_with_recorded_reason(repo):
 
 
 def test_resolve_requires_a_target(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "x", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "x in prd_runner.py", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1")  # neither --resolution-ref nor --void
     assert bad.returncode != 0
 
@@ -226,7 +226,7 @@ def _stub_linear(monkeypatch, module, table: dict):
 
 
 def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-204": {"type": "completed", "name": "Done"}})
 
     code = _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-204",
@@ -248,7 +248,7 @@ def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1",
         # Blocking severity on purpose: this test asserts `gates run` stays
         # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
         # on blocker/major/high, so a default-severity item would leave it
@@ -265,7 +265,7 @@ def test_resolve_refuses_canceled_linear_issue(repo, runner, monkeypatch):
     # Canceled is not fixed. A canceled issue shipped no fix, so letting it
     # resolve an item would clear the gate on work that never happened. The
     # honest exit for a non-item is --void, which records a reason.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {"ASK-998": {"type": "canceled", "name": "Canceled"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-998") != 0
@@ -273,7 +273,7 @@ def test_resolve_refuses_canceled_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_unknown_linear_identifier(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     _stub_linear(monkeypatch, runner, {})  # Linear knows nothing
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-4242") != 0
@@ -283,7 +283,7 @@ def test_resolve_refuses_unknown_linear_identifier(repo, runner, monkeypatch):
 def test_resolve_refuses_malformed_ref_without_calling_linear(repo, runner, monkeypatch):
     # A ref that is neither a local spec nor a well-formed Linear identifier is
     # refused before any network call, so a typo cannot become a live lookup.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     called = []
     monkeypatch.setattr(runner, "_linear_issue_state",
                         lambda ident: called.append(ident) or {"type": "completed", "name": "Done"})
@@ -301,7 +301,7 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
     and a clean ledger, which is exactly the hand-clear this command exists to
     prevent. Refusing keeps the item visible until someone can actually prove it.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1",
         # Blocking severity on purpose: this test asserts `gates run` stays
         # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
         # on blocker/major/high, so a default-severity item would leave it
@@ -326,7 +326,7 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
 def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
     # A repo that tracks issues locally under a Linear-shaped id keeps working
     # offline: the local spec is checked first and Linear is never consulted.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak in prd_runner.py", "--id", "sp1")
     _write_issue(repo, "ASK-204", status="closed")
     monkeypatch.setattr(runner, "_linear_issue_state",
                         lambda ident: pytest.fail("local spec should have answered"))
@@ -345,7 +345,7 @@ def test_local_issue_spec_still_wins_over_linear(repo, runner, monkeypatch):
 
 
 def _add(repo: Path, sid: str, source: str, severity: str) -> None:
-    run(repo, "spillover", "add", "--source", source, "--desc", f"finding {sid}",
+    run(repo, "spillover", "add", "--source", source, "--desc", f"finding {sid} in prd_runner.py",
         "--id", sid, "--severity", severity)
 
 
@@ -419,7 +419,7 @@ def test_archive_still_refuses_on_a_minor_item(repo):
     prd_id = _json.loads(created.stdout)["created"]
     run(repo, "advance", "draft")
     # Sourced from THIS PRD: archive is scoped to the items the work opened.
-    run(repo, "spillover", "add", "--source", prd_id, "--desc", "nit",
+    run(repo, "spillover", "add", "--source", prd_id, "--desc", "nit in prd_runner.py",
         "--id", "sp-n", "--severity", "minor")
     assert run(repo, "gates", "run").returncode == 0, "minor should not block the gate"
     assert run(repo, "archive").returncode != 0, (
@@ -436,7 +436,7 @@ def test_archive_ignores_a_minor_item_another_prd_opened(repo):
     WORK TOUCHED, which is what this pins."""
     import json as _json
     run(repo, "spillover", "add", "--source", "SOME-OTHER-PRD", "--desc",
-        "unrelated backlog", "--id", "sp-other", "--severity", "minor")
+        "unrelated backlog in prd_runner.py", "--id", "sp-other", "--severity", "minor")
     created = run(repo, "new", "arch2", "--title", "T")
     prd_id = _json.loads(created.stdout)["created"]
     run(repo, "advance", "draft")
@@ -495,7 +495,7 @@ def test_cli_refuses_an_unrecognized_severity_at_the_door():
     runner = _P(__file__).resolve().parents[1] / "scripts/prd_runner.py"
     proc = subprocess.run(
         [sys.executable, str(runner), "spillover", "add", "--source", "t",
-         "--desc", "d", "--severity", "critical"],
+         "--desc", "d in prd_runner.py", "--severity", "critical"],
         capture_output=True, text=True)
     assert proc.returncode != 0, "CLI accepted an unrecognized severity"
     assert "critical" in (proc.stderr + proc.stdout)
@@ -516,7 +516,7 @@ def test_cli_refuses_an_unrecognized_severity_at_the_door():
 # or deleting prior spillover events" is an explicit non-goal.
 
 def test_reclassify_raises_severity_and_blocks_the_gate(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "real bug", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "real bug in prd_runner.py", "--id", "sp1")
     assert run(repo, "gates", "run").returncode == 0, "precondition: minor is not blocking"
     r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
             "--reason", "deletes founder data on an empty-prefix instance")
@@ -527,7 +527,7 @@ def test_reclassify_raises_severity_and_blocks_the_gate(repo):
 
 
 def test_reclassify_appends_and_never_rewrites_history(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
     before = _ledger_lines(repo)
     run(repo, "spillover", "reclassify", "sp1", "--severity", "high", "--reason", "why")
     after = _ledger_lines(repo)
@@ -539,7 +539,7 @@ def test_reclassify_appends_and_never_rewrites_history(repo):
 def test_reclassify_records_the_reason(repo):
     """A severity change with no stated reason is the hand-clear this ledger
     refuses everywhere else."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
     bad = run(repo, "spillover", "reclassify", "sp1", "--severity", "major")
     assert bad.returncode != 0, "reclassify accepted a severity change with no reason"
     ok = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
@@ -549,7 +549,7 @@ def test_reclassify_records_the_reason(repo):
 
 
 def test_reclassify_refuses_an_unknown_severity(repo):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
     r = run(repo, "spillover", "reclassify", "sp1", "--severity", "urgent",
             "--reason", "x")
     assert r.returncode != 0, "unknown severity accepted; the gate reads this field"
@@ -576,7 +576,7 @@ def test_reclassify_refuses_a_whitespace_only_reason(repo):
     in-code check is only reachable via whitespace. Mutation proved the earlier
     test never exercised it: deleting the check left the suite green because
     argparse fired first."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1")
     r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
             "--reason", "   ")
     assert r.returncode != 0, "a whitespace-only reason was accepted as a reason"
@@ -587,11 +587,11 @@ def test_reclassify_preserves_status_and_description(repo):
     """Only severity moves. A reclassify that drops the description would make
     the ledger unreadable, and one that flips status would resolve by side
     effect."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "the original text",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "the original text in prd_runner.py",
         "--id", "sp1")
     run(repo, "spillover", "reclassify", "sp1", "--severity", "major", "--reason", "r")
     rec = json.loads(_ledger_lines(repo)[-1])
-    assert rec["description"] == "the original text"
+    assert rec["description"] == "the original text in prd_runner.py"
     assert rec["status"] == "open"
     assert rec["source"] == "s"
 
@@ -599,7 +599,7 @@ def test_reclassify_preserves_status_and_description(repo):
 def test_reclassify_can_lower_severity_too(repo):
     """Triage runs both ways: an over-flagged item must be demotable, or the
     only safe move is to leave everything blocking."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py", "--id", "sp1",
         "--severity", "blocker")
     assert run(repo, "gates", "run").returncode != 0
     run(repo, "spillover", "reclassify", "sp1", "--severity", "minor",
@@ -624,7 +624,7 @@ def test_reclassify_normalizes_case_and_whitespace(repo, typed):
     membership check would sit in the ledger looking severe and blocking
     nothing.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-case", "--severity", "minor")
     r = run(repo, "spillover", "reclassify", "sp-case",
             "--severity", typed, "--reason", "case probe")
@@ -641,7 +641,7 @@ def test_reclassify_refuses_an_unknown_severity_cleanly(repo):
     """The sibling refusals assert their message; this one asserted only a
     non-zero exit, which is the shape that let two other guards pass while
     the behaviour was a stack trace."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-u", "--severity", "minor")
     r = run(repo, "spillover", "reclassify", "sp-u",
             "--severity", "critical", "--reason", "sounds urgent")
@@ -657,7 +657,7 @@ def test_triage_surfaces_a_downgrade(repo):
     nothing, so the one action that can stop the standing gate blocking
     appeared in no report.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-down", "--severity", "blocker")
     assert run(repo, "gates", "run").returncode != 0, "precondition: it blocks"
     run(repo, "spillover", "reclassify", "sp-down", "--severity", "minor",
@@ -673,7 +673,7 @@ def test_triage_surfaces_a_downgrade(repo):
 
 def test_triage_does_not_cry_downgrade_over_a_raise(repo):
     """The negative half. Without it, labelling every change LOWERED passes."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-up", "--severity", "minor")
     run(repo, "spillover", "reclassify", "sp-up", "--severity", "major",
         "--reason", "it is worse than filed")
@@ -699,7 +699,7 @@ def test_concurrent_resolve_and_reclassify_cannot_resurrect(repo):
     resurrected = []
     for n in range(25):
         sid = f"sp-race{n}"
-        run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
             "--id", sid, "--severity", "minor")
         with cf.ThreadPoolExecutor(max_workers=2) as ex:
             a = ex.submit(run, repo, "spillover", "resolve", sid, "--void", "not real")
@@ -726,7 +726,7 @@ def test_triage_labels_the_direction_correctly(repo, before, after, expect):
     which are not ordered by severity: `blocker` is index 0 of its tuple and
     `high` index 2, so `blocker -> high` reported as a RAISE (Codex, minor).
     A membership set is not a scale."""
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-dir", "--severity", before)
     run(repo, "spillover", "reclassify", "sp-dir", "--severity", after,
         "--reason", "direction probe")
@@ -759,7 +759,7 @@ def test_ledger_lock_degrades_when_it_cannot_be_taken(repo):
     here. The race it protects against costs a false RED gate, which is
     recoverable; refusing to resolve at all is not.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d in prd_runner.py",
         "--id", "sp-ro", "--severity", "minor")
     d = Path(repo) / ".prd-os"
     mode = d.stat().st_mode
