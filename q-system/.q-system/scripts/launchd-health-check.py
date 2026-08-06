@@ -390,6 +390,73 @@ def linear_report_line(outcome, dry_run):
             f"already-tracked={outcome['existing']} unfiled={unfiled_count(outcome)}")
 
 
+_INTENT = None
+
+
+def _intent_module():
+    """Lazily load launchd-intent-verify.py (sp-2c7e5819). Same importlib shape as
+    _fleet_health: loaded on demand, and its absence cannot stop the watchdog."""
+    global _INTENT
+    if _INTENT is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "iv", HERE / "launchd-intent-verify.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _INTENT = module
+    return _INTENT
+
+
+def run_intent_check(dry_run):
+    """Verify declared intent against launchd's override DB; print, ping, file.
+
+    Never raises. A watchdog that dies because the intent manifest is malformed
+    stops watching launchd, which is the silent death it exists to catch -- the
+    same contract `file_linear_findings` keeps for Linear.
+
+    The result is REPORTED even when it could not run. An intent verifier that
+    fails to parse `launchctl print-disabled` and prints nothing is
+    indistinguishable from one that found no drift, and the second reading is the
+    one a reader defaults to (the `unfiled=` scar on `linear_report_line`, ASK-181).
+    """
+    try:
+        intent = _intent_module()
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent verification unavailable: {exc}", file=sys.stderr)
+        return
+    try:
+        findings, due, (declared, total) = intent.check(dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent verification COULD NOT RUN: {exc}", file=sys.stderr)
+        return
+
+    for label, kind, detail in findings:
+        print(f"INTENT-{kind.upper()}: {label} -- {detail}")
+    print(f"intent coverage: {declared}/{total} installed jobs declared")
+
+    if not due:
+        return
+    if dry_run:
+        print(f"[dry] would ping intent drift for {len(due)} job(s)")
+        return
+
+    drift = [(label, kind, detail) for label, kind, detail, _ in due]
+    try:
+        outcome = _fleet_health().file_findings(
+            intent.linear_findings(drift, _fleet_health().finding_key),
+            apply=True, filer="launchd-intent-verify.py")
+        unfiled = max(len(drift) - sum(outcome.get(b, 0) for b in LANDED_BUCKETS), 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent findings NOT filed to Linear: {exc}", file=sys.stderr)
+        unfiled = len(drift)
+
+    message = intent.ping_message(due)
+    if unfiled:
+        message += f" [NOT filed to Linear: {unfiled}]"
+    send_ping(message)
+
+
 def problems_to_ping(problems, state, now):
     """Problems whose kind changed since the last ping, or whose last ping is
     older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
@@ -410,6 +477,13 @@ def problems_to_ping(problems, state, now):
 
 
 def run(dry_run):
+    # BEFORE the early return below, not after. `problems` is empty exactly when
+    # every watched job is loaded and healthy -- which is the state a job running
+    # against an explicit pause decision produces. Wiring the intent check after
+    # the `if not problems: return` would make it dead on the only fleet state it
+    # exists to judge.
+    run_intent_check(dry_run)
+
     problems = discover_problems()
 
     if not problems:
