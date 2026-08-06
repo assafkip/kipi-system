@@ -319,9 +319,11 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         sys.stderr.write(f"{exc}\n")
         return 2
     found = False
+    target_record: dict = {}
     for rec in records:
         if rec.get("id") == args.finding_id:
             found = True
+            target_record = rec
             old = rec.get("disposition")
             rec["disposition"] = args.disposition
             if args.disposition in REQUIRES_RATIONALE:
@@ -344,8 +346,74 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         sys.stderr.write(f"finding {args.finding_id!r} not found in {path}\n")
         return 2
     _write_all(path, records)
+    # DEFERRING IS NOT A TERMINAL STATE (sp-5bcfbfe8). Mirrors
+    # prd-os findings_writer._sync_spillover_for_finding, which has done this
+    # for PRD findings all along. This side had no equivalent, so a deferred
+    # ISSUE finding was a rationale and then nothing -- exactly the silent drop
+    # no-orphan-findings.md forbids.
+    #
+    # Measured 2026-08-06 while closing scs-validated-event-fold: three findings
+    # deferred, then the ledger folded for that issue's ids -> []. Two of the
+    # three happened to have been captured by hand beforehand; the third had
+    # nothing and would have vanished behind a rationale nobody re-reads.
+    #
+    # The rule text said this backstop was automatic and named findings_writer,
+    # so it was TRUE and still misleading -- a correct statement about one of
+    # two systems, read as a guarantee about both. Fixed here rather than by
+    # qualifying the sentence: a rule that must be read carefully to avoid a
+    # wrong conclusion will produce wrong conclusions.
+    _sync_spillover_for_finding(repo_root, args.issue_id, target_record)
     print(json.dumps({"set": args.finding_id, "disposition": args.disposition}))
     return 0
+
+
+def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -> None:
+    """Open a spillover item while a finding is deferred; resolve it when it is not.
+
+    Deliberately NON-FATAL. This runs AFTER `_write_all` has already committed
+    the disposition, so raising here would leave the findings file changed and
+    the command reporting failure -- the partial-commit shape that had to be
+    fixed in findings_writer the same day. A ledger that cannot be written is
+    surfaced on stderr and the disposition stands.
+    """
+    # parents[2] is plugins/ : [0]=scripts, [1]=kipi-dsse, [2]=plugins.
+    # parents[1] silently yielded "No module named 'config'", which the broad
+    # except below turned into a WARNING and a green-looking command -- the
+    # swallowed-import shape this repo has a scar for.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
+    try:
+        from config import load as load_config
+        from prd_runner import _read_spillover, _spillover_append
+        cfg = load_config(repo_root, strict=True)
+        sid = f"defer-{issue_id}-{finding['id']}"
+        existing = _read_spillover(cfg).get(sid)
+        if finding.get("disposition") == "deferred":
+            if existing and existing.get("status") == "open":
+                return  # idempotent: re-deferring must not append a duplicate
+            _spillover_append(cfg, {
+                "id": sid, "source": issue_id, "finding_id": finding["id"],
+                # WHOLE body, never a prefix (sp-9f11cf69): a 120-char cap on
+                # the PRD side made every defer-* row end mid-sentence, and
+                # nobody can triage what they cannot read.
+                "description": f"deferred issue finding {finding['id']}: {finding.get('body', '')}",
+                # Severity carries over, or a major defect silently lands in
+                # the gate's non-blocking bucket.
+                "severity": finding.get("severity", "minor"),
+                "status": "open", "created_at": _now_iso(),
+            })
+        elif existing and existing.get("status") == "open":
+            resolved = dict(existing)
+            resolved.update(
+                status="resolved",
+                void_reason=f"finding re-dispositioned to {finding.get('disposition')}",
+                resolved_at=_now_iso())
+            _spillover_append(cfg, resolved)
+    except Exception as exc:  # noqa: BLE001 - see docstring: never fatal here
+        sys.stderr.write(
+            f"WARNING: disposition recorded, but the spillover ledger could not be "
+            f"updated for {finding.get('id')}: {exc}\n"
+            "A deferred finding with no ledger item is untracked; fix the ledger "
+            "and re-run this command to create it.\n")
 
 
 def cmd_count(args: argparse.Namespace) -> int:
