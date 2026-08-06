@@ -68,6 +68,33 @@ SOURCES = (
 )
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
+# Dispositions that CLOSE a defer-* spillover item. `pending` is deliberately
+# absent and that absence is the whole point: see _sync_spillover_for_finding.
+DECIDED_DISPOSITIONS = ("accepted", "rejected")
+
+# ISSUE severity -> SPILLOVER LEDGER severity. Two vocabularies, edited in two
+# plugins by two different changes, and `nit` was legal on this side and unknown
+# on the ledger's for as long as both existed.
+#
+# prd_runner._is_blocking_severity treats an UNKNOWN severity as BLOCKING, which
+# is correct and deliberate (ASK-402: `--severity critical` used to read as minor
+# and green the gate). Handing it `nit` therefore inverted the intent completely
+# -- deferring the single most trivial finding a reviewer can file turned the
+# standing gate RED, fleet-wide, until a human hand-resolved the row. The gate
+# got louder the less the finding mattered.
+#
+# Fixed by translating at the boundary, not by widening the ledger's allowlist:
+# `nit` is this plugin's word and the ledger should not have to learn it.
+# `.get(sev, sev)` on purpose -- an unmapped value passes through and BLOCKS,
+# because fail-closed is still the right direction for something nobody has
+# classified. test_every_issue_severity_maps_into_the_ledger_vocabulary fails the
+# moment a new severity is added here without a translation.
+LEDGER_SEVERITY = {
+    "blocker": "blocker",
+    "major": "major",
+    "minor": "minor",
+    "nit": "minor",
+}
 ID_RE = re.compile(r"^finding-([0-9]+)$")
 RECORD_FIELDS = (
     "id",
@@ -345,6 +372,7 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
     if not found:
         sys.stderr.write(f"finding {args.finding_id!r} not found in {path}\n")
         return 2
+    pre_findings_bytes = path.read_bytes() if path.is_file() else None
     _write_all(path, records)
     # DEFERRING IS NOT A TERMINAL STATE (sp-5bcfbfe8). Mirrors
     # prd-os findings_writer._sync_spillover_for_finding, which has done this
@@ -362,32 +390,73 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
     # two systems, read as a guarantee about both. Fixed here rather than by
     # qualifying the sentence: a rule that must be read carefully to avoid a
     # wrong conclusion will produce wrong conclusions.
-    _sync_spillover_for_finding(repo_root, args.issue_id, target_record)
+    try:
+        _sync_spillover_for_finding(repo_root, args.issue_id, target_record)
+    except Exception as exc:  # noqa: BLE001
+        # BROADER than findings_writer's `except SpilloverLedgerError`, on
+        # purpose. That one lets an ImportError escape as a traceback exiting 1
+        # with NO rollback -- and ImportError is the live failure mode here,
+        # because this fan-out reaches into a SIBLING PLUGIN's scripts by
+        # sys.path. The `parents[1]` bug was exactly that. Every reachable
+        # failure has the same correct response: un-commit and refuse.
+        rolled_back = _rollback_findings(path, pre_findings_bytes)
+        sys.stderr.write(
+            f"spillover ledger not updated for {args.finding_id}: {exc}\n"
+            + ("disposition rolled back; findings file unchanged.\n"
+               if rolled_back else
+               "WARNING: rollback ALSO failed. The finding may now read "
+               f"{args.disposition!r} with no spillover item tracking it.\n")
+            + "Fix the ledger, then re-run this command.\n")
+        return 2
     print(json.dumps({"set": args.finding_id, "disposition": args.disposition}))
     return 0
 
 
 def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -> None:
-    """Open a spillover item while a finding is deferred; resolve it when it is not.
+    """Open a spillover item while a finding is deferred; close it once decided.
 
-    Deliberately NON-FATAL. This runs AFTER `_write_all` has already committed
-    the disposition, so raising here would leave the findings file changed and
-    the command reporting failure -- the partial-commit shape that had to be
-    fixed in findings_writer the same day. A ledger that cannot be written is
-    surfaced on stderr and the disposition stands.
+    RAISES ON FAILURE, and the caller rolls the findings file back.
+
+    This used to catch `Exception`, print a WARNING and fall through, so
+    `set-disposition ... deferred` against an unreadable ledger printed
+    `{"set": "finding-1", "disposition": "deferred"}` and exited 0 -- a silent
+    drop wearing a success record, which is the precise failure this fan-out
+    exists to prevent. Nothing downstream reads stderr for a passing command.
+
+    THE OLD DOCSTRING CITED findings_writer AS PRECEDENT FOR THAT, AND HAD IT
+    BACKWARDS. `findings_writer.cmd_set_disposition` catches
+    SpilloverLedgerError, restores the findings file to its pre-write bytes via
+    `_rollback_findings`, and returns 2. It does not swallow. A wrong citation of
+    a real function is worse than no citation: it reads as "this was considered",
+    so the next reader checks the reasoning instead of the code.
     """
     # parents[2] is plugins/ : [0]=scripts, [1]=kipi-dsse, [2]=plugins.
-    # parents[1] silently yielded "No module named 'config'", which the broad
-    # except below turned into a WARNING and a green-looking command -- the
-    # swallowed-import shape this repo has a scar for.
+    # parents[1] silently yielded "No module named 'config'". Under the old
+    # broad except that was a WARNING and a green command; now it is exit 2,
+    # which is what a disabled backstop should look like.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
-    try:
-        from config import load as load_config
-        from prd_runner import _read_spillover, _spillover_append
-        cfg = load_config(repo_root, strict=True)
-        sid = f"defer-{issue_id}-{finding['id']}"
+    from config import load as load_config
+    from prd_runner import _read_spillover, _spillover_append, _spillover_lock
+
+    cfg = load_config(repo_root, strict=True)
+    sid = f"defer-{issue_id}-{finding['id']}"
+    disposition = finding.get("disposition")
+    # READ AND APPEND UNDER ONE LOCK -- the same chokepoint prd_runner's
+    # `resolve` and `reclassify` take, skipped here.
+    #
+    # The idempotency check below is a read-then-append, so across PROCESSES
+    # every concurrent caller read "no such item" and every one of them
+    # appended. Measured on this fixture before the lock: 4 concurrent deferrals
+    # of ONE finding produced 4 open rows, every trial. The existing idempotency
+    # test only ever ran single-threaded, and re-deferral from a RETRYING AGENT
+    # is exactly the concurrent case it was standing in for.
+    #
+    # Duplicates are not a correctness bug (the fold is last-write-wins). They
+    # are unbounded growth in a ledger whose entire problem is that it grows,
+    # and each duplicate needs its own resolve to leave.
+    with _spillover_lock(cfg):
         existing = _read_spillover(cfg).get(sid)
-        if finding.get("disposition") == "deferred":
+        if disposition == "deferred":
             if existing and existing.get("status") == "open":
                 return  # idempotent: re-deferring must not append a duplicate
             _spillover_append(cfg, {
@@ -396,24 +465,46 @@ def _sync_spillover_for_finding(repo_root: Path, issue_id: str, finding: dict) -
                 # the PRD side made every defer-* row end mid-sentence, and
                 # nobody can triage what they cannot read.
                 "description": f"deferred issue finding {finding['id']}: {finding.get('body', '')}",
-                # Severity carries over, or a major defect silently lands in
-                # the gate's non-blocking bucket.
-                "severity": finding.get("severity", "minor"),
+                # Severity carries over TRANSLATED, or a major defect lands in
+                # the gate's non-blocking bucket and a `nit` turns it red.
+                "severity": LEDGER_SEVERITY.get(
+                    finding.get("severity", "minor"), finding.get("severity", "minor")),
                 "status": "open", "created_at": _now_iso(),
             })
-        elif existing and existing.get("status") == "open":
+        # `pending` is NOT here, and its absence is the fix. This branch used to
+        # be a bare `elif existing...`, so it fired for every non-deferred value
+        # -- including `pending`, the one disposition that needs no --rationale.
+        # `set-disposition <iss> <finding> pending` was therefore a one-command,
+        # unexplained THIRD way out of the ledger, which is exactly what
+        # no-orphan-findings.md (the file this change edits) says does not exist.
+        #
+        # Undeciding is not resolving. Sharpest for an out-of-scope finding:
+        # `count --in-scope-pending` skips it, so afterwards the finding blocked
+        # nothing and the ledger held nothing.
+        elif disposition in DECIDED_DISPOSITIONS and existing and existing.get("status") == "open":
             resolved = dict(existing)
             resolved.update(
                 status="resolved",
-                void_reason=f"finding re-dispositioned to {finding.get('disposition')}",
+                void_reason=f"finding re-dispositioned to {disposition}",
                 resolved_at=_now_iso())
             _spillover_append(cfg, resolved)
-    except Exception as exc:  # noqa: BLE001 - see docstring: never fatal here
-        sys.stderr.write(
-            f"WARNING: disposition recorded, but the spillover ledger could not be "
-            f"updated for {finding.get('id')}: {exc}\n"
-            "A deferred finding with no ledger item is untracked; fix the ledger "
-            "and re-run this command to create it.\n")
+
+
+def _rollback_findings(path: Path, pre_bytes: bytes | None) -> bool:
+    """Restore the findings file to its pre-write bytes. Returns success.
+
+    Same shape as findings_writer._rollback_findings, for the same reason: the
+    fan-out runs after the disposition is committed, so a failure there has to
+    un-commit it or the record claims a backstop that does not exist.
+    """
+    try:
+        if pre_bytes is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(pre_bytes)
+        return True
+    except OSError:
+        return False
 
 
 def cmd_count(args: argparse.Namespace) -> int:
