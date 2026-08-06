@@ -9,6 +9,8 @@ allowed_files:
   - plugins/prd-os/schemas/spillover-event.schema.json
   - plugins/prd-os/tests/test_spillover_events.py
   - plugins/prd-os/scripts/prd_runner.py
+  - plugins/prd-os/scripts/findings_writer.py
+  - plugins/prd-os/tests/test_findings_writer_body.py
 disallowed_files:
   - .prd-os/spillover.jsonl
   - q-system/**
@@ -44,6 +46,20 @@ the live path untouched, which is the inert-wiring scar this repo already has
 
 Single chokepoint, not N call sites: the validator is called from
 `_read_spillover` only. Nothing else reads the ledger file directly.
+
+## Amendment 2 2026-08-06: findings_writer.py (the ledger's other writer)
+
+This issue already took ownership of the WRITE path: `validate_for_append` now
+gates `_spillover_append` (sp-940e1013). `findings_writer._sync_spillover_for_finding`
+calls that same `_spillover_append`, and it feeds it a body truncated to 120
+chars (line 470), so it is the one producer that writes a structurally valid but
+INFORMATION-LOSSY event through the chokepoint this issue hardened.
+
+Validating the shape of an event while its content is silently halved is a
+half-finished job. Same file, same chokepoint, same defect class.
+
+Recorded as a SECOND amendment rather than absorbed quietly: two amendments on
+one issue is the point at which scope drift should be visible to a reviewer.
 
 ## Deliverables
 

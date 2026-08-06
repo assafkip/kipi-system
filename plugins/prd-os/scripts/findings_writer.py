@@ -467,7 +467,19 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
             return  # idempotent: already tracked open
         _spillover_append(cfg, {
             "id": sid, "source": prd_id, "finding_id": finding["id"],
-            "description": f"deferred finding {finding['id']}: {str(finding.get('body', ''))[:120]}",
+            # WHOLE BODY, never a prefix (sp-9f11cf69). This carried [:120],
+            # so every defer-* row in the ledger ended mid-sentence and the
+            # triager could not tell what the defect was. Measured 2026-08-06:
+            # all five open defer-* descriptions stopped mid-clause, and four
+            # were verified against half-sentences before anyone opened the
+            # findings file that still held the real text.
+            #
+            # Nobody can triage what they cannot read. An unreadable item is not
+            # a low-priority item, but `minor` is where unreadable things land
+            # by default -- so a display cap became a permanent triage failure.
+            # The ledger is the artifact people act on; truncate at RENDER time
+            # if a view needs it, never at write time.
+            "description": f"deferred finding {finding['id']}: {finding.get('body', '')}",
             "severity": finding.get("severity", "minor"),
             "status": "open", "created_at": _now_iso(),
         })
