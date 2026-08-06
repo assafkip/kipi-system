@@ -748,7 +748,11 @@ def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
     state["verified_seal"] = _evidence_seal(state["issue_id"], evidence)
     stamp = _write_receipt(paths, state, "verified")
     print(json.dumps({"verified": state["issue_id"], "at": stamp,
-                      "checks_run": len(evidence)}))
+                      "checks_run": len(evidence),
+                      # issue-verify.md tells the agent to list the checks that
+                      # ran. It could not: only a count was emitted (Codex r7,
+                      # minor). The doc and the output are now one fact.
+                      "checks": [e["command"] for e in evidence]}))
     return 0
 
 
@@ -974,6 +978,48 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
                 f"cannot close {issue_id}: the reviewed receipt is set but "
                 f"{missing} never completed.\n")
             return 2
+        # REREAD the artifacts. The seal proves the stored RECORD is
+        # self-consistent; it says nothing about the file still being there.
+        # Codex round 7, with a repro: delete the artifact after
+        # complete-review and close still passed, because both sides of the
+        # comparison came from the same cached metadata. Sealing a hash you
+        # never recompute is a checksum of your own memory.
+        for kind, c in sorted(completions.items()):
+            raw = c.get("artifact_path")
+            if not raw:
+                sys.stderr.write(
+                    f"cannot close {issue_id}: the {kind} completion records no "
+                    "artifact path.\n")
+                return 2
+            art = Path(raw)
+            if not art.is_absolute():
+                art = paths.repo_root / art
+            if not art.is_file():
+                sys.stderr.write(
+                    f"cannot close {issue_id}: the {kind} reviewer artifact is "
+                    f"gone: {art}\n"
+                    "The receipt attests to a file that no longer exists. "
+                    "Re-run the review.\n")
+                return 2
+            blob = art.read_bytes()
+            if not blob.strip():
+                sys.stderr.write(
+                    f"cannot close {issue_id}: the {kind} reviewer artifact is "
+                    f"now empty: {art}\n")
+                return 2
+            # sha256 alone. A byte-count comparison here is subsumed by the
+            # hash -- no tamper can change the length without changing the
+            # digest -- so it is a branch no test can isolate, and an
+            # unkillable branch is one nobody can prove works. The count stays
+            # in the SEAL payload, where it is data rather than a check.
+            if hashlib.sha256(blob).hexdigest() != c.get("artifact_sha256"):
+                sys.stderr.write(
+                    f"cannot close {issue_id}: the {kind} reviewer artifact "
+                    f"changed after it was recorded: {art}\n"
+                    "Re-run `issue_runner.py complete-review "
+                    f"{kind}` against the current output.\n")
+                return 2
+
         if state.get("reviewed_seal") != _review_seal(issue_id, completions):
             sys.stderr.write(
                 f"cannot close {issue_id}: the reviewed receipt does not match "

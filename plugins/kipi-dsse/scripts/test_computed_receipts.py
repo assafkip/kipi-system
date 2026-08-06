@@ -696,3 +696,49 @@ class TestReviewedIsSealedToTheReviewerArtifact:
         proc = _issue(loaded_issue, "close")
         assert proc.returncode == 0, (
             f"honest close refused\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")
+
+    def test_close_refuses_when_the_artifact_was_deleted(self, loaded_issue):
+        """Codex round 7, with a repro. The seal proves the stored RECORD is
+        self-consistent; it says nothing about the file still existing. Both
+        sides of the comparison came from the same cached metadata, so a
+        checksum of your own memory always matches."""
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        self._earn(loaded_issue)
+        _check_off_deliverables(loaded_issue)
+
+        art = Path(loaded_issue) / ".prd-os/reviews/standard.md"
+        assert art.is_file(), "precondition: the artifact was recorded"
+        art.unlink()
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode != 0, "close accepted a receipt whose artifact is gone"
+        assert "gone" in proc.stderr, proc.stderr
+
+    def test_close_refuses_when_the_artifact_was_edited(self, loaded_issue):
+        assert _issue(loaded_issue, "verify").returncode == 0
+        assert _issue(loaded_issue, "triage").returncode == 0
+        self._earn(loaded_issue)
+        _check_off_deliverables(loaded_issue)
+
+        art = Path(loaded_issue) / ".prd-os/reviews/adversarial.md"
+        original = art.read_bytes()
+        # SAME LENGTH, different bytes. The check is `hash != stored OR bytes
+        # != stored`, and a rewrite that also changes the length is caught by
+        # the byte-count half -- so disabling the HASH half still passed and
+        # the mutant survived. Length-preserving isolates the hash.
+        tampered = original.replace(b"APPROVE", b"REJECT!")
+        assert len(tampered) == len(original) and tampered != original, (
+            "the tamper must preserve length to isolate the hash check")
+        art.write_bytes(tampered)
+        proc = _issue(loaded_issue, "close")
+        assert proc.returncode != 0, "close accepted a rewritten artifact"
+        assert "changed after it was recorded" in proc.stderr, proc.stderr
+
+    def test_verify_emits_the_checks_it_ran_not_only_a_count(self, loaded_issue):
+        """issue-verify.md tells the agent to list the checks that ran. An
+        integer cannot be listed (Codex r7, minor)."""
+        proc = _issue(loaded_issue, "verify")
+        assert proc.returncode == 0, proc.stderr
+        out = json.loads(proc.stdout)
+        assert isinstance(out.get("checks"), list) and out["checks"], out
+        assert len(out["checks"]) == out["checks_run"]

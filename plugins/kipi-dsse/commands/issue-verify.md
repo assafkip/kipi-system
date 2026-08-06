@@ -23,7 +23,8 @@ Verify the active DSSE issue. Execute in order:
 
 3. If `verify` exits 0:
    - Report: "verified receipt recorded at <timestamp>."
-   - Read `checks_run` from its JSON output and list the checks that ran.
+   - Read `checks` from its JSON output and list them, one per line
+     (`checks_run` is the count).
 
 4. If `verify` exits 2:
    - It already printed which check failed and its exit code. Report that.
