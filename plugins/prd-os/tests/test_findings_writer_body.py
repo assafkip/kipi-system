@@ -53,6 +53,10 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
+def ledger(repo: Path) -> Path:
+    return repo / ".prd-os" / "spillover.jsonl"
+
+
 def _cfg(repo: Path):
     sys.path.insert(0, str(SCRIPTS))
     from config import load as load_config
@@ -170,3 +174,39 @@ def test_findings_writer_main_reports_an_unreadable_ledger_as_exit_2(repo, monke
         "refusal code, and an uncaught raise would instead exit 1 -- "
         "indistinguishable from a normal result")
     assert "spillover" in err.lower(), f"refusal named no cause: {err!r}"
+
+
+def test_a_deferred_disposition_rolls_back_when_the_ledger_is_unreadable(repo: Path):
+    """PARTIAL COMMIT. Found by adversarial review with an executed reproducer.
+
+    `set-disposition <id> deferred` writes the findings file FIRST, then calls
+    `_sync_spillover_for_finding`. Making `_read_spillover` strict introduced a
+    new mid-transaction failure point at the one place with no rollback: the
+    finding is left `disposition: deferred` with NO spillover item, which breaks
+    the "deferring is not a terminal state" invariant the ledger exists to hold.
+    The operator sees exit 2, and every other exit-2 from this command means
+    nothing happened.
+
+    The sibling failure path 30 lines above already calls `_rollback_findings`.
+    """
+    prd = "prd-x"
+    (repo / ".prd-os" / "findings" / f"{prd}-findings.jsonl").write_text(json.dumps({
+        "id": "finding-1", "prd_id": prd, "severity": "major",
+        "body": "a real defect body", "source": "codex-review",
+        "disposition": "pending", "created_at": "2026-08-06T00:00:00Z"}) + "\n")
+    # Line 2 is a torn write -> the strict reader refuses.
+    ledger(repo).write_text(
+        json.dumps({"id": "sp-a", "source": "s", "description": "d",
+                    "severity": "minor", "status": "open",
+                    "created_at": "2026-08-06T00:00:00Z"}) + '\n{"id":"sp-a","sou\n')
+    findings_path = repo / ".prd-os" / "findings" / f"{prd}-findings.jsonl"
+    before = findings_path.read_bytes()
+
+    fw = _load("findings_writer")
+    rc = fw.main(["--repo-root", str(repo), "set-disposition", prd, "finding-1",
+                  "deferred", "--rationale", "out of scope"])
+    assert rc == 2, f"expected a refusal, got {rc}"
+    assert findings_path.read_bytes() == before, (
+        "the findings file was mutated while the command reported failure: the "
+        "finding is now `deferred` with no spillover item, which is the silent "
+        "drop this subsystem exists to prevent")

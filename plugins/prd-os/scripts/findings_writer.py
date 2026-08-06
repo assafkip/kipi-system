@@ -643,7 +643,35 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
     # permanent open work for a disposition the command had just reported as
     # rolled back (Codex review, PR #97, executed reproducer). The receipt is
     # the failure-prone step, so it goes first among the two irreversible ones.
-    _sync_spillover_for_finding(cfg, args.prd_id, target)
+    # PARTIAL COMMIT GUARD. Before the ledger reader was made strict, this call
+    # could not fail, so it needed no envelope. Now an unreadable ledger raises
+    # here -- AFTER the findings file was written -- and the command returned 2
+    # while leaving the finding at `disposition: deferred` with NO spillover
+    # item. That breaks the one invariant this fan-out exists to hold
+    # ("deferring is not a terminal state") and it does so silently, because
+    # every other exit-2 from this command means nothing happened.
+    #
+    # Rolling back the findings file rather than moving the call: the ordering
+    # above is load-bearing (PR #97 scar) and must not be reopened.
+    try:
+        _sync_spillover_for_finding(cfg, args.prd_id, target)
+    except SpilloverLedgerError as exc:
+        rolled_back = _rollback_findings(path, pre_findings_bytes)
+        sys.stderr.write(
+            f"spillover ledger unreadable: {exc}\n"
+            + ("disposition rolled back; findings file unchanged.\n"
+               if rolled_back else
+               "WARNING: rollback ALSO failed. The finding may now read "
+               "`deferred` with no spillover item tracking it.\n")
+            # Named explicitly: the receipt is written BEFORE this point, so a
+            # rollback here cannot un-write it. The operator needs to know the
+            # judgment ledger holds an attempt whose disposition was reverted,
+            # rather than discovering the mismatch from a cross-check later.
+            + "NOTE: the judgment receipt for this attempt already landed; the "
+              "judgment ledger will show a decision the findings file no longer "
+              "reflects. Fix the ledger, then re-run this command.\n"
+        )
+        return 2
     print(
         json.dumps(
             {

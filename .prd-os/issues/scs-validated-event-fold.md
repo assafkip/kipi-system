@@ -20,7 +20,7 @@ required_checks:
   - python3 -m pytest -q plugins/prd-os/tests/test_findings_writer_body.py
 required_reviews:
   - prd-os-owner
-bypass_check: "python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py -k 'invalid or duplicate or timestamp'"
+bypass_check: "python3 -m pytest -q plugins/prd-os/tests/test_spillover_events.py plugins/prd-os/tests/test_findings_writer_body.py"
 deliverables_count: 1
 ---
 <!-- generated-by: prd_split.py prd=prd-spillover-current-state-2026-07-24 finding=finding-1 at=2026-07-24T21:14:34Z -->
@@ -73,6 +73,20 @@ This is a WIRING CORRECTION, not new scope: no new files, no new behaviour, the
 test already exists and already passes. Recorded as a third amendment anyway,
 because the alternative is editing required_checks quietly, and the whole point
 of amendment 2's note was that scope changes stay visible to a reviewer.
+
+## Amendment 4 2026-08-06: bypass_check omitted the security property
+
+The registered bypass_check was `-k 'invalid or duplicate or timestamp'`, which
+selects 6 of 23 tests. It omitted `test_corrupt_line_cannot_hide_a_blocking_item_from_the_gate`
+-- the test this file's own docstring calls "THE security property" -- plus every
+write-validation test, the fleet-status tests, and both decode tests.
+
+bypass_check is the PERMANENT regression gate registered at closeout, so a
+`-k` filter written before most of the tests existed becomes a gate that
+re-proves a fraction of what it claims. Now runs both files in full.
+
+Found by adversarial review, which named it while explicitly declining to file
+it (outside the contract slice). Fourth amendment, recorded like the others.
 
 ## Deliverables
 

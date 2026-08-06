@@ -1254,10 +1254,39 @@ def _read_spillover(cfg: Config) -> dict:
     # and `gates run` printed "all 0 regression gates green; no blocking-severity
     # spillover" and exited 0 -- a silent way to clear the standing gate.
     #
-    # This is the ONE chokepoint every reader goes through (gates run, spillover
-    # check/list/triage/resolve/reclassify), which is why the validator is called
-    # here and nowhere else.
-    return fold_ledger_text(path.read_text(), path)
+    # The chokepoint for PRD_RUNNER'S OWN readers (gates run, spillover
+    # check/list/triage/resolve/reclassify) and for findings_writer, which
+    # imports these helpers.
+    #
+    # NARROWED after review: this comment used to claim it was the ONE reader in
+    # the plugin, "which is why the validator is called here and nowhere else".
+    # That is false. `judgment_compiler._resolve_one_ref` opens
+    # `.prd-os/spillover.jsonl` itself and still carries the lenient
+    # `except json.JSONDecodeError: continue` this issue removed here, reached
+    # live via `/prd-triage --evidence spillover:<id>`. Its failure direction is
+    # safe (a missed record reads as "no such item", i.e. a refusal), so it is
+    # not a hole in the security property -- but the claim was load-bearing, and
+    # a future reader auditing whether the ledger is strictly read would have
+    # trusted it and stopped here. Second site tracked in spillover.
+    # DECODE INSIDE THE GUARD. This was `path.read_text()`, so the decode
+    # happened OUTSIDE fail-closed handling: a single non-UTF-8 byte raised
+    # UnicodeDecodeError, which is not a SpilloverLedgerError and sailed past
+    # the handler in main() as a raw traceback exiting 1 -- the same code
+    # `spillover check` returns for the healthy "there are open items" state.
+    # That is precisely the hole this issue exists to close, left open for one
+    # corruption class because every test fixture here was ASCII.
+    #
+    # Explicit encoding, not the locale default: a torn write or a non-prd-os
+    # writer produces arbitrary bytes, and the failure must not depend on the
+    # machine's locale.
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SpilloverLedgerError(
+            f"{path}: byte {exc.start} is not valid UTF-8 ({exc.reason}). The "
+            "ledger holds bytes no reader can decode, so it is refused rather "
+            "than partially read.") from exc
+    return fold_ledger_text(text, path)
 
 
 def _spillover_open(cfg: Config) -> list:

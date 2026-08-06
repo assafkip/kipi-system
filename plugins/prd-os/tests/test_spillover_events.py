@@ -286,11 +286,16 @@ def test_a_legacy_status_is_readable_but_NOT_appendable(repo: Path, status):
 def test_every_status_and_severity_the_live_ledger_uses_is_accepted(repo: Path):
     """Fail-closed must not brick the real fleet ledger.
 
-    Measured against `.prd-os/spillover.jsonl` on 2026-08-06 (860 events):
-    statuses open/resolved/promoted, severities minor/major/high/medium/low/
-    blocker. `promoted` appears nowhere in the parent PRD's event list, so a
-    validator written from the PRD alone would have refused 7 live records and
-    taken every prd-os command down with it.
+    Severities measured across the fleet's ledgers on 2026-08-06.
+
+    An earlier version of this docstring said "860 events: open 715, resolved
+    139, promoted 7" -- which sums to 861, not 860. Caught by review. The whole
+    authority of a comment like this rests on it being a real count, so a tally
+    that does not add up is worth nothing. Recounted: kipi-system holds 893
+    events, open 741 / resolved 145 / promoted 7 (741+145+7 = 893).
+
+    Statuses are pinned by `test_every_status_in_the_FLEET_is_readable`, which
+    measures all ten ledgers rather than this one.
     """
     lines = [event(id="sp-st%02d" % i, status=s)
              for i, s in enumerate(("open", "resolved", "promoted"))]
@@ -383,3 +388,52 @@ def test_the_cli_add_path_still_works_end_to_end(repo: Path):
     result = run(repo, "spillover", "add", "--source", "t", "--desc", "a finding")
     assert result.returncode == 0, f"add broke: {result.stderr!r}"
     assert run(repo, "spillover", "check").returncode == 1
+
+
+def test_undecodable_bytes_are_refused_as_exit_2_not_a_traceback(repo: Path):
+    """The decode happens OUTSIDE the guard unless it is caught deliberately.
+
+    `_read_spillover` did `fold_ledger_text(path.read_text(), path)`, so a ledger
+    holding any non-UTF-8 byte raised UnicodeDecodeError, not
+    SpilloverLedgerError. That sailed past the handler whose own comment says a
+    traceback exits 1 and is indistinguishable from `spillover check`'s "there
+    are open items" -- i.e. the exact hole this change exists to close, still
+    open for one corruption class.
+
+    The rest of the suite could not see it: every other corruption fixture here
+    is ASCII. A torn write or a non-prd-os writer produces arbitrary bytes.
+    """
+    ledger(repo).write_bytes(
+        event(id="sp-ok000001").encode() + b"\n\xff\xfe garbage\n")
+    result = run(repo, "spillover", "check")
+    assert result.returncode == 2, (
+        f"undecodable ledger returned {result.returncode}; 2 is the refusal code "
+        f"and 1 collides with the healthy 'open items' state.\nstderr={result.stderr!r}")
+    assert "Traceback" not in result.stderr, (
+        f"decode failure escaped as a crash: {result.stderr!r}")
+
+
+def test_undecodable_bytes_INSIDE_a_json_string_are_refused_not_silently_replaced(repo: Path):
+    """Distinguishes REFUSED from SILENTLY MANGLED.
+
+    The sibling test puts the bad bytes outside any JSON value, so a lenient
+    `decode(errors="replace")` would still yield an unparseable line and the
+    fold would refuse anyway -- the test passes either way and cannot see the
+    difference. Here the bad byte sits INSIDE a description string, so a lenient
+    decode produces VALID JSON with U+FFFD substituted and the fold succeeds,
+    silently altering the evidence the standing gate reads.
+
+    Refusing is the only correct answer: a ledger that cannot be decoded must
+    not be half-read into a decision.
+    """
+    good = event(id="sp-keep0001").encode()
+    # A valid JSON record whose description carries one invalid UTF-8 byte.
+    tainted = b'{"id": "sp-taint01", "source": "s", "description": "before\xffafter", "severity": "minor", "status": "open", "created_at": "t"}'
+    ledger(repo).write_bytes(good + b"\n" + tainted + b"\n")
+    result = run(repo, "spillover", "check")
+    assert result.returncode == 2, (
+        f"expected refusal (2), got {result.returncode}. A lenient decode would "
+        "return 1 here with the byte silently replaced by U+FFFD, corrupting a "
+        f"description the gate reports.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+    assert "�" not in (result.stdout + result.stderr), \
+        "a replacement character reached the output; the decode was lenient"
