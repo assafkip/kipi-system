@@ -317,6 +317,71 @@ class TestPromotedIssueIsSelectable(unittest.TestCase):
             self.assertEqual(rc, 2, "unknown label should refuse")
             self.assertIsNone(stub.created)
 
+    def test_promoting_from_a_worktree_uses_the_shared_ledger(self):
+        """The ledger is per-worktree-set, not per-worktree (sp-d3bdbdc9).
+
+        Driven from a REAL `git worktree`, because the whole defect is that
+        repo_root and the git-common-dir parent are the same directory in the
+        main checkout and only diverge in a worktree. A test run from the main
+        checkout passes against the broken code.
+        """
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / "mainrepo"
+            (main / ".prd-os").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(main)], check=True)
+            subprocess.run(["git", "-C", str(main), "commit", "-q", "--allow-empty",
+                            "-m", "x"], check=True,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "t",
+                                "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                                "GIT_COMMITTER_EMAIL": "t@t"})
+            # The REAL prd_runner, so the resolution under test is the shipped
+            # rule and not a stand-in that agrees with me.
+            dst = main / "plugins" / "prd-os" / "scripts"
+            dst.parent.mkdir(parents=True)
+            shutil.copytree(HERE.parents[2] / "plugins" / "prd-os" / "scripts", dst)
+
+            (main / ".prd-os" / "spillover.jsonl").write_text(json.dumps({
+                "id": "sp-wt01", "status": "open", "severity": "major",
+                "source": "ASK-451", "description": "shared ledger"}) + "\n")
+
+            wt = Path(tmp) / "wt"
+            r = subprocess.run(["git", "-C", str(main), "worktree", "add", "-q",
+                                str(wt), "HEAD"], capture_output=True, text=True)
+            # Prove the setup, or a failed worktree add silently relocates this
+            # test back into the main checkout, where broken code passes.
+            self.assertEqual(r.returncode, 0, f"worktree add failed: {r.stderr}")
+            self.assertTrue((wt / ".git").exists(), "no worktree at the target")
+            self.assertFalse((wt / ".prd-os" / "spillover.jsonl").exists(),
+                             "fixture invalid: the worktree already has a ledger")
+
+            dor = Path(tmp) / "dor.md"
+            dor.write_text(DOR)
+            mod = load_promote()
+            stub = RecordingLinear()
+            mod.linear_module = lambda: stub
+            old_argv, old_env = sys.argv, dict(os.environ)
+            sys.argv = ["spillover-promote.py", "sp-wt01", "--title", "wt",
+                        "--dor-file", str(dor), "--repo-root", str(wt)]
+            os.environ["KIPI_LINEAR_PROJECT"] = "kipi-system"
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    rc = mod.main()
+            finally:
+                sys.argv = old_argv
+                os.environ.clear()
+                os.environ.update(old_env)
+
+            self.assertEqual(rc, 0, f"promote from a worktree failed: {err.getvalue()}")
+            self.assertFalse((wt / ".prd-os" / "spillover.jsonl").exists(),
+                             "wrote a PRIVATE ledger inside the worktree")
+            rows = [json.loads(l) for l in
+                    (main / ".prd-os" / "spillover.jsonl").read_text().splitlines() if l.strip()]
+            self.assertEqual(rows[-1]["status"], "promoted",
+                             "the shared ledger did not receive the promotion")
+
     def test_ledger_row_says_promoted_not_resolved(self):
         """Promoting is not fixing. A `resolved` here would launder the pile."""
         with tempfile.TemporaryDirectory() as tmp:

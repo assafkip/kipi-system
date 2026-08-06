@@ -53,6 +53,46 @@ LABEL_BY_NAME = 'query($name:String!){issueLabels(filter:{name:{eq:$name}}){node
 PROJECT_BY_NAME = 'query($name:String!){projects(filter:{name:{eq:$name}}){nodes{id name}}}'
 
 
+def ledger_root(repo_root: Path) -> Path:
+    """Resolve the ledger root the way prd_runner does -- by CALLING prd_runner.
+
+    why: `*.jsonl` is gitignored, so the spillover ledger is never shared through
+    git. Resolving it from the per-worktree root gives every worktree its own
+    private ledger: 26 of them holding 71 findings the main checkout could not
+    see, measured 2026-07-30. prd_runner._ledger_root resolves via
+    `git rev-parse --git-common-dir` instead, which is the same directory from
+    every worktree in the set.
+
+    This script had exactly that bug. Run from a worktree it read a ledger that
+    does not exist, so `load_rows` came back empty and EVERY promotion exited 2
+    with "unknown finding". An automatic caller would have done nothing forever
+    while looking healthy -- silent absence, which is worse than the visible
+    unlabelled issue this file was fixed for.
+
+    IMPORTED, never reimplemented. Two derivations of one rule is how the ledger
+    got split in the first place, and a private copy here would drift the same
+    way. On failure we fall back to repo_root, which is safe because it fails
+    LOUD: the finding is not found and nothing is written.
+    """
+    # Located next to THIS SCRIPT first, not under repo_root. repo_root may be a
+    # worktree that never checked the plugin out, and looking for the resolver
+    # inside the tree whose identity we are trying to resolve is the same
+    # chicken-and-egg the bug came from -- it fell back to the per-worktree root
+    # and looked fixed. repo_root stays as the fallback for an odd layout.
+    candidates = [SKELETON / "plugins" / "prd-os" / "scripts" / "prd_runner.py",
+                  Path(repo_root) / "plugins" / "prd-os" / "scripts" / "prd_runner.py"]
+    runner = next((c for c in candidates if c.is_file()), None)
+    if runner is None:
+        return Path(repo_root)
+    try:
+        spec = importlib.util.spec_from_file_location("prd_runner_root", runner)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return Path(m._ledger_root(Path(repo_root)))
+    except Exception:
+        return Path(repo_root)
+
+
 def linear_module():
     spec = importlib.util.spec_from_file_location("ls", HERE.parent / "linear-sync.py")
     m = importlib.util.module_from_spec(spec)
@@ -122,11 +162,17 @@ def main() -> int:
     args = ap.parse_args()
 
     root = Path(args.repo_root).resolve()
-    ledger = root / ".prd-os" / "spillover.jsonl"
+    ledger = ledger_root(root) / ".prd-os" / "spillover.jsonl"
     rows = load_rows(ledger)
     rec = rows.get(args.finding_id)
     if not rec:
-        sys.stderr.write(f"unknown finding: {args.finding_id}\n")
+        # Name the ledger. "unknown finding" against a ledger that does not
+        # exist and "unknown finding" against the right one are different
+        # problems, and the first is how the worktree bug stayed invisible.
+        sys.stderr.write(
+            f"unknown finding: {args.finding_id}\n"
+            f"  ledger: {ledger} ({'exists' if ledger.is_file() else 'MISSING'}, "
+            f"{len(rows)} findings)\n")
         return 2
     if rec.get("status") != "open":
         sys.stderr.write(f"{args.finding_id} is '{rec.get('status')}', not open\n")
