@@ -34,14 +34,25 @@ seven instance-owned DATA-DIRECTORY names; a script is not one of them, so
 
     *deleting q-system/.q-system/scripts/income-scan.sh   -> exit 0
 
-still passes. That exact path is how the fractional-cxo income scanners died
-silently for six days. A guard that RECORDS a claim it never COMPUTED is worse
-than an obvious gap, because the next reader trusts it -- reading this sentence
-almost caused sp-10cf4f76 to be voided as already-fixed.
+still passes. A guard that RECORDS a claim it never COMPUTED is worse than an
+obvious gap, because the next reader trusts it -- reading this sentence almost
+caused sp-10cf4f76 to be voided as already-fixed.
 
-sp-10cf4f76 IS STILL OPEN. The class it belongs to -- an instance-created file
-inside the synced tree, whose NAME nobody enumerated in advance -- cannot be
-closed by adding names here, and that is not a matter of effort. Instance-only
+BUT THE DATA IS NOT ACTUALLY AT RISK HERE, AND THE FIRST DRAFT OF THIS COMMENT
+GOT THAT WRONG TOO. Measured 2026-08-06 against a fixture: an instance-only
+script inside the synced tree SURVIVES a real `kipi update`. The protection is
+one layer up, in kipi-update-preserve-scan.py, which snapshots the file, lets
+rsync --delete remove it, and restores it afterwards. So this guard's silence on
+scripts is a DOCUMENTATION defect, not a missing protection -- do not "fix" it
+by adding names here in the belief that founder data is currently exposed.
+
+What the restore does NOT preserve is git tracking: the file returns UNTRACKED
+and drops out of the sync commit (`restored untracked: <path>` in the log).
+That is tracked separately as its own defect, because a silently de-tracked file
+is less detectable than a deleted one, not more.
+
+THE NAME-BASED SHAPE IS STILL THE WRONG PREDICATE, independently of the above.
+Instance-only
 and skeleton-owned files are INTERLEAVED IN THE SAME DIRECTORIES: measured
 2026-08-06, `q-system/.q-system/scripts/` holds 141 skeleton-owned files, and
 the skeleton has deleted 6 files from that directory over its history. Those
