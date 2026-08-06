@@ -145,6 +145,32 @@ else
 fi
 
 echo
+echo "== 2b. a DELIBERATE claude run names Opus (the ENGINE=claude branch) =="
+# COVERAGE HOLE, found by the degraded reviewer's mutation campaign on PR #114.
+# Cases 1 and 2 both drive ENGINE=codex (degraded=1 and degraded=0), so NOTHING
+# exercised `[ "$ENGINE" = "claude" ] && REVIEWED_BY="$CLAUDE_MODEL"`. Deleting
+# that line left this suite 8/8 green while it printed the message claiming the
+# record distinguishes the two writers.
+#
+# It is a LIVE path, not a hypothetical: `--engine claude` is accepted at the
+# arg parser, and with KIPI_REVIEW_PRIMARY_ENGINE=claude that engine writes the
+# ROOT gating record. With the line gone, a deliberate Opus review would be
+# recorded as authored by the codex model -- the exact defect this file exists
+# to kill, surviving inside it.
+D2B="$WORK/case2b"; run_writer claude 0 "$D2B"
+REC2B="$D2B/pr-900.verdict.json"
+if [ ! -f "$REC2B" ]; then
+  bad "no record written for the deliberate claude-engine case"
+else
+  RB2B="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("reviewed_by",""))' "$REC2B")"
+  if [ "$RB2B" = "claude-opus-5" ]; then
+    ok "a deliberate --engine claude run names the claude model (reviewed_by=$RB2B)"
+  else
+    bad "THE DEFECT: --engine claude recorded reviewed_by='$RB2B'; codex never ran"
+  fi
+fi
+
+echo
 echo "== 3. THE FAIL-SAFE: a legacy record with no key is UNKNOWN, not independent =="
 D3="$WORK/case3"; mkdir -p "$D3"
 cat > "$D3/pr-900.verdict.json" <<'JSON'
