@@ -1555,9 +1555,19 @@ def cmd_spillover(cfg: Config, args) -> int:
     sub = args.spillover_cmd
     if sub == "add":
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
+        # THE DEFAULT MOVED OUT OF ARGPARSE. It used to be
+        # `add_argument("--severity", default="minor")`, which is why nothing
+        # downstream could tell a chosen `minor` from an unchosen one: by the
+        # time this line ran, `args.severity` was the string "minor" either way
+        # and the distinction had already been erased one frame up. Resolving it
+        # here is what makes the provenance observable at all (ASK-430).
+        chosen = args.severity is not None
         _spillover_append(cfg, {
             "id": sid, "source": args.source, "description": args.desc,
-            "severity": args.severity, "status": "open", "created_at": _now_iso(),
+            "severity": args.severity if chosen else SPILLOVER_DEFAULT_SEVERITY,
+            "severity_source": (SEVERITY_SOURCE_EXPLICIT if chosen
+                                else SEVERITY_SOURCE_DEFAULT),
+            "status": "open", "created_at": _now_iso(),
         })
         print(json.dumps({"id": sid, "status": "open"}))
         return 0
@@ -1599,6 +1609,14 @@ def cmd_spillover(cfg: Config, args) -> int:
             prior = current.get("severity")
             new_rec.update({
                 "severity": severity,
+                # ASSESSED BY CONSTRUCTION: this verb requires --severity AND a
+                # stated --reason, so reaching this line means somebody read the
+                # item and said why. It is also the ONLY way an existing row
+                # leaves `unknown` -- one item, one reason, one append-only
+                # event. There is deliberately no bulk path: a mechanical pass
+                # stamping a severity nobody read is the hand-clear in a
+                # different coat (ASK-430 explicit non-goal).
+                "severity_source": SEVERITY_SOURCE_EXPLICIT,
                 "reclassified_at": _now_iso(),
                 "reclassified_from": prior,
                 "reclassify_reason": args.reason,
@@ -1742,6 +1760,72 @@ def _is_blocking_severity(value: str) -> bool:
     return sev not in SPILLOVER_NONBLOCKING_SEVERITIES
 
 
+# WHERE A SEVERITY CAME FROM, which is a different question from what it is.
+# `spillover add` defaults `--severity minor`, so a row nobody assessed and a row
+# someone judged small were byte-identical apart from id and timestamp. That was
+# survivable while `severity` was a hint for a human reading `gates run`. It is
+# not survivable now: any deferred item becomes an issue worked by a machine, and
+# `severity` is the ROUTING INPUT deciding whether an item ever reaches one. A
+# routing rule keyed on a field indistinguishable from its own default is keying
+# on nothing (ASK-430).
+SEVERITY_SOURCE_EXPLICIT = "explicit"   # a human or agent passed --severity
+SEVERITY_SOURCE_DEFAULT = "default"     # the flag was omitted; nobody chose
+SEVERITY_SOURCE_UNKNOWN = "unknown"     # written before the field existed
+SPILLOVER_DEFAULT_SEVERITY = "minor"
+SEVERITY_SOURCE_KNOWN = (SEVERITY_SOURCE_EXPLICIT, SEVERITY_SOURCE_DEFAULT)
+
+
+def severity_source(record: dict) -> str:
+    """Provenance of `record`'s severity: explicit | default | unknown.
+
+    MISSING MEANS UNKNOWN, NEVER ASSESSED, and that is the whole point of the
+    field. Measured on the live ledger 2026-08-06: 610 open items, 589 at
+    `minor`, zero carrying provenance. Defaulting a missing key to `explicit`
+    here would relabel every one of those rows as examined in a single deploy
+    without anyone having read one of them -- the same hand-clear this ledger
+    refuses everywhere else, wearing a provenance field as a coat.
+
+    Fails toward `unknown` on an unrecognised value, matching
+    `_is_blocking_severity`'s fail-closed direction: junk in this field is not
+    evidence that somebody looked.
+    """
+    value = record.get("severity_source")
+    if isinstance(value, str) and value.strip().lower() in SEVERITY_SOURCE_KNOWN:
+        return value.strip().lower()
+    return SEVERITY_SOURCE_UNKNOWN
+
+
+def spillover_provenance_split(items: list) -> dict:
+    """Partition items into assessed / never_triaged / unknown.
+
+    A FUNCTION rather than a formatted report line, because there are now two
+    consumers and only one of them reads prose. `gates run` prints it; the
+    edit-time ratchet (`spillover-ratchet.py`, ASK-457) routes on it, and that
+    one decides whether an item ever reaches a machine at all.
+
+    It lives HERE because prd-os owns this ledger and therefore owns its
+    vocabulary -- the same reason FINDING_TO_LEDGER_SEVERITY sits in this file
+    rather than in the two findings writers that feed it. The import direction is
+    load-bearing: a consumer imports from the owner. prd-os pulling a severity
+    vocabulary back out of kipi-dsse or q-system to avoid a drift would only
+    trade one derivation split for a worse one.
+
+    Every input lands in exactly one bucket. A consumer iterating the buckets
+    must not silently drop a row -- the ratchet's `severity == "minor"` literal
+    drops all 9 open low/medium items today, which is sp-61faebb3, filed against
+    that file rather than fixed from this one.
+    """
+    split = {"assessed": [], "never_triaged": [], "unknown": []}
+    bucket = {
+        SEVERITY_SOURCE_EXPLICIT: "assessed",
+        SEVERITY_SOURCE_DEFAULT: "never_triaged",
+        SEVERITY_SOURCE_UNKNOWN: "unknown",
+    }
+    for record in items:
+        split[bucket[severity_source(record)]].append(record)
+    return split
+
+
 def cmd_gates(cfg: Config, args) -> int:
     """gates list prints the registry; gates run executes regression gates from
     the repo root (operator-authored shell commands, the same trust boundary
@@ -1827,10 +1911,29 @@ def cmd_gates(cfg: Config, args) -> int:
         # "we judged it small".
         ids = ", ".join(r["id"] for r in reported[:10])
         more = f" (+{len(reported) - 10} more)" if len(reported) > 10 else ""
-        print(f"[REPORT] spillover: {len(reported)} open minor-or-untriaged "
-              f"item(s), not blocking: {ids}{more}")
+        # SPLIT, because one number answered two different questions. This
+        # printed "N open minor-or-untriaged item(s)" -- the founder's standing
+        # complaint is "550 sit at minor, untriaged" and this line could neither
+        # prove it nor refute it, because a defaulted severity and an assessed
+        # one were the same bytes. Three buckets, and `unknown` is its own rather
+        # than folded into either: folding it into assessed launders ~610
+        # unexamined rows, and folding it into never-triaged asserts nobody
+        # looked, which is equally unobserved (ASK-430).
+        split = spillover_provenance_split(reported)
+        print(f"[REPORT] spillover: {len(reported)} open non-blocking "
+              f"item(s): {len(split['assessed'])} assessed, "
+              # "untriaged", not "never triaged": test_spillover.py's
+              # `test_the_report_does_not_call_untriaged_items_minor` holds this
+              # exact word, guarding the property that the report never presents
+              # a DEFAULT as a judgement. Same property this split sharpens, so
+              # the vocabulary matches rather than forking.
+              f"{len(split['never_triaged'])} untriaged (severity defaulted), "
+              f"{len(split['unknown'])} unknown provenance "
+              f"(pre-dates severity_source): {ids}{more}")
         print("  Triage with `prd_runner.py spillover triage`; raise one with "
-              "`spillover add --severity major|blocker`.")
+              "`spillover add --severity major|blocker`. An `unknown` row moves "
+              "to assessed only via `spillover reclassify <id> --severity X "
+              "--reason ...` -- one item, one reason, never a bulk pass.")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
@@ -1876,7 +1979,12 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
     # choices, so the CLI refuses an unrecognized severity at the door rather
     # than storing it and letting the gate mis-bucket it (Codex, PR #110 r2).
-    sp_add.add_argument("--severity", default="minor",
+    # default=None, NOT "minor". The value still defaults to minor -- but it is
+    # resolved in cmd_spillover so the code can see whether the operator chose
+    # it. argparse filling the default in here is what erased the distinction
+    # (ASK-430); `choices` still refuses an unknown value at the door, and
+    # argparse does not validate a default against `choices`, so None is safe.
+    sp_add.add_argument("--severity", default=None,
                         choices=SPILLOVER_KNOWN_SEVERITIES)
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
