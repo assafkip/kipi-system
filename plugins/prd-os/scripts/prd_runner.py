@@ -1890,10 +1890,17 @@ def main(argv: list[str] | None = None) -> int:
     except SpilloverLedgerError as exc:
         # An unreadable ledger is an OPERATOR-ACTIONABLE refusal, not a crash.
         # Caught at the one dispatch point so every subcommand that reads the
-        # ledger reports it identically. Deliberately not a bare traceback: a
-        # traceback exits 1, which is the same code `spillover check` uses for
-        # "there are open items", so the two would be indistinguishable to any
-        # caller (and to the tests asserting a refusal).
+        # ledger reports it identically.
+        #
+        # WHAT THIS ACTUALLY BUYS, stated narrowly after review called the
+        # earlier wording an overclaim: a refusal instead of a traceback, with
+        # the cause on stderr. It does NOT give a caller a unique exit code for
+        # "ledger corrupt" -- exit 2 is already returned for unknown spillover
+        # id, invalid --severity, missing --reason, missing --resolution-ref,
+        # LinearRefError, unknown subcommand, config error and a malformed
+        # gates registry. A machine caller still has to read stderr to tell
+        # them apart. The win is only that exit 1 no longer collides with
+        # `spillover check`'s healthy "there are open items" result.
         sys.stderr.write(f"spillover ledger unreadable: {exc}\n")
         return 2
 

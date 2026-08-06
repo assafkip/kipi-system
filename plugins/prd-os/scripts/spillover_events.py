@@ -81,7 +81,13 @@ class SpilloverLedgerError(Exception):
 
 
 def _describe(path, lineno, problem: str) -> str:
-    return (f"{path}:{lineno}: {problem}\n"
+    # `lineno=None` on the append path. It used to be passed the literal string
+    # "new event", which rendered as `path (refusing to append):new event: ...`
+    # -- and the class docstring promises a line number precisely so an operator
+    # (or an editor's jump-to-line, or a log scraper) can find the offending
+    # line. A fake one in `path:line` position is worse than none.
+    where = f"{path}:{lineno}" if lineno is not None else f"{path}"
+    return (f"{where}: {problem}\n"
             "The spillover ledger is the standing gate's evidence, so an "
             "unreadable line is refused rather than skipped: skipping one is "
             "indistinguishable from that finding never having existed.")
@@ -108,7 +114,7 @@ def validate_for_append(record, path) -> dict:
     refuse loudly instead of skipping silently. Single-write durability belongs
     to finding-7 (`scs-concurrent-append-lock`); this is validation only.
     """
-    return validate_event(record, f"{path} (refusing to append)", "new event",
+    return validate_event(record, f"{path} (refusing to append)", None,
                           allowed=APPENDABLE_STATUSES)
 
 
