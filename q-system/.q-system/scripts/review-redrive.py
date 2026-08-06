@@ -24,7 +24,9 @@ other's slot.
 
 THE THREE STATES A REQUIRED CONTEXT CAN BE IN, AND WHO OWNS EACH
 ----------------------------------------------------------------
-    ABSENT  (never posted)            -> ASK-318 producer + ASK-313 detector
+    ABSENT  (never posted)            -> HERE, as a first re-review (sp-d87c5416).
+                                         ASK-318/ASK-313 still own the PRODUCER
+                                         question of why it never posted.
     SUCCESS (but nothing merges)      -> ASK-310, pr-land-if-green.sh
     FAILURE (the reviewer refused)    -> here
 
@@ -72,11 +74,15 @@ the first; nothing bounds the second except the cap it would waste.
 
 WHAT IT REFUSES TO TOUCH
 ------------------------
-- A PR with no verdict record at all. That is ABSENT, and it belongs to
-  ASK-318/ASK-313. Manufacturing a review for a PR whose producer never ran would
-  paper over the missing producer, which is the harder and more important bug.
-- A PR whose reviewer slot is not currently FAILURE. A stale record next to a
-  green slot means a newer review already landed.
+- A PR whose slot is FAILING but has no verdict record. The producer ran, posted
+  a failure, and recorded nothing; re-reviewing that papers over a broken producer,
+  which is the harder and more important bug. Still ASK-318/ASK-313.
+  NOT the same as a slot that was NEVER POSTED -- there is no verdict to be
+  missing there, and since 2026-08-06 that case IS selected (sp-d87c5416). The
+  two were conflated while absence was rare; it is now 18 of 29 open PRs.
+- A PR whose reviewer slot is POSTED and not FAILURE. A stale record next to a
+  green slot means a newer review already landed. Note the word posted: the old
+  wording said "not currently FAILURE", which silently included never-posted.
 - A PR that is a draft, or not attributable to an agent+issue. Same rule as
   ci-redrive: an unrecognised branch owner is a human's branch, left alone.
 
@@ -225,6 +231,37 @@ def reviewer_slot_failing(pr_obj):
     return sorted(names)
 
 
+def reviewer_slot_posted(pr_obj):
+    """True if a reviewer slot appears in the rollup AT ALL, whatever its state.
+
+    The distinction reviewer_slot_failing() structurally cannot make. That
+    predicate is two-valued -- failing / not-failing -- over a three-valued
+    world: failing, passing, and NEVER POSTED. Callers that branch only on
+    `not failing` read the third state as the second, so silence becomes health.
+
+    Scar (sp-d87c5416, measured 2026-08-06): candidates() did
+    `if not slots: continue`, so a PR the reviewer had never run against was
+    skipped before its verdict record was even read. 18 of 29 open PRs were in
+    that state, which made the MAJORITY of the backlog invisible to the only
+    mechanism that could move it -- while `select` still printed 8 confident
+    rework candidates and read like a full account of the queue.
+
+    Deliberately state-blind: it answers "did the producer ever speak", never
+    "what did it say". Folding the state back in here would recreate the same
+    two-valued collapse one function further down.
+    """
+    for check in pr_obj.get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("__typename") == "StatusContext":
+            name = check.get("context") or ""
+        else:
+            name = check.get("name") or ""
+        if CI.is_reviewer_slot(name):
+            return True
+    return False
+
+
 def classify(record, head_sha):
     """(action, reason) for a PR whose reviewer slot is failing.
 
@@ -275,9 +312,39 @@ def candidates(repo_dir, records_dir):
             continue
         issue, agent, source = attributed
         slots = reviewer_slot_failing(pr_obj)
-        if not slots:
-            continue
         pr = pr_obj.get("number")
+        if not slots:
+            if reviewer_slot_posted(pr_obj):
+                # A verdict exists and is not failing. Nothing to redrive.
+                continue
+            # NEVER POSTED -- the reviewer has not run against this PR at all.
+            #
+            # This is NOT the ASK-318 case refused below, and the difference is
+            # the whole point. There, a failing slot with no verdict record means
+            # the producer RAN and recorded nothing, so re-reviewing would paper
+            # over a broken producer. Here nothing ever claimed a review happened,
+            # so there is no verdict to be missing and no failure to mask.
+            # Requiring a verdict record before a PR may receive its FIRST review
+            # is circular, which is why the record lookup is skipped on this path.
+            #
+            # It emits the EXISTING re-review action on purpose. kipi-dispatch.sh
+            # :1000 matches that exact string to run pr-review-agent.sh --post;
+            # any other value falls through to `./kipi converge`, so a new
+            # vocabulary word would not be inert, it would silently buy a full
+            # rework round against a review that does not exist. The word already
+            # means "nobody read the code, there is no spec", which is precisely
+            # this state. The distinction rides in the reason, which is what
+            # select and the escalation message print.
+            out.append({
+                "action": REREVIEW,
+                "reason": "the reviewer has never posted a verdict for this PR",
+                "issue": issue, "agent": agent, "issue_source": source,
+                "pr": pr, "url": pr_obj.get("url"),
+                "branch": pr_obj.get("headRefName"),
+                "head_sha": pr_obj.get("headRefOid") or "",
+                "slots": [],
+            })
+            continue
         record = read_record(records_dir, pr)
         if record is None:
             # ABSENT, not FAILURE-with-no-record. Owned by ASK-318/ASK-313.
@@ -379,7 +446,7 @@ def escalate(path, cand):
         "review-redrive: %s PR #%s still has %s failing after the machine tier. "
         "What the machine tried: one %s at %s. The reviewer's record now reads "
         "%s. %s"
-        % (cand["issue"], cand["pr"], ", ".join(cand["slots"]), cand["action"],
+        % (cand["issue"], cand["pr"], (", ".join(cand["slots"]) or "(never posted)"), cand["action"],
            (cand["head_sha"] or "an unknown head")[:8], cand["reason"],
            cand["url"]))
     return True

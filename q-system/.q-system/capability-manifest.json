@@ -516,6 +516,10 @@
       "path": "q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
       "runner": "bash",
       "timeout_s": 60
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive-absent.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],
