@@ -605,3 +605,78 @@ def test_reclassify_can_lower_severity_too(repo):
     run(repo, "spillover", "reclassify", "sp1", "--severity", "minor",
         "--reason", "reread it: cosmetic, no data path")
     assert run(repo, "gates", "run").returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Gaps found reviewing PR #112 (ASK-402).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typed", ["MAJOR", "  Major  ", "MaJoR", "major\t"])
+def test_reclassify_normalizes_case_and_whitespace(repo, typed):
+    """The normalization was UNTESTED: replacing
+    `(args.severity or "").strip().lower()` with the raw value survived
+    mutation, because every existing case passed an already-canonical string.
+
+    It matters in both directions. Un-normalized, a user typing MAJOR is
+    refused with a confusing message; worse, the STORED value is what
+    `_is_blocking_severity` reads, so a variant that ever slipped past the
+    membership check would sit in the ledger looking severe and blocking
+    nothing.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-case", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-case",
+            "--severity", typed, "--reason", "case probe")
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["severity"] == "major", f"{typed!r} stored as {rec['severity']!r}"
+    # ...and the GATE must agree, not just the stored string.
+    assert run(repo, "gates", "run").returncode != 0, (
+        f"{typed!r} normalized in the record but did not block the gate"
+    )
+
+
+def test_reclassify_refuses_an_unknown_severity_cleanly(repo):
+    """The sibling refusals assert their message; this one asserted only a
+    non-zero exit, which is the shape that let two other guards pass while
+    the behaviour was a stack trace."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-u", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-u",
+            "--severity", "critical", "--reason", "sounds urgent")
+    assert r.returncode != 0
+    assert "--severity must be one of" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+
+
+def test_triage_surfaces_a_downgrade(repo):
+    """A writer with no reader is not an audited escape hatch.
+
+    `reclassified_from` and `reclassify_reason` were written and read by
+    nothing, so the one action that can stop the standing gate blocking
+    appeared in no report.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-down", "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0, "precondition: it blocks"
+    run(repo, "spillover", "reclassify", "sp-down", "--severity", "minor",
+        "--reason", "reviewed, it is cosmetic")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: now green"
+
+    out = run(repo, "spillover", "triage").stdout
+    assert "LOWERED" in out, f"triage hides the downgrade that moved the gate:\n{out}"
+    assert "sp-down" in out
+    assert "blocker -> minor" in out
+    assert "cosmetic" in out, "the stated reason is not surfaced with the change"
+
+
+def test_triage_does_not_cry_downgrade_over_a_raise(repo):
+    """The negative half. Without it, labelling every change LOWERED passes."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-up", "--severity", "minor")
+    run(repo, "spillover", "reclassify", "sp-up", "--severity", "major",
+        "--reason", "it is worse than filed")
+    out = run(repo, "spillover", "triage").stdout
+    assert "severity raised" in out, out
+    assert "LOWERED" not in out, f"a raise was reported as a downgrade:\n{out}"

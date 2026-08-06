@@ -1405,6 +1405,45 @@ def _spillover_group_counts(items: list, field: str) -> list:
     return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
+def _print_reclassifications(items: list) -> None:
+    """Surface severity changes, and DOWNGRADES loudest.
+
+    `reclassify` writes `reclassified_from` / `reclassify_reason` and, until
+    this function existed, nothing anywhere read them. A sanctioned way to stop
+    the standing gate blocking, whose use no report ever shows, is not an
+    audited escape hatch -- it is an unaudited one with a paper trail nobody
+    opens. Same shape as the void hatch, same requirement: a writer needs a
+    reader (ASK-402, PR #112 review).
+
+    A downgraded item is NOT invisible -- it stays open and still counts in the
+    gate's reported bucket -- but the ACT of demoting it is the thing an
+    operator needs to see, because that is what moved the gate.
+    """
+    rank = {s: i for i, s in enumerate(
+        SPILLOVER_NONBLOCKING_SEVERITIES + SPILLOVER_BLOCKING_SEVERITIES)}
+    changed = [r for r in items if r.get("reclassified_from")]
+    if not changed:
+        return
+    lowered, raised = [], []
+    for r in changed:
+        before = rank.get((r.get("reclassified_from") or "").lower(), -1)
+        after = rank.get((r.get("severity") or "").lower(), -1)
+        (lowered if after < before else raised).append(r)
+
+    def show(group, label):
+        if not group:
+            return
+        print(f"\n{label} ({len(group)}):")
+        for r in group:
+            print(f"  {r['id']}: {r.get('reclassified_from')} -> "
+                  f"{r.get('severity')}  ({(r.get('reclassify_reason') or '')[:70]})")
+
+    # Lowered first and named as gate-affecting: that is the direction that
+    # stops the gate blocking, so it is the direction someone must review.
+    show(lowered, "severity LOWERED (these stopped blocking the gate)")
+    show(raised, "severity raised")
+
+
 def _print_spillover_groups(items: list, field: str, heading: str) -> None:
     print(f"\nby {heading} ({len(_spillover_group_counts(items, field))} group(s)):")
     for value, count in _spillover_group_counts(items, field):
@@ -1501,6 +1540,7 @@ def cmd_spillover(cfg: Config, args) -> int:
         print(f"{len(openv)} open spillover item(s)")
         _print_spillover_groups(openv, "severity", "severity")
         _print_spillover_groups(openv, "source", "source")
+        _print_reclassifications(openv)
         return 0
     if sub == "resolve":
         rec = _read_spillover(cfg).get(args.id)
