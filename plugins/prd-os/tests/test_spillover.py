@@ -97,6 +97,17 @@ def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
+def _ledger_lines(repo):
+    """Raw ledger lines, for asserting append-only behaviour.
+
+    A missing file is zero events, not an error: a refused command must leave
+    no ledger at all, and that is a state this helper has to be able to report.
+    """
+    path = repo / ".prd-os" / "spillover.jsonl"
+    if not path.is_file():
+        return []
+    return [l for l in path.read_text().splitlines() if l.strip()]
+
 def test_gates_run_red_while_a_blocking_severity_item_is_open(repo):
     # No registered gates at all, but an open BLOCKING-severity spillover item
     # must still make the STANDING re-proof fail. The can't-be-forgotten
@@ -488,3 +499,278 @@ def test_cli_refuses_an_unrecognized_severity_at_the_door():
         capture_output=True, text=True)
     assert proc.returncode != 0, "CLI accepted an unrecognized severity"
     assert "critical" in (proc.stderr + proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# reclassify: correct a severity through a NEW event, never a mutation
+# ---------------------------------------------------------------------------
+#
+# 549 of 559 open items sit at the `minor` DEFAULT, i.e. untriaged. `gates run`
+# now blocks only on blocker/major/high, so triaging that backlog is the work
+# that makes the gate mean something -- and there was no verb to do it with.
+# `add`, `list`, `check`, `triage` (read-only), `resolve`. Nothing could raise
+# an item.
+#
+# Shape per the approved PRD prd-spillover-current-state-2026-07-24: "correct
+# severity through new events only", "preserve append-only history", "editing
+# or deleting prior spillover events" is an explicit non-goal.
+
+def test_reclassify_raises_severity_and_blocks_the_gate(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "real bug", "--id", "sp1")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: minor is not blocking"
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "deletes founder data on an empty-prefix instance")
+    assert r.returncode == 0, r.stderr
+    assert run(repo, "gates", "run").returncode != 0, (
+        "reclassify to major did not make the standing gate block"
+    )
+
+
+def test_reclassify_appends_and_never_rewrites_history(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    before = _ledger_lines(repo)
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "high", "--reason", "why")
+    after = _ledger_lines(repo)
+    assert after[:len(before)] == before, "reclassify rewrote prior events"
+    assert len(after) == len(before) + 1, "reclassify did not append exactly one event"
+    assert json.loads(after[-1])["severity"] == "high"
+
+
+def test_reclassify_records_the_reason(repo):
+    """A severity change with no stated reason is the hand-clear this ledger
+    refuses everywhere else."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    bad = run(repo, "spillover", "reclassify", "sp1", "--severity", "major")
+    assert bad.returncode != 0, "reclassify accepted a severity change with no reason"
+    ok = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+             "--reason", "it can delete data")
+    assert ok.returncode == 0
+    assert "it can delete data" in _ledger_lines(repo)[-1]
+
+
+def test_reclassify_refuses_an_unknown_severity(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "urgent",
+            "--reason", "x")
+    assert r.returncode != 0, "unknown severity accepted; the gate reads this field"
+
+
+def test_reclassify_refuses_an_unknown_id(repo):
+    """Negative-fire: a typo must not silently create a new open item.
+
+    Asserts the MESSAGE, not just a nonzero exit. Mutation showed exit-code-only
+    could not tell a clean refusal from a TypeError crash -- dropping the guard
+    made `dict(None)` raise, which is also nonzero, so the test passed while the
+    behaviour was a stack trace."""
+    r = run(repo, "spillover", "reclassify", "sp-nope", "--severity", "major",
+            "--reason", "x")
+    assert r.returncode != 0, "reclassify invented an item that never existed"
+    assert "unknown spillover id" in r.stderr, (
+        f"refused, but not cleanly -- stderr was: {r.stderr!r}")
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+    assert not _ledger_lines(repo), "a refused reclassify still wrote an event"
+
+
+def test_reclassify_refuses_a_whitespace_only_reason(repo):
+    """argparse `required=True` already rejects a MISSING --reason, so the
+    in-code check is only reachable via whitespace. Mutation proved the earlier
+    test never exercised it: deleting the check left the suite green because
+    argparse fired first."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "   ")
+    assert r.returncode != 0, "a whitespace-only reason was accepted as a reason"
+    assert "--reason is required" in r.stderr
+
+
+def test_reclassify_preserves_status_and_description(repo):
+    """Only severity moves. A reclassify that drops the description would make
+    the ledger unreadable, and one that flips status would resolve by side
+    effect."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "the original text",
+        "--id", "sp1")
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "major", "--reason", "r")
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["description"] == "the original text"
+    assert rec["status"] == "open"
+    assert rec["source"] == "s"
+
+
+def test_reclassify_can_lower_severity_too(repo):
+    """Triage runs both ways: an over-flagged item must be demotable, or the
+    only safe move is to leave everything blocking."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1",
+        "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "minor",
+        "--reason", "reread it: cosmetic, no data path")
+    assert run(repo, "gates", "run").returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Gaps found reviewing PR #112 (ASK-402).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typed", ["MAJOR", "  Major  ", "MaJoR", "major\t"])
+def test_reclassify_normalizes_case_and_whitespace(repo, typed):
+    """The normalization was UNTESTED: replacing
+    `(args.severity or "").strip().lower()` with the raw value survived
+    mutation, because every existing case passed an already-canonical string.
+
+    It matters in both directions. Un-normalized, a user typing MAJOR is
+    refused with a confusing message; worse, the STORED value is what
+    `_is_blocking_severity` reads, so a variant that ever slipped past the
+    membership check would sit in the ledger looking severe and blocking
+    nothing.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-case", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-case",
+            "--severity", typed, "--reason", "case probe")
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["severity"] == "major", f"{typed!r} stored as {rec['severity']!r}"
+    # ...and the GATE must agree, not just the stored string.
+    assert run(repo, "gates", "run").returncode != 0, (
+        f"{typed!r} normalized in the record but did not block the gate"
+    )
+
+
+def test_reclassify_refuses_an_unknown_severity_cleanly(repo):
+    """The sibling refusals assert their message; this one asserted only a
+    non-zero exit, which is the shape that let two other guards pass while
+    the behaviour was a stack trace."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-u", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-u",
+            "--severity", "critical", "--reason", "sounds urgent")
+    assert r.returncode != 0
+    assert "--severity must be one of" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+
+
+def test_triage_surfaces_a_downgrade(repo):
+    """A writer with no reader is not an audited escape hatch.
+
+    `reclassified_from` and `reclassify_reason` were written and read by
+    nothing, so the one action that can stop the standing gate blocking
+    appeared in no report.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-down", "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0, "precondition: it blocks"
+    run(repo, "spillover", "reclassify", "sp-down", "--severity", "minor",
+        "--reason", "reviewed, it is cosmetic")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: now green"
+
+    out = run(repo, "spillover", "triage").stdout
+    assert "LOWERED" in out, f"triage hides the downgrade that moved the gate:\n{out}"
+    assert "sp-down" in out
+    assert "blocker -> minor" in out
+    assert "cosmetic" in out, "the stated reason is not surfaced with the change"
+
+
+def test_triage_does_not_cry_downgrade_over_a_raise(repo):
+    """The negative half. Without it, labelling every change LOWERED passes."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-up", "--severity", "minor")
+    run(repo, "spillover", "reclassify", "sp-up", "--severity", "major",
+        "--reason", "it is worse than filed")
+    out = run(repo, "spillover", "triage").stdout
+    assert "severity raised" in out, out
+    assert "LOWERED" not in out, f"a raise was reported as a downgrade:\n{out}"
+
+
+def test_concurrent_resolve_and_reclassify_cannot_resurrect(repo):
+    """Codex, PR #112, with an executed repro.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, and `_read_spillover` is last-write-wins on the WHOLE record. The
+    interleaving is: reclassify reads (status=open), resolve appends
+    (status=resolved), reclassify appends its STALE copy (status=open) -- and
+    a resolved item is back in the standing gate.
+
+    Stress rather than a staged interleave: the race is between two OS
+    processes, so there is no seam to patch. 25 rounds reproduces it reliably
+    without the lock; the loop is the reproducer.
+    """
+    import concurrent.futures as cf
+    resurrected = []
+    for n in range(25):
+        sid = f"sp-race{n}"
+        run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+            "--id", sid, "--severity", "minor")
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            a = ex.submit(run, repo, "spillover", "resolve", sid, "--void", "not real")
+            b = ex.submit(run, repo, "spillover", "reclassify", sid,
+                          "--severity", "blocker", "--reason", "raising it")
+            a.result(); b.result()
+        rec = json.loads([l for l in _ledger_lines(repo)
+                          if json.loads(l).get("id") == sid][-1])
+        if rec.get("status") == "open":
+            resurrected.append((sid, rec.get("severity")))
+    assert not resurrected, (
+        f"{len(resurrected)}/25 resolved items were resurrected into the gate "
+        f"by a concurrent reclassify: {resurrected[:5]}")
+
+
+@pytest.mark.parametrize("before,after,expect", [
+    ("blocker", "high", "LOWERED"),      # blocker is MORE severe than high
+    ("high", "blocker", "severity raised"),
+    ("major", "minor", "LOWERED"),
+    ("minor", "major", "severity raised"),
+])
+def test_triage_labels_the_direction_correctly(repo, before, after, expect):
+    """The first rank was built by concatenating the two MEMBERSHIP tuples,
+    which are not ordered by severity: `blocker` is index 0 of its tuple and
+    `high` index 2, so `blocker -> high` reported as a RAISE (Codex, minor).
+    A membership set is not a scale."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-dir", "--severity", before)
+    run(repo, "spillover", "reclassify", "sp-dir", "--severity", after,
+        "--reason", "direction probe")
+    out = run(repo, "spillover", "triage").stdout
+    assert expect in out, f"{before} -> {after} not reported as {expect}:\n{out}"
+    if expect == "severity raised":
+        assert "LOWERED" not in out, f"{before} -> {after} called a downgrade:\n{out}"
+
+
+def test_every_known_severity_has_a_rank(repo):
+    """A severity missing from the order defaults to -1 and silently reads as
+    the least severe thing there is."""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "pr_rank", _P(__file__).resolve().parents[1] / "scripts/prd_runner.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    missing = [s for s in m.SPILLOVER_KNOWN_SEVERITIES
+               if s not in m.SPILLOVER_SEVERITY_ORDER]
+    assert not missing, f"known severities absent from the rank order: {missing}"
+
+
+def test_ledger_lock_degrades_when_it_cannot_be_taken(repo):
+    """A lock that cannot be TAKEN must not become a new hard failure.
+
+    Taking it CREATES a file, so it needs write permission on the DIRECTORY,
+    while appending to the existing ledger only needs it on the FILE. Adding
+    the lock therefore turned a working `resolve` into a PermissionError
+    traceback under a read-only `.prd-os` -- and read-only sandboxes are real
+    here. The race it protects against costs a false RED gate, which is
+    recoverable; refusing to resolve at all is not.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-ro", "--severity", "minor")
+    d = Path(repo) / ".prd-os"
+    mode = d.stat().st_mode
+    d.chmod(0o555)
+    try:
+        r = run(repo, "spillover", "resolve", "sp-ro", "--void", "read-only probe")
+    finally:
+        d.chmod(mode)
+    assert "Traceback" not in r.stderr, f"the lock crashed instead of degrading:\n{r.stderr}"
+    assert r.returncode == 0, f"a read-only ledger dir broke resolve: {r.stderr}"
+    assert "could not lock" in r.stderr, (
+        "it degraded SILENTLY -- an unlocked write with no warning is the "
+        "failure mode nobody notices")
+    assert json.loads(_ledger_lines(repo)[-1])["status"] == "resolved"

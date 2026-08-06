@@ -38,6 +38,8 @@ layer in step 6 where both runners are orchestrated.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -1260,6 +1262,61 @@ def _spillover_open(cfg: Config) -> list:
     return [r for r in _read_spillover(cfg).values() if r.get("status") == "open"]
 
 
+@contextlib.contextmanager
+def _spillover_lock(cfg: Config):
+    """Serialize read-modify-append on the ledger across PROCESSES.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, while `_read_spillover` is last-write-wins on the WHOLE record. So
+    two concurrent runs interleave as: reclassify reads (status=open), resolve
+    appends (status=resolved), reclassify appends its stale copy (status=open)
+    -- and the resolved item is RESURRECTED into the standing gate. Codex found
+    it on PR #112 with an executed reproducer.
+
+    This is the single-writer chokepoint rule applied where it was skipped: two
+    writers to one file is a corruption waiting for a race. The lock spans the
+    READ as well as the write, because a lock around the append alone still
+    lets the stale copy be formed.
+
+    A sibling .lock file rather than the ledger itself: flock on the ledger
+    would be released by any unrelated reader closing its own handle.
+
+    DEGRADES, NEVER REFUSES. Taking the lock needs to CREATE a file, so it
+    needs write permission on the DIRECTORY -- while appending to the existing
+    ledger only needs it on the FILE. A read-only `.prd-os` therefore turned a
+    working `resolve` into a PermissionError traceback the moment this lock was
+    added, and read-only sandboxes are real here (every Codex round this
+    session reported one).
+
+    So a lock we cannot take degrades to the unlocked behaviour that shipped
+    for months, loudly, rather than becoming a new hard failure. The race it
+    protects against costs a FALSE RED gate, which is recoverable; refusing to
+    resolve at all is not. Same rule the review gate uses when Codex is down:
+    degrade and say so out loud.
+    """
+    path = _spillover_path(cfg)
+    lock_path = path.with_name(path.name + ".lock")
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+        sys.stderr.write(
+            f"WARNING: could not lock the spillover ledger ({exc}); proceeding "
+            "UNLOCKED.\nA concurrent resolve/reclassify could resurrect a "
+            "resolved item into the standing gate.\n")
+        yield
+        return
+    try:
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
 def _spillover_append(cfg: Config, record: dict) -> None:
     path = _spillover_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1405,6 +1462,50 @@ def _spillover_group_counts(items: list, field: str) -> list:
     return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
+def _print_reclassifications(items: list) -> None:
+    """Surface severity changes, and DOWNGRADES loudest.
+
+    `reclassify` writes `reclassified_from` / `reclassify_reason` and, until
+    this function existed, nothing anywhere read them. A sanctioned way to stop
+    the standing gate blocking, whose use no report ever shows, is not an
+    audited escape hatch -- it is an unaudited one with a paper trail nobody
+    opens. Same shape as the void hatch, same requirement: a writer needs a
+    reader (ASK-402, PR #112 review).
+
+    A downgraded item is NOT invisible -- it stays open and still counts in the
+    gate's reported bucket -- but the ACT of demoting it is the thing an
+    operator needs to see, because that is what moved the gate.
+    """
+    # EXPLICIT order. The first version built this by concatenating
+    # NONBLOCKING + BLOCKING, which assumed those tuples were ordered by
+    # severity. They are not -- `blocker` sits at index 0 of its tuple and
+    # `high` at 2 -- so `blocker -> high` reported as a RAISE and
+    # `low -> minor` as a gate-affecting downgrade (Codex, PR #112, minor).
+    # A membership set is not a scale; reusing one as a scale is the bug.
+    rank = {s: i for i, s in enumerate(SPILLOVER_SEVERITY_ORDER)}
+    changed = [r for r in items if r.get("reclassified_from")]
+    if not changed:
+        return
+    lowered, raised = [], []
+    for r in changed:
+        before = rank.get((r.get("reclassified_from") or "").lower(), -1)
+        after = rank.get((r.get("severity") or "").lower(), -1)
+        (lowered if after < before else raised).append(r)
+
+    def show(group, label):
+        if not group:
+            return
+        print(f"\n{label} ({len(group)}):")
+        for r in group:
+            print(f"  {r['id']}: {r.get('reclassified_from')} -> "
+                  f"{r.get('severity')}  ({(r.get('reclassify_reason') or '')[:70]})")
+
+    # Lowered first and named as gate-affecting: that is the direction that
+    # stops the gate blocking, so it is the direction someone must review.
+    show(lowered, "severity LOWERED (these stopped blocking the gate)")
+    show(raised, "severity raised")
+
+
 def _print_spillover_groups(items: list, field: str, heading: str) -> None:
     print(f"\nby {heading} ({len(_spillover_group_counts(items, field))} group(s)):")
     for value, count in _spillover_group_counts(items, field):
@@ -1422,6 +1523,52 @@ def cmd_spillover(cfg: Config, args) -> int:
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
         })
         print(json.dumps({"id": sid, "status": "open"}))
+        return 0
+    if sub == "reclassify":
+        # Correct a severity through a NEW EVENT, never a mutation. Approved
+        # PRD prd-spillover-current-state-2026-07-24: "correct severity through
+        # new events only", "preserve append-only history"; editing a prior
+        # event is an explicit non-goal there.
+        #
+        # This verb did not exist, and its absence was the real blocker on the
+        # backlog: 549 of 559 open items sit at the `minor` DEFAULT (untriaged,
+        # not assessed), `gates run` blocks only on blocker/major/high, and
+        # nothing could raise or lower an item once written.
+        severity = (args.severity or "").strip().lower()
+        if severity not in SPILLOVER_KNOWN_SEVERITIES:
+            sys.stderr.write(
+                f"--severity must be one of {SPILLOVER_KNOWN_SEVERITIES}; "
+                f"got {args.severity!r}. The standing gate reads this field, so "
+                "an unknown value would silently stop blocking.\n")
+            return 2
+        if not (args.reason or "").strip():
+            sys.stderr.write(
+                "--reason is required: a severity change with no stated reason "
+                "is the hand-clear this ledger refuses everywhere else.\n")
+            return 2
+        # READ AND APPEND UNDER ONE LOCK. Reading outside it lets a concurrent
+        # `resolve` land between the two and be overwritten by this stale copy.
+        with _spillover_lock(cfg):
+            items = _read_spillover(cfg)
+            current = items.get(args.id)
+            if current is None:
+                sys.stderr.write(
+                    f"unknown spillover id: {args.id!r}. Reclassify never creates an "
+                    "item -- a typo must not invent open work.\n")
+                return 2
+            # Carry the whole prior record forward and move ONE field, so a
+            # reclassify can never drop the description or resolve by side effect.
+            new_rec = dict(current)
+            prior = current.get("severity")
+            new_rec.update({
+                "severity": severity,
+                "reclassified_at": _now_iso(),
+                "reclassified_from": prior,
+                "reclassify_reason": args.reason,
+            })
+            _spillover_append(cfg, new_rec)
+        print(json.dumps({"id": args.id, "severity": severity,
+                          "was": prior, "status": new_rec.get("status")}))
         return 0
     if sub == "list":
         items = list(_read_spillover(cfg).values())
@@ -1458,35 +1605,43 @@ def cmd_spillover(cfg: Config, args) -> int:
         print(f"{len(openv)} open spillover item(s)")
         _print_spillover_groups(openv, "severity", "severity")
         _print_spillover_groups(openv, "source", "source")
+        _print_reclassifications(openv)
         return 0
     if sub == "resolve":
-        rec = _read_spillover(cfg).get(args.id)
-        if not rec:
-            sys.stderr.write(f"unknown spillover id: {args.id}\n")
-            return 2
-        if not args.resolution_ref and not args.void:
-            sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
-            return 2
-        new = dict(rec)
-        if args.void:
-            new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
-        else:
-            try:
-                evidence = _verify_resolution_ref(cfg, args.resolution_ref)
-            except LinearRefError as exc:
-                sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+        # Same chokepoint as reclassify. This read-modify-append was
+        # ALREADY unlocked before PR #112; reclassify only added a third
+        # writer to it. A `with` block, not a manual enter/exit: two of
+        # the refusal paths below return early and would leak the lock.
+        with _spillover_lock(cfg):
+            # Same chokepoint as reclassify: this read-modify-append was already
+            # unlocked before PR #112: reclassify only added a third writer to it.
+            rec = _read_spillover(cfg).get(args.id)
+            if not rec:
+                sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
-            new.update(status="resolved", resolution_ref=args.resolution_ref,
-                       resolved_at=_now_iso(), **evidence)
-            if args.evidence:
-                # Operator-supplied context (PR, merge commit). Recorded for the
-                # next reader, never consulted above: it is a note attached to a
-                # verified resolution, not a substitute for verifying one.
-                new["resolution_evidence"] = args.evidence
-        _spillover_append(cfg, new)
-        print(json.dumps({"id": args.id, "status": "resolved"}))
-        return 0
-    sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
+            if not args.resolution_ref and not args.void:
+                sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
+                return 2
+            new = dict(rec)
+            if args.void:
+                new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
+            else:
+                try:
+                    evidence = _verify_resolution_ref(cfg, args.resolution_ref)
+                except LinearRefError as exc:
+                    sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                    return 2
+                new.update(status="resolved", resolution_ref=args.resolution_ref,
+                           resolved_at=_now_iso(), **evidence)
+                if args.evidence:
+                    # Operator-supplied context (PR, merge commit). Recorded for the
+                    # next reader, never consulted above: it is a note attached to a
+                    # verified resolution, not a substitute for verifying one.
+                    new["resolution_evidence"] = args.evidence
+            _spillover_append(cfg, new)
+            print(json.dumps({"id": args.id, "status": "resolved"}))
+            return 0
+        sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
     return 2
 
 
@@ -1511,6 +1666,10 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # louder the label the quieter the gate got. Fail-closed here and validate at the
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+# Least -> most severe. Separate from the membership tuples above ON PURPOSE:
+# those answer "does this block?", this answers "which way did it move?", and
+# conflating the two is how `blocker -> high` read as a raise.
+SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
 
@@ -1662,6 +1821,13 @@ def main(argv: list[str] | None = None) -> int:
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
+    sp_recl = spill_sub.add_parser(
+        "reclassify", help="correct an item's severity via a new append-only event")
+    sp_recl.add_argument("id")
+    sp_recl.add_argument("--severity", required=True)
+    sp_recl.add_argument("--reason", required=True,
+                         help="why the severity is wrong; recorded on the event")
+
     spill_sub.add_parser("check")
     spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
     sp_res = spill_sub.add_parser("resolve")
