@@ -211,8 +211,33 @@ def diff_intent(intent, overrides, installed_labels):
         want = intent[label]
         installed = label in installed_labels
         actual = effective_state(label, overrides)
-        if not installed and label not in overrides:
-            findings.append((label, "orphan", f"declared {want}, no plist and no override"))
+        # No plist on disk settles it ALONE. An override row is a statement about
+        # the override database, never evidence that anything is running -- there
+        # is nothing left to run. It is surfaced in the detail, not in the kind.
+        #
+        # Scar (measured 2026-08-06, found by populating intent from the real
+        # 2026-08-01 jobs audit instead of a synthetic manifest): this guard read
+        # `not installed and label not in overrides`. The audit retired
+        # com.kipi.fractional-cxo.opp-scan by renaming its plist, but launchd kept
+        # `"com.kipi.fractional-cxo.opp-scan" => enabled`. The second clause was
+        # False, so the label fell through to the drift branch below and paged
+        # running_but_paused for a job with no executable. Its sibling
+        # bolt-on-discovery, retired the same way but with no leftover row, was
+        # classified correctly -- the two differed only by the stale row.
+        #
+        # Third instance of one class: a signal read on only one side of a branch.
+        # 4f6bf61f (ASK-113) nested the pause-ledger read INSIDE the not_loaded
+        # arm, whose own scar was 26 false pings for jobs the founder had
+        # deliberately stopped. Same shape, same harm: the guard exists, the
+        # compound condition stops the path from reaching it.
+        if not installed:
+            detail = f"declared {want}, no plist and no override"
+            if label in overrides:
+                detail = (
+                    f"declared {want}, no plist; "
+                    f"stale override row says {overrides[label]}"
+                )
+            findings.append((label, "orphan", detail))
             continue
         if want == actual:
             continue

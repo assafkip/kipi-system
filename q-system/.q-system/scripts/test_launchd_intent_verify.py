@@ -181,6 +181,76 @@ check("a plist with no declared intent is undeclared coverage",
 
 
 # =============================================================================
+# 5b. A RETIRED job with a stale override row is an orphan, not a running job
+# =============================================================================
+# Found by populating intent from the real 2026-08-01 jobs audit instead of a
+# synthetic manifest. The audit KILLED two fractional-cxo jobs by renaming their
+# plists to `.plist.retired-2026-08-01`; `installed_labels()` globs `*.plist`, so
+# neither is installed (verified: the glob returns only the un-renamed sibling).
+#
+# launchd kept an override row for exactly one of them. Measured 2026-08-06 from
+# `launchctl print-disabled gui/$(id -u)`:
+#
+#     "com.kipi.fractional-cxo.opp-scan" => enabled     <- row survived the retire
+#     (com.kipi.fractional-cxo.bolt-on-discovery)       <- no row at all
+#
+# Two jobs, same retirement, differing only by that leftover row. The orphan
+# branch was guarded by `not installed AND label not in overrides`; the second
+# clause is False for opp-scan, so it fell through to the drift branch and paged
+# `running_but_paused` for a job with no executable on disk. A stale override row
+# is a statement about the override DB, never evidence that anything is running.
+#
+# Class scar: the third instance of a signal read on only one side of a branch.
+# 4f6bf61f (ASK-113) nested `if label in paused` INSIDE the not_loaded arm, so a
+# paused-and-healthy job reached no branch at all -- and its own scar was 26 false
+# pings for jobs the founder had deliberately stopped. Same harm, same shape: the
+# guard exists, the compound condition stops the path from reaching it.
+RETIRED_STALE = "com.kipi.fractional-cxo.opp-scan"
+RETIRED_CLEAN = "com.kipi.fractional-cxo.bolt-on-discovery"
+
+# Both retired, both declared disabled by the audit, NEITHER installed.
+_retired_intent = {RETIRED_STALE: "disabled", RETIRED_CLEAN: "disabled"}
+_retired_findings = iv.diff_intent(_retired_intent, {RETIRED_STALE: "enabled"}, set())
+
+check("a retired job whose override row survived is an orphan, not drift",
+      _retired_findings,
+      [(RETIRED_CLEAN, "orphan", "declared disabled, no plist and no override"),
+       (RETIRED_STALE, "orphan",
+        "declared disabled, no plist; stale override row says enabled")])
+
+# The harm this actually prevents: the founder's phone. Before the fix the stale
+# row produced `running_but_paused`, which IS in PINGABLE_KINDS, so a job with no
+# executable rang a phone. Asserting the kind alone would not have caught the
+# consequence if PINGABLE_KINDS ever grew.
+check("and it therefore never reaches the founder's phone",
+      iv.ping_decision(_retired_findings, {})[0], [])
+
+# The THIRD orphan shape, and on this machine the most common one: no plist, and
+# an override row that AGREES with the declared intent. Added after a mutant
+# survived the two cases above -- a variant guarding the orphan branch with
+# `not installed and want != effective_state(...)` passed both, because in both
+# the override disagrees with the intent. Where they agree it falls through to
+# the `want == actual: continue` line and the job vanishes from the report
+# entirely: not a wrong kind, no finding at all.
+#
+# Measured 2026-08-06 (44 override rows, 45 installed plists, 4 retired-renamed
+# files). Labels with an override row and no plist on disk:
+#     disabled  com.ask.ai-podcast
+#     disabled  com.cole.linkedin-loop-watchdog
+#     disabled  com.cole.linkedin-session
+#     enabled   com.cole.pause-resume
+#     enabled   com.kipi.fractional-cxo.opp-scan
+# Three of five agree with a 'disabled' intent, so the untested sub-shape was the
+# MAJORITY of the real population. A retired job is an orphan because there is no
+# plist, never because the override happens to disagree.
+check("a retired job whose override AGREES with intent is still an orphan",
+      iv.diff_intent({"com.ask.ai-podcast": "disabled"},
+                     {"com.ask.ai-podcast": "disabled"}, set()),
+      [("com.ask.ai-podcast", "orphan",
+        "declared disabled, no plist; stale override row says disabled")])
+
+
+# =============================================================================
 # 6. coverage -- the number that separates "nothing wrong" from "nothing checked"
 # =============================================================================
 check("coverage counts installed-and-declared over installed",
