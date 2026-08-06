@@ -50,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
 from concurrency import ConcurrencyError, assert_no_active_issue  # noqa: E402
+from spillover_events import SpilloverLedgerError, fold_ledger_text  # noqa: E402
 
 
 PRD_STATES = ("idea", "draft", "in-review", "approved", "archived")
@@ -1243,19 +1244,19 @@ def _read_spillover(cfg: Config) -> dict:
     """Append-only ledger read with last-write-wins per id (the crash-safe
     pattern: state changes append a new record, reads collapse to the latest)."""
     path = _spillover_path(cfg)
-    items: dict = {}
-    if path.is_file():
-        for raw in path.read_text().splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(rec, dict) and rec.get("id"):
-                items[rec["id"]] = rec
-    return items
+    if not path.is_file():
+        return {}
+    # FAILS CLOSED (scs-validated-event-fold). This used to be a per-line
+    # `except json.JSONDecodeError: continue` plus an `if rec.get("id")` filter,
+    # so an unparseable or id-less line was dropped and the fold returned
+    # successfully without it. Reproducer: truncate a `blocker` record mid-line
+    # and `gates run` printed "all 0 regression gates green; no blocking-severity
+    # spillover" and exited 0 -- a silent way to clear the standing gate.
+    #
+    # This is the ONE chokepoint every reader goes through (gates run, spillover
+    # check/list/triage/resolve/reclassify), which is why the validator is called
+    # here and nowhere else.
+    return fold_ledger_text(path.read_text(), path)
 
 
 def _spillover_open(cfg: Config) -> list:
@@ -1848,7 +1849,17 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         sys.stderr.write(f"prd-os config error: {exc}\n")
         return 2
-    return args.func(cfg, args)
+    try:
+        return args.func(cfg, args)
+    except SpilloverLedgerError as exc:
+        # An unreadable ledger is an OPERATOR-ACTIONABLE refusal, not a crash.
+        # Caught at the one dispatch point so every subcommand that reads the
+        # ledger reports it identically. Deliberately not a bare traceback: a
+        # traceback exits 1, which is the same code `spillover check` uses for
+        # "there are open items", so the two would be indistinguishable to any
+        # caller (and to the tests asserting a refusal).
+        sys.stderr.write(f"spillover ledger unreadable: {exc}\n")
+        return 2
 
 
 if __name__ == "__main__":
