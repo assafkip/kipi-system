@@ -1204,7 +1204,29 @@ PY
         sys_owned_dirty+=("$sys_path")
       fi
     done < <(system_owned_paths_for_run)
-    if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+    # THE TEST THAT USED TO BE HERE COULD NEVER BE FALSE (sp-46c73c76). It read
+    # `[ "$DRY_RUN" != "1" ]`, but DRY_RUN only ever holds "" or the string
+    # "--dry-run" (set at the top of this script and in the arg parser); every
+    # other site compares against "--dry-run". So a condition that LOOKED like
+    # it suppressed this auto-commit during a dry run suppressed nothing. It was
+    # indistinguishable from its own absence -- a guard recording a claim it
+    # never computed.
+    #
+    # IT IS NOT REPLACED BY THE "CORRECT" FLAG TEST, deliberately. In dry mode
+    # this block is reached via MODEL_RUN=1 with $path already repointed to the
+    # throwaway clone, and the model run exists precisely to reproduce what a
+    # real run would do. Skipping the commit there would make the PREVIEW less
+    # faithful without making anything safer.
+    #
+    # What actually keeps a dry run off the live instance is that repointing, so
+    # that is what gets asserted -- a check that CAN fail, in place of a
+    # comparison that could not. If the repointing is ever moved after this
+    # block, or fails, this fires instead of silently auto-committing into a
+    # live instance during a run the operator believes is read-only.
+    if [ "$DRY_RUN" = "--dry-run" ] && [ "$path" = "$ORIGINAL_PATH" ]; then
+      abandon_instance "  ERROR: dry run reached the system-state auto-commit with \$path still pointing at the LIVE instance ($path); the throwaway-model repointing did not happen (sp-46c73c76)" && continue
+    fi
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ]; then
       echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
       # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
