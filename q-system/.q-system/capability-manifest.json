@@ -447,6 +447,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_wiring_check.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/tests/test-stat-verify.py",
       "runner": "python3"
     },
