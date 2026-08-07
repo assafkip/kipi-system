@@ -144,3 +144,82 @@ def test_the_hook_never_raises_into_session_exit(tmp_path):
                          cwd=str(tmp_path),
                          env=dict(os.environ, CLAUDE_PROJECT_DIR="/nonexistent/nope"))
     assert out.returncode == 0
+
+
+# --- adversarial review findings (2026-08-07) -------------------------------------
+
+def test_a_pre_staged_unclassified_file_is_not_swept_in(tmp_path):
+    """finding-1, CRITICAL. `git commit -m` with no pathspec commits the WHOLE INDEX.
+
+    An agent that ran `git add` and had not yet committed had its file swept into the
+    auto-commit anyway -- while the report printed that the file was NOT committed. A
+    false report is worse than the silence it replaced: it tells the next session the
+    file is still theirs. This is also the exact race the original incidents describe.
+    """
+    root, run = _repo(tmp_path)
+    _write(root, "q-consult/pipeline/repo_links.py", "# real work\n")
+    _write(root, "memory/MEMORY.md", "- note\n")
+    run("git", "add", "q-consult/pipeline/repo_links.py")   # staged, not committed
+    out = _fire(root)
+    # `git ls-files` reads the INDEX, and this test staged the file itself, so it is
+    # listed either way. The question is what landed in the COMMIT.
+    committed = run("git", "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert "q-consult/pipeline/repo_links.py" not in committed, \
+        "a pre-staged source file was swept into the auto-commit"
+    assert "memory/MEMORY.md" in committed
+    assert "NOT committed" in out.stdout
+    # The report must not be able to lie: what it says was skipped really was skipped.
+    for line in out.stdout.splitlines():
+        if line.strip().startswith("- "):
+            assert line.strip()[2:] not in committed, f"report lied about {line!r}"
+
+
+def test_instance_content_directories_are_committed(tmp_path):
+    """finding-2, CRITICAL. AREA_MAP only described the SKELETON (q-system/...).
+
+    An instance keeps its real content one segment over. Measured on the consulting
+    instance before the fix: 1047 of 2099 tracked files unclassified, including
+    my-project (the system of record), canonical and marketing. Dropping the fallback
+    without this disabled the net for exactly what it exists to protect.
+    """
+    root, run = _repo(tmp_path)
+    for rel in ("q-consult/canonical/decisions.md",
+                "q-consult/my-project/clients.json",
+                "q-consult/marketing/content-themes.md",
+                "q-consult/memory/last-handoff.md"):
+        _write(root, rel)
+    _fire(root)
+    tracked = _tracked(run)
+    for rel in ("q-consult/canonical/decisions.md",
+                "q-consult/my-project/clients.json",
+                "q-consult/marketing/content-themes.md",
+                "q-consult/memory/last-handoff.md"):
+        assert rel in tracked, f"{rel} is instance generated state and was not committed"
+
+
+def test_instance_source_and_output_are_still_not_committed(tmp_path):
+    """The negative half of finding-2. Widening coverage must not swallow code.
+
+    Without this, INSTANCE_AREAS could be broadened to `("", ...)` and the test above
+    would pass while the original defect returned.
+    """
+    root, run = _repo(tmp_path)
+    _write(root, "q-consult/pipeline/cycle.py", "# code\n")
+    _write(root, "q-consult/email-watch/ledger.py", "# code\n")
+    _write(root, "q-consult/output/report.json", "{}\n")
+    out = _fire(root)
+    tracked = _tracked(run)
+    assert "q-consult/pipeline/cycle.py" not in tracked
+    assert "q-consult/email-watch/ledger.py" not in tracked
+    assert "q-consult/output/report.json" not in tracked
+    assert "q-consult/output/report.json" not in out.stdout, \
+        "generated churn is a declared skip, not a nag"
+
+
+def test_classify_covers_skeleton_and_instance_alike():
+    mod = _hook_module()
+    assert mod.classify("q-system/canonical/x.md") == ("content", "update canonical files")
+    assert mod.classify("q-consult/canonical/x.md") == ("content", "update canonical files")
+    assert mod.classify("q-thaena/my-project/x.json") == ("content", "update project state")
+    assert mod.classify("q-consult/output/x.json") == mod.SKIP_DECLARED
+    assert mod.classify("q-consult/pipeline/x.py") == mod.SKIP_UNCLASSIFIED

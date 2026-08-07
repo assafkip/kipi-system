@@ -81,6 +81,26 @@ def get_changed_files():
     return {f for f in files if f and not f.startswith("q-system/output/")}
 
 
+# AREA_MAP's prefixes all start `q-system/`, which is the SKELETON. In an INSTANCE the
+# real content lives one segment over -- q-consult/canonical, q-consult/my-project and
+# so on -- so none of it matched any row. Measured on the consulting instance: 1047 of
+# 2099 tracked files unclassified, including my-project (the system of record) and
+# marketing. Removing the fallback without this would have disabled the safety net for
+# exactly the generated state it exists to protect (adversarial review finding-2).
+#
+# Matched against the path with its FIRST segment stripped, so one row covers every
+# instance without reading a registry. Source trees (pipeline/, email-watch/) are
+# deliberately absent: code is what an agent commits deliberately, and sweeping it is
+# the defect this whole change removes.
+INSTANCE_AREAS = [
+    ("canonical/",   "content", "update canonical files"),
+    ("my-project/",  "content", "update project state"),
+    ("marketing/",   "content", "update marketing content"),
+    ("memory/",      "chore",   "update session memory"),
+    ("output/",      None,      None),   # generated churn; never committed
+]
+
+
 SKIP_DECLARED = "declared-skip"       # matched AREA_MAP with commit_type None
 SKIP_UNCLASSIFIED = "unclassified"    # matched nothing: never auto-committed
 
@@ -98,6 +118,13 @@ def classify(filepath):
             if commit_type is None:
                 return SKIP_DECLARED
             return (commit_type, msg)
+    if "/" in filepath:
+        tail = filepath.split("/", 1)[1]
+        for prefix, commit_type, msg in INSTANCE_AREAS:
+            if tail.startswith(prefix):
+                if commit_type is None:
+                    return SKIP_DECLARED
+                return (commit_type, msg)
     return SKIP_UNCLASSIFIED
 
 
@@ -156,7 +183,16 @@ def commit_group(commit_type, message, files):
 
     full_msg = header + "\n\n" + "\n".join(body_lines)
 
-    r = run(["git", "commit", "-m", full_msg])
+    # PATHSPEC, not a bare commit (2026-08-07, adversarial review finding-1).
+    # `git commit -m` with no pathspec commits the ENTIRE INDEX, so anything an agent
+    # had staged and not yet committed was swept in anyway -- while report_skipped
+    # printed that it had NOT been committed. A false report is worse than the silence
+    # it replaced: it tells the next session the file is still theirs to commit.
+    # Reproduced before the fix: the hook printed "NOT committed
+    # q-consult/pipeline/repo_links.py" and the commit contained that exact file.
+    # kipi-update.sh already fixed this same defect once (its PR #98 note says so);
+    # it came back through a different door.
+    r = run(["git", "commit", "-m", full_msg, "--"] + files)
     if r.returncode == 0:
         print(f"  committed: {header} ({len(files)} files)")
     else:
