@@ -242,9 +242,29 @@ model_rsync_excludes() {
   # and the instance reported FAILED in --dry while the real run had updated it
   # fine. So --dry manufactured a false failure out of disk pressure alone.
   # Every path here is regenerable by its own toolchain and gitignored.
+  # A BASENAME IS NOT A FACT ABOUT WHAT A DIRECTORY IS (sp-f6733ee3). The names
+  # below are a heuristic for "regenerable build cache", and it is right nearly
+  # every time -- which is why the exception stayed invisible. Measured
+  # 2026-08-06 on interview-coach: `design-room/build/gate-report.md` is AUTHORED
+  # gate output living under a directory that happens to be called `build`. The
+  # rsync skipped it while `.git` was copied verbatim, so the model saw a tracked
+  # DELETION, read the tree as dirty, and reported a healthy instance FAILED.
+  # Second time --dry has manufactured a false failure (the disk-pressure one
+  # above was the first), and a fleet health check driven off --dry would page on
+  # instances that are fine.
+  #
+  # SO ASK GIT, WHICH KNOWS. A directory holding tracked files is not a build
+  # cache whatever it is named -- the comment above already states the real
+  # predicate ("every path here is regenerable by its own toolchain AND
+  # GITIGNORED"), it just was not being checked. Tracked content is committed
+  # content, so copying it cannot reintroduce the 8.7G src-tauri/target problem:
+  # that tree was gitignored and stays excluded.
   MODEL_EXCLUDES=(--exclude=".git")
   local cache_dir
   for cache_dir in target node_modules .venv venv __pycache__ .next dist build .pytest_cache .mypy_cache .ruff_cache; do
+    if [ -n "$(git -C "$instance_root" ls-files -- "$cache_dir/*" "*/$cache_dir/*" 2>/dev/null | head -1)" ]; then
+      continue
+    fi
     MODEL_EXCLUDES+=(--exclude="$cache_dir/")
   done
   for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
