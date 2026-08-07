@@ -467,6 +467,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-autocommit-wip-ref.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-autocommit-replay-2026-08-02.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
       "runner": "bash"
     },
