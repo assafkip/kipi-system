@@ -65,6 +65,18 @@ jobs:
 
       - name: Run prd-os tests
         run: pytest plugins/prd-os/tests/ -q
+
+      # The skeleton's own harnesses had NO runner (adversarial review finding-5):
+      # test_auto_commit, test_token_guard and test_fable_escalation all sat unrun,
+      # so "a test locks the property" was an unenforced claim. wiring-check.md is
+      # explicit that a Python harness needs a caller.
+      - name: Run skeleton hook tests
+        # SCOPED past separation/ deliberately: that subdir has 6 failures that
+        # predate this change and are untouched by it. Widening CI onto someone
+        # else's red is how a gate starts paging the founder for a bug the PR did
+        # not cause. Tracked separately; this step covers the hook harnesses.
+        run: pytest q-system/.q-system/tests/ -q
+             --ignore=q-system/.q-system/tests/separation
         env:
           CI: true
 

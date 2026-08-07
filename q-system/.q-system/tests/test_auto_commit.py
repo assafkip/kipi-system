@@ -223,3 +223,25 @@ def test_classify_covers_skeleton_and_instance_alike():
     assert mod.classify("q-thaena/my-project/x.json") == ("content", "update project state")
     assert mod.classify("q-consult/output/x.json") == mod.SKIP_DECLARED
     assert mod.classify("q-consult/pipeline/x.py") == mod.SKIP_UNCLASSIFIED
+
+
+def test_the_skipped_report_reaches_a_channel_a_human_reads(tmp_path, monkeypatch):
+    """finding-4. The hook is wired `async` and the fleet template appends
+    2>/dev/null, so a bare print() is a report nobody receives. Slack is this repo's
+    single sanctioned founder channel (founder-notifications.md)."""
+    import importlib
+    mod = _hook_module()
+    calls = []
+    monkeypatch.setattr(mod.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: calls.append(a[0]) or None)
+    mod.report_skipped(["q-consult/pipeline/x.py"])
+    assert calls, "nothing was sent to the notification channel"
+    assert "slack-notify.sh" in " ".join(calls[0])
+    assert "q-consult/pipeline/x.py" in " ".join(calls[0])
+
+
+def test_a_missing_slack_script_never_breaks_the_stop_hook(tmp_path):
+    mod = _hook_module()
+    mod.PROJ_DIR = str(tmp_path)          # no slack-notify.sh under here
+    mod.report_skipped(["a/b.py"])        # must not raise

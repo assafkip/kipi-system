@@ -143,6 +143,22 @@ def group_files(files):
     return groups, unclassified
 
 
+def _notify_slack(unclassified):
+    """One line to Slack naming what was left uncommitted. Never raises."""
+    script = os.path.join(PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    if not os.path.isfile(script):
+        return
+    head = ", ".join(unclassified[:3])
+    more = f" (+{len(unclassified) - 3} more)" if len(unclassified) > 3 else ""
+    try:
+        subprocess.run(["bash", script,
+                        f"auto-commit left {len(unclassified)} file(s) uncommitted "
+                        f"in {os.path.basename(PROJ_DIR)}: {head}{more}"],
+                       capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass                       # a Stop hook never fails because Slack did
+
+
 def report_skipped(unclassified):
     """Say out loud what was left uncommitted, and why.
 
@@ -152,6 +168,12 @@ def report_skipped(unclassified):
     """
     if not unclassified:
         return
+    # ROUTE IT SOMEWHERE READ (adversarial review finding-4). This hook is wired
+    # `async` and the fleet template appends `2>/dev/null`, so a bare print() goes
+    # nowhere an operator will look -- the same silently-dropped-notification scar
+    # that founder-notifications.md exists for. Slack is that file's single sanctioned
+    # channel and no-ops when the webhook is unset, so this can never break a Stop.
+    _notify_slack(unclassified)
     print(f"auto-commit: {len(unclassified)} file(s) NOT committed "
           f"(unclassified path, commit these yourself with a real message + issue id):")
     for f in unclassified[:20]:
