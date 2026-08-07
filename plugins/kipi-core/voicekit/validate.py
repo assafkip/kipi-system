@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from . import assemble, corpus, fingerprint
 
@@ -54,6 +55,57 @@ def check_exemplars(path):
                                 f"founder bans everywhere)")
             if row.get("status", "active") not in ("active", "retired"):
                 problems.append(f"{rid}: status {row.get('status')!r}")
+            # voice-2 review: two seed rows shipped literal {{UNVALIDATED}}
+            # markers into the corpus -- template scaffolding presented as voice
+            # material. Any mustache placeholder in an exemplar is scaffolding.
+            if "{{" in text:
+                problems.append(f"{rid}: template placeholder in text")
+            # And several closed with campaign-hashtag tails, the exact register
+            # identity prose disavows. A trailing hashtag-only line is metadata,
+            # not voice.
+            last = text.strip().splitlines()[-1] if text.strip() else ""
+            if re.fullmatch(r"(#\w+[ \t]*)+", last):
+                problems.append(f"{rid}: trailing hashtag line in text")
+    return problems
+
+
+CORRECTION_CLASSES = ("deterministic", "interpretive")
+CORRECTION_STATUSES = ("active", "promoted", "retired")
+
+
+def check_corrections(path):
+    """corrections.jsonl schema health (voice-2 review: the ledger had no
+    validator at all, so a malformed or duplicate row passed the gate green)."""
+    if not os.path.exists(path):
+        return []                      # an absent ledger is a valid empty ledger
+    problems = []
+    seen = set()
+    with open(path, encoding="utf-8") as handle:
+        for lineno, line in enumerate(handle, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError as exc:
+                problems.append(f"corrections line {lineno}: unparseable ({exc})")
+                continue
+            rid = row.get("id")
+            if not rid:
+                problems.append(f"corrections line {lineno}: no id")
+            elif rid in seen:
+                problems.append(f"corrections line {lineno}: duplicate id {rid!r}")
+            seen.add(rid)
+            if not (row.get("instruction") or "").strip():
+                problems.append(f"{rid}: empty instruction")
+            if row.get("class") not in CORRECTION_CLASSES:
+                problems.append(f"{rid}: class {row.get('class')!r}")
+            if row.get("status") not in CORRECTION_STATUSES:
+                problems.append(f"{rid}: status {row.get('status')!r}")
+            for ch in row.get("scope") or []:
+                if ch not in ("linkedin", "x", "substack", "medium", "dm",
+                              "email", "comment"):
+                    problems.append(f"{rid}: unknown scope {ch!r}")
     return problems
 
 
@@ -119,6 +171,7 @@ def check_all(voice_dir):
     """Every check, one list. [] is a healthy corpus."""
     voice = corpus.load(voice_dir)
     problems = check_exemplars(os.path.join(voice_dir, corpus.EXEMPLARS))
+    problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS))
     problems += check_pools(voice)
     problems += check_fingerprint_fresh(voice)
     problems += check_budget(voice)
