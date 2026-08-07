@@ -62,7 +62,7 @@ printf '%s\n' \
   'Reading additional input from stdin...' \
   'OpenAI Codex v0.146.0' \
   '--------' \
-  'workdir: /Users/assafkipnis/projects/kipi-system' \
+  'workdir: /repo' \
   'model: gpt-5.6-sol' \
   '--------' \
   'user' \
