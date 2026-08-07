@@ -147,6 +147,35 @@ check("CONTROL: an unattributable branch is left alone",
       offered([pr(999, ABSENT_ROLLUP, branch="dependabot/npm/lodash-4.17.21", title="Bump lodash from 4.17.20 to 4.17.21")]), [])
 
 # =============================================================================
+# 5b. A record ON DISK with no status posted is NOT a virgin PR.
+# =============================================================================
+# Codex review of PR #123, finding 1 (major), reproduced before accepting.
+# pr-review-agent.sh writes the verdict record unconditionally but posts the
+# status only inside `if [ "$POST" = "1" ]` (:917, :975). So `kipi review <PR>`
+# without --post, a failed status post (":915 recorded but NO gate moved"), or a
+# missing head sha all leave a usable REQUEST CHANGES record with an empty
+# rollup -- and OUT_DIR (:111) is the same dir read_record reads.
+#
+# The first version of this fix skipped read_record on the absent path, so this
+# shape was offered as re-review with the reason "the reviewer has never posted a
+# verdict", while classify() on that very record said rework. That spends a
+# review round manufacturing a second verdict next to a real one with findings,
+# and points the operator at a producer bug that does not exist.
+import json as _json
+_tmp = tempfile.mkdtemp()
+_sha = "b61f215a52007610ce66bf39c9b45ce0a837f838"
+Path(_tmp, "pr-121.verdict.json").write_text(_json.dumps({
+    "pr": 121, "issue": "ASK-447", "verdict": "REQUEST CHANGES",
+    "stated": "REQUEST CHANGES", "usable": True, "round": 1,
+    "review": "", "head_sha": _sha, "ts": "now"}))
+rr.CI.list_prs = lambda repo_dir: [pr(121, ABSENT_ROLLUP)]
+_got = rr.candidates("/nonexistent-repo", Path(_tmp))
+check("a verdict record with no posted status is rework, not a first review",
+      [(c["action"], c["reason"]) for c in _got],
+      [("rework", "reviewer said REQUEST CHANGES at the current head")])
+
+
+# =============================================================================
 # 6. NEGATIVE SELF-TEST: test 1's assertion must be able to fail.
 # =============================================================================
 # A green test 1 could mean "the absent slot is now seen" or "offered() returns

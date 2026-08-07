@@ -231,8 +231,29 @@ def reviewer_slot_failing(pr_obj):
     return sorted(names)
 
 
+# NOTE, unresolved on purpose (sp-833a2b76): should this be the GATING context
+# only, or any reviewer slot?
+#
+# pr-review-agent.sh:189 writes `kipi/reviewer-approved` for the PRIMARY engine
+# and an advisory `kipi/<engine>-approved` otherwise, and ci-redrive.py:202 says
+# the split exists so neither engine "can answer for the other".
+# CI.is_reviewer_slot matches `^kipi/[a-z0-9-]+-approved$`, i.e. BOTH, so a green
+# ADVISORY slot currently reports the GATE as spoken (codex review of PR #123,
+# finding 2, reproduced).
+#
+# It is left BROAD here because narrowing it flips an existing deliberate
+# assertion -- test-review-redrive.sh:157 fixtures `kipi/codex-approved` green
+# and requires "the live status must win over the record". Those two cannot both
+# hold, and picking between them is a scope call about which question this
+# predicate answers ("did SOME review land" vs "has the GATE spoken"), not a
+# detail of making absence visible. Unreachable today regardless:
+# KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so `kipi/codex-approved` needs a
+# hand-run with a non-default primary. Captured rather than decided here.
+GATING_SLOT = "kipi/reviewer-approved"  # named for the pending decision above
+
+
 def reviewer_slot_posted(pr_obj):
-    """True if a reviewer slot appears in the rollup AT ALL, whatever its state.
+    """True if the GATING reviewer slot appears in the rollup, whatever its state.
 
     The distinction reviewer_slot_failing() structurally cannot make. That
     predicate is two-valued -- failing / not-failing -- over a three-valued
@@ -257,6 +278,7 @@ def reviewer_slot_posted(pr_obj):
             name = check.get("context") or ""
         else:
             name = check.get("name") or ""
+        # BROAD on purpose, and this is contested -- see GATING_SLOT above.
         if CI.is_reviewer_slot(name):
             return True
     return False
@@ -313,40 +335,60 @@ def candidates(repo_dir, records_dir):
         issue, agent, source = attributed
         slots = reviewer_slot_failing(pr_obj)
         pr = pr_obj.get("number")
+        record = read_record(records_dir, pr)
         if not slots:
             if reviewer_slot_posted(pr_obj):
-                # A verdict exists and is not failing. Nothing to redrive.
+                # A gating verdict exists and is not failing. Nothing to redrive.
                 continue
-            # NEVER POSTED -- the reviewer has not run against this PR at all.
-            #
-            # This is NOT the ASK-318 case refused below, and the difference is
-            # the whole point. There, a failing slot with no verdict record means
-            # the producer RAN and recorded nothing, so re-reviewing would paper
-            # over a broken producer. Here nothing ever claimed a review happened,
-            # so there is no verdict to be missing and no failure to mask.
-            # Requiring a verdict record before a PR may receive its FIRST review
-            # is circular, which is why the record lookup is skipped on this path.
-            #
-            # It emits the EXISTING re-review action on purpose. kipi-dispatch.sh
-            # :1000 matches that exact string to run pr-review-agent.sh --post;
-            # any other value falls through to `./kipi converge`, so a new
-            # vocabulary word would not be inert, it would silently buy a full
-            # rework round against a review that does not exist. The word already
-            # means "nobody read the code, there is no spec", which is precisely
-            # this state. The distinction rides in the reason, which is what
-            # select and the escalation message print.
-            out.append({
-                "action": REREVIEW,
-                "reason": "the reviewer has never posted a verdict for this PR",
-                "issue": issue, "agent": agent, "issue_source": source,
-                "pr": pr, "url": pr_obj.get("url"),
-                "branch": pr_obj.get("headRefName"),
-                "head_sha": pr_obj.get("headRefOid") or "",
-                "slots": [],
-            })
-            continue
-        record = read_record(records_dir, pr)
-        if record is None:
+            if record is not None:
+                # NO STATUS, BUT A VERDICT RECORD EXISTS. Not a virgin PR.
+                #
+                # pr-review-agent.sh writes the record unconditionally but posts
+                # the status only inside `if [ "$POST" = "1" ]` (:917, :975). So
+                # `kipi review <PR>` without --post, a failed status post (":915
+                # the review is recorded but NO gate moved"), or a missing head
+                # sha all leave exactly this shape, and OUT_DIR (:111) is the very
+                # directory read_record reads.
+                #
+                # Treating it as absent would spend a review round manufacturing a
+                # second verdict while a usable one with findings sits on disk,
+                # and would tell the operator "never posted a verdict" about a PR
+                # that has one -- sending them after a producer bug that does not
+                # exist. Codex review of PR #123, finding 1 (major), reproduced
+                # before accepting.
+                #
+                # The circularity argument for skipping the lookup holds for a
+                # MISSING record, not a present one. Fall through to classify(),
+                # which already knows how to read one.
+                pass
+            else:
+                # NEVER POSTED and never recorded -- the reviewer has not run
+                # against this PR at all.
+                #
+                # NOT the ASK-318 case below. There, a FAILING slot with no record
+                # means the producer ran and recorded nothing, so re-reviewing
+                # papers over a broken producer. Here nothing ever claimed a
+                # review happened, so there is no verdict to be missing.
+                #
+                # It emits the EXISTING re-review action on purpose.
+                # kipi-dispatch.sh:1000 matches that exact string to run
+                # pr-review-agent.sh --post; any other value falls through to
+                # `./kipi converge`, so a new vocabulary word would not be inert,
+                # it would silently buy a full rework round against a review that
+                # does not exist. The word already means "nobody read the code,
+                # there is no spec", which is precisely this state. The
+                # distinction rides in the reason, which select prints.
+                out.append({
+                    "action": REREVIEW,
+                    "reason": "the reviewer has never posted a verdict for this PR",
+                    "issue": issue, "agent": agent, "issue_source": source,
+                    "pr": pr, "url": pr_obj.get("url"),
+                    "branch": pr_obj.get("headRefName"),
+                    "head_sha": pr_obj.get("headRefOid") or "",
+                    "slots": [],
+                })
+                continue
+        elif record is None:
             # ABSENT, not FAILURE-with-no-record. Owned by ASK-318/ASK-313.
             sys.stderr.write(
                 "review-redrive: PR #%s has %s failing but NO verdict record -- "
