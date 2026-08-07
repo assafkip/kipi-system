@@ -392,3 +392,52 @@ class TestReviewRoundFixes:
               "blocking": [{"metric": "sentence_mean", "direction": "above"}]}
         assert fingerprint.out_of_band("Anything at all here.", fp) == []
         assert fingerprint.score("Anything at all here.", fp) == {}
+
+
+class TestVoice2ReviewChecks:
+    """voice-2 review round: placeholder markers, hashtag tails, corrections schema."""
+
+    def test_placeholder_marker_is_red(self, tmp_path):
+        rows = _rows(6)
+        rows[0]["text"] += " 60% of their time {{UNVALIDATED}}"
+        d = _voice_dir(tmp_path, rows=rows)
+        assert any("placeholder" in p for p in
+                   validate.check_exemplars(str(tmp_path / "voice" / "exemplars.jsonl")))
+
+    def test_trailing_hashtag_line_is_red(self, tmp_path):
+        rows = _rows(6)
+        rows[0]["text"] += "\n\n#AI #BuildInPublic #FounderTools"
+        _voice_dir(tmp_path, rows=rows)
+        assert any("hashtag" in p for p in
+                   validate.check_exemplars(str(tmp_path / "voice" / "exemplars.jsonl")))
+
+    def test_hashtag_mid_text_is_not_flagged(self, tmp_path):
+        """The check must catch the TAIL, not any # -- '#1 priority' is prose."""
+        rows = _rows(6)
+        rows[0]["text"] = "It was the #1 priority. Nobody worked it. That was the tell."
+        _voice_dir(tmp_path, rows=rows)
+        assert not any("hashtag" in p for p in
+                       validate.check_exemplars(str(tmp_path / "voice" / "exemplars.jsonl")))
+
+    def test_corrections_schema_negative_selftest(self, tmp_path):
+        d = tmp_path / "voice"
+        d.mkdir()
+        (d / corpus.CORRECTIONS).write_text("\n".join([
+            json.dumps({"id": "c1", "instruction": "x", "class": "interpretive",
+                        "status": "active", "scope": ["linkedin"]}),
+            json.dumps({"id": "c1", "instruction": "", "class": "nonsense",
+                        "status": "weird", "scope": ["myspace"]}),
+            "{torn",
+        ]))
+        problems = "\n".join(validate.check_corrections(str(d / corpus.CORRECTIONS)))
+        for needle in ("duplicate id", "empty instruction", "class", "status",
+                       "unknown scope", "unparseable"):
+            assert needle in problems, needle
+
+    def test_clean_corrections_pass(self, tmp_path):
+        d = tmp_path / "voice"
+        d.mkdir()
+        (d / corpus.CORRECTIONS).write_text(json.dumps(
+            {"id": "c1", "instruction": "Do the thing.", "class": "deterministic",
+             "status": "promoted", "scope": ["dm"]}))
+        assert validate.check_corrections(str(d / corpus.CORRECTIONS)) == []
