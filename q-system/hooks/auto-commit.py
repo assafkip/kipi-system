@@ -30,7 +30,29 @@ AREA_MAP = [
     ("memory/",                       "chore",    "update auto-memory"),
 ]
 
-FALLBACK_AREA = ("chore", "update project files")
+# NO FALLBACK. An unclassified path is REPORTED, never committed (2026-08-07, ASK-498).
+#
+# This used to be `("chore", "update project files")`, so every path not named in
+# AREA_MAP above -- an instance's own source tree, its tests, its config -- was swept
+# into one unattended commit with a generic subject and no issue id.
+#
+# Measured cost in a single session on the consulting instance: three sweeps
+# (d96e621, 7a252f4, f0a3183) carried real feature work onto `main` under
+# "chore: update project files". Two of them also RACED the agent writing the files:
+# a `git add` of new files reported success and staged nothing, because the hook had
+# already committed them a moment earlier, and the agent's own commit then silently
+# contained only half its change.
+#
+# The hook's purpose is a safety net for GENERATED STATE -- canonical files, session
+# memory, marketing content -- that nobody would otherwise commit. Source code is the
+# opposite case: it is exactly what an agent commits deliberately, with a real message
+# and a Linear id. Sweeping it is not a safety net, it is a second writer to the same
+# branch.
+#
+# Uncommitted is not lost: the files are on disk. What is removed here is an
+# unattended commit nobody asked for. `report_skipped` makes the remainder loud
+# rather than silent, so the safety net becomes a NOTICE for source code and stays a
+# COMMIT for the generated state it was built for.
 
 
 def run(cmd, **kwargs):
@@ -59,26 +81,56 @@ def get_changed_files():
     return {f for f in files if f and not f.startswith("q-system/output/")}
 
 
+SKIP_DECLARED = "declared-skip"       # matched AREA_MAP with commit_type None
+SKIP_UNCLASSIFIED = "unclassified"    # matched nothing: never auto-committed
+
+
 def classify(filepath):
-    """Map a file path to (type, message) based on AREA_MAP."""
+    """(type, message) for an auto-committable file, else a SKIP_* reason string.
+
+    Returns a STRING rather than None for both skip cases so the caller can tell
+    "deliberately ignored" (q-system/output, gitignored) from "nobody classified
+    this" (an instance's source tree). The second one is the whole point: it is
+    reported to the operator instead of being swept.
+    """
     for prefix, commit_type, msg in AREA_MAP:
         if filepath.startswith(prefix):
             if commit_type is None:
-                return None  # skip this file
+                return SKIP_DECLARED
             return (commit_type, msg)
-    return FALLBACK_AREA
+    return SKIP_UNCLASSIFIED
 
 
 def group_files(files):
-    """Group files by their commit area."""
+    """(groups, unclassified). Only classified files are ever committed."""
     groups = defaultdict(list)
+    unclassified = []
     for f in sorted(files):
         result = classify(f)
-        if result is None:
+        if result == SKIP_UNCLASSIFIED:
+            unclassified.append(f)
             continue
-        key = result  # (type, message)
-        groups[key].append(f)
-    return groups
+        if result == SKIP_DECLARED:
+            continue
+        groups[result].append(f)
+    return groups, unclassified
+
+
+def report_skipped(unclassified):
+    """Say out loud what was left uncommitted, and why.
+
+    Silence here would recreate the original defect in reverse: work sitting
+    uncommitted with nobody told. The hook prints to the Stop transcript, which is
+    where the operator or the next session sees it.
+    """
+    if not unclassified:
+        return
+    print(f"auto-commit: {len(unclassified)} file(s) NOT committed "
+          f"(unclassified path, commit these yourself with a real message + issue id):")
+    for f in unclassified[:20]:
+        print(f"  - {f}")
+    if len(unclassified) > 20:
+        print(f"  - ... and {len(unclassified) - 20} more")
 
 
 def commit_group(commit_type, message, files):
@@ -123,15 +175,17 @@ def main():
         print("auto-commit: no changes")
         return
 
-    groups = group_files(files)
+    groups, unclassified = group_files(files)
     if not groups:
         print("auto-commit: no committable changes")
+        report_skipped(unclassified)
         return
 
     print(f"auto-commit: {len(files)} files in {len(groups)} groups")
     for (commit_type, message), group_files_list in groups.items():
         commit_group(commit_type, message, group_files_list)
 
+    report_skipped(unclassified)
     print("auto-commit: done")
 
 
