@@ -156,12 +156,29 @@ def record_path(records_dir, pr):
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
 
 
+# A THIRD answer, alongside a record and no record. json.JSONDecodeError IS a
+# ValueError, so the original `except (OSError, ValueError): return None`
+# reported a TRUNCATED record and an ABSENT one identically -- and every caller
+# then states, in the operator-facing reason, that no verdict exists. That is
+# the same false statement finding 1 was about, arriving through the other door.
+# Latent rather than live: 0 unparseable across 96 records sampled 2026-08-06.
+# (Independent probe on PR #123, sp-3e57348e.)
+CORRUPT_RECORD = object()
+
+
 def read_record(records_dir, pr):
+    """The verdict record, None if absent, CORRUPT_RECORD if unreadable."""
     try:
         with open(record_path(records_dir, pr)) as fh:
             return json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except OSError:
+        # Unreadable for a reason that is not absence (permissions, a directory
+        # where a file belongs). Refusing beats claiming the review never ran.
+        return CORRUPT_RECORD
+    except ValueError:
+        return CORRUPT_RECORD
 
 
 def usable_from_lib(review_file):
@@ -340,27 +357,47 @@ def candidates(repo_dir, records_dir):
             if reviewer_slot_posted(pr_obj):
                 # A gating verdict exists and is not failing. Nothing to redrive.
                 continue
+            if record is CORRUPT_RECORD:
+                # Say what is true: the record is there and unreadable. Naming it
+                # "never posted" would send the operator after a producer bug.
+                sys.stderr.write(
+                    "review-redrive: PR #%s has a verdict record that will not "
+                    "parse -- refusing to call it absent. Left alone.\n" % pr)
+                continue
             if record is not None:
                 # NO STATUS, BUT A VERDICT RECORD EXISTS. Not a virgin PR.
                 #
                 # pr-review-agent.sh writes the record unconditionally but posts
                 # the status only inside `if [ "$POST" = "1" ]` (:917, :975). So
-                # `kipi review <PR>` without --post, a failed status post (":915
-                # the review is recorded but NO gate moved"), or a missing head
-                # sha all leave exactly this shape, and OUT_DIR (:111) is the very
-                # directory read_record reads.
+                # `kipi review <PR>` without --post, the ":915 recorded but NO
+                # gate moved" branch, and the missing-head-sha branch all leave
+                # this shape, in the very directory read_record reads (:111).
                 #
-                # Treating it as absent would spend a review round manufacturing a
-                # second verdict while a usable one with findings sits on disk,
-                # and would tell the operator "never posted a verdict" about a PR
-                # that has one -- sending them after a producer bug that does not
-                # exist. Codex review of PR #123, finding 1 (major), reproduced
-                # before accepting.
-                #
-                # The circularity argument for skipping the lookup holds for a
-                # MISSING record, not a present one. Fall through to classify(),
-                # which already knows how to read one.
-                pass
+                # classify() answers "is this a refusal", which is the WRONG
+                # question here. It returns (None, ...) for any non-refusal, and
+                # the shared tail below does `if action is None: continue` -- so
+                # a review that PASSED but was never posted fell out silently.
+                # Sampled 2026-08-06 across 96 records: APPROVE WITH NITS 54,
+                # REQUEST CHANGES 23, APPROVE 17, BLOCK 1, empty 1. The dropped
+                # non-refusals are 71 of 96, the MAJORITY, and PR #23 is one --
+                # approved, never posted, auto-merge armed and waiting forever on
+                # a status nobody sends. The cheapest PR in the queue was the one
+                # the selector could not see. (Independent probe on PR #123.)
+                head_sha = pr_obj.get("headRefOid") or ""
+                action, reason = classify(record, head_sha)
+                if action is None:
+                    # A PASSING review with no status. Not a refusal, not virgin.
+                    action = REREVIEW
+                    reason = ("the review passed but its status was never "
+                              "posted (%s)" % (record.get("verdict") or "no verdict"))
+                out.append({
+                    "action": action, "reason": reason,
+                    "issue": issue, "agent": agent, "issue_source": source,
+                    "pr": pr, "url": pr_obj.get("url"),
+                    "branch": pr_obj.get("headRefName"),
+                    "head_sha": head_sha, "slots": [],
+                })
+                continue
             else:
                 # NEVER POSTED and never recorded -- the reviewer has not run
                 # against this PR at all.
@@ -388,6 +425,11 @@ def candidates(repo_dir, records_dir):
                     "slots": [],
                 })
                 continue
+        elif record is CORRUPT_RECORD:
+            sys.stderr.write(
+                "review-redrive: PR #%s has %s failing and an unreadable verdict "
+                "record -- refusing to guess. Left alone.\n" % (pr, ",".join(slots)))
+            continue
         elif record is None:
             # ABSENT, not FAILURE-with-no-record. Owned by ASK-318/ASK-313.
             sys.stderr.write(

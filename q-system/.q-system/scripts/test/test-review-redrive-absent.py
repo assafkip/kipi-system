@@ -78,7 +78,7 @@ PASSING_ROLLUP = [
 ]
 
 
-def pr(number, rollup, branch="sana/ask-447-sweep", draft=False,
+def pr(number, rollup, branch="sana/ask-447-sweep", draft=False, headsha=None,
        title="Verify a launchd job's paused/running state against declared "
              "intent (ASK-447, sp-2c7e5819)"):
     """A PR object shaped like the one gh actually returns.
@@ -93,7 +93,7 @@ def pr(number, rollup, branch="sana/ask-447-sweep", draft=False,
     return {
         "number": number, "isDraft": draft, "headRefName": branch,
         "title": title,
-        "headRefOid": "b61f215a52007610ce66bf39c9b45ce0a837f838",
+        "headRefOid": headsha or "b61f215a52007610ce66bf39c9b45ce0a837f838",
         "url": "https://github.com/assafkip/kipi-system/pull/%s" % number,
         "statusCheckRollup": rollup,
     }
@@ -173,6 +173,59 @@ _got = rr.candidates("/nonexistent-repo", Path(_tmp))
 check("a verdict record with no posted status is rework, not a first review",
       [(c["action"], c["reason"]) for c in _got],
       [("rework", "reviewer said REQUEST CHANGES at the current head")])
+
+
+# =============================================================================
+# 5c. THE WHOLE VERDICT SPACE on the never-posted path, sampled not assumed.
+# =============================================================================
+# Every fixture in 5b used REQUEST CHANGES. The fall-through has two outcomes and
+# only one was asserted, so a review that PASSED but was never posted fell out
+# silently -- classify() returns (None, ...) for a non-refusal and the shared tail
+# does `if action is None: continue`. PR #23 was exactly that: approved,
+# never posted, auto-merge armed, waiting forever on a status nobody sends. The
+# cheapest PR in the queue was the one the selector could not see.
+#
+# The fixture had encoded an assumption about the population instead of sampling
+# it. This table is the sample, counted from ~/.config/kipi/pr-reviews on
+# 2026-08-06 (96 records): APPROVE WITH NITS 54, REQUEST CHANGES 23, APPROVE 17,
+# BLOCK 1, empty 1. The non-refusals are 71 of 96 -- the MAJORITY was the
+# unasserted branch. Re-sample before adding a verdict here.
+VERDICT_SPACE = [
+    # verdict,             observed, expected action, reason fragment
+    ("APPROVE WITH NITS",  54, "re-review", "passed but its status was never posted"),
+    ("REQUEST CHANGES",    23, "rework",    "reviewer said REQUEST CHANGES"),
+    ("APPROVE",            17, "re-review", "passed but its status was never posted"),
+    ("BLOCK",               1, "rework",    "reviewer said BLOCK"),
+    ("",                    1, "re-review", "states no verdict"),
+]
+for _verdict, _n, _want_action, _frag in VERDICT_SPACE:
+    _d = tempfile.mkdtemp()
+    Path(_d, "pr-23.verdict.json").write_text(_json.dumps({
+        "pr": 23, "verdict": _verdict, "stated": _verdict, "usable": True,
+        "round": 1, "review": "", "head_sha": _sha, "ts": "now"}))
+    rr.CI.list_prs = lambda repo_dir: [pr(23, ABSENT_ROLLUP, headsha=_sha)]
+    _out = rr.candidates("/nonexistent-repo", Path(_d))
+    check("no status + verdict %r (%d in the corpus) is offered"
+          % (_verdict, _n), len(_out), 1)
+    if _out:
+        check("no status + verdict %r routes to %s" % (_verdict, _want_action),
+              _out[0]["action"], _want_action)
+        check("no status + verdict %r reason names why" % _verdict,
+              _frag in _out[0]["reason"], True)
+
+
+# =============================================================================
+# 5d. An UNREADABLE record is never described as an absent one.
+# =============================================================================
+# json.JSONDecodeError is a ValueError, so read_record's original
+# `except (OSError, ValueError)` reported a truncated record and a missing one
+# identically -- and the never-posted reason then asserts no verdict exists.
+# Latent, not live: 0 unparseable across the 96 sampled records.
+_d = tempfile.mkdtemp()
+Path(_d, "pr-23.verdict.json").write_text('{"pr": 23, "verdict": "APPR')  # truncated
+rr.CI.list_prs = lambda repo_dir: [pr(23, ABSENT_ROLLUP, headsha=_sha)]
+check("a truncated verdict record is refused, not called absent",
+      rr.candidates("/nonexistent-repo", Path(_d)), [])
 
 
 # =============================================================================
