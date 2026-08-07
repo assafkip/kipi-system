@@ -63,6 +63,13 @@ WIRING_SURFACE_GLOBS = (
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
+    # A launchd plist's ProgramArguments IS the command line the OS runs, so a
+    # committed template is the strongest wiring an engine can have -- stronger
+    # than a hook, which at least needs an event. mutation-check.py was reported
+    # inert while a committed com.kipi.mutation-check.plist named it in argv
+    # (ASK-316, PR #81 CI). Same shape as the lefthook.yml case above: the
+    # surface list, not the engine, was the thing that was wrong.
+    "q-system/.q-system/scripts/*.plist",
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",

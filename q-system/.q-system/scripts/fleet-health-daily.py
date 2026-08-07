@@ -100,6 +100,15 @@ def _launchd_labels() -> list:
     return sorted(p.stem for p in LAUNCH_AGENTS.glob("*.plist"))
 
 
+def committed_template_labels() -> list:
+    """Labels this repo COMMITS a plist template for (install-plist.sh renders).
+
+    HERE is `q-system/.q-system/scripts/`, which is where every com.kipi.*.plist
+    template lives alongside its installer.
+    """
+    return sorted(p.stem for p in HERE.glob("com.kipi.*.plist"))
+
+
 def _paused_labels() -> set:
     """Reuse the watchdog's own ledger reader so 'paused' has ONE definition."""
     import importlib.util
@@ -186,9 +195,53 @@ def launchd_finding(detector_id: str, label: str, detail: str = "") -> dict:
                 f"- Or record the pause: add `{label}` to `~/.config/kipi/launchd-paused.txt`"
             ),
         }
+    if detector_id == "launchd-uninstalled":
+        return {
+            "subject": label,
+            "title": f"launchd job never installed: {label}",
+            "body": (
+                f"`{label}` has a committed plist template in "
+                "`q-system/.q-system/scripts/` but no rendered plist in "
+                "`~/Library/LaunchAgents/`, so the job has never run on this machine "
+                "and never will.\n\n"
+                "Merging a plist installs nothing. Both other launchd checks start "
+                "from `~/Library/LaunchAgents/`, so a template that was never "
+                "rendered is invisible to them: no file to be dark, no loaded job to "
+                "exit non-zero.\n\n"
+                "## Action\n"
+                f"- Install: `bash q-system/.q-system/scripts/install-plist.sh {label}`\n"
+                f"- Or record the decision not to: add `{label}` to "
+                "`~/.config/kipi/launchd-paused.txt`"
+            ),
+        }
     # Loud, not silent: a caller inventing a launchd detector id would otherwise
     # file an issue with an empty body under a key the other filer also writes.
     raise ValueError(f"no launchd rendering for detector id {detector_id!r}")
+
+
+def uninstalled_templates(committed, installed, paused) -> list:
+    """Committed templates with no rendered plist, minus the paused ledger.
+
+    Pure set logic on purpose: the detector below supplies this machine's state,
+    and the test supplies fixtures, so the rule is pinned without either one
+    depending on what happens to be in ~/Library/LaunchAgents today.
+    """
+    return [label for label in committed
+            if label not in installed and label not in paused]
+
+
+def detect_uninstalled_templates(_ctx) -> list:
+    """A plist committed to the repo that nobody ever installed (ASK-316).
+
+    The third silent-death mode. `detect_dark_jobs` catches installed-but-not-
+    loaded and `detect_failing_jobs` catches loaded-but-failing; both enumerate
+    `~/Library/LaunchAgents/`. A scheduled job whose template was merged and
+    never rendered has no entry there at all, so it is a job the repo believes
+    it runs and the machine has never heard of.
+    """
+    return [launchd_finding("launchd-uninstalled", label)
+            for label in uninstalled_templates(
+                committed_template_labels(), set(_launchd_labels()), _paused_labels())]
 
 
 def detect_dark_jobs(_ctx) -> list:
@@ -1251,6 +1304,13 @@ DETECTORS = [
         "detect": detect_dark_jobs,
         "action": "file_issue",
         "lesson": "a-freshness-deadman-must-live-off-the-machine-it-watches",
+    },
+    {
+        "id": "launchd-uninstalled",
+        "description": "committed plist template with no rendered plist installed",
+        "detect": detect_uninstalled_templates,
+        "action": "file_issue",
+        "lesson": "every-stage-needs-its-own-trigger",
     },
     {
         "id": "launchd-failing",

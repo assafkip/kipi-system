@@ -315,6 +315,110 @@ class TestMutantKills(unittest.TestCase):
             "a case-level output/ dir is not q-system/output/; un-anchoring this "
             "darkens Alice's fill_sheet.py, which is LIVE and in ASK-122's table")
 
+    def test_generated_prefix_matches_at_the_root_only(self):
+        """`startswith` -> `in` survived the whole suite (ASK-316 mutation table).
+
+        The sibling case above uses a path that does not contain the prefix at
+        all, so it cannot tell an anchored check from a substring one. This one
+        does contain it, mid-path, and must still be real source: the prefix is
+        the OS's own generated tree relative to THIS repo root, not any nested
+        directory that happens to be spelled the same way.
+        """
+        root = Path("/repo")
+        self.assertFalse(
+            self.mod.is_excluded_tree(
+                root / "instances/alice/q-system/output/gen.py", root),
+            "a nested q-system/output/ is another tree's source, not this repo's "
+            "generated artifacts; matching it anywhere in the path darkens it")
+        self.assertTrue(
+            self.mod.is_excluded_tree(root / "q-system/output/log.txt", root),
+            "the repo's own generated tree must still be excluded")
+
+    # --- MODULE_REF_RE: all four arms are real callers (ASK-316) --------------
+
+    def test_loader_and_dash_m_arms_still_match(self):
+        """The importlib and `python -m` arms had zero coverage.
+
+        The fixture reaches MODULE_REF_RE only through `import x`, so both other
+        arms could be deleted with the suite green -- and they are the two forms
+        that produced the ASK-230 false-inert in the first place.
+        """
+        cases = {
+            'spec_from_file_location("geo_clues", path)': "geo_clues",
+            "python3 -m provenance_vocabulary --check": "provenance_vocabulary",
+            "import geo_clues": "geo_clues",
+            "from geo_clues import pivot": "geo_clues",
+        }
+        for line, want in cases.items():
+            match = self.mod.MODULE_REF_RE.search(line)
+            self.assertIsNotNone(match, f"a real module reference must match: {line!r}")
+            self.assertIn(
+                want, [g for g in match.groups() if g],
+                f"the matched arm must capture the module name: {line!r}")
+
+    # --- filename_re boundaries: a longer name is not a reference ------------
+
+    def test_filename_match_respects_both_boundaries(self):
+        """Dropping either lookaround left the suite green (ASK-316 mutation table).
+
+        Without the lookBEHIND, `prealpha.py` counts as a reference to
+        `alpha.py`. Without the lookAHEAD, `beta.py-old` counts as a reference
+        to `beta.py`. Both resurrect a dead engine from a string that names a
+        different file, which is the false-LIVE direction the negatives exist for.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "lib").mkdir(parents=True)
+            (root / "lib/alpha.py").write_text(engine_body("alpha"))
+            (root / "lib/beta.py").write_text(engine_body("beta"))
+            (root / "lib/run.sh").write_text(
+                "#!/bin/bash\npython3 lib/prealpha.py\npython3 lib/beta.py-old\n")
+            caps = {c["entry"]: c for c in self.mod.collect_engines(root)}
+            self.assertEqual(
+                "UNWIRED", caps["lib/alpha.py"]["status"],
+                "prealpha.py is a different file; the lookbehind is what says so")
+            self.assertEqual(
+                "UNWIRED", caps["lib/beta.py"]["status"],
+                "beta.py-old is a different file; the lookahead is what says so")
+
+    # --- extensionless wiring surfaces (the kipi CLI, Makefiles) -------------
+
+    def test_extensionless_surface_counts_as_wiring(self):
+        """SURFACE_NAMES could be deleted entirely with the suite green (ASK-316).
+
+        This fleet's own CLI has no extension: a script whose only caller is
+        `kipi` would report UNWIRED, and the fix for that reads as "delete the
+        script".
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "lib").mkdir(parents=True)
+            (root / "lib/engine_cli_called.py").write_text(
+                engine_body("engine_cli_called"))
+            (root / "kipi").write_text(
+                "#!/bin/bash\nexec python3 lib/engine_cli_called.py \"$@\"\n")
+            caps = {c["entry"]: c for c in self.mod.collect_engines(root)}
+            self.assertEqual(
+                "LIVE", caps["lib/engine_cli_called.py"]["status"],
+                "the kipi CLI is a wiring surface; it has no suffix to match on")
+
+    # --- _is_test_file must actually discriminate ---------------------------
+
+    def test_is_test_file_discriminates_both_ways(self):
+        """Replaced with always-True, the suite stayed green (ASK-316).
+
+        Always-True empties wiring_sources, so every engine cites a test instead
+        of its real caller and the map stops answering the question it exists
+        for. Always-False is the mirror. Both directions are asserted here.
+        """
+        for p in (Path("tests/test_extract.py"), Path("q-system/x/test-thing.sh"),
+                  Path("plugins/prd-os/tests/helper.py")):
+            self.assertTrue(self.mod._is_test_file(p), f"{p} is test evidence")
+        for p in (Path("q-system/.q-system/scripts/linear-worker.sh"),
+                  Path("kipi"), Path("plugins/prd-os/hooks.json")):
+            self.assertFalse(self.mod._is_test_file(p),
+                             f"{p} is a real caller, not test evidence")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

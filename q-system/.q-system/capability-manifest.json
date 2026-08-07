@@ -260,7 +260,26 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 180,
+      "mutants": [
+        {
+          "id": "invoker-defaults-to-dispatcher",
+          "target": "q-system/.q-system/scripts/pr-review-agent.sh",
+          "kind": "logic",
+          "find": "INVOKER=\"${KIPI_REVIEW_INVOKER:-manual}\"\n",
+          "replace": "INVOKER=\"${KIPI_REVIEW_INVOKER:-dispatcher}\"\n",
+          "why": "an unlabelled review would read as dispatcher-driven; absent must mean hand-run, the fail-safe direction the design rests on"
+        },
+        {
+          "id": "invoker-worker-stops-labelling-itself",
+          "target": "q-system/.q-system/scripts/linear-worker.sh",
+          "kind": "call-site",
+          "find": "    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD ",
+          "replace": "    $REVIEWER_CMD ",
+          "why": "the reviewer can record an invoker perfectly and still never be told one; provenance exists only if the dispatcher's call site sets it"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
@@ -283,7 +302,33 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash",
-      "timeout_s": 420
+      "timeout_s": 420,
+      "mutants": [
+        {
+          "id": "floor-approve-becomes-rework",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "        *)                                return 10 ;;\n",
+          "replace": "        *)                                return 0 ;;\n",
+          "why": "APPROVE stops being terminal, which is the unsatisfiable gate ASK-113 closed: nothing can ever stop reworking"
+        },
+        {
+          "id": "floor-verdict-takes-more-than-the-first-token",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "      if (s ~ /^APPROVE WITH NITS/) return \"APPROVE WITH NITS\"\n      if (s ~ /^REQUEST CHANGES/)   return \"REQUEST CHANGES\"\n      if (s ~ /^APPROVE/)           return \"APPROVE\"\n      if (s ~ /^BLOCK/)             return \"BLOCK\"\n",
+          "replace": "      if (s ~ /BLOCK/)              return \"BLOCK\"\n      if (s ~ /APPROVE WITH NITS/)  return \"APPROVE WITH NITS\"\n      if (s ~ /REQUEST CHANGES/)    return \"REQUEST CHANGES\"\n      if (s ~ /APPROVE/)            return \"APPROVE\"\n",
+          "why": "the real PR #11 round-4 verdict QUALIFIES itself on one line -- `**REQUEST CHANGES** (not BLOCK -- nothing here writes an unrecoverable object)` -- so the verdict token must be the one that LEADS the statement; a token from the qualifier that follows must not win. ASK-356 moved that property from `head -1` on a grep pipeline into the `^` anchors of awk leading_token, so the mutant follows it there: unanchoring lets `(not BLOCK ...)` decide and the record reads BLOCK for a review that said the opposite in the same breath"
+        },
+        {
+          "id": "floor-worker-stops-sourcing-the-lib",
+          "target": "q-system/.q-system/scripts/linear-worker.sh",
+          "kind": "call-site",
+          "find": ". \"$SCRIPT_DIR/pr-verdict-lib.sh\"\n",
+          "replace": "true # . \"$SCRIPT_DIR/pr-verdict-lib.sh\"\n",
+          "why": "a correct verdict library nobody loads is the ASK-312 defect one layer up; the suite must see the call site disappear"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
@@ -460,15 +505,129 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
-      "runner": "python3"
+      "runner": "python3",
+      "mutants": [
+        {
+          "id": "map-module-ref-drop-loader-arms",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    r\"|spec_from_file_location\\(\\s*[\\\"']([\\w.\\-]+)[\\\"']\"\n    r\"|-m\\s+([\\w.]+)\\b\",\n",
+          "replace": "    \"\",\n",
+          "why": "importlib and `python -m` callers are real wiring; dropping those arms reports live engines as inert (the ASK-230 scar)"
+        },
+        {
+          "id": "map-filename-re-drop-lookarounds",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "        r\"(?<![\\w.\\-])(\" + \"|\".join(re.escape(n) for n in sorted(by_filename)) + r\")(?![\\w\\-])\"\n",
+          "replace": "        r\"(\" + \"|\".join(re.escape(n) for n in sorted(by_filename)) + r\")\"\n",
+          "why": "without the boundaries a longer name containing an engine's name counts as a reference, so a dead engine reads LIVE"
+        },
+        {
+          "id": "map-surface-names-dropped",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "SURFACE_NAMES = {\"Makefile\", \"makefile\", \"kipi\", \"Dockerfile\", \"Justfile\", \"justfile\"}\n",
+          "replace": "SURFACE_NAMES = set()\n",
+          "why": "the extensionless wiring surfaces (the kipi CLI, Makefiles) stop being scanned, so a script called only from `kipi` reads UNWIRED"
+        },
+        {
+          "id": "map-is-test-file-always-true",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "def _is_test_file(p: Path) -> bool:\n    return p.name.startswith((\"test_\", \"test-\")) or \"test\" in p.parts or \"tests\" in p.parts\n",
+          "replace": "def _is_test_file(p: Path) -> bool:\n    return True\n",
+          "why": "every witness becomes a test witness, so wiring_sources empties and no engine can cite a real caller"
+        },
+        {
+          "id": "map-md-invocation-one-arm",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    r\"(?:^|[|&;(`]|\\$\\()\\s*(?:(?:python3?|bash|sh|source)\\s|\\./)\"\n",
+          "replace": "    r\"(?:^|[|&;(`]|\\$\\()\\s*(?:python3\\s)\"\n",
+          "why": "five of six invocation arms removed; a runbook calling bash/sh/source/./ stops counting as a trigger"
+        },
+        {
+          "id": "map-generated-prefix-unanchored",
+          "target": "q-system/.q-system/scripts/capability-map-gen.py",
+          "kind": "logic",
+          "find": "    if rel.as_posix().startswith(GENERATED_SURFACE_PREFIXES):\n",
+          "replace": "    if any(g in rel.as_posix() for g in GENERATED_SURFACE_PREFIXES):\n",
+          "why": "un-anchoring the generated-tree prefix darkens any nested q-system/output/ path, which is real source in an instance layout"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-mutation-check.py",
+      "runner": "python3",
+      "mutants": [
+        {
+          "id": "checker-absent-find-becomes-a-noop",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if occurrences == 0:\n        raise Refusal(\n            f\"mutant {mutant['id']}: find text is absent from {mutant['target']}, \"\n            \"so the mutation would silently not apply\")\n",
+          "replace": "    if occurrences == 0:\n        pass\n",
+          "why": "a mutation that never applied would report the suite green, which is the false-coverage defect this checker exists to remove, one level up"
+        },
+        {
+          "id": "checker-red-baseline-accepted",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if code != 0:\n        raise Refusal(\n            f\"{entry['path']}: baseline is RED (exit {code}) before any mutation. \"\n            f\"Every mutant would 'kill' it for free.\\n{tail}\")\n",
+          "replace": "    if False:\n        raise Refusal(\"unreachable\")\n",
+          "why": "an already-failing suite kills every mutant for free, so a red baseline would be reported as perfect coverage"
+        },
+        {
+          "id": "checker-error-swallowed-by-killed",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if errored:\n        for path, m in errored:\n",
+          "replace": "    if False:\n        for path, m in errored:\n",
+          "why": "an un-appliable declaration would exit 0 alongside the killed ones, so the run would claim to prove more than it did"
+        },
+        {
+          "id": "checker-refusal-skips-the-json-report",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "logic",
+          "find": "    if refusal is not None:\n        print(f\"REFUSED: {refusal}\", file=sys.stderr)\n    else:\n",
+          "replace": "    if refusal is not None:\n        print(f\"REFUSED: {refusal}\", file=sys.stderr)\n        return rc\n    else:\n",
+          "why": "returning before the one writer leaves the previous run's all-killed report on disk, so the weekly job's only durable artifact reads green for a run that refused"
+        },
+        {
+          "id": "checker-mutant-not-restored-between-runs",
+          "target": "q-system/.q-system/scripts/mutation-check.py",
+          "kind": "call-site",
+          "find": "        finally:\n            target.write_text(original, encoding=\"utf-8\")\n",
+          "replace": "        finally:\n            pass\n",
+          "why": "without the restore the first mutant stays applied, so every later mutant in the same suite is measured against an already-broken tree"
+        }
+      ]
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "mutants": [
+        {
+          "id": "verdict-block-accepts-the-echoed-template",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "    open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 \"\\n\"\n",
+          "replace": "    open && /^END FINDINGS/ { last = buf $0 \"\\n\"\n",
+          "why": "the prompt's own findings TEMPLATE echoed back has rows and zero severities; accepting it as a block is the ASK-312 fake-green, where a reviewer that declined to start filled the one required check"
+        },
+        {
+          "id": "verdict-decline-never-fires",
+          "target": "q-system/.q-system/scripts/pr-verdict-lib.sh",
+          "kind": "logic",
+          "find": "  tail=\"$(_text_after_last_findings_block \"$f\")\"\n  [ -n \"$tail\" ] || return 1\n",
+          "replace": "  return 1\n",
+          "why": "the suite's own note measured this leaving review_is_usable GREEN because the block rule masked it; the separate half-assertions exist to kill it, so this mutant is what proves they have teeth"
+        }
+      ]
     },
     {
       "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",

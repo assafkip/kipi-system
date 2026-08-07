@@ -524,6 +524,68 @@ _LESSONS = Path(__file__).resolve().parents[3] / "lessons"
 check("cron-shells-claude's lesson slug is a real file",
       (_LESSONS / f"{_by_id['cron-shells-claude']['lesson']}.md").is_file(), True)
 
+# --- a committed plist template nobody installed (ASK-316) ------------------
+# Both existing launchd detectors start from ~/Library/LaunchAgents. A plist
+# committed to the repo and never installed is in NEITHER watchdog's field of
+# view: it has no file there to be dark, and no loaded job to exit non-zero. It
+# is a scheduled job that was merged and then never ran, with nothing saying so.
+check("launchd-uninstalled is registered", "launchd-uninstalled" in _by_id, True)
+check("launchd-uninstalled files an issue",
+      _by_id.get("launchd-uninstalled", {}).get("action"), "file_issue")
+check("launchd-uninstalled's lesson slug is a real file",
+      (_LESSONS / f"{_by_id.get('launchd-uninstalled', {}).get('lesson')}.md").is_file(),
+      True)
+
+# Pure set logic, so this never depends on THIS machine's LaunchAgents dir.
+check("a committed template with no installed counterpart is a finding",
+      fh.uninstalled_templates(["com.kipi.a", "com.kipi.b"], {"com.kipi.a"}, set()),
+      ["com.kipi.b"])
+check("an installed template is not a finding",
+      fh.uninstalled_templates(["com.kipi.a"], {"com.kipi.a"}, set()), [])
+check("a paused label is never reported as uninstalled",
+      fh.uninstalled_templates(["com.kipi.b"], set(), {"com.kipi.b"}), [])
+
+_uninstalled = fh.launchd_finding("launchd-uninstalled", "com.kipi.mutation-check")
+check("the uninstalled finding keys on the label",
+      _uninstalled["subject"], "com.kipi.mutation-check")
+check("the uninstalled finding names the installer command",
+      "install-plist.sh com.kipi.mutation-check" in _uninstalled["body"], True)
+check("uninstalled and dark are separate dedup keys for one label",
+      fh.finding_key("launchd-uninstalled", "com.kipi.mutation-check")
+      != fh.finding_key("launchd-dark", "com.kipi.mutation-check"), True)
+
+# The detector must read the directory the templates actually live in. A glob
+# pointed one level off finds nothing and reports a permanently clean fleet.
+check("the real repo's templates are discovered",
+      "com.kipi.mutation-check" in fh.committed_template_labels(), True)
+
+# --- run the REGISTERED callback, not just its parts (PR #81 round 2, minor) -
+# Every assertion above tests a helper. The thing the sweep actually invokes is
+# DETECTORS[...]["detect"], and replacing that function body with `return []`
+# left all of them green -- a detector that reports a permanently clean fleet,
+# which is the exact silence this whole file exists to end. So call the
+# registered callback itself, with its three collaborators pinned to fixtures so
+# the result never depends on THIS machine's LaunchAgents dir.
+_detect_uninstalled = _by_id["launchd-uninstalled"]["detect"]
+_saved = (fh.committed_template_labels, fh._launchd_labels, fh._paused_labels)
+try:
+    fh.committed_template_labels = lambda: ["com.kipi.fixture-on", "com.kipi.fixture-off"]
+    fh._launchd_labels = lambda: ["com.kipi.fixture-on"]
+    fh._paused_labels = lambda: set()
+    _found = _detect_uninstalled(None)
+    check("the registered callback reports the uninstalled template",
+          [f["subject"] for f in _found], ["com.kipi.fixture-off"])
+    check("and renders it through its own branch of launchd_finding",
+          [f["title"] for f in _found],
+          ["launchd job never installed: com.kipi.fixture-off"])
+
+    # Everything installed => silence. Without this a callback that ignored its
+    # inputs and always emitted a finding would pass the assertion above.
+    fh._launchd_labels = lambda: ["com.kipi.fixture-on", "com.kipi.fixture-off"]
+    check("a fully installed fleet yields no finding", _detect_uninstalled(None), [])
+finally:
+    fh.committed_template_labels, fh._launchd_labels, fh._paused_labels = _saved
+
 if failures:
     print("FAIL:")
     for line in failures:
