@@ -56,6 +56,7 @@ goes to stdout and the ledger.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -63,6 +64,7 @@ import re
 import shlex
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -1002,6 +1004,226 @@ def detect_open_spillover(_ctx) -> list:
     }]
 
 
+BYPASS_PENDING = QROOT / "output" / "linear-bypass-pending.json"
+
+
+def _read_pending() -> list:
+    """Shas the sweep recorded that Linear has not accepted a finding for yet."""
+    try:
+        data = json.loads(BYPASS_PENDING.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
+
+
+def _write_pending(shas: list) -> None:
+    """Replace the record atomically, and let a failed write BE a failure.
+
+    Swallowing the OSError reported success while nothing durable held the sha.
+    The sweep ledger dedupes on sha forever, so a write that never landed SPENT
+    the finding: the next morning read clean, with no record of it anywhere
+    (PR #66 round 3). A caller that could not write this file has recorded
+    nothing and must go blind rather than file against a record it does not have.
+
+    The write lands in a sibling temp file and is `os.replace`d in, so a process
+    killed mid-write leaves the previous retry set whole. A truncated file parses
+    as invalid JSON, `_read_pending` returns [], and every sha owed at that
+    moment is silently forgiven — the same false-clean by another route.
+    """
+    BYPASS_PENDING.parent.mkdir(parents=True, exist_ok=True)
+    # PID-suffixed: two processes writing concurrently must not replace each
+    # other's half-written temp file into place.
+    tmp = BYPASS_PENDING.with_suffix(f"{BYPASS_PENDING.suffix}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(shas), encoding="utf-8")
+        os.replace(tmp, BYPASS_PENDING)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def _pending_lock():
+    """Hold the pending file's read-then-write as ONE critical section.
+
+    Both sides of this file are read-modify-write, and the file is SHARED: the
+    daily launchd job and a hand run write the same path. Two of them interleaving
+    between the read and the write lose whichever sha was added in between — the
+    sweep ledger has already deduped it, so nothing re-surfaces it. Same shape as
+    linear-bypass-sweep.py's ledger lock, same lesson: a dedup record needs a
+    single writer, and the lock IS it.
+
+    Yields even when the lock cannot be taken (read-only dir). An unlocked update
+    beats losing the record entirely; the weaker guarantee is warned about, not
+    assumed away.
+    """
+    path = BYPASS_PENDING.with_suffix(BYPASS_PENDING.suffix + ".lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+")
+    except OSError as exc:
+        print(f"  could not lock {path}: {exc}", file=sys.stderr)
+        yield False
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield True
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
+def _merge_pending(newly: list) -> list:
+    """Previously-unreported shas first, then this run's, order-stable, deduped."""
+    merged = list(_read_pending())
+    seen = set(merged)
+    for sha in newly:
+        if sha not in seen:
+            seen.add(sha)
+            merged.append(sha)
+    return merged
+
+
+def _record_pending(newly: list) -> list:
+    """Merge this run's shas into the shared record and return everything owed."""
+    with _pending_lock():
+        merged = _merge_pending(newly)
+        if merged:
+            _write_pending(merged)
+    return merged
+
+
+def _clear_pending(reported) -> None:
+    """Drop ONLY the shas this finding carried; anything owed since stays owed.
+
+    Clearing the whole file assumed one finding owned all of it. It does not: an
+    older run's successful filing wiped a newer run's sha, that run's own filing
+    then failed, and the sweep ledger had already deduped the sha — so it was owed
+    by nobody and lost forever. What a filing spends is what it reported.
+
+    A write failure here raises into `on_filed`, which logs it. The sha then
+    stays owed and is re-filed next run: a duplicate report, which is the safe
+    direction. The unsafe direction is the other one, and that is `_record_pending`.
+    """
+    done = set(reported)
+    with _pending_lock():
+        _write_pending([sha for sha in _read_pending() if sha not in done])
+
+
+def detect_unaccounted_commits(_ctx) -> list:
+    """Commits that reached origin with no Linear id and no [no-issue:] tag (ASK-284).
+
+    `git commit --no-verify` skips lefthook, so the commit-msg gate never runs and
+    the bypass ledger never learns. The ledger then reports a number LOWER than the
+    truth and reads as clean. `linear-bypass-sweep.py` is the verify path that reads
+    git directly; what it newly recorded is the finding.
+
+    The sweep writes its ledger row on a dry run too, deliberately. The dry-run
+    contract in this file is about not mutating the external Linear board; the
+    bypass ledger is a local, append-only, sha-deduped count, and making a count
+    true is never the wrong move. Gating it on `--apply` would mean a dry run
+    reports a number it is then unwilling to correct.
+
+    Only a NEWLY recorded commit produces a finding. The sweep dedupes on sha, so a
+    standing backlog of old unaccounted commits returns `recorded: 0` and this
+    detector stays silent — one summary line per new occurrence, never one per
+    cycle (ASK-283, the detect-act-learn rule).
+
+    The finding carries SHAS, never commit subjects. A Linear issue is permanent
+    and a commit message is operator-authored text (ASK-204): publish the
+    reference, not the input.
+    """
+    sweeper = HERE / "linear-bypass-sweep.py"
+    if not sweeper.is_file():
+        raise RuntimeError(f"the sweeper is missing at {sweeper}")
+    try:
+        res = subprocess.run(["python3", str(sweeper), "--json"],
+                             capture_output=True, text=True, timeout=120,
+                             cwd=REPO_ROOT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc
+    if res.returncode != 0:
+        raise RuntimeError(f"the sweeper exited {res.returncode}")
+    try:
+        result = json.loads(res.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("the sweeper produced no parseable JSON") from exc
+    if result.get("status") not in ("ok", "dry"):
+        raise RuntimeError(f"the sweeper reported status {result.get('status')!r}")
+    if result.get("fetched") == "failed":
+        # A remote-tracking ref is a local cache. If the fetch failed, the range
+        # just scanned may be missing commits pushed from anywhere else, and
+        # "nothing unaccounted" over a stale ref is an unknown, not a zero.
+        raise RuntimeError("the sweeper could not fetch; the swept ref may be stale")
+    if result.get("truncated"):
+        # The scan hit its commit cap with history still in range, so every
+        # number it returned is about the WINDOW. "Nothing unaccounted in the
+        # newest N" is not "nothing unaccounted", and the difference is exactly
+        # the false zero this detector exists to stop.
+        raise RuntimeError(
+            "the sweeper's scan window was truncated; commits in range went unread")
+
+    # Newly recorded shas UNION whatever a previous run recorded but never got
+    # onto the board. The sweep dedupes on sha permanently, so once it has
+    # written a row that sha is never "new" again — which meant a transient
+    # Linear outage between the ledger write and the filing consumed the finding
+    # forever and the next morning read clean. The ledger's job is the COUNT; the
+    # pending file is the separate, independently-cleared record of what still
+    # owes a report.
+    try:
+        pending = _record_pending(result.get("commits") or [])
+    except OSError as exc:
+        # Nothing durable holds these shas and the sweep ledger has already
+        # deduped them. Filing now would spend a finding the retry set cannot
+        # re-surface, so the honest result is "could not look", not a finding.
+        raise RuntimeError(
+            f"the pending record at {BYPASS_PENDING} could not be written: {exc}"
+        ) from exc
+    if not pending:
+        return []
+
+    shown = pending[:25]
+    more = len(pending) - len(shown)
+    fresh = pending
+    return [{
+        # Cleared ONLY after Linear has actually accepted the finding, and only
+        # for the shas THIS finding reported. A dry run never clears it: nothing
+        # was filed, so nothing was reported. The list is bound at build time, so
+        # a sha recorded after this finding was assembled is not spent by it.
+        "on_filed": lambda spent=tuple(pending): _clear_pending(spent),
+        # Stable subject: ONE standing issue for this class. The shas live in the
+        # body, which is updatable; putting them in the dedup key would fork a
+        # permanent issue per bypass.
+        "subject": "linear-bypass-unaccounted",
+        "title": "Commits reached origin outside the Linear gate and outside its ledger",
+        "body": (
+            f"**{len(fresh)} commit(s)** newly recorded by `linear-bypass-sweep.py` on "
+            f"`{result.get('rev')}`: they reached origin with neither an issue id nor a "
+            "`[no-issue:]` tag, which means the commit-msg gate did not run for them "
+            "(`--no-verify`, or a repo without lefthook installed).\n\n"
+            + "\n".join(f"- `{sha[:9]}`" for sha in shown)
+            + (f"\n- ...and {more} more" if more else "")
+            + f"\n\nRunning total of unaccounted commits in range: "
+              f"**{result.get('unaccounted')}** of {result.get('scanned')} scanned.\n\n"
+              "## Action\nThe accounting is already done — the sweep wrote these rows to "
+              "`q-system/output/linear-bypass.jsonl`, so the count is true again. What is "
+              "left is provenance: for each sha, `git show --no-patch <sha>` and decide "
+              "whether it belongs to an existing issue.\n\n"
+              "Rewriting the commits is NOT the action. That needs a force-push, which is "
+              "a destructive op and the founder's call.\n\n"
+              "Prevention lives in the commit-msg gate, which works. Reach for "
+              "`--no-verify` only when a hook has actually fired and blocked you, and "
+              "never pre-emptively."
+        ),
+    }]
+
+
 # ---------------------------------------------------------------------------
 # The registry. `action` and the learning leg are REQUIRED.
 # ---------------------------------------------------------------------------
@@ -1287,6 +1509,16 @@ DETECTORS = [
             "non-empty is not a defect to prevent, only to keep visible."
         ),
     },
+    {
+        "id": "linear-bypass-unaccounted",
+        "description": "a commit reached origin with no issue ref and no [no-issue:] tag",
+        "detect": detect_unaccounted_commits,
+        # file_issue, not "both": `fix()` is validated by validate_detectors and
+        # then never invoked by run_detectors, so declaring auto_fix would wire a
+        # dead engine. The ledger row is written by the sweep inside detect().
+        "action": "file_issue",
+        "lesson": "split-the-act-path-from-the-verify-path",
+    },
 ]
 
 
@@ -1505,6 +1737,7 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
         try:
             if key not in known:
                 result[_create_one(ls, f, apply, team_id, project, filer)] += 1
+                _mark_filed(f, apply)
                 continue
             tracked = _tracked_issue(ls, key, remote_keys, ledger)
             if not tracked:
@@ -1523,12 +1756,35 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
                       file=sys.stderr)
                 _create_one(ls, f, apply, team_id, project, filer)
                 result["relisted"] += 1
+                _mark_filed(f, apply)
                 continue
             result[_refresh_one(ls, f, apply, tracked, team_id, filer)] += 1
+            _mark_filed(f, apply)
         except Exception as exc:  # noqa: BLE001 - one finding's failure is not the run's
             print(f"  filing {key} FAILED: {exc}", file=sys.stderr)
             result["errors"] += 1
     return result
+
+
+def _mark_filed(finding: dict, apply: bool) -> None:
+    """Tell a detector its finding actually reached the board.
+
+    Only a detector that CONSUMES state on detection needs this: the bypass sweep
+    dedupes on sha forever, so without a confirmation the shas were spent whether
+    or not Linear took them, and a transient outage made the next run read clean
+    (PR #66 review, major 1). Reached on `existing` too — an unchanged tracked
+    issue already carries the content, which is what "reported" means here.
+
+    Never on a dry run: nothing was filed, so nothing was reported. A callback
+    that raises is one detector's bookkeeping failing, never the filing run's.
+    """
+    hook = finding.get("on_filed")
+    if not apply or not callable(hook):
+        return
+    try:
+        hook()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  on_filed for {finding.get('key')} failed: {exc}", file=sys.stderr)
 
 
 def _tracked_issue(ls, key: str, remote_keys: dict, ledger: dict) -> dict:
