@@ -441,3 +441,32 @@ class TestVoice2ReviewChecks:
             {"id": "c1", "instruction": "Do the thing.", "class": "deterministic",
              "status": "promoted", "scope": ["dm"]}))
         assert validate.check_corrections(str(d / corpus.CORRECTIONS)) == []
+
+
+class TestLoaderAdversarialScars:
+    """voice-3 review: two scars from the retired glob-loader suite were claimed
+    re-homed and were not. Pinned here against the corpus loader."""
+
+    def test_permission_denied_file_degrades_to_empty(self, tmp_path):
+        import os as _os
+        p = tmp_path / "identity.md"
+        p.write_text("secret")
+        _os.chmod(p, 0o000)
+        try:
+            assert corpus.read_text(str(p)) == ""
+            rows, skipped = corpus.read_jsonl(str(p))
+            assert rows == [] and skipped == 0
+        finally:
+            _os.chmod(p, 0o644)
+
+    def test_undecodable_byte_is_replaced_not_fatal(self, tmp_path):
+        """The ASK-461-era scar: a plugin update writing a file mid-read produced a
+        lone undecodable byte and UnicodeDecodeError killed the daily job."""
+        p = tmp_path / "pov.md"
+        p.write_bytes(b"good text \xff\xfe more text")
+        out = corpus.read_text(str(p))
+        assert "good text" in out and "more text" in out
+        j = tmp_path / "rows.jsonl"
+        j.write_bytes(b'{"id": "a", "text": "ok"}\n\xff{torn\n')
+        rows, skipped = corpus.read_jsonl(str(j))
+        assert [r["id"] for r in rows] == ["a"] and skipped == 1
