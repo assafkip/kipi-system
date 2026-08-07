@@ -159,6 +159,40 @@ is_managed_plugin_path() {
 # down to 605MB free before it was killed.
 #
 # Cached per instance root so two callers cannot observe two different trees.
+# PATHS THE SYSTEM ITSELF WRITES INTO AN INSTANCE.
+# The dirty-tree guard below refuses ANY tracked modification, which is correct
+# for founder work and wrong for the updater's own exhaust: measured 2026-08-04,
+# 6 of 23 instances sat 2-6 prd-os versions behind and 4 were blocked SOLELY by
+# files this system wrote (the monthly sycophancy stamp, hook state, and a
+# plugins/ tree an EARLIER update staged and never committed). The fleet updater
+# was blocked by itself, silently. This list is deliberately narrow and explicit:
+# anything not named here is treated as founder work and still refuses.
+SYSTEM_OWNED_PATHS=(
+  "q-system/memory/.sycophancy-monthly-stamp"
+  "q-system/.q-system/claude-integrity-baseline.json"
+  ".claude/state/stop-gate-firings.json"
+)
+# Skeleton-managed plugin dirs are appended at run time from the SAME
+# enumeration the sync itself uses (managed_plugin_names), never as a blanket
+# "plugins" entry. The blanket version classified the WHOLE tree as system-owned
+# and would have committed founder edits inside an instance-LOCAL plugin, which
+# the sync does not manage (Codex review, PR #98 round 2). One enumeration, one
+# meaning of "managed".
+#
+# Consequence, accepted deliberately: an ORPHANED plugin dir -- one an older
+# skeleton shipped and a newer one dropped, e.g. plugins/memory-lifecycle -- is
+# no longer covered, so it still blocks that instance. That is the right answer.
+# An orphan is genuinely ambiguous (is it founder-adopted or dead weight?) and
+# now gets NAMED in the run summary instead of silently skipped.
+system_owned_paths_for_run() {
+  local plugin_name
+  printf '%s\n' "${SYSTEM_OWNED_PATHS[@]}"
+  while IFS= read -r -d '' plugin_name; do
+    printf 'plugins/%s\n' "$plugin_name"
+  done < <(managed_plugin_names)
+}
+FAILED_NAMES=""
+
 MODEL_SKIPPED_ROOT=""
 MODEL_SKIPPED_PATHS=()
 
@@ -201,7 +235,18 @@ model_rsync_excludes() {
   # the projection cannot be built against a stale or unpopulated list. The
   # scan is cached per root, so this costs nothing on the second call.
   model_skip_scan "$instance_root"
+  # BUILD CACHES ARE NOT STATE. The model exists to preview what the skeleton
+  # sync would do, and the sync never touches these -- copying them is pure
+  # cost. Measured 2026-08-04: the accountant instance carried an 8.7G
+  # src-tauri/target tree, the copy hit "No space left on device" at 92% disk,
+  # and the instance reported FAILED in --dry while the real run had updated it
+  # fine. So --dry manufactured a false failure out of disk pressure alone.
+  # Every path here is regenerable by its own toolchain and gitignored.
   MODEL_EXCLUDES=(--exclude=".git")
+  local cache_dir
+  for cache_dir in target node_modules .venv venv __pycache__ .next dist build .pytest_cache .mypy_cache .ruff_cache; do
+    MODEL_EXCLUDES+=(--exclude="$cache_dir/")
+  done
   for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
     MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
   done
@@ -499,6 +544,12 @@ PY
 # increment itself in exactly one place.
 count_instance_failure() {
   FAIL=$((FAIL + 1))
+  # NAME the instance, do not just count it. The summary reported "Failed: 6"
+  # with no names, so nobody could see WHICH instances were drifting -- they sat
+  # 2-6 prd-os versions behind for weeks and each run skipped a different subset
+  # (measured 2026-08-04). A count is not a report.
+  FAILED_NAMES="$FAILED_NAMES
+    - ${name:-<unnamed>} (${path:-unknown path})"
 }
 
 abandon_instance() {
@@ -1142,6 +1193,39 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # Clear the system's OWN artifacts first, so the guard below judges founder
+    # work only. Each path is committed individually and only if it is actually
+    # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
+    sys_owned_dirty=()
+    while IFS= read -r sys_path; do
+      [ -n "$sys_path" ] || continue
+      if ! git diff --quiet -- "$sys_path" 2>/dev/null ||
+          ! git diff --cached --quiet -- "$sys_path" 2>/dev/null; then
+        sys_owned_dirty+=("$sys_path")
+      fi
+    done < <(system_owned_paths_for_run)
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+      echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
+      printf '    %s\n' "${sys_owned_dirty[@]}"
+      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
+      # with no pathspec commits everything ALREADY STAGED, so a founder with
+      # staged work would have had it swept into this infra commit -- the exact
+      # thing the guard below exists to prevent, reintroduced by the fix for it
+      # (Codex review, PR #98). With a pathspec, only these paths are committed
+      # no matter what else sits in the index.
+      #
+      # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
+      # gate wants a Linear id, and this is the sanctioned hatch that gets
+      # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
+      # to land a commit in their repo is not ours to do.
+      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+
+These files are written by the fleet itself (sycophancy stamp, integrity
+baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
+updater from being blocked by its own exhaust; founder work is never included
+because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+    fi
+
     # Refuse tracked work in progress. The updater owns only its scoped sync
     # commits and must never package unrelated founder edits into an infra commit.
     if ! git diff --cached --quiet 2>/dev/null ||
@@ -1292,6 +1376,24 @@ PY
         # patterns also matched inside the nested q-system/q-system/ shadow copy
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete
         # the shadow tree -- "not empty, cannot delete" on every update.
+        # FAIL-CLOSED BACKSTOP (sp-737ce1ae, sp-10cf4f76). The excludes above
+        # are ANCHORED to the transfer root, so they only protect the instance
+        # when the destination IS its q-system dir. Reproduced 2026-08-05: with
+        # a null `subtree_prefix` the destination is the instance ROOT, and an
+        # instance still keeping its data under q-system/ has that data one
+        # level below where the excludes point -- the dry run itemizes
+        # `*deleting q-system/my-project/...` and nothing stops it.
+        #
+        # Re-anchoring the excludes fixes that variant; this catches the CLASS.
+        # Any future layout, prefix, or registry drift that moves the
+        # destination re-opens the same hole, and the failure mode is deleted
+        # founder data with no error. So: ask rsync what it plans to delete,
+        # and refuse if any of it is instance-owned at any depth.
+        if ! rsync -ain --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
+            $(rsync_owned_excludes) 2>/dev/null \
+            | python3 "$SCRIPT_DIR/kipi-update-deletion-guard.py"; then
+          abandon_instance "  ERROR: q-system sync would delete instance-owned data; refusing" && continue
+        fi
         if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
             $(rsync_owned_excludes) 2>/dev/null; then
           abandon_instance "  ERROR: q-system sync failed" && continue
@@ -1524,6 +1626,9 @@ fi
 echo "=== Summary ==="
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
+if [ -n "$FAILED_NAMES" ]; then
+  echo "  NOT UPDATED (still on their previous skeleton version):$FAILED_NAMES"
+fi
 echo "  Skipped: $SKIP"
 if [ -n "${GATE_FAIL:-}" ]; then
   echo "  CAPABILITY GATE RED in:$GATE_FAIL"

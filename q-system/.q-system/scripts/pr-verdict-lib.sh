@@ -32,14 +32,90 @@
 # That misread actually reached the record: pr-11.verdict.json read BLOCK while
 # the review said REQUEST CHANGES. Both route to rework so behavior survived,
 # but "APPROVE (not BLOCK...)" would have reworked an approved PR forever.
+# A VERDICT STATEMENT, NOT A LINE MENTIONING THE WORD (ASK-356). This used to
+# anchor on the first line matching `VERDICT`, take the first verdict token within
+# three lines, and fall back to grepping the WHOLE FILE for a token. All three
+# steps read the reviewer's conclusion out of text the reviewer did not write.
+#
+# `codex exec` ECHOES THE ENTIRE PROMPT to stdout, and the reviewer prompt carries
+# its own grading rule:
+#
+#     - **VERDICT:** decided by THIS RULE, not by feel:
+#         - any blocker or major finding      => REQUEST CHANGES
+#
+# That line is the first `VERDICT` match in every codex review ever produced, so
+# extract_verdict returned REQUEST CHANGES universally. Measured 2026-08-03: 47 of
+# 54 records carried stated=REQUEST CHANGES. It was cosmetic while
+# VERDICT="$DERIVED_VERDICT" won unconditionally, and became fleet-blocking the
+# moment ASK-312 made resolve_verdict take the HARSHER of stated and derived --
+# every codex-reviewed PR held at REQUEST CHANGES on a REQUIRED context. Codex
+# called this exact consequence on PR #89 and we shipped anyway; the answer was
+# always "keep resolve_verdict AND fix this", not one or the other.
+#
+# SHAPE FIRST, AND DELIBERATELY NOT "TAKE THE LAST MATCH" (review steer, ASK-356).
+# Copying findings_block's LAST-NOT-FIRST wholesale would be a second position
+# rule, and anchoring on position is what produced this bug. The grading rule is
+# not distinguished by WHERE it sits. It is distinguished by not being a
+# statement: a statement puts the verdict token DIRECTLY after the marker, while
+# the rule puts prose there. So the token must lead what follows `VERDICT:`, or
+# follow a marker that is bare (`## VERDICT` on its own line -- the real PR #11
+# round 4 shape, which also self-qualifies as `**REQUEST CHANGES** (not BLOCK...)`
+# and must still read REQUEST CHANGES).
+#
+# ORDER IS STILL NEEDED, FOR A DIFFERENT INPUT. The stream also replays the PR's
+# DIFF, so a review of a change to this loop contains real verdict statements the
+# reviewer is only quoting -- this file's own fixtures are exactly that. Those are
+# statement-shaped because they ARE quoted statements; shape cannot separate them.
+# The reviewer answers after the material it was given, so among candidates that
+# PASS the shape test the last one wins. Shape rejects the prompt; order resolves
+# the quotes. Neither alone is enough and the two are not the same rule.
+#
+# THE WHOLE-FILE FALLBACK IS GONE. With the echo present it scanned the prompt and
+# the diff for loose tokens, which is how source code gets parsed as a verdict
+# (`REWORK_VERDICTS = {"REQUEST CHANGES", ...}` is in the diff of this very
+# change). Losing it means a review that never states a verdict now reads
+# unstated, and unstated posts state=failure and HOLDS the PR. That is the safe
+# direction and the same posture the rest of this file takes.
+#
+# BLOCKER/BLOCKERS is still stripped before token matching: "Fix first: **BLOCKER
+# 1**" after a verdict line made a bare BLOCK match report verdict BLOCK on the
+# real PR #11 round 2 payload.
 extract_verdict() {
-  local f="$1" v=""
+  local f="$1"
   [ -s "$f" ] || return 0
-  v="$(grep -A3 -E 'VERDICT' "$f" 2>/dev/null | sed 's/BLOCKERS\{0,1\}//g' \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
-  [ -n "$v" ] || v="$(sed 's/BLOCKERS\{0,1\}//g' "$f" 2>/dev/null \
-        | grep -oE 'APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK' | head -1)"
-  printf '%s' "$v"
+  awk '
+    function leading_token(s,   t) {
+      sub(/^[[:space:]*_]+/, "", s)
+      if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
+      if (s ~ /^REQUEST CHANGES/)   return "REQUEST CHANGES"
+      if (s ~ /^APPROVE/)           return "APPROVE"
+      if (s ~ /^BLOCK/)             return "BLOCK"
+      return ""
+    }
+    {
+      line = $0
+      gsub(/BLOCKERS?/, "", line)
+    }
+    # Under a bare heading the FIRST non-blank line decides, and it decides either
+    # way: prose there is not a verdict, it is a heading with no statement under
+    # it. Continuing to scan would walk into the next paragraph.
+    awaiting {
+      if (line ~ /^[[:space:]]*$/) next
+      awaiting = 0
+      t = leading_token(line)
+      if (t != "") found = t
+      next
+    }
+    line ~ /VERDICT/ {
+      rest = line
+      sub(/^.*VERDICT[*_]*[[:space:]]*:?[[:space:]]*/, "", rest)
+      t = leading_token(rest)
+      if (t != "") { found = t; next }
+      # Bare marker: nothing but punctuation/emphasis left on the line.
+      if (rest ~ /^[[:space:]*_:#-]*$/) awaiting = 1
+    }
+    END { if (found != "") printf "%s", found }
+  ' "$f" 2>/dev/null
 }
 
 # findings_block <review-file>
@@ -81,6 +157,25 @@ extract_verdict() {
 # The cost of that strictness is a review whose PROSE happens to end with a line
 # starting `FINDINGS:` reads as unstated. That is the safe direction and the same
 # posture the rest of this file takes: unstated HOLDS a PR, green RELEASES it.
+#
+# TWO INDEPENDENT DEFENCES AGAINST THE SAME GREEN, AND BOTH ARE LOAD-BEARING
+# (the #86/#87 merge, 2026-08-07). The echoed prompt template can be rejected by
+# WHERE it sits (it is above the model's turn: the transcript skip, ASK-287) or by
+# WHAT it is (rows that are not severities: the placeholder guard, sp-df1a458f).
+# Neither subsumes the other and each is blind exactly where the other sees:
+#
+#   template echoed in the harness region  -> transcript skip catches it; the
+#                                             placeholder guard also would
+#   template echoed INSIDE the model's own turn (the model quotes the block it was
+#     shown, which is what a plan-instead-of-a-review does) -> the transcript skip
+#     is BLIND, that text is below the turn marker; only the placeholder guard
+#     rejects it
+#   `claude -p` fallback output (no banner, no transcript to skip) -> the
+#     transcript skip never arms at all; only the placeholder guard is on duty
+#
+# Measured on #86 before this merge: the branch alone accepted a bare prompt
+# template AND an in-turn echo, deriving APPROVE from both. Keeping only one of
+# these two is a regression whichever one you keep. Both stay.
 #
 # THE HARNESS ECHOES THE PROMPT, AND THE PROMPT CARRIES THE TEMPLATE (ASK-287,
 # found by codex reviewing PR #86 round 2). `run_engine` captures the WHOLE
@@ -145,10 +240,38 @@ extract_verdict() {
 # UNSTATED, which holds a PR. This tightening therefore adds a signal the
 # producer always writes, rather than replacing the banner with a narrower one.
 #
-# awk, not sed, because the rule is stateful in three ways a range expression
+# A BLOCK OF NOTHING BUT PLACEHOLDERS IS THE PROMPT, NOT THE REVIEW (sp-df1a458f).
+# The reviewer prompt ends with a literal template -- `severity|one-sentence
+# claim|file:line` between the two markers -- and `codex exec` echoes the whole
+# prompt to stdout. When the model answers with a PLAN instead of a review, that
+# echo is the ONLY complete block in the stream. Measured 2026-08-03 on Alice PR
+# #1 round 2: the block was accepted, `severity|` matched no severity, no
+# severities derived APPROVE, and kipi/reviewer-approved -- a REQUIRED context on
+# main -- went green on code nobody had read, 12 seconds after dispatch.
+#
+# The rule is NOT "reject a block with no severity rows": an EMPTY block is
+# legitimate and load-bearing (a round 2 that refutes everything closes with one;
+# test-severity-floor.sh and test-findings-block-reader.sh case 2 both pin it).
+# The discriminator is rows-that-are-not-findings:
+#
+#   zero rows                      -> legitimate empty block, kept
+#   >=1 row, >=1 a real severity   -> a real block, kept
+#   >=1 row, NONE a real severity  -> the template echo (or prose leaked into the
+#                                     block); not a findings block, skipped
+#
+# Skipped, not fatal: an earlier COMPLETE real block still stands, because the
+# echo arrives BEFORE the model's own answer. Truncation is unchanged -- a block
+# still open at EOF voids everything, which is the stricter case and stays.
+#
+# THE SEVERITY TOKENS HERE ARE THE SAME FOUR verdict_from_findings GRADES, and
+# they have to be: a row this function calls real but the derivation cannot grade
+# contributes nothing, so the block would count as usable and derive APPROVE --
+# the defect again, one layer down. Change the two together or not at all.
+#
+# awk, not sed, because the rule is stateful in four ways a range expression
 # cannot express: the transcript region has to be skipped before matching starts,
-# opening a new block discards an unclosed one, and the end-of-input state decides
-# whether any of it counts.
+# opening a new block discards an unclosed one, a closing block is graded on the
+# rows it accumulated, and the end-of-input state decides whether any of it counts.
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
@@ -157,11 +280,74 @@ findings_block() {
     NR <= 10 && banner && /^workdir: / { transcript = 1; buf = ""; open = 0; next }
     transcript && !turn && /^codex[[:space:]]*$/ { turn = 1; next }
     transcript && !turn           { next }
-    /^FINDINGS:/            { buf = $0 "\n"; open = 1; next }
-    open && /^END FINDINGS/ { last = buf $0 "\n"; open = 0; next }
-    open                    { buf = buf $0 "\n" }
+    /^FINDINGS:/            { buf = $0 "\n"; open = 1; rows = 0; sev = 0; next }
+    open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 "\n"
+                              open = 0; next }
+    open                    { buf = buf $0 "\n"
+                              if ($0 ~ /^[ \t]*$/) next
+                              rows++
+                              if ($0 ~ /^(blocker|major|minor|nit)[|]/) sev++
+                              next }
     END                     { if (open) exit 0; printf "%s", last }
   ' "$f" 2>/dev/null
+}
+
+# _text_after_last_findings_block <review-file>
+# Everything the stream said AFTER its last `END FINDINGS`, or the whole file when
+# there is no block at all. The prompt orders the block LAST ("Last, a
+# machine-readable findings block"), so this is the region a finished review has
+# nothing substantive in -- which is what makes it the right place to look for an
+# answer that never started. Internal to review_declined_to_start.
+_text_after_last_findings_block() {
+  awk '/^END FINDINGS/ { tail = ""; next } { tail = tail $0 "\n" }
+       END { printf "%s", tail }' "${1:-}" 2>/dev/null
+}
+
+# review_declined_to_start <review-file>
+# True when the reviewer answered with a PLAN and waited for confirmation instead
+# of reviewing. Exit 0 = it declined (the review is not a review).
+#
+# WHY THIS IS SEPARATE FROM THE BLOCK CHECK (sp-df1a458f, half b). Rejecting the
+# placeholder block is not enough on its own. From round 2 the stream carries the
+# PREVIOUS round's findings for the model to re-prove, so a decline can arrive
+# wrapped around a structurally perfect block full of REAL severity rows. Grading
+# those derives a verdict from findings the reviewer never examined: it wedges the
+# PR on a blocker the author may already have fixed, which is the false-BLOCK half
+# of this defect and costs as much as a false green.
+#
+# ANCHORED AFTER THE LAST BLOCK, NOT ANYWHERE IN THE FILE. A genuine review of
+# THIS script quotes plan-and-await prose in its findings -- that is a real review
+# and must land. Because the prompt puts the block last, decline language after it
+# is the model's own closing answer rather than something it was reading about.
+# Over-refusal here wedges PRs exactly as hard as under-refusal releases them,
+# so the window matters as much as the phrases.
+#
+# The phrases are the two shapes actually recorded ("Reply `OK` and I'll execute
+# exactly that plan." / "Waiting for `OK` to execute the review plan.") plus the
+# nearest generalisations. A herestring, not a pipe: `printf ... | grep -q` returns
+# 141 under `set -o pipefail` when grep exits on the first match before the write
+# finishes, which reads as NO MATCH on exactly the long inputs this sees.
+review_declined_to_start() {
+  local f="${1:-}" tail
+  [ -s "$f" ] || return 1
+  tail="$(_text_after_last_findings_block "$f")"
+  [ -n "$tail" ] || return 1
+  grep -qiE "waiting[[:space:]]+for[[:space:]]+[\`'\"]?(an[[:space:]]+)?(ok|go[- ]ahead|confirmation|approval)|reply[[:space:]]+[\`'\"]?ok[\`'\"]?[[:space:]]+(and|so|then)|say[[:space:]]+[\`'\"]?(ok|go)[\`'\"]?[[:space:]]+and[[:space:]]+i|awaiting[[:space:]]+(your[[:space:]]+)?(confirmation|approval|go[- ]ahead)" <<<"$tail"
+}
+
+# review_is_usable <review-file>
+# THE ONE QUESTION pr-review-agent.sh asks before it lets a stream fill the gate:
+# did a review actually happen here? Both dispatch sites (codex, and the Opus
+# fallback -- where this class last hid, ASK-221) gate on this single predicate,
+# so the two paths cannot drift into different answers about the same file.
+#
+# Usable means BOTH: a complete findings block that is not the prompt's own
+# template, AND an answer that did not stop to ask permission. Either one alone
+# lets a review that never ran set a REQUIRED status.
+review_is_usable() {
+  local f="${1:-}"
+  has_complete_findings_block "$f" || return 1
+  ! review_declined_to_start "$f"
 }
 
 # has_complete_findings_block <review-file>
@@ -175,6 +361,18 @@ findings_block() {
 # is truncated -- so the unusable flag stays off, the gate goes green, and the
 # verdict is derived from findings the review had already withdrawn. Two
 # definitions of "complete" in one script is the drift this file exists to stop.
+#
+# DELIBERATELY STRUCTURAL, NOT ROW-COUNTING (ASK-312). Requiring at least one
+# severity row here looks like the obvious hardening and is wrong: a round-2 review
+# that refutes every round-1 finding closes with a legitimately EMPTY block, and
+# `test-findings-block-reader.sh` case 2 pins that shape. Rejecting it would route
+# a real review to the fallback engine and mark the status DEGRADED for finding
+# nothing, which is the opposite of what finding nothing means.
+#
+# "Reviewed, found nothing" and "never started" are byte-identical inside the
+# block. The discriminator is OUTSIDE it -- the reviewer's own STATED verdict --
+# so the fix lives at that comparison, not in this predicate. See
+# verdict_from_findings below and the decline-to-start guard in pr-review-agent.sh.
 has_complete_findings_block() {
   [ -n "$(findings_block "${1:-}")" ]
 }
@@ -201,8 +399,54 @@ verdict_from_findings() {
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
   elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
   elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  # An empty block deriving APPROVE is a DELIBERATE contract, pinned by name in
+  # test-severity-floor.sh: a round 2 that refutes everything must be able to land,
+  # or approved PRs wedge forever. ASK-312 tried removing it and collided with that
+  # contract plus test-findings-block-reader.sh case 2. The decline-to-start defect
+  # is not fixed here -- see resolve_verdict below, where the discriminator lives.
   else printf 'APPROVE'
   fi
+}
+
+# resolve_verdict <stated> <derived>
+# The ONE place a stated and a derived verdict become the verdict that gets posted.
+#
+# WHY THIS FAILS CLOSED (ASK-312). pr-review-agent.sh used to prefer the derived
+# verdict whenever it existed, printing a NOTE about any disagreement and
+# proceeding. On 2026-08-02 that silently converted a reviewer's own
+# "REQUEST CHANGES" into APPROVE, twice, and posted kipi/reviewer-approved=success
+# on the head SHA of a PR nobody had read. The reviewer had answered "Reply `OK`
+# and I'll run the review exactly as planned" and echoed the prompt's TEMPLATE
+# back: a structurally perfect block with zero rows, which the severity ladder
+# reads as "nothing was wrong" when it meant "nothing was examined".
+#
+# The rule: a disagreement may never resolve TOWARD approval. Deriving a harsher
+# verdict than the reviewer stated is fine and stays -- that is the severity floor
+# doing its job against a reviewer that logged a blocker and then said APPROVE.
+# Deriving a SOFTER one means the two signals contradict each other about whether
+# the PR is safe, and the only safe reading of a contradiction is the harsher side.
+#
+# Ranked least to most permissive; a disagreement resolves to the lower rank.
+verdict_rank() {   # verdict_rank <verdict>
+  case "$1" in
+    BLOCK)                printf '0' ;;
+    "REQUEST CHANGES")    printf '1' ;;
+    "APPROVE WITH NITS")  printf '2' ;;
+    APPROVE)              printf '3' ;;
+    *)                    printf '9' ;;   # unknown/empty: not a verdict
+  esac
+}
+
+resolve_verdict() {   # resolve_verdict <stated> <derived>
+  local stated="${1:-}" derived="${2:-}" sr dr
+  [ -n "$derived" ] || { printf '%s' "$stated"; return 0; }
+  [ -n "$stated" ]  || { printf '%s' "$derived"; return 0; }
+  sr="$(verdict_rank "$stated")"
+  dr="$(verdict_rank "$derived")"
+  # An unrecognised stated verdict cannot vouch for anything, so the derived one
+  # stands alone rather than being averaged with noise.
+  [ "$sr" = "9" ] && { printf '%s' "$derived"; return 0; }
+  if [ "$dr" -le "$sr" ]; then printf '%s' "$derived"; else printf '%s' "$stated"; fi
 }
 
 # pr_merge_state <pr-number>

@@ -62,6 +62,15 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-pr-review-root-guard.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
@@ -202,14 +211,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -254,12 +255,26 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-degraded-provenance.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
@@ -312,6 +327,14 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
       "runner": "bash"
     },
     {
@@ -396,6 +419,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -405,10 +432,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -432,12 +455,75 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/tests/test_fable_escalation.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "runner": "python3",
+      "timeout_s": 240
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
+      "runner": "bash",
+      "timeout_s": 300
+    },
+    {
+      "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
+      "runner": "bash",
+      "timeout_s": 60
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive-absent.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-prompt-echo-not-a-review.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
@@ -465,6 +551,11 @@
       "path": "q-system/.q-system/scripts/accept-rate.py",
       "reason": "sycophancy pi metric script with no caller on any wiring surface",
       "spillover_id": "sp-cc33bdb0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/founder-judge-calibration.py",
+      "reason": "manually-invoked benchmark harness (build/blind/verify/score), run when a calibration question is asked rather than on any schedule; declared inert instead of given fake wiring to clear the gate",
+      "spillover_id": "sp-5de8ca5b"
     },
     {
       "path": "q-system/.q-system/scripts/granola-voice-synthesize.py",

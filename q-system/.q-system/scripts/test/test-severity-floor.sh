@@ -272,18 +272,50 @@ ok "derive: a transcript with no assistant turn derives NOTHING (the echoed temp
 ok "derive: a transcript WITH an assistant turn still derives from the model's own block"
 
 # NEGATIVE SELF-TEST. Both assertions above pass trivially if findings_block were
-# broken outright, so mutate out the two transcript lines and prove the outage
-# case goes back to APPROVE. If this mutant still derives nothing, the assertions
-# are being carried by something other than the strip and prove nothing about it.
+# broken outright, so mutate out the two transcript lines and prove a fabricated
+# verdict comes back. If this mutant still derives nothing, the assertions are
+# being carried by something other than the strip and prove nothing about it.
+#
+# THE MUTANT IS AIMED AT A FIXTURE ONLY THE STRIP CAN SAVE (the #86/#87 merge).
+# It used to run against `echo-outage.md`, whose echoed block is the PROMPT
+# TEMPLATE -- and #87's placeholder guard rejects a template block on its own,
+# with no help from the strip. So once both defences were in the same file this
+# mutant reported SURVIVED while the strip was still perfectly intact: a false
+# survival caused by a SECOND guard silently covering the mutated one, not by a
+# weak assertion. Removing the placeholder guard too would "fix" the mutant by
+# mutating out both defences at once, which measures neither.
+#
+# The fixture that isolates the strip is a round-2 stream: from round 2 the
+# prompt replays the PREVIOUS round's REAL findings for the model to re-prove, so
+# the echoed region carries genuine severity rows. The placeholder guard must
+# accept those (they are real severities); only the turn-marker strip knows the
+# model never spoke. Remove the strip and the gate derives BLOCK from findings
+# nobody re-examined -- a fabricated verdict, which is the kill.
+{ printf '%s\n' "$CODEX_HEADER"
+  printf 'user\nRe-prove these round-1 findings:\n'
+  printf 'FINDINGS:\nblocker|round 1 said the ledger can be deleted|led.py:9\nEND FINDINGS\n'
+  printf 'ERROR: Your workspace is out of credits. Add credits to continue.\n'
+} > "$WORK/echo-outage-realrows.md"
+[ -z "$(verdict_from_findings "$WORK/echo-outage-realrows.md")" ] \
+  || fail "a round-2 transcript with NO assistant turn derived
+      '$(verdict_from_findings "$WORK/echo-outage-realrows.md")' from the echoed prior-round block.
+      The model never spoke on this stream; re-grading findings it never examined wedges the PR."
+ok "derive: prior-round findings echoed with no assistant turn derive NOTHING"
+
 DERIVE_MUTANT="$WORK/lib-no-strip.sh"
 grep -v -e '^    NR <= 10 && /\^OpenAI Codex v/' \
         -e '^    transcript && !turn' "$LIB" > "$DERIVE_MUTANT"
-MUTANT_VERDICT="$(bash -c '. "$1"; verdict_from_findings "$2"' _ "$DERIVE_MUTANT" "$WORK/echo-outage.md")"
-[ "$MUTANT_VERDICT" = "APPROVE" ] \
-  || fail "mutation did not kill it: with the transcript strip removed the out-of-credits artifact
-      derived '$MUTANT_VERDICT', not the APPROVE the defect actually produced. The two assertions
-      above are therefore not testing the strip -- something else is producing their result."
-ok "mutation kills it: remove the transcript strip and the out-of-credits artifact derives APPROVE again"
+# VALIDATE THE MUTANT APPLIED. A grep -v that matches nothing yields a byte-identical
+# copy, and an unmutated copy "surviving" says nothing at all.
+cmp -s "$LIB" "$DERIVE_MUTANT" \
+  && fail "the transcript-strip mutant changed nothing -- the grep -v patterns no longer match
+      findings_block. Fix the patterns; a mutant that was never applied cannot be killed."
+MUTANT_VERDICT="$(bash -c '. "$1"; verdict_from_findings "$2"' _ "$DERIVE_MUTANT" "$WORK/echo-outage-realrows.md")"
+[ "$MUTANT_VERDICT" = "BLOCK" ] \
+  || fail "mutation did not kill it: with the transcript strip removed, a round-2 transcript whose
+      model never spoke derived '$MUTANT_VERDICT', not the BLOCK the defect actually produces.
+      The assertions above are therefore not testing the strip."
+ok "mutation kills it: remove the transcript strip and an unexamined prior-round block derives BLOCK"
 
 # --- A REVIEW IS NOT A TRANSCRIPT JUST BECAUSE IT NAMES ONE -------------------
 # (ASK-287, PR #86 round 3, minor.) The strip above armed on `^OpenAI Codex v` in
@@ -664,7 +696,7 @@ grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
       not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
 ok "it stopped at the conflict cap, not as unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
 grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
@@ -1766,7 +1798,7 @@ grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
       gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
 ok "it stopped at the drift cap, not as approved or unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 5 runs at the drift cap, got $PAGES. Zero means
       unreviewed code sits at the head of an approved PR with nobody told; more than one is the
@@ -1961,7 +1993,7 @@ ok "an unreadable head does not refill the drift budget"
       the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
 ok "the drift cap holds across runs whose head could not be read"
 
-P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+P8_PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$P8_PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
       never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
@@ -2207,7 +2239,12 @@ run_engine_reviewer() {
   RC=$?
 }
 
-pages_in() { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; }
+# `grep -c` prints 0 AND exits 1 on a zero count, so a bare `|| echo 0`
+# APPENDED a second 0 and the value became "0\n0": that breaks `-eq` with
+# "integer expression expected" and makes a legitimate `= "0"` assertion
+# fail on correct behaviour. `| head -1` keeps whichever 0 arrived first.
+# Missing file: grep prints nothing and the fallback supplies the only 0.
+pages_in() { { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; } | head -1; }
 
 # --- Q1. an approving codex review posts kipi/codex-approved on the read sha ---
 Q1="$W2/eng-approve"

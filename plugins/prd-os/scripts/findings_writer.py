@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -478,6 +479,18 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
         _spillover_append(cfg, new)
 
 
+def _rollback_findings(path: Path, pre_bytes: bytes | None) -> bool:
+    """Restore the findings file to its pre-write bytes. Returns success."""
+    try:
+        if pre_bytes is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(pre_bytes)
+        return True
+    except OSError:
+        return False
+
+
 def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901
     if args.disposition not in DISPOSITIONS:
         sys.stderr.write(
@@ -489,38 +502,134 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
             f"disposition={args.disposition!r} requires --rationale\n"
         )
         return 2
+    # Judgment Compiler fail-fast half (PRD prd-judgment-compiler-2026-08-04):
+    # an evidence-requiring reason code without its stable reference is refused
+    # BEFORE the findings file mutates, so a gate failure never leaves the
+    # ledger and the findings file disagreeing about what happened.
+    judgment_enabled = os.environ.get("KIPI_JUDGMENT_CAPTURE") != "0"
+    if judgment_enabled:
+        import judgment_compiler
+
+        gate_errors = judgment_compiler.validate_triage_decision(
+            getattr(args, "reason_code", None), getattr(args, "evidence", []),
+            args.disposition, cfg)
+        if gate_errors:
+            for gate_error in gate_errors:
+                sys.stderr.write(f"{gate_error}\n")
+            return 2
     path = _findings_path(cfg, args.prd_id)
-    try:
-        recs = _load_findings(path)
-    except ValueError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 2
-    target = None
-    for rec in recs:
-        if rec.get("id") == args.finding_id:
-            target = rec
-            break
-    if target is None:
-        sys.stderr.write(f"finding not found: {args.finding_id}\n")
-        return 2
-    target["disposition"] = args.disposition
-    if getattr(args, "covered_by", "") and args.covered_by.strip():
-        # umbrella coverage: this finding is owned by a phase PRD
-        target["covered_by"] = args.covered_by.strip()
-    if args.rationale and args.rationale.strip():
-        target["rationale"] = args.rationale.strip()
-    elif args.disposition == "pending":
-        target.pop("rationale", None)
-    if args.disposition == "pending":
-        target.pop("resolved_at", None)
-    else:
-        target["resolved_at"] = _now_iso()
-    try:
-        _validate_record(target, f"{path}:{args.finding_id}")
-    except ValueError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 2
-    _write_all(path, recs)
+    # ONE critical section over the READ, the mutation AND the write (Codex
+    # major, PR #103 round 5). The lock used to start after `_load_findings`,
+    # so two concurrent dispositions each loaded the same snapshot, each
+    # mutated its own finding in its own copy, and each wrote the WHOLE list
+    # back: the second silently reverted the first while both receipts
+    # recorded success. Serialising stale snapshots is not serialising the
+    # transaction. The round-5 reproducer returned final_dispositions
+    # {'finding-1': 'accepted', 'finding-2': 'pending'} with two accepted
+    # receipts -- lost disposition state, invisible to both writers.
+    #
+    # Taken UNCONDITIONALLY. The previous judgment-disabled branch used a
+    # nullcontext, reasoning that with no receipt coming there is no window to
+    # close. That reasoning was about the write-to-receipt observation gap
+    # (sp-0c725cde) and does NOT extend to lost updates, which happen with or
+    # without a receipt. `ledger_lock` is re-entrant per thread, so the
+    # capture below can take it again.
+    import judgment_compiler
+
+    with judgment_compiler.ledger_lock(cfg):
+        try:
+            recs = _load_findings(path)
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        target = None
+        for rec in recs:
+            if rec.get("id") == args.finding_id:
+                target = rec
+                break
+        if target is None:
+            sys.stderr.write(f"finding not found: {args.finding_id}\n")
+            return 2
+        target["disposition"] = args.disposition
+        if getattr(args, "covered_by", "") and args.covered_by.strip():
+            # umbrella coverage: this finding is owned by a phase PRD
+            target["covered_by"] = args.covered_by.strip()
+        if args.rationale and args.rationale.strip():
+            target["rationale"] = args.rationale.strip()
+        elif args.disposition == "pending":
+            target.pop("rationale", None)
+        if args.disposition == "pending":
+            target.pop("resolved_at", None)
+        else:
+            target["resolved_at"] = _now_iso()
+        try:
+            _validate_record(target, f"{path}:{args.finding_id}")
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        # Snapshot BEFORE the write so a failed capture can restore it. Mirrors the
+        # rollback cmd_add already does for its stamp step. Without this, any
+        # capture failure that the fail-fast pre-check cannot see (a stale packet, a
+        # bad --judge-run, an unresolvable evidence ref, an OSError on the shared
+        # ledger) left the findings file saying "rejected" with no receipt — the
+        # exact divergence `verify --cross-check` exists to detect, manufactured by
+        # our own primary write path (review 2026-08-04).
+        pre_findings_bytes = path.read_bytes() if path.is_file() else None
+        # Assemble BEFORE the write, inside the lock. The receipt must freeze
+        # decision-time context, and the judge assembled its packet while this
+        # finding was still pending. Assembling after the write dropped every
+        # cross-PRD duplicate candidate (they are computed for pending findings
+        # only) and moved the packet hash, so any finding with one could not be
+        # captured with a judge run at all (Codex major, PR #103 round 4).
+        decision_packet = None
+        if judgment_enabled:
+            try:
+                decision_packet = judgment_compiler.assemble_packet(
+                    cfg, args.prd_id, args.finding_id)
+            except (judgment_compiler.ValidationError, OSError) as exc:
+                sys.stderr.write(
+                    f"judgment context could not be assembled: {exc}\n"
+                    "findings file unchanged.\n")
+                return 2
+        _write_all(path, recs)
+        # INSIDE the lock, with the write above: that pairing is the whole
+        # point of the critical section. The receipt still lands before
+        # spillover fans out, which stays OUTSIDE the lock below.
+        if judgment_enabled:
+            try:
+                judgment_compiler.capture_from_triage(
+                    cfg, args.prd_id, target,
+                    actor=getattr(args, "actor", "founder"),
+                    reason_code=getattr(args, "reason_code", None),
+                    evidence_refs=list(getattr(args, "evidence", [])),
+                    # Freeze what the RECORD says, not what the flag said. A
+                    # re-disposition to accepted passes no --rationale while the
+                    # record keeps its previous one (only `pending` clears it), so
+                    # reading the flag captured None against a record that still had
+                    # text -- and the decision fingerprint then falsely reported the
+                    # decision as uncaptured (Codex, PR #101 round 6: a regression
+                    # from the round-5 fingerprint fix).
+                    rationale=(target.get("rationale") or "").strip() or None,
+                    judge_run_path=getattr(args, "judge_run", None),
+                    packet=decision_packet,
+                )
+            except (judgment_compiler.ValidationError, OSError) as exc:
+                rolled_back = _rollback_findings(path, pre_findings_bytes)
+                sys.stderr.write(
+                    f"judgment receipt refused: {exc}\n"
+                    + ("disposition rolled back; findings file unchanged.\n"
+                       if rolled_back else
+                       "WARNING: rollback ALSO failed. The findings file may now "
+                       "disagree with the judgment ledger; run "
+                       "`kipi judgment verify --cross-check` before trusting it.\n")
+                )
+                return 2
+    # Spillover fans out AFTER the receipt lands, not before. Ordered the other
+    # way, a refused receipt rolled the findings file back while the spillover
+    # append stood — and that ledger is append-only, so the standing gate saw
+    # permanent open work for a disposition the command had just reported as
+    # rolled back (Codex review, PR #97, executed reproducer). The receipt is
+    # the failure-prone step, so it goes first among the two irreversible ones.
     _sync_spillover_for_finding(cfg, args.prd_id, target)
     print(
         json.dumps(
@@ -593,6 +702,14 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--rationale", default="")
     p_set.add_argument("--covered-by", default="", dest="covered_by",
                        help="umbrella coverage: the phase PRD id that owns this finding")
+    p_set.add_argument("--reason-code", default=None, dest="reason_code",
+                       help="canonical judgment reason code (judgment_compiler)")
+    p_set.add_argument("--evidence", action="append", default=[],
+                       help="stable evidence ref (repeatable), e.g. finding:<prd>/<id>")
+    p_set.add_argument("--actor", default="founder",
+                       help="who made this decision (judgment receipt)")
+    p_set.add_argument("--judge-run", default=None, dest="judge_run",
+                       help="path to a judge-run JSON bound to the context packet")
     p_set.set_defaults(func=cmd_set_disposition)
 
     p_rec = sub.add_parser("record-review")

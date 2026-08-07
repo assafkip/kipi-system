@@ -1,1 +1,0 @@
-{"session_id": "repro3-22944", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit --dry-run -m x"}, "tool_response": {"stdout": "", "stderr": "Dry run\n", "error": "Exit code 1"}}

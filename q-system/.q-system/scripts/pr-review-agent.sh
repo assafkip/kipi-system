@@ -65,6 +65,48 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
+# lives exactly 3 levels below the root" and nothing ever asserted it. A copy
+# dropped 2 levels deep (.pr28rev/scripts/) overshoots by one and lands OUTSIDE
+# the repo: on 2026-08-04 one resolved to the checkout's PARENT directory (the
+# one holding every project), which is
+# not a git repo, so `gh pr diff` returned nothing and the model formed a
+# verdict from the prompt alone -- then that empty review was posted as a
+# passing commit status. Measured 2026-08-05: 79 of 102 copies on this box
+# resolve SKEL to a non-repo.
+#
+# Every downstream check that could have caught it degrades to "warn and
+# proceed" (a reviewer that cannot fetch should not wedge the loop), and codex's
+# own repo check is disabled by --skip-git-repo-check. So the assertion has to
+# be here, at the point of resolution, and it has to REFUSE. Reviewing nothing
+# and reporting APPROVE is worse than not running: it manufactures evidence.
+#
+# Compares against the toplevel rather than just `rev-parse` succeeding, because
+# a path merely INSIDE a repo would otherwise pass while reviewing a subtree.
+#
+# Both sides are resolved to PHYSICAL paths before comparing. `pwd` keeps
+# symlinks while git reports the real path, so on macOS a repo under /var
+# resolves to /var/... on one side and /private/var/... on the other and a naive
+# string compare refuses a perfectly good canonical checkout. A guard that false
+# -refuses gets switched off, and a gate that is off protects nothing. Caught by
+# this guard's own test on first run (2026-08-05).
+_SKEL_TOPLEVEL="$(git -C "$SKEL" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_SKEL_TOPLEVEL" ]; then
+  _SKEL_TOPLEVEL="$(cd "$_SKEL_TOPLEVEL" 2>/dev/null && pwd -P || echo "$_SKEL_TOPLEVEL")"
+fi
+_SKEL_PHYS="$(cd "$SKEL" && pwd -P)"
+if [ -z "$_SKEL_TOPLEVEL" ] || [ "$_SKEL_TOPLEVEL" != "$_SKEL_PHYS" ]; then
+  echo "REFUSING: resolved review root is not a git repository root." >&2
+  echo "  script:        ${BASH_SOURCE[0]}" >&2
+  echo "  resolved root: $SKEL" >&2
+  echo "  git toplevel:  ${_SKEL_TOPLEVEL:-<not a git repository>}" >&2
+  echo "This script must live exactly 3 levels below the repo root" >&2
+  echo "(<repo>/q-system/.q-system/scripts/). Run the canonical copy, not a" >&2
+  echo "copy inside a review-scratch tree." >&2
+  exit 2
+fi
+unset _SKEL_TOPLEVEL _SKEL_PHYS
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
 TIMEOUT_SECONDS=2400
@@ -396,6 +438,26 @@ PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codeba
 You were asked to review pull request #$PR in $REVIEW_ROOT, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.$ROUND_RULE
 
+## YOU ARE ALONE. THERE IS NOBODY TO ASK.
+
+This run is HEADLESS: no human is reading your output while it happens, and
+nothing you write can be answered. Do not state a plan and wait for approval,
+do not ask to begin, do not ask which files to look at. Begin immediately and
+finish in one pass, ending with the verdict and the machine-readable findings
+block.
+
+This is not a style preference. Measured 2026-08-04 on PR #97 round 4: this
+reviewer replied \"Ready for your OK to begin the read-only review\", spent 15k
+tokens, produced no findings block, and the run scored the PR unstated. The
+repo-wide skills you inherit (founder-voice, AUDHD executive-function) carry an
+INTERACTIVE rule -- state your approach and wait for OK before multi-file work
+-- which is correct when a founder is present and wrong here. In this run that
+rule does not apply: you have no interlocutor, so waiting is the same as
+producing nothing.
+
+An empty or truncated review never derives APPROVE, so stopping to ask does not
+fail safe for the author -- it just burns a round.
+
 ## Read the change
 
   gh pr view $PR
@@ -509,23 +571,67 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
-# A codex answer is usable only if it carries a COMPLETE machine-readable block.
-# A truncated review that green-lights a PR nobody read is the worst outcome
-# available in this script.
+# --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
+# Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
+# The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
+# audhd-executive-function, and fable-discipline skills", firing SessionStart and
+# UserPromptSubmit hooks, and then applying the founder's own "state your planned
+# approach and wait for OK before executing" rule TO ITS OWN REVIEW. It answered
+# with a plan in 12 seconds and reviewed nothing. sp-df1a458f is what that did to
+# the gate downstream: the echoed prompt template became the findings block.
 #
-# THE PREDICATE NOW LIVES IN THE LIB, next to the reader that defines it
+# THE REVIEWER'S WHOLE VALUE IS THAT IT IS NOT US. A reviewer wearing the author's
+# skills, voice rules and hooks is not the independent second opinion this engine
+# exists to buy -- it is the same mental model with a different model id, which is
+# the correlated-blind-spot problem the codex engine was chosen to escape.
+#
+# THE CWD ISOLATION DOES NOT COVER IT. `-C $REVIEW_ROOT` already runs the review in
+# a detached worktree and the round-1 artifact shows the same config loading anyway:
+# it resolves from the USER HOME, not from the project directory, so no amount of
+# cwd isolation reaches it.
+#
+# WHAT THIS FLAG ACTUALLY BUYS, MEASURED, NOT ASSUMED (2026-08-03, same prompt run
+# twice against codex v0.146.0 from a neutral cwd):
+#     without the flag:  12 `hook: ` lines   -- SessionStart/UserPromptSubmit/Stop
+#     with the flag:      0 `hook: ` lines
+# The hooks are the layer that injected the plan-and-await instruction, and they
+# are gone. It is NOT total isolation: the "Skill descriptions were shortened to
+# fit the 2% skills context budget" warning appears in BOTH runs, so codex can
+# still SEE the skill catalogue with the flag set. Claiming this severs skills
+# would be an overclaim; captured separately rather than asserted here.
+#
+# NOT `--disable skills`: that flag does not exist on this codex build and errors
+# with "Unknown feature flag: skills", which would send every review down the Opus
+# fallback and mark the gate DEGRADED fleet-wide.
+#
+# sp-df1a458f's guard is the backstop either way: if a future codex build finds a
+# new road to the same behaviour, review_is_usable refuses the stream instead of
+# letting it fill a required check.
+
+
+# A codex answer is usable only if it carries a COMPLETE machine-readable block
+# AND is actually a review. A truncated -- or unstarted -- stream that green-lights
+# a PR nobody read is the worst outcome available in this script.
+#
+# THE PREDICATE LIVES IN THE LIB, next to the reader that defines it
 # (sp-c0a9dac3). Its own two-marker grep here was a SECOND definition of
 # "complete": both markers, anywhere, in any order. That passes a review whose
 # only complete block is a quoted prior round while the real trailing block is
 # truncated -- unusable stays off, the gate goes green, and the verdict comes from
 # findings the review itself withdrew. One definition, one reader.
-review_has_complete_findings_block() {
-  has_complete_findings_block "$1"
-}
+#
+# IT NOW ASKS review_is_usable, WHICH IS A WIDER QUESTION (sp-df1a458f). Block
+# completeness alone said YES to a stream where the model answered "Reply `OK`
+# and I'll execute exactly that plan" and the only complete block was the
+# PROMPT'S OWN echoed template. Both dispatch sites below call this, and the
+# second one -- the Opus fallback -- is where this exact class hid last time.
+# No local wrapper: both sites call review_is_usable directly. The wrapper existed
+# only to forward to the lib, and a forwarder is one more place the two dispatch
+# paths can be made to disagree about the same file.
 
 # AN ENGINE THAT PRODUCED NOTHING NEVER RAN (ASK-287).
 # ----------------------------------------------------
@@ -655,88 +761,104 @@ if [ "$ENGINE" != "codex" ]; then
   fi
 else
   # THE RC IS CAPTURED, NOT BRANCHED ON DIRECTLY (ASK-287). `if run_engine codex`
-  # made the exit code the whole classifier, and an out-of-credits codex exits 0.
-  # The artifact decides now; the rc is only one of the two things that can prove
-  # an outage, and it is the weaker one.
+  # made the exit code the whole classifier, and an out-of-credits codex can exit
+  # 0. The artifact decides now; the rc is only one of the two things that can
+  # prove an outage, and it is the weaker one.
+  # USABILITY IS TESTED FIRST, and that ordering is deliberate. It means no
+  # widening of the outage predicate can ever route a parseable review into the
+  # fallback: the only inputs the classifier below sees are ones that carry no
+  # usable verdict either way.
+  #
+  # THE QUESTION IS review_is_usable, NOT BLOCK-COMPLETENESS (the #86/#87 merge).
+  # ASK-287 was written against `review_has_complete_findings_block`, a local
+  # forwarder that sp-df1a458f then DELETED on purpose -- a forwarder is one more
+  # place the two dispatch sites can be made to disagree about the same file.
+  # Completeness alone also says YES to a stream that answered "Reply `OK` and
+  # I'll execute exactly that plan" wrapped around a real prior-round block.
+  # review_is_usable is that check AND the decline guard, so resolving here to the
+  # wider predicate keeps both fixes; resolving to the narrower one would have
+  # called a function main no longer defines.
   run_engine codex "$REVIEW"; CODEX_RC=$?
-  # A COMPLETE FINDINGS BLOCK IS TESTED FIRST, and that ordering is deliberate.
-  # It means no widening of the outage predicate can ever route a parseable
-  # review into the fallback: the only inputs the classifier below sees are ones
-  # that carry no usable verdict either way.
-  if [ "$CODEX_RC" = "0" ] && review_has_complete_findings_block "$REVIEW"; then
-  # A usable review. Nothing to classify.
-  note_degraded_transition 0
-  echo "$(TS) review written: $REVIEW"
-elif [ "$CODEX_RC" = "0" ] && ! engine_never_answered "$REVIEW"; then
+  if review_is_usable "$REVIEW" && [ "$CODEX_RC" = "0" ]; then
+    # A usable review. Nothing to classify.
+    note_degraded_transition 0
+    echo "$(TS) review written: $REVIEW"
+  elif [ "$CODEX_RC" = "0" ] && ! engine_never_answered "$REVIEW"; then
     # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
     # path: an outage leaves no review to trust, but this is an attempted review
     # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
     # over it would invent a verdict for a review that said nothing. It falls
     # through UNSTATED, and unstated posts state=failure a few lines below.
+    #
+    # A DECLINE-TO-START LANDS HERE, NOT IN THE OUTAGE ARM, and that is correct:
+    # the model took its turn to write the plan, so the turn marker is present and
+    # engine_never_answered is false. A review that stopped to ask permission is a
+    # garbage answer, not an outage -- UNSTATED holds the PR either way, and no
+    # Opus verdict is invented over it.
     REVIEW_UNUSABLE=1
     note_degraded_transition 1 \
-      "it took its turn and then emitted no complete FINDINGS block (truncated or unreadable), so the status is UNSTATED rather than a fabricated APPROVE"
-    echo "$(TS) codex answered with no complete FINDINGS block (truncated or unreadable); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
-else
-  # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
-  # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
-  # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
-  # real hazard: both statuses would come from one model family and nobody would
-  # know the independence this engine exists to buy had been lost.
-  DEGRADED=1
-  # NAME WHICH PROOF FIRED. "exited non-zero" and "exited 0 and emitted nothing"
-  # are different outages to whoever reads this log at 3am -- the second one is
-  # billing or auth, and telling them apart is the whole point of ASK-287.
-  if [ "$CODEX_RC" = "0" ]; then
-    CODEX_DOWN_WHY="it exited 0 but never took an assistant turn -- no output, or a transcript that ends on an ERROR banner -- so it never actually reviewed. That is out of credits, unauthenticated, or a rejected model; all three exit 0 (ASK-287)"
+      "it took its turn and then emitted no complete FINDINGS block (truncated or unreadable), or it stopped to ask permission instead of reviewing, so the status is UNSTATED rather than a fabricated APPROVE"
+    echo "$(TS) codex answered but the review is not usable (truncated, unreadable, or a plan awaiting confirmation); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
   else
-    CODEX_DOWN_WHY="it exited $CODEX_RC"
-  fi
-  mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
-  echo "$(TS) codex is unusable: $CODEX_DOWN_WHY. Running the Opus fallback so $STATUS_CONTEXT does not wedge. Codex output kept at: $REVIEW.codex-failed" >&2
-  # THE PAGE REPORTS THE OUTCOME, SO IT IS SENT AFTER THERE IS ONE (codex round 4
-  # on PR #86, major). It used to fire HERE, one line above `run_engine claude`,
-  # saying "the Opus fallback filled the slot and the status is marked DEGRADED"
-  # -- a claim about work that had not started. Three outcomes are reachable from
-  # this branch and only one of them fills anything:
-  #
-  #   fallback writes a complete review -> $STATUS_CONTEXT goes green, DEGRADED
-  #   fallback answers unparseably      -> UNSTATED (failure): the gate is HELD
-  #   fallback dies                     -> the script exits: NO status is posted
-  #
-  # In the last two the page was the operator's only artifact and it announced a
-  # filled gate over a PR nothing was holding, which reads as "handled" and sends
-  # them past the one PR that needs them. The page fires exactly once either way
-  # -- including on the death path, BEFORE the exit, because a both-engines-down
-  # run that says nothing at all is the silence this whole notifier exists to end.
-  #
-  # $FALLBACK_OUTCOME is assembled per branch and the page is sent from ONE place
-  # per branch rather than once at the bottom: the death path has to exit with the
-  # fallback's rc, and threading that around a shared tail is how a page gets
-  # skipped on the branch that most needs it.
-  if run_engine claude "$REVIEW"; then
-    # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
-    # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
-    # block, which derives APPROVE and would post state=success on the REQUIRED
-    # context. Filling the gate with an unread approval is worse than leaving it
-    # unstated, because unstated holds the PR and green releases it.
-    if review_has_complete_findings_block "$REVIEW"; then
-      FALLBACK_OUTCOME="so the Opus fallback filled the slot and the status is marked DEGRADED"
-      echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+    # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
+    # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
+    # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
+    # real hazard: both statuses would come from one model family and nobody would
+    # know the independence this engine exists to buy had been lost.
+    DEGRADED=1
+    # NAME WHICH PROOF FIRED. "exited non-zero" and "exited 0 and emitted nothing"
+    # are different outages to whoever reads this log at 3am -- the second one is
+    # billing or auth, and telling them apart is the whole point of ASK-287.
+    if [ "$CODEX_RC" = "0" ]; then
+      CODEX_DOWN_WHY="it exited 0 but never took an assistant turn -- no output, or a transcript that ends on an ERROR banner -- so it never actually reviewed. That is out of credits, unauthenticated, or a rejected model; all three exit 0 (ASK-287)"
     else
-      REVIEW_UNUSABLE=1
-      FALLBACK_OUTCOME="and the Opus fallback ALSO produced no complete FINDINGS block, so nothing filled the slot: the verdict is UNSTATED and the PR is HELD, not released"
-      echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+      CODEX_DOWN_WHY="it exited $CODEX_RC"
     fi
-    note_degraded_transition 1 "$CODEX_DOWN_WHY, $FALLBACK_OUTCOME"
-  else
-    rc=$?
-    echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
-    note_degraded_transition 1 \
-      "$CODEX_DOWN_WHY, and the Opus fallback ALSO failed (rc=$rc), so nothing filled the slot and NO status is posted at all -- this PR is waiting on a human"
-    exit "$rc"
+    mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
+    echo "$(TS) codex is unusable: $CODEX_DOWN_WHY. Running the Opus fallback so $STATUS_CONTEXT does not wedge. Codex output kept at: $REVIEW.codex-failed" >&2
+    # THE PAGE REPORTS THE OUTCOME, SO IT IS SENT AFTER THERE IS ONE (codex round 4
+    # on PR #86, major). It used to fire HERE, one line above `run_engine claude`,
+    # saying "the Opus fallback filled the slot and the status is marked DEGRADED"
+    # -- a claim about work that had not started. Three outcomes are reachable from
+    # this branch and only one of them fills anything:
+    #
+    #   fallback writes a complete review -> $STATUS_CONTEXT goes green, DEGRADED
+    #   fallback answers unparseably      -> UNSTATED (failure): the gate is HELD
+    #   fallback dies                     -> the script exits: NO status is posted
+    #
+    # In the last two the page was the operator's only artifact and it announced a
+    # filled gate over a PR nothing was holding, which reads as "handled" and sends
+    # them past the one PR that needs them. The page fires exactly once either way
+    # -- including on the death path, BEFORE the exit, because a both-engines-down
+    # run that says nothing at all is the silence this whole notifier exists to end.
+    #
+    # $FALLBACK_OUTCOME is assembled per branch and the page is sent from ONE place
+    # per branch rather than once at the bottom: the death path has to exit with the
+    # fallback's rc, and threading that around a shared tail is how a page gets
+    # skipped on the branch that most needs it.
+    if run_engine claude "$REVIEW"; then
+      # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
+      # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
+      # block, which derives APPROVE and would post state=success on the REQUIRED
+      # context. Filling the gate with an unread approval is worse than leaving it
+      # unstated, because unstated holds the PR and green releases it.
+      if review_is_usable "$REVIEW"; then
+        FALLBACK_OUTCOME="so the Opus fallback filled the slot and the status is marked DEGRADED"
+        echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+      else
+        REVIEW_UNUSABLE=1
+        FALLBACK_OUTCOME="and the Opus fallback ALSO produced no usable review, so nothing filled the slot: the verdict is UNSTATED and the PR is HELD, not released"
+        echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+      fi
+      note_degraded_transition 1 "$CODEX_DOWN_WHY, $FALLBACK_OUTCOME"
+    else
+      rc=$?
+      echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+      note_degraded_transition 1 \
+        "$CODEX_DOWN_WHY, and the Opus fallback ALSO failed (rc=$rc), so nothing filled the slot and NO status is posted at all -- this PR is waiting on a human"
+      exit "$rc"
+    fi
   fi
-fi
 fi
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
@@ -758,9 +880,16 @@ if [ "$REVIEW_UNUSABLE" = "1" ]; then
   VERDICT=""
   echo "  NOTE: no complete FINDINGS block from codex; verdict UNSTATED. An empty or truncated review never derives APPROVE."
 elif [ -n "$DERIVED_VERDICT" ]; then
-  VERDICT="$DERIVED_VERDICT"
+  # A DISAGREEMENT MAY NEVER RESOLVE TOWARD APPROVAL (ASK-312). This used to read
+  # VERDICT="$DERIVED_VERDICT" unconditionally, printing a NOTE and proceeding --
+  # which twice turned a reviewer's own "REQUEST CHANGES" into APPROVE and posted
+  # kipi/reviewer-approved=success on a PR nobody had read. resolve_verdict takes
+  # the harsher of the two, so the severity floor still overrides a reviewer that
+  # logged a blocker and then said APPROVE, while silence can no longer overrule a
+  # reviewer that said stop.
+  VERDICT="$(resolve_verdict "$STATED_VERDICT" "$DERIVED_VERDICT")"
   if [ "$STATED_VERDICT" != "$DERIVED_VERDICT" ]; then
-    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; using the findings"
+    echo "  NOTE: reviewer stated '${STATED_VERDICT:-none}' but its own findings imply '$DERIVED_VERDICT'; taking the harsher: '$VERDICT'"
   fi
 else
   VERDICT="$STATED_VERDICT"
@@ -783,15 +912,86 @@ echo "  verdict: ${VERDICT:-unstated}"
 # directory only for a non-primary engine; for the gating engine the reviews live
 # in $OUT_DIR/codex (its own round counter) while the record must land in $OUT_DIR
 # where converge.sh and linear-worker.sh actually read it.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" <<'PY'
+# DID A REVIEW ACTUALLY HAPPEN, PERSISTED (sp-2a832233, ASK-352). The record used
+# to store only a PATH to the review, and the review files rotate, so every
+# consumer downstream had to re-derive usability from a file it does not own --
+# or, in practice, guess from the verdict.
+#
+# THE VERDICT DOES NOT ANSWER IT. Measured across all 79 records on 2026-08-03:
+# 13 were unusable and they carry the whole range of verdicts. `APPROVE` on 11 of
+# them (all merged); `REQUEST CHANGES` on #80 and #83; empty on #89. The
+# REQUEST CHANGES pair is the expensive one: the reviewer's `stated` verdict was
+# read out of the PROMPT'S OWN echoed grading rule, so a record that says an
+# objection was raised is indistinguishable from one where nobody read the code.
+# Both post `state: failure`, and a selector that sees only `failure` sends a
+# never-reviewed PR to REWORK with no findings to work from.
+#
+# ASKED HERE, NOT REUSED FROM $REVIEW_UNUSABLE. That flag is set on the codex and
+# fallback paths only -- the `ENGINE != codex` primary path never evaluates
+# usability at all -- so reading it would record `usable: true` for a path that
+# never checked, which is the fabricated-evidence direction. One call, the same
+# predicate on the same file the verdict came from, covering all three paths.
+#
+# RECORD-ONLY, DELIBERATELY. This changes no gate. $VERDICT is computed above and
+# is not touched here, so no PR's outcome moves on this commit; the consumer that
+# acts on the key is the selector (review-redrive.py), which is a separate change
+# with its own cap. Widening a gate as a side effect of adding a field is how a
+# fleet-wide refusal ships unannounced.
+if review_is_usable "$REVIEW"; then REVIEW_USABLE=1; else REVIEW_USABLE=0; fi
+
+# WHICH MODEL ACTUALLY WROTE THIS REVIEW (sp-8379cd52). `engine` is the FLAG the
+# run was invoked with, not the author. On the DEGRADED path codex never answered
+# and Opus wrote the review, yet the record still said `"engine": "codex"` -- so
+# the human-facing surfaces told the truth (the status description and the Linear
+# comment both say DEGRADED out loud) while the MACHINE-READABLE record that
+# converge.sh:36 and linear-worker.sh:76 gate on claimed a second lab reviewed
+# code that second lab never saw. Measured 2026-08-02 on PR #66 and #67 during a
+# codex out-of-credits outage: both records read `engine: codex`, both reviews
+# were Opus. That is the sp-a72a9567 false-provenance shape aimed at the gating
+# reader instead of the human one, which is the worse direction.
+#
+# DERIVED, NEVER BRANCHED. This reads existing state and adds nothing to the
+# control flow above -- deliberately. The fallback trigger is the one path in this
+# script where a wrong edit posts an unearned green, so the provenance fix is not
+# allowed to touch it. $DEGRADED is set at exactly one place (the outage branch),
+# so deriving from it cannot disagree with what actually ran.
+REVIEWED_BY="$CODEX_MODEL"
+[ "$ENGINE" = "claude" ] && REVIEWED_BY="$CLAUDE_MODEL"
+[ "$DEGRADED" = "1" ] && REVIEWED_BY="$CLAUDE_MODEL"
+# `set -e` IS OFF IN THIS SCRIPT (line 64 is `set -uo pipefail`) and these two
+# lines depend on that. Under `set -e` a false `[ ... ] && assign` is an AND-list
+# whose final status is 1, which exits the shell -- so turning on -e here would
+# abort every healthy codex review right before its record is written. If -e is
+# ever added, these become if/fi first.
+#
+# IT SITS BELOW review_is_usable ON PURPOSE. test-review-degraded-provenance.sh
+# extracts this block by awk range, anchored `^REVIEWED_BY="\$CODEX_MODEL"$` ..
+# `^PY$`, and executes it in a bare subshell to drive the SHIPPED writer instead
+# of a copy. Moving this above the `if review_is_usable` line pulls that function
+# call into the extracted range, where it is undefined -- the writer would die,
+# no record would be written, and the suite would report a break in the test
+# rather than the defect. Keep the derivation adjacent to the python3 call.
+
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" <<'PY'
 import json, sys
-pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir, engine, invoker = sys.argv[1:13]
+(pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
+ engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = f"{verdict_dir}/pr-{pr}.verdict.json"
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
+           # reviewed_by is the model that produced the prose; engine is the flag
+           # the run was asked for. On the fallback those disagree, and that
+           # disagreement IS the record of the outage.
+           "reviewed_by": reviewed_by,
+           "degraded": degraded == "1",
            "invoker": invoker,
+           # A real boolean, not "1"/"0". A JSON string "0" is TRUTHY in every
+           # consumer language here, so a truthiness read of the wrong shape
+           # would call every phantom review usable -- the exact inversion this
+           # key exists to prevent.
+           "usable": usable == "1",
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY

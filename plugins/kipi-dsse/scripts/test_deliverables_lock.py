@@ -19,6 +19,21 @@ import sys
 import tempfile
 from pathlib import Path
 
+def _review_artifact(repo, kind: str = "standard") -> str:
+    """A stand-in for the reviewer's own output.
+
+    Fixtures come from producers, and the producer here is "whatever the
+    reviewer printed" -- an opaque blob. What the runner asserts about it is
+    only that it exists, is non-empty, and hashes stably, so a representative
+    blob is the honest fixture rather than a fabricated verdict schema.
+    """
+    d = Path(repo) / ".prd-os/reviews"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{kind}.md"
+    f.write_text(f"# {kind} review\nVERDICT: APPROVE\nno findings\n")
+    return str(f)
+
+
 RUNNER = Path(__file__).resolve().parent / "issue_runner.py"
 
 _MARKER = (
@@ -51,7 +66,9 @@ def _write_spec(repo, issue_id, count=None, deliverables_md=""):
         "priority: p0\n"
         "allowed_files:\n  - src/tracked.py\n"
         "disallowed_files: []\n"
-        "required_checks: []\n"
+        # `verify` refuses an empty check list (a receipt cannot attest that
+        # nothing ran), so the fixture carries a real passing check.
+        "required_checks:\n  - python3 -c \"print('ok')\"\n"
         "required_reviews: []\n"
         f"{count_line}"
         "---\n\n"
@@ -63,8 +80,19 @@ def _write_spec(repo, issue_id, count=None, deliverables_md=""):
 def _drive_close(repo, issue_id):
     _runner(repo, "load", issue_id)
     _runner(repo, "approve")
-    for r in ("verified", "reviewed", "findings_triaged"):
-        _runner(repo, "mark", r)
+    # Receipts are earned, not stamped: `mark <receipt>` was removed
+    # 2026-08-05 (it recorded a claim it never computed).
+    _runner(repo, "verify")
+    _runner(repo, "triage")
+    _runner(repo, "record-review", "standard")
+    # Claiming the slot no longer writes `reviewed`; completing it does.
+    _runner(repo, "complete-review", "standard",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "standard"))
+    _runner(repo, "record-review", "adversarial")
+    _runner(repo, "complete-review", "adversarial",
+                  "--verdict", "approve",
+                  "--evidence-file", _review_artifact(repo, "adversarial"))
     return _runner(repo, "close")
 
 

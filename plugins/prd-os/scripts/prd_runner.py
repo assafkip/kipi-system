@@ -38,6 +38,8 @@ layer in step 6 where both runners are orchestrated.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -153,7 +155,12 @@ def cmd_new(cfg: Config, args: argparse.Namespace) -> int:
     title = args.title or slug.replace("-", " ").title()
     owner = args.owner or os.environ.get("USER", "unknown")
     created_at = _now_iso()
-    prd_id = f"prd-{slug}-{created_at[:10]}"
+    # Strip a slug's own `prd-` before prefixing. An unconditional prefix made
+    # `new prd-thing` produce `prd-prd-thing-<date>`, and the reported id is the
+    # one findings_writer requires -- a caller that reused its slug got
+    # "PRD spec not found" (virgin-repo run, 2026-08-05).
+    base_slug = slug[4:] if slug.startswith("prd-") else slug
+    prd_id = f"prd-{base_slug}-{created_at[:10]}"
     spec_path = cfg.prds_dir / f"{prd_id}.md"
     if spec_path.exists():
         sys.stderr.write(f"PRD spec already exists: {spec_path}\n")
@@ -290,8 +297,12 @@ def cmd_advance(cfg: Config, args: argparse.Namespace) -> int:
 
     if target == "approved":
         rc, err = _findings_gate(cfg, state)
-        if rc != 0:
+        # Emitted on rc == 0 too: the judgment gate returns a decision-
+        # disagreement WARNING alongside a passing code, and the old
+        # `if rc != 0` guard would have swallowed it silently.
+        if err:
             sys.stderr.write(err)
+        if rc != 0:
             return rc
         rc, err = _issues_manifest_gate(cfg, state)
         if rc != 0:
@@ -338,6 +349,10 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     if rc != 0:
         sys.stderr.write(err)
         return rc
+    rc, err = _archive_spillover_gate(cfg, state.get("prd_id"))
+    if rc != 0:
+        sys.stderr.write(err)
+        return rc
     spec_path = cfg.repo_root / state["spec_path"]
     text = spec_path.read_text()
     new_text = re.sub(r"(?m)^status:\s*.+$", "status: archived", text, count=1)
@@ -350,6 +365,48 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
     _propose_skeptic_antipatterns_best_effort(cfg, archived_id)
     print(json.dumps({"archived": archived_id}))
     return 0
+
+
+def _archive_spillover_gate(cfg: Config, prd_id: str | None = None) -> tuple[int, str]:
+    """Refuse archive while an item THIS PRD opened is still open.
+
+    `no-orphan-findings.md` states the ledger "cannot be forgotten" and names
+    `gates run` the enforcement of last resort. It was never wired into the one
+    terminal step. Measured 2026-08-05 in a virgin repo: `gates run` exited 1
+    GATE RED on `sp-0b8645ad` and `archive` exited 0 in the same repo, in the
+    same moment. The only thing holding the line was prose in
+    `commands/prd-archive.md` asking the model to check first -- prompt-only
+    enforcement, which q-system/CLAUDE.md core rule 3 forbids.
+
+    Deliberately no --force hatch: the two documented exits (resolve against a
+    closed issue, or --void with a recorded reason) already cover every real
+    case, and a third would be the hand-clear the rule refuses.
+    """
+    openv = _spillover_open(cfg)
+    # SCOPED TO THIS PRD's OWN ITEMS (Codex, PR #110 round 3, with a repro).
+    # Refusing on the GLOBAL ledger made archive permanently unreachable: 533
+    # items carry the default `minor` severity, `gates run` correctly treats
+    # them as non-blocking, and archive refused on all of them anyway. A
+    # terminal step no run can ever reach is not a gate, it is a wall.
+    #
+    # This is what no-orphan-findings.md actually says -- "report every
+    # spillover item THE WORK TOUCHED" -- not "resolve the fleet's backlog
+    # before any PRD may close". The global backlog is real work; it is not
+    # THIS PRD's exit condition.
+    if prd_id:
+        openv = [r for r in openv if r.get("source") == prd_id]
+    if not openv:
+        return 0, ""
+    detail = "\n".join(
+        f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})"
+        for r in openv
+    )
+    return 2, (
+        f"refusing to archive: {len(openv)} open spillover item(s) opened by "
+        f"{prd_id or 'this PRD'}\n{detail}\n"
+        "Resolve each via `prd_runner.py spillover resolve <id> "
+        "--resolution-ref <closed-issue>` or `--void \"<reason>\"`.\n"
+    )
 
 
 def _propose_skeptic_antipatterns_best_effort(cfg: Config, prd_id: str) -> None:
@@ -596,7 +653,138 @@ def _findings_gate(cfg: Config, state: dict) -> tuple[int, str]:
             f"approval blocked: {len(pending)} pending finding(s): "
             f"{', '.join(pending)}. Set a disposition on each before advancing.\n"
         )
-    return 0, ""
+    return _judgment_receipt_gate(cfg, state["prd_id"])
+
+
+# The Judgment Compiler shipped WRITING a receipt on every triage and REQUIRING
+# one nowhere, which made it available rather than baked in: KIPI_JUDGMENT_CAPTURE=0,
+# a hand-edited findings file, or a capture that failed and got ignored all left
+# a silent hole no gate could see. A ledger with unnoticed holes cannot be the
+# calibration set it exists to be.
+JUDGMENT_RECEIPT_FLOOR = "2026-08-04T00:00:00Z"
+
+def _judgment_receipt_gate(cfg: Config, prd_id: str) -> tuple[int, str]:
+    """Every dispositioned finding in this PRD must carry a receipt.
+
+    NO EXEMPTION, and deliberately no date logic of any kind. Three shapes all
+    failed the same way. Rounds 2/7/8 of PR #101 inferred eligibility from
+    `resolved_at`, a mutable strippable field. PR #102 moved the inference to
+    the PRD id's creation date, and its review round matched a date-SHAPED
+    suffix no calendar can produce. Then Codex found the defect underneath
+    both: a PRD-creation floor exempts every FUTURE decision on an old PRD, and
+    35 of 36 real PRDs predate the floor, so the gate was a near-permanent
+    no-op -- the opposite of "receipts are required from here on".
+
+    The signal was simply wrong. This gate fires when a PRD is APPROVED, and a
+    PRD being approved now is being decided now, whatever date its id carries.
+    So the rule is unconditional and reads no date at all.
+
+    Measured before removing the exemption, because "a gate that cannot be
+    satisfied gets switched off" is a real risk that deserved a number rather
+    than a worry: of the 36 real PRDs, 21 are archived and 13 approved, so they
+    can never reach this gate again. Exactly ONE is still in-review, with 13
+    dispositioned findings, and its remedy is one `set-disposition` re-run per
+    finding, which mints the receipt as a side effect. A bounded, one-time,
+    self-service cost bought back the whole guarantee.
+
+    Returns (exit_code, text). The text is NOT only an error: a decision-
+    disagreement warning rides back with exit 0, so the caller must emit it
+    regardless of the code.
+    """
+    try:
+        import judgment_compiler
+    except ImportError:
+        # The ONLY fail-open case: the compiler is not installed (an older
+        # instance), so there is no contract to enforce and nothing to read.
+        return 0, ""
+    try:
+        # Read UNDER THE WRITER'S LOCK. capture appends the receipt and then
+        # writes the tip; observed between those two, the ledger holds N+1
+        # records against a tip of N, which the chain check below correctly
+        # calls "receipts BEYOND the tip anchor" -- and would block approval
+        # over a concurrent capture that was perfectly fine (Codex, PR #101
+        # round 4). I gave the writer a lock and left the reader without one.
+        with judgment_compiler.ledger_lock(cfg):
+            records = judgment_compiler.read_ledger(
+                judgment_compiler.ledger_path(cfg))
+            tip = judgment_compiler.read_tip(judgment_compiler.tip_path(cfg))
+        # VERIFY before trusting. read_ledger only parses JSON, so without this
+        # a receipt appended by hand -- right prd_id, right finding_id, right
+        # disposition, broken chain -- satisfied the gate and authorized
+        # approval (Codex, PR #101 round 3). A hash chain no consumer checks is
+        # decoration; the gate is the consumer that matters.
+            chain_errors = judgment_compiler.verify_ledger(records, tip)
+            # Cross-check INSIDE the lock, with the read that feeds it (Codex
+            # major, PR #102). It used to run after the lock was released, so a
+            # concurrent and perfectly valid triage landing in that gap wrote a
+            # disposition this stale ledger snapshot could not see, and approval
+            # false-blocked on a missing receipt that did exist. The round-4 fix
+            # locked the read; the comparison needs the same span.
+            # No `since`: eligibility is unconditional now, so there is nothing
+            # to date-filter.
+            raw_missing, raw_drift = ([], []) if chain_errors else \
+                judgment_compiler.cross_check_findings(
+                    cfg, records, None, prd_id=prd_id)
+        if chain_errors:
+            return 2, (
+                "approval blocked: the judgment ledger does not verify, so its "
+                "receipts cannot be trusted as evidence:\n  "
+                + "\n  ".join(chain_errors[:5])
+                + ("\n  ..." if len(chain_errors) > 5 else "")
+                + "\n\nRun `kipi judgment verify` for the full report.\n"
+            )
+    except Exception as exc:
+        # FAIL CLOSED. The first version caught everything and returned 0,
+        # defended as "a bug in the check must not cause an approval outage".
+        # That conflated two different things: a corrupt or truncated ledger is
+        # not a bug in the gate, it is precisely the integrity failure the gate
+        # exists to catch, and letting approval through on it is the worst
+        # possible response (Codex, PR #101, executed repro: a ValueError from
+        # read_ledger returned rc=0). A required integrity gate fails closed.
+        return 2, (
+            f"approval blocked: the judgment ledger could not be checked ({exc}).\n"
+            "This is refused rather than skipped: an unreadable or corrupt "
+            "ledger is the integrity failure this gate exists to catch. Run "
+            "`kipi judgment verify` to see the damage.\n"
+        )
+    # Exact prd_id match, not `in`: cross_check_findings emits
+    # "<prd_id>/<finding_id>: ...", so a substring test let a missing receipt
+    # for `prd-alpha-2` block approval of `prd-alpha` (Codex, PR #101).
+    missing = [m for m in raw_missing if m.startswith(f"{prd_id}/")]
+    drift = [d for d in raw_drift if d.startswith(f"{prd_id}/")]
+    # WARNING, never a block (PR #101 rounds 6-8). This compares the MUTABLE
+    # findings file against the IMMUTABLE receipt, and when they disagree the
+    # receipt is still the honest record of the decision -- `cmd_evaluate`,
+    # which feeds the release gates, reads ONLY the ledger. Rounds 6-8 blocked
+    # on it and produced two self-inflicted regressions; three of the four
+    # tests guarding it existed to stop it blocking legitimate work rather than
+    # to catch a real threat. A gate that false-blocks gets switched off, and
+    # an off gate protects nothing. It is not dropped: `kipi judgment evaluate`
+    # counts it as decision_disagreement_count and gates AUTOMATION on it.
+    warning = ""
+    if drift:
+        warning = (
+            f"WARNING: {len(drift)} finding(s) whose findings-file record "
+            "disagrees with the receipt that froze the decision:\n  "
+            + "\n  ".join(drift[:5])
+            + ("\n  ..." if len(drift) > 5 else "")
+            + "\n\nApproval is NOT blocked: the receipt is the immutable record "
+              "and the ledger is what calibration reads, while the findings "
+              "file is mutable operational state. Counted as "
+              "decision_disagreement_count by `kipi judgment evaluate`.\n"
+        )
+    if missing:
+        return 2, (
+            f"approval blocked: {len(missing)} dispositioned finding(s) with "
+            "no judgment receipt:\n  "
+            + "\n  ".join(missing[:5])
+            + ("\n  ..." if len(missing) > 5 else "")
+            + "\n\nRe-run the disposition through findings_writer.py "
+              "set-disposition so the decision is recorded, or explain the gap. "
+              "Receipts are the calibration set; a hole in them is invisible "
+              "later.\n"
+        ) + warning
+    return 0, warning
 
 
 # ---------------------------------------------------------------------------
@@ -1074,6 +1262,61 @@ def _spillover_open(cfg: Config) -> list:
     return [r for r in _read_spillover(cfg).values() if r.get("status") == "open"]
 
 
+@contextlib.contextmanager
+def _spillover_lock(cfg: Config):
+    """Serialize read-modify-append on the ledger across PROCESSES.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, while `_read_spillover` is last-write-wins on the WHOLE record. So
+    two concurrent runs interleave as: reclassify reads (status=open), resolve
+    appends (status=resolved), reclassify appends its stale copy (status=open)
+    -- and the resolved item is RESURRECTED into the standing gate. Codex found
+    it on PR #112 with an executed reproducer.
+
+    This is the single-writer chokepoint rule applied where it was skipped: two
+    writers to one file is a corruption waiting for a race. The lock spans the
+    READ as well as the write, because a lock around the append alone still
+    lets the stale copy be formed.
+
+    A sibling .lock file rather than the ledger itself: flock on the ledger
+    would be released by any unrelated reader closing its own handle.
+
+    DEGRADES, NEVER REFUSES. Taking the lock needs to CREATE a file, so it
+    needs write permission on the DIRECTORY -- while appending to the existing
+    ledger only needs it on the FILE. A read-only `.prd-os` therefore turned a
+    working `resolve` into a PermissionError traceback the moment this lock was
+    added, and read-only sandboxes are real here (every Codex round this
+    session reported one).
+
+    So a lock we cannot take degrades to the unlocked behaviour that shipped
+    for months, loudly, rather than becoming a new hard failure. The race it
+    protects against costs a FALSE RED gate, which is recoverable; refusing to
+    resolve at all is not. Same rule the review gate uses when Codex is down:
+    degrade and say so out loud.
+    """
+    path = _spillover_path(cfg)
+    lock_path = path.with_name(path.name + ".lock")
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+        sys.stderr.write(
+            f"WARNING: could not lock the spillover ledger ({exc}); proceeding "
+            "UNLOCKED.\nA concurrent resolve/reclassify could resurrect a "
+            "resolved item into the standing gate.\n")
+        yield
+        return
+    try:
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
 def _spillover_append(cfg: Config, record: dict) -> None:
     path = _spillover_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1219,6 +1462,50 @@ def _spillover_group_counts(items: list, field: str) -> list:
     return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
+def _print_reclassifications(items: list) -> None:
+    """Surface severity changes, and DOWNGRADES loudest.
+
+    `reclassify` writes `reclassified_from` / `reclassify_reason` and, until
+    this function existed, nothing anywhere read them. A sanctioned way to stop
+    the standing gate blocking, whose use no report ever shows, is not an
+    audited escape hatch -- it is an unaudited one with a paper trail nobody
+    opens. Same shape as the void hatch, same requirement: a writer needs a
+    reader (ASK-402, PR #112 review).
+
+    A downgraded item is NOT invisible -- it stays open and still counts in the
+    gate's reported bucket -- but the ACT of demoting it is the thing an
+    operator needs to see, because that is what moved the gate.
+    """
+    # EXPLICIT order. The first version built this by concatenating
+    # NONBLOCKING + BLOCKING, which assumed those tuples were ordered by
+    # severity. They are not -- `blocker` sits at index 0 of its tuple and
+    # `high` at 2 -- so `blocker -> high` reported as a RAISE and
+    # `low -> minor` as a gate-affecting downgrade (Codex, PR #112, minor).
+    # A membership set is not a scale; reusing one as a scale is the bug.
+    rank = {s: i for i, s in enumerate(SPILLOVER_SEVERITY_ORDER)}
+    changed = [r for r in items if r.get("reclassified_from")]
+    if not changed:
+        return
+    lowered, raised = [], []
+    for r in changed:
+        before = rank.get((r.get("reclassified_from") or "").lower(), -1)
+        after = rank.get((r.get("severity") or "").lower(), -1)
+        (lowered if after < before else raised).append(r)
+
+    def show(group, label):
+        if not group:
+            return
+        print(f"\n{label} ({len(group)}):")
+        for r in group:
+            print(f"  {r['id']}: {r.get('reclassified_from')} -> "
+                  f"{r.get('severity')}  ({(r.get('reclassify_reason') or '')[:70]})")
+
+    # Lowered first and named as gate-affecting: that is the direction that
+    # stops the gate blocking, so it is the direction someone must review.
+    show(lowered, "severity LOWERED (these stopped blocking the gate)")
+    show(raised, "severity raised")
+
+
 def _print_spillover_groups(items: list, field: str, heading: str) -> None:
     print(f"\nby {heading} ({len(_spillover_group_counts(items, field))} group(s)):")
     for value, count in _spillover_group_counts(items, field):
@@ -1236,6 +1523,52 @@ def cmd_spillover(cfg: Config, args) -> int:
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
         })
         print(json.dumps({"id": sid, "status": "open"}))
+        return 0
+    if sub == "reclassify":
+        # Correct a severity through a NEW EVENT, never a mutation. Approved
+        # PRD prd-spillover-current-state-2026-07-24: "correct severity through
+        # new events only", "preserve append-only history"; editing a prior
+        # event is an explicit non-goal there.
+        #
+        # This verb did not exist, and its absence was the real blocker on the
+        # backlog: 549 of 559 open items sit at the `minor` DEFAULT (untriaged,
+        # not assessed), `gates run` blocks only on blocker/major/high, and
+        # nothing could raise or lower an item once written.
+        severity = (args.severity or "").strip().lower()
+        if severity not in SPILLOVER_KNOWN_SEVERITIES:
+            sys.stderr.write(
+                f"--severity must be one of {SPILLOVER_KNOWN_SEVERITIES}; "
+                f"got {args.severity!r}. The standing gate reads this field, so "
+                "an unknown value would silently stop blocking.\n")
+            return 2
+        if not (args.reason or "").strip():
+            sys.stderr.write(
+                "--reason is required: a severity change with no stated reason "
+                "is the hand-clear this ledger refuses everywhere else.\n")
+            return 2
+        # READ AND APPEND UNDER ONE LOCK. Reading outside it lets a concurrent
+        # `resolve` land between the two and be overwritten by this stale copy.
+        with _spillover_lock(cfg):
+            items = _read_spillover(cfg)
+            current = items.get(args.id)
+            if current is None:
+                sys.stderr.write(
+                    f"unknown spillover id: {args.id!r}. Reclassify never creates an "
+                    "item -- a typo must not invent open work.\n")
+                return 2
+            # Carry the whole prior record forward and move ONE field, so a
+            # reclassify can never drop the description or resolve by side effect.
+            new_rec = dict(current)
+            prior = current.get("severity")
+            new_rec.update({
+                "severity": severity,
+                "reclassified_at": _now_iso(),
+                "reclassified_from": prior,
+                "reclassify_reason": args.reason,
+            })
+            _spillover_append(cfg, new_rec)
+        print(json.dumps({"id": args.id, "severity": severity,
+                          "was": prior, "status": new_rec.get("status")}))
         return 0
     if sub == "list":
         items = list(_read_spillover(cfg).values())
@@ -1272,36 +1605,81 @@ def cmd_spillover(cfg: Config, args) -> int:
         print(f"{len(openv)} open spillover item(s)")
         _print_spillover_groups(openv, "severity", "severity")
         _print_spillover_groups(openv, "source", "source")
+        _print_reclassifications(openv)
         return 0
     if sub == "resolve":
-        rec = _read_spillover(cfg).get(args.id)
-        if not rec:
-            sys.stderr.write(f"unknown spillover id: {args.id}\n")
-            return 2
-        if not args.resolution_ref and not args.void:
-            sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
-            return 2
-        new = dict(rec)
-        if args.void:
-            new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
-        else:
-            try:
-                evidence = _verify_resolution_ref(cfg, args.resolution_ref)
-            except LinearRefError as exc:
-                sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+        # Same chokepoint as reclassify. This read-modify-append was
+        # ALREADY unlocked before PR #112; reclassify only added a third
+        # writer to it. A `with` block, not a manual enter/exit: two of
+        # the refusal paths below return early and would leak the lock.
+        with _spillover_lock(cfg):
+            # Same chokepoint as reclassify: this read-modify-append was already
+            # unlocked before PR #112: reclassify only added a third writer to it.
+            rec = _read_spillover(cfg).get(args.id)
+            if not rec:
+                sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
-            new.update(status="resolved", resolution_ref=args.resolution_ref,
-                       resolved_at=_now_iso(), **evidence)
-            if args.evidence:
-                # Operator-supplied context (PR, merge commit). Recorded for the
-                # next reader, never consulted above: it is a note attached to a
-                # verified resolution, not a substitute for verifying one.
-                new["resolution_evidence"] = args.evidence
-        _spillover_append(cfg, new)
-        print(json.dumps({"id": args.id, "status": "resolved"}))
-        return 0
-    sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
+            if not args.resolution_ref and not args.void:
+                sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
+                return 2
+            new = dict(rec)
+            if args.void:
+                new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
+            else:
+                try:
+                    evidence = _verify_resolution_ref(cfg, args.resolution_ref)
+                except LinearRefError as exc:
+                    sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                    return 2
+                new.update(status="resolved", resolution_ref=args.resolution_ref,
+                           resolved_at=_now_iso(), **evidence)
+                if args.evidence:
+                    # Operator-supplied context (PR, merge commit). Recorded for the
+                    # next reader, never consulted above: it is a note attached to a
+                    # verified resolution, not a substitute for verifying one.
+                    new["resolution_evidence"] = args.evidence
+            _spillover_append(cfg, new)
+            print(json.dumps({"id": args.id, "status": "resolved"}))
+            return 0
+        sys.stderr.write(f"unknown spillover subcommand: {sub}\n")
     return 2
+
+
+# Severities that turn the standing gate RED. Approved PRD
+# prd-spillover-current-state-2026-07-24, goal 5: "make `gates run` identify
+# pre-existing debt separately from new debt". Before this, every open item was
+# one undifferentiated red group; the ledger reached 550 open and the gate had
+# been red for months, which teaches everyone to step over it -- strictly worse
+# than no gate, because it launders "we have enforcement".
+#
+# `minor`/`low`/`medium` are REPORTED, never silent. The 533 sitting at the
+# `minor` DEFAULT are untriaged rather than assessed, which the report says
+# out loud instead of implying they were judged small.
+SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
+# Everything the gate is willing to call NON-blocking. Anything outside the union
+# of these two tuples is treated as BLOCKING, not as minor.
+#
+# Codex, PR #110 round 2, with a reproducer: `spillover add --severity critical`
+# was accepted, stored verbatim, reported as "minor-or-untriaged", and the gate
+# returned green. The word a human reaches for under pressure ("critical",
+# "urgent", "sev1") is exactly the one the allowlist did not contain, so the
+# louder the label the quieter the gate got. Fail-closed here and validate at the
+# CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
+SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+# Least -> most severe. Separate from the membership tuples above ON PURPOSE:
+# those answer "does this block?", this answers "which way did it move?", and
+# conflating the two is how `blocker -> high` read as a raise.
+SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
+SPILLOVER_KNOWN_SEVERITIES = (
+    SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+
+
+def _is_blocking_severity(value: str) -> bool:
+    """Unknown severities block. See SPILLOVER_NONBLOCKING_SEVERITIES."""
+    sev = (value or "").strip().lower()
+    if not sev:
+        return False  # absent == the documented `minor` default, not unknown
+    return sev not in SPILLOVER_NONBLOCKING_SEVERITIES
 
 
 def cmd_gates(cfg: Config, args) -> int:
@@ -1373,17 +1751,32 @@ def cmd_gates(cfg: Config, args) -> int:
     # Out-of-scope findings are part of the standing re-proof: an open spillover
     # item turns the gate RED until it is resolved against a closed issue.
     openv = _spillover_open(cfg)
-    if openv:
-        names = ", ".join(r["id"] for r in openv)
-        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
-        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
-        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
+    blocking = [r for r in openv if _is_blocking_severity(r.get("severity"))]
+    reported = [r for r in openv if r not in blocking]
+    if blocking:
+        names = ", ".join(r["id"] for r in blocking)
+        detail = "\n".join(f"  {r['id']} [{r.get('severity')}]: {r.get('description', '')[:90]} (src {r.get('source')})" for r in blocking)
+        print(f"[RED] spillover: {len(blocking)} open blocking-severity item(s): {names}")
+        failures.append(("spillover", f"{len(blocking)} open blocking-severity spillover item(s):\n{detail}\n"
                                       f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    if reported:
+        # Reported, never silent. These do not block, but a bucket nobody can
+        # see is how 533 of them accumulated. `--severity` DEFAULTS to minor, so
+        # a defaulted item is indistinguishable from one assessed as minor --
+        # the label says "untriaged" rather than laundering "nobody looked" as
+        # "we judged it small".
+        ids = ", ".join(r["id"] for r in reported[:10])
+        more = f" (+{len(reported) - 10} more)" if len(reported) > 10 else ""
+        print(f"[REPORT] spillover: {len(reported)} open minor-or-untriaged "
+              f"item(s), not blocking: {ids}{more}")
+        print("  Triage with `prd_runner.py spillover triage`; raise one with "
+              "`spillover add --severity major|blocker`.")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} regression gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; "
+          f"no blocking-severity spillover")
     return 0
 
 
@@ -1421,10 +1814,20 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--source", required=True, help="originating prd-id or issue-id")
     sp_add.add_argument("--desc", required=True, help="what the out-of-scope finding is")
     sp_add.add_argument("--id", help="stable id (default: derived from source+desc)")
-    sp_add.add_argument("--severity", default="minor")
+    # choices, so the CLI refuses an unrecognized severity at the door rather
+    # than storing it and letting the gate mis-bucket it (Codex, PR #110 r2).
+    sp_add.add_argument("--severity", default="minor",
+                        choices=SPILLOVER_KNOWN_SEVERITIES)
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
+    sp_recl = spill_sub.add_parser(
+        "reclassify", help="correct an item's severity via a new append-only event")
+    sp_recl.add_argument("id")
+    sp_recl.add_argument("--severity", required=True)
+    sp_recl.add_argument("--reason", required=True,
+                         help="why the severity is wrong; recorded on the event")
+
     spill_sub.add_parser("check")
     spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
     sp_res = spill_sub.add_parser("resolve")
