@@ -207,6 +207,210 @@ ok "derive: empty findings block -> APPROVE (a clean PR is reachable)"
   || fail "no FINDINGS block must derive nothing so the caller falls back to prose"
 ok "derive: no findings block -> empty (prose fallback, never a guess)"
 
+# --- THE ECHOED PROMPT IS NOT THE ENGINE'S ANSWER (ASK-287, PR #86 round 2) ----
+# `run_engine` captures the whole `codex exec` transcript, and the transcript
+# replays the prompt -- which ENDS with the template block the reviewer asks for.
+# So a complete FINDINGS block is present in every artifact before the model has
+# said anything, and it derived APPROVE: a green required gate on a PR nobody
+# reviewed. Pinned HERE, at the lib, because the reader is what every consumer
+# shares; a caller-side ordering fix would leave the next consumer fail-open.
+#
+# The template is sliced out of the reviewer at test time for the same reason the
+# transcript preamble is (see CODEX_ECHOED_PROMPT_TAIL below): a retyped copy
+# tests the copy, not the producer, which is how this defect got past round 1.
+DERIVE_TMPL="$(sed -n '/^FINDINGS:$/,/^END FINDINGS"$/p' "$REVIEWER" | sed 's/"$//')"
+[ -n "$DERIVE_TMPL" ] || fail "could not slice the findings template out of $REVIEWER"
+
+# THE HEADER IS THE PRODUCER'S, NOT A THREE-LINE GESTURE AT IT. Round 2's
+# fixtures opened `Reading.../OpenAI Codex v.../user` and stopped, which is the
+# same retyping mistake one level down: the real `codex exec` header is a
+# `--------` fenced block carrying workdir/model/provider/sandbox/session lines,
+# and round 3's fix reads that block rather than the banner alone. A fixture
+# missing it would have certified a strip that never armed. Captured live
+# 2026-08-03 from the invocation run_engine makes; CODEX_PREAMBLE below is built
+# from this same constant so the two cannot drift apart.
+CODEX_HEADER='Reading additional input from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /tmp/review-tree
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019fc8bf-5560-7a51-9a29-77d468eedf6c
+--------
+user'
+
+{ printf '%s\n' "$CODEX_HEADER"
+  printf '%s\n' "$DERIVE_TMPL"
+  printf 'hook: UserPromptSubmit Completed\n'
+  printf 'ERROR: Your workspace is out of credits. Add credits to continue.\n'
+} > "$WORK/echo-outage.md"
+[ -z "$(findings_block "$WORK/echo-outage.md")" ] \
+  || fail "the echoed prompt template parsed as the engine's findings block. The model never took a
+      turn on this transcript (no ^codex marker), so nothing in it is its output.
+      Parsed: $(findings_block "$WORK/echo-outage.md")"
+[ -z "$(verdict_from_findings "$WORK/echo-outage.md")" ] \
+  || fail "AN OUT-OF-CREDITS CODEX RUN DERIVED '$(verdict_from_findings "$WORK/echo-outage.md")'.
+      A verdict off a transcript where the model emitted zero tokens is a fabricated review, and
+      APPROVE here posts a green required check on a PR that was never read."
+ok "derive: a transcript with no assistant turn derives NOTHING (the echoed template is not an answer)"
+
+# The other half: a model that DID answer must be read, and read from ITS block --
+# not from the echoed template sitting above it. Without the strip, "last complete
+# block" is ambiguous the moment the real one is cut off.
+{ printf '%s\n' "$CODEX_HEADER"
+  printf '%s\n' "$DERIVE_TMPL"
+  printf 'hook: UserPromptSubmit Completed\ncodex\n'
+  printf '## VERDICT: REQUEST CHANGES\n\nFINDINGS:\nmajor|the fallback fills the slot silently|x.sh:1\nEND FINDINGS\n'
+} > "$WORK/echo-answered.md"
+[ "$(verdict_from_findings "$WORK/echo-answered.md")" = "REQUEST CHANGES" ] \
+  || fail "a real review inside a transcript must still derive from the MODEL's block, got
+      '$(verdict_from_findings "$WORK/echo-answered.md")'. The strip must drop the echo, not the answer."
+ok "derive: a transcript WITH an assistant turn still derives from the model's own block"
+
+# NEGATIVE SELF-TEST. Both assertions above pass trivially if findings_block were
+# broken outright, so mutate out the two transcript lines and prove a fabricated
+# verdict comes back. If this mutant still derives nothing, the assertions are
+# being carried by something other than the strip and prove nothing about it.
+#
+# THE MUTANT IS AIMED AT A FIXTURE ONLY THE STRIP CAN SAVE (the #86/#87 merge).
+# It used to run against `echo-outage.md`, whose echoed block is the PROMPT
+# TEMPLATE -- and #87's placeholder guard rejects a template block on its own,
+# with no help from the strip. So once both defences were in the same file this
+# mutant reported SURVIVED while the strip was still perfectly intact: a false
+# survival caused by a SECOND guard silently covering the mutated one, not by a
+# weak assertion. Removing the placeholder guard too would "fix" the mutant by
+# mutating out both defences at once, which measures neither.
+#
+# The fixture that isolates the strip is a round-2 stream: from round 2 the
+# prompt replays the PREVIOUS round's REAL findings for the model to re-prove, so
+# the echoed region carries genuine severity rows. The placeholder guard must
+# accept those (they are real severities); only the turn-marker strip knows the
+# model never spoke. Remove the strip and the gate derives BLOCK from findings
+# nobody re-examined -- a fabricated verdict, which is the kill.
+{ printf '%s\n' "$CODEX_HEADER"
+  printf 'user\nRe-prove these round-1 findings:\n'
+  printf 'FINDINGS:\nblocker|round 1 said the ledger can be deleted|led.py:9\nEND FINDINGS\n'
+  printf 'ERROR: Your workspace is out of credits. Add credits to continue.\n'
+} > "$WORK/echo-outage-realrows.md"
+[ -z "$(verdict_from_findings "$WORK/echo-outage-realrows.md")" ] \
+  || fail "a round-2 transcript with NO assistant turn derived
+      '$(verdict_from_findings "$WORK/echo-outage-realrows.md")' from the echoed prior-round block.
+      The model never spoke on this stream; re-grading findings it never examined wedges the PR."
+ok "derive: prior-round findings echoed with no assistant turn derive NOTHING"
+
+DERIVE_MUTANT="$WORK/lib-no-strip.sh"
+grep -v -e '^    NR <= 10 && /\^OpenAI Codex v/' \
+        -e '^    transcript && !turn' "$LIB" > "$DERIVE_MUTANT"
+# VALIDATE THE MUTANT APPLIED. A grep -v that matches nothing yields a byte-identical
+# copy, and an unmutated copy "surviving" says nothing at all.
+cmp -s "$LIB" "$DERIVE_MUTANT" \
+  && fail "the transcript-strip mutant changed nothing -- the grep -v patterns no longer match
+      findings_block. Fix the patterns; a mutant that was never applied cannot be killed."
+MUTANT_VERDICT="$(bash -c '. "$1"; verdict_from_findings "$2"' _ "$DERIVE_MUTANT" "$WORK/echo-outage-realrows.md")"
+[ "$MUTANT_VERDICT" = "BLOCK" ] \
+  || fail "mutation did not kill it: with the transcript strip removed, a round-2 transcript whose
+      model never spoke derived '$MUTANT_VERDICT', not the BLOCK the defect actually produces.
+      The assertions above are therefore not testing the strip."
+ok "mutation kills it: remove the transcript strip and an unexamined prior-round block derives BLOCK"
+
+# --- A REVIEW IS NOT A TRANSCRIPT JUST BECAUSE IT NAMES ONE -------------------
+# (ASK-287, PR #86 round 3, minor.) The strip above armed on `^OpenAI Codex v` in
+# the first ten lines and nothing else. The Opus fallback's entire subject is the
+# codex outage it just replaced, so naming the version it saw belongs in its
+# OPENING lines -- and such a review carries no `codex` turn marker, so every line
+# of it was discarded and the verdict came back UNSTATED. The fallback exists to
+# keep the required check from wedging; this made the fallback wedge it.
+#
+# Live, not hypothetical: it turned `validate` red on this PR via
+# test-review-comment-body.sh case 4, whose fixture opens with the banner and is
+# not a transcript.
+{ printf '## VERDICT: REQUEST CHANGES\n\n'
+  printf 'DEGRADED: codex is down. Its transcript ended at the OpenAI Codex v0.146.0\n'
+  printf 'banner with no assistant turn, so this is the Opus stand-in.\n\n'
+  printf 'FINDINGS:\nmajor|the outage path posts a verdict nobody derived|y.sh:2\nEND FINDINGS\n'
+} > "$WORK/fallback-quotes-banner.md"
+[ "$(verdict_from_findings "$WORK/fallback-quotes-banner.md")" = "REQUEST CHANGES" ] \
+  || fail "a PLAIN review that mentions the codex banner in its first lines was read as a transcript,
+      so its findings were discarded and it derived '$(verdict_from_findings "$WORK/fallback-quotes-banner.md")'.
+      That is the Opus fallback wedging the very required check it exists to fill."
+ok "derive: a plain review that QUOTES the codex banner is still read whole (banner != transcript)"
+
+# The tightening must not have bought that by loosening the round-2 fix, so both
+# transcript cases are re-asserted against the SAME lib right here. A guard that
+# fixes one direction by reopening the other is not a fix.
+[ -z "$(verdict_from_findings "$WORK/echo-outage.md")" ] \
+  || fail "the header-block test reopened the round-2 defect: the out-of-credits transcript derives
+      '$(verdict_from_findings "$WORK/echo-outage.md")' again."
+[ "$(verdict_from_findings "$WORK/echo-answered.md")" = "REQUEST CHANGES" ] \
+  || fail "the header-block test broke the answered-transcript case"
+ok "derive: tightening the transcript test did not reopen the echoed-template defect"
+
+# --- ONE PAGE PER TRANSITION, UNDER CONCURRENCY -------------------------------
+# (ASK-287, PR #86 round 3, major.) note_degraded_transition read the previous
+# state, then wrote the new one, with nothing holding the two together. An outage
+# is by definition simultaneous -- every open PR's reviewer hits the dead API in
+# the same minute -- so N reviewers all read prev=0, all wrote 1, and all paged.
+# N pings for one transition is the cry-wolf failure the transition check exists
+# to prevent, which makes an unlocked check decoration.
+#
+# The function is SLICED OUT OF THE REVIEWER at test time, same reason as the
+# prompt template above: a retyped copy would test the copy. pr-review-agent.sh
+# runs top-to-bottom and cannot be sourced, so the slice is the only way to drive
+# the real function.
+DEG_FN="$WORK/note-degraded.sh"
+awk '/^note_degraded_transition\(\) \{/,/^\}$/' "$REVIEWER" > "$DEG_FN"
+grep -q '^note_degraded_transition() {' "$DEG_FN" \
+  || fail "could not slice note_degraded_transition out of $REVIEWER"
+grep -q '^}$' "$DEG_FN" || fail "the sliced note_degraded_transition has no closing brace"
+
+printf '%s\n' 'printf "%s\n" "$1" >> "$KIPI_TEST_PAGES"' > "$WORK/notify-stub.sh"
+
+# run_transition_trial <lib-file> <n-concurrent> -> prints how many pages fired
+run_transition_trial() {
+  local fn="$1" n="$2" i
+  : > "$WORK/pages.log"
+  rm -rf "$WORK/deg"; mkdir -p "$WORK/deg"
+  for i in $(seq 1 "$n"); do
+    ( export KIPI_TEST_PAGES="$WORK/pages.log"
+      DEGRADED_STATE="$WORK/deg/degraded.state"
+      PR=86; STATUS_CONTEXT="kipi/reviewer-approved"; NOTIFY="$WORK/notify-stub.sh"
+      # shellcheck disable=SC1090
+      . "$fn"
+      note_degraded_transition 1 "the same outage, seen by every reviewer at once" ) &
+  done
+  wait
+  wc -l < "$WORK/pages.log" | tr -d ' '
+}
+
+DEG_PAGES="$(run_transition_trial "$DEG_FN" 20)"
+[ "$DEG_PAGES" = "1" ] \
+  || fail "20 reviewers hit ONE outage transition and it paged $DEG_PAGES times. Every extra ping is
+      the cry-wolf failure this check exists to prevent -- an operator who learns to skim the
+      degraded alert misses the one that matters."
+ok "degraded transition: 20 concurrent outage reviews page exactly once"
+
+# NEGATIVE SELF-TEST. The assertion above passes trivially if the pages never
+# fire at all, so strip the lock back out and prove the duplicate returns. The
+# race is reliable but not certain on one trial, so three trials are run and at
+# least one must double-page; a mutant that never doubles means the assertion
+# above is carried by something other than the lock.
+DEG_MUTANT="$WORK/note-degraded-unlocked.sh"
+sed '/^  until mkdir "\$lock"/,/^  done$/d; /^  rmdir "\$lock"/d' "$DEG_FN" > "$DEG_MUTANT"
+grep -q 'mkdir "\$lock"' "$DEG_MUTANT" \
+  && fail "the mutation did not remove the lock, so it proves nothing"
+MUTANT_DOUBLED=0
+for _ in 1 2 3; do
+  [ "$(run_transition_trial "$DEG_MUTANT" 20)" -gt 1 ] && MUTANT_DOUBLED=1
+done
+[ "$MUTANT_DOUBLED" = "1" ] \
+  || fail "mutation did not kill it: with the lock removed, 20 concurrent transitions still paged once
+      across three trials. The assertion above is therefore not testing the lock."
+ok "mutation kills it: remove the lock and one transition pages more than once"
+
 # The disagreement case the reviewer must not be trusted on: prose says APPROVE
 # while its own labels carry a major. Derivation has to win, or a reviewer can
 # talk a majors-laden PR through the gate.
@@ -1905,20 +2109,84 @@ FINDINGS:
 major|the fallback fills the slot without marking it degraded|q-system/x.sh:40
 END FINDINGS
 '
+# THE REAL `codex exec` PREAMBLE, captured live 2026-08-03 by running
+#
+#   codex exec --skip-git-repo-check --model <m> -C <dir> "<prompt>" </dev/null >f 2>&1
+#
+# (the exact invocation run_engine uses). It is here because the invented
+# fixtures below were WRONG about the producer, and that is what let the ASK-287
+# fix ship half-done: every codex run -- success, garbage, or total outage --
+# writes this banner, the echoed prompt, and the hook chatter into the review
+# file BEFORE anything else. There is no such thing as a 0-byte codex artifact.
+#
+# THE ECHOED PROMPT IS READ OUT OF THE PRODUCER, NOT RETYPED (round 2 of the same
+# PR #86 review). The first cut of this preamble stubbed the echo as the single
+# line `Review this PR.`, and that stand-in is exactly where the next defect hid:
+# the REAL prompt ends with the machine-readable TEMPLATE the reviewer asks for,
+#
+#     FINDINGS: / severity|one-sentence claim|file:line / END FINDINGS
+#
+# so `codex exec` echoing it back writes a COMPLETE findings block into every
+# transcript before the model has emitted one token. A one-line stand-in has no
+# block, so the fixture could not see it. Slicing the tail out of the reviewer at
+# test time means the fixture cannot drift from the prompt it is imitating: edit
+# the template in pr-review-agent.sh and this fixture follows.
+CODEX_ECHOED_PROMPT_TAIL="$(sed -n '/^FINDINGS:$/,/^END FINDINGS"$/p' "$REVIEWER" | sed 's/"$//')"
+[ -n "$CODEX_ECHOED_PROMPT_TAIL" ] \
+  || fail "could not slice the findings template out of $REVIEWER -- the fixture would silently
+      go back to imitating a prompt that carries no block, which is the defect it exists to pin."
+printf '%s' "$CODEX_ECHOED_PROMPT_TAIL" | grep -q '^END FINDINGS$' \
+  || fail "the sliced prompt tail has no closing END FINDINGS line, so the echoed template would not
+      parse as a complete block and the fixture would prove nothing. Got: $CODEX_ECHOED_PROMPT_TAIL"
+
+CODEX_PREAMBLE="$CODEX_HEADER
+Review this PR. Report findings in exactly this shape:
+
+$CODEX_ECHOED_PROMPT_TAIL
+warning: Skill descriptions were shortened to fit the 2% skills context budget.
+hook: SessionStart
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed"
+
 # Truncated: the stream died after the block opened. `sed /FINDINGS:/,/END
 # FINDINGS/p` runs to EOF on this, so an empty range derives APPROVE unless the
 # closing line is REQUIRED. This is path 2 above, in its exact observed shape.
-CODEX_TRUNCATED='hook: Stop
+#
+# THE `codex` LINE IS LOAD-BEARING, not decoration. It is the assistant-turn
+# marker codex prints before the model's first token, and it is the whole reason
+# this case is a GARBAGE ANSWER rather than an outage: the model spoke and was
+# cut off. The old fixture omitted it, which made "codex answered" and "codex
+# never answered" look identical on disk and quietly certified the wrong rule.
+CODEX_TRUNCATED="$CODEX_PREAMBLE
+codex
 ## VERDICT: APPROVE
 
 FINDINGS:
-'
+"
+
+# THE ASK-287 OUTAGE, in the shape the producer really writes. Preamble captured
+# live (above); the terminating banner is the one measured 2026-08-02 with a real
+# billed call, which printed it and EXITED 0. Note what is NOT here: no `codex`
+# line anywhere, because the run died at the API before the model emitted a
+# single token. That absence is the evidence the classifier reads.
+CODEX_OUT_OF_CREDITS="$CODEX_PREAMBLE
+ERROR: Your workspace is out of credits. Add credits to continue.
+ERROR: Your workspace is out of credits. Add credits to continue.
+"
 
 # mk_engine_stubs <dir> <headRefOid> <codex-mode> <codex-body>
 #   codex-mode: ok | fail (non-zero exit) | empty (exit 0, no output)
-# The claude stub always emits $APPROVE_REVIEW, so a `success` status on a codex
-# run can only have come from the Opus fallback -- which is what makes the
-# degraded cases readable at all.
+# The claude stub emits $APPROVE_REVIEW, so a `success` status on a codex run can
+# only have come from the Opus fallback -- which is what makes the degraded cases
+# readable at all.
+#
+# THE FALLBACK CAN ALSO FAIL, and until round 4 no fixture could express that.
+# The claude stub is steered by two files written AFTER this helper rather than by
+# a fifth positional argument, so every existing case keeps its exact call and
+# behaviour: `$d/claude-body.txt` is what it says, and `$d/claude-fail` (if it
+# exists) makes it die the way a dropped stream does. A default-healthy fallback
+# is what let "the Opus fallback filled the slot" be paged before Opus ever ran.
 mk_engine_stubs() {
   local d="$1" oid="$2" mode="$3" body="$4"
   mkdir -p "$d/bin" "$d/home"
@@ -1932,6 +2200,7 @@ EOF
   cat > "$d/bin/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$d/claude-calls.log"
+[ -f "$d/claude-fail" ] && { echo "claude: stream disconnected before first token" >&2; exit 1; }
 cat "$d/claude-body.txt"
 EOF
   cat > "$d/bin/codex" <<EOF
@@ -2072,22 +2341,111 @@ $(sed 's/^/        /' "$Q3/pages.txt" 2>/dev/null)"
 grep -qi 'codex' "$Q3/pages.txt" || fail "the page never names codex: $(cat "$Q3/pages.txt")"
 ok "the founder is paged exactly once on the transition into degraded mode"
 
-# --- Q4. codex answers with NOTHING USABLE -> never APPROVE -------------------
-# The single most dangerous path in this issue. An empty or truncated answer has
-# no findings in it, and "no findings" derives APPROVE. Both shapes must land on
-# a NON-success status, and neither may be laundered through the Opus fallback:
-# an outage has no review at all, but garbage is an attempted review whose
-# content cannot be trusted, so approving over it invents a verdict.
+# =============================================================================
+# AN ENGINE THAT PRODUCED NOTHING NEVER RAN (ASK-287)
+# =============================================================================
+# THE DEFECT, measured 2026-08-02 with a real billed call:
+#
+#   codex exec --skip-git-repo-check --model gpt-5.6-sol "Reply with exactly: ALIVE"
+#   ERROR: Your workspace is out of credits. Add credits to continue.
+#
+# and it EXITED 0. So `run_engine codex` reported success, control took the
+# "answered with nothing parseable" branch -- which by design does NOT fall back
+# -- and the Opus fallback promised at the top of pr-review-agent.sh never fired.
+# Not "fired and failed": NEVER, since the day it was written.
+# Consequences on disk: unusable reviews pr-66-20260802-092103.md and
+# pr-67-20260802-092225.md, degraded.state=1 (the system NOTICED), and
+# ~/.config/kipi/pr-reviews/claude/ which did not exist at all. Both PRs sat on
+# kipi/reviewer-approved=failure, CI-green, unmergeable.
+#
+# THOSE TWO ARTIFACTS ARE 7,724 BYTES EACH, NOT ZERO (codex round 4 on PR #86,
+# minor). This header said "0-byte reviews" while the preamble block above it says
+# there is no such thing as a 0-byte codex artifact and Q4D below measures the
+# same two files at 7,724 bytes. Three statements about one pair of files, two of
+# them agreeing and this one not: a reader has no way to tell which is the
+# measurement. "0-byte" was the first write-up's GUESS, made before anyone opened
+# the files, and it is the guess that shipped the half-fix Q4D exists to close.
+# It is corrected here rather than deleted because the wrong number is the whole
+# reason the emptiness predicate looked sufficient.
+#
+# Same defect class as 2026-08-01: two failure modes genuinely different in the
+# world, identical in the signal being read. An outage and a garbage answer
+# cannot be told apart by an exit code.
+#
+# THE CONTRACT THESE CASES PIN. The discriminator is EVIDENCE, never the exit
+# code: an outage never took an assistant turn, a garbage answer took its turn and
+# then said something that does not parse. (The first cut of this line read "an
+# outage produces NO CONTENT AT ALL" -- same wrong measurement as the paragraph
+# above, and Q4D is the case that disproves it.)
+#   Q4  empty output         -> OUTAGE  -> Opus fills the slot, marked DEGRADED
+#   Q4D real out-of-credits  -> OUTAGE  -> same, on the payload actually observed
+#   Q4B content, unparseable -> GARBAGE -> UNSTATED, NO fallback, nothing invented
+#   Q4E/Q4F the fallback itself fails -> the PAGE says so; nothing claims a filled slot
+# Q4B is the rule that must NOT move. Filling the slot with an Opus approval over
+# an attempted-but-unreadable review invents a verdict for a review that said
+# nothing, and a fabricated green is worse than a blocked merge.
+
+# --- Q4. codex EXITS 0 AND SAYS NOTHING -> that is an outage, not an answer ----
+# mk_engine_stubs' `empty` mode is exit 0 with no output: the exact shape the
+# out-of-credits call left on disk. Before the fix this took the garbage branch,
+# so claude-calls.log stayed empty and the status was posted unstated=failure.
 Q4="$W2/eng-empty"
 mk_engine_stubs "$Q4" "$SHA_A" empty ""
 run_engine_reviewer "$Q4" --post --engine codex
 CALL="$(status_call "$Q4")"
-printf '%s' "$CALL" | grep -q 'state=success' \
-  && fail "THE DEFECT: codex returned an EMPTY review and the reviewer posted state=success. An
-      empty answer read as 'no findings survived reproduction' green-lights a PR nobody read.
-      Call was: $CALL"
-ok "an EMPTY codex review never posts state=success"
 
+[ -s "$Q4/claude-calls.log" ] \
+  || fail "THE ASK-287 DEFECT: codex exited 0 and produced NOTHING, and the Opus fallback never
+      ran. An engine that emitted no bytes did not review anything -- reading that as 'it answered,
+      just unparseably' is reading the exit code, which an out-of-credits codex sets to 0. Every PR
+      in the loop then accumulates kipi/reviewer-approved=failure and nothing merges. claude saw:
+      $(cat "$Q4/claude-calls.log" 2>/dev/null)"
+ok "codex exit 0 with EMPTY output is treated as an outage: the Opus fallback runs"
+
+[ -n "$CALL" ] \
+  || fail "no commit status was posted at all after the fallback, so $CODEX_CONTEXT stays absent
+      and the PR wedges exactly as it did before. gh saw:
+$(sed 's/^/        /' "$Q4/gh-calls.log")"
+printf '%s' "$CALL" | grep -q "context=$CODEX_CONTEXT" \
+  || fail "the fallback filled the wrong slot after an empty codex run: $CALL"
+printf '%s' "$CALL" | grep -q 'state=success' \
+  || fail "the Opus fallback wrote a real APPROVE review and the required gate did not go green,
+      so the wedge survives the fix. Call was: $CALL"
+printf '%s' "$CALL" | grep -qi 'degraded' \
+  || fail "the slot was filled by Opus with NO degraded marker. Both statuses now come from one
+      model family and the status text says nothing about it. Call was: $CALL"
+ok "the empty-codex fallback fills $CODEX_CONTEXT=success and says DEGRADED out loud"
+
+[ "$(pages_in "$Q4")" = "1" ] \
+  || fail "expected EXACTLY 1 page on the transition into degraded mode, got $(pages_in "$Q4"):
+$(sed 's/^/        /' "$Q4/pages.txt" 2>/dev/null)"
+grep -qi 'codex' "$Q4/pages.txt" || fail "the page never names codex: $(cat "$Q4/pages.txt")"
+ok "an empty-codex outage pages the founder exactly once, naming codex"
+
+# The verdict the gate reads must come from the review Opus actually wrote, not
+# from the nothing codex returned. Asserting the RECORD and not just the status
+# is what separates "a real fallback review" from "a green posted on absence".
+Q4_REC="$Q4/home/.config/kipi/pr-reviews/pr-901.verdict.json"
+[ -s "$Q4_REC" ] || fail "no verdict record was written after the fallback: $Q4_REC"
+# $APPROVE_REVIEW is the claude stub's body and its FINDINGS block is empty, so
+# the fallback's own derivation is APPROVE. Pinned to that exact value rather
+# than to "non-empty": the point is that the gate carries the FALLBACK REVIEW's
+# conclusion, and a wildcard would pass on a verdict inherited from anywhere.
+[ "$(verdict_from_record "$Q4_REC")" = "APPROVE" ] \
+  || fail "the record's verdict is '$(verdict_from_record "$Q4_REC")', not the fallback review's own
+      APPROVE. The gate must be derived from the review that was actually performed."
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$Q4_REC'))['source'])" 2>/dev/null)" = "findings" ] \
+  || fail "the fallback's verdict did not come from its FINDINGS block, so it was read from prose
+      or invented. Record: $(cat "$Q4_REC")"
+ok "the fallback's verdict is derived from the findings of the review it really performed"
+
+# --- Q4B. content that does not parse is a GARBAGE ANSWER, and does NOT fall back
+# THE PROPERTY MOST AT RISK in the ASK-287 fix: widening the outage branch must
+# not swallow this one. Codex here ANSWERED -- there is prose, there is a verdict
+# line, there is an opened FINDINGS block -- it just cannot be trusted. An outage
+# has no review at all; garbage is an attempted review whose CONTENT cannot be
+# trusted, and filling the slot with an Opus approval over it invents a verdict
+# for a review that said nothing. Unstated HOLDS the PR; green RELEASES it.
 Q4B="$W2/eng-trunc"
 mk_engine_stubs "$Q4B" "$SHA_A" ok "$CODEX_TRUNCATED"
 run_engine_reviewer "$Q4B" --post --engine codex
@@ -2103,6 +2461,188 @@ ok "a TRUNCATED codex review (unclosed FINDINGS block) never posts state=success
       review to trust; garbage is a review whose CONTENT cannot be trusted, and filling the slot
       with an Opus approval over it invents a verdict for a review that said nothing."
 ok "an unusable codex answer is not laundered through the fallback"
+
+# Assert the ABSENCE explicitly, on the record and not only on the status. "No
+# fallback ran" and "no verdict was invented" are two different claims, and the
+# second is the one the hard constraint is about: the gate must never carry a
+# verdict nobody derived from a review that was actually performed.
+Q4B_REC="$Q4B/home/.config/kipi/pr-reviews/pr-901.verdict.json"
+[ -s "$Q4B_REC" ] || fail "no verdict record was written for the garbage case: $Q4B_REC"
+[ -z "$(verdict_from_record "$Q4B_REC")" ] \
+  || fail "THE HARD CONSTRAINT: the garbage case recorded verdict
+      '$(verdict_from_record "$Q4B_REC")'. Codex answered with content nobody can parse, so the
+      only honest verdict is NONE. A fabricated green is worse than a blocked merge.
+      Record: $(cat "$Q4B_REC")"
+ok "the garbage case records NO verdict at all (nothing invented over an unreadable review)"
+
+# --- Q4D. THE REAL OUT-OF-CREDITS PAYLOAD -> still an outage, still falls back --
+# FOUND BY CODEX ON 2026-08-03 reviewing PR #86 (major, pr-review-agent.sh:599)
+# while Q4 above was green. Q4's `empty` stub was an INVENTED fixture: it assumed
+# an out-of-credits codex writes zero bytes. It does not. The production
+# artifacts for PRs #66 and #67 are 7,724 bytes each -- the banner, the echoed
+# prompt, the hook chatter, then the error -- so the emptiness predicate could
+# never fire on the very payload the issue was opened about, and the Opus
+# fallback STILL never ran. Q4 passed and the defect shipped.
+#
+# The lesson underneath is the one this repo keeps relearning: a fixture you
+# invent tests your assumption about the producer, not the producer. This case
+# uses the shape captured from a live `codex exec`.
+#
+# The discriminator that survives contact with the real artifact is not size, it
+# is whether the engine ever took an assistant turn:
+#   outage  -> preamble, then ERROR, and NO `codex` turn marker  -> fall back
+#   garbage -> preamble, `codex` turn marker, then unparseable   -> UNSTATED
+Q4D="$W2/eng-out-of-credits"
+mk_engine_stubs "$Q4D" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+run_engine_reviewer "$Q4D" --post --engine codex
+CALL="$(status_call "$Q4D")"
+
+[ -s "$Q4D/claude-calls.log" ] \
+  || fail "THE DEFECT CODEX FOUND ON PR #86: the REAL out-of-credits payload (non-empty: banner +
+      echoed prompt + hooks + the error, ~7.7KB on disk for PRs #66 and #67) did NOT trigger the
+      Opus fallback. The ASK-287 fix keyed on EMPTINESS, and this artifact is not empty, so the
+      outage still reads as a garbage answer and every PR in the loop keeps wedging on
+      $CODEX_CONTEXT=failure. claude saw: $(cat "$Q4D/claude-calls.log" 2>/dev/null)"
+ok "the REAL out-of-credits payload (non-empty, exit 0) is treated as an outage"
+
+printf '%s' "$CALL" | grep -q 'state=success' \
+  || fail "the fallback ran but $CODEX_CONTEXT did not go green, so the wedge survives. Call: $CALL"
+printf '%s' "$CALL" | grep -qi 'degraded' \
+  || fail "the out-of-credits fallback filled the slot with NO degraded marker. Call: $CALL"
+ok "the out-of-credits fallback fills $CODEX_CONTEXT=success and says DEGRADED out loud"
+
+grep -qi 'credit\|never actually reviewed\|no assistant turn\|produced no' "$Q4D/pages.txt" 2>/dev/null \
+  || fail "the page does not say WHY codex is down, so the operator reading it at 3am cannot tell
+      a billing outage from a crash. Page was: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+ok "the out-of-credits page names the outage, not just 'codex failed'"
+
+# THE POSITIVE HALF of the Q4E/Q4F pair below. Those two assert the page must NOT
+# claim a filled slot when the fallback did not fill it; on their own that passes
+# just as well if the claim is deleted from every page. Here the fallback really
+# did fill the slot, so the page has to SAY so -- which is what makes the absence
+# in Q4E/Q4F evidence about the outcome rather than about the wording.
+#
+# THE TWO NEEDLES ARE MUTUALLY EXCLUSIVE SUBSTRINGS, not one phrase and its
+# negation. A plain `filled the slot` matches "nothing filled the slot" as
+# happily as "the fallback filled the slot" -- the first cut of Q4E asserted
+# exactly that and failed against a page whose text was already correct. So the
+# affirmative needle carries its subject (`fallback filled the slot`) and the
+# denial carries its own (`nothing filled the slot`); neither string can appear
+# inside the other, so each case pins one outcome and rejects the other two.
+grep -qi 'fallback filled the slot' "$Q4D/pages.txt" 2>/dev/null \
+  || fail "the fallback DID fill $CODEX_CONTEXT and the page never says so, so the operator cannot
+      tell this run from one where nothing filled the gate. Page was: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+grep -qi 'nothing filled' "$Q4D/pages.txt" 2>/dev/null \
+  && fail "the page denies filling a slot the fallback DID fill: $(cat "$Q4D/pages.txt" 2>/dev/null)"
+ok "a fallback that really filled the slot says so in the page"
+
+# --- Q4E. CODEX IS DOWN AND THE OPUS FALLBACK DIES TOO -----------------------
+# FOUND BY CODEX ON 2026-08-03 reviewing PR #86 (major, pr-review-agent.sh:697).
+# The outage page was fired BEFORE `run_engine claude` and said "the Opus fallback
+# filled the slot and the status is marked DEGRADED" unconditionally. When the
+# fallback then died, the reviewer exited before posting anything, so the one
+# artifact the operator gets -- the page -- reported a filled gate over a PR with
+# no status at all. That is worse than silence: silence sends someone to look.
+#
+# The reviewer STILL exits non-zero here and STILL posts nothing; absent is not
+# approved and that is unchanged. What this case pins is that the page tells the
+# truth about which of the three outcomes happened.
+Q4E="$W2/eng-fallback-dead"
+mk_engine_stubs "$Q4E" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+: > "$Q4E/claude-fail"
+run_engine_reviewer "$Q4E" --post --engine codex
+
+[ -s "$Q4E/claude-calls.log" ] \
+  || fail "the fallback was never even attempted, so this case cannot say anything about what
+      happens when it fails. claude saw: $(cat "$Q4E/claude-calls.log" 2>/dev/null)"
+[ -z "$(status_call "$Q4E")" ] \
+  || fail "a commit status was posted even though NO review exists: $(status_call "$Q4E").
+      Absent is not approved, and neither is a status over a review nobody wrote."
+ok "codex down + a dead Opus fallback posts no status at all"
+
+[ "$(pages_in "$Q4E")" = "1" ] \
+  || fail "expected EXACTLY 1 page when both engines are down, got $(pages_in "$Q4E"):
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+grep -qi 'fallback filled the slot' "$Q4E/pages.txt" 2>/dev/null \
+  && fail "THE DEFECT CODEX FOUND: the page claims 'the Opus fallback filled the slot and the
+      status is marked DEGRADED' when the fallback DIED and no status was posted at all. The page
+      is fired before run_engine claude, so it reports an outcome that has not happened yet, and
+      the operator reads a healthy-enough gate over a PR nothing is holding. Page was:
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+ok "a dead fallback is never paged as a filled slot"
+
+grep -qi 'no status\|also failed\|nothing filled' "$Q4E/pages.txt" 2>/dev/null \
+  || fail "the page does not say the fallback ALSO failed and nothing filled the gate, so the
+      operator has no way to know this PR needs a human. Page was:
+$(sed 's/^/        /' "$Q4E/pages.txt" 2>/dev/null)"
+ok "the both-engines-down page says nothing filled the gate"
+
+# --- Q4F. CODEX IS DOWN AND THE FALLBACK ANSWERS UNPARSEABLY -----------------
+# The third outcome, and the quiet one: `claude` exits 0, so the pre-fix page
+# still said "filled the slot", but the review carries no complete FINDINGS block,
+# so REVIEW_UNUSABLE holds and the status goes out UNSTATED (failure). The gate is
+# HELD, not filled. A page that says otherwise sends the operator past the one PR
+# that is actually stuck.
+Q4F="$W2/eng-fallback-unusable"
+mk_engine_stubs "$Q4F" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+# Reuse the truncated shape rather than inventing one: an unclosed FINDINGS block
+# is the fallback failure mode the reviewer's own comment names (a stream that
+# died one line in), and it is the one that would otherwise derive APPROVE.
+printf '%s' '## VERDICT: APPROVE
+
+FINDINGS:
+' > "$Q4F/claude-body.txt"
+run_engine_reviewer "$Q4F" --post --engine codex
+CALL="$(status_call "$Q4F")"
+
+printf '%s' "$CALL" | grep -q 'state=success' \
+  && fail "the Opus fallback emitted an unclosed FINDINGS block and $CODEX_CONTEXT still went
+      green. An empty range derives APPROVE, so a truncated fallback would release the PR the
+      outage was holding. Call was: $CALL"
+ok "an unparseable Opus fallback never posts state=success"
+
+[ "$(pages_in "$Q4F")" = "1" ] \
+  || fail "expected EXACTLY 1 page, got $(pages_in "$Q4F"):
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+grep -qi 'fallback filled the slot' "$Q4F/pages.txt" 2>/dev/null \
+  && fail "THE SAME DEFECT, quieter: the fallback exited 0 but said nothing parseable, so the
+      status went out UNSTATED and the gate is HELD -- while the page announces a filled slot.
+      Page was:
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+ok "an unparseable fallback is never paged as a filled slot"
+
+grep -qi 'unstated\|held\|nothing filled' "$Q4F/pages.txt" 2>/dev/null \
+  || fail "the page does not say the verdict is UNSTATED and the PR is held, so the operator
+      cannot tell this from a working degraded review. Page was:
+$(sed 's/^/        /' "$Q4F/pages.txt" 2>/dev/null)"
+ok "the unparseable-fallback page says the gate is held, not filled"
+
+# --- Q4C. NEGATIVE SELF-TEST: break the fallback trigger, the outage goes red --
+# Q4 asserts a fallback fires. On its own that assertion could pass for reasons
+# unrelated to the fix, so the trigger is MUTATED and the same case is re-run:
+# with the emptiness discriminator neutered, the empty-codex run must fall back
+# to the pre-fix behaviour (no Opus call). If this case still shows a fallback,
+# Q4 is decoration and proves nothing about which branch it took.
+# It is run against the REAL out-of-credits payload, not the empty one: an empty
+# stub would still die on the `[ -s ]` arm and the mutation would look lethal
+# without the arm that actually carries Q4D ever being exercised.
+Q4C="$W2/eng-outage-mutant"
+mk_engine_stubs "$Q4C" "$SHA_A" ok "$CODEX_OUT_OF_CREDITS"
+MUTANT="$W2/pr-review-agent.mutant.sh"
+# The mutation is on the ONE predicate the fix owns: make it answer "the engine
+# did answer" for every input, which is exactly the pre-fix reading.
+sed 's/^engine_never_answered() {.*$/engine_never_answered() { return 1; # MUTANT/' \
+  "$REVIEWER" > "$MUTANT"
+grep -q 'MUTANT' "$MUTANT" \
+  || fail "the mutation did not apply: pr-review-agent.sh has no engine_never_answered()
+      predicate to neuter, so the outage discriminator this issue adds is not there at all."
+( PATH="$Q4C/bin:$PATH" HOME="$Q4C/home" KIPI_NOTIFY="$Q4C/bin/notify" \
+  bash "$MUTANT" 901 --post --engine codex ) >"$Q4C/out.txt" 2>"$Q4C/err.txt"
+[ ! -s "$Q4C/claude-calls.log" ] \
+  || fail "MUTATION SURVIVED: with engine_never_answered() forced to 'it answered', the real
+      out-of-credits run STILL fell back to Opus. Q4D is therefore not testing that predicate, and
+      something else is routing the fallback. claude saw: $(cat "$Q4C/claude-calls.log")"
+ok "mutation kills it: neuter the outage predicate and the real out-of-credits case stops falling back"
 
 # --- Q5. harness noise is not a finding and does not move the verdict ---------
 # Q1's fixture is the noisy one on purpose; this reads back what the parser

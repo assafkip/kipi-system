@@ -158,9 +158,88 @@ extract_verdict() {
 # starting `FINDINGS:` reads as unstated. That is the safe direction and the same
 # posture the rest of this file takes: unstated HOLDS a PR, green RELEASES it.
 #
-# awk, not sed, because the rule is stateful in two ways a range expression cannot
-# express: opening a new block discards an unclosed one, and the end-of-input state
-# decides whether any of it counts.
+# TWO INDEPENDENT DEFENCES AGAINST THE SAME GREEN, AND BOTH ARE LOAD-BEARING
+# (the #86/#87 merge, 2026-08-07). The echoed prompt template can be rejected by
+# WHERE it sits (it is above the model's turn: the transcript skip, ASK-287) or by
+# WHAT it is (rows that are not severities: the placeholder guard, sp-df1a458f).
+# Neither subsumes the other and each is blind exactly where the other sees:
+#
+#   template echoed in the harness region  -> transcript skip catches it; the
+#                                             placeholder guard also would
+#   template echoed INSIDE the model's own turn (the model quotes the block it was
+#     shown, which is what a plan-instead-of-a-review does) -> the transcript skip
+#     is BLIND, that text is below the turn marker; only the placeholder guard
+#     rejects it
+#   `claude -p` fallback output (no banner, no transcript to skip) -> the
+#     transcript skip never arms at all; only the placeholder guard is on duty
+#
+# Measured on #86 before this merge: the branch alone accepted a bare prompt
+# template AND an in-turn echo, deriving APPROVE from both. Keeping only one of
+# these two is a regression whichever one you keep. Both stay.
+#
+# THE HARNESS ECHOES THE PROMPT, AND THE PROMPT CARRIES THE TEMPLATE (ASK-287,
+# found by codex reviewing PR #86 round 2). `run_engine` captures the WHOLE
+# `codex exec` transcript (`> "$2" 2>&1`), and that transcript replays the prompt
+# back before the model runs. The reviewer's prompt ends by showing the exact
+# block it wants:
+#
+#     FINDINGS: / severity|one-sentence claim|file:line / END FINDINGS
+#
+# so EVERY codex artifact contains a syntactically complete findings block that
+# the model did not write. Measured on the out-of-credits shape (probe, 2026-08-03):
+# has_complete_findings_block TRUE, verdict_from_findings APPROVE, on a run where
+# the model never emitted one token. That is the worst output this file can
+# produce -- a green required gate on a PR that was never reviewed -- and it beat
+# the outage classifier because the classifier ran second, on a file that had
+# already parsed.
+#
+# THE CUT IS THE ASSISTANT-TURN MARKER, the same structural property of the
+# producer the outage predicate already reads: `codex` alone on a line is printed
+# before the model's first token. Everything above it is the harness talking to
+# itself (banner, workdir, echoed prompt, hook chatter); everything below is the
+# engine's own output. So on a transcript:
+#
+#   turn marker present -> parse ONLY what follows the FIRST one
+#   turn marker absent  -> the model never spoke, so there is NO content to parse
+#
+# It lives HERE, in the one reader, and not in pr-review-agent.sh's branch order,
+# because a fix in the caller leaves the lib handing APPROVE to every other
+# consumer that asks -- the exact "safety lived in one caller instead of in the
+# reader" defect the comment above this one was written about.
+#
+# `claude -p` writes only the model's words, no banner and no echo, so a review
+# from that engine has no transcript to strip and is read whole.
+#
+# THE BANNER ALONE IS NOT THE TRANSCRIPT (codex round 3 on PR #86, minor). The
+# first cut tested `^OpenAI Codex v` in the first ten lines and nothing else, on
+# the reasoning that a review only quotes the banner "mid-prose". It does not:
+# the Opus fallback's whole subject is the codex outage it just replaced, so
+# naming the version it saw belongs in its opening lines -- and a review that
+# does that has no `codex` turn marker, so every line of it was discarded and the
+# verdict came back UNSTATED. That wedges the gate using the very fallback that
+# exists to unwedge it. It was not hypothetical: it turned `validate` red on this
+# PR (test-review-comment-body.sh case 4), whose fixture opens with the banner
+# and is not a transcript.
+#
+# So the test is the producer's HEADER BLOCK, not one string out of it. `codex
+# exec` writes the banner and then a `workdir:` line inside the same `--------`
+# fenced header, every run, before anything else (measured 2026-08-03 on a live
+# capture: banner line 2, workdir line 4). Prose that mentions the banner does
+# not reproduce the header around it.
+#
+# The two signals cannot be checked at once in a single pass, so `transcript`
+# arms on the SECOND one, and arming resets any block opened in the two header
+# lines between them -- otherwise a `FINDINGS:` above the banner could be closed
+# by an `END FINDINGS` from the model's own turn, splicing two regions into one
+# block. Nothing the producer writes up there matches, but a reader whose safety
+# depends on the producer never changing is the defect this file keeps re-fixing.
+#
+# BOTH DIRECTIONS OF THIS GUARD ARE NOT EQUAL. Calling a real transcript "not a
+# transcript" restores the round-2 defect (the echoed template derives APPROVE on
+# a PR nobody read, releasing it). Calling a plain review "a transcript" costs an
+# UNSTATED, which holds a PR. This tightening therefore adds a signal the
+# producer always writes, rather than replacing the banner with a narrower one.
+#
 # A BLOCK OF NOTHING BUT PLACEHOLDERS IS THE PROMPT, NOT THE REVIEW (sp-df1a458f).
 # The reviewer prompt ends with a literal template -- `severity|one-sentence
 # claim|file:line` between the two markers -- and `codex exec` echoes the whole
@@ -188,10 +267,19 @@ extract_verdict() {
 # they have to be: a row this function calls real but the derivation cannot grade
 # contributes nothing, so the block would count as usable and derive APPROVE --
 # the defect again, one layer down. Change the two together or not at all.
+#
+# awk, not sed, because the rule is stateful in four ways a range expression
+# cannot express: the transcript region has to be skipped before matching starts,
+# opening a new block discards an unclosed one, a closing block is graded on the
+# rows it accumulated, and the end-of-input state decides whether any of it counts.
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
   awk '
+    NR <= 10 && /^OpenAI Codex v/ { banner = 1 }
+    NR <= 10 && banner && /^workdir: / { transcript = 1; buf = ""; open = 0; next }
+    transcript && !turn && /^codex[[:space:]]*$/ { turn = 1; next }
+    transcript && !turn           { next }
     /^FINDINGS:/            { buf = $0 "\n"; open = 1; rows = 0; sev = 0; next }
     open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 "\n"
                               open = 0; next }

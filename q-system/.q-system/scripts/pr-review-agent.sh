@@ -633,17 +633,114 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
 # only to forward to the lib, and a forwarder is one more place the two dispatch
 # paths can be made to disagree about the same file.
 
+# AN ENGINE THAT PRODUCED NOTHING NEVER RAN (ASK-287).
+# ----------------------------------------------------
+# `codex exec` OUT OF CREDITS EXITS 0. Measured 2026-08-02 with a real billed
+# call: it printed `ERROR: Your workspace is out of credits.` and returned rc=0.
+# So `run_engine codex` reported SUCCESS, control took the "answered with nothing
+# parseable" branch -- which by design does NOT fall back -- and the Opus fallback
+# promised at the top of this file never fired. Not "fired and failed": never
+# once since it was written. On disk: unusable reviews for PRs #66 and #67 (7,724
+# bytes of transcript each, not one token of model output -- see the correction
+# below; "0-byte" was this comment's original guess and it was wrong),
+# degraded.state=1 (the system NOTICED), and no pr-reviews/claude/ directory at
+# all. Both PRs sat CI-green on kipi/reviewer-approved=failure and nothing merged.
+#
+# Same defect class this repo hit repeatedly on 2026-08-01: two failure modes
+# genuinely different IN THE WORLD, identical in the SIGNAL being read. An outage
+# and a garbage answer cannot be told apart by an exit code, so this stops asking
+# the exit code and asks the artifact instead:
+#
+#   NO CONTENT AT ALL          -> the engine never reviewed  -> OUTAGE, fall back
+#   CONTENT THAT DOES NOT PARSE -> an attempted review        -> GARBAGE, no fallback
+#
+# The second rule is deliberately untouched and must stay that way. An outage
+# leaves no review to trust; garbage IS a review whose content cannot be trusted,
+# and filling the gate with an Opus approval over it invents a verdict for a
+# review that said nothing. A fabricated green is worse than a blocked merge.
+#
+# EMPTINESS WAS THE WRONG SHAPE, and a fixture nobody grounded is why (found by
+# codex reviewing PR #86, 2026-08-03). The first cut of this predicate read "zero
+# bytes", on the belief that an out-of-credits run leaves an empty file. It does
+# not. `codex exec ... > "$2" 2>&1` captures the WHOLE transcript, so every run --
+# success, garbage, or dead-at-the-API -- writes the version banner, the workdir
+# block, the echoed prompt and the hook chatter before anything else. The real
+# PR #66 / #67 outage artifacts are 7,724 bytes each. A zero-byte codex review is
+# not a thing that happens, so the predicate could never fire on the very payload
+# this issue was opened about, and the fallback still never ran.
+#
+# WHAT THE ARTIFACT ACTUALLY DISTINGUISHES. Captured live 2026-08-03 from the
+# same invocation run_engine makes, one failing run and one succeeding run:
+#
+#   ...hook: UserPromptSubmit Completed        ...hook: UserPromptSubmit Completed
+#   ERROR: <the 400 from the API>              codex            <- assistant turn
+#   ERROR: <repeated>                          ALIVE
+#                                              hook: Stop / tokens used
+#
+# `codex` alone on a line is the turn marker printed before the model's first
+# token. Its ABSENCE means no token was ever emitted: the engine never reviewed,
+# whatever the exit code said. That is the outage, and it is a structural
+# property of the producer rather than a list of error strings to keep chasing.
+#
+# The garbage rule is UNCHANGED and still must not move: a review that took its
+# turn and then said something unparseable has the marker, so it keeps the
+# no-fallback path. An outage leaves no review to trust; garbage IS a review
+# whose content cannot be trusted, and an Opus approval laid over it invents a
+# verdict for a review that said nothing.
+#
+# The terminal-ERROR arm is a second, independent proof for the same conclusion,
+# kept because the out-of-credits banner was measured (2026-08-02) while its
+# turn-marker absence is inferred from the sibling 400 above. It is anchored at
+# line start and only consulted at the END of the transcript, after the trailing
+# `hook:` / `tokens used` noise, so a review that merely QUOTES an error line
+# cannot trip it. Both arms sit behind "no complete FINDINGS block" in the caller,
+# so a parseable review is never routed to the fallback by either one.
+engine_never_answered() {   # engine_never_answered <review-file>
+  local f="${1:-/dev/null}"
+  [ -s "$f" ] || return 0
+  [ -z "$(tr -d '[:space:]' < "$f" 2>/dev/null)" ] && return 0
+  grep -q '^codex[[:space:]]*$' "$f" 2>/dev/null || return 0
+  grep -v -e '^hook: ' -e '^tokens used' -e '^[0-9,]*$' -e '^[[:space:]]*$' "$f" 2>/dev/null \
+    | tail -1 | grep -q '^ERROR: '
+}
+
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
 # cry-wolf failure: it trains the operator to skim, which costs the real alert
 # later. Both edges earn their one line -- going degraded means the two statuses
 # stopped being independent, and an operator who never hears the recovery cannot
 # tell a live second opinion from an Opus stand-in wearing its context.
+#
+# ONE WRITER PER TRANSITION (codex round 3 on PR #86, major). The read and the
+# write used to sit next to each other with nothing holding them together, so
+# two reviewers hitting the same outage -- which is what an outage IS, every PR
+# on the board failing at once -- both read prev=0, both wrote 1, and both paged.
+# Two pings for one transition is precisely the cry-wolf failure the transition
+# check exists to prevent, so the check has to be atomic or it is decoration.
+# Reproduced at 100/100 trials before this lock (codex), 0/100 after.
+#
+# `mkdir` is the test-and-set: it is atomic on every filesystem this runs on and
+# needs no `flock`, which macOS does not ship. The whole read-compare-write sits
+# inside it; the PAGE deliberately does not, because by then the winner is
+# already decided and holding a lock across a network call is how one slow
+# notifier stalls every reviewer behind it.
+#
+# THE LOCK EXPIRES RATHER THAN WEDGING. A run killed between mkdir and rmdir
+# would otherwise silence the notifier forever, and a notifier that never fires
+# again is a worse failure than the duplicate page this lock exists to stop. So
+# after ~10s the waiter takes the lock anyway and accepts that risk explicitly.
 note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
-  local now="$1" reason="${2:-}" prev="" msg
+  local now="$1" reason="${2:-}" prev="" msg lock waited=0
+  mkdir -p "$(dirname "$DEGRADED_STATE")"
+  lock="$DEGRADED_STATE.lock"
+  until mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -ge 100 ] && break
+    sleep 0.1
+  done
   [ -f "$DEGRADED_STATE" ] && prev="$(tr -dc '01' < "$DEGRADED_STATE" 2>/dev/null | head -c1)"
   [ -n "$prev" ] || prev=0
-  mkdir -p "$(dirname "$DEGRADED_STATE")"
   printf '%s\n' "$now" > "$DEGRADED_STATE"
+  rmdir "$lock" 2>/dev/null || true
   [ "$now" = "$prev" ] && return 0
   if [ "$now" = "1" ]; then
     msg="reviewer: codex is not producing an independent review (PR #$PR): $reason. $STATUS_CONTEXT stops being a second lab's opinion until codex is back."
@@ -662,49 +759,105 @@ if [ "$ENGINE" != "codex" ]; then
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
     exit "$rc"
   fi
-elif run_engine codex "$REVIEW"; then
-  if review_is_usable "$REVIEW"; then
+else
+  # THE RC IS CAPTURED, NOT BRANCHED ON DIRECTLY (ASK-287). `if run_engine codex`
+  # made the exit code the whole classifier, and an out-of-credits codex can exit
+  # 0. The artifact decides now; the rc is only one of the two things that can
+  # prove an outage, and it is the weaker one.
+  # USABILITY IS TESTED FIRST, and that ordering is deliberate. It means no
+  # widening of the outage predicate can ever route a parseable review into the
+  # fallback: the only inputs the classifier below sees are ones that carry no
+  # usable verdict either way.
+  #
+  # THE QUESTION IS review_is_usable, NOT BLOCK-COMPLETENESS (the #86/#87 merge).
+  # ASK-287 was written against `review_has_complete_findings_block`, a local
+  # forwarder that sp-df1a458f then DELETED on purpose -- a forwarder is one more
+  # place the two dispatch sites can be made to disagree about the same file.
+  # Completeness alone also says YES to a stream that answered "Reply `OK` and
+  # I'll execute exactly that plan" wrapped around a real prior-round block.
+  # review_is_usable is that check AND the decline guard, so resolving here to the
+  # wider predicate keeps both fixes; resolving to the narrower one would have
+  # called a function main no longer defines.
+  run_engine codex "$REVIEW"; CODEX_RC=$?
+  if review_is_usable "$REVIEW" && [ "$CODEX_RC" = "0" ]; then
+    # A usable review. Nothing to classify.
     note_degraded_transition 0
     echo "$(TS) review written: $REVIEW"
-  else
+  elif [ "$CODEX_RC" = "0" ] && ! engine_never_answered "$REVIEW"; then
     # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
     # path: an outage leaves no review to trust, but this is an attempted review
     # whose CONTENT cannot be trusted, and filling the slot with an Opus approval
     # over it would invent a verdict for a review that said nothing. It falls
     # through UNSTATED, and unstated posts state=failure a few lines below.
+    #
+    # A DECLINE-TO-START LANDS HERE, NOT IN THE OUTAGE ARM, and that is correct:
+    # the model took its turn to write the plan, so the turn marker is present and
+    # engine_never_answered is false. A review that stopped to ask permission is a
+    # garbage answer, not an outage -- UNSTATED holds the PR either way, and no
+    # Opus verdict is invented over it.
     REVIEW_UNUSABLE=1
     note_degraded_transition 1 \
-      "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
-    echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
-  fi
-else
-  # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
-  # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
-  # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
-  # real hazard: both statuses would come from one model family and nobody would
-  # know the independence this engine exists to buy had been lost.
-  rc=$?
-  DEGRADED=1
-  mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
-  echo "$(TS) codex failed or timed out (rc=$rc); running the Opus fallback so $STATUS_CONTEXT does not wedge. Partial codex output: $REVIEW.codex-failed" >&2
-  note_degraded_transition 1 \
-    "it exited $rc, so the Opus fallback filled the slot and the status is marked DEGRADED"
-  if run_engine claude "$REVIEW"; then
-    # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
-    # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
-    # block, which derives APPROVE and would post state=success on the REQUIRED
-    # context. Filling the gate with an unread approval is worse than leaving it
-    # unstated, because unstated holds the PR and green releases it.
-    if review_is_usable "$REVIEW"; then
-      echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
-    else
-      REVIEW_UNUSABLE=1
-      echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
-    fi
+      "it took its turn and then emitted no complete FINDINGS block (truncated or unreadable), or it stopped to ask permission instead of reviewing, so the status is UNSTATED rather than a fabricated APPROVE"
+    echo "$(TS) codex answered but the review is not usable (truncated, unreadable, or a plan awaiting confirmation); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
   else
-    rc=$?
-    echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
-    exit "$rc"
+    # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required
+    # check, every PR in the repo would wedge forever -- so the Opus reviewer fills
+    # the slot, and the status says DEGRADED out loud. A SILENT fallback is the
+    # real hazard: both statuses would come from one model family and nobody would
+    # know the independence this engine exists to buy had been lost.
+    DEGRADED=1
+    # NAME WHICH PROOF FIRED. "exited non-zero" and "exited 0 and emitted nothing"
+    # are different outages to whoever reads this log at 3am -- the second one is
+    # billing or auth, and telling them apart is the whole point of ASK-287.
+    if [ "$CODEX_RC" = "0" ]; then
+      CODEX_DOWN_WHY="it exited 0 but never took an assistant turn -- no output, or a transcript that ends on an ERROR banner -- so it never actually reviewed. That is out of credits, unauthenticated, or a rejected model; all three exit 0 (ASK-287)"
+    else
+      CODEX_DOWN_WHY="it exited $CODEX_RC"
+    fi
+    mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
+    echo "$(TS) codex is unusable: $CODEX_DOWN_WHY. Running the Opus fallback so $STATUS_CONTEXT does not wedge. Codex output kept at: $REVIEW.codex-failed" >&2
+    # THE PAGE REPORTS THE OUTCOME, SO IT IS SENT AFTER THERE IS ONE (codex round 4
+    # on PR #86, major). It used to fire HERE, one line above `run_engine claude`,
+    # saying "the Opus fallback filled the slot and the status is marked DEGRADED"
+    # -- a claim about work that had not started. Three outcomes are reachable from
+    # this branch and only one of them fills anything:
+    #
+    #   fallback writes a complete review -> $STATUS_CONTEXT goes green, DEGRADED
+    #   fallback answers unparseably      -> UNSTATED (failure): the gate is HELD
+    #   fallback dies                     -> the script exits: NO status is posted
+    #
+    # In the last two the page was the operator's only artifact and it announced a
+    # filled gate over a PR nothing was holding, which reads as "handled" and sends
+    # them past the one PR that needs them. The page fires exactly once either way
+    # -- including on the death path, BEFORE the exit, because a both-engines-down
+    # run that says nothing at all is the silence this whole notifier exists to end.
+    #
+    # $FALLBACK_OUTCOME is assembled per branch and the page is sent from ONE place
+    # per branch rather than once at the bottom: the death path has to exit with the
+    # fallback's rc, and threading that around a shared tail is how a page gets
+    # skipped on the branch that most needs it.
+    if run_engine claude "$REVIEW"; then
+      # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
+      # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
+      # block, which derives APPROVE and would post state=success on the REQUIRED
+      # context. Filling the gate with an unread approval is worse than leaving it
+      # unstated, because unstated holds the PR and green releases it.
+      if review_is_usable "$REVIEW"; then
+        FALLBACK_OUTCOME="so the Opus fallback filled the slot and the status is marked DEGRADED"
+        echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
+      else
+        REVIEW_UNUSABLE=1
+        FALLBACK_OUTCOME="and the Opus fallback ALSO produced no usable review, so nothing filled the slot: the verdict is UNSTATED and the PR is HELD, not released"
+        echo "$(TS) the Opus fallback answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+      fi
+      note_degraded_transition 1 "$CODEX_DOWN_WHY, $FALLBACK_OUTCOME"
+    else
+      rc=$?
+      echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+      note_degraded_transition 1 \
+        "$CODEX_DOWN_WHY, and the Opus fallback ALSO failed (rc=$rc), so nothing filled the slot and NO status is posted at all -- this PR is waiting on a human"
+      exit "$rc"
+    fi
   fi
 fi
 
