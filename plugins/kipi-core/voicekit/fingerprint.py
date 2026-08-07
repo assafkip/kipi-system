@@ -202,9 +202,14 @@ def _bounds(band):
     min/max are corpus observations, so every corpus member is inside its own
     bounds, which is exactly the property the control-set test asserts.
     """
-    lo = band["p10"] if band.get("min") is None else min(band["p10"], band["min"])
-    hi = band["p90"] if band.get("max") is None else max(band["p90"], band["max"])
-    return lo, hi
+    # Degrade-not-die on a partial band dict (voice-1 review, minor): a
+    # hand-migrated band can hold min without p10; min(None, x) raises. Every
+    # present bound participates; an absent one simply does not constrain.
+    lows = [v for v in (band.get("p10"), band.get("min")) if v is not None]
+    highs = [v for v in (band.get("p90"), band.get("max")) if v is not None]
+    if not lows or not highs:
+        return None, None
+    return min(lows), max(highs)
 
 
 def score(text, fingerprint):
@@ -222,6 +227,8 @@ def score(text, fingerprint):
         if value is None or band.get("p10") is None:
             continue
         lo, hi = _bounds(band)
+        if lo is None:
+            continue
         out[name] = {"value": value, "band": [band["p10"], band["p90"]],
                      "bounds": [lo, hi], "inside": lo <= value <= hi}
     return out
@@ -232,8 +239,13 @@ def out_of_band(text, fingerprint, tier="blocking"):
 
     Blocking entries carry a direction (above|below|both): a cap only fails
     ABOVE its widened bounds, a floor only BELOW. Legacy plain-string entries
-    mean both. Advisory tier entries are plain metric names (report-only, so
-    direction lives with the reader, not the gate).
+    mean both.
+
+    This function is GATE semantics. The advisory tier is report-only: read it
+    through `score()`, never through here -- passing tier="advisory" would
+    coerce report-only names into both-direction rejections (voice-1 review,
+    minor). The tier parameter exists for a future PROMOTED tier, not for
+    advisory reads.
     """
     got = metrics(text)
     bands = fingerprint.get("metrics") or {}
@@ -246,6 +258,8 @@ def out_of_band(text, fingerprint, tier="blocking"):
         if band is None or value is None or band.get("p10") is None:
             continue
         lo, hi = _bounds(band)
+        if lo is None:
+            continue
         too_high = direction in ("above", "both") and value > hi
         too_low = direction in ("below", "both") and value < lo
         if too_high or too_low:

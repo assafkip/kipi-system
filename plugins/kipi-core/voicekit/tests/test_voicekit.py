@@ -347,3 +347,48 @@ class TestBlockingTierContract:
         stale = dict(fp, metrics_version=-1)
         assert fingerprint.version_skew(stale)
         assert not fingerprint.version_skew(fp)
+
+
+# --- voice-1 review round: the four findings, pinned -------------------------------
+
+class TestReviewRoundFixes:
+    def test_metrics_version_skew_is_caught_by_the_freshness_check(self, tmp_path):
+        """Review blocker: version_skew existed, nothing called it. Same corpus_sha,
+        stale metrics_version, and check_all reported healthy."""
+        rows = [{"id": f"r{i}", "kind": "post", "channel": "any", "status": "active",
+                 "anchor": False, "weight": 1.0,
+                 "text": f"Row {i}. It broke. I watched. We fixed it fast."}
+                for i in range(4)]
+        fp = fingerprint.compute([r["text"] for r in rows], generated_at="x")
+        fp["metrics_version"] = fingerprint.METRICS_VERSION - 1   # skew, sha intact
+        d = tmp_path / "voice"
+        d.mkdir()
+        (d / corpus.EXEMPLARS).write_text("\n".join(json.dumps(r) for r in rows))
+        (d / corpus.FINGERPRINT).write_text(json.dumps(fp))
+        v = corpus.load(str(d))
+        assert any("metrics_version" in p for p in validate.check_fingerprint_fresh(v))
+
+    def test_direction_below_actually_blocks_below(self):
+        """Review major: the below path had only a passing case. A floor must fire
+        under the bounds and stay silent above them."""
+        punchy_corpus = ["It broke. I saw. We fixed. Done. Fast.",
+                         "Short lines. Real scars. It failed twice. I was there.",
+                         "One look. One fix. The test went red. Then green."]
+        fp = fingerprint.compute(punchy_corpus, generated_at="x",
+                                 blocking=[{"metric": "short_share",
+                                            "direction": "below"}])
+        smooth = ("Every sentence in this candidate stretches onward comfortably "
+                  "past the six word threshold without a single short burst. "
+                  "Nothing here lands quickly or punches through the paragraph. "
+                  "The rhythm stays long and even throughout the entire text.")
+        assert fingerprint.out_of_band(smooth, fp) == ["short_share"]
+        punchier = "It broke. I saw. Fixed. Done. True. Fast. Real. Short."
+        assert fingerprint.out_of_band(punchier, fp) == [], (
+            "a floor must never fire ABOVE the band")
+
+    def test_partial_band_degrades_instead_of_raising(self):
+        fp = {"metrics": {"sentence_mean": {"p10": None, "p50": None, "p90": None,
+                                            "min": 3.0, "max": 9.0}},
+              "blocking": [{"metric": "sentence_mean", "direction": "above"}]}
+        assert fingerprint.out_of_band("Anything at all here.", fp) == []
+        assert fingerprint.score("Anything at all here.", fp) == {}

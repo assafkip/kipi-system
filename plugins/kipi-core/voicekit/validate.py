@@ -78,14 +78,25 @@ def check_fingerprint_fresh(voice):
     pattern: corpus changed but fingerprint.json not regenerated = a failure."""
     if voice.fingerprint is None:
         return ["fingerprint.json missing or unparseable"]
+    problems = []
+    # Instrument skew FIRST (voice-1 review blocker): version_skew existed and
+    # nothing called it, so a metrics change with an unchanged corpus passed
+    # every check while the verdicts went wrong -- the exact scar the version
+    # exists for, reproduced by the reviewer against this very function.
+    if fingerprint.version_skew(voice.fingerprint):
+        problems.append(
+            f"fingerprint.json was computed by metrics_version "
+            f"{voice.fingerprint.get('metrics_version')!r} but this instrument is "
+            f"{fingerprint.METRICS_VERSION}. Recompute via the fingerprint CLI.")
     texts = [r.get("text") or "" for r in voice.active_exemplars()
              if r.get("kind") == "post"]
     want = fingerprint.corpus_sha(texts)
     got = voice.fingerprint.get("corpus_sha")
     if got != want:
-        return [f"fingerprint.json is stale: corpus_sha {got!r}, post-kind corpus "
-                f"is {want!r}. Recompute via the fingerprint CLI (its only writer)."]
-    return []
+        problems.append(
+            f"fingerprint.json is stale: corpus_sha {got!r}, post-kind corpus "
+            f"is {want!r}. Recompute via the fingerprint CLI (its only writer).")
+    return problems
 
 
 def check_budget(voice, channels=("linkedin", "x")):
