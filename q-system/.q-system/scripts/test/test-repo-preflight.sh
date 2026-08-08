@@ -36,6 +36,18 @@
 # is the exact thing under test.
 set -uo pipefail
 
+# COST, AND WHY THIS ENTRY CARRIES timeout_s=480 IN THE CAPABILITY MANIFEST
+# (ASK-505). This suite builds a fleet of real git repos under mktemp, and that
+# is the point -- see the fixture_git scar below. Measured on the founder's box
+# 2026-08-08: 228.60s real / 39.05s user, rc=0, "48 passed, 0 failed".
+#
+# The manifest gave this entry NO timeout_s, so it inherited the gate's
+# DEFAULT_TIMEOUT_S of 60 and was SIGKILLed at 60s on every run -- a green
+# 48-case suite reported by the capability gate as `test-timeout`, i.e. a
+# passing test indistinguishable from a broken one. It had never passed under
+# the gate. If this ever times out again, measure it before touching the
+# assertions: the cost is git fixture construction, so it tracks disk and load,
+# not the number of cases.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Derive the repo from the SCRIPT, never from $PWD -- a test that asks the checkout
 # it happens to run in proves nothing about the caller (test-dispatch-stale-checkout
@@ -677,7 +689,12 @@ if [ "$1" = "-f" ]; then
   exit $rc
 fi
 if [ "$1" = "-c" ]; then shift; fmt="$1"; shift
-  [ "$fmt" = "%Y" ] && { command stat -f %m "$1" 2>/dev/null || echo 1; exit 0; }
+  # Deliberate: this heredoc BUILDS a fake GNU stat (it answers -c %Y), and the
+  # BSD -f %m below is the real macOS stat it delegates to in order to fake that
+  # GNU answer. Making the line "portable" would break the stub it constructs.
+  # The marker must sit on the hit line itself (portability-lint.sh:54 matches
+  # the matched line, not the one above it).
+  [ "$fmt" = "%Y" ] && { command stat -f %m "$1" 2>/dev/null || echo 1; exit 0; } # portability-lint-skip
 fi
 exit 1
 GNUSTUB

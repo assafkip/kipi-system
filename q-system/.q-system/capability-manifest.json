@@ -67,7 +67,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 480
     },
     {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
@@ -251,7 +252,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
