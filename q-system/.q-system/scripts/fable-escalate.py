@@ -413,19 +413,36 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         row = {"ts": _now(), "trigger": trigger, "capped": True,
                "fable_ok": False, "failure": result["failure"],
                "call_timeout_s": 0, "next_path_taken": None}
-        if not capped_notified:
-            record = notify_cap(trigger, count)
-            row.update(record)
-            # `notified` now means ATTEMPTED, and delivery is its own field.
-            # Collapsing the two is what made the old row a false receipt.
-            result["notified"] = record["notify_attempted"]
-            result["delivered"] = record["notify_delivered"]
-        else:
-            configured = notify_channel_configured()
-            row.update({"notify_attempted": False, "notify_exit": None,
-                        "notify_delivered": False,
-                        "notify_channel_configured": configured,
-                        "notify_note": "already paged for this episode"})
+        # THE CAP NO LONGER PAGES THE FOUNDER (ASK-504).
+        #
+        # This branch returns BEFORE call_fable, so the page it used to send
+        # could never carry a diagnosis. Measured over the whole ledger
+        # (63 rows, 2026-08-08): 6 capped rows, `diagnosis` None on all 6.
+        # Structurally always empty, not occasionally. The founder received
+        # "cross-model triage did not unstick this" with nothing about what was
+        # stuck, and called it useless.
+        #
+        # Worse, it was not even firing on stuckness. 4 of those 6 were
+        # `volume-ceiling` -- a token-BUDGET heuristic that trips on a long
+        # read-heavy session making steady progress. And two pairs share one
+        # timestamp with different triggers (08-04T03:35:31Z, 08-08T22:07:13Z):
+        # parallel PreToolUse hooks race token-guard's unlocked cache, so
+        # `capped_notified` was stale in both copies and BOTH paged.
+        #
+        # `founder-notifications.md` says do not ping for routine progress. So
+        # the mechanism is deleted rather than tuned -- guarding a page that can
+        # never have content just moves the noise. The refusal still reaches the
+        # founder through the agent's own reply, which the old cap message
+        # already conceded is the reliable route to a human.
+        #
+        # The ROW SURVIVES on purpose. A silent cap would be the worse defect;
+        # the episode stays auditable via `fable-escalate.py --report`.
+        row.update({"notify_attempted": False, "notify_exit": None,
+                    "notify_delivered": False,
+                    "notify_channel_configured": notify_channel_configured(),
+                    "notify_note": "cap reached; founder not paged by design "
+                                   "(ASK-504) -- this path never calls Fable, "
+                                   "so a page here carries no diagnosis"})
         log_row(row)
         return result
 
