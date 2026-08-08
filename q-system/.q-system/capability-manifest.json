@@ -31,7 +31,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-claim-page-once-routing.sh",
@@ -51,11 +52,13 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
@@ -73,7 +76,7 @@
     {
       "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash",
-      "timeout_s": 480
+      "timeout_s": 600
     },
     {
       "path": "q-system/.q-system/scripts/test/test-firecrawl-scrape.sh",
@@ -266,7 +269,8 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
@@ -285,7 +289,7 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash",
-      "timeout_s": 420
+      "timeout_s": 600
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
@@ -309,11 +313,13 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-update-preservation-manifest.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-receipt-contract.py",
@@ -458,7 +464,8 @@
     },
     {
       "path": "q-system/.q-system/tests/test_fable_escalation.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 180
     },
     {
       "path": "q-system/.q-system/tests/test_fable_cap_page_deleted.py",

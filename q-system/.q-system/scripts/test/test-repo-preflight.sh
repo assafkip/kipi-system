@@ -36,7 +36,7 @@
 # is the exact thing under test.
 set -uo pipefail
 
-# COST, AND WHY THIS ENTRY CARRIES timeout_s=480 IN THE CAPABILITY MANIFEST
+# COST, AND WHY THIS ENTRY CARRIES timeout_s=600 IN THE CAPABILITY MANIFEST
 # (ASK-505). This suite builds a fleet of real git repos under mktemp, and that
 # is the point -- see the fixture_git scar below. Measured on the founder's box
 # 2026-08-08: 228.60s real / 39.05s user, rc=0, "48 passed, 0 failed".
@@ -48,6 +48,11 @@ set -uo pipefail
 # the gate. If this ever times out again, measure it before touching the
 # assertions: the cost is git fixture construction, so it tracks disk and load,
 # not the number of cases.
+#
+# 600 is the manifest's TIMEOUT_MAX_S and this test needs the whole ceiling. The
+# budgets across the manifest were set from one whole-population sweep (all 117
+# declared tests, every one rc=0) at roughly 4x measured cost; at ~240s this is
+# the most expensive test declared, so it gets the cap instead of 4x.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Derive the repo from the SCRIPT, never from $PWD -- a test that asks the checkout
 # it happens to run in proves nothing about the caller (test-dispatch-stale-checkout
