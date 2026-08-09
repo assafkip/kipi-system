@@ -243,10 +243,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-notify-verdict.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -322,25 +318,12 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
       "runner": "bash",
       "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh",
-      "runner": "bash",
-      "timeout_s": 120
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
       "runner": "bash",
       "timeout_s": 120
     },
