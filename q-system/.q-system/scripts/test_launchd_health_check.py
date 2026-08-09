@@ -869,9 +869,13 @@ check("delivered page records a ping time",
       isinstance(_delivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at"), int), True)
 check("delivered page prints no undelivered warning",
       "no channel took them" in _delivered_err, False)
+# `.get` and not `[...]`: a mutant that records nothing must fail this check BY
+# NAME. Subscripting raised KeyError at import instead, which is red for the
+# wrong reason and prints a traceback where a diagnosis belongs.
 check("a delivered page dedups the next run",
-      wd.problems_to_ping([_ONE_DEAD_JOB], _delivered,
-                          _delivered[_ONE_DEAD_JOB[0]]["pinged_at"] + 60), [])
+      wd.problems_to_ping(
+          [_ONE_DEAD_JOB], _delivered,
+          _delivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at", 0) + 60), [])
 
 # Single writer, checked against the SOURCE. Gating on the verdict is only a
 # chokepoint while exactly one function can write the key; a second assignment
