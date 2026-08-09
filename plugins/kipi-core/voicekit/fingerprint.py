@@ -147,7 +147,15 @@ def _percentile(values, q):
 # bands computed by one instrument and evaluated by another is the _version_key
 # scar again -- silent skew, every check green, verdicts wrong. `version_skew`
 # is the paired check; the consuming staleness test calls it.
-METRICS_VERSION = 2
+# 2 -> 3: the _FIRST_PERSON case classes above changed what first_person_rate
+# COUNTS, so bands computed by the old instrument measure something the new one
+# does not. Caught by codex on PR #127 as a major, and the trigger was already
+# written one line up ("a new regex") -- the rule existed, I changed a regex, and
+# I did not apply it. Exactly the plugin-version-bump gate an hour earlier: a
+# version key exists so a changed meaning invalidates the cached calibration, and
+# skipping the bump makes stale data look fresh against a BLOCKING gate that runs
+# unattended.
+METRICS_VERSION = 3
 
 
 def version_skew(fingerprint_doc):

@@ -98,6 +98,25 @@ class TestFingerprint:
         assert fingerprint.metrics("The gate, i.e. the hook, ran.")[
             "first_person_rate"] == 0.0
 
+    def test_bands_from_the_pre_fix_instrument_are_stale(self, ):
+        """A LITERAL version, not a relative one (ASK-508, codex major on #127).
+
+        first_person_rate changed meaning when the case classes landed, so bands
+        computed before that measure occurrences the old instrument could not
+        see. METRICS_VERSION 2 is the value that shipped WITH the old regex, so
+        a doc carrying it must now read as skewed or validate.py keeps treating
+        pre-fix bands as current -- in a BLOCKING band that runs unattended,
+        which means valid founder text refused at 3am by a gate calibrated to a
+        different instrument.
+
+        Asserted against the literal 2 on purpose. The staleness test below uses
+        METRICS_VERSION - 1, which follows the constant and therefore stays green
+        whether or not anyone remembers to bump it -- it cannot catch a missing
+        bump, which is the whole failure mode here.
+        """
+        assert fingerprint.version_skew({"metrics_version": 2}), (
+            "bands from the pre-case-class instrument must not read as current")
+
     def test_compute_then_score_roundtrip(self):
         texts = [PUNCHY, PUNCHY + " More of it.", "Short. Very. It broke. I saw."]
         fp = fingerprint.compute(texts, generated_at="2026-08-06",
@@ -162,6 +181,23 @@ class TestCorpus:
         v = corpus.load(_voice_dir(tmp_path, rows=rows))
         assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
             "a junk weight must drop its own row and spare the rest")
+
+    def test_nonnumeric_weight_is_counted_as_decay(self, tmp_path):
+        """Dropping the row is half the job; the drop has to be VISIBLE
+        (ASK-508, codex minor on #127).
+
+        skipped_rows is the deadman signal validation and provenance read, and
+        the first cut of the crash fix returned 0.0 for a junk weight and said
+        nothing. A corpus quietly rotting to zero usable rows would have looked
+        identical to a healthy one. A malformed field is a malformed ROW, the
+        same class as a torn line, so it is counted where torn lines are.
+        """
+        rows = _rows(2)
+        rows[0]["weight"] = "heavy"
+        v = corpus.load(_voice_dir(tmp_path, rows=rows))
+        assert v.skipped_rows == 1, (
+            "a junk weight must show up as decay, not vanish (got %r)"
+            % (v.skipped_rows,))
 
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)

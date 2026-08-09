@@ -70,7 +70,8 @@ def read_json(path):
 
 
 def _weight(row):
-    """A row's weight as a number, or 0 when it is not one (ASK-508, sp-18daaa21).
+    """A row's weight as a number, or None when the field is not a number
+    (ASK-508, sp-18daaa21 + the codex minor on PR #127).
 
     read_jsonl only guarantees the LINE parsed, never that a numeric field holds a
     number -- so `{"weight": "heavy"}` is valid JSON, is counted as no skip, and
@@ -82,7 +83,28 @@ def _weight(row):
     try:
         return float(row.get("weight", 1.0) or 0)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+
+
+def _drop_malformed_weights(rows):
+    """(usable rows, count dropped). Partitioned at LOAD, never in a filter.
+
+    The first cut of the crash fix coerced a junk weight to 0.0 inside
+    active_exemplars() and said nothing, so the row vanished and skipped_rows --
+    the deadman signal validation and provenance read -- stayed clean. A corpus
+    rotting to zero usable rows would have looked identical to a healthy one.
+
+    Counted HERE because __init__ is the single owner of skipped_rows. Doing it
+    in active_exemplars() would make a read path mutate the decay count, so the
+    number would change depending on how many times a caller happened to filter.
+    """
+    usable, dropped = [], 0
+    for row in rows:
+        if _weight(row) is None:
+            dropped += 1
+        else:
+            usable.append(row)
+    return usable, dropped
 
 
 class Voice:
@@ -91,19 +113,20 @@ class Voice:
     def __init__(self, voice_dir):
         self.voice_dir = voice_dir
         self.exemplars, ex_skipped = read_jsonl(os.path.join(voice_dir, EXEMPLARS))
+        self.exemplars, wt_skipped = _drop_malformed_weights(self.exemplars)
         self.corrections, co_skipped = read_jsonl(os.path.join(voice_dir, CORRECTIONS))
         self.identity = read_text(os.path.join(voice_dir, IDENTITY))
         self.pov = read_text(os.path.join(voice_dir, POV))
         self.lexicon = read_json(os.path.join(voice_dir, LEXICON)) or {}
         self.fingerprint = read_json(os.path.join(voice_dir, FINGERPRINT))
-        self.skipped_rows = ex_skipped + co_skipped
+        self.skipped_rows = ex_skipped + co_skipped + wt_skipped
 
     def active_exemplars(self):
         """Usable rows only: active status, non-empty text, weight above zero."""
         return [r for r in self.exemplars
                 if r.get("status", "active") == "active"
                 and (r.get("text") or "").strip()
-                and _weight(r) > 0]
+                and (_weight(r) or 0) > 0]
 
     def active_corrections(self):
         """Rows still carried as prose. A `promoted` row's gate carries it instead."""
