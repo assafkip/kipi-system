@@ -419,6 +419,101 @@ def linear_findings(findings, finding_key):
     return out
 
 
+# --- the coverage gap reaches a channel, without reaching the phone -----------
+
+LINEAR_COVERAGE_DETECTOR = "launchd-intent-coverage"
+
+# ONE issue, forever, for the whole gap. A stable subject is what makes the
+# roll-up a roll-up: `file_findings` dedups on the key and REWRITES the body when
+# the rendering changes, which is the shape `cron-shells-claude` and
+# `open-spillover` already use for a finding whose content moves while its
+# identity does not.
+_COVERAGE_SUBJECT = "coverage"
+
+
+def coverage_findings(findings, coverage_tuple, finding_key):
+    """At most ONE rolled-up finding for every job intent enforcement cannot see.
+
+    Scar (codex review of PR #135, major, reproduced before fixing): "LaunchAgents
+    installed by the repository remain outside intent enforcement because
+    undeclared findings are filtered from both Slack and Linear." Both halves were
+    true and only one of them was deliberate.
+
+    Not pinging per label is correct and stays: measured 2026-08-09, 47 plists on
+    this machine and NO manifest file at all, so every installed job is
+    `undeclared` on day one. Paging 47 times is the alert-fatigue mechanism that
+    teaches the founder to ignore this channel.
+
+    But `linear_findings` drops every kind without a `_LINEAR_BODY`, so the ONLY
+    trace of the gap was a stdout line under launchd and a `coverage: 0/47` count
+    in the same log. An output nobody reads is the same as no output: the manifest
+    never grows, and a job that is never declared can never drift, so the verifier
+    reports "no drift" over a fleet it is not checking. That reads exactly like
+    full verification, which is the failure `coverage()` was added to prevent and
+    could not, having no channel of its own.
+
+    Linear is the channel that fits: durable, deduped, and silent. One issue whose
+    body is a list, not 47 issues and not one page.
+
+    DERIVED rather than declared, and that is deliberate here. Round 8 established
+    the opposite rule for the DELIVERY allowlist -- derive by subtraction there and
+    a new bucket silently becomes delivery, suppressing alerts. This list fails the
+    other way: a kind added to `diff_intent` later that nobody wires a page or a
+    body for lands in the roll-up and gets SEEN. The safe default for "which
+    findings reach a human" is inclusion; the safe default for "which outcomes
+    count as delivered" is exclusion. Same question, opposite safe answers.
+    """
+    rolled = [(label, kind) for label, kind, _ in findings
+              if kind not in PINGABLE_KINDS]
+    if not rolled:
+        # A fully declared fleet files NOTHING. `_refresh_one` reopens a closed
+        # rollup when the finding is true again, so the lifecycle is: gap appears
+        # -> issue; operator declares the jobs and closes it; gap returns ->
+        # reopened. Emitting a "0 undeclared" finding every run instead would put
+        # a permanent all-clear issue on the board and write a mutation each time
+        # the number moved.
+        return []
+
+    declared, total = coverage_tuple
+    by_kind = {}
+    for label, kind in rolled:
+        by_kind.setdefault(kind, []).append(label)
+
+    sections = []
+    for kind in sorted(by_kind):
+        labels = sorted(by_kind[kind])
+        sections.append(
+            f"### {kind} ({len(labels)})\n\n"
+            + "\n".join(f"- `{label}`" for label in labels))
+
+    body = (
+        f"`{INTENT_MANIFEST.name}` declares **{declared} of {total}** installed "
+        "jobs. The rest are outside intent enforcement entirely: a job with no "
+        "declared intent cannot drift from it, so it produces no finding, no page "
+        "and no issue no matter what its override record says.\n\n"
+        + "\n\n".join(sections)
+        + "\n\n## Action\n"
+        "- `undeclared`: add a row to `~/.config/kipi/launchd-intent.json` with "
+        "`enabled` or `disabled` and a reason. One row is enough to bring that "
+        "label under verification.\n"
+        "- `orphan`: the manifest names a job with no plist on disk. Drop the row, "
+        "or reinstall the job.\n"
+        "- `conflict`: the manifest and the pause ledger disagree. The manifest "
+        "wins at runtime; edit the ledger so the two stop saying different things."
+    )
+    return [{
+        "subject": _COVERAGE_SUBJECT,
+        # Counted from the ROLLED set, not from `total - declared`: an orphan is
+        # declared and not installed, so it is in this issue and not in that
+        # subtraction. A title is the most-read line and must not overstate or
+        # understate what the body lists.
+        "title": f"launchd intent coverage: {len(rolled)} job(s) outside intent enforcement",
+        "body": body + _MEASURED,
+        "key": finding_key(LINEAR_COVERAGE_DETECTOR, _COVERAGE_SUBJECT),
+        "detector": LINEAR_COVERAGE_DETECTOR,
+    }]
+
+
 # --- I/O edges ----------------------------------------------------------------
 
 def read_text(path):

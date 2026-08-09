@@ -537,6 +537,48 @@ def _intent_module():
     return _INTENT
 
 
+def file_intent_coverage(intent, findings, coverage_tuple, dry_run):
+    """File the coverage gap as ONE Linear issue. Pages nobody. Returns nothing.
+
+    A SEPARATE call from the drift filing, and it returns nothing on purpose.
+    Scar (codex review of PR #135, major): the undeclared set reached no channel
+    at all, and the obvious fix -- append the roll-up to the drift batch -- would
+    have walked straight back into rounds 8 and 9. `run_intent_check` computes its
+    delivery verdict from the buckets `file_findings` returns, and a coverage
+    issue landing `created` in that same outcome would have counted as the DRIFT
+    alert's delivery: commit(delivered=True) with the real page still on the
+    floor, and 12 silent runs after it. Two questions, two calls, and this one
+    hands its caller no number it could accidentally add.
+
+    Deliberately BEFORE the `if not due` return in run_intent_check. Coverage is
+    the state of a run with no drift at all -- 47 undeclared jobs and nothing due
+    is the shape of every run on this machine today -- so filing it only on a
+    drifting run would leave it as unreachable as it was.
+
+    Never raises, for the same reason as the rest of this file: a watchdog that
+    dies over a Linear failure stops watching launchd.
+    """
+    try:
+        rolled = intent.coverage_findings(
+            findings, coverage_tuple, _fleet_health().finding_key)
+        if not rolled:
+            return
+        outcome = _fleet_health().file_findings(
+            rolled, apply=not dry_run, filer="launchd-intent-verify.py")
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent coverage NOT filed to Linear: {exc}", file=sys.stderr)
+        return
+    declared, total = coverage_tuple
+    landed = sum(outcome.get(bucket, 0) for bucket in LANDED_BUCKETS)
+    # Says which of the two it is. "0 filed" reads as "nothing to report" unless
+    # the line also says a gap existed -- the `unfiled=` scar on
+    # linear_report_line, one detector over.
+    print(f"intent coverage {'would be' if dry_run else ''} filed: "
+          f"{total - declared} of {total} installed job(s) undeclared, "
+          f"{landed} of 1 rollup issue(s) on the board"
+          + ("" if landed else " -- THE GAP REACHED NOBODY"))
+
+
 def run_intent_check(dry_run):
     """Verify declared intent against launchd's override DB; print, ping, file.
 
@@ -563,6 +605,7 @@ def run_intent_check(dry_run):
     for label, kind, detail in findings:
         print(f"INTENT-{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
+    file_intent_coverage(intent, findings, (declared, total), dry_run)
 
     # `commit` records the consecutive-run counts and is deliberately called
     # AFTER delivery on every path that has one. Recording first meant a crash

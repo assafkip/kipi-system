@@ -1034,6 +1034,121 @@ check("no docstring credits the deleted verdict-file side channel",
 #
 # The canonical runner is unchanged: the capability manifest runs this with
 # python3, where __name__ == "__main__" and the exit codes still carry.
+# --- the coverage gap is filed, and is NOT the drift alert's delivery ---------
+# THE REPRODUCER (PR #135 review, round 10, major): "LaunchAgents installed by the
+# repository remain outside intent enforcement because undeclared findings are
+# filtered from both Slack and Linear." Two halves, and the wiring half lives
+# here: `run_intent_check` returns before it files anything when `due` is empty,
+# and `due` is empty on every run whose only findings are coverage -- which is
+# every run on this machine today (47 plists, no manifest file).
+#
+# The second check is the one that keeps rounds 8 and 9 fixed. The coverage
+# roll-up is filed in its OWN file_findings call, so its buckets can never be
+# added into `told`. Appending it to the drift batch instead would have made a
+# coverage issue landing `created` count as the drift alert's delivery: a phantom
+# receipt and 12 silent runs, the exact class this issue has now fixed 4 times.
+_COVERAGE_KEY = "fleet-health/launchd-intent-coverage/coverage"
+# The stub splits the two batches the way launchd-intent-verify.py does.
+_PINGABLE = ("enabled_but_declared_paused", "disabled_but_declared_running")
+_UNDECLARED = [("com.kipi.newly-installed", "undeclared", "no declared intent")]
+
+
+def _cov_intent_stub(commits, findings, due):
+    class _Stub:
+        @staticmethod
+        def check(dry_run=False):
+            return list(findings), list(due), (0, len(findings)), \
+                lambda delivered=False: commits.append(delivered)
+
+        @staticmethod
+        def linear_findings(fs, finding_key):
+            return [{"subject": l, "title": l, "body": "",
+                     "key": finding_key("launchd-intent-drift", l),
+                     "detector": "launchd-intent-drift"}
+                    for l, k, _ in fs if k in _PINGABLE]
+
+        @staticmethod
+        def coverage_findings(fs, cov, finding_key):
+            rolled = [l for l, k, _ in fs if k not in _PINGABLE]
+            if not rolled:
+                return []
+            return [{"subject": "coverage", "title": "coverage",
+                     "body": ", ".join(sorted(rolled)), "key": _COVERAGE_KEY,
+                     "detector": "launchd-intent-coverage"}]
+
+        @staticmethod
+        def ping_message(due_):
+            return f"launchd intent drift: {len(due_)} job(s)"
+
+    return _Stub
+
+
+def _cov_fh_stub(filed, outcomes):
+    """One bucket dict PER CALL, scripted by detector -- what the real filer does.
+
+    A single shared outcome for the whole run would be a fixture built from my own
+    mental model instead of from the producer, which is how round 9's incoherent
+    `created=1, existing=1` against a one-job drift got written and proved nothing.
+    """
+    class _FH:
+        @staticmethod
+        def finding_key(detector, subject):
+            return f"fleet-health/{detector}/{subject}"
+
+        @staticmethod
+        def file_findings(findings, apply, filer=None):
+            detectors = {f["detector"] for f in findings}
+            assert len(detectors) == 1, f"one call mixed detectors: {detectors}"
+            filed.extend(f["key"] for f in findings)
+            return dict(outcomes.get(detectors.pop(), {}))
+
+    return _FH
+
+
+def _cov_capture(findings, due, outcomes, delivered):
+    commits, filed, pings = [], [], []
+    saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
+    wd._INTENT = _cov_intent_stub(commits, findings, due)
+    wd._FLEET_HEALTH = _cov_fh_stub(filed, outcomes)
+    wd.send_ping = lambda message: (pings.append(message), delivered)[1]
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            wd.run_intent_check(dry_run=False)
+    finally:
+        (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping) = saved
+    return commits, filed, pings, err.getvalue()
+
+
+_cov_commits, _cov_filed, _cov_pings, _ = _cov_capture(
+    _UNDECLARED, [], {"launchd-intent-coverage": {"created": 1}}, False)
+check("the coverage rollup is filed on a run with no drift due at all",
+      _cov_filed, [_COVERAGE_KEY])
+check("and it pages nobody", _cov_pings, [])
+check("a run with nothing due still records its run counts", len(_cov_commits), 1)
+
+_MIXED = [("com.kipi.drifting", "enabled_but_declared_paused",
+           "intent=disabled, override record=enabled")] + _UNDECLARED
+_MIXED_DUE = [(l, k, d, 1) for l, k, d in _MIXED[:1]]
+_leak_commits, _leak_filed, _leak_pings, _leak_err = _cov_capture(
+    _MIXED, _MIXED_DUE,
+    {"launchd-intent-drift": {"existing": 1},
+     "launchd-intent-coverage": {"created": 1}}, False)
+check("a coverage issue filing cleanly is NOT the drift alert's delivery",
+      _leak_commits, [False])
+check("and the operator is told the alert went nowhere",
+      "NOT delivered" in _leak_err, True)
+check("the drift page still says only what drifted",
+      _leak_pings, ["launchd intent drift: 1 job(s)"])
+check("both the drift finding and the rollup reached the filer",
+      sorted(_leak_filed),
+      [_COVERAGE_KEY, "fleet-health/launchd-intent-drift/com.kipi.drifting"])
+check("the drift's own NEW issue is still delivery",
+      _cov_capture(_MIXED, _MIXED_DUE,
+                   {"launchd-intent-drift": {"created": 1},
+                    "launchd-intent-coverage": {"existing": 1}}, False)[0], [True])
+
+
 def _report() -> int:
     if failures:
         print("FAIL:")
