@@ -346,3 +346,36 @@ def test_a_comment_slot_still_falls_back_to_posts():
     picked = selector.select(rows, "x", 0, slot_kind="comment")
     assert len(picked) == selector.DEFAULT_K
     assert {r["kind"] for r in picked} == {"post"}
+
+
+def test_the_comment_mapping_exists_and_is_not_a_fallthrough():
+    """The guard above could not tell a correct mapping from its own absence.
+
+    Standard review 2026-08-09: deleting the `"comment"` entry from
+    ELIGIBLE_KINDS entirely passed all 73 tests. `eligible()` does
+    `ELIGIBLE_KINDS.get(slot_kind, ELIGIBLE_KINDS["post"])`, so a comment slot
+    silently degrades to a POST slot -- whose fallback tier is article-excerpt.
+    That is the wrong-form-teaching failure this whole PRD exists to remove,
+    re-entering on the comment path, fleet-wide, green.
+
+    The fixture was why: with zero comment-kind rows, `len == k` and
+    `kinds == {"post"}` are satisfied identically by the real mapping and by the
+    fallthrough. One comment-kind row discriminates them, so this test supplies
+    one, and asserts the mapping's existence directly as a backstop.
+    """
+    assert "comment" in selector.ELIGIBLE_KINDS, (
+        "the comment slot mapping is gone, so `eligible` falls through to the "
+        "post mapping and a comment slot is padded with article excerpts")
+
+    rows = _corpus() + [{"id": "c-00", "kind": "comment", "channel": "any",
+                         "anchor": False, "text": "a real comment row"}]
+    picked = selector.select(rows, "x", 0, slot_kind="comment")
+
+    assert picked[0]["kind"] == "comment" or any(
+        r["kind"] == "comment" for r in picked), (
+        f"a comment-kind row exists and the comment slot did not select it: "
+        f"{[(r['id'], r['kind']) for r in picked]}. The slot resolved to the post "
+        f"mapping instead of its own.")
+    assert "article-excerpt" not in {r["kind"] for r in picked}, (
+        f"a comment slot drew article excerpts: "
+        f"{[(r['id'], r['kind']) for r in picked]}")
