@@ -63,7 +63,6 @@ except Exception as exc:  # pragma: no cover - exercised via the env seam above
 
 MANIFEST_UNREADABLE = "unreadable"
 HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
-NOTIFY_STATE = "q-system/output/.grounding-manifest-notified.json"
 
 REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
 SKIP_MARKER = "grounding-guard-skip"
@@ -200,86 +199,6 @@ def manifest_health(repo=REPO):
                 f"system_manifest.health() raised {type(exc).__name__}: {exc}")
 
 
-def _notify_once(detail):
-    """Page the founder AT MOST once per 24h per distinct problem. Returns True if sent.
-
-    WHY A PAGE AND NOT JUST STDERR (Codex round 3, PR #132, MAJOR). A Stop hook that
-    exits 0 has no operator-visible channel: stderr is not surfaced on a pass, so the
-    warning reached nobody on exactly the run that matters -- the 3am scheduled agent
-    that exits normally while subsystem coverage is silently off. `founder-notifications.md`
-    makes slack-notify.sh the one channel for "something the founder would want to know
-    while away", and this is that.
-
-    DEDUPED ON PURPOSE. The manifest state is stable, so an undeduped ping would fire
-    every single turn. A checker that cries wolf trains the operator to ignore it,
-    which costs the real alert later -- so the alarm is keyed on the PROBLEM, not the
-    turn, and re-arms daily.
-
-    Never raises and never blocks: slack-notify.sh is already a silent no-op when no
-    webhook resolves, and a notification failure must not take down the Stop hook.
-    """
-    try:
-        import hashlib
-        import subprocess
-        import time
-        script = REPO / "q-system" / ".q-system" / "scripts" / "slack-notify.sh"
-        if not script.is_file():
-            return False  # also the test chokepoint: a temp REPO has no script
-        # A PAGE IS ATTEMPTED, NEVER GUARANTEED -- and the difference must not be
-        # laundered (Codex round 4, PR #132, MAJOR). slack-notify.sh is a SILENT no-op
-        # that still exits 0 when no webhook resolves, so invoking it proves the
-        # process ran, not that anyone was told. The first cut returned True anyway
-        # AND burned the 24h dedupe window, so an unconfigured fleet got "Founder
-        # paged" in stderr and 24h of suppression protecting a page that never left
-        # the machine. That is the major anchor verbatim: reporting success for work
-        # that did not happen.
-        #
-        # Same contract fable-escalate.py already settled on for this exact script
-        # (notify_attempted / notify_channel_configured / notify_delivered as separate
-        # fields, never one `notified` boolean). One fleet, one answer.
-        if not _notify_channel_configured():
-            return False
-        key = hashlib.sha256(detail.encode("utf-8", "ignore")).hexdigest()[:16]
-        state = REPO / NOTIFY_STATE
-        seen = {}
-        if state.is_file():
-            try:
-                seen = json.loads(state.read_text() or "{}")
-            except Exception:
-                seen = {}
-        now = time.time()
-        if now - float(seen.get(key, 0)) < 86400:
-            return False
-        rc = subprocess.run(
-            ["bash", str(script),
-             "grounding guard: subsystem-coverage check is OFF -- the manifest is "
-             "unreadable. " + detail[:180] +
-             " Fix: python3 q-system/.q-system/scripts/system_manifest.py check"],
-            capture_output=True, timeout=5).returncode
-        if rc != 0:
-            # Do NOT burn the window on a failed send; the next turn should retry.
-            return False
-        seen[key] = now
-        state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(json.dumps(seen))
-        return True
-    except Exception:
-        return False
-
-
-def _notify_channel_configured():
-    """Is there a Slack webhook for slack-notify.sh to actually resolve?
-
-    Mirrors that script's own resolution order ($KIPI_SLACK_WEBHOOK, then
-    ~/.config/kipi/slack-webhook). Deliberately a separate predicate: the dedupe
-    window must only be spent on a page that could really leave the machine, or an
-    unconfigured instance suppresses its own alarm for 24h at a time forever.
-    """
-    if (os.environ.get("KIPI_SLACK_WEBHOOK") or "").strip():
-        return True
-    return (Path.home() / ".config" / "kipi" / "slack-webhook").is_file()
-
-
 def _record_health(status, detail, enforced):
     """Append one row so the warn-phase rate is MEASURABLE against real runs.
 
@@ -319,8 +238,6 @@ def main():
     if status == MANIFEST_UNREADABLE:
         enforce = os.environ.get("KIPI_GROUNDING_MANIFEST_ENFORCE") == "1"
         _record_health(status, detail, enforce)
-        # Reach a human who is not watching stderr. Deduped to once/24h per problem.
-        paged = _notify_once(detail)
         # AND reach the AGENT, through the one channel the docs actually define for a
         # non-blocking Stop message: exit 0 plus hookSpecificOutput.additionalContext
         # (Claude Code hooks reference, Stop event). Deliberately NOT `systemMessage`
@@ -346,12 +263,10 @@ def main():
             "the corrupted evidence that should alarm it (ASK-533). An ABSENT manifest "
             "is fine and silent; this one is present and broken.\n"
             "Fix: `python3 q-system/.q-system/scripts/system_manifest.py check`\n"
-            + ("Founder paged via slack-notify (once per 24h per problem).\n"
-               if paged else
-               "NOT paged: no Slack webhook is configured, so nobody was told out of "
-               "band. Set $KIPI_SLACK_WEBHOOK or ~/.config/kipi/slack-webhook.\n"
-               if not _notify_channel_configured() else
-               "Page attempted and NOT confirmed; will retry next turn.\n"))
+            "Out-of-band paging is deliberately NOT wired here (ASK-534): "
+            "slack-notify.sh masks curl failure and exits 0, so no exit-code check "
+            "can confirm delivery, and fixing that changes a shared script every "
+            "other caller depends on.\n")
         if enforce:
             sys.exit(2)
     records = _load_records(payload.get("transcript_path", ""))
