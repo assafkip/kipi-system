@@ -42,6 +42,39 @@ def eligible(rows, channel, slot_kind="post"):
     return primary, fallback
 
 
+def resolved_pool(rows, channel, slot_kind="post", k=DEFAULT_K):
+    """THE pooling rule. One writer, because two readers drifted (2026-08-09).
+
+    EXHAUST the primary tier before touching fallback. The line this replaced
+    concatenated both tiers unconditionally, which made this module's own
+    FORM-MATCHED promise false in code: over counters 0-29 a post slot got <=1
+    post-kind exemplar in 18/30 rotations and ZERO in 10/30, so article rhythm
+    taught post slots and the engine published essays on a 280-char channel
+    (finding-5, prd-content-engine-sameness-2026-08-09).
+
+    (The PRD and the first version of this comment both said ZERO in 12/30.
+    Re-measured against the real corpus with the original anchor flags it is
+    10/30. The <=1 figure of 18/30 reproduces exactly. Corrected here rather than
+    carried, because a number nobody re-ran is how this PRD's other six
+    falsified claims survived.)
+
+    Padding is still allowed, because exhaustion must not become starvation: a
+    primary tier too thin to fill k pads from fallback, and a slot kind whose
+    primary tier is empty in this corpus (comment/dm rows, which most instances
+    have none of) falls back wholesale rather than returning nothing.
+
+    It is a PUBLIC function because `validate` needs the same answer. Both
+    validators used to re-derive it by counting primary-kind rows, which is only
+    the same thing above k -- so they printed statements that were false about
+    their own corpus at n<k (adversarial + standard review agreed, by different
+    methods). A checker that replicates the rule it checks tests its own copy.
+    """
+    primary, fallback = eligible(rows, channel, slot_kind)
+    if len(primary) >= k:
+        return primary
+    return primary + [r for r in fallback if r not in primary]
+
+
 def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post"):
     """The selection. Pure function of its arguments; no clock, no randomness.
 
@@ -51,8 +84,7 @@ def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post"):
     pieces stay in every prompt), rotated rather than pinned -- a pinned anchor is
     the same 3-exemplars-forever failure with extra steps.
     """
-    primary, fallback = eligible(rows, channel, slot_kind)
-    pool = primary + [r for r in fallback if r not in primary]
+    pool = resolved_pool(rows, channel, slot_kind, k)
     if not pool:
         return []
     offset = (int(counter) + int(slot_index)) % len(pool)
