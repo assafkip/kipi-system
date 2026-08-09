@@ -43,10 +43,26 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The import failure REASON is kept, not discarded (ASK-533). The bare `except` here
+# used to drop it on the floor, so a syntax error or a missing dependency inside
+# system_manifest.py silently killed check two forever with no signal anywhere. A
+# missing module still must not BLOCK -- an instance predating the manifest is a
+# legitimate state -- but "cannot run" and "nothing to run" are different facts and
+# only one of them is fine.
+_MANIFEST_IMPORT_ERROR = ""
 try:  # an instance that predates the manifest keeps check one and skips check two
+    if os.environ.get("KIPI_GROUNDING_FORCE_IMPORT_FAILURE") == "1":
+        # Test seam. Without it the unimportable-module path is unreachable from a
+        # test, and an untestable branch is how it stayed broken: `except Exception`
+        # around an import is invisible to every suite that imports successfully.
+        raise ImportError("forced by KIPI_GROUNDING_FORCE_IMPORT_FAILURE (test seam)")
     import system_manifest as _manifest
-except Exception:  # pragma: no cover - defensive; a missing module must not block
+except Exception as exc:  # pragma: no cover - exercised via the env seam above
     _manifest = None
+    _MANIFEST_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+MANIFEST_UNREADABLE = "unreadable"
+HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
 
 REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
 SKIP_MARKER = "grounding-guard-skip"
@@ -165,6 +181,47 @@ def evaluate_subsystems(final_text, evidence_blob, repo=REPO):
     return uncovered
 
 
+def manifest_health(repo=REPO):
+    """(status, detail) for the manifest the coverage check depends on.
+
+    Folds the module-import failure into the same vocabulary as the file-level states,
+    because from the operator's seat they are one fact: check two is not running.
+    """
+    if _manifest is None:
+        return (MANIFEST_UNREADABLE,
+                f"system_manifest module could not be imported "
+                f"({_MANIFEST_IMPORT_ERROR or 'no reason recorded'}); the "
+                f"subsystem-coverage check is DEAD, not merely idle")
+    try:
+        return _manifest.health(repo)
+    except Exception as exc:
+        return (MANIFEST_UNREADABLE,
+                f"system_manifest.health() raised {type(exc).__name__}: {exc}")
+
+
+def _record_health(status, detail, enforced):
+    """Append one row so the warn-phase rate is MEASURABLE against real runs.
+
+    The whole point of shipping warn-first is to learn how often this fires before
+    deciding fail-closed is safe on a hook that runs every turn. A warning nobody
+    counts is just noise that trains the operator to ignore the line.
+
+    Never raises: a telemetry failure must not take down the Stop hook it observes.
+    """
+    try:
+        import datetime
+        p = REPO / HEALTH_LOG
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "status": status, "detail": detail[:400], "enforced": bool(enforced),
+                "repo": str(REPO),
+            }) + "\n")
+    except Exception:
+        pass
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -172,6 +229,46 @@ def main():
         sys.exit(0)
     if payload.get("stop_hook_active"):  # loop guard: block at most once per cycle
         sys.exit(0)
+
+    # WARN PHASE (ASK-533). Report a manifest that cannot be read; do NOT block on it
+    # yet. This hook fires on every turn fleet-wide, so a fail-closed flip with one bad
+    # manifest anywhere wedges every session in every instance. Measure the real rate
+    # from HEALTH_LOG first, then decide. The flip is one env var, deliberately OFF.
+    status, detail = manifest_health()
+    if status == MANIFEST_UNREADABLE:
+        enforce = os.environ.get("KIPI_GROUNDING_MANIFEST_ENFORCE") == "1"
+        _record_health(status, detail, enforce)
+        # AND reach the AGENT, through the one channel the docs actually define for a
+        # non-blocking Stop message: exit 0 plus hookSpecificOutput.additionalContext
+        # (Claude Code hooks reference, Stop event). Deliberately NOT `systemMessage`
+        # or `continue` -- both appear only in the generic JSON section and are
+        # undocumented for Stop, and shipping an unverified field is how you get a
+        # channel that silently does nothing, which is the entire defect class here.
+        # The nesting is load-bearing: a TOP-LEVEL additionalContext is silently
+        # ignored, the scar recorded at token-guard.py:743.
+        if not enforce:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": (
+                    "GROUNDING GUARD WARNING: the subsystem-coverage check is NOT "
+                    "running because the manifest is unreadable. " + detail +
+                    " Say so in your answer rather than implying coverage held, and "
+                    "run `python3 q-system/.q-system/scripts/system_manifest.py check`."
+                )}}))
+        sys.stderr.write(
+            f"GROUNDING GUARD ({'blocked' if enforce else 'warning'}): the manifest "
+            f"is UNREADABLE, so the subsystem-coverage check (check two) is not "
+            f"running.\n  {detail}\n"
+            "This is the fail-open the guard is weakest on: it goes quiet on exactly "
+            "the corrupted evidence that should alarm it (ASK-533). An ABSENT manifest "
+            "is fine and silent; this one is present and broken.\n"
+            "Fix: `python3 q-system/.q-system/scripts/system_manifest.py check`\n"
+            "Out-of-band paging is deliberately NOT wired here (ASK-534): "
+            "slack-notify.sh masks curl failure and exits 0, so no exit-code check "
+            "can confirm delivery, and fixing that changes a shared script every "
+            "other caller depends on.\n")
+        if enforce:
+            sys.exit(2)
     records = _load_records(payload.get("transcript_path", ""))
     if not records:
         sys.exit(0)

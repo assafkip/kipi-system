@@ -6,45 +6,19 @@
 # Webhook URL is a SECRET -- never committed. Resolved from, in order:
 #   1. $KIPI_SLACK_WEBHOOK
 #   2. ~/.config/kipi/slack-webhook  (gitignored file, one line)
-# No webhook configured -> silent no-op (exit 0), so callers never break.
+# EXIT CONTRACT (ASK-534). Exit 0 means DELIVERED and nothing else:
+#   0  delivered (curl succeeded)
+#   1  send attempted and FAILED (curl status + stderr reported)
+#   3  no webhook configured -- nothing to send on (a setup state, not an error)
+#   4  refused: fixture run (see the guard below)
+# Callers that do not care still work unchanged (`|| true`); callers that need to
+# know whether a human was actually reached can finally ask.
 #
 # Usage: slack-notify.sh "message text"
-#
-# Delivery verdict (opt-in): set KIPI_NOTIFY_VERDICT_FILE=<path> and this script
-# writes exactly one line there saying what happened. See _kipi_verdict below.
 set -uo pipefail
 
-# --- the delivery verdict, reported where it is KNOWN --------------------------
-# SCAR (PR #134 review round 5, reproduced 2026-08-09). This script exits 0 on
-# EVERY path by design -- "no webhook configured -> silent no-op, so callers
-# never break" -- and line 105's `|| true` extends that to a curl that could not
-# reach Slack at all. So the exit code cannot distinguish a delivered page from a
-# swallowed one, and two callers read it as if it could: `send_ping` in
-# launchd-health-check.py and `notify_cap` in fable-escalate.py. Measured with a
-# webhook pointing at a refused port: curl failed, both callers recorded
-# DELIVERED, the watchdog committed the run, and the next 13 scheduled runs were
-# silent -- the founder's phone showing exactly what a clean fleet shows.
-#
-# The outcome of the POST is knowable in exactly one place, which is here. So it
-# is reported from here instead of being re-inferred by each caller. This is the
-# same single-writer move the state file already got: a caller cannot guess right
-# about something it cannot see.
-#
-# Opt-in on purpose. 30+ call sites invoke this script; every one of them keeps
-# byte-for-byte identical behaviour (exit 0, nothing on stdout) unless it sets
-# KIPI_NOTIFY_VERDICT_FILE. Absence of the file is read as NOT delivered by the
-# Python reader, so a caller running against an older copy of this script pays a
-# duplicate ping and never a missed one.
-#
-# Verdicts: delivered | send-failed rc=<n> | not-configured | refused-fixture
-#           | empty-message | payload-failed
-_kipi_verdict() {
-  [ -n "${KIPI_NOTIFY_VERDICT_FILE:-}" ] || return 0
-  printf '%s\n' "$1" > "$KIPI_NOTIFY_VERDICT_FILE" 2>/dev/null || true
-}
-
 MSG="${1:-}"
-[ -n "$MSG" ] || { _kipi_verdict empty-message; exit 0; }
+[ -n "$MSG" ] || exit 0
 
 # Project label so the founder always knows which instance pinged. Resolved in order:
 #   KIPI_INSTANCE_NAME (set by the fleet heartbeat = exact registry name)
@@ -122,8 +96,7 @@ if [ -n "${KIPI_LINEAR_API_URL:-}" ]; then
   if _kipi_loopback_host "$_KHOST"; then
     printf 'slack-notify: REFUSED to page a human -- fixture run (KIPI_LINEAR_API_URL host "%s" is loopback). Message NOT sent: %s\n' \
            "$_KHOST" "$MSG" >&2
-    _kipi_verdict refused-fixture
-    exit 0
+    exit 4
   fi
 fi
 
@@ -131,19 +104,50 @@ HOOK="${KIPI_SLACK_WEBHOOK:-}"
 if [ -z "$HOOK" ] && [ -f "$HOME/.config/kipi/slack-webhook" ]; then
   HOOK="$(tr -d '\n\r' < "$HOME/.config/kipi/slack-webhook")"
 fi
-[ -n "$HOOK" ] || { _kipi_verdict not-configured; exit 0; }   # not configured -> silent
+if [ -z "$HOOK" ]; then
+  # NOT AN ERROR, and NOT a delivery either. Distinct from 1 so a caller can tell
+  # "nothing to send on" (a setup state, common on a fresh instance) from "the
+  # send failed" (an operational problem). Deliberately NOT 0: exit 0 is the
+  # promise that a human was reached, and this script must never make that
+  # promise on behalf of a webhook that does not exist.
+  exit 3
+fi
 
 PAYLOAD="$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MSG" 2>/dev/null)"
-[ -n "$PAYLOAD" ] || { _kipi_verdict payload-failed; exit 0; }
+if [ -z "$PAYLOAD" ]; then
+  printf 'slack-notify: could not build the JSON payload; message NOT sent: %s\n' "$MSG" >&2
+  exit 1
+fi
 
-# `-f` makes curl fail on an HTTP error status, so a revoked or 404 webhook lands
-# here as a nonzero rc rather than as a 200-shaped silence. The rc is recorded and
-# then discarded: the exit code stays 0 so no existing caller breaks.
-curl -fsS -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$HOOK" >/dev/null 2>&1
-_CURL_RC=$?
-if [ "$_CURL_RC" -eq 0 ]; then
-  _kipi_verdict delivered
-else
-  _kipi_verdict "send-failed rc=$_CURL_RC"
+# THE SEND RESULT IS REPORTED, NOT SWALLOWED (ASK-534, sp-8f879dc5).
+#
+# This line used to end in `|| true` followed by an unconditional `exit 0`, so a
+# dead webhook, an HTTP 404, an expired URL and no-network were all
+# indistinguishable from a delivered message. This is the SINGLE sanctioned
+# founder-alert channel (founder-notifications.md bans osascript), so that one
+# `|| true` meant every autonomous-run alert in the fleet could stop arriving
+# with no symptom anywhere. Delivery was last confirmed BY HAND on 2026-07-29;
+# nothing in the system would have reported it otherwise.
+#
+# Callers were audited before this changed (ASK-534): every one either ignores
+# the status (`|| true`, or an unchecked subprocess.run) or already WANTS it.
+# kipi-dispatch.sh:197 is the latter -- its `else` branch says "page did NOT go
+# out; leaving the marker unset so the next heartbeat retries it" and was DEAD
+# CODE, unreachable while this script always exited 0. This arms it.
+#
+# fable-escalate.py built the same distinction at its own call site as a
+# workaround (notify_attempted / notify_channel_configured / notify_delivered).
+# That workaround stays correct and is left alone; it is now backed by a
+# chokepoint that tells the truth instead of a caller guessing around one.
+CURL_ERR="$(curl -fsS -X POST -H 'Content-type: application/json' \
+                 --data "$PAYLOAD" "$HOOK" 2>&1 >/dev/null)"
+CURL_RC=$?
+if [ "$CURL_RC" -ne 0 ]; then
+  # The message goes to stderr so an alert that failed to send is still readable
+  # in the job log. A silently swallowed alert is the exact failure mode
+  # founder-notifications.md exists to prevent.
+  printf 'slack-notify: send FAILED (curl exit %s: %s). Message NOT delivered: %s\n' \
+         "$CURL_RC" "${CURL_ERR:-no stderr}" "$MSG" >&2
+  exit 1
 fi
 exit 0

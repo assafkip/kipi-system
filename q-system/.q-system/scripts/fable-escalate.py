@@ -47,7 +47,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 
 # The triage model. Verified reachable 2026-08-02 (`FABLE_OK`, 5.35s).
@@ -322,6 +321,18 @@ def notify_channel_configured():
         return False
 
 
+# slack-notify.sh's EXIT CONTRACT (ASK-534), transcribed once. Read it as a
+# closed set: an rc that is not in this table is `unknown`, which reads as NOT
+# delivered, so an older or newer notifier costs a duplicate ping and never a
+# missed one.
+NOTIFY_EXIT_VERDICTS = {
+    0: "delivered",
+    1: "send-failed",
+    3: "not-configured",
+    4: "refused-fixture",
+}
+
+
 def notify_send(message, notify=None, timeout=20):
     """Run the notifier and report what is KNOWN about delivery. Never raises.
 
@@ -340,18 +351,38 @@ def notify_send(message, notify=None, timeout=20):
     for the next 13 scheduled runs. A configured channel says a page COULD leave;
     it says nothing about whether this one did.
 
-    So the verdict is read from the notifier itself (KIPI_NOTIFY_VERDICT_FILE),
-    which is the only place the POST outcome exists.
+    So the verdict is read from the notifier itself, which is the only place the
+    POST outcome exists. This branch first carried its own side channel for that
+    (KIPI_NOTIFY_VERDICT_FILE, because slack-notify.sh exited 0 on every path and
+    could not be changed without touching ~15 callers). Merging origin/main
+    2026-08-09 made that unnecessary: ASK-534 landed the same fix at the same
+    chokepoint and gave the script a real EXIT CONTRACT after auditing every
+    caller. Two mechanisms for one fact is the drift `fleet-homogeneity` exists
+    to stop, and the exit code is the one the rest of the fleet already reads
+    (kipi-dispatch.sh:197 branches on it), so the side channel was deleted and
+    the rc table below is the single reader. Same verdict vocabulary either way.
 
     Returns: {attempted, exit, delivered, channel_configured, verdict, note}.
 
-    HONEST BOUNDARY, unchanged from before: `delivered` means Slack accepted the
-    POST, not that a human read it. Three ways it answers False for a page that
-    might still be fine, all of which cost a duplicate ping and never a missed
-    one -- an older slack-notify.sh that writes no verdict file, an unwritable
-    verdict path, and a notifier that dies before it can report. A custom
-    KIPI_FABLE_NOTIFY_CMD owns its own delivery semantics, so it is judged by its
-    exit code as before; only the default notifier is held to the verdict.
+    HONEST BOUNDARY, and the trade this merge makes explicit:
+
+    `delivered` means Slack accepted the POST, never that a human read it. It
+    answers False for a rc outside the table and for a notifier that dies before
+    it reports -- both cost a duplicate ping, never a missed one.
+
+    The direction that got WEAKER is worth naming rather than burying. The
+    verdict file could not be forged by an old notifier: absent meant unknown
+    meant not-delivered. An exit code can be. A pre-ASK-534 slack-notify.sh
+    exits 0 on every path, including after a curl that never left the machine,
+    and this table reads that 0 as `delivered`. In THIS repo the notifier is
+    migrated, so the table is right; an instance running a stale copy through a
+    lagging `kipi update` would get a false delivered. That is a version-skew
+    hole in the fleet, not in this function, and it is captured as spillover
+    rather than papered over with a guess here.
+
+    A custom KIPI_FABLE_NOTIFY_CMD owns its own delivery semantics, so it is
+    judged by its exit code as before; only the default notifier is held to the
+    contract table.
     """
     notify = notify or os.environ.get("KIPI_FABLE_NOTIFY_CMD") or DEFAULT_NOTIFY
     # The verdict protocol is a property of the SCRIPT being run, not of who asked
@@ -367,31 +398,12 @@ def notify_send(message, notify=None, timeout=20):
         record["note"] = "notifier not found at %s" % notify
         return record
 
-    env = dict(os.environ)
-    verdict_path = None
-    if own_verdict:
-        fd, verdict_path = tempfile.mkstemp(prefix="kipi-notify-verdict-")
-        os.close(fd)
-        os.unlink(verdict_path)  # absent until the notifier affirmatively writes
-        env["KIPI_NOTIFY_VERDICT_FILE"] = verdict_path
-
     try:
         proc = subprocess.run(["bash", notify, message], timeout=timeout,
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True)
     except (subprocess.SubprocessError, OSError) as exc:
         record["note"] = "notifier failed to run: %s" % exc
         return record
-    finally:
-        if verdict_path and os.path.exists(verdict_path):
-            try:
-                record["verdict"] = (
-                    open(verdict_path, encoding="utf-8").read().strip())
-            except OSError:
-                pass
-            try:
-                os.unlink(verdict_path)
-            except OSError:
-                pass
 
     record["attempted"] = True
     record["exit"] = proc.returncode
@@ -400,6 +412,8 @@ def notify_send(message, notify=None, timeout=20):
         # The caller supplied the notifier and owns its semantics.
         record["delivered"] = bool(proc.returncode == 0 and configured)
     else:
+        record["verdict"] = NOTIFY_EXIT_VERDICTS.get(
+            proc.returncode, "unknown rc=%s" % proc.returncode)
         record["delivered"] = record["verdict"] == "delivered"
 
     if not record["delivered"]:
@@ -485,19 +499,36 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         row = {"ts": _now(), "trigger": trigger, "capped": True,
                "fable_ok": False, "failure": result["failure"],
                "call_timeout_s": 0, "next_path_taken": None}
-        if not capped_notified:
-            record = notify_cap(trigger, count)
-            row.update(record)
-            # `notified` now means ATTEMPTED, and delivery is its own field.
-            # Collapsing the two is what made the old row a false receipt.
-            result["notified"] = record["notify_attempted"]
-            result["delivered"] = record["notify_delivered"]
-        else:
-            configured = notify_channel_configured()
-            row.update({"notify_attempted": False, "notify_exit": None,
-                        "notify_delivered": False,
-                        "notify_channel_configured": configured,
-                        "notify_note": "already paged for this episode"})
+        # THE CAP NO LONGER PAGES THE FOUNDER (ASK-504).
+        #
+        # This branch returns BEFORE call_fable, so the page it used to send
+        # could never carry a diagnosis. Measured over the whole ledger
+        # (63 rows, 2026-08-08): 6 capped rows, `diagnosis` None on all 6.
+        # Structurally always empty, not occasionally. The founder received
+        # "cross-model triage did not unstick this" with nothing about what was
+        # stuck, and called it useless.
+        #
+        # Worse, it was not even firing on stuckness. 4 of those 6 were
+        # `volume-ceiling` -- a token-BUDGET heuristic that trips on a long
+        # read-heavy session making steady progress. And two pairs share one
+        # timestamp with different triggers (08-04T03:35:31Z, 08-08T22:07:13Z):
+        # parallel PreToolUse hooks race token-guard's unlocked cache, so
+        # `capped_notified` was stale in both copies and BOTH paged.
+        #
+        # `founder-notifications.md` says do not ping for routine progress. So
+        # the mechanism is deleted rather than tuned -- guarding a page that can
+        # never have content just moves the noise. The refusal still reaches the
+        # founder through the agent's own reply, which the old cap message
+        # already conceded is the reliable route to a human.
+        #
+        # The ROW SURVIVES on purpose. A silent cap would be the worse defect;
+        # the episode stays auditable via `fable-escalate.py --report`.
+        row.update({"notify_attempted": False, "notify_exit": None,
+                    "notify_delivered": False,
+                    "notify_channel_configured": notify_channel_configured(),
+                    "notify_note": "cap reached; founder not paged by design "
+                                   "(ASK-504) -- this path never calls Fable, "
+                                   "so a page here carries no diagnosis"})
         log_row(row)
         return result
 

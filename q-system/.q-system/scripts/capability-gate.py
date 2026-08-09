@@ -20,6 +20,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -465,6 +466,33 @@ def gather_wiring_text(root, exclude_names):
     return "\n".join(chunks)
 
 
+def references_engine(name, surface):
+    """True when `surface` references this engine by FILENAME or by Python import.
+
+    Scar (ASK-517): the matcher was `p.name in surface`, i.e. the filename WITH
+    its .py extension, while a Python import names the module by its STEM. So
+    q-system/.q-system/scripts/loops_path.py -- imported by
+    q-system/hooks/session-start.py, which is wired in both .claude/settings.json
+    and settings-template.json -- was reported as a dead engine. That reddened
+    origin/main and blocked every merge in the repo until this fix. An engine
+    wired by `import` was structurally invisible to the one check built to find
+    dead engines.
+
+    The import form is matched EXPLICITLY, never by bare stem. A bare stem would
+    make a script called utils.py read as wired anywhere the word "utils"
+    appears, which turns the check off without anyone noticing -- trading a
+    false positive for a silent false negative, in the check whose whole job is
+    catching things nobody noticed.
+    """
+    if name in surface:
+        return True
+    if not name.endswith(".py"):
+        return False
+    stem = re.escape(name[:-3])
+    return re.search(r"\bimport\s+%s\b|\bfrom\s+%s\s+import\b" % (stem, stem),
+                     surface) is not None
+
+
 def check_inert_engines(root, manifest, errors, notes):
     """F2 class: a runnable .py with zero textual references across the wiring
     surfaces and no declared_inert entry is a silently-dead engine.
@@ -514,7 +542,7 @@ def check_inert_engines(root, manifest, errors, notes):
     while changed:
         changed = False
         for p in sorted(candidates - wired):
-            if p.name in surface:
+            if references_engine(p.name, surface):
                 wired.add(p)
                 surface += "\n" + p.read_text(errors="ignore")
                 changed = True
@@ -533,7 +561,7 @@ def check_inert_engines(root, manifest, errors, notes):
     while changed:
         changed = False
         for p in sorted(plugin_candidates - p_wired):
-            if p.name in plugin_surface:
+            if references_engine(p.name, plugin_surface):
                 p_wired.add(p)
                 plugin_surface += "\n" + p.read_text(errors="ignore")
                 changed = True
