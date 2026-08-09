@@ -696,7 +696,8 @@ check("dry mode reaches the intent check in dry mode too",
 # ping_decision only re-alerts at runs==1 or runs % REPEAT_EVERY_RUNS == 0 -- so
 # one phantom receipt bought 12 silent runs on a real drift. Measured on the
 # shipped code: `commit() called anyway: True`, `consecutive silent runs: 12`.
-_DRIFT = [("com.kipi.drifting", "running_but_paused", "intent=disabled, launchd=enabled")]
+_DRIFT = [("com.kipi.drifting", "enabled_but_declared_paused",
+           "intent=disabled, override record=enabled")]
 
 
 def _intent_stub(commits):

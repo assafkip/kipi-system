@@ -75,11 +75,11 @@ check("REPRODUCER half A: watchdog sees a paused-but-running job as nothing",
 
 # Half B -- the verifier reports it, in the direction nothing else covers.
 _intent, _conflicts = iv.load_intent(None, ["com.kipi.zzz-should-be-paused\n"])
-check("REPRODUCER half B: verifier reports running_but_paused",
+check("REPRODUCER half B: verifier reports enabled_but_declared_paused",
       iv.diff_intent(_intent, {"com.kipi.zzz-should-be-paused": "enabled"},
                      {"com.kipi.zzz-should-be-paused"}),
-      [("com.kipi.zzz-should-be-paused", "running_but_paused",
-        "declared disabled, launchd says enabled")])
+      [("com.kipi.zzz-should-be-paused", "enabled_but_declared_paused",
+        "declared disabled, override record says enabled")])
 
 # Half B', the same job with NO override row at all. This is the common case: 65
 # watched plists on disk, 32 override rows (measured 2026-08-06). If absence were
@@ -87,8 +87,8 @@ check("REPRODUCER half B: verifier reports running_but_paused",
 # unverified and this finding would vanish.
 check("REPRODUCER half B': absent override still reports drift",
       iv.diff_intent(_intent, {}, {"com.kipi.zzz-should-be-paused"}),
-      [("com.kipi.zzz-should-be-paused", "running_but_paused",
-        "declared disabled, launchd says enabled")])
+      [("com.kipi.zzz-should-be-paused", "enabled_but_declared_paused",
+        "declared disabled, override record says enabled")])
 
 
 # =============================================================================
@@ -172,7 +172,7 @@ check("intent matching reality reports nothing",
       iv.diff_intent({"a": "enabled"}, {"a": "enabled"}, {"a"}), [])
 check("declared enabled, launchd disabled",
       iv.diff_intent({"a": "enabled"}, {"a": "disabled"}, {"a"}),
-      [("a", "paused_but_intended_running", "declared enabled, launchd says disabled")])
+      [("a", "disabled_but_declared_running", "declared enabled, override record says disabled")])
 check("declared but no plist and no override is an orphan",
       iv.diff_intent({"a": "disabled"}, {}, set()),
       [("a", "orphan", "declared disabled, no plist and no override")])
@@ -197,7 +197,7 @@ check("a plist with no declared intent is undeclared coverage",
 # Two jobs, same retirement, differing only by that leftover row. The orphan
 # branch was guarded by `not installed AND label not in overrides`; the second
 # clause is False for opp-scan, so it fell through to the drift branch and paged
-# `running_but_paused` for a job with no executable on disk. A stale override row
+# `enabled_but_declared_paused` for a job with no executable. A stale override row
 # is a statement about the override DB, never evidence that anything is running.
 #
 # Class scar: the third instance of a signal read on only one side of a branch.
@@ -219,7 +219,7 @@ check("a retired job whose override row survived is an orphan, not drift",
         "declared disabled, no plist; stale override row says enabled")])
 
 # The harm this actually prevents: the founder's phone. Before the fix the stale
-# row produced `running_but_paused`, which IS in PINGABLE_KINDS, so a job with no
+# row produced a pingable drift kind, which IS in PINGABLE_KINDS, so a job with no
 # executable rang a phone. Asserting the kind alone would not have caught the
 # consequence if PINGABLE_KINDS ever grew.
 check("and it therefore never reaches the founder's phone",
@@ -260,11 +260,11 @@ check("coverage counts installed-and-declared over installed",
 # =============================================================================
 # 7. ping_decision -- transition plus a consecutive count, never the state
 # =============================================================================
-DRIFT = [("a", "running_but_paused", "d")]
+DRIFT = [("a", "enabled_but_declared_paused", "d")]
 
 due, state = iv.ping_decision(DRIFT, {})
-check("first sighting pings", due, [("a", "running_but_paused", "d", 1)])
-check("and records one run", state, {"a": {"kind": "running_but_paused", "runs": 1, "detail": "d"}})
+check("first sighting pings", due, [("a", "enabled_but_declared_paused", "d", 1)])
+check("and records one run", state, {"a": {"kind": "enabled_but_declared_paused", "runs": 1, "detail": "d"}})
 
 due, state = iv.ping_decision(DRIFT, state)
 check("second consecutive run is silent", due, [])
@@ -272,16 +272,16 @@ check("but the count still advances", state["a"]["runs"], 2)
 
 # Walk to the repeat threshold. The count is what re-fires, so this cannot be
 # defeated by a schedule change the way a wall-clock TTL was (ASK-283).
-s = {"a": {"kind": "running_but_paused", "runs": iv.REPEAT_EVERY_RUNS - 1}}
+s = {"a": {"kind": "enabled_but_declared_paused", "runs": iv.REPEAT_EVERY_RUNS - 1}}
 due, _ = iv.ping_decision(DRIFT, s)
 check("re-pings at the consecutive-run threshold",
-      due, [("a", "running_but_paused", "d", iv.REPEAT_EVERY_RUNS)])
+      due, [("a", "enabled_but_declared_paused", "d", iv.REPEAT_EVERY_RUNS)])
 
 # A different bad state is a new transition and pings immediately.
-s = {"a": {"kind": "paused_but_intended_running", "runs": 9}}
+s = {"a": {"kind": "disabled_but_declared_running", "runs": 9}}
 due, _ = iv.ping_decision(DRIFT, s)
 check("a changed kind re-pings and resets the count",
-      due, [("a", "running_but_paused", "d", 1)])
+      due, [("a", "enabled_but_declared_paused", "d", 1)])
 
 # Coverage findings never reach the phone.
 check("undeclared is never pingable",
@@ -290,10 +290,10 @@ check("orphan is never pingable",
       iv.ping_decision([("z", "orphan", "x")], {})[0], [])
 
 # One line for the whole run, not one ping per finding.
-msg = iv.ping_message([("a", "running_but_paused", "d", 1),
-                       ("b", "paused_but_intended_running", "d", 14)])
+msg = iv.ping_message([("a", "enabled_but_declared_paused", "d", 1),
+                       ("b", "disabled_but_declared_running", "d", 14)])
 check("one message names both jobs", msg.count("--"), 1)
-check("message says what drifted", "running but declared paused" in msg, True)
+check("message says what drifted", "override enabled, declared paused" in msg, True)
 check("message carries the consecutive count", "14 runs" in msg, True)
 
 
@@ -301,7 +301,7 @@ check("message carries the consecutive count", "14 runs" in msg, True)
 # 8. linear_findings -- pingable kinds only, keyed through the shared keyer
 # =============================================================================
 lf = iv.linear_findings(
-    [("a", "running_but_paused", "d"), ("z", "undeclared", "x")],
+    [("a", "enabled_but_declared_paused", "d"), ("z", "undeclared", "x")],
     lambda detector, subject: f"fleet-health/{detector}/{subject}")
 check("only drift kinds are filed", [f["subject"] for f in lf], ["a"])
 check("filed under the intent-drift detector", lf[0]["detector"], "launchd-intent-drift")
@@ -315,7 +315,7 @@ check("body names the label", "`a`" in lf[0]["body"], True)
 # launchctl that exits nonzero prints nothing on stdout, `parse_print_disabled("")`
 # legitimately returns {}, and an empty override map means "no label has an
 # override" -- which `effective_state` correctly reads as EVERYTHING ENABLED. So a
-# broken launchctl produced one `running_but_paused` finding per intended-paused
+# broken launchctl produced one `enabled_but_declared_paused` finding per intended-paused
 # job: a Slack page and a PERMANENT Linear issue per job, about a machine nobody
 # touched. That is the same false-alarm storm `parse_print_disabled` refuses a
 # format change to avoid; the failure just entered one layer lower, where the
@@ -378,7 +378,7 @@ findings, due, cov, commit = iv.check(
 )
 check("check() surfaces the drift",
       [(l, k) for l, k, _ in findings if k in iv.PINGABLE_KINDS],
-      [("com.kipi.paused-job", "running_but_paused")])
+      [("com.kipi.paused-job", "enabled_but_declared_paused")])
 check("check() pings the transition", [d[0] for d in due], ["com.kipi.paused-job"])
 check("check() reports partial coverage", cov, (1, 2))
 check("check() does not persist before the caller has delivered",
@@ -480,6 +480,89 @@ try:
 except iv.IntentError:
     _leaked.append("raises")
 check("the injected verifier really does raise", _leaked, ["raises"])
+
+
+# =============================================================================
+# 12. REPRODUCER: an installed-but-unloaded job was reported as RUNNING
+# =============================================================================
+# Codex review of PR #134, round 3. The verifier's only sources are the override
+# database and the plists on disk; neither says whether a job is bootstrapped. The
+# two drift kinds were nonetheless named `running_but_paused` /
+# `paused_but_intended_running`, the page read "running but declared paused", and
+# the PERMANENT Linear issue closed with "so it is running".
+#
+# The fixture is installed-but-unloaded BY CONSTRUCTION, not by assertion: a plist
+# written into a fresh temp dir that launchd has never seen, so it cannot be
+# bootstrapped. Probed against the shipped code, that job produced
+# `running_but_paused`, a page reading "running but declared paused", and an issue
+# body containing "so it is running" -- three runtime claims about a job that was
+# not running.
+#
+# The fix is the rename plus the reworded page and body. Detection is unchanged: an
+# enabled override on a job declared paused is real drift whether or not it is
+# loaded, because launchd will run it at the next interval or the next bootstrap.
+# What changed is that every claim now names the override record. These assertions
+# go RED on the pre-fix code.
+_unloaded_dir = Path(tempfile.mkdtemp()) / "LaunchAgents"
+_unloaded_dir.mkdir()
+UNLOADED = "com.kipi.never-bootstrapped"
+(_unloaded_dir / (UNLOADED + ".plist")).write_text("<plist/>")
+
+_saved_agents = iv.LAUNCH_AGENTS
+iv.LAUNCH_AGENTS = _unloaded_dir
+_unloaded_installed = iv.installed_labels()
+iv.LAUNCH_AGENTS = _saved_agents
+
+check("the fixture is installed", _unloaded_installed, {UNLOADED})
+
+_unloaded_findings = iv.diff_intent(
+    {UNLOADED: iv.DISABLED}, {UNLOADED: iv.ENABLED}, _unloaded_installed)
+check("an installed-but-unloaded job is not called running",
+      _unloaded_findings,
+      [(UNLOADED, "enabled_but_declared_paused",
+        "declared disabled, override record says enabled")])
+
+_unloaded_due, _ = iv.ping_decision(_unloaded_findings, {})
+_unloaded_page = iv.ping_message(_unloaded_due)
+check("the page claims the override record, not behaviour",
+      "override enabled, declared paused" in _unloaded_page, True)
+
+# The consequence, not just the kind: the strings a human actually reads. Each of
+# these was present pre-fix, so each can go red on its own.
+_unloaded_issue = iv.linear_findings(
+    _unloaded_findings, lambda detector, subject: detector + "/" + subject)[0]
+_human_text = _unloaded_page + _unloaded_issue["title"] + _unloaded_issue["body"]
+for _claim in ("so it is running", "running but declared paused", "is running"):
+    check("nothing a human reads claims " + repr(_claim),
+          _claim in _human_text, False)
+
+# The permanent issue states what was measured, so a reader six months out does not
+# have to open the script to learn that load state was never checked.
+check("the issue names its source", "print-disabled" in _unloaded_issue["body"], True)
+check("and names what it did not measure",
+      "launchctl list" in _unloaded_issue["body"], True)
+
+# The SAME defect on the other side of the same expression: a `disabled` override
+# row is not evidence that a bootstrapped job has stopped, because disabling does
+# not unload what is already running. Pre-fix that body ended "so it has silently
+# stopped running".
+_other = iv.diff_intent(
+    {UNLOADED: iv.ENABLED}, {UNLOADED: iv.DISABLED}, _unloaded_installed)
+check("the other direction is named for the record too",
+      [k for _, k, _ in _other], ["disabled_but_declared_running"])
+_other_body = iv.linear_findings(
+    _other, lambda detector, subject: detector + "/" + subject)[0]["body"]
+check("and it does not claim the job stopped",
+      "has silently stopped running" in _other_body, False)
+
+# Renaming the kinds re-pings every job still drifting under a pre-rename state
+# row. Pinned here rather than discovered on the founder's phone: one duplicate
+# page, never a missing one.
+_legacy_state = {UNLOADED: {"kind": "running_but_paused", "runs": 7}}
+_legacy_due, _ = iv.ping_decision(_unloaded_findings, _legacy_state)
+check("a pre-rename state row re-pings once and resets the count",
+      [(label, runs) for label, _, _, runs in _legacy_due], [(UNLOADED, 1)])
+
 
 if failures:
     print("FAIL")

@@ -78,7 +78,16 @@ _ENTRY_RE = re.compile(r'"(?P<label>[^"]+)"\s*=>\s*(?P<value>[^\s;,}]+)')
 # and counted but never pinged: they are manifest hygiene, and 40 of them exist on
 # day one (65 watched plists, 25 declared). Paging on coverage is the alert-fatigue
 # mechanism that teaches the founder to ignore this channel.
-PINGABLE_KINDS = ("running_but_paused", "paused_but_intended_running")
+#
+# The kind ids NAME THE RECORD, never the runtime. They used to be
+# `running_but_paused` / `paused_but_intended_running`, which asserted what the job
+# was DOING from a source that only reports what the override database SAYS. See
+# diff_intent's scar for the probe; the rename is the fix, because a name is what
+# the next branch will believe. Renaming them makes every pre-rename row in
+# `launchd-intent-state.json` read as a kind change, so each still-drifting job
+# re-pings once on the first run after this ships -- a duplicate, which is the
+# failure direction this file is allowed to have (see check()).
+PINGABLE_KINDS = ("enabled_but_declared_paused", "disabled_but_declared_running")
 
 # Re-ping a still-drifting job every Nth CONSECUTIVE run, counted by this script.
 #
@@ -107,8 +116,8 @@ def parse_print_disabled(text):
     Why it refuses instead of returning {}: an empty override map means "no label
     has an override", and `effective_state` correctly reads that as everything
     being ENABLED. So a parser that silently fails on a future macOS format change
-    would flip every intended-paused job into a `running_but_paused` finding at
-    once -- 25 of them on this machine today -- and page the founder about a job
+    would flip every intended-paused job into an `enabled_but_declared_paused`
+    finding at once -- 25 of them on this machine today -- and page the founder about a job
     nobody touched. The failure mode of a silent parse miss here is a false alarm
     storm, which is worse than the outage it would be reporting.
     """
@@ -197,14 +206,37 @@ def diff_intent(intent, overrides, installed_labels):
     """(label, kind, detail) for every disagreement between intent and reality.
 
     kinds:
-      running_but_paused          declared disabled, override DB says enabled.
-                                  THE DIRECTION NOTHING ELSE SEES -- the sibling
-                                  watchdog reports nothing at all for a healthy job.
-      paused_but_intended_running declared enabled, override DB says disabled.
-      orphan                      declared, but no plist on disk. A manifest line
-                                  about a job that no longer exists.
-      undeclared                  plist on disk, no intent recorded. Coverage, not
-                                  drift; never pinged.
+      enabled_but_declared_paused  declared disabled, override DB says enabled.
+                                   THE DIRECTION NOTHING ELSE SEES -- the sibling
+                                   watchdog reports nothing at all for a healthy job.
+      disabled_but_declared_running declared enabled, override DB says disabled.
+      orphan                       declared, but no plist on disk. A manifest line
+                                   about a job that no longer exists.
+      undeclared                   plist on disk, no intent recorded. Coverage, not
+                                   drift; never pinged.
+
+    EVERY KIND HERE IS A STATEMENT ABOUT THE OVERRIDE RECORD, NOT ABOUT WHAT IS
+    RUNNING. This function has no runtime source and cannot acquire one: its
+    arguments are the declared intent, the override database, and the set of plists
+    on disk. Bootstrap state (`launchctl list`) is a different question, deliberately
+    not asked -- see the module docstring on why the persistent record is the thing
+    intent is checked against.
+
+    Scar (codex review of PR #134, round 3, reproduced by execution 2026-08-09): the
+    two drift kinds were named `running_but_paused` and `paused_but_intended_running`
+    and their Linear bodies closed with "so it is running" / "so it has silently
+    stopped running". Probed with a plist written into a fresh temp LaunchAgents dir
+    -- installed, never bootstrapped, therefore not running by construction -- the
+    verifier produced `running_but_paused`, paged "running but declared paused", and
+    filed a PERMANENT Linear issue asserting the job was running. Both directions
+    carried it: an override row reading `disabled` is not evidence that a loaded job
+    has stopped either, since disabling does not unload what is already bootstrapped.
+
+    An enabled override on a job declared paused is a REAL drift whether or not the
+    job is loaded right now -- launchd will run it at its next scheduled interval or
+    the next bootstrap. So the detection is unchanged and nothing is silenced. What
+    changed is that the name, the page, and the issue body now claim only what was
+    measured. A name is what the next branch will believe.
     """
     findings = []
     for label in sorted(intent):
@@ -221,7 +253,7 @@ def diff_intent(intent, overrides, installed_labels):
         # com.kipi.fractional-cxo.opp-scan by renaming its plist, but launchd kept
         # `"com.kipi.fractional-cxo.opp-scan" => enabled`. The second clause was
         # False, so the label fell through to the drift branch below and paged
-        # running_but_paused for a job with no executable. Its sibling
+        # enabled_but_declared_paused for a job with no executable. Its sibling
         # bolt-on-discovery, retired the same way but with no leftover row, was
         # classified correctly -- the two differed only by the stale row.
         #
@@ -241,8 +273,10 @@ def diff_intent(intent, overrides, installed_labels):
             continue
         if want == actual:
             continue
-        kind = "running_but_paused" if want == DISABLED else "paused_but_intended_running"
-        findings.append((label, kind, f"declared {want}, launchd says {actual}"))
+        kind = ("enabled_but_declared_paused" if want == DISABLED
+                else "disabled_but_declared_running")
+        findings.append(
+            (label, kind, f"declared {want}, override record says {actual}"))
     for label in sorted(installed_labels - set(intent)):
         findings.append((label, "undeclared", "no declared intent"))
     return findings
@@ -286,8 +320,11 @@ def ping_message(due):
     """One Slack line for the whole run. One ping per run, never one per finding."""
     parts = []
     for label, kind, detail, runs in due:
-        what = ("running but declared paused" if kind == "running_but_paused"
-                else "paused but declared running")
+        # Phrased as the override record, not as behaviour -- the page is the most
+        # widely read of the three claim sites and was the loudest wrong one.
+        what = ("override enabled, declared paused"
+                if kind == "enabled_but_declared_paused"
+                else "override disabled, declared running")
         age = "new" if runs == 1 else f"{runs} runs"
         parts.append(f"{label} ({what}, {age})")
     return f"launchd intent drift: {len(due)} job(s) -- " + ", ".join(parts)
@@ -302,24 +339,39 @@ def ping_message(due):
 # plain dicts, so the seam that does not require that coupling is the dict.
 LINEAR_DETECTOR = "launchd-intent-drift"
 
+# A Linear issue filed here is PERMANENT, so its body states the measurement and
+# then stops. `_MEASURED` is appended to both: the reader has to be able to tell
+# what this verifier looked at without opening the script, because the issue will
+# outlive the run that filed it.
+_MEASURED = (
+    "\n\n---\n"
+    "Measured: launchd's persistent override database "
+    "(`launchctl print-disabled gui/$(id -u)`) and the plists in "
+    "`~/Library/LaunchAgents`. NOT measured: whether the job is bootstrapped right "
+    "now (`launchctl list`). This issue is about the override record, which is what "
+    "survives a reboot and what `launchctl enable`/`disable` writes."
+)
+
 _LINEAR_BODY = {
-    "running_but_paused": (
+    "enabled_but_declared_paused": (
         "`{label}` is declared **disabled** in `~/.config/kipi/launchd-intent.json` "
         "(or the pause ledger) but launchd's override database reports it "
-        "**enabled**, so it is running.\n\n"
+        "**enabled**, so launchd is permitted to run it and will do so at its next "
+        "scheduled interval or the next bootstrap.\n\n"
         "Nothing else in the fleet detects this direction: the launchd watchdog "
         "reports only failing and dark jobs, and a healthy job produces silence.\n\n"
         "## Action\n"
-        "- If running is correct, change this label's intent to `enabled` with a reason.\n"
+        "- If enabled is correct, change this label's intent to `enabled` with a reason.\n"
         "- If the pause was intended: `launchctl disable gui/$(id -u)/{label}`"
-    ),
-    "paused_but_intended_running": (
+    ) + _MEASURED,
+    "disabled_but_declared_running": (
         "`{label}` is declared **enabled** but launchd's override database reports "
-        "it **disabled**, so it has silently stopped running.\n\n"
+        "it **disabled**, so launchd will not start it again -- after the next "
+        "bootstrap it is dark.\n\n"
         "## Action\n"
         "- Resume: `launchctl enable gui/$(id -u)/{label}`\n"
         "- Or record the decision by setting this label's intent to `disabled`."
-    ),
+    ) + _MEASURED,
 }
 
 
@@ -365,7 +417,7 @@ def launchctl_print_disabled(run=None):
     an empty override map means "no label has an override", which
     `effective_state` correctly reads as EVERY label enabled. Measured on the
     shipped code with a stubbed exit 113: five intended-paused jobs produced five
-    `running_but_paused` findings, five founder pages, and five PERMANENT Linear
+    `enabled_but_declared_paused` findings, five founder pages, and five PERMANENT
     issues about a machine nobody had touched.
 
     That is the exact false-alarm storm `parse_print_disabled` refuses a format
