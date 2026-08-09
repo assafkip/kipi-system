@@ -703,18 +703,20 @@ _DRIFT = [("com.kipi.drifting", "enabled_but_declared_paused",
            "intent=disabled, override record=enabled")]
 
 
-def _intent_stub(commits):
+def _intent_stub(commits, drift=None):
+    drift = _DRIFT if drift is None else drift
+
     class _Stub:
         @staticmethod
         def check(dry_run=False):
-            due = [(label, kind, detail, 1) for label, kind, detail in _DRIFT]
+            due = [(label, kind, detail, 1) for label, kind, detail in drift]
             # Records the VERDICT it was handed rather than reimplementing the
             # refusal. The refusal itself is the single writer's, and it is
             # asserted against the real code in test_launchd_intent_verify.py
             # section 9. A stub that re-encoded the policy would pass whether or
             # not run_intent_check told the truth, which is the whole question.
-            return list(_DRIFT), due, (1, 1), lambda delivered=False: \
-                commits.append(delivered)
+            return list(drift), due, (len(drift), len(drift)), \
+                lambda delivered=False: commits.append(delivered)
 
         @staticmethod
         def linear_findings(findings, finding_key):
@@ -730,11 +732,11 @@ def _intent_stub(commits):
     return _Stub
 
 
-def intent_capture(fleet_health, delivered):
+def intent_capture(fleet_health, delivered, drift=None):
     """Drive run_intent_check with both delivery channels scripted."""
     commits = []
     saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
-    wd._INTENT = _intent_stub(commits)
+    wd._INTENT = _intent_stub(commits, drift)
     wd._FLEET_HEALTH = fleet_health
     wd.send_ping = lambda message: delivered
     err = io.StringIO()
@@ -755,8 +757,110 @@ check("slack alone is enough to record the run",
       intent_capture(_fh_stub(unfiled="all"), delivered=True)[0], [True])
 check("linear alone is enough to record the run",
       intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
-check("one landed finding beside a skipped bucket still counts as delivery",
-      intent_capture(_fh_stub(created=1, unfiled=1), delivered=False)[0], [True])
+check("the one job in a one-job batch newly filed counts as delivery",
+      intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
+
+# --- an ALREADY-OPEN issue is not this run's delivery (PR #135 review, major) --
+# THE REPRODUCER: the delivery verdict was computed off LANDED_BUCKETS, the filing-
+# COVERAGE allowlist, which contains `existing`. So a drift whose Linear issue was
+# already open -- the normal state from the second run of any real drift onward --
+# reported delivery on a run where the Slack webhook was dead. Measured on the
+# shipped code: `commit(delivered=True)` with slack=False and existing=1, and the
+# real `ping_decision` then returns nothing for 12 consecutive runs.
+#
+# `existing` means the filer found the issue and changed nothing. Linear sends no
+# notification for a no-op, so nobody was told anything on this run.
+#
+# Both directions, on purpose and with the full bucket shape the real filer emits:
+# a verdict hardcoded to False would pass the first check here and page nobody
+# ever, which is the same defect pointing the other way.
+_stale, _stale_err = intent_capture(_fh_stub_shape(existing=1), delivered=False)
+check("slack dead + the board already had the issue -> NOT delivered",
+      _stale, [False])
+check("and the operator is told, not left reading a silent success",
+      "NOT delivered" in _stale_err, True)
+check("a NEW issue is delivery",
+      intent_capture(_fh_stub_shape(created=1), delivered=False)[0], [True])
+check("a REOPENED issue is delivery",
+      intent_capture(_fh_stub_shape(reopened=1), delivered=False)[0], [True])
+check("an UPDATED issue is delivery",
+      intent_capture(_fh_stub_shape(updated=1), delivered=False)[0], [True])
+check("a RELISTED issue -- it had vanished from Linear -- is delivery",
+      intent_capture(_fh_stub_shape(relisted=1), delivered=False)[0], [True])
+check("an already-open issue plus a live webhook is still delivery",
+      intent_capture(_fh_stub_shape(existing=1), delivered=True)[0], [True])
+# The coverage question keeps its own answer: `existing` still means FILED, so the
+# ping must not claim the issue never reached the board. One list per question is
+# the fix; this is the half that must NOT have changed.
+check("an already-open issue is still counted as filed, not as unfiled",
+      wd.unfiled_count({"owed": 1, "existing": 1}), 0)
+
+# The two lists are a strict subset relationship, asserted so a bucket added
+# upstream cannot drift into delivery unnoticed. LANDED_BUCKETS grew three times
+# already (ASK-204: updated, reopened, relisted). A new one arriving now goes red
+# here until somebody answers which of the two questions it belongs to -- red in
+# the safe direction, since the un-answered default is "not delivery".
+check("every delivering bucket is also a landed bucket",
+      [b for b in wd.DELIVERING_BUCKETS if b not in wd.LANDED_BUCKETS], [])
+check("and the only landed bucket that is not delivery is `existing`",
+      [b for b in wd.LANDED_BUCKETS if b not in wd.DELIVERING_BUCKETS], ["existing"])
+
+# --- a PARTIAL filing is not the batch's delivery (PR #135 review, major) ------
+# THE REPRODUCER: the verdict was `told or delivered`. `told` counts FINDINGS;
+# commit() writes the run counts for every label in the batch from one boolean.
+# So one job landing `created` recorded its neighbours as seen. `file_findings`
+# loops per finding, so part-`created` / part-`existing` (already on the board,
+# Linear notifies nobody) or part-`errors` (that write refused) is the ordinary
+# shape of a multi-job run. Measured on the shipped code with created=1,
+# existing=1 and a dead webhook: commit(delivered=True), and the real
+# ping_decision then returns nothing for 12 consecutive runs for the job nobody
+# was told about.
+#
+# Every fixture in the four prior rounds was a batch of ONE, where a partial
+# outcome cannot occur. That is how this class survived four reviews of this one
+# function, so the batch of TWO is the fixture from here on.
+_TWO_DRIFT = [("com.kipi.fresh", "enabled_but_declared_paused",
+               "intent=disabled, override record=enabled"),
+              ("com.kipi.stale", "disabled_but_declared_running",
+               "intent=enabled, override record=disabled")]
+
+
+def _batch(delivered, **buckets):
+    return intent_capture(_fh_stub_shape(**buckets), delivered=delivered,
+                          drift=_TWO_DRIFT)
+
+
+_partial, _partial_err = _batch(False, created=1, existing=1)
+check("slack dead + only half the batch newly filed -> NOT delivered",
+      _partial, [False])
+check("and the operator is told which half, not just that something failed",
+      "1 of 2" in _partial_err, True)
+check("zero and partial are reported as different states",
+      "PARTLY" in _partial_err, True)
+check("slack dead + one filing REFUSED -> not delivered",
+      _batch(False, created=1, errors=1)[0], [False])
+check("slack dead + one finding never offered to Linear -> not delivered",
+      _batch(False, created=1, skipped_no_key=1)[0], [False])
+# The other direction, so the fix cannot be "a batch never delivers". A verdict
+# hardcoded to False passes every check above and pages nobody, ever.
+check("slack dead + the WHOLE batch newly filed -> that IS delivery",
+      _batch(False, created=2)[0], [True])
+check("slack dead + the whole batch reopened or updated -> that IS delivery",
+      _batch(False, reopened=1, updated=1)[0], [True])
+# One ping_message line covers every due job, so slack is all-or-nothing for the
+# batch by construction -- which is why it is compared against the same
+# denominator instead of being counted.
+check("a live webhook covers the whole batch however Linear went",
+      _batch(True, created=1, existing=1)[0], [True])
+check("a live webhook covers a batch Linear dropped entirely",
+      _batch(True, skipped_no_key=2)[0], [True])
+# The zero case keeps its own wording, so the two states stay distinguishable in
+# the run log after this change.
+_none, _none_err = _batch(False, existing=2)
+check("slack dead + the whole batch already on the board -> not delivered",
+      _none, [False])
+check("nothing delivered still reads as NOT delivered, not as partial",
+      ("NOT delivered" in _none_err, "PARTLY" in _none_err), (True, False))
 
 # send_ping's own verdict: a notifier that cannot reach a channel is not delivery.
 _saved_channel = wd.notify_channel_configured
@@ -901,6 +1005,27 @@ check("record_pings is the only writer of pinged_at",
       _lines_writing_pinged_at("record_pings"), [])
 
 
+# =============================================================================
+# 15. The docstring may not outlive its mechanism (codex PR #134, round 7)
+# =============================================================================
+# send_ping's docstring credited a KIPI_NOTIFY_VERDICT_FILE side channel for the
+# delivery verdict. That side channel was built on this branch and DELETED when
+# origin/main's slack-notify.sh exit contract replaced it, so the paragraph
+# described a mechanism present nowhere in the file. Nothing went red: the code
+# was correct and only the explanation was false, which is the failure mode this
+# repo cares about most -- a name is what the next branch will believe.
+#
+# The rule is the bare name, deliberately, not "names it without reading it". No
+# checker can separate a docstring crediting a mechanism as CURRENT from one
+# recording it as deleted HISTORY, and this file needs neither: the removal
+# decision is recorded once, in fable-escalate.notify_send where it was made. So
+# any occurrence here is stale by construction. Split at write time so this
+# assertion does not fail on its own source.
+_DEAD_SIDE_CHANNEL = "KIPI_NOTIFY_VERDICT" + "_FILE"
+check("no docstring credits the deleted verdict-file side channel",
+      _DEAD_SIDE_CHANNEL in Path(wd.__file__).read_text(), False)
+
+
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,
 # which pytest reports as INTERNALERROR and which aborts the whole run -- so a
@@ -909,6 +1034,121 @@ check("record_pings is the only writer of pinged_at",
 #
 # The canonical runner is unchanged: the capability manifest runs this with
 # python3, where __name__ == "__main__" and the exit codes still carry.
+# --- the coverage gap is filed, and is NOT the drift alert's delivery ---------
+# THE REPRODUCER (PR #135 review, round 10, major): "LaunchAgents installed by the
+# repository remain outside intent enforcement because undeclared findings are
+# filtered from both Slack and Linear." Two halves, and the wiring half lives
+# here: `run_intent_check` returns before it files anything when `due` is empty,
+# and `due` is empty on every run whose only findings are coverage -- which is
+# every run on this machine today (47 plists, no manifest file).
+#
+# The second check is the one that keeps rounds 8 and 9 fixed. The coverage
+# roll-up is filed in its OWN file_findings call, so its buckets can never be
+# added into `told`. Appending it to the drift batch instead would have made a
+# coverage issue landing `created` count as the drift alert's delivery: a phantom
+# receipt and 12 silent runs, the exact class this issue has now fixed 4 times.
+_COVERAGE_KEY = "fleet-health/launchd-intent-coverage/coverage"
+# The stub splits the two batches the way launchd-intent-verify.py does.
+_PINGABLE = ("enabled_but_declared_paused", "disabled_but_declared_running")
+_UNDECLARED = [("com.kipi.newly-installed", "undeclared", "no declared intent")]
+
+
+def _cov_intent_stub(commits, findings, due):
+    class _Stub:
+        @staticmethod
+        def check(dry_run=False):
+            return list(findings), list(due), (0, len(findings)), \
+                lambda delivered=False: commits.append(delivered)
+
+        @staticmethod
+        def linear_findings(fs, finding_key):
+            return [{"subject": l, "title": l, "body": "",
+                     "key": finding_key("launchd-intent-drift", l),
+                     "detector": "launchd-intent-drift"}
+                    for l, k, _ in fs if k in _PINGABLE]
+
+        @staticmethod
+        def coverage_findings(fs, cov, finding_key):
+            rolled = [l for l, k, _ in fs if k not in _PINGABLE]
+            if not rolled:
+                return []
+            return [{"subject": "coverage", "title": "coverage",
+                     "body": ", ".join(sorted(rolled)), "key": _COVERAGE_KEY,
+                     "detector": "launchd-intent-coverage"}]
+
+        @staticmethod
+        def ping_message(due_):
+            return f"launchd intent drift: {len(due_)} job(s)"
+
+    return _Stub
+
+
+def _cov_fh_stub(filed, outcomes):
+    """One bucket dict PER CALL, scripted by detector -- what the real filer does.
+
+    A single shared outcome for the whole run would be a fixture built from my own
+    mental model instead of from the producer, which is how round 9's incoherent
+    `created=1, existing=1` against a one-job drift got written and proved nothing.
+    """
+    class _FH:
+        @staticmethod
+        def finding_key(detector, subject):
+            return f"fleet-health/{detector}/{subject}"
+
+        @staticmethod
+        def file_findings(findings, apply, filer=None):
+            detectors = {f["detector"] for f in findings}
+            assert len(detectors) == 1, f"one call mixed detectors: {detectors}"
+            filed.extend(f["key"] for f in findings)
+            return dict(outcomes.get(detectors.pop(), {}))
+
+    return _FH
+
+
+def _cov_capture(findings, due, outcomes, delivered):
+    commits, filed, pings = [], [], []
+    saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
+    wd._INTENT = _cov_intent_stub(commits, findings, due)
+    wd._FLEET_HEALTH = _cov_fh_stub(filed, outcomes)
+    wd.send_ping = lambda message: (pings.append(message), delivered)[1]
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            wd.run_intent_check(dry_run=False)
+    finally:
+        (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping) = saved
+    return commits, filed, pings, err.getvalue()
+
+
+_cov_commits, _cov_filed, _cov_pings, _ = _cov_capture(
+    _UNDECLARED, [], {"launchd-intent-coverage": {"created": 1}}, False)
+check("the coverage rollup is filed on a run with no drift due at all",
+      _cov_filed, [_COVERAGE_KEY])
+check("and it pages nobody", _cov_pings, [])
+check("a run with nothing due still records its run counts", len(_cov_commits), 1)
+
+_MIXED = [("com.kipi.drifting", "enabled_but_declared_paused",
+           "intent=disabled, override record=enabled")] + _UNDECLARED
+_MIXED_DUE = [(l, k, d, 1) for l, k, d in _MIXED[:1]]
+_leak_commits, _leak_filed, _leak_pings, _leak_err = _cov_capture(
+    _MIXED, _MIXED_DUE,
+    {"launchd-intent-drift": {"existing": 1},
+     "launchd-intent-coverage": {"created": 1}}, False)
+check("a coverage issue filing cleanly is NOT the drift alert's delivery",
+      _leak_commits, [False])
+check("and the operator is told the alert went nowhere",
+      "NOT delivered" in _leak_err, True)
+check("the drift page still says only what drifted",
+      _leak_pings, ["launchd intent drift: 1 job(s)"])
+check("both the drift finding and the rollup reached the filer",
+      sorted(_leak_filed),
+      [_COVERAGE_KEY, "fleet-health/launchd-intent-drift/com.kipi.drifting"])
+check("the drift's own NEW issue is still delivery",
+      _cov_capture(_MIXED, _MIXED_DUE,
+                   {"launchd-intent-drift": {"created": 1},
+                    "launchd-intent-coverage": {"existing": 1}}, False)[0], [True])
+
+
 def _report() -> int:
     if failures:
         print("FAIL:")

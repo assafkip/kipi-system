@@ -166,6 +166,37 @@ check_raises("a row with no label refuses", iv.IntentError,
 check_raises("an unknown intent value refuses", iv.IntentError,
              lambda: iv.load_intent('{"jobs":[{"label":"a","intent":"paused"}]}', []))
 
+# Duplicate labels (codex review of PR #134, round 7). Both directions are pinned
+# because refusing only the contradicting pair would leave the row-order coupling
+# in place for the identical pair -- and a manifest that lists a label twice is a
+# defect whether or not the two rows happen to agree today.
+check_raises("a label declared twice refuses", iv.IntentError,
+             lambda: iv.load_intent(
+                 '{"jobs":[{"label":"a","intent":"enabled"},'
+                 '{"label":"a","intent":"disabled"}]}', []))
+check_raises("even when the two rows agree", iv.IntentError,
+             lambda: iv.load_intent(
+                 '{"jobs":[{"label":"a","intent":"enabled"},'
+                 '{"label":"a","intent":"enabled"}]}', []))
+# The assertion that would have caught the shipped bug: not "it refuses" but "the
+# answer does not depend on line order". A last-row-wins reader passes every
+# single-order test and still pages on one ordering and stays silent on the other.
+_dup = [{"label": "a", "intent": "enabled"}, {"label": "a", "intent": "disabled"}]
+
+
+def _outcome(rows):
+    try:
+        intent, _ = iv.load_intent(json.dumps({"jobs": rows}), [])
+    except iv.IntentError:
+        return ("REFUSED",)
+    return (intent["a"], tuple(k for _, k, _ in iv.diff_intent(intent, {"a": "enabled"}, {"a"})))
+
+
+check("the verdict does not depend on manifest row order",
+      _outcome(_dup) == _outcome(list(reversed(_dup))), True)
+check("and that shared verdict is a refusal, not a silent pick",
+      _outcome(_dup), ("REFUSED",))
+
 
 # =============================================================================
 # 5. diff_intent -- all four kinds, and agreement producing silence
@@ -620,6 +651,62 @@ _legacy_state = {UNLOADED: {"kind": "running_but_paused", "runs": 7}}
 _legacy_due, _ = iv.ping_decision(_unloaded_findings, _legacy_state)
 check("a pre-rename state row re-pings once and resets the count",
       [(label, runs) for label, _, _, runs in _legacy_due], [(UNLOADED, 1)])
+
+
+# =============================================================================
+# 12. THE COVERAGE GAP REACHES A CHANNEL (PR #135 review, round 10, major)
+# =============================================================================
+# THE REPRODUCER: "LaunchAgents installed by the repository remain outside intent
+# enforcement because undeclared findings are filtered from both Slack and
+# Linear." Executed against the shipped code first: `linear_findings` returned []
+# for a set of undeclared jobs and an orphan, and ping_decision returned [] too,
+# so the only trace of the gap was a stdout line under launchd.
+#
+# The no-page half is CORRECT and is pinned below so a later change cannot turn
+# the roll-up into 47 pages. The no-channel half is the defect.
+_COV_INTENT = {"com.kipi.declared": iv.ENABLED, "com.kipi.gone": iv.ENABLED}
+_COV_INSTALLED = {"com.kipi.declared", "com.kipi.newly-installed", "com.kipi.also-new"}
+_COV_FINDINGS = iv.diff_intent(_COV_INTENT, {"com.kipi.declared": iv.ENABLED},
+                               _COV_INSTALLED)
+
+
+def _cov_key(detector, subject):
+    return f"fleet-health/{detector}/{subject}"
+
+
+check("undeclared and orphan jobs still page nobody",
+      iv.ping_decision(_COV_FINDINGS, {})[0], [])
+check("and they are still not filed one issue per label",
+      iv.linear_findings(_COV_FINDINGS, _cov_key), [])
+
+_rollup = iv.coverage_findings(_COV_FINDINGS, iv.coverage(_COV_INTENT, _COV_INSTALLED),
+                               _cov_key)
+check("the whole gap is ONE rolled-up finding", len(_rollup), 1)
+check("naming every job intent enforcement cannot see",
+      [l for l in ("com.kipi.newly-installed", "com.kipi.also-new", "com.kipi.gone")
+       if l not in _rollup[0]["body"]], [])
+check("under a key that does not move when the numbers do",
+      _rollup[0]["key"],
+      iv.coverage_findings(_COV_FINDINGS, (99, 200), _cov_key)[0]["key"])
+# A distinct detector from the drift issues on purpose: sharing `LINEAR_DETECTOR`
+# would collide the rollup's stable subject with a label's, and the two are
+# triaged differently (a gap is manifest hygiene, a drift is a live misconfig).
+check("and a detector of its own, not the drift one",
+      _rollup[0]["detector"] != iv.LINEAR_DETECTOR, True)
+check("a fully declared fleet files nothing at all",
+      iv.coverage_findings(iv.diff_intent({"a": iv.ENABLED}, {"a": iv.ENABLED}, {"a"}),
+                           (1, 1), _cov_key), [])
+
+# The membership rule is DERIVED (everything that is not pingable), the opposite
+# of the delivery allowlist's declared-not-derived rule. A kind wired later with
+# no page and no body of its own must land here rather than vanish, so the failure
+# direction is "seen on the board", never "silently dropped".
+_INVENTED = [("com.kipi.x", "some-kind-nobody-has-wired-yet", "detail")]
+check("a kind nobody wired a page or a body for still reaches the board",
+      len(iv.coverage_findings(_INVENTED, (0, 1), _cov_key)), 1)
+check("and a pingable kind never lands in the coverage rollup",
+      iv.coverage_findings(
+          [("com.kipi.d", "enabled_but_declared_paused", "d")], (1, 1), _cov_key), [])
 
 
 if failures:

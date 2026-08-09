@@ -291,11 +291,21 @@ def send_ping(message):
     leave the machine; it never said this one did.
 
     The POST outcome exists in exactly one place -- inside slack-notify.sh -- so
-    it is now REPORTED from there (KIPI_NOTIFY_VERDICT_FILE) and read by one
-    shared function rather than re-inferred here. Borrowed through the same lazy
-    importlib shape as `notify_channel_configured`, and a load failure answers
-    False: delivery unknown reads as not delivered, which costs a duplicate ping
-    and never a missed one.
+    it is now REPORTED from there, through that script's EXIT CONTRACT (ASK-534
+    gave it distinct codes after auditing every caller), and read by one shared
+    function, `fable-escalate.notify_send`, rather than re-inferred here. Borrowed
+    through the same lazy importlib shape as `notify_channel_configured`, and a
+    load failure answers False: delivery unknown reads as not delivered, which
+    costs a duplicate ping and never a missed one.
+
+    Scar (codex review of PR #134, round 7): for one merge this paragraph credited
+    an env-var side channel that this branch built and then DELETED when
+    origin/main's exit contract replaced it. The code was right; the comment named
+    a mechanism that existed nowhere in this file, which is the reading the next
+    branch would have trusted. The deleted design is recorded once, in
+    `fable-escalate.notify_send`'s docstring where that decision was made, and
+    NOT restated here -- so this file naming it again is by definition stale, and
+    test 15 in test_launchd_health_check.py fails on the bare name.
 
     HONEST BOUNDARY: True means Slack accepted the POST, not that a human saw it.
     slack-notify.sh's fixture guard refuses to page on a loopback
@@ -445,6 +455,29 @@ def file_linear_findings(problems, apply=True):
 # declared landed before it stops being counted as unfiled.
 LANDED_BUCKETS = ("created", "existing", "updated", "reopened", "relisted")
 
+# Buckets that mean "this RUN put something in front of a human". A strict subset
+# of LANDED_BUCKETS, and the difference is the whole point.
+#
+# Scar (codex review of PR #135, major, reproduced before fixing): run_intent_check
+# read LANDED_BUCKETS for its delivery verdict. Two different questions were being
+# answered by one list. "Does the board HAVE this finding" is filing coverage, and
+# `existing` belongs in it -- the issue is there, nothing is unfiled. "Did anyone
+# get TOLD on this run" is delivery, and `existing` is precisely the case where the
+# answer is no: the issue was filed on some earlier run, this run changed nothing,
+# and Linear sends no notification for a no-op. So a drift whose issue was already
+# open, on a run where the Slack webhook was dead, handed the state writer
+# delivered=True. Measured on the shipped code: commit(delivered=True) with
+# slack=False and existing=1, and the real ping_decision then returns nothing for
+# 12 consecutive runs -- the next page at run 14, six days at 2 runs/day, for an
+# alert that never left the machine.
+#
+# Declared as its own allowlist rather than derived by subtracting `existing`,
+# because subtraction fails OPEN: a bucket added to LANDED_BUCKETS upstream would
+# silently become delivery and suppress alerts. test_launchd_health_check.py pins
+# the difference between the two lists as exactly {"existing"}, so a new bucket
+# goes red until somebody decides which of the two questions it answers.
+DELIVERING_BUCKETS = ("created", "updated", "reopened", "relisted")
+
 
 def unfiled_count(outcome):
     """How many findings were OWED an issue and did not get one.
@@ -504,6 +537,48 @@ def _intent_module():
     return _INTENT
 
 
+def file_intent_coverage(intent, findings, coverage_tuple, dry_run):
+    """File the coverage gap as ONE Linear issue. Pages nobody. Returns nothing.
+
+    A SEPARATE call from the drift filing, and it returns nothing on purpose.
+    Scar (codex review of PR #135, major): the undeclared set reached no channel
+    at all, and the obvious fix -- append the roll-up to the drift batch -- would
+    have walked straight back into rounds 8 and 9. `run_intent_check` computes its
+    delivery verdict from the buckets `file_findings` returns, and a coverage
+    issue landing `created` in that same outcome would have counted as the DRIFT
+    alert's delivery: commit(delivered=True) with the real page still on the
+    floor, and 12 silent runs after it. Two questions, two calls, and this one
+    hands its caller no number it could accidentally add.
+
+    Deliberately BEFORE the `if not due` return in run_intent_check. Coverage is
+    the state of a run with no drift at all -- 47 undeclared jobs and nothing due
+    is the shape of every run on this machine today -- so filing it only on a
+    drifting run would leave it as unreachable as it was.
+
+    Never raises, for the same reason as the rest of this file: a watchdog that
+    dies over a Linear failure stops watching launchd.
+    """
+    try:
+        rolled = intent.coverage_findings(
+            findings, coverage_tuple, _fleet_health().finding_key)
+        if not rolled:
+            return
+        outcome = _fleet_health().file_findings(
+            rolled, apply=not dry_run, filer="launchd-intent-verify.py")
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent coverage NOT filed to Linear: {exc}", file=sys.stderr)
+        return
+    declared, total = coverage_tuple
+    landed = sum(outcome.get(bucket, 0) for bucket in LANDED_BUCKETS)
+    # Says which of the two it is. "0 filed" reads as "nothing to report" unless
+    # the line also says a gap existed -- the `unfiled=` scar on
+    # linear_report_line, one detector over.
+    print(f"intent coverage {'would be' if dry_run else ''} filed: "
+          f"{total - declared} of {total} installed job(s) undeclared, "
+          f"{landed} of 1 rollup issue(s) on the board"
+          + ("" if landed else " -- THE GAP REACHED NOBODY"))
+
+
 def run_intent_check(dry_run):
     """Verify declared intent against launchd's override DB; print, ping, file.
 
@@ -530,6 +605,7 @@ def run_intent_check(dry_run):
     for label, kind, detail in findings:
         print(f"INTENT-{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
+    file_intent_coverage(intent, findings, (declared, total), dry_run)
 
     # `commit` records the consecutive-run counts and is deliberately called
     # AFTER delivery on every path that has one. Recording first meant a crash
@@ -550,14 +626,19 @@ def run_intent_check(dry_run):
             intent.linear_findings(drift, _fleet_health().finding_key),
             apply=True, filer="launchd-intent-verify.py")
         unfiled = max(len(drift) - sum(outcome.get(b, 0) for b in LANDED_BUCKETS), 0)
+        # Counted from the outcome directly, NOT as len(drift) - unfiled. The two
+        # numbers answer different questions (see DELIVERING_BUCKETS) and deriving
+        # one from the other is what let `existing` cross from coverage into
+        # delivery in the first place.
+        told = sum(outcome.get(b, 0) for b in DELIVERING_BUCKETS)
     except Exception as exc:  # noqa: BLE001
         print(f"intent findings NOT filed to Linear: {exc}", file=sys.stderr)
         unfiled = len(drift)
+        told = 0
 
     message = intent.ping_message(due)
     if unfiled:
         message += f" [NOT filed to Linear: {unfiled}]"
-    landed = max(len(drift) - unfiled, 0)
     delivered = send_ping(message)
 
     # Deliver-then-record is only half the contract. The other half is that
@@ -575,11 +656,38 @@ def run_intent_check(dry_run):
     # which had its own copy of the ordering rule and got it wrong). What this
     # caller owns is the part the writer cannot see -- WHICH channel failed --
     # so it reports that and hands the writer a truthful verdict.
-    if not (landed or delivered):
-        print(f"intent alert NOT delivered (linear=0, slack=not delivered) -- "
-              f"run counts NOT recorded, the next run re-alerts "
-              f"{len(drift)} job(s)", file=sys.stderr)
-    commit(delivered=bool(landed or delivered))
+    #
+    # The verdict is a claim about the WHOLE batch, because commit() is one call
+    # that writes the run counts for every label in it. Scar (codex review of
+    # PR #135, major, reproduced before fixing): the verdict was `told or
+    # delivered`, and `told` counts findings. One job in a batch of two landing
+    # `created` therefore recorded the OTHER one as seen. `file_findings` loops
+    # per finding (fleet-health-daily.py), so a batch coming back part `created`
+    # and part `existing` (already on the board, Linear notifies nobody) or part
+    # `errors` (that one write refused) is the ordinary shape of a multi-job run,
+    # not an exotic one. Measured on the shipped code with created=1, existing=1
+    # and a dead webhook: commit(delivered=True), and the real ping_decision then
+    # returns nothing for 12 consecutive runs for the job nobody was told about.
+    #
+    # Every prior round's fixture was a batch of ONE, where partial cannot occur.
+    # That is how this class survived four reviews of this same function, so the
+    # suite now pins the two-job batch specifically.
+    #
+    # Slack is compared against the same denominator on purpose: `ping_message`
+    # renders one line covering every due job, so a delivered ping tells the
+    # founder about all of them and a dead one about none.
+    everyone_told = told >= len(drift)
+    if not (everyone_told or delivered):
+        # Zero and partial are reported as different words. They are different
+        # states -- "the alert went nowhere" and "half of it went somewhere" --
+        # and an operator reading the run log has to be able to tell which one
+        # they are looking at without counting.
+        what = "NOT delivered" if not told else "only PARTLY delivered"
+        print(f"intent alert {what} (linear: {told} of {len(drift)} job(s) "
+              f"newly filed or changed, slack: not delivered) -- run counts "
+              f"NOT recorded, the next run re-alerts {len(drift)} job(s)",
+              file=sys.stderr)
+    commit(delivered=bool(everyone_told or delivered))
 
 
 def problems_to_ping(problems, state, now):
