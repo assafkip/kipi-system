@@ -81,9 +81,26 @@ def _weight(row):
     exists to hold: one junk field in one row took down every other row with it.
     Unreadable weight means unusable row, which is what a zero already means here.
     """
+    raw = row.get("weight", 1.0)
+    # A JSON boolean is a TYPE error, not a magnitude, and it has to be rejected
+    # BEFORE float() because bool subclasses int in Python: float(True) is 1.0,
+    # so `{"weight": true}` would otherwise read as a perfectly ordinary row.
+    if isinstance(raw, bool):
+        return None
     try:
-        value = float(row.get("weight", 1.0) or 0)
-    except (TypeError, ValueError):
+        # float(raw), NOT float(raw or 0). The `or 0` conflated FALSY with ZERO,
+        # so [], {}, "" and null each became 0.0: retained on the row, excluded
+        # from active_exemplars by `> 0`, and never counted as decay (codex
+        # minor, PR #128). float() rejects all of them on its own -- TypeError
+        # for the containers and null, ValueError for the empty string -- while
+        # a real 0 still parses to 0.0 and stays a deliberate zero rather than
+        # damage.
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is the one ASK-508 missed (ASK-512): a plain JSON
+        # integer like 10**400 is valid, parses as JSON, and blows up in float()
+        # without being either a TypeError or a ValueError -- so the
+        # degrade-only loader still died on one row of valid input.
         return None
     # FINITENESS, not a list of the spellings someone reported. float() PARSES
     # "NaN", "inf" and "Infinity", so the try/except above never fired for them
