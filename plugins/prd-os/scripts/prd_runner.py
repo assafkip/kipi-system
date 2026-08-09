@@ -1296,19 +1296,99 @@ def _verify_resolution_ref(cfg: Config, ref: str) -> dict:
     }
 
 
+# A spec in one of these states is finished work. Finished work must not carry
+# a live amnesty. Spelled both ways because specs are hand-edited.
+_TERMINAL_SPEC_STATES = frozenset({
+    "archived", "closed", "cancelled", "canceled", "done", "abandoned",
+})
+
+
+def _spec_status(spec: Path) -> str | None:
+    """The `status:` frontmatter value, lowercased, or None if it has none."""
+    try:
+        lines = spec.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        s = line.strip()
+        if s.startswith("status:"):
+            return s.split(":", 1)[1].strip().strip("\"'").lower()
+    return None
+
+
+def _is_git_tracked(repo_root, spec: Path) -> bool:
+    """Whether git has this path committed. False for every unprovable case.
+
+    Durability, not tidiness: a spec that exists only in one working tree
+    vanishes on a fresh checkout. `_enforce_wiring_contract` (issue_runner)
+    already blocks issue close on exactly this test, after a created-but-unstaged
+    file passed every gate and then disappeared. A unit of work that can narrow a
+    fleet safety gate is held to the same bar.
+    """
+    import subprocess as _subprocess
+    try:
+        out = _subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(spec)],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        # git missing, not a repo, timeout: unprovable. Refusing here costs a
+        # red gate; guessing True would hand out the amnesty this exists to stop.
+        return False
+    return out.returncode == 0
+
+
+def _scope_is_live(cfg: Config, scope_id: str, spec_dir: Path) -> bool:
+    """Whether `scope_id` is PROVABLY a live, durable unit of work (ASK-527).
+
+    Three independent proofs, all deterministic and none of them a clock: the
+    spec exists, git has it tracked, and its status is not terminal. Any one
+    failing -- or being unanswerable -- means no scope, which falls through to
+    the fail-closed path in cmd_gates where every open item blocks.
+    """
+    spec = spec_dir / f"{scope_id}.md"
+    # No separate existence check: `git ls-files --error-unmatch` already answers
+    # False for a path that is not there, and a redundant branch here would be a
+    # line no mutation test can kill. The distinction between "missing" and
+    # "untracked" is preserved where it earns its keep -- the operator-facing
+    # message in _scope_refusal_note.
+    if not _is_git_tracked(cfg.repo_root, spec):
+        return False
+    status = _spec_status(spec)
+    # A spec with no status frontmatter is unprovable, not permissive.
+    return status is not None and status not in _TERMINAL_SPEC_STATES
+
+
 def _active_scope(cfg: Config) -> str | None:
     """The id `gates run` holds THIS run accountable for, or None.
 
     The active issue wins over the active PRD: an issue is the narrower unit of
-    work and both state files exist at once during closeout.
+    work and both state files exist at once during closeout. A DEAD active issue
+    does not fall back to the PRD -- that state is inconsistent, and resolving an
+    inconsistency in the direction of less enforcement is how amnesties happen.
 
     Returning None is not a failure, it is the fail-closed signal -- see
-    cmd_gates, where no scope means every open item blocks. A scope that
-    silently defaulted to something would be exactly the amnesty this must
-    never grant.
+    cmd_gates, where no scope means every open item blocks.
+
+    WHY LIVENESS IS PROVEN AND NOT ASSUMED (ASK-527). This used to return the id
+    the state file named, full stop. Measured on kipi-system 2026-08-09: the file
+    named `prd-judgment-compiler-not-deployed-2026-08-05`, still at status "idea"
+    three days after it was loaded, whose spec was present on disk but never
+    committed. `gates run` exited 0 over 635 open items. A forgotten draft in one
+    working tree was silently granting a standing amnesty over the whole ledger --
+    the same lapse the age-cutoff design was rejected for in ASK-526, through a
+    different door.
+
+    An mtime age cap was rejected: it re-introduces a clock deciding what nobody
+    decided, and mtime does not survive checkout, rsync or `kipi update`, so the
+    gate would flap for reasons unrelated to the work. "Last ledger write by this
+    scope" was rejected as perverse -- a scope would stay alive by producing MORE
+    spillover.
     """
-    for path, key in ((cfg.active_issue_state_path, "issue_id"),
-                      (cfg.active_prd_state_path, "prd_id")):
+    for path, key, spec_dir in (
+        (cfg.active_issue_state_path, "issue_id", cfg.issues_dir),
+        (cfg.active_prd_state_path, "prd_id", cfg.prds_dir),
+    ):
         if not path.is_file():
             continue
         try:
@@ -1318,7 +1398,52 @@ def _active_scope(cfg: Config) -> str | None:
         # `_empty_state()` writes the key with a None value on clear, so a
         # cleared state file must read as "no scope", not as scope "None".
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            scope_id = value.strip()
+            return scope_id if _scope_is_live(cfg, scope_id, spec_dir) else None
+    return None
+
+
+def _scope_refusal_note(cfg: Config) -> str | None:
+    """Display-only: WHY a named active scope was refused, or None.
+
+    A fail-closed run over a large ledger must be red for a NAMEABLE, one-command
+    reason ("this spec was never committed"), not just red. A red gate whose cause
+    the operator cannot see is the uninformative-roll-up defect from ASK-526
+    reappearing as the cure for ASK-527.
+
+    Deliberately separate from `_scope_is_live`: the predicate answers one
+    question and is what the gate depends on, while this only builds a sentence.
+    A single function returning both would make the message a load-bearing part
+    of the security decision.
+    """
+    for path, key, spec_dir, kind in (
+        (cfg.active_issue_state_path, "issue_id", cfg.issues_dir, "issue"),
+        (cfg.active_prd_state_path, "prd_id", cfg.prds_dir, "PRD"),
+    ):
+        if not path.is_file():
+            continue
+        try:
+            value = json.loads(path.read_text()).get(key)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        sid = value.strip()
+        spec = spec_dir / f"{sid}.md"
+        where = _relpath(cfg, spec)
+        if not spec.is_file():
+            return f"active {kind} '{sid}' refused: spec {where} does not exist"
+        if not _is_git_tracked(cfg.repo_root, spec):
+            return (f"active {kind} '{sid}' refused: spec {where} is not git-tracked, "
+                    f"so it is not a durable unit of work. Commit it, or clear the "
+                    f"active state, then re-run")
+        status = _spec_status(spec)
+        if status is None:
+            return f"active {kind} '{sid}' refused: spec {where} has no status frontmatter"
+        if status in _TERMINAL_SPEC_STATES:
+            return (f"active {kind} '{sid}' refused: spec status is '{status}' "
+                    f"(terminal). Finished work carries no amnesty")
+        return None
     return None
 
 
@@ -1525,6 +1650,9 @@ def cmd_gates(cfg: Config, args) -> int:
         # that wiring-check.md tells you to run still answers for the WHOLE
         # ledger, so the scoping can never hide the tail from an audit.
         attributable, inherited = openv, []
+        note = _scope_refusal_note(cfg)
+        if note:
+            print(f"[scope] {note}")
     if attributable:
         names = ", ".join(r["id"] for r in attributable)
         detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})"

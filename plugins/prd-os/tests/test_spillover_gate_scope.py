@@ -44,11 +44,30 @@ def run(repo: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(repo), check=True,
+                   capture_output=True, text=True)
+
+
+def _commit_live_spec(repo: Path, sub: str, sid: str) -> None:
+    """A scope only narrows the gate when it is PROVABLY live (ASK-527): spec
+    present, git-tracked, non-terminal status. These tests are about which items
+    block, so their setup must satisfy that precondition -- the assertions below
+    are unchanged."""
+    d = repo / ".prd-os" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{sid}.md").write_text(f"---\nid: {sid}\nstatus: draft\n---\n")
+    _git(repo, "add", "-f", f".prd-os/{sub}/{sid}.md")
+    _git(repo, "commit", "-q", "-m", f"add {sid}")
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     r = tmp_path / "repo"
     (r / ".prd-os").mkdir(parents=True)
-    (r / ".git").mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "user.email", "t@example.com")
+    _git(r, "config", "user.name", "t")
     (r / ".prd-os" / "config.json").write_text(json.dumps({
         "config_schema_version": 1,
         "prds_dir": ".prd-os/prds",
@@ -56,6 +75,9 @@ def repo(tmp_path: Path) -> Path:
         "findings_dir": ".prd-os/findings",
         "state_dir": ".claude/state",
     }))
+    (r / "README.md").write_text("fixture\n")
+    _git(r, "add", "README.md")
+    _git(r, "commit", "-q", "-m", "init")
     return r
 
 
@@ -63,12 +85,14 @@ def _set_active_issue(repo: Path, issue_id: str) -> None:
     d = repo / ".claude" / "state"
     d.mkdir(parents=True, exist_ok=True)
     (d / "active-issue.json").write_text(json.dumps({"issue_id": issue_id}))
+    _commit_live_spec(repo, "issues", issue_id)
 
 
 def _set_active_prd(repo: Path, prd_id: str) -> None:
     d = repo / ".claude" / "state"
     d.mkdir(parents=True, exist_ok=True)
     (d / "active-prd.json").write_text(json.dumps({"prd_id": prd_id}))
+    _commit_live_spec(repo, "prds", prd_id)
 
 
 def _add(repo: Path, sid: str, source: str, desc: str = "a real finding") -> None:
