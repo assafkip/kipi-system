@@ -99,8 +99,9 @@ def _active_prd(repo: Path, prd_id: str) -> None:
     }))
 
 
-def _write_spec(repo: Path, prd_id: str, status: str, *, tracked: bool) -> None:
-    d = repo / ".prd-os" / "prds"
+def _write_spec(repo: Path, prd_id: str, status: str, *, tracked: bool,
+                kind: str = "prds") -> None:
+    d = repo / ".prd-os" / kind
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{prd_id}.md"
     p.write_text(f"---\nid: {prd_id}\nstatus: {status}\n---\n\n# {prd_id}\n")
@@ -217,11 +218,40 @@ def test_tracked_live_spec_still_scopes(repo):
     assert "600 inherited" in out, f"the census stopped naming the backlog.\nout={out}"
 
 
-def test_explicit_scope_flag_is_honoured_without_a_spec(repo):
-    """`--scope` is a caller ASSERTING accountability, which is a decision by
-    somebody. The defect was amnesty INFERRED from a file nobody looked at, so
-    the explicit flag stays honoured and is not required to name a spec."""
+def test_explicit_scope_without_a_live_spec_cannot_grant_amnesty(repo):
+    """`--scope` must clear the SAME liveness bar as an inferred scope.
+
+    THIS TEST USED TO ASSERT THE OPPOSITE, and that was the defect. The old
+    rationale was "`--scope` is a caller ASSERTING accountability, which is a
+    decision by somebody", so the flag was honoured without naming a live spec.
+    Codex round 1 on PR #131 reproduced what that actually buys, against the real
+    638-record ledger:
+
+        blocking_unscoped=19   blocking_fake_scope=1   fake_scope_live=False
+
+    A scope id that names nothing suppressed 18 inherited majors. That is a
+    hand-clear with extra steps, and no-orphan-findings.md refuses hand-clears
+    everywhere else. Caller intent is not durable proof: the caller is usually an
+    unattended agent, and "somebody decided" is exactly what nobody can audit at
+    3am. An unverifiable assertion is not a decision, it is a bypass."""
     _seed_backlog(repo, 600)
+    run(repo, "spillover", "add", "--source", "ASK-9", "--desc", "mine", "--id", "sp-mine",
+        "--severity", "major")
+    g = run(repo, "gates", "run", "--scope", "ASK-9")
+    out = g.stdout + g.stderr
+    assert g.returncode != 0, f"a scope naming no live spec granted amnesty.\nout={out}"
+    # Fail-closed means the WHOLE backlog answers, not just the caller's own item.
+    assert "600 inherited" not in out, (
+        f"the bogus scope still scoped the run; 600 items were filed as "
+        f"'inherited' and stopped blocking.\nout={out}")
+
+
+def test_explicit_scope_with_a_live_spec_still_scopes(repo):
+    """The flag is not deleted, it is verified. A `--scope` naming a tracked, live
+    spec still scopes -- otherwise the fix is 'remove the feature', which is not
+    the ask and would make the flag a lie."""
+    _seed_backlog(repo, 600)
+    _write_spec(repo, "ASK-9", "in-progress", tracked=True, kind="issues")
     run(repo, "spillover", "add", "--source", "ASK-9", "--desc", "mine", "--id", "sp-mine",
         "--severity", "major")
     g = run(repo, "gates", "run", "--scope", "ASK-9")
