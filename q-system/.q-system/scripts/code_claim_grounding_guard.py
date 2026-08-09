@@ -63,6 +63,7 @@ except Exception as exc:  # pragma: no cover - exercised via the env seam above
 
 MANIFEST_UNREADABLE = "unreadable"
 HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
+NOTIFY_STATE = "q-system/output/.grounding-manifest-notified.json"
 
 REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
 SKIP_MARKER = "grounding-guard-skip"
@@ -199,6 +200,56 @@ def manifest_health(repo=REPO):
                 f"system_manifest.health() raised {type(exc).__name__}: {exc}")
 
 
+def _notify_once(detail):
+    """Page the founder AT MOST once per 24h per distinct problem. Returns True if sent.
+
+    WHY A PAGE AND NOT JUST STDERR (Codex round 3, PR #132, MAJOR). A Stop hook that
+    exits 0 has no operator-visible channel: stderr is not surfaced on a pass, so the
+    warning reached nobody on exactly the run that matters -- the 3am scheduled agent
+    that exits normally while subsystem coverage is silently off. `founder-notifications.md`
+    makes slack-notify.sh the one channel for "something the founder would want to know
+    while away", and this is that.
+
+    DEDUPED ON PURPOSE. The manifest state is stable, so an undeduped ping would fire
+    every single turn. A checker that cries wolf trains the operator to ignore it,
+    which costs the real alert later -- so the alarm is keyed on the PROBLEM, not the
+    turn, and re-arms daily.
+
+    Never raises and never blocks: slack-notify.sh is already a silent no-op when no
+    webhook resolves, and a notification failure must not take down the Stop hook.
+    """
+    try:
+        import hashlib
+        import subprocess
+        import time
+        script = REPO / "q-system" / ".q-system" / "scripts" / "slack-notify.sh"
+        if not script.is_file():
+            return False  # also the test chokepoint: a temp REPO has no script
+        key = hashlib.sha256(detail.encode("utf-8", "ignore")).hexdigest()[:16]
+        state = REPO / NOTIFY_STATE
+        seen = {}
+        if state.is_file():
+            try:
+                seen = json.loads(state.read_text() or "{}")
+            except Exception:
+                seen = {}
+        now = time.time()
+        if now - float(seen.get(key, 0)) < 86400:
+            return False
+        seen[key] = now
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(seen))
+        subprocess.run(
+            ["bash", str(script),
+             "grounding guard: subsystem-coverage check is OFF -- the manifest is "
+             "unreadable. " + detail[:180] +
+             " Fix: python3 q-system/.q-system/scripts/system_manifest.py check"],
+            capture_output=True, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
 def _record_health(status, detail, enforced):
     """Append one row so the warn-phase rate is MEASURABLE against real runs.
 
@@ -238,6 +289,8 @@ def main():
     if status == MANIFEST_UNREADABLE:
         enforce = os.environ.get("KIPI_GROUNDING_MANIFEST_ENFORCE") == "1"
         _record_health(status, detail, enforce)
+        # Reach a human who is not watching stderr. Deduped to once/24h per problem.
+        paged = _notify_once(detail)
         sys.stderr.write(
             f"GROUNDING GUARD ({'blocked' if enforce else 'warning'}): the manifest "
             f"is UNREADABLE, so the subsystem-coverage check (check two) is not "
@@ -245,7 +298,9 @@ def main():
             "This is the fail-open the guard is weakest on: it goes quiet on exactly "
             "the corrupted evidence that should alarm it (ASK-533). An ABSENT manifest "
             "is fine and silent; this one is present and broken.\n"
-            "Fix: `python3 q-system/.q-system/scripts/system_manifest.py check`\n")
+            "Fix: `python3 q-system/.q-system/scripts/system_manifest.py check`\n"
+            + ("Founder paged via slack-notify (once per 24h per problem).\n"
+               if paged else ""))
         if enforce:
             sys.exit(2)
     records = _load_records(payload.get("transcript_path", ""))

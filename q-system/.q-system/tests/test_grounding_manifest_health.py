@@ -301,6 +301,68 @@ def test_accessors_do_not_crash_on_a_wrong_type_container(tmp_path):
             f"{raw} was not reported as unreadable")
 
 
+def _stub_notifier(repo: Path) -> Path:
+    """A stand-in slack-notify.sh that RECORDS what it was called with.
+
+    Asserting on stderr proves the guard talked to itself. This asserts the alarm's
+    own recorder fired, which is the thing that reaches a human who is not watching
+    the terminal.
+    """
+    d = repo / "q-system" / ".q-system" / "scripts"
+    d.mkdir(parents=True, exist_ok=True)
+    sink = repo / "paged.txt"
+    sh = d / "slack-notify.sh"
+    sh.write_text(f'#!/bin/bash\nprintf "%s\\n" "$1" >> "{sink}"\n')
+    sh.chmod(0o755)
+    return sink
+
+
+def test_an_unreadable_manifest_pages_a_human_not_just_stderr(tmp_path):
+    """Codex round 3, PR #132, MAJOR. A Stop hook that exits 0 has no operator-visible
+    channel -- stderr is not surfaced on a pass. So on the run that matters most, the
+    3am scheduled agent that exits normally, the warning reached nobody at all."""
+    repo = _repo(tmp_path)
+    sink = _stub_notifier(repo)
+    _manifest_file(repo).write_text("{oops")
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
+    assert sink.is_file(), (
+        "nobody was paged; the warning existed only on stderr, which a Stop hook "
+        "exiting 0 does not surface")
+    body = sink.read_text()
+    assert "manifest" in body.lower() and "system_manifest.py check" in body, (
+        f"the page does not say what broke or what to run: {body!r}")
+
+
+def test_the_page_is_deduped_so_it_cannot_become_per_turn_noise(tmp_path):
+    """The manifest state is stable, so an undeduped ping fires EVERY turn. A checker
+    that cries wolf trains the operator to ignore it, which costs the real alert
+    later -- the reason false alarms rank as major in this repo's own severity
+    anchors. Keyed on the problem, not the turn."""
+    repo = _repo(tmp_path)
+    sink = _stub_notifier(repo)
+    _manifest_file(repo).write_text("{oops")
+    for _ in range(3):
+        _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert sink.is_file(), "never paged at all"
+    assert len(sink.read_text().strip().splitlines()) == 1, (
+        f"paged {len(sink.read_text().strip().splitlines())} times across 3 turns; "
+        "this is the per-turn noise that gets an alarm muted")
+
+
+def test_a_healthy_manifest_never_pages(tmp_path):
+    """NEGATIVE CONTROL on the alarm itself: it must be silent when nothing is wrong,
+    or every one of the assertions above is satisfied by an alarm that always fires."""
+    repo = _repo(tmp_path)
+    sink = _stub_notifier(repo)
+    _manifest_file(repo).write_text(json.dumps({
+        "version": 1,
+        "subsystems": [{"id": "s1", "name": "S One",
+                        "members": [{"ref": "a.py", "kind": "file"}]}]}))
+    _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert not sink.exists(), f"paged on a HEALTHY manifest: {sink.read_text()!r}"
+
+
 if __name__ == "__main__":
     # The capability gate runs `python3 <file>`, NOT pytest (capability-gate.py:423).
     # Without this block the module would merely DEFINE its tests and exit 0 -- a
