@@ -11,6 +11,7 @@ suite at edit time, not inside the publishing run.
 from __future__ import annotations
 
 import json
+import math
 import os
 
 EXEMPLARS = "exemplars.jsonl"
@@ -69,25 +70,72 @@ def read_json(path):
         return None
 
 
+def _weight(row):
+    """A row's weight as a number, or None when the field is not a number
+    (ASK-508, sp-18daaa21 + the codex minor on PR #127).
+
+    read_jsonl only guarantees the LINE parsed, never that a numeric field holds a
+    number -- so `{"weight": "heavy"}` is valid JSON, is counted as no skip, and
+    reached a bare float() that raised ValueError from inside active_exemplars().
+    That walked straight past the degrade-without-dying boundary this loader
+    exists to hold: one junk field in one row took down every other row with it.
+    Unreadable weight means unusable row, which is what a zero already means here.
+    """
+    try:
+        value = float(row.get("weight", 1.0) or 0)
+    except (TypeError, ValueError):
+        return None
+    # FINITENESS, not a list of the spellings someone reported. float() PARSES
+    # "NaN", "inf" and "Infinity", so the try/except above never fired for them
+    # and they walked straight through the round-1 fix. NaN then failed `> 0`
+    # and vanished uncounted -- the exact silent decay that fix existed to end --
+    # while inf PASSED `> 0` and survived as a usable exemplar carrying infinite
+    # weight, so the most nonsensical row in a corpus read as its most valid one.
+    # Codex reported only the NaN case; fixing that alone would have left inf.
+    return value if math.isfinite(value) else None
+
+
+def _drop_malformed_weights(rows):
+    """(usable rows, count dropped). Partitioned at LOAD, never in a filter.
+
+    The first cut of the crash fix coerced a junk weight to 0.0 inside
+    active_exemplars() and said nothing, so the row vanished and skipped_rows --
+    the deadman signal validation and provenance read -- stayed clean. A corpus
+    rotting to zero usable rows would have looked identical to a healthy one.
+
+    Counted HERE because __init__ is the single owner of skipped_rows. Doing it
+    in active_exemplars() would make a read path mutate the decay count, so the
+    number would change depending on how many times a caller happened to filter.
+    """
+    usable, dropped = [], 0
+    for row in rows:
+        if _weight(row) is None:
+            dropped += 1
+        else:
+            usable.append(row)
+    return usable, dropped
+
+
 class Voice:
     """Everything one voice/ dir holds, read once, with decay counts."""
 
     def __init__(self, voice_dir):
         self.voice_dir = voice_dir
         self.exemplars, ex_skipped = read_jsonl(os.path.join(voice_dir, EXEMPLARS))
+        self.exemplars, wt_skipped = _drop_malformed_weights(self.exemplars)
         self.corrections, co_skipped = read_jsonl(os.path.join(voice_dir, CORRECTIONS))
         self.identity = read_text(os.path.join(voice_dir, IDENTITY))
         self.pov = read_text(os.path.join(voice_dir, POV))
         self.lexicon = read_json(os.path.join(voice_dir, LEXICON)) or {}
         self.fingerprint = read_json(os.path.join(voice_dir, FINGERPRINT))
-        self.skipped_rows = ex_skipped + co_skipped
+        self.skipped_rows = ex_skipped + co_skipped + wt_skipped
 
     def active_exemplars(self):
         """Usable rows only: active status, non-empty text, weight above zero."""
         return [r for r in self.exemplars
                 if r.get("status", "active") == "active"
                 and (r.get("text") or "").strip()
-                and float(r.get("weight", 1.0) or 0) > 0]
+                and (_weight(r) or 0) > 0]
 
     def active_corrections(self):
         """Rows still carried as prose. A `promoted` row's gate carries it instead."""

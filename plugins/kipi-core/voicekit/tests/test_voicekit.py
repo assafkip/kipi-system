@@ -71,6 +71,52 @@ class TestFingerprint:
         assert p["short_share"] > s["short_share"]
         assert p["first_person_rate"] > s["first_person_rate"]
 
+    def test_first_person_rate_is_the_same_sentence_cased(self, ):
+        """Capitalization must not move a MEASUREMENT (ASK-508, sp-83d62639).
+
+        _FIRST_PERSON was the only pattern in fingerprint.py without re.I, so
+        "We shipped" and "My take" scored as impersonal and the same prose
+        measured differently depending on where a sentence happened to break.
+        The band this feeds is blocking, so a case-sensitive count is a gate
+        that moves under the text.
+        """
+        # No bare lowercase "i" here on purpose: the I-forms stay case-sensitive
+        # so that i.e. cannot read as first person (the test below), which means
+        # "i" and "I" are NOT expected to measure the same. The words that vary
+        # innocently with sentence position are the ones this pins.
+        lower = "we broke it. my fault, our call, blame me."
+        upper = "We broke it. My fault, Our call, blame Me."
+        assert (fingerprint.metrics(upper)["first_person_rate"]
+                == fingerprint.metrics(lower)["first_person_rate"])
+
+    def test_bare_i_in_an_abbreviation_is_not_first_person(self, ):
+        """The guard on the fix above: re.I across the whole pattern would make
+        \\bi\\b match the "i" in "i.e.", inventing first-person voice in prose
+        that has none. The I-forms stay case-sensitive; only the genuinely
+        case-varying words become case-insensitive.
+        """
+        assert fingerprint.metrics("The gate, i.e. the hook, ran.")[
+            "first_person_rate"] == 0.0
+
+    def test_bands_from_the_pre_fix_instrument_are_stale(self, ):
+        """A LITERAL version, not a relative one (ASK-508, codex major on #127).
+
+        first_person_rate changed meaning when the case classes landed, so bands
+        computed before that measure occurrences the old instrument could not
+        see. METRICS_VERSION 2 is the value that shipped WITH the old regex, so
+        a doc carrying it must now read as skewed or validate.py keeps treating
+        pre-fix bands as current -- in a BLOCKING band that runs unattended,
+        which means valid founder text refused at 3am by a gate calibrated to a
+        different instrument.
+
+        Asserted against the literal 2 on purpose. The staleness test below uses
+        METRICS_VERSION - 1, which follows the constant and therefore stays green
+        whether or not anyone remembers to bump it -- it cannot catch a missing
+        bump, which is the whole failure mode here.
+        """
+        assert fingerprint.version_skew({"metrics_version": 2}), (
+            "bands from the pre-case-class instrument must not read as current")
+
     def test_compute_then_score_roundtrip(self):
         texts = [PUNCHY, PUNCHY + " More of it.", "Short. Very. It broke. I saw."]
         fp = fingerprint.compute(texts, generated_at="2026-08-06",
@@ -120,6 +166,61 @@ class TestCorpus:
         d.mkdir()
         (d / corpus.EXEMPLARS).write_text("{a\n{b\n{c\n")
         assert corpus.load(str(d)).skipped_rows == 3
+
+    def test_nonnumeric_weight_degrades_instead_of_raising(self, tmp_path):
+        """A row can be VALID JSON and still carry junk in a numeric field
+        (ASK-508, sp-18daaa21).
+
+        read_jsonl only guarantees the LINE parsed, so it counts no skip here and
+        float() raised ValueError inside active_exemplars() -- past the
+        degrade-without-dying boundary the loader exists to hold. The usable rows
+        around it must still come back.
+        """
+        rows = _rows(2)
+        rows[0]["weight"] = "heavy"
+        v = corpus.load(_voice_dir(tmp_path, rows=rows))
+        assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
+            "a junk weight must drop its own row and spare the rest")
+
+    def test_nonnumeric_weight_is_counted_as_decay(self, tmp_path):
+        """Dropping the row is half the job; the drop has to be VISIBLE
+        (ASK-508, codex minor on #127).
+
+        skipped_rows is the deadman signal validation and provenance read, and
+        the first cut of the crash fix returned 0.0 for a junk weight and said
+        nothing. A corpus quietly rotting to zero usable rows would have looked
+        identical to a healthy one. A malformed field is a malformed ROW, the
+        same class as a torn line, so it is counted where torn lines are.
+        """
+        rows = _rows(2)
+        rows[0]["weight"] = "heavy"
+        v = corpus.load(_voice_dir(tmp_path, rows=rows))
+        assert v.skipped_rows == 1, (
+            "a junk weight must show up as decay, not vanish (got %r)"
+            % (v.skipped_rows,))
+
+    def test_non_finite_weights_are_counted_as_decay(self, tmp_path):
+        """NaN and the infinities go through the same door as a junk string
+        (ASK-508, codex minor on PR #127 round 2).
+
+        float("NaN") and float("inf") PARSE, so the previous fix's try/except
+        never fired. NaN then fails `> 0` and vanished uncounted, exactly the
+        silent decay the round-1 fix was supposed to end. inf is worse in kind:
+        it passes `> 0` and survives as a usable exemplar carrying infinite
+        weight, so a nonsense row reads as the most valid row in the corpus.
+
+        Fixing only the reported NaN would leave that. A weight has to be a
+        real number to mean anything, so the check is finiteness, not a list of
+        the spellings someone happened to report.
+        """
+        for spelling in ("NaN", "inf", "-inf", "Infinity"):
+            rows = _rows(2)
+            rows[0]["weight"] = spelling
+            v = corpus.load(_voice_dir(tmp_path, rows=rows))
+            assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
+                "%r must not survive as a usable row" % spelling)
+            assert v.skipped_rows == 1, (
+                "%r must show up as decay, got %r" % (spelling, v.skipped_rows))
 
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)
@@ -225,6 +326,27 @@ class TestAssemble:
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
         text, _ = assemble.voice_section(v, "linkedin", counter=0)
         assert "X only rule" not in text
+
+    def test_off_channel_correction_is_not_recorded_as_applied(self, tmp_path):
+        """Provenance is a RECEIPT, so it may only name corrections the prompt
+        actually carried (ASK-508, sp-9642b63d).
+
+        test_scoped_correction_excluded_off_channel above pins the prompt half
+        and stops there, which is exactly why this survived review: the rule was
+        correctly withheld from the model and still recorded as applied. Same
+        class as the notify_cap scar, where an exit code became proof of a page
+        that never sent.
+        """
+        cor = [{"id": "on", "status": "active", "scope": ["linkedin"],
+                "instruction": "Linkedin only rule."},
+               {"id": "off", "status": "active", "scope": ["x"],
+                "instruction": "X only rule."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        assert "X only rule" not in text, "precondition: the rule is withheld"
+        assert prov["correction_ids"] == ["on"], (
+            "provenance named %r; it must name only what the prompt carried"
+            % (prov["correction_ids"],))
 
     def test_promoted_correction_stops_loading(self, tmp_path):
         cor = [{"id": "c1", "status": "promoted", "instruction": "Old rule."}]
