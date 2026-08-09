@@ -215,18 +215,29 @@ def main():
     #     --against stale-main  -> exit 0   (the violation was EXCUSED)
     # github.event.pull_request.base.sha is the base GitHub itself computed for
     # the PR. It needs no fetch, always resolves, and cannot go stale.
+    # COMMENTS ARE STRIPPED FIRST, and that is the whole point of this block.
+    # The first cut scanned raw lines, so the explanatory comment above the step
+    # -- which quotes `--against HEAD` and `--against stale-main` -- kept the
+    # check green after the real argument was deleted. Verified by deleting it:
+    # the gate silently falls back to --staged mode and the test still printed
+    # "OK: all checks passed". A check that cannot fail for the reason it exists
+    # (codex minor, PR #129; same shape as METRICS_VERSION - 1 and case D).
     wf = os.path.join(HERE, "..", "..", "..", ".github", "workflows", "validate.yml")
     if os.path.isfile(wf):
-        text = open(wf).read()
-        invocations = [l for l in text.splitlines()
+        raw = open(wf).read().splitlines()
+        code = [l for l in raw if not l.strip().startswith("#")]
+        invocations = [l for l in code
                        if "plugin-version-bump-check.py" in l or "--against" in l]
         joined = "\n".join(invocations)
         check("H. CI passes an immutable base sha, not a fetched ref",
-              "--against" in joined and "origin/main" not in joined)
+              bool(invocations) and "--against" in joined
+              and "origin/main" not in joined)
+        # The fetch must not be re-added on an EXECUTABLE line near the gate.
+        idx = code.index(invocations[0]) if invocations else 0
+        near = code[max(0, idx - 6):idx + 1]
         check("I. CI does not swallow a failure on the line feeding the gate",
-              not any("|| true" in l and "fetch" in l for l in
-                      text.splitlines()[max(0, text.splitlines().index(invocations[0]) - 4):]
-                      ) if invocations else True)
+              bool(invocations)
+              and not any("|| true" in l and "fetch" in l for l in near))
 
     if failures:
         print(f"\nFAILED: {failures}")
