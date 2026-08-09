@@ -1,0 +1,5 @@
+q-system/.q-system/capability-manifest.json
+q-system/.q-system/instruction-budget-baseline.json
+q-system/.q-system/scripts/apply_claude_changes.py
+q-system/.q-system/scripts/instruction-budget-audit.py
+q-system/.q-system/scripts/test/test-instruction-budget-ratchet.sh

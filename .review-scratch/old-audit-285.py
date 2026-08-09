@@ -90,13 +90,6 @@ and the new one as a fresh file. That direction only ever TIGHTENS the cap (and 
 clamped at the total that just passed), so it costs banked headroom and never
 mints any. Recovering it is a founder edit of the baseline, same as before.
 
-SIXTH HONEST BOUNDARY: the scoping credit is body-to-body, and a baseline
-recorded before that split carries no body counts. The fallback reads the whole
-recorded count as body, which OVER-charges a rule that already carried
-frontmatter and is scoped in the very next commit -- it can never mint. One
-recorded run puts the real body counts in the baseline and the fallback stops
-applying. See scoped_credit.
-
 FIFTH HONEST BOUNDARY: git failing is FAIL-CLOSED in both directions, and both
 directions cost something. A `git status` that fails inside a work tree records
 nothing, even when the tree was in fact clean -- so a broken git quietly stops the
@@ -134,9 +127,6 @@ CATCH_ALL_PATTERNS = {"**/*", "**/**", "**"}
 KEY_CAP = "cap"
 KEY_TOTAL = "total_always_on"
 KEY_SNAPSHOT = "always_on_files"
-# Per-rule body counts, the frontmatter block excluded. Absent from any baseline
-# written before PR #88 round 7; scoped_credit says what happens then.
-KEY_BODY = "always_on_body"
 
 
 def count_lines(path):
@@ -146,47 +136,19 @@ def count_lines(path):
         return sum(1 for line in f if line.strip())
 
 
-def split_frontmatter(content):
-    """(frontmatter text or None, body text).
-
-    ONE reader for "where does the frontmatter end", because both the scoping
-    parser and the body counter ask it and they have to agree -- two spellings of
-    the same judgement is the drift class that opened the nested-rules hole in
-    round 1. No leading `---`, or no closing one, means no frontmatter and the
-    whole file is body.
-    """
-    if not content.startswith("---"):
-        return None, content
-    end = content.find("---", 3)
-    if end == -1:
-        return None, content
-    return content[3:end], content[end + 3:]
-
-
-def count_body_lines(path):
-    """Substantive lines BELOW the frontmatter block.
-
-    A scoping block is itself four substantive lines ("---", "paths:", the glob,
-    "---"), so a file's whole-file count RISES by four at the moment it leaves
-    the always-on set. scoped_credit therefore measures the credit against this
-    number and not against the file; section 33 of
-    test-instruction-budget-ratchet.sh is the executable that pins it.
-    """
-    if not os.path.exists(path):
-        return 0
-    with open(path) as f:
-        _, body = split_frontmatter(f.read())
-    return sum(1 for line in body.splitlines() if line.strip())
-
-
 def parse_paths_from_frontmatter(path):
     """Extract paths/globs list from YAML frontmatter. Returns None if no scoping key."""
     with open(path) as f:
-        frontmatter, _ = split_frontmatter(f.read())
+        content = f.read()
 
-    if frontmatter is None:
+    if not content.startswith("---"):
         return None
 
+    end = content.find("---", 3)
+    if end == -1:
+        return None
+
+    frontmatter = content[3:end]
     # Check for either paths: or globs: (both are scoping keys in Claude Code)
     has_scoping = re.search(r"^(paths|globs):", frontmatter, re.MULTILINE)
     if not has_scoping:
@@ -260,13 +222,12 @@ def read_baseline(project_root):
         return json.load(f)
 
 
-def write_baseline(project_root, cap, total, always_on, body):
+def write_baseline(project_root, cap, total, always_on):
     path = baseline_path(project_root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump({KEY_CAP: cap, KEY_TOTAL: total,
-                   KEY_SNAPSHOT: dict(sorted(always_on.items())),
-                   KEY_BODY: dict(sorted(body.items()))}, f, indent=2)
+                   KEY_SNAPSHOT: dict(sorted(always_on.items()))}, f, indent=2)
         f.write("\n")
 
 
@@ -288,9 +249,8 @@ def scan_rules(rules_dir):
     """
     always_on = {}
     conditional = {}
-    body = {}
     if not os.path.isdir(rules_dir):
-        return always_on, conditional, body
+        return always_on, conditional
     for dirpath, dirnames, filenames in os.walk(rules_dir):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for filename in sorted(filenames):
@@ -299,12 +259,11 @@ def scan_rules(rules_dir):
             full = os.path.join(dirpath, filename)
             name = os.path.relpath(full, rules_dir)
             lines = count_lines(full)
-            body[name] = count_body_lines(full)
             if is_effectively_always_on(full):
                 always_on[name] = lines
             else:
                 conditional[name] = lines
-    return always_on, conditional, body
+    return always_on, conditional
 
 
 def inside_work_tree(project_root):
@@ -439,39 +398,6 @@ def git_status(project_root, audited):
     return records
 
 
-def baseline_unstaged(project_root):
-    """True when the index does not hold the baseline that is on disk.
-
-    WHY THIS EXISTS (PR #88 round 5, major). Staging used to be decided by
-    `changed` -- did THIS run rewrite the file -- and that answer is wrong for
-    every run after the first. When `git add` failed, the rewrite had already
-    landed in the working tree, so the retry read its own advanced baseline,
-    computed `changed` = False and exited 0 having staged nothing: the commit went
-    out carrying the rules without the accounting they moved, which is exactly the
-    defect report_baseline_written was added to stop, surviving one `git commit`
-    later. `--no-stage` followed by a forgotten `git add` is the same hole through
-    a sanctioned door.
-
-    The durable question is about the INDEX, not about this run's bookkeeping: does
-    the commit being built carry the accounting on disk? Asking it every run makes
-    the staging idempotent -- it keeps trying until the index agrees, and says
-    nothing once it does.
-
-    False when there is no index to carry anything (a --root'ed fixture, a non-git
-    tree). GIT_UNREADABLE fails closed as True: a git that would not answer is
-    never read as "already staged", and the `git add` that follows either settles
-    it or fails the run.
-    """
-    records = git_status(project_root, [baseline_path(project_root)])
-    if records is None:
-        return False
-    if records is GIT_UNREADABLE:
-        return True
-    # The worktree-vs-index column: ' ' means the index already matches the file,
-    # 'M'/'D'/'?' mean it does not. Untracked reads as '??', which needs staging too.
-    return any(tree_state != " " for _, tree_state, _, _ in records)
-
-
 def index_divergence(records):
     """Audited paths whose WORKING TREE content differs from the index.
 
@@ -574,27 +500,7 @@ def apply_renames(snapshot, renames, always_on, conditional):
     return out
 
 
-def scoped_credit(before, body_before, body_after):
-    """Lines a now-scoped file genuinely freed: what it was counted for, minus the
-    body lines that no longer exist anywhere.
-
-    The credit used to be min(before, after) against the WHOLE file, and a scoping
-    block is four substantive lines of its own -- so scoping while gutting up to
-    four body lines read as "nothing was deleted", banked all of it as headroom,
-    and let a later append spend budget for lines that no longer exist. Headroom
-    is the one quantity this accounting may never mint (PR #88 round 7; section 33
-    of test-instruction-budget-ratchet.sh is the test that pins it).
-
-    body_before missing -- a baseline recorded before this split -- falls back to
-    the whole recorded count, which collapses to min(before, body_after): never a
-    mint, and an over-charge only where frontmatter was already present and the
-    scoping lands in the very next commit. One recorded run ends the fallback.
-    """
-    return max(0, before - max(0, body_before - body_after))
-
-
-def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_lines,
-                  prev_body, body):
+def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_lines):
     """Always-on lines the snapshot had that no longer exist anywhere, per file.
 
     Netting the whole repo's drop against the scoping credit was wrong: a step that
@@ -605,7 +511,7 @@ def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_li
     snapshot entry:
 
       still always-on : deleted = max(0, before - after)
-      now conditional : the credited survivors are scoped_credit(), so the
+      now conditional : the credited survivors are min(before, after), so the
                         uncredited remainder is a deletion -- same split section 9
                         already pinned for scoped-and-gutted
       gone entirely   : the whole entry is a deletion
@@ -618,8 +524,7 @@ def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_li
         if name in always_on:
             after = always_on[name]
         elif name in conditional:
-            after = scoped_credit(before, prev_body.get(name, before),
-                                  body.get(name, 0))
+            after = min(before, conditional[name])
         else:
             after = 0
         if after < before:
@@ -627,7 +532,7 @@ def deleted_lines(snapshot, always_on, conditional, prev_claude_md, claude_md_li
     return deleted
 
 
-def scoping_freed(snapshot, always_on, conditional, prev_body, body):
+def scoping_freed(snapshot, always_on, conditional):
     """Lines the last audit counted as always-on that are now paths-scoped.
 
     Returns (freed_lines, [(name, lines), ...]).
@@ -639,10 +544,8 @@ def scoping_freed(snapshot, always_on, conditional, prev_body, body):
     behaviour that has held since the ratchet was resurrected.
 
     A rule that was scoped AND shortened in the same step is credited only
-    scoped_credit(): the shortening half is a deletion and tightens the cap like
-    any other. That helper is shared with deleted_lines on purpose -- the credit
-    and the charge are two readings of one split, and two spellings of it is the
-    drift class that opened the nested-rules hole in round 1.
+    min(before, after): the shortening half is a deletion and tightens the cap
+    like any other.
     """
     freed = 0
     moved = []
@@ -651,8 +554,7 @@ def scoping_freed(snapshot, always_on, conditional, prev_body, body):
             continue
         if name not in conditional:
             continue
-        credited = scoped_credit(before, prev_body.get(name, before),
-                                 body.get(name, 0))
+        credited = min(before, conditional[name])
         if credited <= 0:
             continue
         freed += credited
@@ -660,27 +562,18 @@ def scoping_freed(snapshot, always_on, conditional, prev_body, body):
     return freed, moved
 
 
-def ratchet_fail_text(cap, prev_total, total, always_on):
+def ratchet_fail_text(cap, total, always_on):
     """The message an agent reads when it is over the cap.
 
     It names the moves that are actually REACHABLE from where the reader stands,
     because the old text ("Trim what you added, or move a rule to paths-scoped")
     named two moves the sanctioned write path cannot make and cost a full agent
     pass to discover (ASK-285).
-
-    Cap and previous total are TWO numbers since this issue split them, so the
-    sentence has to say which is which. Reporting the cap as the left-hand side of
-    "total X -> Y" was only ever right before any headroom was banked, where
-    cap == prev_total and the two readings coincide -- which is why section 5 never
-    caught it. After scoping they come apart, and "33 -> 34" describes a tree that
-    never existed: it hides the real growth (13 -> 34) and the 20 banked lines the
-    run just spent, so the reader hunts for one line to trim (PR #88 round 6).
     """
     candidates = sorted(always_on.items(), key=lambda kv: -kv[1])[:3]
     named = ", ".join("%s (%d)" % (n, c) for n, c in candidates) or "none"
     return (
-        "RATCHET FAIL: always-on total {prev} -> {total}, cap {cap} exceeded by "
-        "{over}; banked headroom was {banked} and is spent.\n"
+        "RATCHET FAIL: always-on total {cap} -> {total} (+{over}); headroom 0.\n"
         "  Reachable with no deletion anywhere: put the new lines in a rule that "
         "declares paths:/globs: frontmatter. A paths-scoped rule costs 0 always-on "
         "lines, create_file through apply-claude-changes.sh can make one, and "
@@ -690,8 +583,7 @@ def ratchet_fail_text(cap, prev_total, total, always_on):
         "  Scoping is a founder edit: apply_claude_changes.py refuses frontmatter "
         "changes on every op, because a narrowed paths: switches a rule off.\n"
         "  Target remains {target}."
-    ).format(cap=cap, total=total, over=total - cap, prev=prev_total,
-             banked=max(0, cap - prev_total), named=named,
+    ).format(cap=cap, total=total, over=total - cap, named=named,
              target=BUDGET_TOTAL_ALWAYS_ON)
 
 
@@ -705,11 +597,6 @@ def report_baseline_written(project_root, stage):
     replaced once already. A rename is the sharp case: git reports it only in the
     commit that makes it, so a baseline left behind charges the whole rule as a
     deletion on the very next run and eats banked headroom.
-
-    Says nothing about WHY it was called. The caller reaches it when this run
-    rewrote the baseline OR when baseline_unstaged() found the index does not hold
-    the one on disk, and failing the first attempt only helps if every later
-    attempt keeps trying (PR #88 round 5, major).
 
     Failing is gated on inside_work_tree(), so the fixtures and the engine's gate
     suite -- neither of which has an index -- keep passing exactly as before.
@@ -725,7 +612,7 @@ def report_baseline_written(project_root, stage):
     if inside_work_tree(project_root) is False:
         print(f"RATCHET: stage {path} with this commit.")
         return True
-    print(f"RATCHET FAIL: could not stage {path}: {error}\n"
+    print(f"RATCHET FAIL: rewrote {path} but could not stage it: {error}\n"
           "  The commit would carry the rules without the accounting they moved, "
           "so the next run reads a baseline that disagrees with the tree.\n"
           "  Fix git, or re-run with --no-stage and `git add` the baseline "
@@ -733,11 +620,9 @@ def report_baseline_written(project_root, stage):
     return False
 
 
-def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, body,
+def run_ratchet(project_root, claude_md_lines, total, always_on, conditional,
                 rules_dir, audited=(), write=True, stage=True):
     """Regression gate: block growth past the cap; tighten the cap on deletion."""
-    # Only always-on rules are snapshotted, so only their bodies are recorded.
-    body_always_on = {name: body.get(name, 0) for name in always_on}
     if claude_md_lines > BUDGET_CLAUDE_MD:
         print(
             f"RATCHET FAIL: CLAUDE.md {claude_md_lines} > {BUDGET_CLAUDE_MD} (absolute cap)"
@@ -767,7 +652,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
             return 0
         print(f"RATCHET: baseline created at {total} (target {BUDGET_TOTAL_ALWAYS_ON})")
         if write:
-            write_baseline(project_root, total, total, always_on, body_always_on)
+            write_baseline(project_root, total, total, always_on)
             if not report_baseline_written(project_root, stage):
                 return 1
         return 0
@@ -778,10 +663,9 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
     cap = baseline.get(KEY_CAP, baseline.get(KEY_TOTAL))
     prev_total = baseline.get(KEY_TOTAL, cap)
     snapshot = baseline.get(KEY_SNAPSHOT)
-    body_snapshot = baseline.get(KEY_BODY)
 
     if total > cap:
-        print(ratchet_fail_text(cap, prev_total, total, always_on))
+        print(ratchet_fail_text(cap, total, always_on))
         return 1
 
     if blocked:
@@ -800,17 +684,13 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
         # `snapshot` stays as recorded; `prev_files` is the same entries rekeyed
         # onto today's paths. Keeping them apart is what lets the changed-compare
         # below still see the rename that the rekey deliberately smooths over.
-        renames = rule_renames(records, project_root, rules_dir)
-        prev_files = apply_renames(snapshot, renames, always_on, conditional)
-        # The recorded bodies are rekeyed by the SAME map in the same step, so the
-        # two halves of one snapshot cannot end up describing different paths.
-        prev_body = apply_renames(body_snapshot or {}, renames,
-                                  always_on, conditional)
-        _, moved = scoping_freed(prev_files, always_on, conditional, prev_body, body)
+        prev_files = apply_renames(snapshot,
+                                   rule_renames(records, project_root, rules_dir),
+                                   always_on, conditional)
+        _, moved = scoping_freed(prev_files, always_on, conditional)
         prev_claude_md = prev_total - sum(prev_files.values())
         deletion_delta = deleted_lines(prev_files, always_on, conditional,
-                                       prev_claude_md, claude_md_lines,
-                                       prev_body, body)
+                                       prev_claude_md, claude_md_lines)
 
     # Never below the current total: moving lines between two always-on rules is a
     # per-file deletion plus a per-file addition, and letting the deletion half
@@ -824,13 +704,9 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
     # key in the baseline and the NEXT run would see a rule vanish with nothing
     # left to explain it, charging the deletion one commit late. `snapshot is
     # None` is subsumed: None never equals a scan.
-    # The body compare is here for the same reason: a baseline predating the body
-    # split records none, and without this the fallback in scoped_credit would
-    # never expire on a repo that is otherwise sitting still.
-    changed = (new_cap != cap or total != prev_total or snapshot != always_on
-               or body_snapshot != body_always_on)
+    changed = (new_cap != cap or total != prev_total or snapshot != always_on)
     if changed and write:
-        write_baseline(project_root, new_cap, total, always_on, body_always_on)
+        write_baseline(project_root, new_cap, total, always_on)
 
     scoped_note = ""
     if moved:
@@ -842,13 +718,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
     else:
         print(f"RATCHET PASS: total {total}, cap {new_cap}, headroom "
               f"{new_cap - total}.{scoped_note} Target {BUDGET_TOTAL_ALWAYS_ON}.")
-    # `changed` says whether THIS run rewrote the file; staging is decided by what
-    # the INDEX holds. Those came apart the moment a `git add` failed: the rewrite
-    # was already on disk, so the retry saw changed=False and exited 0 having staged
-    # nothing, and the commit carried the rules without the accounting they moved
-    # (PR #88 round 5, major). Asking the index every run makes the staging
-    # idempotent -- it keeps trying until they agree, and is silent once they do.
-    if write and (changed or baseline_unstaged(project_root)):
+    if changed and write:
         if not report_baseline_written(project_root, stage):
             return 1
     return 0
@@ -884,13 +754,13 @@ def main():
 
     audited = claude_md_sources(claude_md) + [rules_dir]
     claude_md_lines = resolve_imports(claude_md)
-    always_on, conditional, body = scan_rules(rules_dir)
+    always_on, conditional = scan_rules(rules_dir)
     total = claude_md_lines + sum(always_on.values())
 
     if "--ratchet" in argv:
         sys.exit(run_ratchet(project_root, claude_md_lines, total,
-                             always_on, conditional, body, rules_dir,
-                             audited=audited, write=write, stage=stage))
+                             always_on, conditional, rules_dir, audited=audited,
+                             write=write, stage=stage))
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")
     print(f"Always-on rules ({len(always_on)} files):")

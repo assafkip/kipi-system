@@ -47,6 +47,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-instruction-budget-ratchet.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-attempts-ledger.py",
       "runner": "python3"
     },
