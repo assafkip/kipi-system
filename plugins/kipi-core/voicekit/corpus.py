@@ -11,6 +11,7 @@ suite at edit time, not inside the publishing run.
 from __future__ import annotations
 
 import json
+import math
 import os
 
 EXEMPLARS = "exemplars.jsonl"
@@ -81,9 +82,17 @@ def _weight(row):
     Unreadable weight means unusable row, which is what a zero already means here.
     """
     try:
-        return float(row.get("weight", 1.0) or 0)
+        value = float(row.get("weight", 1.0) or 0)
     except (TypeError, ValueError):
         return None
+    # FINITENESS, not a list of the spellings someone reported. float() PARSES
+    # "NaN", "inf" and "Infinity", so the try/except above never fired for them
+    # and they walked straight through the round-1 fix. NaN then failed `> 0`
+    # and vanished uncounted -- the exact silent decay that fix existed to end --
+    # while inf PASSED `> 0` and survived as a usable exemplar carrying infinite
+    # weight, so the most nonsensical row in a corpus read as its most valid one.
+    # Codex reported only the NaN case; fixing that alone would have left inf.
+    return value if math.isfinite(value) else None
 
 
 def _drop_malformed_weights(rows):

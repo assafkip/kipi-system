@@ -199,6 +199,29 @@ class TestCorpus:
             "a junk weight must show up as decay, not vanish (got %r)"
             % (v.skipped_rows,))
 
+    def test_non_finite_weights_are_counted_as_decay(self, tmp_path):
+        """NaN and the infinities go through the same door as a junk string
+        (ASK-508, codex minor on PR #127 round 2).
+
+        float("NaN") and float("inf") PARSE, so the previous fix's try/except
+        never fired. NaN then fails `> 0` and vanished uncounted, exactly the
+        silent decay the round-1 fix was supposed to end. inf is worse in kind:
+        it passes `> 0` and survives as a usable exemplar carrying infinite
+        weight, so a nonsense row reads as the most valid row in the corpus.
+
+        Fixing only the reported NaN would leave that. A weight has to be a
+        real number to mean anything, so the check is finiteness, not a list of
+        the spellings someone happened to report.
+        """
+        for spelling in ("NaN", "inf", "-inf", "Infinity"):
+            rows = _rows(2)
+            rows[0]["weight"] = spelling
+            v = corpus.load(_voice_dir(tmp_path, rows=rows))
+            assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
+                "%r must not survive as a usable row" % spelling)
+            assert v.skipped_rows == 1, (
+                "%r must show up as decay, got %r" % (spelling, v.skipped_rows))
+
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)
         rows[0]["status"] = "retired"
