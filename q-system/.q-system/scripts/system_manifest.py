@@ -50,9 +50,51 @@ def manifest_path(repo=None) -> Path:
     return instance_root(repo) / "canonical" / MANIFEST_NAME
 
 
+MANIFEST_OK = "ok"
+MANIFEST_ABSENT = "absent"
+MANIFEST_UNREADABLE = "unreadable"
+
+
+def health(repo=None) -> tuple[str, str]:
+    """(status, human detail). The runtime-path answer to "can coverage be computed?"
+
+    WHY THIS EXISTS SEPARATELY FROM `load()` (ASK-533). `load()` returns {} for BOTH
+    "no manifest" and "manifest I could not parse", so its callers cannot tell a
+    correct no-op from a broken one. `check()` already distinguishes them correctly --
+    but nothing on the runtime path calls `check()`; the Stop hook only ever reaches
+    `load()`. So the gate was weakest on exactly the corrupted evidence that should
+    alarm it, which is the finding this closes.
+
+    ABSENT IS NOT A PROBLEM AND MUST NOT BE REPORTED AS ONE. Most instances declare no
+    data path; no-op is their correct steady state, and it is where every instance
+    starts. Only PRESENT-BUT-UNREADABLE is the defect. Conflating the two would turn a
+    Stop hook that fires every turn into a fleet-wide wedge, so the distinction here is
+    load-bearing rather than cosmetic.
+
+    Deliberately returns a status instead of raising: the caller is an unattended hook
+    whose job is to keep running, and an exception would just get swallowed by another
+    broad `except` somewhere up the stack, which is how this defect happened.
+    """
+    path = manifest_path(repo)
+    if not path.exists():
+        return (MANIFEST_ABSENT, "")
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception as exc:
+        return (MANIFEST_UNREADABLE, f"{path}: not valid JSON ({exc})")
+    if not isinstance(obj, dict):
+        return (MANIFEST_UNREADABLE,
+                f"{path}: top level must be an object, got {type(obj).__name__}")
+    return (MANIFEST_OK, "")
+
+
 def load(repo=None) -> dict:
     """The manifest, or {} when absent or unreadable. Absence is never an error --
-    most instances have no declared data path, and the gate must no-op for them."""
+    most instances have no declared data path, and the gate must no-op for them.
+
+    NOTE (ASK-533): this deliberately still swallows. Callers that need to tell absent
+    from unreadable ask `health()`; changing this return contract would alter every
+    read path at once on a hook that runs every turn."""
     path = manifest_path(repo)
     if not path.exists():
         return {}
