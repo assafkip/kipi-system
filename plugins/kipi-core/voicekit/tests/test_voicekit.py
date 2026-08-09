@@ -71,6 +71,33 @@ class TestFingerprint:
         assert p["short_share"] > s["short_share"]
         assert p["first_person_rate"] > s["first_person_rate"]
 
+    def test_first_person_rate_is_the_same_sentence_cased(self, ):
+        """Capitalization must not move a MEASUREMENT (ASK-508, sp-83d62639).
+
+        _FIRST_PERSON was the only pattern in fingerprint.py without re.I, so
+        "We shipped" and "My take" scored as impersonal and the same prose
+        measured differently depending on where a sentence happened to break.
+        The band this feeds is blocking, so a case-sensitive count is a gate
+        that moves under the text.
+        """
+        # No bare lowercase "i" here on purpose: the I-forms stay case-sensitive
+        # so that i.e. cannot read as first person (the test below), which means
+        # "i" and "I" are NOT expected to measure the same. The words that vary
+        # innocently with sentence position are the ones this pins.
+        lower = "we broke it. my fault, our call, blame me."
+        upper = "We broke it. My fault, Our call, blame Me."
+        assert (fingerprint.metrics(upper)["first_person_rate"]
+                == fingerprint.metrics(lower)["first_person_rate"])
+
+    def test_bare_i_in_an_abbreviation_is_not_first_person(self, ):
+        """The guard on the fix above: re.I across the whole pattern would make
+        \\bi\\b match the "i" in "i.e.", inventing first-person voice in prose
+        that has none. The I-forms stay case-sensitive; only the genuinely
+        case-varying words become case-insensitive.
+        """
+        assert fingerprint.metrics("The gate, i.e. the hook, ran.")[
+            "first_person_rate"] == 0.0
+
     def test_compute_then_score_roundtrip(self):
         texts = [PUNCHY, PUNCHY + " More of it.", "Short. Very. It broke. I saw."]
         fp = fingerprint.compute(texts, generated_at="2026-08-06",
@@ -120,6 +147,21 @@ class TestCorpus:
         d.mkdir()
         (d / corpus.EXEMPLARS).write_text("{a\n{b\n{c\n")
         assert corpus.load(str(d)).skipped_rows == 3
+
+    def test_nonnumeric_weight_degrades_instead_of_raising(self, tmp_path):
+        """A row can be VALID JSON and still carry junk in a numeric field
+        (ASK-508, sp-18daaa21).
+
+        read_jsonl only guarantees the LINE parsed, so it counts no skip here and
+        float() raised ValueError inside active_exemplars() -- past the
+        degrade-without-dying boundary the loader exists to hold. The usable rows
+        around it must still come back.
+        """
+        rows = _rows(2)
+        rows[0]["weight"] = "heavy"
+        v = corpus.load(_voice_dir(tmp_path, rows=rows))
+        assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
+            "a junk weight must drop its own row and spare the rest")
 
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)
@@ -225,6 +267,27 @@ class TestAssemble:
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
         text, _ = assemble.voice_section(v, "linkedin", counter=0)
         assert "X only rule" not in text
+
+    def test_off_channel_correction_is_not_recorded_as_applied(self, tmp_path):
+        """Provenance is a RECEIPT, so it may only name corrections the prompt
+        actually carried (ASK-508, sp-9642b63d).
+
+        test_scoped_correction_excluded_off_channel above pins the prompt half
+        and stops there, which is exactly why this survived review: the rule was
+        correctly withheld from the model and still recorded as applied. Same
+        class as the notify_cap scar, where an exit code became proof of a page
+        that never sent.
+        """
+        cor = [{"id": "on", "status": "active", "scope": ["linkedin"],
+                "instruction": "Linkedin only rule."},
+               {"id": "off", "status": "active", "scope": ["x"],
+                "instruction": "X only rule."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        assert "X only rule" not in text, "precondition: the rule is withheld"
+        assert prov["correction_ids"] == ["on"], (
+            "provenance named %r; it must name only what the prompt carried"
+            % (prov["correction_ids"],))
 
     def test_promoted_correction_stops_loading(self, tmp_path):
         cor = [{"id": "c1", "status": "promoted", "instruction": "Old rule."}]

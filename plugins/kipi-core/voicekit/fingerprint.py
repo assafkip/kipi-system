@@ -41,7 +41,18 @@ _FORMAL_PAIRS = re.compile(
     r"can not|will not|would not|should not|could not|have not|has not|it is|"
     r"that is|there is|you are|we are|they are|i am)\b", re.I)
 
-_FIRST_PERSON = re.compile(r"\b(?:I|I'm|I've|I'll|I'd|we|we're|we've|my|our|me)\b")
+# NOT re.I, and not case-sensitive either -- split on purpose (ASK-508,
+# sp-9642b63d's sibling). Every other pattern in this file carries re.I, and this
+# one shipped without it, so "We shipped" and "My take" scored as impersonal: the
+# same prose measured differently depending on where a sentence happened to
+# break, in a metric whose band is BLOCKING. Adding re.I across the whole pattern
+# is the obvious fix and is wrong -- \bi\b would then match the "i" in "i.e."
+# and invent first-person voice in prose that has none. The I-forms are always
+# capitalized in English, so they stay exact; only the words that vary innocently
+# with sentence position get both cases.
+_FIRST_PERSON = re.compile(
+    r"\b(?:I|I'm|I've|I'll|I'd"
+    r"|[Ww]e|[Ww]e're|[Ww]e've|[Mm]y|[Oo]ur|[Mm]e)\b")
 
 # Hedges: the softeners that dilute a verdict. Small list, presence-per-post is the
 # metric; an exhaustive list would be a banned-word gate, which is a different tool.

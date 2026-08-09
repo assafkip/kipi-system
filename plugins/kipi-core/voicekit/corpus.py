@@ -69,6 +69,22 @@ def read_json(path):
         return None
 
 
+def _weight(row):
+    """A row's weight as a number, or 0 when it is not one (ASK-508, sp-18daaa21).
+
+    read_jsonl only guarantees the LINE parsed, never that a numeric field holds a
+    number -- so `{"weight": "heavy"}` is valid JSON, is counted as no skip, and
+    reached a bare float() that raised ValueError from inside active_exemplars().
+    That walked straight past the degrade-without-dying boundary this loader
+    exists to hold: one junk field in one row took down every other row with it.
+    Unreadable weight means unusable row, which is what a zero already means here.
+    """
+    try:
+        return float(row.get("weight", 1.0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class Voice:
     """Everything one voice/ dir holds, read once, with decay counts."""
 
@@ -87,7 +103,7 @@ class Voice:
         return [r for r in self.exemplars
                 if r.get("status", "active") == "active"
                 and (r.get("text") or "").strip()
-                and float(r.get("weight", 1.0) or 0) > 0]
+                and _weight(r) > 0]
 
     def active_corrections(self):
         """Rows still carried as prose. A `promoted` row's gate carries it instead."""

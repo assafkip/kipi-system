@@ -62,9 +62,17 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
         bodies = "\n\n---\n\n".join((r.get("text") or "").strip() for r in picked)
         parts.append("POSTS HE HAS WRITTEN. Match their rhythm, register and "
                      "length. Never reuse their sentences or openings:\n\n" + bodies)
-    if corrections:
-        lines = "\n".join(f"- {r['instruction']}" for r in corrections
-                          if not r.get("scope") or channel in r["scope"])
+    # Filter ONCE, and let the same list feed the prompt and the receipt below
+    # (ASK-508, sp-9642b63d). These were two independent readers of one fact: the
+    # prompt honoured `scope` and provenance ignored it, so a correction withheld
+    # from the model was still recorded as applied. Same class as the notify_cap
+    # scar -- a receipt for an action that did not occur. The echo gate and every
+    # audit downstream trust correction_ids, so the cheapest wrong answer here is
+    # the one that looks authoritative.
+    applied = [r for r in (corrections or [])
+               if not r.get("scope") or channel in r["scope"]]
+    if applied:
+        lines = "\n".join(f"- {r['instruction']}" for r in applied)
         if lines:
             parts.append("STANDING CORRECTIONS (these override everything above):\n"
                          + lines)
@@ -72,7 +80,7 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     provenance = {
         "exemplar_ids": [str(r.get("id")) for r in picked],
         "exemplar_texts": [(r.get("text") or "") for r in picked],
-        "correction_ids": [str(r.get("id")) for r in corrections],
+        "correction_ids": [str(r.get("id")) for r in applied],
         "selection_reason": selector.selection_reason(picked, channel, counter,
                                                       slot_index),
         "skipped_rows": voice.skipped_rows,
