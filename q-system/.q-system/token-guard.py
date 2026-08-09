@@ -205,6 +205,14 @@ def save_cache(actor_key, cache):
 # just lost cleanly. The read and the write have to be inside one critical
 # section, which is what this is.
 #
+# LOST UPDATES WERE NOT THE WORST OF IT. save_cache truncates and rewrites in
+# place, so two concurrent writers can interleave: running the concurrency suite
+# against a no-lock mutant produced a cache whose JSON ended at byte 464 with a
+# longer writer's tail still after it. load_cache catches JSONDecodeError and
+# returns fresh defaults, so a torn write silently reset every counter this
+# guard owns — the ceiling, the retry map and the escalation budget all back to
+# zero, with nothing logged and nothing to see afterwards.
+#
 # WHY THE REGION HOLDS NO SUBPROCESS. This hook is wired at `timeout: 5` on all
 # three events fleet-wide, and a hook that overruns its timeout has its exit 2
 # DISCARDED (measured 2026-08-03; see the escalation block comment below). So a
@@ -219,10 +227,18 @@ LOCK_POLL_SECONDS = 0.002
 def lock_path(actor_key):
     """A sidecar, never the cache file itself.
 
-    save_cache reopens the cache with mode "w", which truncates and can hand
-    back a different file description — locking that same path would drop the
-    hold mid-region. A dedicated file also lets the lock exist before the cache
-    does, which is the common case on an actor's first tool call.
+    HONEST ABOUT WHY, because the first version of this comment was wrong.
+    It claimed save_cache's mode-"w" truncate would drop a lock taken on the
+    cache path; a mutant that pointed this function AT the cache file survived
+    the concurrency suite 8/8, because truncation keeps the same inode and flock
+    follows the inode. So that is not the reason.
+
+    The real reasons are narrower and both structural: the lock must exist
+    before the cache does (an actor's first tool call has no cache file yet, and
+    load_cache is happy to return defaults for one), and a sidecar cannot be
+    invalidated by any future change that REPLACES the cache rather than
+    rewriting it in place — an os.replace-based atomic write, the obvious next
+    edit here, swaps the inode and would silently orphan every held lock.
     """
     return f"/tmp/claude-guard-{actor_key}.lock"
 
@@ -1247,12 +1263,31 @@ def main():
                     grant_gate_grace(cache, gate)
         sys.exit(0)
 
+    # The commit probe shells out to git, so it runs BEFORE the lock is taken —
+    # holding the cache lock across a 3s subprocess could push a waiting hook
+    # past its own 5s timeout, and an overrun hook has its exit 2 discarded
+    # (sp-016776e6; see the chokepoint comment above reset_volume_if_committed).
+    #
+    # The peek deciding whether to pay for the probe is an unlocked read. Being
+    # wrong about it costs one wasted or one skipped probe on a single tool
+    # call, never correctness: the authoritative count is re-read under the lock
+    # on the very next line, and a missed reset lands on the following call.
+    head_epoch = None
+    if load_cache(actor).get("tool_calls_since_user", 0) >= VOLUME_WARNING:
+        head_epoch = _head_commit_epoch()
+
+    # Everything from here to process exit runs under this actor's lock, so the
+    # load-mutate-save below is one critical section rather than a race. The
+    # existing save_cache calls at each block/warn exit are unchanged; they now
+    # simply happen while the lock is held.
+    hold_actor_lock(actor)
+
     # Load cache, update counters from this invocation. The commit-progress
     # valve runs before the checks so a freshly-shipped commit lifts the
     # ceiling even when the PostToolUse event never arrived (wiring B).
     cache = load_cache(actor)
     cache = update_counters(tool_name, tool_input, cache)
-    cache = reset_volume_if_committed(cache)
+    cache = reset_volume_if_committed(cache, head_epoch)
 
     # A triage from an earlier stuck refusal, if the detached call has landed.
     # One cheap open() on the common path (the file is absent almost always).
