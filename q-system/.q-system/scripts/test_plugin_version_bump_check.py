@@ -203,6 +203,31 @@ def main():
         check("G. ...and still clears on a real bump -> exit 0",
               run_script(tmp, "--against", base) == 0)
 
+    # --- ASK-514: CI must hand the gate an IMMUTABLE base, not a fetched ref ---
+    #
+    # The gate is only as correct as the base it is given, and a
+    # remote-tracking ref is not trustworthy: `git fetch origin main || true`
+    # swallows a failure, leaving origin/main STALE BUT RESOLVABLE. Fail-closed
+    # never fires (it resolves fine), and version_at(stale base) then reads a
+    # HISTORICAL bump that makes the PR's own unbumped plugin look bumped.
+    # Measured on a scratch repo:
+    #     --against HEAD        -> exit 2   (correctly refused)
+    #     --against stale-main  -> exit 0   (the violation was EXCUSED)
+    # github.event.pull_request.base.sha is the base GitHub itself computed for
+    # the PR. It needs no fetch, always resolves, and cannot go stale.
+    wf = os.path.join(HERE, "..", "..", "..", ".github", "workflows", "validate.yml")
+    if os.path.isfile(wf):
+        text = open(wf).read()
+        invocations = [l for l in text.splitlines()
+                       if "plugin-version-bump-check.py" in l or "--against" in l]
+        joined = "\n".join(invocations)
+        check("H. CI passes an immutable base sha, not a fetched ref",
+              "--against" in joined and "origin/main" not in joined)
+        check("I. CI does not swallow a failure on the line feeding the gate",
+              not any("|| true" in l and "fetch" in l for l in
+                      text.splitlines()[max(0, text.splitlines().index(invocations[0]) - 4):]
+                      ) if invocations else True)
+
     if failures:
         print(f"\nFAILED: {failures}")
         sys.exit(1)
