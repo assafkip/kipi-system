@@ -455,6 +455,29 @@ def file_linear_findings(problems, apply=True):
 # declared landed before it stops being counted as unfiled.
 LANDED_BUCKETS = ("created", "existing", "updated", "reopened", "relisted")
 
+# Buckets that mean "this RUN put something in front of a human". A strict subset
+# of LANDED_BUCKETS, and the difference is the whole point.
+#
+# Scar (codex review of PR #135, major, reproduced before fixing): run_intent_check
+# read LANDED_BUCKETS for its delivery verdict. Two different questions were being
+# answered by one list. "Does the board HAVE this finding" is filing coverage, and
+# `existing` belongs in it -- the issue is there, nothing is unfiled. "Did anyone
+# get TOLD on this run" is delivery, and `existing` is precisely the case where the
+# answer is no: the issue was filed on some earlier run, this run changed nothing,
+# and Linear sends no notification for a no-op. So a drift whose issue was already
+# open, on a run where the Slack webhook was dead, handed the state writer
+# delivered=True. Measured on the shipped code: commit(delivered=True) with
+# slack=False and existing=1, and the real ping_decision then returns nothing for
+# 12 consecutive runs -- the next page at run 14, six days at 2 runs/day, for an
+# alert that never left the machine.
+#
+# Declared as its own allowlist rather than derived by subtracting `existing`,
+# because subtraction fails OPEN: a bucket added to LANDED_BUCKETS upstream would
+# silently become delivery and suppress alerts. test_launchd_health_check.py pins
+# the difference between the two lists as exactly {"existing"}, so a new bucket
+# goes red until somebody decides which of the two questions it answers.
+DELIVERING_BUCKETS = ("created", "updated", "reopened", "relisted")
+
 
 def unfiled_count(outcome):
     """How many findings were OWED an issue and did not get one.
@@ -560,14 +583,19 @@ def run_intent_check(dry_run):
             intent.linear_findings(drift, _fleet_health().finding_key),
             apply=True, filer="launchd-intent-verify.py")
         unfiled = max(len(drift) - sum(outcome.get(b, 0) for b in LANDED_BUCKETS), 0)
+        # Counted from the outcome directly, NOT as len(drift) - unfiled. The two
+        # numbers answer different questions (see DELIVERING_BUCKETS) and deriving
+        # one from the other is what let `existing` cross from coverage into
+        # delivery in the first place.
+        told = sum(outcome.get(b, 0) for b in DELIVERING_BUCKETS)
     except Exception as exc:  # noqa: BLE001
         print(f"intent findings NOT filed to Linear: {exc}", file=sys.stderr)
         unfiled = len(drift)
+        told = 0
 
     message = intent.ping_message(due)
     if unfiled:
         message += f" [NOT filed to Linear: {unfiled}]"
-    landed = max(len(drift) - unfiled, 0)
     delivered = send_ping(message)
 
     # Deliver-then-record is only half the contract. The other half is that
@@ -585,11 +613,11 @@ def run_intent_check(dry_run):
     # which had its own copy of the ordering rule and got it wrong). What this
     # caller owns is the part the writer cannot see -- WHICH channel failed --
     # so it reports that and hands the writer a truthful verdict.
-    if not (landed or delivered):
-        print(f"intent alert NOT delivered (linear=0, slack=not delivered) -- "
-              f"run counts NOT recorded, the next run re-alerts "
-              f"{len(drift)} job(s)", file=sys.stderr)
-    commit(delivered=bool(landed or delivered))
+    if not (told or delivered):
+        print(f"intent alert NOT delivered (linear: 0 new or changed issue(s), "
+              f"slack: not delivered) -- run counts NOT recorded, the next run "
+              f"re-alerts {len(drift)} job(s)", file=sys.stderr)
+    commit(delivered=bool(told or delivered))
 
 
 def problems_to_ping(problems, state, now):

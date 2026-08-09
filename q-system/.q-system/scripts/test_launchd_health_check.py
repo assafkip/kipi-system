@@ -758,6 +758,51 @@ check("linear alone is enough to record the run",
 check("one landed finding beside a skipped bucket still counts as delivery",
       intent_capture(_fh_stub(created=1, unfiled=1), delivered=False)[0], [True])
 
+# --- an ALREADY-OPEN issue is not this run's delivery (PR #135 review, major) --
+# THE REPRODUCER: the delivery verdict was computed off LANDED_BUCKETS, the filing-
+# COVERAGE allowlist, which contains `existing`. So a drift whose Linear issue was
+# already open -- the normal state from the second run of any real drift onward --
+# reported delivery on a run where the Slack webhook was dead. Measured on the
+# shipped code: `commit(delivered=True)` with slack=False and existing=1, and the
+# real `ping_decision` then returns nothing for 12 consecutive runs.
+#
+# `existing` means the filer found the issue and changed nothing. Linear sends no
+# notification for a no-op, so nobody was told anything on this run.
+#
+# Both directions, on purpose and with the full bucket shape the real filer emits:
+# a verdict hardcoded to False would pass the first check here and page nobody
+# ever, which is the same defect pointing the other way.
+_stale, _stale_err = intent_capture(_fh_stub_shape(existing=1), delivered=False)
+check("slack dead + the board already had the issue -> NOT delivered",
+      _stale, [False])
+check("and the operator is told, not left reading a silent success",
+      "NOT delivered" in _stale_err, True)
+check("a NEW issue is delivery",
+      intent_capture(_fh_stub_shape(created=1), delivered=False)[0], [True])
+check("a REOPENED issue is delivery",
+      intent_capture(_fh_stub_shape(reopened=1), delivered=False)[0], [True])
+check("an UPDATED issue is delivery",
+      intent_capture(_fh_stub_shape(updated=1), delivered=False)[0], [True])
+check("a RELISTED issue -- it had vanished from Linear -- is delivery",
+      intent_capture(_fh_stub_shape(relisted=1), delivered=False)[0], [True])
+check("an already-open issue plus a live webhook is still delivery",
+      intent_capture(_fh_stub_shape(existing=1), delivered=True)[0], [True])
+# The coverage question keeps its own answer: `existing` still means FILED, so the
+# ping must not claim the issue never reached the board. One list per question is
+# the fix; this is the half that must NOT have changed.
+check("an already-open issue is still counted as filed, not as unfiled",
+      wd.unfiled_count({"owed": 1, "existing": 1}), 0)
+
+# The two lists are a strict subset relationship, asserted so a bucket added
+# upstream cannot drift into delivery unnoticed. LANDED_BUCKETS grew three times
+# already (ASK-204: updated, reopened, relisted). A new one arriving now goes red
+# here until somebody answers which of the two questions it belongs to -- red in
+# the safe direction, since the un-answered default is "not delivery".
+check("every delivering bucket is also a landed bucket",
+      [b for b in wd.DELIVERING_BUCKETS if b not in wd.LANDED_BUCKETS], [])
+check("and the only landed bucket that is not delivery is `existing`",
+      [b for b in wd.LANDED_BUCKETS if b not in wd.DELIVERING_BUCKETS], ["existing"])
+
 # send_ping's own verdict: a notifier that cannot reach a channel is not delivery.
 _saved_channel = wd.notify_channel_configured
 try:
