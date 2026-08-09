@@ -258,14 +258,36 @@ class TestCorpus:
         loader dead. Listing the shapes someone reported is what left it, so
         this walks the scalar space instead.
         """
-        junk = ["heavy", "NaN", "inf", "-inf", "Infinity", 10 ** 400,
-                -(10 ** 400), None, True, [], {}, "", "1e999"]
-        for bad in junk:
+        # TWO assertions per shape, because the first cut made only the first
+        # one and was structurally blind to the codex nit on PR #128: a falsy
+        # malformed weight ([], {}, "", null) hit `float(raw or 0)`, became 0.0,
+        # failed `> 0`, and so satisfied "not usable" while being RETAINED and
+        # never counted as decay. A table that asserts one half of a property is
+        # the same defect as the METRICS_VERSION - 1 test replaced this round.
+        malformed = ["heavy", "NaN", "inf", "-inf", "Infinity", 10 ** 400,
+                     -(10 ** 400), None, True, False, [], {}, "", "1e999"]
+        for bad in malformed:
             rows = _rows(2)
             rows[0]["weight"] = bad
             v = corpus.load(_voice_dir(tmp_path, rows=rows))
             assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
                 "weight=%r must not survive as usable" % (bad,))
+            assert v.skipped_rows == 1, (
+                "weight=%r is malformed, so it must show as decay (got %r)"
+                % (bad, v.skipped_rows))
+
+        # The other side of the boundary: a real zero is a DECISION, not damage.
+        # Without this the fix could over-reach and start counting deliberate
+        # zero-weight rows as corpus decay, which would fire the deadman signal
+        # on a healthy corpus.
+        for legit in (0, 0.0, "0"):
+            rows = _rows(2)
+            rows[0]["weight"] = legit
+            v = corpus.load(_voice_dir(tmp_path, rows=rows))
+            assert [r["id"] for r in v.active_exemplars()] == ["ex-01"]
+            assert v.skipped_rows == 0, (
+                "weight=%r is a deliberate zero, not decay (got %r)"
+                % (legit, v.skipped_rows))
 
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)

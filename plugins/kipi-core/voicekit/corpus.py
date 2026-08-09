@@ -88,7 +88,14 @@ def _weight(row):
     if isinstance(raw, bool):
         return None
     try:
-        value = float(raw or 0)
+        # float(raw), NOT float(raw or 0). The `or 0` conflated FALSY with ZERO,
+        # so [], {}, "" and null each became 0.0: retained on the row, excluded
+        # from active_exemplars by `> 0`, and never counted as decay (codex
+        # minor, PR #128). float() rejects all of them on its own -- TypeError
+        # for the containers and null, ValueError for the empty string -- while
+        # a real 0 still parses to 0.0 and stays a deliberate zero rather than
+        # damage.
+        value = float(raw)
     except (TypeError, ValueError, OverflowError):
         # OverflowError is the one ASK-508 missed (ASK-512): a plain JSON
         # integer like 10**400 is valid, parses as JSON, and blows up in float()
