@@ -183,6 +183,62 @@ def test_enforce_flag_turns_the_warning_into_a_block(tmp_path):
         f"does not work, so the warn phase leads nowhere.\n{r.stderr}")
 
 
+def test_structurally_invalid_object_is_unreadable_not_ok(tmp_path):
+    """Valid JSON, a real dict, and still unusable.
+
+    Codex round 1 on PR #132, MAJOR. The first cut of health() validated ONLY the top
+    level, so this exact input reported `ok` while subsystems() returned [] and
+    coverage silently did nothing -- the same fail-open ASK-533 exists to close,
+    reintroduced one level deeper by the fix for it.
+
+    Reproducer output before the fix:
+        health = ('ok', '')
+        check  = ['subsystems[0]: not an object', ...]
+        subsystems = []
+    """
+    m = _load_module()
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text('{"subsystems": "not-a-list"}')
+    status, detail = m.health(repo)
+    assert status == m.MANIFEST_UNREADABLE, (
+        f"a structurally invalid manifest reported {status!r} while check() calls it "
+        f"invalid and subsystems() yields nothing to cover")
+    assert detail, "no reason given; the operator cannot act on a bare status"
+
+
+def test_health_agrees_with_check_on_every_shape(tmp_path):
+    """The anti-drift property, stated directly: two functions answering 'is this
+    manifest usable?' with different rules is how they come apart. check() is the
+    authority; health() must never call a manifest ok that check() rejects."""
+    m = _load_module()
+    repo = _repo(tmp_path)
+    shapes = [
+        '{"subsystems": "not-a-list"}',
+        '{"subsystems": [{"id": "", "name": "x", "members": [{"ref": "a"}]}]}',
+        '{"subsystems": [{"id": "s", "name": "S", "members": []}]}',
+        '{"subsystems": [{"id": "s", "name": "", "members": [{"ref": "a"}]}]}',
+    ]
+    for raw in shapes:
+        _manifest_file(repo).write_text(raw)
+        status, _ = m.health(repo)
+        problems = m.check(repo)
+        assert bool(problems) == (status == m.MANIFEST_UNREADABLE), (
+            f"health={status!r} but check() returned {len(problems)} problem(s) "
+            f"for {raw!r}; the two disagree about the same file")
+
+
+def test_guard_warns_on_a_structurally_invalid_manifest(tmp_path):
+    """The guard-level half the reviewer asked for: the malformed OBJECT must reach
+    the operator, not just be classified correctly in a helper."""
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text('{"subsystems": "not-a-list"}')
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
+    assert "unreadable" in r.stderr.lower(), (
+        f"a structurally invalid manifest produced no warning; coverage is off and "
+        f"nobody is told.\nstderr={r.stderr!r}")
+
+
 if __name__ == "__main__":
     # The capability gate runs `python3 <file>`, NOT pytest (capability-gate.py:423).
     # Without this block the module would merely DEFINE its tests and exit 0 -- a

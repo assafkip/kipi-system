@@ -85,6 +85,20 @@ def health(repo=None) -> tuple[str, str]:
     if not isinstance(obj, dict):
         return (MANIFEST_UNREADABLE,
                 f"{path}: top level must be an object, got {type(obj).__name__}")
+    # STRUCTURAL VALIDITY IS `check()`'s JOB, AND ONLY `check()`'s (Codex round 1 on
+    # PR #132, MAJOR). The first cut of this function validated only the top level, so
+    # `{"subsystems": "not-a-list"}` -- valid JSON, and a dict -- reported `ok` while
+    # `subsystems()` returned [] and coverage silently did nothing. That is the same
+    # fail-open this issue exists to close, one level deeper, reintroduced by the fix.
+    #
+    # Two functions answering "is this manifest usable?" with different rules is how
+    # they drift apart; `check()` is the authority and this delegates to it rather than
+    # restating a subset. Cost is one extra parse on a path that runs once per turn.
+    problems = check(repo)
+    if problems:
+        head = "; ".join(problems[:5])
+        more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
+        return (MANIFEST_UNREADABLE, f"{path}: {head}{more}")
     return (MANIFEST_OK, "")
 
 
