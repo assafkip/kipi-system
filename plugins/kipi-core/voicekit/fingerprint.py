@@ -161,7 +161,20 @@ def _percentile(values, q):
 # version key exists so a changed meaning invalidates the cached calibration, and
 # skipping the bump makes stale data look fresh against a BLOCKING gate that runs
 # unattended.
-METRICS_VERSION = 3
+# 3 -> 4: the (?i: ...) scoped flag above changed what first_person_rate COUNTS
+# again. Measured, not assumed: "WE SHIPPED MY CODE. WE DID." reads 0.0 under
+# v3 and 50.0 under v4, so a v3 fingerprint's bands describe a different
+# instrument.
+#
+# THIRD MISS OF THIS RULE IN ONE SESSION, all mine: plugin-version-bump caught
+# an unbumped kipi-core, then caught it again on the commit whose own subject
+# was forgetting a version key, and codex caught this one on the PR that FIXED a
+# METRICS_VERSION bug. The rule was written directly above this constant the
+# whole time. A constant a human has to remember to hand-bump is the wrong
+# mechanism for an invariant a blocking unattended gate depends on; a
+# deterministic check that fails when a metric's computation changes without its
+# version moving is captured in the ledger rather than bolted onto this PR.
+METRICS_VERSION = 4
 
 
 def version_skew(fingerprint_doc):

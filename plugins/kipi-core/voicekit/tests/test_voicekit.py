@@ -133,8 +133,15 @@ class TestFingerprint:
         whether or not anyone remembers to bump it -- it cannot catch a missing
         bump, which is the whole failure mode here.
         """
-        assert fingerprint.version_skew({"metrics_version": 2}), (
-            "bands from the pre-case-class instrument must not read as current")
+        # A TABLE of literals, one per version that shipped a DIFFERENT
+        # first_person_rate. Grown, never rewritten: 2 shipped the no-re.I
+        # regex, 3 shipped [Ww]e (which measured ALL-CAPS as impersonal --
+        # "WE SHIPPED MY CODE. WE DID." reads 0.0 under 3 and 50.0 under 4).
+        # Each new row is the receipt that a measurement change was noticed.
+        for shipped in (2, 3):
+            assert fingerprint.version_skew({"metrics_version": shipped}), (
+                "bands computed by instrument v%d measure something this "
+                "version does not; they must not read as current" % shipped)
 
     def test_compute_then_score_roundtrip(self):
         texts = [PUNCHY, PUNCHY + " More of it.", "Short. Very. It broke. I saw."]
