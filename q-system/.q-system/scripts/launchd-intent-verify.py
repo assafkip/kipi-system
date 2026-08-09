@@ -353,17 +353,60 @@ def installed_labels():
     return {p.stem for p in LAUNCH_AGENTS.glob("*.plist")}
 
 
+def launchctl_print_disabled(run=None):
+    """stdout of `launchctl print-disabled`, or IntentError. `run` is injected.
+
+    Every non-answer is refused here rather than handed on as text, because the
+    empty string is a VALID parse that means something dangerous.
+
+    Scar (this file, caught in review before it ever ran): this call used to read
+    `.stdout` and never look at `.returncode`. A launchctl that exits nonzero
+    prints nothing on stdout; `parse_print_disabled("")` legitimately returns {};
+    an empty override map means "no label has an override", which
+    `effective_state` correctly reads as EVERY label enabled. Measured on the
+    shipped code with a stubbed exit 113: five intended-paused jobs produced five
+    `running_but_paused` findings, five founder pages, and five PERMANENT Linear
+    issues about a machine nobody had touched.
+
+    That is the exact false-alarm storm `parse_print_disabled` refuses a format
+    change to prevent. The guard was real; the failure entered one layer below
+    it, where a broken producer is indistinguishable from a quiet one. So the
+    producer has to prove it answered:
+
+      - a nonzero exit is a refusal, not an empty database
+      - a raise from the subprocess layer (launchctl absent, timeout) is a
+        refusal, not a fallthrough
+      - rc 0 with blank stdout is a refusal too: a real success always prints the
+        `disabled services = { ... }` block, so silence is the same lie told
+        more quietly.
+    """
+    import os
+    import subprocess
+
+    if run is None:
+        run = subprocess.run
+    try:
+        proc = run(
+            ["launchctl", "print-disabled", f"gui/{os.getuid()}"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IntentError(f"launchctl print-disabled could not run: {exc}") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()[:1]
+        raise IntentError(
+            f"launchctl print-disabled exited {proc.returncode}"
+            + (f": {detail[0]}" if detail else "")
+        )
+    if not proc.stdout.strip():
+        raise IntentError("launchctl print-disabled exited 0 but printed nothing")
+    return proc.stdout
+
+
 def read_overrides(runner=None):
     """The override DB. `runner` is injected by tests so nothing shells launchctl."""
     if runner is None:
-        import subprocess
-
-        def runner():
-            import os
-            return subprocess.run(
-                ["launchctl", "print-disabled", f"gui/{os.getuid()}"],
-                capture_output=True, text=True, timeout=20,
-            ).stdout
+        runner = launchctl_print_disabled
     return parse_print_disabled(runner())
 
 
@@ -380,10 +423,27 @@ def write_state(state):
 
 
 def check(dry_run=False, overrides=None, labels=None):
-    """Run the verification. Returns (findings, due, coverage_tuple).
+    """Run the verification. Returns (findings, due, coverage_tuple, commit).
 
     Raises IntentError when ground truth could not be established -- the caller
     must report that as a broken check, never as a clean one.
+
+    `commit` is a zero-argument callable that persists the run counts, and the
+    caller invokes it ONLY AFTER the alert has been delivered.
+
+    Scar (this file, caught in review before it ever ran): check() used to
+    write_state() before returning, so a run was recorded as "seen" the instant it
+    was computed -- before the Linear issue was filed and before send_ping ran.
+    Anything that killed the process in between (a launchd timeout, a raise inside
+    the filer, the machine sleeping) left runs=1 on disk with nothing delivered.
+    The next run then computed runs=2, which is neither 1 nor a multiple of
+    REPEAT_EVERY_RUNS, so ping_decision returned nothing. Probed on the shipped
+    code: one skipped delivery turned a real drift into runs 2, 3, 4 and 5 all
+    silent -- a week of a phone that looks exactly like a clean fleet.
+
+    Deliver-then-record is the only ordering where a crash costs a DUPLICATE ping
+    instead of a MISSING one, and a duplicate is the failure this system is
+    allowed to have.
     """
     intent, conflicts = load_intent(
         read_text(INTENT_MANIFEST),
@@ -395,11 +455,14 @@ def check(dry_run=False, overrides=None, labels=None):
         labels = installed_labels()
     findings = diff_intent(intent, overrides, labels)
     due, new_state = ping_decision(findings, load_state())
-    if not dry_run:
-        write_state(new_state)
+
+    def commit():
+        if not dry_run:
+            write_state(new_state)
+
     for label in conflicts:
         findings.append((label, "conflict", "manifest says enabled, pause ledger lists it"))
-    return findings, due, coverage(intent, labels)
+    return findings, due, coverage(intent, labels), commit
 
 
 def main(argv):
@@ -409,7 +472,7 @@ def main(argv):
         print(f"unrecognised flag(s): {' '.join(unrecognized)} -- refusing to run.")
         return 0
     try:
-        findings, due, (declared, total) = check(dry_run=dry)
+        findings, due, (declared, total), commit = check(dry_run=dry)
     except IntentError as exc:
         print(f"launchd intent verification COULD NOT RUN: {exc}")
         return 0
@@ -417,6 +480,8 @@ def main(argv):
         print(f"{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
     print(f"would ping: {len(due)}" if dry else f"ping-worthy: {len(due)}")
+    # Printing IS this entry point's delivery, so the record follows it.
+    commit()
     return 0
 
 

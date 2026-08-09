@@ -426,7 +426,7 @@ def run_intent_check(dry_run):
         print(f"intent verification unavailable: {exc}", file=sys.stderr)
         return
     try:
-        findings, due, (declared, total) = intent.check(dry_run=dry_run)
+        findings, due, (declared, total), commit = intent.check(dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
         print(f"intent verification COULD NOT RUN: {exc}", file=sys.stderr)
         return
@@ -435,10 +435,17 @@ def run_intent_check(dry_run):
         print(f"INTENT-{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
 
+    # `commit` records the consecutive-run counts and is deliberately called
+    # AFTER delivery on every path that has one. Recording first meant a crash
+    # between the write and send_ping suppressed an alert that was never sent
+    # (see check()'s docstring). Nothing to deliver commits immediately: the
+    # counts still have to advance for a job that stopped drifting.
     if not due:
+        commit()
         return
     if dry_run:
         print(f"[dry] would ping intent drift for {len(due)} job(s)")
+        commit()  # a no-op in dry mode; called so the paths stay symmetrical
         return
 
     drift = [(label, kind, detail) for label, kind, detail, _ in due]
@@ -455,6 +462,7 @@ def run_intent_check(dry_run):
     if unfiled:
         message += f" [NOT filed to Linear: {unfiled}]"
     send_ping(message)
+    commit()
 
 
 def problems_to_ping(problems, state, now):

@@ -309,6 +309,61 @@ check("body names the label", "`a`" in lf[0]["body"], True)
 
 
 # =============================================================================
+# 8b. REPRODUCER: a launchctl that FAILED is not an override DB with no rows
+# =============================================================================
+# The default runner returned `.stdout` and never looked at `.returncode`. A
+# launchctl that exits nonzero prints nothing on stdout, `parse_print_disabled("")`
+# legitimately returns {}, and an empty override map means "no label has an
+# override" -- which `effective_state` correctly reads as EVERYTHING ENABLED. So a
+# broken launchctl produced one `running_but_paused` finding per intended-paused
+# job: a Slack page and a PERMANENT Linear issue per job, about a machine nobody
+# touched. That is the same false-alarm storm `parse_print_disabled` refuses a
+# format change to avoid; the failure just entered one layer lower, where the
+# guard could not see it.
+class _Proc:
+    def __init__(self, returncode, stdout, stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+check_raises("a nonzero launchctl is refused, not read as an empty DB", iv.IntentError,
+             lambda: iv.launchctl_print_disabled(
+                 run=lambda *a, **k: _Proc(113, "", "Could not find domain")))
+
+# rc 0 with no output is the same lie in a quieter form: a real success always
+# prints the `disabled services = { ... }` block.
+check_raises("a silent success is refused too", iv.IntentError,
+             lambda: iv.launchctl_print_disabled(run=lambda *a, **k: _Proc(0, "  \n")))
+
+
+def _explode(*a, **k):
+    raise FileNotFoundError("launchctl")
+
+
+check_raises("launchctl missing from PATH is refused", iv.IntentError,
+             lambda: iv.launchctl_print_disabled(run=_explode))
+
+check("a real answer is returned unchanged",
+      iv.launchctl_print_disabled(run=lambda *a, **k: _Proc(0, REAL_OUTPUT)),
+      REAL_OUTPUT)
+
+# The harm, end to end: read_overrides must inherit that refusal from its DEFAULT
+# runner, because that is the one the installed job uses.
+check("read_overrides defaults to the guarded runner",
+      iv.read_overrides.__defaults__, (None,))
+check_raises("and so a failed launchctl cannot reach diff_intent", iv.IntentError,
+             lambda: iv.read_overrides(
+                 runner=lambda: iv.launchctl_print_disabled(
+                     run=lambda *a, **k: _Proc(1, ""))))
+
+# Negative self-test: prove the probe above can pass. Without the returncode
+# guard, this same input returns {} and the check_raises calls go red.
+check("an unguarded read of the same input yields the empty map that caused it",
+      iv.parse_print_disabled(_Proc(113, "", "boom").stdout), {})
+
+
+# =============================================================================
 # 9. check() -- the wiring, against a tmpdir, with injected launchd state
 # =============================================================================
 _home = Path(tempfile.mkdtemp())
@@ -317,7 +372,7 @@ iv.STATE_FILE = _home / "state.json"
 iv.LEGACY_PAUSED_FILES = (_home / "paused.txt",)
 (_home / "paused.txt").write_text("com.kipi.paused-job\n")
 
-findings, due, cov = iv.check(
+findings, due, cov, commit = iv.check(
     overrides={"com.kipi.paused-job": "enabled"},
     labels={"com.kipi.paused-job", "com.kipi.other"},
 )
@@ -326,14 +381,55 @@ check("check() surfaces the drift",
       [("com.kipi.paused-job", "running_but_paused")])
 check("check() pings the transition", [d[0] for d in due], ["com.kipi.paused-job"])
 check("check() reports partial coverage", cov, (1, 2))
-check("check() persisted the run count", json.loads(iv.STATE_FILE.read_text())
-      ["com.kipi.paused-job"]["runs"], 1)
+check("check() does not persist before the caller has delivered",
+      iv.STATE_FILE.exists(), False)
+commit()
+check("check() persisted the run count once committed",
+      json.loads(iv.STATE_FILE.read_text())["com.kipi.paused-job"]["runs"], 1)
 
 # dry mode must not advance the counter that decides future pings.
 before = iv.STATE_FILE.read_text()
-iv.check(dry_run=True, overrides={"com.kipi.paused-job": "enabled"},
-         labels={"com.kipi.paused-job"})
+_, _, _, _dry_commit = iv.check(
+    dry_run=True, overrides={"com.kipi.paused-job": "enabled"},
+    labels={"com.kipi.paused-job"})
+_dry_commit()
 check("dry run writes no state", iv.STATE_FILE.read_text(), before)
+
+
+# =============================================================================
+# 9b. REPRODUCER: a crash between persisting and delivering ate the alert
+# =============================================================================
+# check() used to write_state() before returning, so the run was recorded as
+# "seen" the instant it was computed -- before the caller filed the Linear issue
+# and before send_ping ran. Anything that killed the process in between (launchd
+# timeout, an exception in the filer, the machine sleeping) left runs=1 on disk
+# with nothing delivered. The NEXT run then computed runs=2, which is not
+# 1 and not a multiple of REPEAT_EVERY_RUNS, so ping_decision returned nothing.
+# One transient crash silently converted a real drift into 14 runs (a week) of
+# silence, and the founder's phone showed the same thing a clean fleet shows.
+_crash = Path(tempfile.mkdtemp())
+iv.INTENT_MANIFEST = _crash / "launchd-intent.json"
+iv.STATE_FILE = _crash / "state.json"
+iv.LEGACY_PAUSED_FILES = (_crash / "paused.txt",)
+(_crash / "paused.txt").write_text("com.kipi.drifting\n")
+
+_args = {"overrides": {"com.kipi.drifting": "enabled"},
+         "labels": {"com.kipi.drifting"}}
+
+_, due_a, _, _commit_a = iv.check(**_args)
+check("run 1 computes a due alert", [d[0] for d in due_a], ["com.kipi.drifting"])
+# The crash: _commit_a is never called, because delivery never happened.
+check("and nothing was recorded on the way out", iv.STATE_FILE.exists(), False)
+
+_, due_b, _, _commit_b = iv.check(**_args)
+check("run 2 still owes the founder that alert",
+      [d[0] for d in due_b], ["com.kipi.drifting"])
+_commit_b()  # this time delivery succeeded
+
+_, due_c, _, _commit_c = iv.check(**_args)
+check("and once delivered it is not re-sent", due_c, [])
+check("the committed count is 1 run, not 3", json.loads(iv.STATE_FILE.read_text())
+      ["com.kipi.drifting"]["runs"], 1)
 
 
 # =============================================================================
