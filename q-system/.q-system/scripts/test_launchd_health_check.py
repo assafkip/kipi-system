@@ -8,10 +8,13 @@ verified manually on wiring; these tests guard the logic that a refactor could b
 Run: python3 test_launchd_health_check.py   (exit 0 = pass, 1 = fail)
 """
 import contextlib
+import http.server
 import importlib.util
 import io
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -763,6 +766,57 @@ try:
           wd.send_ping("probe: this must never leave the machine"), False)
 finally:
     wd.notify_channel_configured = _saved_channel
+
+# --- a CONFIGURED webhook is not a delivered one (PR #134 review round 5) -----
+# The check above only covers the case where no channel exists at all. The scar
+# is the other one: a webhook IS configured, curl cannot reach it, slack-notify.sh
+# exits 0 anyway, and send_ping used to return `proc.returncode == 0` -> True.
+# Measured before the fix with the webhook on a refused port: send_ping True,
+# nothing sent, the run committed, 13 scheduled runs silent.
+#
+# Both directions are asserted here on purpose. Without the delivered case, a
+# send_ping hardcoded to False would pass this section and page nobody, ever.
+# Endpoints are on 127.0.0.1 only; the suite never contacts Slack.
+def _send_ping_verdict(webhook):
+    """send_ping's answer for one webhook, with the environment restored after."""
+    saved_hook = os.environ.get("KIPI_SLACK_WEBHOOK")
+    saved_api = os.environ.get("KIPI_LINEAR_API_URL")
+    os.environ["KIPI_SLACK_WEBHOOK"] = webhook
+    # The loopback fixture guard would refuse before curl ever runs, which is a
+    # different verdict than the one under test here.
+    os.environ.pop("KIPI_LINEAR_API_URL", None)
+    try:
+        return wd.send_ping("probe: local endpoints only, ASK-447")
+    finally:
+        os.environ.pop("KIPI_SLACK_WEBHOOK", None)
+        if saved_hook is not None:
+            os.environ["KIPI_SLACK_WEBHOOK"] = saved_hook
+        if saved_api is not None:
+            os.environ["KIPI_LINEAR_API_URL"] = saved_api
+
+
+class _PostSink(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):  # keep the suite output readable
+        pass
+
+
+check("configured webhook that refuses the connection -> NOT delivered",
+      _send_ping_verdict("http://127.0.0.1:9/services/dead"), False)
+
+_sink = http.server.HTTPServer(("127.0.0.1", 0), _PostSink)
+threading.Thread(target=_sink.serve_forever, daemon=True).start()
+try:
+    check("webhook that accepts the POST -> delivered",
+          _send_ping_verdict("http://127.0.0.1:%d/hook" % _sink.server_address[1]),
+          True)
+finally:
+    _sink.shutdown()
 
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,
