@@ -291,3 +291,10 @@ def test_parallel_fires_do_not_lose_the_volume_counter(actor, tmp_path):
         "unlocked read-modify-write, so the ceiling undercounts a fan-out "
         "exactly when it is most needed (sp-016776e6)"
         % (cache.get("tool_calls_since_user"), PARALLEL_FIRES))
+
+
+if __name__ == "__main__":
+    # REQUIRED, not decoration. capability-gate.py runs a `runner: python3`
+    # entry as `python3 <file>`, so a pytest-only module would define its tests,
+    # call none of them, and exit 0 — registered, green, and enforcing nothing.
+    sys.exit(pytest.main([__file__, "-v"]))
