@@ -244,6 +244,33 @@ def notify_channel_configured():
     return _NOTIFY_CHANNEL()
 
 
+_NOTIFY_SENDER = False
+
+
+def _notify_sender():
+    """fable-escalate.py's `notify_send`, or None when it cannot be loaded.
+
+    Same lazy-importlib borrow as `notify_channel_configured` above, and for the
+    same reason: that module is the single Python reader of slack-notify.sh's
+    delivery verdict, and a second copy here is the drift `fleet-homogeneity`
+    exists to stop. None means "delivery unknowable", which the caller reads as
+    NOT delivered.
+    """
+    global _NOTIFY_SENDER
+    if _NOTIFY_SENDER is False:
+        import importlib.util
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "fe_send", HERE / "fable-escalate.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _NOTIFY_SENDER = module.notify_send
+        except Exception:  # noqa: BLE001
+            _NOTIFY_SENDER = None
+    return _NOTIFY_SENDER
+
+
 def send_ping(message):
     """Attempt the page. Returns True only when it could actually have LEFT.
 
@@ -255,21 +282,38 @@ def send_ping(message):
     webhook and a dead filer: 0 findings reached Linear, the message was never
     sent, the run was committed anyway, and the following 12 runs were silent.
 
-    HONEST BOUNDARY: True means "a channel was configured and the notifier exited
-    0", not "a human saw it". slack-notify.sh's fixture guard refuses to page on a
-    loopback KIPI_LINEAR_API_URL and still exits 0, so a fixture run on a machine
-    that HAS a webhook reads as delivered here. Tests stub send_ping (that is
-    finding 2 of the same review); production has no loopback Linear URL.
+    Scar (PR #134 review round 5, same class one layer down, reproduced before
+    fixing): the fix above still ended in `return proc.returncode == 0`, and
+    slack-notify.sh exits 0 after a curl that never reached Slack -- its last line
+    is `curl ... || true`. Measured with the webhook pointing at a refused port:
+    curl failed, this returned True, run_intent_check committed the run, and the
+    next 13 scheduled runs were silent. A configured channel says a page COULD
+    leave the machine; it never said this one did.
+
+    The POST outcome exists in exactly one place -- inside slack-notify.sh -- so
+    it is now REPORTED from there (KIPI_NOTIFY_VERDICT_FILE) and read by one
+    shared function rather than re-inferred here. Borrowed through the same lazy
+    importlib shape as `notify_channel_configured`, and a load failure answers
+    False: delivery unknown reads as not delivered, which costs a duplicate ping
+    and never a missed one.
+
+    HONEST BOUNDARY: True means Slack accepted the POST, not that a human saw it.
+    slack-notify.sh's fixture guard refuses to page on a loopback
+    KIPI_LINEAR_API_URL -- that now reports `refused-fixture`, so it reads as NOT
+    delivered here instead of as a page. Tests stub send_ping regardless (finding
+    2 of the round-2 review); production has no loopback Linear URL.
     """
     if not NOTIFY_SCRIPT.exists():
         return False
     if not notify_channel_configured():
         return False
+    send = _notify_sender()
+    if send is None:
+        return False
     try:
-        proc = subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+        return bool(send(message, notify=str(NOTIFY_SCRIPT))["delivered"])
     except Exception:  # noqa: BLE001
         return False
-    return proc.returncode == 0
 
 
 def is_dry_run(args):
