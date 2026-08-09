@@ -363,6 +363,45 @@ def test_a_healthy_manifest_never_pages(tmp_path):
     assert not sink.exists(), f"paged on a HEALTHY manifest: {sink.read_text()!r}"
 
 
+def test_warning_reaches_the_agent_via_the_documented_stop_channel(tmp_path):
+    """Exit 0 + hookSpecificOutput.additionalContext, the ONE shape the Claude Code
+    hooks reference documents for a non-blocking Stop message.
+
+    Deliberately not `systemMessage` or `continue`: both appear only in the generic
+    JSON section and are undocumented for Stop. Shipping an unverified field is how
+    you get a channel that silently does nothing -- the exact defect class ASK-533 is
+    about, which would make the fix an instance of the bug.
+
+    The NESTING is the assertion that matters. A top-level `additionalContext` is
+    silently ignored by Claude Code (scar: token-guard.py:743), so a test that merely
+    grepped stdout for the word would pass against a payload that does nothing.
+    """
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text("{oops")
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
+    payload = json.loads(r.stdout.strip().splitlines()[0])
+    hso = payload["hookSpecificOutput"]
+    assert hso["hookEventName"] == "Stop", (
+        f"wrong hookEventName {hso.get('hookEventName')!r}; the payload is discarded")
+    assert "unreadable" in hso["additionalContext"].lower(), (
+        f"context does not name the problem: {hso['additionalContext']!r}")
+    assert "additionalContext" not in payload, (
+        "additionalContext is at the TOP LEVEL, where Claude Code silently ignores it")
+
+
+def test_no_stdout_payload_when_the_manifest_is_healthy(tmp_path):
+    """NEGATIVE CONTROL. A hook that emits a warning payload unconditionally is worse
+    than one that emits none: it injects noise into every single turn fleet-wide."""
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text(json.dumps({
+        "version": 1,
+        "subsystems": [{"id": "s1", "name": "S One",
+                        "members": [{"ref": "a.py", "kind": "file"}]}]}))
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert r.stdout.strip() == "", f"emitted a payload on a healthy manifest: {r.stdout!r}"
+
+
 if __name__ == "__main__":
     # The capability gate runs `python3 <file>`, NOT pytest (capability-gate.py:423).
     # Without this block the module would merely DEFINE its tests and exit 0 -- a

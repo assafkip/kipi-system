@@ -291,6 +291,23 @@ def main():
         _record_health(status, detail, enforce)
         # Reach a human who is not watching stderr. Deduped to once/24h per problem.
         paged = _notify_once(detail)
+        # AND reach the AGENT, through the one channel the docs actually define for a
+        # non-blocking Stop message: exit 0 plus hookSpecificOutput.additionalContext
+        # (Claude Code hooks reference, Stop event). Deliberately NOT `systemMessage`
+        # or `continue` -- both appear only in the generic JSON section and are
+        # undocumented for Stop, and shipping an unverified field is how you get a
+        # channel that silently does nothing, which is the entire defect class here.
+        # The nesting is load-bearing: a TOP-LEVEL additionalContext is silently
+        # ignored, the scar recorded at token-guard.py:743.
+        if not enforce:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": (
+                    "GROUNDING GUARD WARNING: the subsystem-coverage check is NOT "
+                    "running because the manifest is unreadable. " + detail +
+                    " Say so in your answer rather than implying coverage held, and "
+                    "run `python3 q-system/.q-system/scripts/system_manifest.py check`."
+                )}}))
         sys.stderr.write(
             f"GROUNDING GUARD ({'blocked' if enforce else 'warning'}): the manifest "
             f"is UNREADABLE, so the subsystem-coverage check (check two) is not "
