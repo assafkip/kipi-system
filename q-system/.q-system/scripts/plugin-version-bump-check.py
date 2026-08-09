@@ -34,6 +34,15 @@ def run(args):
     return subprocess.run(args, capture_output=True, text=True).stdout
 
 
+def run_ok(args):
+    """(succeeded, stdout). run() discards the return code, which is what let a
+    FAILED git command look identical to one that found nothing: `git diff
+    <bad-ref>` returns "", changed_files sees no files, and the gate exits 0
+    having verified nothing at all (codex major, PR #129)."""
+    p = subprocess.run(args, capture_output=True, text=True)
+    return p.returncode == 0, p.stdout
+
+
 def changed_files(diff_args):
     out = run(["git", "diff", "--name-only"] + diff_args)
     return [l for l in out.splitlines() if l.strip()]
@@ -62,8 +71,30 @@ def merge_base(ref):
     sha with no common ancestor) keeps the previous behaviour rather than
     crashing a blocking gate on an edge it cannot resolve.
     """
-    out = run(["git", "merge-base", ref, "HEAD"]).strip()
-    return out or ref
+    # FAIL CLOSED on a ref that does not resolve. A blocking gate that silently
+    # becomes NO gate is worse than no gate, because CI reports it green -- and
+    # the workflow makes this reachable rather than theoretical:
+    #     git fetch origin main || true
+    #     ... --against origin/main
+    # The `|| true` swallows a fetch failure, so on a runner whose fetch failed
+    # origin/main may not resolve, and every version-bump violation in the PR
+    # would sail through unexamined. Verified before the fix: `--against
+    # no-such-ref-xyz` exited 0 with a real unbumped plugin change in the tree.
+    resolves, _ = run_ok(["git", "rev-parse", "--verify", "--quiet",
+                          "%s^{commit}" % ref])
+    if not resolves:
+        sys.stderr.write(
+            "plugin-version-bump-check: cannot resolve --against ref %r, so the "
+            "version-bump check could not run. Refusing rather than passing "
+            "unchecked. If this is CI, the `git fetch` for that ref likely "
+            "failed.\n" % ref)
+        sys.exit(2)
+    ok, out = run_ok(["git", "merge-base", ref, "HEAD"])
+    base = out.strip()
+    # No merge base (unrelated histories) is NOT the same as an unresolvable
+    # ref: the ref exists, so comparing against it directly is still meaningful
+    # and is the behaviour that shipped. Only the missing-ref case refuses.
+    return base if ok and base else ref
 
 
 def plugins_touched(files):

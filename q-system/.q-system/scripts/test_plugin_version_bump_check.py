@@ -164,6 +164,45 @@ def main():
         check("D. a bump on MAIN does not excuse the PR's unbumped plugin",
               rc == 2 and "- foo" in err and "- bar" not in err)
 
+    # --- ASK-514: an unresolvable --against ref must FAIL CLOSED ---
+    #
+    # run() returns only stdout and throws the return code away, so a git
+    # command that FAILED was indistinguishable from one that found nothing:
+    # `git diff <bad-ref>` returned "", changed_files saw no files, and the gate
+    # exited 0 having verified nothing. A blocking check that silently becomes
+    # no check is worse than no check, because CI reports it green.
+    #
+    # The workflow makes this reachable rather than theoretical:
+    #     git fetch origin main || true
+    #     ... --against origin/main
+    # The `|| true` swallows a fetch failure, and on a runner whose fetch failed
+    # origin/main may not resolve at all.
+    with tempfile.TemporaryDirectory() as tmp:
+        git(tmp, "init", "-q")
+        git(tmp, "config", "user.email", "t@t")
+        git(tmp, "config", "user.name", "t")
+        write(os.path.join(tmp, "plugins/foo/.claude-plugin/plugin.json"),
+              manifest("1.0.0"))
+        write(os.path.join(tmp, "plugins/foo/cmd.md"), "v1\n")
+        git(tmp, "add", "-A"); git(tmp, "commit", "-qm", "init")
+
+        # A REAL violation is sitting in the tree the whole time, so a green
+        # result here can only mean the gate checked nothing at all.
+        write(os.path.join(tmp, "plugins/foo/cmd.md"), "v2\n")
+        rc, err = run_script_full(tmp, "--against", "no-such-ref-xyz")
+        check("E. an unresolvable --against ref fails CLOSED, naming the ref",
+              rc == 2 and "no-such-ref-xyz" in err)
+
+        # And the resolvable case must still work, so E is not just 'always 2'.
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp,
+                              capture_output=True, text=True).stdout.strip()
+        check("F. a resolvable ref still evaluates normally -> exit 2",
+              run_script(tmp, "--against", base) == 2)
+        write(os.path.join(tmp, "plugins/foo/.claude-plugin/plugin.json"),
+              manifest("1.1.0"))
+        check("G. ...and still clears on a real bump -> exit 0",
+              run_script(tmp, "--against", base) == 0)
+
     if failures:
         print(f"\nFAILED: {failures}")
         sys.exit(1)
