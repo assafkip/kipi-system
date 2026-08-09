@@ -703,18 +703,20 @@ _DRIFT = [("com.kipi.drifting", "enabled_but_declared_paused",
            "intent=disabled, override record=enabled")]
 
 
-def _intent_stub(commits):
+def _intent_stub(commits, drift=None):
+    drift = _DRIFT if drift is None else drift
+
     class _Stub:
         @staticmethod
         def check(dry_run=False):
-            due = [(label, kind, detail, 1) for label, kind, detail in _DRIFT]
+            due = [(label, kind, detail, 1) for label, kind, detail in drift]
             # Records the VERDICT it was handed rather than reimplementing the
             # refusal. The refusal itself is the single writer's, and it is
             # asserted against the real code in test_launchd_intent_verify.py
             # section 9. A stub that re-encoded the policy would pass whether or
             # not run_intent_check told the truth, which is the whole question.
-            return list(_DRIFT), due, (1, 1), lambda delivered=False: \
-                commits.append(delivered)
+            return list(drift), due, (len(drift), len(drift)), \
+                lambda delivered=False: commits.append(delivered)
 
         @staticmethod
         def linear_findings(findings, finding_key):
@@ -730,11 +732,11 @@ def _intent_stub(commits):
     return _Stub
 
 
-def intent_capture(fleet_health, delivered):
+def intent_capture(fleet_health, delivered, drift=None):
     """Drive run_intent_check with both delivery channels scripted."""
     commits = []
     saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
-    wd._INTENT = _intent_stub(commits)
+    wd._INTENT = _intent_stub(commits, drift)
     wd._FLEET_HEALTH = fleet_health
     wd.send_ping = lambda message: delivered
     err = io.StringIO()
@@ -755,8 +757,8 @@ check("slack alone is enough to record the run",
       intent_capture(_fh_stub(unfiled="all"), delivered=True)[0], [True])
 check("linear alone is enough to record the run",
       intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
-check("one landed finding beside a skipped bucket still counts as delivery",
-      intent_capture(_fh_stub(created=1, unfiled=1), delivered=False)[0], [True])
+check("the one job in a one-job batch newly filed counts as delivery",
+      intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
 
 # --- an ALREADY-OPEN issue is not this run's delivery (PR #135 review, major) --
 # THE REPRODUCER: the delivery verdict was computed off LANDED_BUCKETS, the filing-
@@ -802,6 +804,63 @@ check("every delivering bucket is also a landed bucket",
       [b for b in wd.DELIVERING_BUCKETS if b not in wd.LANDED_BUCKETS], [])
 check("and the only landed bucket that is not delivery is `existing`",
       [b for b in wd.LANDED_BUCKETS if b not in wd.DELIVERING_BUCKETS], ["existing"])
+
+# --- a PARTIAL filing is not the batch's delivery (PR #135 review, major) ------
+# THE REPRODUCER: the verdict was `told or delivered`. `told` counts FINDINGS;
+# commit() writes the run counts for every label in the batch from one boolean.
+# So one job landing `created` recorded its neighbours as seen. `file_findings`
+# loops per finding, so part-`created` / part-`existing` (already on the board,
+# Linear notifies nobody) or part-`errors` (that write refused) is the ordinary
+# shape of a multi-job run. Measured on the shipped code with created=1,
+# existing=1 and a dead webhook: commit(delivered=True), and the real
+# ping_decision then returns nothing for 12 consecutive runs for the job nobody
+# was told about.
+#
+# Every fixture in the four prior rounds was a batch of ONE, where a partial
+# outcome cannot occur. That is how this class survived four reviews of this one
+# function, so the batch of TWO is the fixture from here on.
+_TWO_DRIFT = [("com.kipi.fresh", "enabled_but_declared_paused",
+               "intent=disabled, override record=enabled"),
+              ("com.kipi.stale", "disabled_but_declared_running",
+               "intent=enabled, override record=disabled")]
+
+
+def _batch(delivered, **buckets):
+    return intent_capture(_fh_stub_shape(**buckets), delivered=delivered,
+                          drift=_TWO_DRIFT)
+
+
+_partial, _partial_err = _batch(False, created=1, existing=1)
+check("slack dead + only half the batch newly filed -> NOT delivered",
+      _partial, [False])
+check("and the operator is told which half, not just that something failed",
+      "1 of 2" in _partial_err, True)
+check("zero and partial are reported as different states",
+      "PARTLY" in _partial_err, True)
+check("slack dead + one filing REFUSED -> not delivered",
+      _batch(False, created=1, errors=1)[0], [False])
+check("slack dead + one finding never offered to Linear -> not delivered",
+      _batch(False, created=1, skipped_no_key=1)[0], [False])
+# The other direction, so the fix cannot be "a batch never delivers". A verdict
+# hardcoded to False passes every check above and pages nobody, ever.
+check("slack dead + the WHOLE batch newly filed -> that IS delivery",
+      _batch(False, created=2)[0], [True])
+check("slack dead + the whole batch reopened or updated -> that IS delivery",
+      _batch(False, reopened=1, updated=1)[0], [True])
+# One ping_message line covers every due job, so slack is all-or-nothing for the
+# batch by construction -- which is why it is compared against the same
+# denominator instead of being counted.
+check("a live webhook covers the whole batch however Linear went",
+      _batch(True, created=1, existing=1)[0], [True])
+check("a live webhook covers a batch Linear dropped entirely",
+      _batch(True, skipped_no_key=2)[0], [True])
+# The zero case keeps its own wording, so the two states stay distinguishable in
+# the run log after this change.
+_none, _none_err = _batch(False, existing=2)
+check("slack dead + the whole batch already on the board -> not delivered",
+      _none, [False])
+check("nothing delivered still reads as NOT delivered, not as partial",
+      ("NOT delivered" in _none_err, "PARTLY" in _none_err), (True, False))
 
 # send_ping's own verdict: a notifier that cannot reach a channel is not delivery.
 _saved_channel = wd.notify_channel_configured

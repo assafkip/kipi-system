@@ -613,11 +613,38 @@ def run_intent_check(dry_run):
     # which had its own copy of the ordering rule and got it wrong). What this
     # caller owns is the part the writer cannot see -- WHICH channel failed --
     # so it reports that and hands the writer a truthful verdict.
-    if not (told or delivered):
-        print(f"intent alert NOT delivered (linear: 0 new or changed issue(s), "
-              f"slack: not delivered) -- run counts NOT recorded, the next run "
-              f"re-alerts {len(drift)} job(s)", file=sys.stderr)
-    commit(delivered=bool(told or delivered))
+    #
+    # The verdict is a claim about the WHOLE batch, because commit() is one call
+    # that writes the run counts for every label in it. Scar (codex review of
+    # PR #135, major, reproduced before fixing): the verdict was `told or
+    # delivered`, and `told` counts findings. One job in a batch of two landing
+    # `created` therefore recorded the OTHER one as seen. `file_findings` loops
+    # per finding (fleet-health-daily.py), so a batch coming back part `created`
+    # and part `existing` (already on the board, Linear notifies nobody) or part
+    # `errors` (that one write refused) is the ordinary shape of a multi-job run,
+    # not an exotic one. Measured on the shipped code with created=1, existing=1
+    # and a dead webhook: commit(delivered=True), and the real ping_decision then
+    # returns nothing for 12 consecutive runs for the job nobody was told about.
+    #
+    # Every prior round's fixture was a batch of ONE, where partial cannot occur.
+    # That is how this class survived four reviews of this same function, so the
+    # suite now pins the two-job batch specifically.
+    #
+    # Slack is compared against the same denominator on purpose: `ping_message`
+    # renders one line covering every due job, so a delivered ping tells the
+    # founder about all of them and a dead one about none.
+    everyone_told = told >= len(drift)
+    if not (everyone_told or delivered):
+        # Zero and partial are reported as different words. They are different
+        # states -- "the alert went nowhere" and "half of it went somewhere" --
+        # and an operator reading the run log has to be able to tell which one
+        # they are looking at without counting.
+        what = "NOT delivered" if not told else "only PARTLY delivered"
+        print(f"intent alert {what} (linear: {told} of {len(drift)} job(s) "
+              f"newly filed or changed, slack: not delivered) -- run counts "
+              f"NOT recorded, the next run re-alerts {len(drift)} job(s)",
+              file=sys.stderr)
+    commit(delivered=bool(everyone_told or delivered))
 
 
 def problems_to_ping(problems, state, now):
