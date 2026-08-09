@@ -601,6 +601,44 @@ def problems_to_ping(problems, state, now):
     return due
 
 
+def record_pings(state, due, now, delivered):
+    """The ONLY writer of `pinged_at`. Refuses to record a page that never left.
+
+    `delivered` is a required positional argument, not a keyword with a default
+    and not an `if` at the call site, because the same class of defect has now
+    come back four times in one review (see send_ping's docstring, and
+    launchd-intent-verify's `commit`). Each time the fix was correct at the site
+    that was named and the next entry point re-derived the rule and got it wrong.
+    A caller that wants a run marked as pinged has to produce a verdict to get
+    here; a fifth caller added later inherits the refusal instead of having to
+    remember it.
+
+    Scar (PR #134 review round 6, reproduced on the shipped code before fixing):
+    run() called `send_ping(message)` and threw the verdict away, then wrote
+    `pinged_at` for every due job. Measured with KIPI_SLACK_WEBHOOK pointed at a
+    refused port: send_ping returned False, nothing reached Slack, and the state
+    file still recorded the page -- which `problems_to_ping` reads as "already
+    told them", suppressing the re-alert for FAIL_PING_TTL_SECONDS (6h). Not
+    recording is the safe direction: it costs a duplicate ping and never a
+    missed one.
+
+    Silence about the failure was the other half. The intent path prints when
+    nothing took its alert; this one printed nothing at all, so a log reading
+    `NOT_LOADED: com.kipi.x` was byte-identical whether the founder's phone rang
+    or the webhook was revoked. It now says which.
+    """
+    if not delivered:
+        print(
+            f"launchd watchdog: {len(due)} alert(s) were due and no channel took "
+            f"them -- ping times NOT recorded, the next run re-alerts.",
+            file=sys.stderr,
+        )
+        return False
+    for label, kind, detail in due:
+        state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
+    return True
+
+
 def run(dry_run):
     # BEFORE the early return below, not after. `problems` is empty exactly when
     # every watched job is loaded and healthy -- which is the state a job running
@@ -648,9 +686,7 @@ def run(dry_run):
             # problems" while the issues meant to hold them never reached the
             # board. No NEW ping: the one that was already firing carries it.
             message += f" [NOT filed to Linear: {unfiled_count(filed)}]"
-        send_ping(message)
-        for label, kind, detail in due:
-            state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
+        record_pings(state, due, now, send_ping(message))
 
     problem_labels = {label for label, _, _ in problems}
     for label in [k for k in state if k not in problem_labels]:

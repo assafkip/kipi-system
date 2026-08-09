@@ -818,6 +818,85 @@ try:
 finally:
     _sink.shutdown()
 
+# ---------------------------------------------------------------------------
+# The legacy watchdog may not record a page that never left (PR #134 round 6)
+# ---------------------------------------------------------------------------
+# `run_capture` above stubs send_ping to `True` on every call, which is exactly
+# why this survived five review rounds: the suite had no way to express "the
+# page failed". These drive run() with the verdict as an input instead.
+
+
+def _run_with_verdict(delivered, state=None):
+    """run() live, send_ping scripted to `delivered`. Returns the state written."""
+    saved = (wd.discover_problems, wd.load_state, wd.write_state,
+             wd.send_ping, wd.run_intent_check, wd.file_linear_findings)
+    writes = []
+    wd.discover_problems = lambda: [_ONE_DEAD_JOB]
+    wd.load_state = lambda: dict(state or {})
+    wd.write_state = writes.append
+    wd.send_ping = lambda message: delivered
+    wd.run_intent_check = lambda dry_run: None
+    wd.file_linear_findings = lambda problems, apply=True: {
+        "created": 0, "existing": len(problems), "skipped_no_key": 0,
+        "owed": len(problems)}
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            wd.run(False)
+    finally:
+        (wd.discover_problems, wd.load_state, wd.write_state,
+         wd.send_ping, wd.run_intent_check, wd.file_linear_findings) = saved
+    return writes[-1] if writes else {}, err.getvalue()
+
+
+_ONE_DEAD_JOB = ("com.kipi.dead-job", "not_loaded", "installed but not running")
+
+_undelivered, _undelivered_err = _run_with_verdict(False)
+check("undelivered page records no ping time",
+      _undelivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at"), None)
+check("undelivered page says so on stderr",
+      "no channel took them" in _undelivered_err, True)
+# The consequence, asserted rather than assumed: with nothing recorded, the very
+# next run is due again instead of waiting out the 6h TTL.
+check("next run re-alerts immediately after an undelivered page",
+      [p[0] for p in wd.problems_to_ping([_ONE_DEAD_JOB], _undelivered, now)],
+      [_ONE_DEAD_JOB[0]])
+
+# The delivered direction, or "never record" would pass every assertion above
+# and page the founder on every single run.
+_delivered, _delivered_err = _run_with_verdict(True)
+check("delivered page records a ping time",
+      isinstance(_delivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at"), int), True)
+check("delivered page prints no undelivered warning",
+      "no channel took them" in _delivered_err, False)
+check("a delivered page dedups the next run",
+      wd.problems_to_ping([_ONE_DEAD_JOB], _delivered,
+                          _delivered[_ONE_DEAD_JOB[0]]["pinged_at"] + 60), [])
+
+# Single writer, checked against the SOURCE. Gating on the verdict is only a
+# chokepoint while exactly one function can write the key; a second assignment
+# added later would re-open the hole with every test above still green.
+def _lines_writing_pinged_at(outside_of):
+    """Source lines that STORE pinged_at, excluding the named function's body.
+
+    A write CONSTRUCTS the key (`{"pinged_at": ...}`); a read SUBSCRIPTS it
+    (`prev.get("pinged_at", 0)` in problems_to_ping). Only the write side is
+    the invariant, so the reader side stays free to grow.
+    """
+    src = Path(wd.__file__).read_text().splitlines()
+    inside, offenders = False, []
+    for line in src:
+        if line.startswith("def "):
+            inside = line.startswith(f"def {outside_of}(")
+        if not inside and '{"pinged_at":' in line.replace("{ ", "{"):
+            offenders.append(line.strip())
+    return offenders
+
+
+check("record_pings is the only writer of pinged_at",
+      _lines_writing_pinged_at("record_pings"), [])
+
+
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,
 # which pytest reports as INTERNALERROR and which aborts the whole run -- so a
