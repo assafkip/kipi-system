@@ -8,10 +8,13 @@ verified manually on wiring; these tests guard the logic that a refactor could b
 Run: python3 test_launchd_health_check.py   (exit 0 = pass, 1 = fail)
 """
 import contextlib
+import http.server
 import importlib.util
 import io
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -249,26 +252,47 @@ def _fh_stub(created=0, existing=0, unfiled=0, record=None):
     return _Stub
 
 
+_intent_calls = []
+
+
 def run_capture(problems, fleet_health, dry=False, state=None):
     """Drive run() with every side-effecting edge stubbed.
 
     Returns (stdout, stderr, pings, state_writes) so an assertion can read what
-    the operator would actually SEE, not just what the function returned."""
+    the operator would actually SEE, not just what the function returned.
+
+    `run_intent_check` is stubbed for the same reason as the other four. Scar
+    (PR #134 review, major): it was left LIVE, so `wd.run(dry)` -- default
+    dry=False, the live path -- loaded launchd-intent-verify.py for real, shelled
+    the operator's actual `launchctl print-disabled`, read ~/Library/LaunchAgents,
+    and WROTE ~/.config/kipi/launchd-intent-state.json. Measured: the state file's
+    mtime changed on every run of this suite. It also leaked into the assertions
+    themselves -- a real drift on the machine would push an extra entry into
+    `pings`, and the ping-count checks below would fail for a reason that has
+    nothing to do with the watchdog. A unit test's verdict must not depend on the
+    founder's launchd state.
+
+    The stub RECORDS its calls rather than swallowing them, so the wiring
+    ("intent runs BEFORE the early return in run()") stays pinned by an assertion
+    instead of by the live call that used to prove it as a side effect.
+    """
     saved = (wd.discover_problems, wd.load_state, wd.write_state,
-             wd.send_ping, wd._FLEET_HEALTH)
+             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check)
     pings, writes = [], []
-    wd.discover_problems = lambda: problems
+    _intent_calls.clear()
+    wd.discover_problems = lambda: (_intent_calls.append("discover"), problems)[1]
     wd.load_state = lambda: dict(state or {})
     wd.write_state = lambda s: writes.append(s)
-    wd.send_ping = lambda message: pings.append(message)
+    wd.send_ping = lambda message: (pings.append(message), True)[1]
     wd._FLEET_HEALTH = fleet_health
+    wd.run_intent_check = lambda dry_run: _intent_calls.append(f"intent:{dry_run}")
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             wd.run(dry)
     finally:
         (wd.discover_problems, wd.load_state, wd.write_state,
-         wd.send_ping, wd._FLEET_HEALTH) = saved
+         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check) = saved
     return out.getvalue(), err.getvalue(), pings, writes
 
 
@@ -653,6 +677,229 @@ check("the watchdog's failing key equals the key fleet-health's PRODUCER files",
 _registry_ids = {d["id"] for d in _fh.DETECTORS}
 check("every detector the watchdog files under is in fleet-health's registry",
       sorted(set(wd.LINEAR_DETECTOR_BY_KIND.values()) - _registry_ids), [])
+
+# --- the unit suite must not touch real operator state (PR #134 review, major) -
+# THE REPRODUCER: run_capture() left run_intent_check live, so driving run() from
+# a test loaded launchd-intent-verify.py against the founder's real machine.
+# Measured before the fix: `mtime changed by the unit suite: True` on
+# ~/.config/kipi/launchd-intent-state.json. `wd._INTENT` is the module cache the
+# live path fills, so a None cache after a full run_capture is proof the live
+# path was never entered -- and it goes red the moment the stub is removed.
+run_capture(_TWO_REAL, _fh_stub(created="all"))
+check("run_capture never loads the live intent module", wd._INTENT, None)
+check("the intent check still runs, and BEFORE problems are discovered",
+      _intent_calls[:2], ["intent:False", "discover"])
+run_capture(_NOTHING_TO_FILE, _fh_stub(), dry=True)
+check("dry mode reaches the intent check in dry mode too",
+      _intent_calls[0], "intent:True")
+
+# --- an undelivered alert must not be recorded as seen (PR #134 review, major) -
+# THE REPRODUCER: run_intent_check() called commit() unconditionally. With Linear
+# filing 0 and no Slack webhook, the consecutive-run counter still advanced, and
+# ping_decision only re-alerts at runs==1 or runs % REPEAT_EVERY_RUNS == 0 -- so
+# one phantom receipt bought 12 silent runs on a real drift. Measured on the
+# shipped code: `commit() called anyway: True`, `consecutive silent runs: 12`.
+_DRIFT = [("com.kipi.drifting", "enabled_but_declared_paused",
+           "intent=disabled, override record=enabled")]
+
+
+def _intent_stub(commits):
+    class _Stub:
+        @staticmethod
+        def check(dry_run=False):
+            due = [(label, kind, detail, 1) for label, kind, detail in _DRIFT]
+            # Records the VERDICT it was handed rather than reimplementing the
+            # refusal. The refusal itself is the single writer's, and it is
+            # asserted against the real code in test_launchd_intent_verify.py
+            # section 9. A stub that re-encoded the policy would pass whether or
+            # not run_intent_check told the truth, which is the whole question.
+            return list(_DRIFT), due, (1, 1), lambda delivered=False: \
+                commits.append(delivered)
+
+        @staticmethod
+        def linear_findings(findings, finding_key):
+            return [{"subject": label, "title": label, "body": "",
+                     "key": finding_key("launchd-intent-drift", label),
+                     "detector": "launchd-intent-drift"}
+                    for label, _, _ in findings]
+
+        @staticmethod
+        def ping_message(due):
+            return f"launchd intent drift: {len(due)} job(s)"
+
+    return _Stub
+
+
+def intent_capture(fleet_health, delivered):
+    """Drive run_intent_check with both delivery channels scripted."""
+    commits = []
+    saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
+    wd._INTENT = _intent_stub(commits)
+    wd._FLEET_HEALTH = fleet_health
+    wd.send_ping = lambda message: delivered
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            wd.run_intent_check(dry_run=False)
+    finally:
+        (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping) = saved
+    return commits, err.getvalue()
+
+
+_nowhere, _nowhere_err = intent_capture(_fh_stub(unfiled="all"), delivered=False)
+check("nothing filed and nothing sent -> the writer is told delivery FAILED",
+      _nowhere, [False])
+check("and it says so, instead of failing silently",
+      "NOT delivered" in _nowhere_err, True)
+check("slack alone is enough to record the run",
+      intent_capture(_fh_stub(unfiled="all"), delivered=True)[0], [True])
+check("linear alone is enough to record the run",
+      intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
+check("one landed finding beside a skipped bucket still counts as delivery",
+      intent_capture(_fh_stub(created=1, unfiled=1), delivered=False)[0], [True])
+
+# send_ping's own verdict: a notifier that cannot reach a channel is not delivery.
+_saved_channel = wd.notify_channel_configured
+try:
+    wd.notify_channel_configured = lambda: False
+    check("no webhook configured -> send_ping reports NOT delivered",
+          wd.send_ping("probe: this must never leave the machine"), False)
+finally:
+    wd.notify_channel_configured = _saved_channel
+
+# --- a CONFIGURED webhook is not a delivered one (PR #134 review round 5) -----
+# The check above only covers the case where no channel exists at all. The scar
+# is the other one: a webhook IS configured, curl cannot reach it, slack-notify.sh
+# exits 0 anyway, and send_ping used to return `proc.returncode == 0` -> True.
+# Measured before the fix with the webhook on a refused port: send_ping True,
+# nothing sent, the run committed, 13 scheduled runs silent.
+#
+# Both directions are asserted here on purpose. Without the delivered case, a
+# send_ping hardcoded to False would pass this section and page nobody, ever.
+# Endpoints are on 127.0.0.1 only; the suite never contacts Slack.
+def _send_ping_verdict(webhook):
+    """send_ping's answer for one webhook, with the environment restored after."""
+    saved_hook = os.environ.get("KIPI_SLACK_WEBHOOK")
+    saved_api = os.environ.get("KIPI_LINEAR_API_URL")
+    os.environ["KIPI_SLACK_WEBHOOK"] = webhook
+    # The loopback fixture guard would refuse before curl ever runs, which is a
+    # different verdict than the one under test here.
+    os.environ.pop("KIPI_LINEAR_API_URL", None)
+    try:
+        return wd.send_ping("probe: local endpoints only, ASK-447")
+    finally:
+        os.environ.pop("KIPI_SLACK_WEBHOOK", None)
+        if saved_hook is not None:
+            os.environ["KIPI_SLACK_WEBHOOK"] = saved_hook
+        if saved_api is not None:
+            os.environ["KIPI_LINEAR_API_URL"] = saved_api
+
+
+class _PostSink(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):  # keep the suite output readable
+        pass
+
+
+check("configured webhook that refuses the connection -> NOT delivered",
+      _send_ping_verdict("http://127.0.0.1:9/services/dead"), False)
+
+_sink = http.server.HTTPServer(("127.0.0.1", 0), _PostSink)
+threading.Thread(target=_sink.serve_forever, daemon=True).start()
+try:
+    check("webhook that accepts the POST -> delivered",
+          _send_ping_verdict("http://127.0.0.1:%d/hook" % _sink.server_address[1]),
+          True)
+finally:
+    _sink.shutdown()
+
+# ---------------------------------------------------------------------------
+# The legacy watchdog may not record a page that never left (PR #134 round 6)
+# ---------------------------------------------------------------------------
+# `run_capture` above stubs send_ping to `True` on every call, which is exactly
+# why this survived five review rounds: the suite had no way to express "the
+# page failed". These drive run() with the verdict as an input instead.
+
+
+def _run_with_verdict(delivered, state=None):
+    """run() live, send_ping scripted to `delivered`. Returns the state written."""
+    saved = (wd.discover_problems, wd.load_state, wd.write_state,
+             wd.send_ping, wd.run_intent_check, wd.file_linear_findings)
+    writes = []
+    wd.discover_problems = lambda: [_ONE_DEAD_JOB]
+    wd.load_state = lambda: dict(state or {})
+    wd.write_state = writes.append
+    wd.send_ping = lambda message: delivered
+    wd.run_intent_check = lambda dry_run: None
+    wd.file_linear_findings = lambda problems, apply=True: {
+        "created": 0, "existing": len(problems), "skipped_no_key": 0,
+        "owed": len(problems)}
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            wd.run(False)
+    finally:
+        (wd.discover_problems, wd.load_state, wd.write_state,
+         wd.send_ping, wd.run_intent_check, wd.file_linear_findings) = saved
+    return writes[-1] if writes else {}, err.getvalue()
+
+
+_ONE_DEAD_JOB = ("com.kipi.dead-job", "not_loaded", "installed but not running")
+
+_undelivered, _undelivered_err = _run_with_verdict(False)
+check("undelivered page records no ping time",
+      _undelivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at"), None)
+check("undelivered page says so on stderr",
+      "no channel took them" in _undelivered_err, True)
+# The consequence, asserted rather than assumed: with nothing recorded, the very
+# next run is due again instead of waiting out the 6h TTL.
+check("next run re-alerts immediately after an undelivered page",
+      [p[0] for p in wd.problems_to_ping([_ONE_DEAD_JOB], _undelivered, now)],
+      [_ONE_DEAD_JOB[0]])
+
+# The delivered direction, or "never record" would pass every assertion above
+# and page the founder on every single run.
+_delivered, _delivered_err = _run_with_verdict(True)
+check("delivered page records a ping time",
+      isinstance(_delivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at"), int), True)
+check("delivered page prints no undelivered warning",
+      "no channel took them" in _delivered_err, False)
+# `.get` and not `[...]`: a mutant that records nothing must fail this check BY
+# NAME. Subscripting raised KeyError at import instead, which is red for the
+# wrong reason and prints a traceback where a diagnosis belongs.
+check("a delivered page dedups the next run",
+      wd.problems_to_ping(
+          [_ONE_DEAD_JOB], _delivered,
+          _delivered.get(_ONE_DEAD_JOB[0], {}).get("pinged_at", 0) + 60), [])
+
+# Single writer, checked against the SOURCE. Gating on the verdict is only a
+# chokepoint while exactly one function can write the key; a second assignment
+# added later would re-open the hole with every test above still green.
+def _lines_writing_pinged_at(outside_of):
+    """Source lines that STORE pinged_at, excluding the named function's body.
+
+    A write CONSTRUCTS the key (`{"pinged_at": ...}`); a read SUBSCRIPTS it
+    (`prev.get("pinged_at", 0)` in problems_to_ping). Only the write side is
+    the invariant, so the reader side stays free to grow.
+    """
+    src = Path(wd.__file__).read_text().splitlines()
+    inside, offenders = False, []
+    for line in src:
+        if line.startswith("def "):
+            inside = line.startswith(f"def {outside_of}(")
+        if not inside and '{"pinged_at":' in line.replace("{ ", "{"):
+            offenders.append(line.strip())
+    return offenders
+
+
+check("record_pings is the only writer of pinged_at",
+      _lines_writing_pinged_at("record_pings"), [])
+
 
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,

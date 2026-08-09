@@ -321,6 +321,108 @@ def notify_channel_configured():
         return False
 
 
+# slack-notify.sh's EXIT CONTRACT (ASK-534), transcribed once. Read it as a
+# closed set: an rc that is not in this table is `unknown`, which reads as NOT
+# delivered, so an older or newer notifier costs a duplicate ping and never a
+# missed one.
+NOTIFY_EXIT_VERDICTS = {
+    0: "delivered",
+    1: "send-failed",
+    3: "not-configured",
+    4: "refused-fixture",
+}
+
+
+def notify_send(message, notify=None, timeout=20):
+    """Run the notifier and report what is KNOWN about delivery. Never raises.
+
+    The one Python reader of slack-notify.sh's outcome. Both callers that need a
+    delivery verdict go through it -- `notify_cap` below and `send_ping` in
+    launchd-health-check.py -- for the same reason `notify_channel_configured`
+    is borrowed rather than re-derived: a safety property re-implemented at each
+    call site is not a chokepoint, and the copies drift exactly where they
+    disagree.
+
+    Scar (PR #134 review round 5, reproduced 2026-08-09 before the fix): both
+    callers computed `delivered = rc == 0 and channel_configured`. slack-notify.sh
+    exits 0 unconditionally, including after a curl that never reached Slack, so
+    with a webhook pointing at a refused port BOTH recorded a delivered page that
+    never left the machine. The watchdog then committed the run and stayed silent
+    for the next 13 scheduled runs. A configured channel says a page COULD leave;
+    it says nothing about whether this one did.
+
+    So the verdict is read from the notifier itself, which is the only place the
+    POST outcome exists. This branch first carried its own side channel for that
+    (KIPI_NOTIFY_VERDICT_FILE, because slack-notify.sh exited 0 on every path and
+    could not be changed without touching ~15 callers). Merging origin/main
+    2026-08-09 made that unnecessary: ASK-534 landed the same fix at the same
+    chokepoint and gave the script a real EXIT CONTRACT after auditing every
+    caller. Two mechanisms for one fact is the drift `fleet-homogeneity` exists
+    to stop, and the exit code is the one the rest of the fleet already reads
+    (kipi-dispatch.sh:197 branches on it), so the side channel was deleted and
+    the rc table below is the single reader. Same verdict vocabulary either way.
+
+    Returns: {attempted, exit, delivered, channel_configured, verdict, note}.
+
+    HONEST BOUNDARY, and the trade this merge makes explicit:
+
+    `delivered` means Slack accepted the POST, never that a human read it. It
+    answers False for a rc outside the table and for a notifier that dies before
+    it reports -- both cost a duplicate ping, never a missed one.
+
+    The direction that got WEAKER is worth naming rather than burying. The
+    verdict file could not be forged by an old notifier: absent meant unknown
+    meant not-delivered. An exit code can be. A pre-ASK-534 slack-notify.sh
+    exits 0 on every path, including after a curl that never left the machine,
+    and this table reads that 0 as `delivered`. In THIS repo the notifier is
+    migrated, so the table is right; an instance running a stale copy through a
+    lagging `kipi update` would get a false delivered. That is a version-skew
+    hole in the fleet, not in this function, and it is captured as spillover
+    rather than papered over with a guess here.
+
+    A custom KIPI_FABLE_NOTIFY_CMD owns its own delivery semantics, so it is
+    judged by its exit code as before; only the default notifier is held to the
+    contract table.
+    """
+    notify = notify or os.environ.get("KIPI_FABLE_NOTIFY_CMD") or DEFAULT_NOTIFY
+    # The verdict protocol is a property of the SCRIPT being run, not of who asked
+    # for it, so this is keyed on the resolved path. A caller that points
+    # KIPI_FABLE_NOTIFY_CMD at the real notifier gets the real verdict; anything
+    # else is a notifier this fleet did not write and cannot make claims about.
+    own_verdict = os.path.realpath(notify) == os.path.realpath(DEFAULT_NOTIFY)
+    configured = notify_channel_configured()
+    record = {"attempted": False, "exit": None, "delivered": False,
+              "channel_configured": configured, "verdict": None, "note": None}
+
+    if not os.path.exists(notify):
+        record["note"] = "notifier not found at %s" % notify
+        return record
+
+    try:
+        proc = subprocess.run(["bash", notify, message], timeout=timeout,
+                              capture_output=True, text=True)
+    except (subprocess.SubprocessError, OSError) as exc:
+        record["note"] = "notifier failed to run: %s" % exc
+        return record
+
+    record["attempted"] = True
+    record["exit"] = proc.returncode
+
+    if not own_verdict:
+        # The caller supplied the notifier and owns its semantics.
+        record["delivered"] = bool(proc.returncode == 0 and configured)
+    else:
+        record["verdict"] = NOTIFY_EXIT_VERDICTS.get(
+            proc.returncode, "unknown rc=%s" % proc.returncode)
+        record["delivered"] = record["verdict"] == "delivered"
+
+    if not record["delivered"]:
+        record["note"] = ("exit %s, verdict %s, channel_configured=%s"
+                          % (proc.returncode, record["verdict"] or "none",
+                             configured))
+    return record
+
+
 def notify_cap(trigger, count):
     """Page the founder once when cross-model triage did not unstick the run.
 
@@ -340,35 +442,19 @@ def notify_cap(trigger, count):
     that caller working through its fail-open-loudly branch. Passing --kind to
     the version on main would make the flag the message body.
     """
-    notify = os.environ.get("KIPI_FABLE_NOTIFY_CMD") or DEFAULT_NOTIFY
-    configured = notify_channel_configured()
-    record = {"notify_attempted": False, "notify_exit": None,
-              "notify_delivered": False,
-              "notify_channel_configured": configured, "notify_note": None}
-
-    if not os.path.exists(notify):
-        record["notify_note"] = "notifier not found at %s" % notify
-        return record
-
     message = ("agent stuck after %d Fable escalations (last trigger: %s). "
                "Cross-model triage did not unstick it; a human call is next."
                % (count, trigger))
-    try:
-        proc = subprocess.run(["bash", notify, message], timeout=20,
-                              capture_output=True, text=True)
-    except (subprocess.SubprocessError, OSError) as exc:
-        record["notify_note"] = "notifier failed to run: %s" % exc
-        return record
-
-    record["notify_attempted"] = True
-    record["notify_exit"] = proc.returncode
-    # BOTH halves are required. Exit 0 alone is the lie this fix removes, and a
-    # configured channel alone says nothing about whether the send worked.
-    record["notify_delivered"] = bool(proc.returncode == 0 and configured)
-    if not record["notify_delivered"]:
-        record["notify_note"] = (
-            "exit %s, channel_configured=%s" % (proc.returncode, configured))
-    return record
+    # The verdict is READ from the notifier, not inferred from its exit code.
+    # `notify_send` carries the scar; this function only renames its keys into
+    # the ledger's `notify_*` namespace, which is already written to disk.
+    sent = notify_send(message)
+    return {"notify_attempted": sent["attempted"],
+            "notify_exit": sent["exit"],
+            "notify_delivered": sent["delivered"],
+            "notify_channel_configured": sent["channel_configured"],
+            "notify_verdict": sent["verdict"],
+            "notify_note": sent["note"]}
 
 
 # --------------------------------------------------------------------------

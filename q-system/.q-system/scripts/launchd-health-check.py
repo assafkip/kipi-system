@@ -211,13 +211,109 @@ def write_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+_NOTIFY_CHANNEL = None
+
+
+def notify_channel_configured():
+    """True when a page could actually leave this machine.
+
+    Borrowed, not re-derived: `fable-escalate.py` already owns the Python read of
+    slack-notify.sh's webhook resolution order ($KIPI_SLACK_WEBHOOK, then
+    ~/.config/kipi/slack-webhook), and a second copy here is the drift
+    `fleet-homogeneity` exists to stop. Loaded through the same lazy-importlib
+    shape as `_fleet_health` / `_intent_module`, so its absence cannot stop the
+    watchdog.
+
+    A load failure answers False -- "delivery unknown". The caller reads that as
+    NOT delivered, which costs a repeated ping and never costs a missed one. That
+    is the same trade `check()` in launchd-intent-verify.py already made: a
+    duplicate is the failure this system is allowed to have.
+    """
+    global _NOTIFY_CHANNEL
+    if _NOTIFY_CHANNEL is None:
+        import importlib.util
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "fe", HERE / "fable-escalate.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _NOTIFY_CHANNEL = module.notify_channel_configured
+        except Exception:  # noqa: BLE001
+            _NOTIFY_CHANNEL = lambda: False  # noqa: E731
+    return _NOTIFY_CHANNEL()
+
+
+_NOTIFY_SENDER = False
+
+
+def _notify_sender():
+    """fable-escalate.py's `notify_send`, or None when it cannot be loaded.
+
+    Same lazy-importlib borrow as `notify_channel_configured` above, and for the
+    same reason: that module is the single Python reader of slack-notify.sh's
+    delivery verdict, and a second copy here is the drift `fleet-homogeneity`
+    exists to stop. None means "delivery unknowable", which the caller reads as
+    NOT delivered.
+    """
+    global _NOTIFY_SENDER
+    if _NOTIFY_SENDER is False:
+        import importlib.util
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "fe_send", HERE / "fable-escalate.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _NOTIFY_SENDER = module.notify_send
+        except Exception:  # noqa: BLE001
+            _NOTIFY_SENDER = None
+    return _NOTIFY_SENDER
+
+
 def send_ping(message):
+    """Attempt the page. Returns True only when it could actually have LEFT.
+
+    Scar (PR #134 review, major): this returned None on every path, and
+    `run_intent_check` recorded the run as seen regardless. slack-notify.sh is a
+    silent no-op that STILL EXITS 0 when no webhook resolves -- its own header
+    says so -- so neither its exit code nor "the subprocess started" distinguishes
+    a delivered page from a swallowed one. Measured on the shipped code with no
+    webhook and a dead filer: 0 findings reached Linear, the message was never
+    sent, the run was committed anyway, and the following 12 runs were silent.
+
+    Scar (PR #134 review round 5, same class one layer down, reproduced before
+    fixing): the fix above still ended in `return proc.returncode == 0`, and
+    slack-notify.sh exits 0 after a curl that never reached Slack -- its last line
+    is `curl ... || true`. Measured with the webhook pointing at a refused port:
+    curl failed, this returned True, run_intent_check committed the run, and the
+    next 13 scheduled runs were silent. A configured channel says a page COULD
+    leave the machine; it never said this one did.
+
+    The POST outcome exists in exactly one place -- inside slack-notify.sh -- so
+    it is now REPORTED from there (KIPI_NOTIFY_VERDICT_FILE) and read by one
+    shared function rather than re-inferred here. Borrowed through the same lazy
+    importlib shape as `notify_channel_configured`, and a load failure answers
+    False: delivery unknown reads as not delivered, which costs a duplicate ping
+    and never a missed one.
+
+    HONEST BOUNDARY: True means Slack accepted the POST, not that a human saw it.
+    slack-notify.sh's fixture guard refuses to page on a loopback
+    KIPI_LINEAR_API_URL -- that now reports `refused-fixture`, so it reads as NOT
+    delivered here instead of as a page. Tests stub send_ping regardless (finding
+    2 of the round-2 review); production has no loopback Linear URL.
+    """
     if not NOTIFY_SCRIPT.exists():
-        return
+        return False
+    if not notify_channel_configured():
+        return False
+    send = _notify_sender()
+    if send is None:
+        return False
     try:
-        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
-    except Exception:
-        pass
+        return bool(send(message, notify=str(NOTIFY_SCRIPT))["delivered"])
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def is_dry_run(args):
@@ -390,6 +486,102 @@ def linear_report_line(outcome, dry_run):
             f"already-tracked={outcome['existing']} unfiled={unfiled_count(outcome)}")
 
 
+_INTENT = None
+
+
+def _intent_module():
+    """Lazily load launchd-intent-verify.py (sp-2c7e5819). Same importlib shape as
+    _fleet_health: loaded on demand, and its absence cannot stop the watchdog."""
+    global _INTENT
+    if _INTENT is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "iv", HERE / "launchd-intent-verify.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _INTENT = module
+    return _INTENT
+
+
+def run_intent_check(dry_run):
+    """Verify declared intent against launchd's override DB; print, ping, file.
+
+    Never raises. A watchdog that dies because the intent manifest is malformed
+    stops watching launchd, which is the silent death it exists to catch -- the
+    same contract `file_linear_findings` keeps for Linear.
+
+    The result is REPORTED even when it could not run. An intent verifier that
+    fails to parse `launchctl print-disabled` and prints nothing is
+    indistinguishable from one that found no drift, and the second reading is the
+    one a reader defaults to (the `unfiled=` scar on `linear_report_line`, ASK-181).
+    """
+    try:
+        intent = _intent_module()
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent verification unavailable: {exc}", file=sys.stderr)
+        return
+    try:
+        findings, due, (declared, total), commit = intent.check(dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent verification COULD NOT RUN: {exc}", file=sys.stderr)
+        return
+
+    for label, kind, detail in findings:
+        print(f"INTENT-{kind.upper()}: {label} -- {detail}")
+    print(f"intent coverage: {declared}/{total} installed jobs declared")
+
+    # `commit` records the consecutive-run counts and is deliberately called
+    # AFTER delivery on every path that has one. Recording first meant a crash
+    # between the write and send_ping suppressed an alert that was never sent
+    # (see check()'s docstring). Nothing to deliver commits immediately: the
+    # counts still have to advance for a job that stopped drifting.
+    if not due:
+        commit()
+        return
+    if dry_run:
+        print(f"[dry] would ping intent drift for {len(due)} job(s)")
+        commit()  # a no-op in dry mode; called so the paths stay symmetrical
+        return
+
+    drift = [(label, kind, detail) for label, kind, detail, _ in due]
+    try:
+        outcome = _fleet_health().file_findings(
+            intent.linear_findings(drift, _fleet_health().finding_key),
+            apply=True, filer="launchd-intent-verify.py")
+        unfiled = max(len(drift) - sum(outcome.get(b, 0) for b in LANDED_BUCKETS), 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intent findings NOT filed to Linear: {exc}", file=sys.stderr)
+        unfiled = len(drift)
+
+    message = intent.ping_message(due)
+    if unfiled:
+        message += f" [NOT filed to Linear: {unfiled}]"
+    landed = max(len(drift) - unfiled, 0)
+    delivered = send_ping(message)
+
+    # Deliver-then-record is only half the contract. The other half is that
+    # "delivered" has to be TRUE. Scar (PR #134 review, major): commit() ran
+    # unconditionally, so a run where Linear filed nothing AND no webhook was
+    # configured still advanced the consecutive-run counts. Measured on the
+    # shipped code: runs=1 persisted with nothing sent, and runs 2 through 13
+    # were silent -- the next page came only at run 14, because ping_decision
+    # re-alerts at 1 and at multiples of REPEAT_EVERY_RUNS and at nothing else.
+    # A phantom receipt for an undelivered alert is the exact failure this whole
+    # verifier exists to catch, one layer up.
+    #
+    # The refusal itself now lives in check()'s commit(), the single writer of
+    # the state file (PR #134 round 4: the same class came back through main(),
+    # which had its own copy of the ordering rule and got it wrong). What this
+    # caller owns is the part the writer cannot see -- WHICH channel failed --
+    # so it reports that and hands the writer a truthful verdict.
+    if not (landed or delivered):
+        print(f"intent alert NOT delivered (linear=0, slack=not delivered) -- "
+              f"run counts NOT recorded, the next run re-alerts "
+              f"{len(drift)} job(s)", file=sys.stderr)
+    commit(delivered=bool(landed or delivered))
+
+
 def problems_to_ping(problems, state, now):
     """Problems whose kind changed since the last ping, or whose last ping is
     older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
@@ -409,7 +601,52 @@ def problems_to_ping(problems, state, now):
     return due
 
 
+def record_pings(state, due, now, delivered):
+    """The ONLY writer of `pinged_at`. Refuses to record a page that never left.
+
+    `delivered` is a required positional argument, not a keyword with a default
+    and not an `if` at the call site, because the same class of defect has now
+    come back four times in one review (see send_ping's docstring, and
+    launchd-intent-verify's `commit`). Each time the fix was correct at the site
+    that was named and the next entry point re-derived the rule and got it wrong.
+    A caller that wants a run marked as pinged has to produce a verdict to get
+    here; a fifth caller added later inherits the refusal instead of having to
+    remember it.
+
+    Scar (PR #134 review round 6, reproduced on the shipped code before fixing):
+    run() called `send_ping(message)` and threw the verdict away, then wrote
+    `pinged_at` for every due job. Measured with KIPI_SLACK_WEBHOOK pointed at a
+    refused port: send_ping returned False, nothing reached Slack, and the state
+    file still recorded the page -- which `problems_to_ping` reads as "already
+    told them", suppressing the re-alert for FAIL_PING_TTL_SECONDS (6h). Not
+    recording is the safe direction: it costs a duplicate ping and never a
+    missed one.
+
+    Silence about the failure was the other half. The intent path prints when
+    nothing took its alert; this one printed nothing at all, so a log reading
+    `NOT_LOADED: com.kipi.x` was byte-identical whether the founder's phone rang
+    or the webhook was revoked. It now says which.
+    """
+    if not delivered:
+        print(
+            f"launchd watchdog: {len(due)} alert(s) were due and no channel took "
+            f"them -- ping times NOT recorded, the next run re-alerts.",
+            file=sys.stderr,
+        )
+        return False
+    for label, kind, detail in due:
+        state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
+    return True
+
+
 def run(dry_run):
+    # BEFORE the early return below, not after. `problems` is empty exactly when
+    # every watched job is loaded and healthy -- which is the state a job running
+    # against an explicit pause decision produces. Wiring the intent check after
+    # the `if not problems: return` would make it dead on the only fleet state it
+    # exists to judge.
+    run_intent_check(dry_run)
+
     problems = discover_problems()
 
     if not problems:
@@ -449,9 +686,7 @@ def run(dry_run):
             # problems" while the issues meant to hold them never reached the
             # board. No NEW ping: the one that was already firing carries it.
             message += f" [NOT filed to Linear: {unfiled_count(filed)}]"
-        send_ping(message)
-        for label, kind, detail in due:
-            state[label] = {"pinged_at": now, "kind": kind, "detail": detail}
+        record_pings(state, due, now, send_ping(message))
 
     problem_labels = {label for label, _, _ in problems}
     for label in [k for k in state if k not in problem_labels]:

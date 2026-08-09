@@ -446,6 +446,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_launchd_intent_verify.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_linear_sync_comments.py",
       "runner": "python3"
     },
