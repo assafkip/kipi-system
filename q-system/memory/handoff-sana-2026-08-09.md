@@ -19,14 +19,12 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover list | grep sp-1c959431
 | #127 | ASK-508 | MERGED `71912fac` |
 | #128 | ASK-512 | MERGED `85eb96cf` |
 | #130 | ASK-517 | MERGED `aa3a99bd` |
-| #129 | ASK-514 | see below |
+| #129 | ASK-514 | MERGED `b3967f98` |
 | #125 | — | CLOSED, unmergeable by construction; branch `sana/bake-in-and-cleanup` kept at `464be47a` |
 
-**#129** (`sana/version-bump-merge-base`, head `e9f2c057`): reviewer APPROVE
-(clean, round 4), `validate` was the last gate. If it merged, close ASK-514 and
-resolve `sp-05762519`, `sp-a8bbaae7`, `sp-00370692`, `sp-10729c93` against it.
-If it did not, the branch is fully tested locally — re-run `validate`, nothing
-in the tree needs changing.
+All five merged. Every Linear issue opened today is closed: ASK-507, ASK-508,
+ASK-512, ASK-514, ASK-517. `origin/main` is at `b3967f98`, verified carrying the
+merge-base + fail-closed gate, the CI `base.sha` change, and kipi-design 1.2.9.
 
 ## Open ledger items, with the read on each
 
@@ -62,8 +60,35 @@ open_items = [r for r in last.values() if r["status"] == "open"]
   Bash; `update_counters` only resets on the Edit/Write tools. Fires constantly
   through productive sessions. Do NOT just add `Bash` to the tuple — every `ls`
   would then count as progress.
-- Resolving with ASK-514: `sp-05762519`, `sp-a8bbaae7`, `sp-00370692`,
-  `sp-10729c93`.
+### Not triaged by me — inherited, all `minor`, all pre-existing
+
+Auto-captured by the reviewer in earlier sessions; I did not work them. Read
+these before picking anything above, because two touch the same gate surface as
+today's work:
+
+- **`sp-2390e6fe`** — `capability-gate.py` has no check that a declared test's
+  `timeout_s` has headroom over its real cost; a new manifest entry silently
+  defaults to 60s.
+- **`sp-488ce60b`** — the gate runs 116 tests with zero progress output and
+  prints only at the end; measured 12+ min wall.
+- **`sp-b4087657`** — `validate-separation.py:780` truncates the gate's stdout to
+  the last 15 lines on failure, which hid the `test-timeout` header and cost real
+  diagnosis time on ASK-505.
+- **`sp-ab91855e`** — `volume-ceiling` is 57 of 63 escalation triggers (90%) but
+  is a token-BUDGET heuristic, not a stuckness detector. Directly relevant to
+  `sp-ef66e61c`: most escalations may not be escalations at all.
+
+## Ledger at stop: 9 open
+
+Resolved: `sp-05762519`, `sp-a8bbaae7`, `sp-00370692`, `sp-10729c93`,
+`sp-317fc543` against ASK-514; `sp-016776e6` against ASK-507. Voided as
+superseded with substance carried: `sp-ff914c2b` into `sp-ef66e61c`,
+`sp-1229ec50` into `sp-1c959431`.
+
+**Count the ledger yourself before trusting that number.** An earlier draft of
+this file said "five open"; the collapsed listing said thirteen — including
+`sp-016776e6`, the original item for work I had already shipped and closed. A
+summary of the ledger is not the ledger. Collapse by id, last-write-wins.
 
 ## Two things that will bite whoever picks this up
 

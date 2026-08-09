@@ -35,7 +35,7 @@ There is no third way. You cannot hand-clear the gate.
   systems (findings_writer + issue_findings, sp-5bcfbfe8). Never terminal.
 - The fable-discipline lint blocks deferral language written into CODE without a
   capture (`# spillover-skip` acks an already-captured line).
-- `gates run` fails while any item is open (the enforcement of last resort).
+- `gates run` fails on open items attributable to the active issue/PRD, or on all of them when no scope is active; inherited items print in `[census]`, never expire and never leave the ledger (ASK-526; an age cutoff was rejected because it would print "no open spillover" over 640 open items).
 
 ## Reporting
 

@@ -1063,6 +1063,15 @@ def gate_register(
 
 # ---------------------------------------------------------------------------
 # Spillover ledger (prd-os-spine-native): out-of-scope findings, durable + gated
+#
+# spillover-skip -- file-level ack for the fable-discipline deferral lint.
+# That lint flags the phrase "out-of-scope" in code as an UNCAPTURED deferral.
+# This file is the capture MECHANISM, so its own docstrings and --help text
+# necessarily name the thing it captures; every hit here is the vocabulary of
+# the ledger, not a finding being written down and walked away from. Acked at
+# file level (the lint's own convention, one marker per file) rather than by
+# rewording the API help, which would make the command harder to understand in
+# order to satisfy a detector aimed at a different shape of line.
 # ---------------------------------------------------------------------------
 # The scar: a finding marked `deferred`, or an adjacent issue "mentioned" in
 # prose, used to be terminal — it vanished and nobody (least of all an operator
@@ -1287,6 +1296,32 @@ def _verify_resolution_ref(cfg: Config, ref: str) -> dict:
     }
 
 
+def _active_scope(cfg: Config) -> str | None:
+    """The id `gates run` holds THIS run accountable for, or None.
+
+    The active issue wins over the active PRD: an issue is the narrower unit of
+    work and both state files exist at once during closeout.
+
+    Returning None is not a failure, it is the fail-closed signal -- see
+    cmd_gates, where no scope means every open item blocks. A scope that
+    silently defaulted to something would be exactly the amnesty this must
+    never grant.
+    """
+    for path, key in ((cfg.active_issue_state_path, "issue_id"),
+                      (cfg.active_prd_state_path, "prd_id")):
+        if not path.is_file():
+            continue
+        try:
+            value = json.loads(path.read_text()).get(key)
+        except (json.JSONDecodeError, OSError):
+            continue
+        # `_empty_state()` writes the key with a None value on clear, so a
+        # cleared state file must read as "no scope", not as scope "None".
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _spillover_group_counts(items: list, field: str) -> list:
     """(value, count) pairs for one field, biggest group first, ties by name.
 
@@ -1389,9 +1424,14 @@ def cmd_spillover(cfg: Config, args) -> int:
 def cmd_gates(cfg: Config, args) -> int:
     """gates list prints the registry; gates run executes regression gates from
     the repo root (operator-authored shell commands, the same trust boundary
-    as required_checks), per-gate green/RED, non-zero exit on any RED. `run`
-    ALSO fails while any spillover item is open (out-of-scope findings are part
-    of the standing no-bypass re-proof, so they can never be silently dropped)."""
+    as required_checks), per-gate green/RED, non-zero exit on any RED.
+
+    `run` ALSO fails on open spillover items ATTRIBUTABLE to the run's scope --
+    the active issue/PRD, or everything when there is no active scope. Items
+    inherited from other work are printed in the census on every run but do not
+    block, so the red light means "this work left something behind" instead of
+    "a backlog exists". See the block above the census for the measurement that
+    forced the split and for the age-cutoff design that was rejected."""
     import subprocess as _subprocess
     import re as _re
     path = _gates_path(cfg)
@@ -1452,20 +1492,62 @@ def cmd_gates(cfg: Config, args) -> int:
         if result.returncode != 0:
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
             failures.append((rec["gate_id"], "\n".join(tail)))
-    # Out-of-scope findings are part of the standing re-proof: an open spillover
-    # item turns the gate RED until it is resolved against a closed issue.
+    # Spillover verdict, scoped by ATTRIBUTION and never by the clock (ASK-526).
+    #
+    # WHY THIS IS NOT ONE BOOLEAN ANY MORE. This block used to append a failure
+    # whenever ANY item was open, which collapsed two unrelated verdicts into
+    # one exit code: "a regression gate failed" (you broke something) and "the
+    # ledger is non-empty" (there is a backlog). Measured on kipi-system
+    # 2026-08-08: 640 open items arriving ~50/day from 141 sources against ~4/day
+    # resolved. A boolean over a queue whose arrival rate is 12x its service rate
+    # is red with probability 1 forever, so the red light carried no information
+    # and a genuine new regression was invisible inside it. The gate had the FORM
+    # of enforcement without the function: it was continuously red across exactly
+    # the period in which those 640 accumulated, and caused none of them to be
+    # worked.
+    #
+    # WHAT WAS REJECTED. An age cutoff ("only items newer than N days block").
+    # It would let this function print "no open spillover" while 640 items sat
+    # open -- a gate that states something false is strictly worse than one that
+    # is uninformative, and items would leave enforcement with nobody deciding,
+    # which is the silent drop no-orphan-findings.md exists to prevent.
+    #
+    # Nothing here removes an item, changes its status, or expires it. The two
+    # ways out of the ledger are still exactly resolve-against-a-closed-issue and
+    # record-a-void.
     openv = _spillover_open(cfg)
-    if openv:
-        names = ", ".join(r["id"] for r in openv)
-        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})" for r in openv)
-        print(f"[RED] spillover: {len(openv)} open out-of-scope item(s): {names}")
-        failures.append(("spillover", f"{len(openv)} open spillover item(s):\n{detail}\n"
-                                      f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    scope = args.scope or _active_scope(cfg)
+    if scope:
+        attributable = [r for r in openv if r.get("source") == scope]
+        inherited = [r for r in openv if r.get("source") != scope]
+    else:
+        # Fail-closed. No active issue means no excuse: the bare `gates run`
+        # that wiring-check.md tells you to run still answers for the WHOLE
+        # ledger, so the scoping can never hide the tail from an audit.
+        attributable, inherited = openv, []
+    if attributable:
+        names = ", ".join(r["id"] for r in attributable)
+        detail = "\n".join(f"  {r['id']}: {r.get('description', '')[:90]} (src {r.get('source')})"
+                           for r in attributable)
+        label = f"spillover[{scope}]" if scope else "spillover"
+        print(f"[RED] {label}: {len(attributable)} open item(s) this work must answer for: {names}")
+        failures.append((label, f"{len(attributable)} open spillover item(s):\n{detail}\n"
+                                f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    # The census prints on EVERY run, red or green, passing or failing. An
+    # inherited backlog that stops being PRINTED is functionally deleted for an
+    # operator with ADHD, so the number leaving the blocking set must never mean
+    # the number leaving the screen. `spillover triage` is the lens on it.
+    census = f"[census] spillover: {len(openv)} open total"
+    if inherited:
+        census += (f"; {len(inherited)} inherited from other work (not attributable "
+                   f"to {scope}), reported not blocking")
+    print(census)
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    print(f"all {len(records)} regression gates green; no open spillover")
+    print(f"all {len(records)} regression gates green; "
+          f"{len(attributable)} attributable spillover item(s)")
     return 0
 
 
@@ -1495,6 +1577,12 @@ def main(argv: list[str] | None = None) -> int:
     p_gates = sub.add_parser("gates")
     p_gates.add_argument("gates_cmd", choices=("list", "run"))
     p_gates.add_argument("--lifecycle", choices=GATE_LIFECYCLES)
+    p_gates.add_argument(
+        "--scope",
+        help="issue/PRD id whose spillover items block this run. Default: the "
+             "active issue, then the active PRD. With NO scope the run is "
+             "fail-closed and every open item blocks. Items outside the scope "
+             "are always printed in the census, never expired")
     p_gates.set_defaults(func=cmd_gates)
 
     p_spill = sub.add_parser("spillover")
