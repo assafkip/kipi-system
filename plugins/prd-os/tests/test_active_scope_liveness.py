@@ -309,3 +309,42 @@ def test_corrupt_active_issue_state_does_not_widen_to_the_prd(repo):
         f"the run was scoped to prd-live despite unreadable issue state; the "
         f"corrupt file widened the amnesty instead of refusing.\nout={out}"
     )
+
+
+def test_scope_is_frozen_before_gates_run_so_a_concurrent_switch_cannot_excuse(repo):
+    """The run's verdict must use the scope it STARTED under.
+
+    Codex round 3 on PR #131, MAJOR. Scope was resolved AFTER the regression loop,
+    so a gate command -- or a concurrent `gates run` in another worktree, which is
+    routine on this fleet -- could rewrite .claude/state/active-issue.json mid-run.
+    The verdict was then computed against a DIFFERENT scope than the one the work
+    was done under, and the run's OWN open major was reclassified as 'inherited',
+    stopped blocking, and the gate exited 0 over it.
+
+    This test drives the switch through the gate command itself, which is the same
+    seam a concurrent process reaches through and is deterministic to trigger.
+    """
+    _write_spec(repo, "ASK-A", "in-progress", tracked=True, kind="issues")
+    _write_spec(repo, "ASK-B", "in-progress", tracked=True, kind="issues")
+    d = repo / ".claude" / "state"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "active-issue.json").write_text(json.dumps({"issue_id": "ASK-A"}))
+    # A major left behind by ASK-A: it must block ASK-A's own run.
+    run(repo, "spillover", "add", "--source", "ASK-A", "--desc", "mine", "--id",
+        "sp-A", "--severity", "major")
+    # A passing gate whose side effect flips the active scope to ASK-B mid-run.
+    state = (d / "active-issue.json").as_posix()
+    (repo / ".prd-os" / "gates.jsonl").write_text(json.dumps({
+        "gate_id": "flips-the-scope", "issue_id": "ASK-A", "lifecycle": "regression",
+        "command": f"printf '%s' '{{\"issue_id\": \"ASK-B\"}}' > {state}",
+    }) + "\n")
+
+    g = run(repo, "gates", "run")
+    out = g.stdout + g.stderr
+    assert (d / "active-issue.json").read_text().strip().endswith("}"), "fixture did not run"
+    assert "ASK-B" in (d / "active-issue.json").read_text(), (
+        "the gate command did not actually flip the scope; the test proves nothing")
+    assert g.returncode != 0, (
+        f"a mid-run scope switch excused ASK-A's own open major and the gate "
+        f"exited 0.\nout={out}")
+    assert "sp-A" in out, f"ASK-A's own major was not named as blocking.\nout={out}"

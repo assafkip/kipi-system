@@ -1933,6 +1933,46 @@ def cmd_gates(cfg: Config, args) -> int:
         record for record in records
         if record["lifecycle"] == "regression"
     ]
+    # SCOPE IS RESOLVED AND FROZEN BEFORE ANY GATE COMMAND RUNS (Codex round 3,
+    # PR #131, MAJOR). It used to be read AFTER the regression loop, so a gate
+    # command -- or a concurrent `gates run` in another worktree -- could switch
+    # .claude/state/active-issue.json mid-run and the verdict would be computed
+    # against a DIFFERENT scope than the one the run started under. Reproduced:
+    # scope ASK-A at gate start, ASK-B by verdict time, and the run's own open
+    # major was reclassified as 'inherited' and stopped blocking -- exit 0 over a
+    # major that run had left behind. Read once, hold it immutable for the run.
+    # An EXPLICIT --scope clears the same liveness bar as an inferred one.
+    #
+    # THE SCAR (Codex round 1, PR #131, reproduced against the real 638-record
+    # ledger): --scope used to be honoured unverified, on the rationale that the
+    # flag is "a caller ASSERTING accountability, which is a decision by
+    # somebody". Measured, that assertion bought:
+    #     blocking_unscoped=19  blocking_fake_scope=1  fake_scope_live=False
+    # A scope id naming nothing at all suppressed 18 inherited majors. The caller
+    # here is usually an unattended agent, so "somebody decided" is precisely what
+    # nobody can audit at 3am; an unverifiable assertion is not a decision, it is a
+    # hand-clear, and no-orphan-findings.md refuses hand-clears everywhere else.
+    # The flag is not removed (that would make it a lie) -- it is verified.
+    explicit = getattr(args, "scope", None)
+    if explicit:
+        live = (_scope_is_live(cfg, explicit, cfg.issues_dir)
+                or _scope_is_live(cfg, explicit, cfg.prds_dir))
+        if live:
+            scope = explicit
+        else:
+            scope = None
+            print(f"[scope] --scope '{explicit}' refused: it names no tracked, live "
+                  f"issue or PRD spec. Falling through to fail-closed; every open "
+                  f"item answers.")
+    else:
+        scope = _active_scope(cfg)
+    if not scope:
+        # Say WHY there is no scope. A silent fall-through reads as "the gate is
+        # just always red"; the note names the dead/missing/terminal spec that
+        # refused to grant amnesty, which is the actionable half (ASK-527).
+        note = _scope_refusal_note(cfg)
+        if note:
+            print(f"[scope] {note}")
     failures = []
     skipped_self_ref = 0
     for rec in records:
@@ -1984,38 +2024,6 @@ def cmd_gates(cfg: Config, args) -> int:
     # ways out of the ledger are still exactly resolve-against-a-closed-issue and
     # record-a-void.
     openv = _spillover_open(cfg)
-    # An EXPLICIT --scope clears the same liveness bar as an inferred one.
-    #
-    # THE SCAR (Codex round 1, PR #131, reproduced against the real 638-record
-    # ledger): --scope used to be honoured unverified, on the rationale that the
-    # flag is "a caller ASSERTING accountability, which is a decision by
-    # somebody". Measured, that assertion bought:
-    #     blocking_unscoped=19  blocking_fake_scope=1  fake_scope_live=False
-    # A scope id naming nothing at all suppressed 18 inherited majors. The caller
-    # here is usually an unattended agent, so "somebody decided" is precisely what
-    # nobody can audit at 3am; an unverifiable assertion is not a decision, it is a
-    # hand-clear, and no-orphan-findings.md refuses hand-clears everywhere else.
-    # The flag is not removed (that would make it a lie) -- it is verified.
-    explicit = getattr(args, "scope", None)
-    if explicit:
-        live = (_scope_is_live(cfg, explicit, cfg.issues_dir)
-                or _scope_is_live(cfg, explicit, cfg.prds_dir))
-        if live:
-            scope = explicit
-        else:
-            scope = None
-            print(f"[scope] --scope '{explicit}' refused: it names no tracked, live "
-                  f"issue or PRD spec. Falling through to fail-closed; every open "
-                  f"item answers.")
-    else:
-        scope = _active_scope(cfg)
-    if not scope:
-        # Say WHY there is no scope. A silent fall-through reads as "the gate is
-        # just always red"; the note names the dead/missing/terminal spec that
-        # refused to grant amnesty, which is the actionable half (ASK-527).
-        note = _scope_refusal_note(cfg)
-        if note:
-            print(f"[scope] {note}")
     blocking = [r for r in openv if _spillover_blocks(r, scope)]
     reported = [r for r in openv if r not in blocking]
     inherited = [r for r in openv if scope and r.get("source") != scope]
