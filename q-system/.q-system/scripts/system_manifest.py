@@ -120,7 +120,15 @@ def load(repo=None) -> dict:
 
 
 def subsystems(repo=None) -> list[dict]:
+    # Same blind-iteration root as check() (Codex round 2, PR #132): a non-list here
+    # is not merely wrong, it RAISES -- `{"subsystems": 0}` and `{"subsystems": null}`
+    # both give TypeError: not iterable. The guard's broad `except` around mentions()
+    # swallowed that into an empty result, so a malformed manifest crashed this
+    # accessor on every turn and nobody ever saw it. Return the empty set instead and
+    # let health()/check() be the things that SAY so.
     subs = load(repo).get("subsystems", [])
+    if not isinstance(subs, list):
+        return []
     return [s for s in subs if isinstance(s, dict)]
 
 
@@ -140,7 +148,28 @@ def check(repo=None) -> list[str]:
     seen_ids: set[str] = set()
     seen_labels: dict[str, str] = {}  # lowercase label -> owning subsystem id
 
-    for i, sub in enumerate(obj.get("subsystems", [])):
+    # VALIDATE THE CONTAINER'S TYPE BEFORE ITERATING IT (Codex round 2, PR #132,
+    # MAJOR). This used to iterate `obj.get("subsystems", [])` blind, and Python
+    # iterates almost anything: a STRING yields characters (each fails the
+    # "not an object" test, so that shape was caught by accident), but a DICT yields
+    # its keys -- and an EMPTY dict yields nothing at all. So `{"subsystems": {}}`
+    # walked zero iterations, produced zero problems, and check() called it clean.
+    # health() then reported `ok` and the Stop hook ran with zero coverage, silently.
+    # The round-1 fix cited check() as the structural authority; this input falsified
+    # that, so the authority is being made real rather than re-cited.
+    #
+    # EMPTY-BUT-RIGHT-TYPE STAYS LEGAL on purpose. `{}` with no key, and
+    # `{"subsystems": []}`, both mean "nothing declared yet", which is the same
+    # legitimate state as having no manifest. Only the wrong TYPE is a defect.
+    # Rejecting empties would wedge every instance mid-authoring on a hook that fires
+    # every turn, which is the outage this whole issue is being careful to avoid.
+    declared = obj.get("subsystems", [])
+    if not isinstance(declared, list):
+        problems.append(
+            f"`subsystems` must be a list, got {type(declared).__name__}; "
+            "coverage would silently cover nothing")
+        declared = []
+    for i, sub in enumerate(declared):
         where = f"subsystems[{i}]"
         if not isinstance(sub, dict):
             problems.append(f"{where}: not an object")

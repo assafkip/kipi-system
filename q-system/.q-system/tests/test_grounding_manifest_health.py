@@ -213,6 +213,13 @@ def test_health_agrees_with_check_on_every_shape(tmp_path):
     m = _load_module()
     repo = _repo(tmp_path)
     shapes = [
+        # Wrong TYPE for the container. `{}` is the one that slipped round 1: Python
+        # iterates a dict's keys, and an EMPTY dict yields none, so the validation
+        # loop ran zero times and reported clean (Codex round 2, PR #132).
+        '{"subsystems": {}}',
+        '{"subsystems": {"a": 1}}',
+        '{"subsystems": 0}',
+        '{"subsystems": null}',
         '{"subsystems": "not-a-list"}',
         '{"subsystems": [{"id": "", "name": "x", "members": [{"ref": "a"}]}]}',
         '{"subsystems": [{"id": "s", "name": "S", "members": []}]}',
@@ -237,6 +244,61 @@ def test_guard_warns_on_a_structurally_invalid_manifest(tmp_path):
     assert "unreadable" in r.stderr.lower(), (
         f"a structurally invalid manifest produced no warning; coverage is off and "
         f"nobody is told.\nstderr={r.stderr!r}")
+
+
+def test_empty_wrong_type_container_is_unreadable(tmp_path):
+    """`{"subsystems": {}}` -- the exact input that survived round 1.
+
+    Python iterates a dict's KEYS, so an empty dict yields nothing, the validation
+    loop ran zero times, check() returned [], health() said ok, and the Stop hook ran
+    with zero coverage and an empty stderr. A non-empty string was caught only by
+    accident (its characters each failed the per-item object test), which is why the
+    round-1 test set passed while the defect was live.
+    """
+    m = _load_module()
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text('{"subsystems": {}}')
+    status, detail = m.health(repo)
+    assert status == m.MANIFEST_UNREADABLE, (
+        f"an empty wrong-type container reported {status!r}; coverage is silently off")
+    assert "list" in detail.lower(), f"detail does not name the problem: {detail!r}"
+
+
+def test_empty_but_correctly_typed_manifest_stays_ok(tmp_path):
+    """NEGATIVE CONTROL for round 2's fix. "Nothing declared yet" is legitimate.
+
+    `{}` and `{"subsystems": []}` mean the same thing as having no manifest, and that
+    is the state an instance sits in while someone is authoring one. Rejecting them
+    would wedge every session on a hook that fires every turn -- the outage this issue
+    is being careful to avoid. This is the test that fails if the fix over-broadens.
+    """
+    m = _load_module()
+    repo = _repo(tmp_path)
+    for raw in ('{}', '{"subsystems": []}'):
+        _manifest_file(repo).write_text(raw)
+        status, _ = m.health(repo)
+        assert status == m.MANIFEST_OK, (
+            f"{raw} reported {status!r}; an empty manifest is a legitimate state, not "
+            "a broken one")
+
+
+def test_accessors_do_not_crash_on_a_wrong_type_container(tmp_path):
+    """`subsystems()` RAISED on a non-iterable container, on every turn, invisibly.
+
+    `{"subsystems": 0}` and `{"subsystems": null}` both gave
+    `TypeError: not iterable`. The guard's broad `except Exception` around mentions()
+    swallowed it into an empty result, so the crash never surfaced anywhere -- the
+    same swallow-the-reason pattern this whole issue is about, one layer down.
+    Accessors return empty; health()/check() are the things that SAY it is broken.
+    """
+    m = _load_module()
+    repo = _repo(tmp_path)
+    for raw in ('{"subsystems": 0}', '{"subsystems": null}', '{"subsystems": {}}'):
+        _manifest_file(repo).write_text(raw)
+        assert m.subsystems(repo) == [], f"{raw} did not yield an empty set"
+        assert m.mentions(repo, "some prose") == [], f"{raw} broke mentions()"
+        assert m.health(repo)[0] == m.MANIFEST_UNREADABLE, (
+            f"{raw} was not reported as unreadable")
 
 
 if __name__ == "__main__":
