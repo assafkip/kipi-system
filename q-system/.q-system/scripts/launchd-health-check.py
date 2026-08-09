@@ -291,11 +291,21 @@ def send_ping(message):
     leave the machine; it never said this one did.
 
     The POST outcome exists in exactly one place -- inside slack-notify.sh -- so
-    it is now REPORTED from there (KIPI_NOTIFY_VERDICT_FILE) and read by one
-    shared function rather than re-inferred here. Borrowed through the same lazy
-    importlib shape as `notify_channel_configured`, and a load failure answers
-    False: delivery unknown reads as not delivered, which costs a duplicate ping
-    and never a missed one.
+    it is now REPORTED from there, through that script's EXIT CONTRACT (ASK-534
+    gave it distinct codes after auditing every caller), and read by one shared
+    function, `fable-escalate.notify_send`, rather than re-inferred here. Borrowed
+    through the same lazy importlib shape as `notify_channel_configured`, and a
+    load failure answers False: delivery unknown reads as not delivered, which
+    costs a duplicate ping and never a missed one.
+
+    Scar (codex review of PR #134, round 7): for one merge this paragraph credited
+    an env-var side channel that this branch built and then DELETED when
+    origin/main's exit contract replaced it. The code was right; the comment named
+    a mechanism that existed nowhere in this file, which is the reading the next
+    branch would have trusted. The deleted design is recorded once, in
+    `fable-escalate.notify_send`'s docstring where that decision was made, and
+    NOT restated here -- so this file naming it again is by definition stale, and
+    test 15 in test_launchd_health_check.py fails on the bare name.
 
     HONEST BOUNDARY: True means Slack accepted the POST, not that a human saw it.
     slack-notify.sh's fixture guard refuses to page on a loopback

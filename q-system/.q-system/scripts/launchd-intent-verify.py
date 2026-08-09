@@ -194,6 +194,28 @@ def load_intent(manifest_text=None, paused_texts=()):
                 raise IntentError(
                     f"{label}: intent must be {ENABLED!r} or {DISABLED!r}, got {intent!r}"
                 )
+            # A second row for one label REFUSES rather than overwriting.
+            #
+            # Scar (codex review of PR #134, reproduced by execution 2026-08-09
+            # before the fix): this was a bare assignment, so the last row won and
+            # every earlier one vanished without an error, a conflict entry, or a
+            # log line. Probed with two rows for `com.kipi.dup` and the override DB
+            # reading enabled: as written the verifier paged
+            # `enabled_but_declared_paused` and filed a PERMANENT Linear issue;
+            # with the same two rows swapped it reported nothing at all. Whether
+            # the founder's phone rings was decided by line order in a JSON file.
+            #
+            # The manifest is the file that WINS over the pause ledger, and
+            # `conflicts` exists so a manifest-vs-ledger disagreement is surfaced
+            # and never silently resolved. A manifest disagreeing with ITSELF is
+            # the same defect one level in, so it gets the same answer: name it.
+            # Refusing beats picking, because there is no correct pick -- the two
+            # rows are equally explicit and nothing ranks them.
+            if label in declared:
+                raise IntentError(
+                    f"{label}: declared twice in launchd-intent.json "
+                    f"({declared[label]!r} then {intent!r}); one row per label"
+                )
             declared[label] = intent
 
     conflicts = sorted(

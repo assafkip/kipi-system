@@ -166,6 +166,37 @@ check_raises("a row with no label refuses", iv.IntentError,
 check_raises("an unknown intent value refuses", iv.IntentError,
              lambda: iv.load_intent('{"jobs":[{"label":"a","intent":"paused"}]}', []))
 
+# Duplicate labels (codex review of PR #134, round 7). Both directions are pinned
+# because refusing only the contradicting pair would leave the row-order coupling
+# in place for the identical pair -- and a manifest that lists a label twice is a
+# defect whether or not the two rows happen to agree today.
+check_raises("a label declared twice refuses", iv.IntentError,
+             lambda: iv.load_intent(
+                 '{"jobs":[{"label":"a","intent":"enabled"},'
+                 '{"label":"a","intent":"disabled"}]}', []))
+check_raises("even when the two rows agree", iv.IntentError,
+             lambda: iv.load_intent(
+                 '{"jobs":[{"label":"a","intent":"enabled"},'
+                 '{"label":"a","intent":"enabled"}]}', []))
+# The assertion that would have caught the shipped bug: not "it refuses" but "the
+# answer does not depend on line order". A last-row-wins reader passes every
+# single-order test and still pages on one ordering and stays silent on the other.
+_dup = [{"label": "a", "intent": "enabled"}, {"label": "a", "intent": "disabled"}]
+
+
+def _outcome(rows):
+    try:
+        intent, _ = iv.load_intent(json.dumps({"jobs": rows}), [])
+    except iv.IntentError:
+        return ("REFUSED",)
+    return (intent["a"], tuple(k for _, k, _ in iv.diff_intent(intent, {"a": "enabled"}, {"a"})))
+
+
+check("the verdict does not depend on manifest row order",
+      _outcome(_dup) == _outcome(list(reversed(_dup))), True)
+check("and that shared verdict is a refusal, not a silent pick",
+      _outcome(_dup), ("REFUSED",))
+
 
 # =============================================================================
 # 5. diff_intent -- all four kinds, and agreement producing silence

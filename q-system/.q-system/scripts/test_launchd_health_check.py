@@ -901,6 +901,27 @@ check("record_pings is the only writer of pinged_at",
       _lines_writing_pinged_at("record_pings"), [])
 
 
+# =============================================================================
+# 15. The docstring may not outlive its mechanism (codex PR #134, round 7)
+# =============================================================================
+# send_ping's docstring credited a KIPI_NOTIFY_VERDICT_FILE side channel for the
+# delivery verdict. That side channel was built on this branch and DELETED when
+# origin/main's slack-notify.sh exit contract replaced it, so the paragraph
+# described a mechanism present nowhere in the file. Nothing went red: the code
+# was correct and only the explanation was false, which is the failure mode this
+# repo cares about most -- a name is what the next branch will believe.
+#
+# The rule is the bare name, deliberately, not "names it without reading it". No
+# checker can separate a docstring crediting a mechanism as CURRENT from one
+# recording it as deleted HISTORY, and this file needs neither: the removal
+# decision is recorded once, in fable-escalate.notify_send where it was made. So
+# any occurrence here is stale by construction. Split at write time so this
+# assertion does not fail on its own source.
+_DEAD_SIDE_CHANNEL = "KIPI_NOTIFY_VERDICT" + "_FILE"
+check("no docstring credits the deleted verdict-file side channel",
+      _DEAD_SIDE_CHANNEL in Path(wd.__file__).read_text(), False)
+
+
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,
 # which pytest reports as INTERNALERROR and which aborts the whole run -- so a
