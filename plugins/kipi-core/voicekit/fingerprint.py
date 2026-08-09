@@ -52,7 +52,13 @@ _FORMAL_PAIRS = re.compile(
 # with sentence position get both cases.
 _FIRST_PERSON = re.compile(
     r"\b(?:I|I'm|I've|I'll|I'd"
-    r"|[Ww]e|[Ww]e're|[Ww]e've|[Mm]y|[Oo]ur|[Mm]e)\b")
+    # A SCOPED flag, not more spellings (ASK-512). [Ww]e covered sentence-case
+    # and lowercase and still missed ALL-CAPS, so a headline or an emphatic line
+    # measured as impersonal in a BLOCKING band. Enumerating the casings a
+    # reviewer happened to name is what left the hole; (?i: ...) states the
+    # property instead, and keeps the I-forms outside it so "i.e." is still not
+    # first person.
+    r"|(?i:we|we're|we've|my|our|me))\b")
 
 # Hedges: the softeners that dilute a verdict. Small list, presence-per-post is the
 # metric; an exhaustive list would be a banned-word gate, which is a different tool.

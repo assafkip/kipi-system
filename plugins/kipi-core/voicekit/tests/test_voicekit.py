@@ -89,6 +89,25 @@ class TestFingerprint:
         assert (fingerprint.metrics(upper)["first_person_rate"]
                 == fingerprint.metrics(lower)["first_person_rate"])
 
+    def test_capitalization_never_moves_the_measurement(self, ):
+        """The PROPERTY, across a case table, not the spellings a reviewer named
+        (ASK-512).
+
+        ASK-508 fixed "We shipped" and shipped [Ww]e, which still missed
+        ALL-CAPS -- so a headline or emphatic line measured as impersonal in a
+        BLOCKING band. Enumerating shapes is what left the hole; the invariant
+        is that case carries no information about first person, so every casing
+        of the same sentence must land on the same number.
+        """
+        variants = ["we broke it and my call cost us our week",
+                    "We broke it and My call cost us Our week",
+                    "WE BROKE IT AND MY CALL COST US OUR WEEK",
+                    "wE bRoKe It AnD mY cAlL cOsT uS oUr WeEk"]
+        rates = {v: fingerprint.metrics(v)["first_person_rate"] for v in variants}
+        assert len(set(rates.values())) == 1, (
+            "capitalization moved the measurement: %r" % rates)
+        assert all(r > 0 for r in rates.values()), "precondition: some matched"
+
     def test_bare_i_in_an_abbreviation_is_not_first_person(self, ):
         """The guard on the fix above: re.I across the whole pattern would make
         \\bi\\b match the "i" in "i.e.", inventing first-person voice in prose
@@ -221,6 +240,25 @@ class TestCorpus:
                 "%r must not survive as a usable row" % spelling)
             assert v.skipped_rows == 1, (
                 "%r must show up as decay, got %r" % (spelling, v.skipped_rows))
+
+    def test_no_json_scalar_weight_can_crash_the_loader(self, tmp_path):
+        """The PROPERTY: a weight is a finite number or the row is decay, for
+        every scalar JSON can carry (ASK-512).
+
+        ASK-508 caught non-numeric strings and the non-finite floats, then
+        missed a plain integer too big for a float -- float(10**400) raises
+        OverflowError, which (TypeError, ValueError) does not catch. Valid JSON,
+        loader dead. Listing the shapes someone reported is what left it, so
+        this walks the scalar space instead.
+        """
+        junk = ["heavy", "NaN", "inf", "-inf", "Infinity", 10 ** 400,
+                -(10 ** 400), None, True, [], {}, "", "1e999"]
+        for bad in junk:
+            rows = _rows(2)
+            rows[0]["weight"] = bad
+            v = corpus.load(_voice_dir(tmp_path, rows=rows))
+            assert [r["id"] for r in v.active_exemplars()] == ["ex-01"], (
+                "weight=%r must not survive as usable" % (bad,))
 
     def test_retired_and_zero_weight_rows_are_excluded(self, tmp_path):
         rows = _rows(3)
