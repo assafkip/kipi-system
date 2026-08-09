@@ -96,9 +96,14 @@ def _live_spec(repo: Path, sid: str, kind: str = "issues") -> None:
     subprocess.run(["git", "-C", str(repo), "add", "-f", rel], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", f"add {sid}"], check=True)
 
-def _add(repo: Path, sid: str, source: str, desc: str = "a real finding") -> None:
+def _add(repo: Path, sid: str, source: str, desc: str = "a real finding",
+         severity: str = "major") -> None:
+    """Seeded at MAJOR on purpose. This file tests ATTRIBUTION; severity is the
+    other axis of the combined rule and must be held above the reporting bar, or
+    a green result is ambiguous between "not attributable" and "not severe"."""
     assert run(repo, "spillover", "add", "--source", source,
-               "--desc", desc, "--id", sid).returncode == 0
+               "--desc", desc, "--id", sid,
+               "--severity", severity).returncode == 0
 
 
 def _register_failing_gate(repo: Path, gate_id: str) -> None:

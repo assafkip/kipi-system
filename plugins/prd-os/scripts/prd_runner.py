@@ -1832,6 +1832,41 @@ SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
 
 
+def _spillover_blocks(record: dict, scope: str | None) -> bool:
+    """Does this open item turn `gates run` red?
+
+    THE COMBINED RULE. Attribution narrows WHICH items count; severity still sets
+    the bar; a `blocker` anywhere is the floor.
+
+        no live scope        -> severity decides (ASK-363's rule, unchanged)
+        item source == scope -> severity decides (your own item, normal bar)
+        inherited item       -> only `blocker` blocks
+
+    WHY BOTH AXES. ASK-363 shipped severity alone; ASK-526/527 shipped attribution
+    alone; neither is sufficient and each deletes the other's contract if landed
+    naively. Measured on kipi-system 2026-08-09: 636 open items, severity blocks 18,
+    and all 18 are inherited from other work -- attributable to no change under
+    review. A verdict RED with probability 1 regardless of the diff carries no
+    information about the diff. Attribution alone, though, blocks on a MINOR item
+    your own work opened, which collapses the deliberate two-bar split (`gates run`
+    is the day-to-day light, `archive` is the closeout bar that refuses on ANY open
+    item this work touched) -- see test_archive_still_refuses_on_a_minor_item.
+
+    THE KNOWN COST, named here rather than discovered later: one inherited `blocker`
+    wedges EVERY scope in the repo until somebody acts on it. That is the intended
+    blast radius of the word, but it makes severity a loaded gun -- mislabel one item
+    and all work halts. The escapes are auditable and there are exactly three, each
+    of which records a decision: `spillover reclassify --reason`, `resolve` against a
+    closed issue, or `void` with a reason. There is deliberately NO
+    --ignore-inherited flag; that would be the hand-clear no-orphan-findings.md
+    refuses everywhere else.
+    """
+    severity = (record.get("severity") or "").strip().lower()
+    if scope is None or record.get("source") == scope:
+        return _is_blocking_severity(severity)
+    return severity == "blocker"
+
+
 def _is_blocking_severity(value: str) -> bool:
     """Unknown severities block. See SPILLOVER_NONBLOCKING_SEVERITIES."""
     sev = (value or "").strip().lower()
@@ -1941,29 +1976,35 @@ def cmd_gates(cfg: Config, args) -> int:
     # record-a-void.
     openv = _spillover_open(cfg)
     scope = getattr(args, "scope", None) or _active_scope(cfg)
-    if scope:
-        attributable = [r for r in openv if r.get("source") == scope]
-        inherited = [r for r in openv if r.get("source") != scope]
-    else:
-        # Fail-closed. No active issue means no excuse: the bare `gates run`
-        # that wiring-check.md tells you to run still answers for the WHOLE
-        # ledger, so the scoping can never hide the tail from an audit.
-        attributable, inherited = openv, []
-        # Say WHY there is no scope. A silent fall-through to fail-closed reads
-        # as "the gate is just always red"; the note names the dead/missing/
-        # terminal spec that refused to grant amnesty, which is the actionable
-        # half (ASK-527).
+    if not scope:
+        # Say WHY there is no scope. A silent fall-through reads as "the gate is
+        # just always red"; the note names the dead/missing/terminal spec that
+        # refused to grant amnesty, which is the actionable half (ASK-527).
         note = _scope_refusal_note(cfg)
         if note:
             print(f"[scope] {note}")
-    if attributable:
-        names = ", ".join(r["id"] for r in attributable)
+    blocking = [r for r in openv if _spillover_blocks(r, scope)]
+    reported = [r for r in openv if r not in blocking]
+    inherited = [r for r in openv if scope and r.get("source") != scope]
+    if blocking:
+        names = ", ".join(r["id"] for r in blocking)
         detail = "\n".join(f"  {r['id']} [{r.get('severity')}]: {r.get('description', '')[:90]} (src {r.get('source')})"
-                           for r in attributable)
+                           for r in blocking)
         label = f"spillover[{scope}]" if scope else "spillover"
-        print(f"[RED] {label}: {len(attributable)} open item(s) this work must answer for: {names}")
-        failures.append((label, f"{len(attributable)} open spillover item(s):\n{detail}\n"
+        print(f"[RED] {label}: {len(blocking)} open item(s) this work must answer for: {names}")
+        failures.append((label, f"{len(blocking)} open spillover item(s):\n{detail}\n"
                                 f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+    if reported:
+        # Reported, never silent. `--severity` DEFAULTS to minor, so a defaulted
+        # item is indistinguishable from one assessed as minor -- the label says
+        # "untriaged" rather than laundering "nobody looked" as "we judged it
+        # small". This is how 533 of them accumulated unnoticed.
+        ids = ", ".join(r["id"] for r in reported[:10])
+        more = f" (+{len(reported) - 10} more)" if len(reported) > 10 else ""
+        print(f"[REPORT] spillover: {len(reported)} open minor-or-untriaged "
+              f"item(s), not blocking: {ids}{more}")
+        print("  Triage with `prd_runner.py spillover triage`; raise one with "
+              "`spillover add --severity major|blocker`.")
     # The census prints on EVERY run, red or green, passing or failing. An
     # inherited backlog that stops being PRINTED is functionally deleted for an
     # operator with ADHD, so the number leaving the blocking set must never mean
@@ -1972,16 +2013,20 @@ def cmd_gates(cfg: Config, args) -> int:
     if inherited:
         sev = [r for r in inherited if _is_blocking_severity(r.get("severity"))]
         census += (f"; {len(inherited)} inherited from other work (not attributable "
-                   f"to {scope}), reported not blocking")
+                   f"to {scope})")
         if sev:
-            census += f", of which {len(sev)} at blocking severity"
+            # The number that must never go quiet. These stopped BLOCKING; they
+            # did not stop existing, and a green run that omits them is the
+            # silent drop ASK-526 refused to trade away.
+            census += (f", of which {len(sev)} at blocking severity still open "
+                       f"and now non-blocking here")
     print(census)
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
     print(f"all {len(records)} regression gates green; "
-          f"{len(attributable)} attributable spillover item(s)")
+          f"{len(blocking)} blocking spillover item(s)")
     return 0
 
 

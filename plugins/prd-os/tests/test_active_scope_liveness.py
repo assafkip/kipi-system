@@ -114,7 +114,8 @@ def _seed_backlog(repo: Path, n: int) -> None:
     shape; the rest are appended in that shape and then read back through the
     runner's own reader, so the fixture is validated by production code."""
     assert run(repo, "spillover", "add", "--source", "old-work",
-               "--desc", "seed item 0", "--id", "sp-seed0").returncode == 0
+               "--desc", "seed item 0", "--id", "sp-seed0",
+               "--severity", "major").returncode == 0
     ledger = repo / ".prd-os" / "spillover.jsonl"
     shape = json.loads(ledger.read_text().splitlines()[0])
     with ledger.open("a") as fh:
@@ -221,7 +222,8 @@ def test_explicit_scope_flag_is_honoured_without_a_spec(repo):
     somebody. The defect was amnesty INFERRED from a file nobody looked at, so
     the explicit flag stays honoured and is not required to name a spec."""
     _seed_backlog(repo, 600)
-    run(repo, "spillover", "add", "--source", "ASK-9", "--desc", "mine", "--id", "sp-mine")
+    run(repo, "spillover", "add", "--source", "ASK-9", "--desc", "mine", "--id", "sp-mine",
+        "--severity", "major")
     g = run(repo, "gates", "run", "--scope", "ASK-9")
     out = g.stdout + g.stderr
     assert g.returncode == 1 and "sp-mine" in out, out
