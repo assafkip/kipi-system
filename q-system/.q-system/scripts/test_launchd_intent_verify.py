@@ -13,7 +13,9 @@ injected values and a tmpdir.
 
 Run: python3 test_launchd_intent_verify.py   (exit 0 = pass, 1 = fail)
 """
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -383,8 +385,11 @@ check("check() pings the transition", [d[0] for d in due], ["com.kipi.paused-job
 check("check() reports partial coverage", cov, (1, 2))
 check("check() does not persist before the caller has delivered",
       iv.STATE_FILE.exists(), False)
-commit()
-check("check() persisted the run count once committed",
+check("committing without a delivery verdict is REFUSED", commit(), False)
+check("and nothing was written by the refused commit",
+      iv.STATE_FILE.exists(), False)
+check("check() persisted the run count once delivery was declared",
+      commit(delivered=True) and
       json.loads(iv.STATE_FILE.read_text())["com.kipi.paused-job"]["runs"], 1)
 
 # dry mode must not advance the counter that decides future pings.
@@ -392,7 +397,7 @@ before = iv.STATE_FILE.read_text()
 _, _, _, _dry_commit = iv.check(
     dry_run=True, overrides={"com.kipi.paused-job": "enabled"},
     labels={"com.kipi.paused-job"})
-_dry_commit()
+check("a dry commit reports success without writing", _dry_commit(), True)
 check("dry run writes no state", iv.STATE_FILE.read_text(), before)
 
 
@@ -424,12 +429,65 @@ check("and nothing was recorded on the way out", iv.STATE_FILE.exists(), False)
 _, due_b, _, _commit_b = iv.check(**_args)
 check("run 2 still owes the founder that alert",
       [d[0] for d in due_b], ["com.kipi.drifting"])
-_commit_b()  # this time delivery succeeded
+_commit_b(delivered=True)  # this time delivery succeeded
 
 _, due_c, _, _commit_c = iv.check(**_args)
 check("and once delivered it is not re-sent", due_c, [])
 check("the committed count is 1 run, not 3", json.loads(iv.STATE_FILE.read_text())
       ["com.kipi.drifting"]["runs"], 1)
+
+
+# =============================================================================
+# 9c. REPRODUCER: the standalone entry point recorded runs it never delivered
+# =============================================================================
+# main() printed to stdout, called commit(), and argued that printing was its
+# delivery. It shares STATE_FILE with run_intent_check in launchd-health-check.py
+# -- the only path that files a Linear issue and sends a Slack ping. Measured on
+# the shipped code (q-system/output/ask447r4_probe.py): one standalone run
+# persisted runs=1 for a real drift and the SCHEDULED watchdog then went silent
+# for 12 consecutive runs, first paging at run 13. At 2 runs/day that is six days
+# in which the founder's phone looks exactly like a clean fleet.
+_solo = Path(tempfile.mkdtemp())
+iv.INTENT_MANIFEST = _solo / "launchd-intent.json"
+iv.STATE_FILE = _solo / "state.json"
+iv.LEGACY_PAUSED_FILES = (_solo / "paused.txt",)
+(_solo / "paused.txt").write_text("com.kipi.drifting\n")
+
+_saved_overrides, _saved_installed = iv.read_overrides, iv.installed_labels
+try:
+    iv.read_overrides = lambda runner=None: {"com.kipi.drifting": iv.ENABLED}
+    iv.installed_labels = lambda: {"com.kipi.drifting"}
+
+    with contextlib.redirect_stdout(io.StringIO()) as _solo_out:
+        _rc = iv.main([])
+    check("the standalone entry point exits 0", _rc, 0)
+    check("it still reports the drift it found",
+          "ENABLED_BUT_DECLARED_PAUSED: com.kipi.drifting" in _solo_out.getvalue(),
+          True)
+    check("and it claims no delivery it did not make",
+          "nothing sent and nothing recorded" in _solo_out.getvalue(), True)
+    check("a standalone run records NOTHING", iv.STATE_FILE.exists(), False)
+    check("--dry is accepted and identical", iv.main(["--dry"]), 0)
+    check("still nothing recorded", iv.STATE_FILE.exists(), False)
+
+    # Negative self-test: prove the fixture CAN write, so "no state file" is a
+    # measured absence and not a broken temp dir or a stub that never ran.
+    _, _due_solo, _, _commit_solo = iv.check()
+    check("the same fixture is due an alert", [d[0] for d in _due_solo],
+          ["com.kipi.drifting"])
+    check("and a DELIVERING caller does write it here",
+          _commit_solo(delivered=True) and iv.STATE_FILE.exists(), True)
+
+    # The counter main() would have stolen: it must not advance an existing one
+    # either. runs stays 1, so the watchdog's next scheduled run still re-alerts
+    # on schedule instead of counting a terminal session as a delivered page.
+    _before_solo = iv.STATE_FILE.read_text()
+    with contextlib.redirect_stdout(io.StringIO()):
+        iv.main([])
+    check("a standalone run does not advance an existing count",
+          iv.STATE_FILE.read_text(), _before_solo)
+finally:
+    iv.read_overrides, iv.installed_labels = _saved_overrides, _saved_installed
 
 
 # =============================================================================

@@ -39,11 +39,16 @@ ledger, for the same stated reason: this script propagates fleet-wide via
 verifier; the machine holds the data.
 
 Usage:
-  launchd-intent-verify.py            # check, print, exit 0
-  launchd-intent-verify.py --dry      # same, but never writes the state file
+  launchd-intent-verify.py            # check, print, exit 0 -- READ-ONLY
+  launchd-intent-verify.py --dry      # accepted, and identical: see main()
+
+Running this script never writes the state file and never pages anyone. Delivery
+and the consecutive-run counter belong to `run_intent_check` in
+`launchd-health-check.py`, which is what the installed schedule calls.
 """
 import json
 import re
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -508,9 +513,40 @@ def check(dry_run=False, overrides=None, labels=None):
     findings = diff_intent(intent, overrides, labels)
     due, new_state = ping_decision(findings, load_state())
 
-    def commit():
-        if not dry_run:
-            write_state(new_state)
+    def commit(delivered=False):
+        """Record the run counts. Returns True when they were written.
+
+        `delivered` is the caller's verdict: did a channel actually take the
+        alert. It is REQUIRED to be true whenever `due` is non-empty, and this
+        is the only writer of the state file, so a caller cannot record a run it
+        never delivered no matter which entry point it came in through.
+
+        Scar (this issue, third recurrence of one class in four review rounds):
+        the deliver-then-record ordering was fixed in check(), then again in
+        run_intent_check, and the defect came straight back in main() -- which
+        prints to stdout, delivers to nobody, and called commit() anyway.
+        Measured on the shipped code: one standalone `launchd-intent-verify.py`
+        run persisted runs=1 for a real drift, and the scheduled watchdog that
+        DOES page then went silent for 12 consecutive runs, because
+        ping_decision re-alerts at runs==1 and at multiples of
+        REPEAT_EVERY_RUNS and at nothing else. At 2 runs/day that is six days.
+
+        A safety property enforced at N call sites is not a chokepoint. So the
+        verdict is now an argument to the single writer rather than an `if`
+        repeated at each caller: a fourth entry point added later inherits the
+        refusal instead of having to remember it.
+        """
+        if dry_run:
+            return True
+        if due and not delivered:
+            print(
+                f"launchd intent: {len(due)} alert(s) were due and no channel "
+                f"took them -- run counts NOT recorded, the next run re-alerts.",
+                file=sys.stderr,
+            )
+            return False
+        write_state(new_state)
+        return True
 
     for label in conflicts:
         findings.append((label, "conflict", "manifest says enabled, pause ledger lists it"))
@@ -518,22 +554,40 @@ def check(dry_run=False, overrides=None, labels=None):
 
 
 def main(argv):
-    dry = any(a in ("--dry", "--dry-run", "-n") for a in argv)
+    """Print the current drift. Delivers nothing, so it records NOTHING.
+
+    This entry point has no Slack sender and no Linear filer -- the only path
+    that pages the founder is `run_intent_check` in launchd-health-check.py, on
+    the installed schedule. The consecutive-run counter in STATE_FILE belongs to
+    that path: it counts SCHEDULED runs, and an ad-hoc invocation here is not
+    one of them.
+
+    Scar (PR #134 review round 4, reproduced before fixing): this used to argue
+    "printing IS this entry point's delivery" and call commit(). Both writers
+    share one STATE_FILE, so a single `launchd-intent-verify.py` at a terminal
+    advanced the counter for a real drift and the watchdog that actually pages
+    then stayed silent for 12 consecutive runs -- about six days at the current
+    2 runs/day. A human reading a terminal is not the founder's phone, and it is
+    certainly not the phone six days later.
+
+    `--dry` is still accepted so an existing invocation does not start printing
+    "unrecognised flag" and exiting, but it now selects nothing: this entry
+    point is read-only either way.
+    """
     unrecognized = [a for a in argv if a not in ("--dry", "--dry-run", "-n")]
     if unrecognized:
         print(f"unrecognised flag(s): {' '.join(unrecognized)} -- refusing to run.")
         return 0
     try:
-        findings, due, (declared, total), commit = check(dry_run=dry)
+        findings, due, (declared, total), _commit = check(dry_run=True)
     except IntentError as exc:
         print(f"launchd intent verification COULD NOT RUN: {exc}")
         return 0
     for label, kind, detail in findings:
         print(f"{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
-    print(f"would ping: {len(due)}" if dry else f"ping-worthy: {len(due)}")
-    # Printing IS this entry point's delivery, so the record follows it.
-    commit()
+    print(f"alert-worthy: {len(due)} -- nothing sent and nothing recorded from "
+          f"here; the scheduled watchdog owns delivery and the run counts.")
     return 0
 
 

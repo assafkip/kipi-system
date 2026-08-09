@@ -513,6 +513,7 @@ def run_intent_check(dry_run):
     message = intent.ping_message(due)
     if unfiled:
         message += f" [NOT filed to Linear: {unfiled}]"
+    landed = max(len(drift) - unfiled, 0)
     delivered = send_ping(message)
 
     # Deliver-then-record is only half the contract. The other half is that
@@ -524,12 +525,17 @@ def run_intent_check(dry_run):
     # re-alerts at 1 and at multiples of REPEAT_EVERY_RUNS and at nothing else.
     # A phantom receipt for an undelivered alert is the exact failure this whole
     # verifier exists to catch, one layer up.
-    if not (len(drift) - unfiled) and not delivered:
+    #
+    # The refusal itself now lives in check()'s commit(), the single writer of
+    # the state file (PR #134 round 4: the same class came back through main(),
+    # which had its own copy of the ordering rule and got it wrong). What this
+    # caller owns is the part the writer cannot see -- WHICH channel failed --
+    # so it reports that and hands the writer a truthful verdict.
+    if not (landed or delivered):
         print(f"intent alert NOT delivered (linear=0, slack=not delivered) -- "
               f"run counts NOT recorded, the next run re-alerts "
               f"{len(drift)} job(s)", file=sys.stderr)
-        return
-    commit()
+    commit(delivered=bool(landed or delivered))
 
 
 def problems_to_ping(problems, state, now):

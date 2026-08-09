@@ -705,7 +705,13 @@ def _intent_stub(commits):
         @staticmethod
         def check(dry_run=False):
             due = [(label, kind, detail, 1) for label, kind, detail in _DRIFT]
-            return list(_DRIFT), due, (1, 1), lambda: commits.append(True)
+            # Records the VERDICT it was handed rather than reimplementing the
+            # refusal. The refusal itself is the single writer's, and it is
+            # asserted against the real code in test_launchd_intent_verify.py
+            # section 9. A stub that re-encoded the policy would pass whether or
+            # not run_intent_check told the truth, which is the whole question.
+            return list(_DRIFT), due, (1, 1), lambda delivered=False: \
+                commits.append(delivered)
 
         @staticmethod
         def linear_findings(findings, finding_key):
@@ -738,7 +744,8 @@ def intent_capture(fleet_health, delivered):
 
 
 _nowhere, _nowhere_err = intent_capture(_fh_stub(unfiled="all"), delivered=False)
-check("nothing filed and nothing sent -> the run is NOT recorded", _nowhere, [])
+check("nothing filed and nothing sent -> the writer is told delivery FAILED",
+      _nowhere, [False])
 check("and it says so, instead of failing silently",
       "NOT delivered" in _nowhere_err, True)
 check("slack alone is enough to record the run",
