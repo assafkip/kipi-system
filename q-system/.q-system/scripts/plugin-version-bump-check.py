@@ -39,6 +39,33 @@ def changed_files(diff_args):
     return [l for l in out.splitlines() if l.strip()]
 
 
+def merge_base(ref):
+    """The commit this branch actually diverged at, or `ref` if git cannot say.
+
+    Scar (ASK-514, sp-05762519): this compared against the moving TIP of
+    origin/main, and it was wrong in BOTH directions at once.
+
+    Too loud: any plugin changed on main AFTER a PR branched shows up in
+    `git diff <tip>`, and its version matches on both sides because the PR never
+    touched it -- which is precisely the violation shape. PR #127 touched only
+    plugins/kipi-core and CI failed it for plugins/kipi-design; merging main in,
+    with no code change at all, turned it green.
+
+    Too quiet, and this is the half that is easy to miss: a version bump landing
+    on MAIN makes the PR's own unbumped plugin look bumped, because
+    version_at(tip) then differs from version_now() for a change the PR never
+    made. The gate excuses a real violation.
+
+    Both follow from one mistake, so both are fixed by one resolution: the
+    comparison point is where the branch diverged, not wherever main has got to.
+    Returning `ref` unchanged when merge-base fails (unrelated histories, a bare
+    sha with no common ancestor) keeps the previous behaviour rather than
+    crashing a blocking gate on an edge it cannot resolve.
+    """
+    out = run(["git", "merge-base", ref, "HEAD"]).strip()
+    return out or ref
+
+
 def plugins_touched(files):
     """Map plugin name -> True if any non-manifest file changed (needs a bump)."""
     touched = {}
@@ -95,7 +122,7 @@ def main():
         sys.exit(0)  # not the skeleton; nothing to check
 
     if "--against" in sys.argv:
-        ref = sys.argv[sys.argv.index("--against") + 1]
+        ref = merge_base(sys.argv[sys.argv.index("--against") + 1])
         diff_args = [ref, "--"]
     else:
         ref = "HEAD"
