@@ -324,7 +324,8 @@ def test_an_unreadable_manifest_pages_a_human_not_just_stderr(tmp_path):
     repo = _repo(tmp_path)
     sink = _stub_notifier(repo)
     _manifest_file(repo).write_text("{oops")
-    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+                   env_extra={"KIPI_SLACK_WEBHOOK": "https://example.invalid/stub"})
     assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
     assert sink.is_file(), (
         "nobody was paged; the warning existed only on stderr, which a Stop hook "
@@ -343,7 +344,8 @@ def test_the_page_is_deduped_so_it_cannot_become_per_turn_noise(tmp_path):
     sink = _stub_notifier(repo)
     _manifest_file(repo).write_text("{oops")
     for _ in range(3):
-        _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+        _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+                   env_extra={"KIPI_SLACK_WEBHOOK": "https://example.invalid/stub"})
     assert sink.is_file(), "never paged at all"
     assert len(sink.read_text().strip().splitlines()) == 1, (
         f"paged {len(sink.read_text().strip().splitlines())} times across 3 turns; "
@@ -359,7 +361,8 @@ def test_a_healthy_manifest_never_pages(tmp_path):
         "version": 1,
         "subsystems": [{"id": "s1", "name": "S One",
                         "members": [{"ref": "a.py", "kind": "file"}]}]}))
-    _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+               env_extra={"KIPI_SLACK_WEBHOOK": "https://example.invalid/stub"})
     assert not sink.exists(), f"paged on a HEALTHY manifest: {sink.read_text()!r}"
 
 
@@ -400,6 +403,68 @@ def test_no_stdout_payload_when_the_manifest_is_healthy(tmp_path):
                         "members": [{"ref": "a.py", "kind": "file"}]}]}))
     r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
     assert r.stdout.strip() == "", f"emitted a payload on a healthy manifest: {r.stdout!r}"
+
+
+def test_no_webhook_means_no_claim_of_paging_and_no_burnt_window(tmp_path):
+    """Codex round 4, PR #132, MAJOR. slack-notify.sh is a SILENT no-op that still
+    exits 0 when no webhook resolves, so invoking it proves a process ran, not that a
+    human was told.
+
+    The first cut returned True anyway AND recorded the 24h dedupe key, so an
+    unconfigured fleet got "Founder paged" in stderr plus 24h of suppression
+    protecting a page that never left the machine -- the major anchor verbatim,
+    reporting success for work that did not happen. Worse, the suppression outlived
+    the moment someone finally configured a webhook.
+
+    Same contract fable-escalate.py already settled on for this script: attempted,
+    channel-configured and delivered are separate facts.
+    """
+    import os as _os
+    repo = _repo(tmp_path)
+    sink = _stub_notifier(repo)
+    _manifest_file(repo).write_text("{oops")
+    # No webhook anywhere: unset the env var AND point HOME at an empty dir so the
+    # ~/.config/kipi/slack-webhook fallback cannot resolve either.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+                   env_extra={"HOME": str(fake_home), "KIPI_SLACK_WEBHOOK": ""})
+    assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
+    assert not sink.exists(), "invoked the notifier with no channel to send on"
+    assert "not paged" in r.stderr.lower(), (
+        f"claimed a page with no webhook configured.\nstderr={r.stderr!r}")
+    state = repo / "q-system" / "output" / ".grounding-manifest-notified.json"
+    assert not state.exists(), (
+        "burnt the 24h dedupe window on a page that was never sent; the alarm would "
+        "stay suppressed even after a webhook is configured")
+
+
+def test_a_failed_send_does_not_burn_the_dedupe_window(tmp_path):
+    """Found by MUTATION, not by review: deleting the `rc != 0` guard left all 20
+    tests green, so that branch was shipped-shaped but unexercised.
+
+    A webhook can be configured and the send can still fail -- Slack 5xx, an expired
+    URL, no network at 3am. If a failed send recorded the dedupe key, one transient
+    failure would suppress the alarm for a full 24h, which is worse than never having
+    tried: the operator believes the channel is live.
+    """
+    repo = _repo(tmp_path)
+    d = repo / "q-system" / ".q-system" / "scripts"
+    d.mkdir(parents=True, exist_ok=True)
+    sh = d / "slack-notify.sh"
+    sh.write_text("#!/bin/bash\nexit 1\n")   # configured, invoked, and it FAILS
+    sh.chmod(0o755)
+    _manifest_file(repo).write_text("{oops")
+
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+                   env_extra={"KIPI_SLACK_WEBHOOK": "https://example.invalid/stub"})
+    assert r.returncode == 0, f"warn phase blocked: {r.stderr}"
+    assert "paged via slack-notify" not in r.stderr.lower(), (
+        f"claimed a successful page after the notifier exited 1.\nstderr={r.stderr!r}")
+    state = repo / "q-system" / "output" / ".grounding-manifest-notified.json"
+    assert not state.exists(), (
+        "recorded the 24h dedupe key after a FAILED send; one transient Slack error "
+        "would now mute this alarm for a day")
 
 
 if __name__ == "__main__":
