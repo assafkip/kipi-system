@@ -67,6 +67,42 @@ real; it was not testing what its name claimed.
   a gate that has been red this long is not gating anything. It is a backlog
   wearing a gate's clothes. Worth a decision on bulk triage or a scope change.
 
+## The spillover gate, two rounds with Sana (both pushed)
+
+Founder said "do your preference, check it with Sana first, then have her do it".
+My preference was an age cutoff on the gate. Sana REJECTED it, correctly: an age
+cutoff would make `gates run` print "no open spillover" over hundreds of open
+items, and a lying green is worse than a noisy red. Tag: [CLAUDE-RECOMMENDED -> REJECTED]
+
+She also corrected two of my premises. Items were created today (the ledger
+writes UTC, so a local evening is already the next date there), and my "runaway
+producer" theory was wrong: nearly all items are hand-added, only 3 auto-created
+from `deferred` dispositions. These are genuine captures, not detector noise.
+
+What she built instead, ASK-526: blocking scoped by ATTRIBUTION, never by clock.
+Inherited items print in a `[census]` line on every run, red or green, so
+de-blocking never means de-displaying. Nothing expires or leaves the ledger.
+
+ASK-527, the follow-up I sent her on: a stale active-PRD state file was granting
+a standing amnesty over the whole ledger, which is the age-cutoff hole arriving
+through a different door. Fix proves the scope is a live durable unit of work
+(git-tracked, readable status, non-terminal); every unprovable case fail-closes.
+She rejected an mtime cap for the same reason she rejected mine, and rejected
+"last ledger write by this scope" as perverse, since a scope would stay alive by
+producing more spillover.
+
+Verified independently rather than by re-running her suite: zero assertions were
+removed from the pre-existing tests [verified: git show b8a1f601 on the test path, grepped for removed assert lines, none].
+
+## Correction to my own claim this session
+
+I told the founder one command would clear the red gate. Wrong. Running
+`prd_runner.py clear` removed the stale-scope amnesty but did NOT turn the gate
+green: with no active scope, fail-closed means every open item blocks
+[verified: python3 plugins/prd-os/scripts/prd_runner.py gates run, exit 1 after the clear].
+The bare unscoped run stays red until the backlog is worked down. That is the
+designed behaviour, and my summary of it was wrong before I ran it.
+
 ## Artifacts written
 
 - `q-system/output/post-finish-the-day-2026-08-08.md`, the LinkedIn cut [verified: voice-lint.py, clean]

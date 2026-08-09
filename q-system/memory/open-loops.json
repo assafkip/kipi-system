@@ -30,15 +30,23 @@
     {
       "id": "ftd-x-post",
       "title": "X post for finish-the-day repo is written but not posted",
-      "next_action": "Chrome extension is installed (Claude v1.0.85, Default profile) but paired to zero browsers: list_connected_browsers returned []. Founder clicks the Claude icon in Chrome and hits Connect, then the agent opens x.com and fills the composer. Text ready at q-system/output/x-post-finish-the-day-2026-08-08.md (lint-clean, 1110 chars). Fallback: paste it manually.",
+      "next_action": "Chrome extension is installed (Claude v1.0.85, Default profile) but paired to zero browsers: list_connected_browsers returned []. Founder clicks the Claude icon in Chrome and hits Connect, then the agent opens x.com and fills the composer. Repo is live and pushed. Text ready at q-system/output/x-post-finish-the-day-2026-08-08.md (lint-clean, 1110 chars). Fallback: paste it manually.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-08-08"
     },
     {
       "id": "kipi-system-divergence",
-      "title": "kipi-system local and origin/main have diverged",
-      "next_action": "SessionStart reported 21 local commits not on remote and 34 remote commits not local, on branch sana/bake-in-and-cleanup. Untouched this session. Reconcile with git merge origin/main, or decide the branch is disposable. Not urgent, but it is silently growing.",
+      "title": "sana/bake-in-and-cleanup has diverged from origin/main",
+      "next_action": "CORRECTED: the earlier note misread this as branch-vs-its-own-remote. The branch is IN SYNC with its own remote (pushed b8a1f601, ahead 0 behind 0). The gap is against MAIN: origin/main holds 48 commits this branch lacks, and the branch holds 25 main lacks. Decide whether this branch merges back or main is rebased onto it. Not urgent, but the gap grows every session.",
+      "needs_founder": false,
+      "status": "open",
+      "added": "2026-08-08"
+    },
+    {
+      "id": "spillover-backlog-decisions",
+      "title": "636 open spillover items need decisions, not blind voids",
+      "next_action": "The gate is now honest (ASK-526 + ASK-527, pushed): scoped work blocks only on its own items, and an unscoped `gates run` fail-closes red over all 636. That is correct and it means the bare run stays red until the backlog is worked. Arrival measured at ~50/day vs ~4/day resolved, so triage alone will not hold. Route to Sana as its own issue: decide each item fixed or voided-with-reason, and separately decide whether capture volume itself needs a bound.",
       "needs_founder": false,
       "status": "open",
       "added": "2026-08-08"
