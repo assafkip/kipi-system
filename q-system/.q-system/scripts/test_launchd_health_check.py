@@ -249,26 +249,47 @@ def _fh_stub(created=0, existing=0, unfiled=0, record=None):
     return _Stub
 
 
+_intent_calls = []
+
+
 def run_capture(problems, fleet_health, dry=False, state=None):
     """Drive run() with every side-effecting edge stubbed.
 
     Returns (stdout, stderr, pings, state_writes) so an assertion can read what
-    the operator would actually SEE, not just what the function returned."""
+    the operator would actually SEE, not just what the function returned.
+
+    `run_intent_check` is stubbed for the same reason as the other four. Scar
+    (PR #134 review, major): it was left LIVE, so `wd.run(dry)` -- default
+    dry=False, the live path -- loaded launchd-intent-verify.py for real, shelled
+    the operator's actual `launchctl print-disabled`, read ~/Library/LaunchAgents,
+    and WROTE ~/.config/kipi/launchd-intent-state.json. Measured: the state file's
+    mtime changed on every run of this suite. It also leaked into the assertions
+    themselves -- a real drift on the machine would push an extra entry into
+    `pings`, and the ping-count checks below would fail for a reason that has
+    nothing to do with the watchdog. A unit test's verdict must not depend on the
+    founder's launchd state.
+
+    The stub RECORDS its calls rather than swallowing them, so the wiring
+    ("intent runs BEFORE the early return in run()") stays pinned by an assertion
+    instead of by the live call that used to prove it as a side effect.
+    """
     saved = (wd.discover_problems, wd.load_state, wd.write_state,
-             wd.send_ping, wd._FLEET_HEALTH)
+             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check)
     pings, writes = [], []
-    wd.discover_problems = lambda: problems
+    _intent_calls.clear()
+    wd.discover_problems = lambda: (_intent_calls.append("discover"), problems)[1]
     wd.load_state = lambda: dict(state or {})
     wd.write_state = lambda s: writes.append(s)
-    wd.send_ping = lambda message: pings.append(message)
+    wd.send_ping = lambda message: (pings.append(message), True)[1]
     wd._FLEET_HEALTH = fleet_health
+    wd.run_intent_check = lambda dry_run: _intent_calls.append(f"intent:{dry_run}")
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             wd.run(dry)
     finally:
         (wd.discover_problems, wd.load_state, wd.write_state,
-         wd.send_ping, wd._FLEET_HEALTH) = saved
+         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check) = saved
     return out.getvalue(), err.getvalue(), pings, writes
 
 
@@ -653,6 +674,87 @@ check("the watchdog's failing key equals the key fleet-health's PRODUCER files",
 _registry_ids = {d["id"] for d in _fh.DETECTORS}
 check("every detector the watchdog files under is in fleet-health's registry",
       sorted(set(wd.LINEAR_DETECTOR_BY_KIND.values()) - _registry_ids), [])
+
+# --- the unit suite must not touch real operator state (PR #134 review, major) -
+# THE REPRODUCER: run_capture() left run_intent_check live, so driving run() from
+# a test loaded launchd-intent-verify.py against the founder's real machine.
+# Measured before the fix: `mtime changed by the unit suite: True` on
+# ~/.config/kipi/launchd-intent-state.json. `wd._INTENT` is the module cache the
+# live path fills, so a None cache after a full run_capture is proof the live
+# path was never entered -- and it goes red the moment the stub is removed.
+run_capture(_TWO_REAL, _fh_stub(created="all"))
+check("run_capture never loads the live intent module", wd._INTENT, None)
+check("the intent check still runs, and BEFORE problems are discovered",
+      _intent_calls[:2], ["intent:False", "discover"])
+run_capture(_NOTHING_TO_FILE, _fh_stub(), dry=True)
+check("dry mode reaches the intent check in dry mode too",
+      _intent_calls[0], "intent:True")
+
+# --- an undelivered alert must not be recorded as seen (PR #134 review, major) -
+# THE REPRODUCER: run_intent_check() called commit() unconditionally. With Linear
+# filing 0 and no Slack webhook, the consecutive-run counter still advanced, and
+# ping_decision only re-alerts at runs==1 or runs % REPEAT_EVERY_RUNS == 0 -- so
+# one phantom receipt bought 12 silent runs on a real drift. Measured on the
+# shipped code: `commit() called anyway: True`, `consecutive silent runs: 12`.
+_DRIFT = [("com.kipi.drifting", "running_but_paused", "intent=disabled, launchd=enabled")]
+
+
+def _intent_stub(commits):
+    class _Stub:
+        @staticmethod
+        def check(dry_run=False):
+            due = [(label, kind, detail, 1) for label, kind, detail in _DRIFT]
+            return list(_DRIFT), due, (1, 1), lambda: commits.append(True)
+
+        @staticmethod
+        def linear_findings(findings, finding_key):
+            return [{"subject": label, "title": label, "body": "",
+                     "key": finding_key("launchd-intent-drift", label),
+                     "detector": "launchd-intent-drift"}
+                    for label, _, _ in findings]
+
+        @staticmethod
+        def ping_message(due):
+            return f"launchd intent drift: {len(due)} job(s)"
+
+    return _Stub
+
+
+def intent_capture(fleet_health, delivered):
+    """Drive run_intent_check with both delivery channels scripted."""
+    commits = []
+    saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
+    wd._INTENT = _intent_stub(commits)
+    wd._FLEET_HEALTH = fleet_health
+    wd.send_ping = lambda message: delivered
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            wd.run_intent_check(dry_run=False)
+    finally:
+        (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping) = saved
+    return commits, err.getvalue()
+
+
+_nowhere, _nowhere_err = intent_capture(_fh_stub(unfiled="all"), delivered=False)
+check("nothing filed and nothing sent -> the run is NOT recorded", _nowhere, [])
+check("and it says so, instead of failing silently",
+      "NOT delivered" in _nowhere_err, True)
+check("slack alone is enough to record the run",
+      intent_capture(_fh_stub(unfiled="all"), delivered=True)[0], [True])
+check("linear alone is enough to record the run",
+      intent_capture(_fh_stub(created="all"), delivered=False)[0], [True])
+check("one landed finding beside a skipped bucket still counts as delivery",
+      intent_capture(_fh_stub(created=1, unfiled=1), delivered=False)[0], [True])
+
+# send_ping's own verdict: a notifier that cannot reach a channel is not delivery.
+_saved_channel = wd.notify_channel_configured
+try:
+    wd.notify_channel_configured = lambda: False
+    check("no webhook configured -> send_ping reports NOT delivered",
+          wd.send_ping("probe: this must never leave the machine"), False)
+finally:
+    wd.notify_channel_configured = _saved_channel
 
 # Guarded because this file is named test_*.py and pytest IMPORTS such files
 # during collection. A module-level sys.exit() raised SystemExit mid-import,

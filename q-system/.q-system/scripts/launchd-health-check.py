@@ -211,13 +211,65 @@ def write_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+_NOTIFY_CHANNEL = None
+
+
+def notify_channel_configured():
+    """True when a page could actually leave this machine.
+
+    Borrowed, not re-derived: `fable-escalate.py` already owns the Python read of
+    slack-notify.sh's webhook resolution order ($KIPI_SLACK_WEBHOOK, then
+    ~/.config/kipi/slack-webhook), and a second copy here is the drift
+    `fleet-homogeneity` exists to stop. Loaded through the same lazy-importlib
+    shape as `_fleet_health` / `_intent_module`, so its absence cannot stop the
+    watchdog.
+
+    A load failure answers False -- "delivery unknown". The caller reads that as
+    NOT delivered, which costs a repeated ping and never costs a missed one. That
+    is the same trade `check()` in launchd-intent-verify.py already made: a
+    duplicate is the failure this system is allowed to have.
+    """
+    global _NOTIFY_CHANNEL
+    if _NOTIFY_CHANNEL is None:
+        import importlib.util
+
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "fe", HERE / "fable-escalate.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _NOTIFY_CHANNEL = module.notify_channel_configured
+        except Exception:  # noqa: BLE001
+            _NOTIFY_CHANNEL = lambda: False  # noqa: E731
+    return _NOTIFY_CHANNEL()
+
+
 def send_ping(message):
+    """Attempt the page. Returns True only when it could actually have LEFT.
+
+    Scar (PR #134 review, major): this returned None on every path, and
+    `run_intent_check` recorded the run as seen regardless. slack-notify.sh is a
+    silent no-op that STILL EXITS 0 when no webhook resolves -- its own header
+    says so -- so neither its exit code nor "the subprocess started" distinguishes
+    a delivered page from a swallowed one. Measured on the shipped code with no
+    webhook and a dead filer: 0 findings reached Linear, the message was never
+    sent, the run was committed anyway, and the following 12 runs were silent.
+
+    HONEST BOUNDARY: True means "a channel was configured and the notifier exited
+    0", not "a human saw it". slack-notify.sh's fixture guard refuses to page on a
+    loopback KIPI_LINEAR_API_URL and still exits 0, so a fixture run on a machine
+    that HAS a webhook reads as delivered here. Tests stub send_ping (that is
+    finding 2 of the same review); production has no loopback Linear URL.
+    """
     if not NOTIFY_SCRIPT.exists():
-        return
+        return False
+    if not notify_channel_configured():
+        return False
     try:
-        subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
-    except Exception:
-        pass
+        proc = subprocess.run(["bash", str(NOTIFY_SCRIPT), message], timeout=20)
+    except Exception:  # noqa: BLE001
+        return False
+    return proc.returncode == 0
 
 
 def is_dry_run(args):
@@ -461,7 +513,22 @@ def run_intent_check(dry_run):
     message = intent.ping_message(due)
     if unfiled:
         message += f" [NOT filed to Linear: {unfiled}]"
-    send_ping(message)
+    delivered = send_ping(message)
+
+    # Deliver-then-record is only half the contract. The other half is that
+    # "delivered" has to be TRUE. Scar (PR #134 review, major): commit() ran
+    # unconditionally, so a run where Linear filed nothing AND no webhook was
+    # configured still advanced the consecutive-run counts. Measured on the
+    # shipped code: runs=1 persisted with nothing sent, and runs 2 through 13
+    # were silent -- the next page came only at run 14, because ping_decision
+    # re-alerts at 1 and at multiples of REPEAT_EVERY_RUNS and at nothing else.
+    # A phantom receipt for an undelivered alert is the exact failure this whole
+    # verifier exists to catch, one layer up.
+    if not (len(drift) - unfiled) and not delivered:
+        print(f"intent alert NOT delivered (linear=0, slack=not delivered) -- "
+              f"run counts NOT recorded, the next run re-alerts "
+              f"{len(drift)} job(s)", file=sys.stderr)
+        return
     commit()
 
 
