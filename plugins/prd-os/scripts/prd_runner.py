@@ -1553,7 +1553,16 @@ def _active_scope(cfg: Config) -> str | None:
         try:
             value = json.loads(path.read_text()).get(key)
         except (json.JSONDecodeError, OSError):
-            continue
+            # PRESENT BUT UNREADABLE IS A REFUSAL, NOT A MISS (Codex round 2,
+            # PR #131, MAJOR). This used to `continue`, which walked on to the
+            # broader PRD scope and let a half-written active-issue.json widen
+            # the amnesty from one issue to a whole PRD. The producer writes this
+            # file NON-ATOMICALLY, so a partial write is a real failure mode, not
+            # a constructed one; reproduced with `{partial-json` yielding
+            # active_scope=prd-live. An absent file means "no issue is active",
+            # which is information; a corrupt file means "we cannot tell", which
+            # is not. Refuse outright and let the caller fail closed.
+            return None
         # `_empty_state()` writes the key with a None value on clear, so a
         # cleared state file must read as "no scope", not as scope "None".
         if isinstance(value, str) and value.strip():

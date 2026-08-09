@@ -277,3 +277,35 @@ def test_dead_issue_does_not_fall_back_to_a_live_prd(repo):
         "a CLOSED active issue scoped the gate instead of falling through to "
         f"fail-closed.\nout={g.stdout + g.stderr}"
     )
+
+
+def test_corrupt_active_issue_state_does_not_widen_to_the_prd(repo):
+    """A half-written active-issue.json must REFUSE, not walk on to the PRD.
+
+    Codex round 2 on PR #131, MAJOR. `_active_scope` used to `continue` on a
+    JSONDecodeError, which fell through to the active PRD and silently WIDENED the
+    amnesty from one issue to a whole PRD. The producer writes this state file
+    non-atomically, so a torn write is a real failure mode, not a constructed one.
+
+    The doctrine this restores is already stated at the top of this file: an absent
+    file means "no issue is active", which is information; a corrupt file means "we
+    cannot tell", which is not. Unprovable is the reason to refuse, never to relax.
+    """
+    _seed_backlog(repo, 600)
+    # A live PRD that WOULD scope the run if the corrupt issue state were skipped.
+    _active_prd(repo, "prd-live")
+    _write_spec(repo, "prd-live", "in-progress", tracked=True)
+    d = repo / ".claude" / "state"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "active-issue.json").write_text("{partial-json")
+
+    g = run(repo, "gates", "run")
+    out = g.stdout + g.stderr
+    assert g.returncode != 0, (
+        f"a CORRUPT active-issue state fell through to the PRD scope and granted "
+        f"amnesty over 600 open items.\nout={out}"
+    )
+    assert "600 inherited" not in out, (
+        f"the run was scoped to prd-live despite unreadable issue state; the "
+        f"corrupt file widened the amnesty instead of refusing.\nout={out}"
+    )
