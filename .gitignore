@@ -107,7 +107,13 @@ q-system/output/capability-maps/
 # .claude/settings.json from settings-template.json, so a shared baseline can
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
+q-system/.q-system/claude-integrity-baseline.json.lock
 q-system/output/claude-integrity/
+# The armed marker (ASK-291 round 11) is ignored for the SAME reason and it is
+# load-bearing that it stays that way: a committed marker propagates via kipi
+# update, so every fresh instance would claim prior arming, refuse to arm, and
+# Slack-page SECURITY on its first run -- the round-2 outage exactly.
+q-system/.q-system/.claude-integrity-armed
 
 # PR-review scratch trees. 537 of these files were swept into the repo by an
 # unattended `chore: update project files` auto-commit (ec5efddf). Removing them

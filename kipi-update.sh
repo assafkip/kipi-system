@@ -1505,6 +1505,75 @@ PY
       fi
     done
 
+    # Sanction the .claude/ writes THIS update just made (ASK-291).
+    #
+    # SCAR, measured before rollout by probe_update_interaction.sh: Layer 2
+    # (claude-integrity-tripwire.py --enforce) is wired PostToolUse on every
+    # instance and AUTO-REVERTS unsanctioned .claude/ content. Everything above
+    # this line rewrites .claude/ -- settings.json from the template, then
+    # rules/, agents/, output-styles/. Without this call the next tool call in
+    # the updated instance sees all of it as drift, quarantines it, and rolls the
+    # update BACK. The updater already printed OK. Silent, and on 23 machines.
+    #
+    # A sanction and not an exclusion: `kipi update` propagates the skeleton's
+    # git HEAD, which is the same reviewed provenance the tripwire's own
+    # attributable() already treats as sanctioned. Excluding settings.json from
+    # the watch set would hand back the whole hole. Phase 3 of the probe holds
+    # the other end: a tamper AFTER this call is still caught.
+    #
+    # --register, NOT a blanket --baseline (review finding, PR #85). A blanket
+    # re-baseline re-measures the WHOLE watch set, so any unrelated tamper that
+    # happened to be sitting in .claude/ at that moment became sanctioned
+    # content, fleet-wide, on every update. The applier's own docstring already
+    # named that "the blinding version of this fix"; the updater was doing it.
+    # The path list below is exactly what this run writes -- settings.json, every
+    # .md copied above, and the two guard scripts the q-system rsync replaced --
+    # so an unrelated file cannot ride along.
+    #
+    # THE WATCH SET IS NOT ONLY .claude/ (review finding, PR #85 round 14, MAJOR).
+    # The list was written from the .claude/ half of it while the tripwire's
+    # EXTRA_WATCHED has always held two files OUTSIDE .claude/: both guard
+    # scripts, which the rsync at the top of this block rewrites on every update.
+    # A fresh local commit is in no remote default branch, so head_is_reviewed()
+    # is False and nothing absorbed them. Measured on a stand-in instance
+    # (probe_round14_findings.sh phase 1): every tool call after a routine update
+    # printed `SECURITY: unsanctioned .claude/ change -- 2 modified`, forever, on
+    # 23 machines, until a human ran --baseline on each. An alarm nobody reads is
+    # the same as no alarm, which is the failure mode both scripts' headers exist
+    # to avoid.
+    #
+    # DERIVED FROM THE TRIPWIRE, NOT TRANSCRIBED: the paths come out of the
+    # instance's own EXTRA_WATCHED, so adding a third watched file outside
+    # .claude/ cannot leave this list behind.
+    #
+    # Best-effort by design: an instance that has not adopted the tripwire has no
+    # script here, and a sanction failure must never abandon a good update.
+    if [ -f "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" ]; then
+      TRIPWIRE_WROTE=()
+      [ -f "$path/.claude/settings.json" ] && TRIPWIRE_WROTE+=(".claude/settings.json")
+      for config_kind in agents output-styles rules; do
+        if compgen -G "$SCRIPT_DIR/.claude/$config_kind/*.md" >/dev/null; then
+          for src in "$SCRIPT_DIR"/.claude/"$config_kind"/*.md; do
+            TRIPWIRE_WROTE+=(".claude/$config_kind/$(basename "$src")")
+          done
+        fi
+      done
+      while IFS= read -r extra_rel; do
+        [ -n "$extra_rel" ] || continue
+        [ -f "$path/$extra_rel" ] && TRIPWIRE_WROTE+=("$extra_rel")
+      done < <(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("t", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.EXTRA_WATCHED))
+' "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" 2>/dev/null)
+      KIPI_NOTIFY=/usr/bin/true python3 \
+        "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
+        --root "$path" --quiet --register "${TRIPWIRE_WROTE[@]}" >/dev/null 2>&1 ||
+        echo "    WARN: could not sanction .claude/ tripwire writes (next tool call may revert this update)"
+    fi
+
     # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).
     # rsync instead of rm -rf + cp -R: --delete-excluded strips embedded .git dirs
     # and bytecode from the instance copy. A symlinked skeleton plugin (e.g.
