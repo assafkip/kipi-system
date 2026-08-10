@@ -1223,7 +1223,13 @@ PY
     if [ -f "$sys_classifier" ]; then
       while IFS= read -r sys_path; do
         [ -n "$sys_path" ] || continue
-        case " ${sys_owned_dirty[*]} " in *" $sys_path "*) continue ;; esac
+        # `:-` is not decoration. /bin/bash on macOS is 3.2.57, where `arr[*]`
+        # on an EMPTY array is an unbound-variable error under `set -u` (bash
+        # 4.4+ made it expand to nothing). The array is empty exactly when none
+        # of the three hand-listed paths are dirty -- which is the case this
+        # whole block was added to handle -- so the code written to unblock a
+        # stuck instance aborted its sync instead. ASK-607, measured 2026-08-10.
+        case " ${sys_owned_dirty[*]:-} " in *" $sys_path "*) continue ;; esac
         sys_owned_dirty+=("$sys_path")
       # -uall, not the default: plain --porcelain collapses untracked content into
       # the DIRECTORY ("q-system/"), which matches no classifier prefix, so every
@@ -1607,7 +1613,8 @@ print("\n".join(mod.EXTRA_WATCHED))
 ' "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" 2>/dev/null)
       KIPI_NOTIFY=/usr/bin/true python3 \
         "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
-        --root "$path" --quiet --register "${TRIPWIRE_WROTE[@]}" >/dev/null 2>&1 ||
+        --root "$path" --quiet \
+        --register ${TRIPWIRE_WROTE[@]+"${TRIPWIRE_WROTE[@]}"} >/dev/null 2>&1 ||
         echo "    WARN: could not sanction .claude/ tripwire writes (next tool call may revert this update)"
     fi
 
