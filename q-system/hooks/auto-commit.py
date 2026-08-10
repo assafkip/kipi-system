@@ -4,9 +4,12 @@
 Runs on Stop (async). Creates one commit per area with conventional commit messages.
 Never pushes. Skips if no uncommitted changes.
 """
+import hashlib
+import json
 import subprocess
 import sys
 import os
+import time
 from collections import defaultdict
 
 PROJ_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
@@ -143,10 +146,67 @@ def group_files(files):
     return groups, unclassified
 
 
+# An unchanged set of uncommitted files speaks again after this long, so a file
+# left behind for a week is not permanently silent. 12h, not 1h: this is a Stop
+# hook, so "once per turn" means once every couple of minutes.
+REMIND_AFTER_HOURS = 12
+
+
+def notify_state_path(proj_dir):
+    """Where this project's last-notified fingerprint lives.
+
+    OUTSIDE the repo, always. why (ASK-603): state written into the project
+    becomes an uncommitted file, which is exactly what this hook reports on,
+    which rewrites the state, which reports again. The cache would be its own
+    alarm. Hashed basename so two projects never share a slot and never
+    silence each other -- consulting and Pure_spectrum_Q were both flooding.
+    """
+    slot = hashlib.sha256(proj_dir.encode()).hexdigest()[:16]
+    return os.path.join(os.path.expanduser("~"), ".cache", "kipi",
+                        "auto-commit-notify", f"{slot}.json")
+
+
+def should_notify(unclassified, now=None, path=None):
+    """(say?, digest) -- speak on a CHANGED file set, or after the remind window.
+
+    why (ASK-603): 41 of 60 #general messages inside ONE 75-minute window were
+    this notification, naming the identical two files every time. Posted into
+    that same hour: a job dead for 16 days and four security reverts. Nobody
+    could see them. Reporting an unchanged condition on a Stop hook is how a
+    channel stops being read.
+    """
+    now = time.time() if now is None else now
+    digest = hashlib.sha256(
+        "\n".join(sorted(unclassified)).encode()).hexdigest()[:16]
+    try:
+        with open(path) as fh:
+            prev = json.load(fh)
+    except (OSError, ValueError):
+        return True, digest        # no cache, or a broken one: speak, never swallow
+    if prev.get("digest") != digest:
+        return True, digest
+    return (now - prev.get("at", 0)) >= REMIND_AFTER_HOURS * 3600, digest
+
+
+def record_notified(digest, now=None, path=None):
+    """Remember what was said. Never raises: a Stop hook does not fail on a cache."""
+    now = time.time() if now is None else now
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"digest": digest, "at": now}, fh)
+    except OSError:
+        pass
+
+
 def _notify_slack(unclassified):
     """One line to Slack naming what was left uncommitted. Never raises."""
     script = os.path.join(PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
     if not os.path.isfile(script):
+        return
+    state = notify_state_path(PROJ_DIR)
+    say, digest = should_notify(unclassified, path=state)
+    if not say:
         return
     head = ", ".join(unclassified[:3])
     more = f" (+{len(unclassified) - 3} more)" if len(unclassified) > 3 else ""
@@ -155,6 +215,7 @@ def _notify_slack(unclassified):
                         f"auto-commit left {len(unclassified)} file(s) uncommitted "
                         f"in {os.path.basename(PROJ_DIR)}: {head}{more}"],
                        capture_output=True, timeout=10)
+        record_notified(digest, path=state)
     except (OSError, subprocess.SubprocessError):
         pass                       # a Stop hook never fails because Slack did
 

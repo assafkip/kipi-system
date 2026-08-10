@@ -245,3 +245,86 @@ def test_a_missing_slack_script_never_breaks_the_stop_hook(tmp_path):
     mod = _hook_module()
     mod.PROJ_DIR = str(tmp_path)          # no slack-notify.sh under here
     mod.report_skipped(["a/b.py"])        # must not raise
+
+
+# ---------------------------------------------------- ASK-603 notify throttle
+
+import importlib.util  # noqa: E402
+import json  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("auto_commit", HOOK)
+auto_commit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(auto_commit)
+
+
+class TestTheSlackLineDoesNotRepeatItself:
+    """ASK-603. 41 of 60 #general messages in a 75-MINUTE window were this one
+    hook, naming the identical two files every time. A 16-day-dead job and four
+    security reverts were posted into that same hour and read as wallpaper.
+
+    Same idea as ASK-594 on the ask-crm watchdog: report what CHANGED, not what
+    is true.
+    """
+    FILES = ["RECONCILED_THROUGH", "q-consult/config/source-weights.yaml"]
+
+    def test_the_first_time_it_speaks(self, tmp_path):
+        say, _ = auto_commit.should_notify(
+            self.FILES, now=1000.0, path=str(tmp_path / "s.json"))
+        assert say
+
+    def test_the_same_files_again_are_silent(self, tmp_path):
+        p = str(tmp_path / "s.json")
+        say, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
+        auto_commit.record_notified(digest, now=1000.0, path=p)
+        say, _ = auto_commit.should_notify(self.FILES, now=1060.0, path=p)
+        assert not say, "24 identical lines in 75 minutes is the defect"
+
+    def test_file_order_does_not_count_as_a_change(self, tmp_path):
+        """git does not promise ordering; a reordered list is the same news."""
+        p = str(tmp_path / "s.json")
+        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
+        auto_commit.record_notified(digest, now=1000.0, path=p)
+        say, _ = auto_commit.should_notify(
+            list(reversed(self.FILES)), now=1060.0, path=p)
+        assert not say
+
+    def test_a_different_file_set_speaks(self, tmp_path):
+        p = str(tmp_path / "s.json")
+        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
+        auto_commit.record_notified(digest, now=1000.0, path=p)
+        say, _ = auto_commit.should_notify(
+            self.FILES + ["new_thing.py"], now=1060.0, path=p)
+        assert say, "a NEW uncommitted file is real news"
+
+    def test_it_speaks_again_after_the_remind_window(self, tmp_path):
+        """A file uncommitted for a week must not go permanently silent."""
+        p = str(tmp_path / "s.json")
+        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
+        auto_commit.record_notified(digest, now=1000.0, path=p)
+        later = 1000.0 + (auto_commit.REMIND_AFTER_HOURS * 3600) + 1
+        say, _ = auto_commit.should_notify(self.FILES, now=later, path=p)
+        assert say
+
+    def test_a_corrupt_state_file_speaks_rather_than_swallows(self, tmp_path):
+        """Fail loud. A broken cache must never silence a real notification."""
+        p = tmp_path / "s.json"
+        p.write_text("{not json")
+        say, _ = auto_commit.should_notify(self.FILES, now=1000.0, path=str(p))
+        assert say
+
+    def test_state_lives_outside_the_repo(self, tmp_path):
+        """The trap: state written INTO the repo becomes an uncommitted file,
+        which this very hook then reports on, which rewrites the state. Its own
+        cache would be its own alarm."""
+        path = auto_commit.notify_state_path("/Users/x/projects/consulting")
+        assert "/projects/consulting" not in path
+        assert path.startswith(os.path.expanduser("~"))
+
+    def test_two_projects_do_not_silence_each_other(self, tmp_path):
+        a = auto_commit.notify_state_path("/Users/x/projects/consulting")
+        b = auto_commit.notify_state_path("/Users/x/projects/Pure_spectrum_Q")
+        assert a != b, "consulting and Pure_spectrum_Q both spam; both need a slot"
+
+    def test_recording_never_raises_on_an_unwritable_path(self):
+        """A Stop hook never fails because its cache did."""
+        auto_commit.record_notified("d", now=1.0, path="/nope/nope/s.json")
