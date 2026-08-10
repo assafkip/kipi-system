@@ -32,6 +32,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -391,6 +393,104 @@ class TestPromotedIssueIsSelectable(unittest.TestCase):
                     (root / ".prd-os" / "spillover.jsonl").read_text().splitlines() if l.strip()]
             self.assertEqual(rows[-1]["status"], "promoted")
             self.assertEqual(rows[-1]["linear_ref"], "ASK-999")
+
+
+class ConcurrentPromotionTest(unittest.TestCase):
+    """One finding may become ONE issue, even when two runs promote it at once.
+
+    Codex major on PR #120: the open-state read, the issueCreate and the ledger
+    append were three separate steps with nothing serializing them. The ratchet
+    makes that concurrency ordinary rather than exotic -- it fires PostToolUse in
+    every agent session, and after the git-common-dir fix every worktree in the
+    set shares ONE ledger. Two agents editing the same file both see `open` and
+    both file. A duplicate Linear issue is permanent: nothing in the conveyor
+    de-duplicates, and the worker would dispatch two runs at the same fix.
+
+    The race is made deterministic rather than raced for. Both threads are held
+    at a barrier until each has passed the status check, then the create is slow
+    enough that the second is inside the window while the first is still in it.
+    Unlocked that yields two creates every run; there is no timing in which it
+    yields one.
+    """
+
+    def _run_two(self, tmp):
+        root = Path(tmp)
+        (root / ".prd-os").mkdir(parents=True, exist_ok=True)
+        (root / ".prd-os" / "spillover.jsonl").write_text(json.dumps({
+            "id": "sp-test01", "status": "open", "severity": "major",
+            "source": "ASK-451", "description": "the conveyor is dead"}) + "\n")
+        dor = root / "dor.md"
+        dor.write_text(DOR)
+
+        creates = []
+        creates_lock = threading.Lock()
+        start = threading.Barrier(2)
+
+        class SlowLinear(RecordingLinear):
+            """Widens the create window; the barrier decides the interleaving."""
+
+            def graphql(self, query, variables):
+                if "issueCreate" in " ".join(query.split()):
+                    time.sleep(0.4)
+                    with creates_lock:
+                        creates.append(variables["input"]["title"])
+                        n = len(creates)
+                    return {"issueCreate": {
+                        "success": True,
+                        "issue": {"id": f"i{n}", "identifier": f"ASK-99{n}"}}}
+                return super().graphql(query, variables)
+
+        mod = load_promote()
+        mod.linear_module = lambda: SlowLinear()
+
+        sys.argv = ["spillover-promote.py", "sp-test01", "--title", "conveyor test",
+                    "--dor-file", str(dor), "--repo-root", str(root)]
+        os.environ["KIPI_LINEAR_PROJECT"] = "kipi-system"
+
+        rcs = {}
+
+        def promote(tag):
+            # Both threads clear the status check before either can create.
+            # Without that barrier this would be a coin flip on scheduler luck,
+            # and a reproducer that only sometimes reproduces is not one.
+            start.wait(timeout=10)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                rcs[tag] = mod.main()
+
+        threads = [threading.Thread(target=promote, args=(i,)) for i in range(2)]
+        old_argv, old_env = sys.argv, dict(os.environ)
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+                self.assertFalse(t.is_alive(), "a promotion never finished (deadlock?)")
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_env)
+        return creates, rcs, root
+
+    def test_two_concurrent_promotions_create_one_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            creates, rcs, root = self._run_two(tmp)
+            self.assertEqual(len(creates), 1,
+                             f"{len(creates)} Linear issues for one finding: the "
+                             "check/create/append is not serialized")
+            self.assertEqual(sorted(rcs.values()), [0, 2],
+                             "the loser must REFUSE (exit 2), not report success")
+
+    def test_the_loser_appends_no_second_promoted_row(self):
+        """A second `promoted` row would make the ledger claim two promotions."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, root = self._run_two(tmp)
+            rows = [json.loads(l) for l in
+                    (root / ".prd-os" / "spillover.jsonl").read_text().splitlines()
+                    if l.strip()]
+            promoted = [r for r in rows if r.get("status") == "promoted"]
+            self.assertEqual(len(promoted), 1,
+                             f"{len(promoted)} promoted rows for one finding")
 
 
 if __name__ == "__main__":

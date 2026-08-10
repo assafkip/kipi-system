@@ -25,11 +25,13 @@ Usage:
   spillover-promote.py <id> --title "..." --dor "..." --dry-run
 """
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve()
 SKELETON = HERE.parents[3]
@@ -79,18 +81,69 @@ def ledger_root(repo_root: Path) -> Path:
     # inside the tree whose identity we are trying to resolve is the same
     # chicken-and-egg the bug came from -- it fell back to the per-worktree root
     # and looked fixed. repo_root stays as the fallback for an odd layout.
+    m = prd_runner(repo_root)
+    if m is None:
+        return Path(repo_root)
+    try:
+        return Path(m._ledger_root(Path(repo_root)))
+    except Exception:
+        return Path(repo_root)
+
+
+def prd_runner(repo_root):
+    """Load prd_runner, or None when it is not on disk. Never raises."""
     candidates = [SKELETON / "plugins" / "prd-os" / "scripts" / "prd_runner.py",
                   Path(repo_root) / "plugins" / "prd-os" / "scripts" / "prd_runner.py"]
     runner = next((c for c in candidates if c.is_file()), None)
     if runner is None:
-        return Path(repo_root)
+        return None
     try:
         spec = importlib.util.spec_from_file_location("prd_runner_root", runner)
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        return Path(m._ledger_root(Path(repo_root)))
+        return m
     except Exception:
-        return Path(repo_root)
+        return None
+
+
+@contextlib.contextmanager
+def ledger_lock(repo_root: Path):
+    """Serialize check -> create -> append against every other ledger writer.
+
+    why (Codex major, PR #120): those three steps were unserialized, so two runs
+    both read `open`, both called issueCreate, and both appended. The ratchet
+    makes that ordinary rather than exotic -- it fires PostToolUse in every agent
+    session, and since the git-common-dir fix every worktree in the set shares
+    ONE ledger. A duplicate Linear issue is permanent: nothing downstream
+    de-duplicates, and the worker would dispatch two runs at one fix.
+
+    IMPORTED from prd_runner, never reimplemented -- same rule as `ledger_root`
+    above, and for the same reason. `_spillover_lock` already guards
+    resolve/reclassify on the SAME `spillover.jsonl.lock` path, so importing it
+    (rather than opening a private second lock) is what makes promote serialize
+    against a concurrent resolve too. A second lock file would serialize
+    promotions against each other and against nothing else.
+
+    It only reads `cfg.repo_root`, so a namespace carrying that one field is the
+    whole contract; building a real Config here would couple this script to a
+    constructor it has no other use for.
+
+    DEGRADES, NEVER REFUSES, inherited deliberately: `_spillover_lock` warns to
+    stderr and proceeds unlocked when the directory is read-only (Codex sandboxes
+    are read-only here routinely). A promotion that cannot lock is still better
+    than a conveyor that stops; the re-read below still closes the window for
+    every sequential caller.
+    """
+    m = prd_runner(repo_root)
+    if m is None or not hasattr(m, "_spillover_lock"):
+        sys.stderr.write(
+            "WARNING: prd_runner._spillover_lock is unavailable; promoting "
+            "UNLOCKED. Two concurrent promotions could file two issues for one "
+            "finding.\n")
+        yield
+        return
+    with m._spillover_lock(SimpleNamespace(repo_root=Path(repo_root))):
+        yield
 
 
 def linear_module():
@@ -194,12 +247,43 @@ def main() -> int:
             "You have the file open. You are the cheapest person to write this.\n")
         return 2
 
+    args._dor = dor      # the transaction rebuilds the body from the FRESH row
     body = build_body(rec, dor, root.name)
     if args.dry_run:
         print(f"WOULD CREATE in team {TEAM_KEY}: {args.title}\n")
         print(body[:900])
         print(f"\nDRY RUN. {ledger} unchanged.")
         return 0
+
+    # EVERYTHING FROM HERE IS ONE TRANSACTION. The status re-read, the create
+    # and the append are the three steps Codex found unserialized on PR #120;
+    # a lock around the append alone still lets two runs both pass the check.
+    with ledger_lock(root):
+        return promote_locked(args, root, ledger, rec)
+
+
+def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
+    """The transaction. Called ONLY with the ledger lock held.
+
+    Split out rather than indented in place so the lock's span is one line to
+    read: everything this function does happens inside it, and nothing outside
+    it writes.
+    """
+    # RE-READ UNDER THE LOCK. The pre-lock check above is a fast refusal for the
+    # ordinary case; it is not the decision. Between it and here another run may
+    # have promoted this same finding, and its ledger append is the only record
+    # of that. Trusting the earlier read is precisely the check-then-act the
+    # duplicate came from.
+    fresh = load_rows(ledger).get(args.finding_id)
+    if not fresh or fresh.get("status") != "open":
+        status = (fresh or {}).get("status", "gone from the ledger")
+        sys.stderr.write(
+            f"refused: {args.finding_id} is '{status}', not open.\n"
+            "Another run promoted or resolved it while this one was starting.\n"
+            "One finding gets ONE issue; nothing downstream de-duplicates.\n")
+        return 2
+    rec = fresh
+    body = build_body(rec, args._dor, root.name)
 
     ls = linear_module()
     tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % TEAM_KEY,
