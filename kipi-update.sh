@@ -1233,7 +1233,15 @@ PY
                  | python3 "$sys_classifier" --system-state 2>/dev/null)
     fi
 
-    if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+    # sp-46c73c76. This read `[ "$DRY_RUN" != "1" ]`, and DRY_RUN is only ever ""
+    # or the literal "--dry-run" (set at :22/:26) -- so the guard was ALWAYS true
+    # and a --dry-run really did commit into live instances. Every other site in
+    # this file already compares against "--dry-run" plus the MODEL_RUN escape
+    # (a dry run operates on a throwaway clone, where writing is the point).
+    # Found while extending this very block for ASK-605, which would have made a
+    # "dry" run commit MORE.
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ] &&
+        { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
       echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
       # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`

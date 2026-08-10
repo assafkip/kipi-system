@@ -118,6 +118,18 @@ SKIP_DECLARED = "declared-skip"       # matched AREA_MAP with commit_type None
 SKIP_UNCLASSIFIED = "unclassified"    # matched nothing: never auto-committed
 
 
+# Checked BEFORE any prefix match. A prefix is a blunt instrument: `.prd-os/`
+# is mostly machine-written ledgers, but it also holds authored issue specs, and
+# every resolve drops a `.lock` beside the ledger it is writing.
+NEVER_AUTO_COMMIT = (
+    ".lock",                 # sp-a21cb27c: ephemeral, and sweeping it is a race
+)
+NEVER_AUTO_COMMIT_DIRS = (
+    ".prd-os/issues/",       # issue SPECS are authored, not exhaust
+    ".prd-os/findings/",     # review findings are authored
+)
+
+
 def classify(filepath):
     """(type, message) for an auto-committable file, else a SKIP_* reason string.
 
@@ -126,6 +138,9 @@ def classify(filepath):
     this" (an instance's source tree). The second one is the whole point: it is
     reported to the operator instead of being swept.
     """
+    if filepath.endswith(NEVER_AUTO_COMMIT) or \
+            filepath.startswith(NEVER_AUTO_COMMIT_DIRS):
+        return SKIP_UNCLASSIFIED
     for prefix, commit_type, msg in AREA_MAP:
         if filepath.startswith(prefix):
             if commit_type is None:

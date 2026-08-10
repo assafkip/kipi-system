@@ -444,3 +444,29 @@ class TestDeclaredSkipMustActuallyBeIgnored:
                     f"never committed, never ignored and never reported -- it "
                     f"blocks the fleet sync invisibly, which is what left "
                     f"cole-gtm stuck on two .md files.")
+
+
+class TestTheNeverList:
+    """sp-a21cb27c, caught before it shipped. Classifying `.prd-os/` as chore
+    (ASK-605, to unblock cole-gtm's dirty spillover.jsonl) also made the
+    ephemeral `.jsonl.lock` and the AUTHORED issue specs auto-committable. A
+    prefix is a blunt instrument; these are the exceptions, checked first.
+    """
+
+    def test_the_ledger_is_still_taken(self):
+        assert auto_commit.system_state_paths([".prd-os/spillover.jsonl"])
+
+    def test_a_lock_file_is_never_taken(self):
+        assert auto_commit.system_state_paths([".prd-os/spillover.jsonl.lock"]) == []
+        assert auto_commit.classify(".prd-os/spillover.jsonl.lock") == \
+            auto_commit.SKIP_UNCLASSIFIED
+
+    def test_authored_prd_os_content_is_never_taken(self):
+        for p in (".prd-os/issues/ath-durable-recovery.md",
+                  ".prd-os/findings/some-review.json"):
+            assert auto_commit.system_state_paths([p]) == [], p
+
+    def test_a_lock_anywhere_is_never_taken(self):
+        """Not a .prd-os special case: a lock is a race wherever it lives."""
+        assert auto_commit.system_state_paths(
+            ["q-system/memory/open-loops.json.lock"]) == []
