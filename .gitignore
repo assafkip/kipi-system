@@ -13,6 +13,13 @@ security-remediation/
 Thumbs.db
 
 # Output (generated daily, don't commit)
+# ASK-605: the whole directory, not a list of extensions. auto-commit.py
+# declares q-system/output/ skip-because-gitignored; when that claim was
+# only true for *.html/*.json/*.log, a .md file there was invisible to the
+# hook AND blocked every fleet sync. Keep the negation for .gitkeep so the
+# directory survives a clone.
+q-system/output/**
+!q-system/output/.gitkeep
 q-system/output/*.html
 q-system/output/*.json
 q-system/output/*.log

@@ -20,7 +20,17 @@ AREA_MAP = [
     ("q-system/my-project/",          "content",  "update project state"),
     ("q-system/marketing/",           "content",  "update marketing content"),
     ("q-system/memory/",              "chore",    "update session memory"),
-    ("q-system/output/",              None,       None),  # skip - gitignored
+    # Append-only ledgers the system writes for itself (spillover, gates,
+    # findings). ASK-605: these were unclassified, so cole-gtm's dirty
+    # .prd-os/spillover.jsonl blocked its sync with no path out -- the updater
+    # would not take it and no rule said who should.
+    (".prd-os/",                      "chore",    "update prd-os ledgers"),
+    # skip - gitignored. That claim is now TESTED against `git check-ignore`
+    # rather than trusted: it used to be FALSE for any extension the .gitignore
+    # did not list (*.md was not listed), and such a file is never committed,
+    # never ignored and never even reported, so it blocks the fleet sync
+    # invisibly. cole-gtm sat stuck on two of them.
+    ("q-system/output/",              None,       None),
     ("q-system/hooks/",               "chore",    "update hooks"),
     ("q-system/.q-system/agent-pipeline/", "feat", "update agent pipeline"),
     ("q-system/.q-system/",           "chore",    "update system infrastructure"),
@@ -188,8 +198,14 @@ def notify_state_path(proj_dir):
     silence each other -- consulting and Pure_spectrum_Q were both flooding.
     """
     slot = hashlib.sha256(proj_dir.encode()).hexdigest()[:16]
-    return os.path.join(os.path.expanduser("~"), ".cache", "kipi",
-                        "auto-commit-notify", f"{slot}.json")
+    # KIPI_CACHE_HOME so a test can never write the REAL cache. Without it the
+    # suite recorded a live digest on first run and then SUPPRESSED itself on
+    # the second, turning a green test red with no code change -- a test
+    # touching a live data path, which is the one habit the fable-discipline
+    # lint exists to block.
+    home = os.environ.get("KIPI_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache")
+    return os.path.join(home, "kipi", "auto-commit-notify", f"{slot}.json")
 
 
 def should_notify(unclassified, now=None, path=None):

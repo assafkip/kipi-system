@@ -16,6 +16,19 @@ HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "q-system", "hooks", "auto-commit.py")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_notify_cache(tmp_path_factory, monkeypatch):
+    """No test may touch the REAL ~/.cache/kipi notify state.
+
+    Without this, report_skipped recorded a live digest on the first run and
+    then suppressed itself on the second, so the suite went red with no code
+    change. A test that writes a live data path is the exact habit the
+    fable-discipline lint blocks.
+    """
+    monkeypatch.setenv("KIPI_CACHE_HOME",
+                       str(tmp_path_factory.mktemp("cache")))
+
+
 def _repo(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
@@ -317,8 +330,16 @@ class TestTheSlackLineDoesNotRepeatItself:
         which this very hook then reports on, which rewrites the state. Its own
         cache would be its own alarm."""
         path = auto_commit.notify_state_path("/Users/x/projects/consulting")
-        assert "/projects/consulting" not in path
-        assert path.startswith(os.path.expanduser("~"))
+        assert "/projects/consulting" not in path, \
+            "the cache would sit inside the repo it reports on"
+        # And the DEFAULT (no test override) still lands under the user's cache.
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.delenv("KIPI_CACHE_HOME", raising=False)
+        try:
+            assert auto_commit.notify_state_path("/Users/x/projects/consulting") \
+                .startswith(os.path.join(os.path.expanduser("~"), ".cache"))
+        finally:
+            monkeypatch.undo()
 
     def test_two_projects_do_not_silence_each_other(self, tmp_path):
         a = auto_commit.notify_state_path("/Users/x/projects/consulting")
@@ -382,3 +403,44 @@ class TestTheFleetSyncSharesThisClassifier:
                          "q-investigate/evidence/capture.pdf\n")
         assert r.returncode == 0
         assert r.stdout.split() == ["q-system/memory/open-loops.json"]
+
+
+class TestDeclaredSkipMustActuallyBeIgnored:
+    """ASK-605 cause 2. AREA_MAP carries q-system/output/ as
+    `(None, None)  # skip - gitignored`. The .gitignore only ignores that
+    directory BY EXTENSION (*.html, *.json, *.log) -- never *.md. So
+    q-system/output/*.md is not committed, not ignored, and not even REPORTED
+    (SKIP_DECLARED is silent). It blocks the fleet sync invisibly. cole-gtm sat
+    stuck on exactly two such files.
+    """
+
+    def test_the_prd_os_ledger_is_system_state(self):
+        """.prd-os/spillover.jsonl is an append-only ledger the system writes.
+        It was unclassified, so it blocked cole-gtm's sync with no way out."""
+        assert auto_commit.system_state_paths([".prd-os/spillover.jsonl"]) == \
+            [".prd-os/spillover.jsonl"]
+
+    def test_every_declared_skip_prefix_is_actually_gitignored(self):
+        """The claim in the comment must be true, or the path blocks silently.
+
+        Reads the real .gitignore rather than trusting the comment. This is the
+        check that would have caught cole-gtm before a human did.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        for prefix, commit_type, _ in auto_commit.AREA_MAP:
+            if commit_type is not None:
+                continue
+            # Ask git, do not pattern-match the .gitignore by hand. The first
+            # version of this test did the latter, and it PASSED against the
+            # exact repo whose cole-gtm blockers proved it false.
+            for ext in (".md", ".txt", ".yaml", ""):
+                probe = f"{prefix}probe-does-not-exist{ext}"
+                r = subprocess.run(["git", "check-ignore", "-q", probe],
+                                   cwd=root, capture_output=True)
+                assert r.returncode == 0, (
+                    f"{probe} is NOT gitignored, yet {prefix} is declared "
+                    f"skip-because-gitignored in AREA_MAP. Such a file is "
+                    f"never committed, never ignored and never reported -- it "
+                    f"blocks the fleet sync invisibly, which is what left "
+                    f"cole-gtm stuck on two .md files.")
