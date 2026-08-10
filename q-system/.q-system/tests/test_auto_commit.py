@@ -328,3 +328,57 @@ class TestTheSlackLineDoesNotRepeatItself:
     def test_recording_never_raises_on_an_unwritable_path(self):
         """A Stop hook never fails because its cache did."""
         auto_commit.record_notified("d", now=1.0, path="/nope/nope/s.json")
+
+
+class TestTheFleetSyncSharesThisClassifier:
+    """ASK-605. kipi-update.sh carried its own 3-entry SYSTEM_OWNED_PATHS list
+    meaning exactly what classify() means: "system exhaust, safe to commit
+    unattended". They disagreed, and the disagreement had teeth --
+    q-system/memory/open-loops.json is written by a background heartbeat, is
+    `chore` here, was absent there, and blocked 4 of 7 instances from ever
+    syncing. One concept must have one list.
+    """
+
+    def test_the_file_that_blocked_four_instances_is_system_state(self):
+        assert auto_commit.system_state_paths(
+            ["q-system/memory/open-loops.json"]) == \
+            ["q-system/memory/open-loops.json"]
+
+    def test_the_integrity_baseline_is_system_state(self):
+        assert auto_commit.system_state_paths(
+            ["q-system/.q-system/claude-integrity-baseline.json"])
+
+    def test_founder_content_is_never_system_state(self):
+        """NARROWER than classify() on purpose. An unattended fleet-wide sweep
+        of a half-finished canonical edit is a second writer to his branch."""
+        for p in ["q-system/canonical/decisions.md",
+                  "q-system/my-project/current-state.md",
+                  "q-system/marketing/brand-voice.md",
+                  "plugins/kipi-core/skills/founder-voice/SKILL.md"]:
+            assert auto_commit.system_state_paths([p]) == [], p
+
+    def test_work_product_is_never_system_state(self):
+        """The 162 files the old sweeper took from Alice."""
+        for p in ["q-investigate/investigations/case-001/evidence/capture.pdf",
+                  "q-investigate/.../generators/fill_sheet.py",
+                  "output/opportunities/opps-2026-08-01.md",
+                  "q-pure/output/drafts/2026-08-10-sushma.md",
+                  "projects/2026_QEP_Agent_Automation/progress.md"]:
+            assert auto_commit.system_state_paths([p]) == [], p
+
+    def test_it_filters_a_mixed_list_rather_than_all_or_nothing(self):
+        mixed = ["q-system/memory/open-loops.json",
+                 "q-investigate/evidence/capture.pdf",
+                 "q-system/canonical/decisions.md"]
+        assert auto_commit.system_state_paths(mixed) == \
+            ["q-system/memory/open-loops.json"]
+
+    def test_the_cli_mode_reads_stdin_and_prints_only_system_state(self):
+        """kipi-update.sh shells this; the contract is the stdout list."""
+        import subprocess as sp
+        r = sp.run([sys.executable, HOOK, "--system-state"], text=True,
+                   capture_output=True,
+                   input="q-system/memory/open-loops.json\n"
+                         "q-investigate/evidence/capture.pdf\n")
+        assert r.returncode == 0
+        assert r.stdout.split() == ["q-system/memory/open-loops.json"]
