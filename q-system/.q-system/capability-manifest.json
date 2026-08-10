@@ -510,6 +510,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_spillover_promote_selection.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
       "runner": "python3"
     },

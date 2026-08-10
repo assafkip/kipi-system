@@ -229,6 +229,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\""
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-validator.py\""
           },
           {

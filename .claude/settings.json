@@ -238,6 +238,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\""
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py\"",
             "timeout": 5
           }
