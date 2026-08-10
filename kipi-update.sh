@@ -243,8 +243,34 @@ model_rsync_excludes() {
   # fine. So --dry manufactured a false failure out of disk pressure alone.
   # Every path here is regenerable by its own toolchain and gitignored.
   MODEL_EXCLUDES=(--exclude=".git")
-  local cache_dir
+  # sp-f6733ee3. The comment above says "every path here is regenerable by its
+  # own toolchain and gitignored". That is false for some instances, and the
+  # exclusion list is the only thing that believed it. Measured 2026-08-10:
+  # gtm-partner TRACKS 28 files under these names (build/index.html,
+  # build/styles.css, a design-room template's build/art/, a released
+  # dist/ tarball) and interview-coach tracks 1. Stripping a TRACKED file from
+  # the model makes the model's git see it as deleted, so --dry reports a
+  # deletion that the real sync would never perform.
+  #
+  # A fix that relocated its own bug: sp-b2f16971 (the model copied 8.7G of
+  # caches) was closed by ADDING this list, and the list is what manufactures
+  # the false deletions. So the test is not the name, it is whether git tracks
+  # anything there. Untracked caches -- the 8.7G that motivated the list -- are
+  # still stripped, which is the whole point of keeping the list at all.
+  local instance_tracked tracked_nl cache_dir
+  instance_tracked="$(git -C "$1" ls-files 2>/dev/null || true)"
+  # Leading newline so a first-line match and a mid-path match use one pattern.
+  # A `case` glob rather than `printf | grep -q`: grep -q closes the pipe on its
+  # first match, the writer takes SIGPIPE, and pipefail reports 141 for the
+  # whole pipeline -- which would silently invert this test.
+  tracked_nl=$'\n'"$instance_tracked"
   for cache_dir in target node_modules .venv venv __pycache__ .next dist build .pytest_cache .mypy_cache .ruff_cache; do
+    case "$tracked_nl" in
+      *$'\n'"$cache_dir"/*|*"/$cache_dir"/*)
+        # Tracked content lives here. Excluding it would fake a deletion.
+        continue
+        ;;
+    esac
     MODEL_EXCLUDES+=(--exclude="$cache_dir/")
   done
   for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
