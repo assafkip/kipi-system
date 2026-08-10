@@ -78,6 +78,28 @@ def invokes(code, target_file):
     for var in re.findall(r'(\w+)=[^\n]*' + esc, code):
         if re.search(INTERPRETERS + r'\s+"?\$\{?' + re.escape(var) + r'\}?', code):
             return True
+    # EXTRACTION counts as using the real code, and this is not a loophole.
+    # A test that pulls a function's text out of the shipping file at run time
+    # (`sed -n "/^fn() {/,/^}/p" kipi-update.sh`) and then executes it is running
+    # the code under test, not a copy of it -- it follows the file, and a mutation
+    # of the real function changes what the test runs. That is the property this
+    # lint is actually protecting; "invokes the top-level script" was only ever a
+    # proxy for it.
+    #
+    # Kept deliberately narrow: the target must be READ by a text extractor AND
+    # the result must be executed (eval, or written to a script that is then run).
+    # Reading the file alone is not enough -- grepping a file to assert its
+    # contents is a source-text check, which is the weakest thing this lint
+    # exists to discourage.
+    extracted = re.search(r'(?:sed|awk)\s[^\n]*' + esc, code) or \
+        re.search(r'(\w+)="?\$\((?:sed|awk)[^\n]*' + esc, code) or \
+        re.search(r'SRC="[^\n]*' + esc, code)
+    if extracted:
+        executed = re.search(r'\beval\b', code) or \
+            re.search(INTERPRETERS + r'\s+"?\$\{?\w*(?:probe|PROBE|script|SCRIPT)\w*\}?', code) or \
+            re.search(INTERPRETERS + r'\s+"\$\(', code)   # bash "$(build_probe ...)"
+        if executed:
+            return True
     return False
 
 
