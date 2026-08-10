@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-echo "worked" >> "/Users/assafkipnis/projects/kipi-system/.pr25rev/repo/../burn-66438/worked.txt"
-exit 0

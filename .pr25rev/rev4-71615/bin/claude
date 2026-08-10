@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-if [ ! -s "/Users/assafkipnis/projects/kipi-system/.pr25rev/rev4-71615/prompt.txt" ]; then cat > "/Users/assafkipnis/projects/kipi-system/.pr25rev/rev4-71615/prompt.txt"; else cat >/dev/null; fi
-printf 'ran\n' >> "/Users/assafkipnis/projects/kipi-system/.pr25rev/rev4-71615/worked.txt"
-exit 0

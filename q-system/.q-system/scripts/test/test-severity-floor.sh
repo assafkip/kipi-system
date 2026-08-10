@@ -492,7 +492,7 @@ grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
       not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
 ok "it stopped at the conflict cap, not as unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
 grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
@@ -1594,7 +1594,7 @@ grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
       gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
 ok "it stopped at the drift cap, not as approved or unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 5 runs at the drift cap, got $PAGES. Zero means
       unreviewed code sits at the head of an approved PR with nobody told; more than one is the
@@ -1789,7 +1789,7 @@ ok "an unreadable head does not refill the drift budget"
       the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
 ok "the drift cap holds across runs whose head could not be read"
 
-P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+P8_PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$P8_PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
       never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
@@ -1970,7 +1970,12 @@ run_engine_reviewer() {
   RC=$?
 }
 
-pages_in() { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; }
+# `grep -c` prints 0 AND exits 1 on a zero count, so a bare `|| echo 0`
+# APPENDED a second 0 and the value became "0\n0": that breaks `-eq` with
+# "integer expression expected" and makes a legitimate `= "0"` assertion
+# fail on correct behaviour. `| head -1` keeps whichever 0 arrived first.
+# Missing file: grep prints nothing and the fallback supplies the only 0.
+pages_in() { { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; } | head -1; }
 
 # --- Q1. an approving codex review posts kipi/codex-approved on the read sha ---
 Q1="$W2/eng-approve"

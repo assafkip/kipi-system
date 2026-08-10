@@ -159,6 +159,40 @@ is_managed_plugin_path() {
 # down to 605MB free before it was killed.
 #
 # Cached per instance root so two callers cannot observe two different trees.
+# PATHS THE SYSTEM ITSELF WRITES INTO AN INSTANCE.
+# The dirty-tree guard below refuses ANY tracked modification, which is correct
+# for founder work and wrong for the updater's own exhaust: measured 2026-08-04,
+# 6 of 23 instances sat 2-6 prd-os versions behind and 4 were blocked SOLELY by
+# files this system wrote (the monthly sycophancy stamp, hook state, and a
+# plugins/ tree an EARLIER update staged and never committed). The fleet updater
+# was blocked by itself, silently. This list is deliberately narrow and explicit:
+# anything not named here is treated as founder work and still refuses.
+SYSTEM_OWNED_PATHS=(
+  "q-system/memory/.sycophancy-monthly-stamp"
+  "q-system/.q-system/claude-integrity-baseline.json"
+  ".claude/state/stop-gate-firings.json"
+)
+# Skeleton-managed plugin dirs are appended at run time from the SAME
+# enumeration the sync itself uses (managed_plugin_names), never as a blanket
+# "plugins" entry. The blanket version classified the WHOLE tree as system-owned
+# and would have committed founder edits inside an instance-LOCAL plugin, which
+# the sync does not manage (Codex review, PR #98 round 2). One enumeration, one
+# meaning of "managed".
+#
+# Consequence, accepted deliberately: an ORPHANED plugin dir -- one an older
+# skeleton shipped and a newer one dropped, e.g. plugins/memory-lifecycle -- is
+# no longer covered, so it still blocks that instance. That is the right answer.
+# An orphan is genuinely ambiguous (is it founder-adopted or dead weight?) and
+# now gets NAMED in the run summary instead of silently skipped.
+system_owned_paths_for_run() {
+  local plugin_name
+  printf '%s\n' "${SYSTEM_OWNED_PATHS[@]}"
+  while IFS= read -r -d '' plugin_name; do
+    printf 'plugins/%s\n' "$plugin_name"
+  done < <(managed_plugin_names)
+}
+FAILED_NAMES=""
+
 MODEL_SKIPPED_ROOT=""
 MODEL_SKIPPED_PATHS=()
 
@@ -201,7 +235,18 @@ model_rsync_excludes() {
   # the projection cannot be built against a stale or unpopulated list. The
   # scan is cached per root, so this costs nothing on the second call.
   model_skip_scan "$instance_root"
+  # BUILD CACHES ARE NOT STATE. The model exists to preview what the skeleton
+  # sync would do, and the sync never touches these -- copying them is pure
+  # cost. Measured 2026-08-04: the accountant instance carried an 8.7G
+  # src-tauri/target tree, the copy hit "No space left on device" at 92% disk,
+  # and the instance reported FAILED in --dry while the real run had updated it
+  # fine. So --dry manufactured a false failure out of disk pressure alone.
+  # Every path here is regenerable by its own toolchain and gitignored.
   MODEL_EXCLUDES=(--exclude=".git")
+  local cache_dir
+  for cache_dir in target node_modules .venv venv __pycache__ .next dist build .pytest_cache .mypy_cache .ruff_cache; do
+    MODEL_EXCLUDES+=(--exclude="$cache_dir/")
+  done
   for nested_rel in ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"}; do
     MODEL_EXCLUDES+=(--exclude="/$nested_rel/")
   done
@@ -458,8 +503,18 @@ restore_instance() {
   # and it asserts the first commit survives. Undoing it also strands the
   # index against a HEAD it no longer matches, which manufactures the exact
   # dirty tree this function exists to prevent.
-  git -C "$target" reset -q HEAD 2>/dev/null || true
-  git -C "$target" checkout -q -- . 2>/dev/null || true
+  # SCOPED to the sync's own write set (ASK-609), and this is load-bearing.
+  # `checkout -- .` discards every unstaged tracked modification in the repo.
+  # That was safe ONLY because the dirty-tree guard had just proved the whole
+  # tree clean, so there was nothing of the founder's to discard. Once that
+  # guard is scoped, an instance with founder edits outside the sync's reach
+  # passes it legitimately -- and an unscoped checkout here would then delete
+  # exactly the work the scoping was meant to stop blocking on. The two must
+  # move together; the pathspec below is the same one the guard uses.
+  git -C "$target" reset -q HEAD -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
+    $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
+  git -C "$target" checkout -q -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
+    $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
   # Finally, remove files this run created: untracked NOW, absent from the
   # checkpoint, and inside the sync's own scope. Never a recursive delete of a
   # directory this run was not observed to create.
@@ -499,6 +554,12 @@ PY
 # increment itself in exactly one place.
 count_instance_failure() {
   FAIL=$((FAIL + 1))
+  # NAME the instance, do not just count it. The summary reported "Failed: 6"
+  # with no names, so nobody could see WHICH instances were drifting -- they sat
+  # 2-6 prd-os versions behind for weeks and each run skipped a different subset
+  # (measured 2026-08-04). A count is not a report.
+  FAILED_NAMES="$FAILED_NAMES
+    - ${name:-<unnamed>} (${path:-unknown path})"
 }
 
 abandon_instance() {
@@ -1142,10 +1203,105 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # Clear the system's OWN artifacts first, so the guard below judges founder
+    # work only. Each path is committed individually and only if it is actually
+    # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
+    sys_owned_dirty=()
+    while IFS= read -r sys_path; do
+      [ -n "$sys_path" ] || continue
+      if ! git diff --quiet -- "$sys_path" 2>/dev/null ||
+          ! git diff --cached --quiet -- "$sys_path" 2>/dev/null; then
+        sys_owned_dirty+=("$sys_path")
+      fi
+    done < <(system_owned_paths_for_run)
+
+    # ASK-605. The list above is hand-maintained and names 3 paths. auto-commit.py's
+    # classifier answers the SAME question -- "is this the system's own exhaust?" --
+    # for the whole tree, and the two disagreed. `q-system/memory/open-loops.json`
+    # is written by a background heartbeat, is `chore` to the classifier, was absent
+    # from the list, and on 2026-08-10 left 4 of 7 instances permanently unsyncable:
+    # dirty forever, so never synced, so never given the fix that would help.
+    #
+    # We shell the SKELETON's copy, never the instance's. A blocked instance is by
+    # definition running stale code -- Alice's own pre-ASK-498 copy still had the
+    # `chore: update project files` catch-all and swept 162 files of investigation
+    # evidence when run there. The instance most in need of sweeping is the one whose
+    # sweeper cannot be trusted, and this is how that circle breaks.
+    #
+    # `chore` only: content/feat are founder-authored and not the updater's to take.
+    sys_classifier="$SCRIPT_DIR/q-system/hooks/auto-commit.py"
+    if [ -f "$sys_classifier" ]; then
+      while IFS= read -r sys_path; do
+        [ -n "$sys_path" ] || continue
+        # `:-` is not decoration. /bin/bash on macOS is 3.2.57, where `arr[*]`
+        # on an EMPTY array is an unbound-variable error under `set -u` (bash
+        # 4.4+ made it expand to nothing). The array is empty exactly when none
+        # of the three hand-listed paths are dirty -- which is the case this
+        # whole block was added to handle -- so the code written to unblock a
+        # stuck instance aborted its sync instead. ASK-607, measured 2026-08-10.
+        case " ${sys_owned_dirty[*]:-} " in *" $sys_path "*) continue ;; esac
+        sys_owned_dirty+=("$sys_path")
+      # -uall, not the default: plain --porcelain collapses untracked content into
+      # the DIRECTORY ("q-system/"), which matches no classifier prefix, so every
+      # untracked system file silently classified as nothing. Caught by running it
+      # against a scratch repo rather than by reading it.
+      done < <(git status --porcelain -uall 2>/dev/null | cut -c4- \
+                 | python3 "$sys_classifier" --system-state 2>/dev/null)
+    fi
+
+    # sp-46c73c76. This read `[ "$DRY_RUN" != "1" ]`, and DRY_RUN is only ever ""
+    # or the literal "--dry-run" (set at :22/:26) -- so the guard was ALWAYS true
+    # and a --dry-run really did commit into live instances. Every other site in
+    # this file already compares against "--dry-run" plus the MODEL_RUN escape
+    # (a dry run operates on a throwaway clone, where writing is the point).
+    # Found while extending this very block for ASK-605, which would have made a
+    # "dry" run commit MORE.
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ] &&
+        { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
+      echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
+      printf '    %s\n' "${sys_owned_dirty[@]}"
+      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
+      # with no pathspec commits everything ALREADY STAGED, so a founder with
+      # staged work would have had it swept into this infra commit -- the exact
+      # thing the guard below exists to prevent, reintroduced by the fix for it
+      # (Codex review, PR #98). With a pathspec, only these paths are committed
+      # no matter what else sits in the index.
+      #
+      # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
+      # gate wants a Linear id, and this is the sanctioned hatch that gets
+      # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
+      # to land a commit in their repo is not ours to do.
+      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+
+These files are written by the fleet itself (sycophancy stamp, integrity
+baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
+updater from being blocked by its own exhaust; founder work is never included
+because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+    fi
+
     # Refuse tracked work in progress. The updater owns only its scoped sync
     # commits and must never package unrelated founder edits into an infra commit.
-    if ! git diff --cached --quiet 2>/dev/null ||
-        ! git diff --quiet 2>/dev/null; then
+    #
+    # SCOPED, not repo-wide (ASK-609). The sync writes exactly three things:
+    # $prefix/ minus the instance-owned subtrees, .claude/, and plugins/. A
+    # dirty file anywhere else is in a path this run is not permitted to write,
+    # so it cannot be packaged into an infra commit and cannot be damaged.
+    # Measured 2026-08-10: 182 dirty files across the four blocked instances,
+    # ZERO of them reachable by the sync. Alice's 162 are investigation
+    # evidence under q-investigate/. The guard was protecting an empty set and
+    # charging four instances every future fix for it -- including the ASK-607
+    # fix written to unblock stuck instances.
+    #
+    # Same pathspec as checkpoint_untracked_list, deliberately: that function
+    # already carries the rule ("restore can never even propose deleting a path
+    # the sync was never permitted to touch"). One scope, and the BLOCK
+    # decision and the RESTORE decision must not be allowed to drift apart --
+    # see restore_instance, which reduces its reset and checkout to this same
+    # set. If they diverge, restore discards founder work the guard let past.
+    if ! git diff --cached --quiet -- "$prefix/" .claude/ plugins/ \
+          $(pathspec_owned_excludes "$prefix") 2>/dev/null ||
+        ! git diff --quiet -- "$prefix/" .claude/ plugins/ \
+          $(pathspec_owned_excludes "$prefix") 2>/dev/null; then
       if [ "$MODEL_RUN" = "1" ]; then
         echo "  Changes vs skeleton: blocked by dirty working tree"
       fi
@@ -1292,6 +1448,24 @@ PY
         # patterns also matched inside the nested q-system/q-system/ shadow copy
         # (protecting ITS memory/, canonical/, ...), so rsync could never delete
         # the shadow tree -- "not empty, cannot delete" on every update.
+        # FAIL-CLOSED BACKSTOP (sp-737ce1ae, sp-10cf4f76). The excludes above
+        # are ANCHORED to the transfer root, so they only protect the instance
+        # when the destination IS its q-system dir. Reproduced 2026-08-05: with
+        # a null `subtree_prefix` the destination is the instance ROOT, and an
+        # instance still keeping its data under q-system/ has that data one
+        # level below where the excludes point -- the dry run itemizes
+        # `*deleting q-system/my-project/...` and nothing stops it.
+        #
+        # Re-anchoring the excludes fixes that variant; this catches the CLASS.
+        # Any future layout, prefix, or registry drift that moves the
+        # destination re-opens the same hole, and the failure mode is deleted
+        # founder data with no error. So: ask rsync what it plans to delete,
+        # and refuse if any of it is instance-owned at any depth.
+        if ! rsync -ain --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
+            $(rsync_owned_excludes) 2>/dev/null \
+            | python3 "$SCRIPT_DIR/kipi-update-deletion-guard.py"; then
+          abandon_instance "  ERROR: q-system sync would delete instance-owned data; refusing" && continue
+        fi
         if ! rsync -a --delete "$ARCHIVE_TMP/q-system/" "$path/$prefix/" \
             $(rsync_owned_excludes) 2>/dev/null; then
           abandon_instance "  ERROR: q-system sync failed" && continue
@@ -1402,6 +1576,76 @@ PY
         CONFIG_FAILED=1
       fi
     done
+
+    # Sanction the .claude/ writes THIS update just made (ASK-291).
+    #
+    # SCAR, measured before rollout by probe_update_interaction.sh: Layer 2
+    # (claude-integrity-tripwire.py --enforce) is wired PostToolUse on every
+    # instance and AUTO-REVERTS unsanctioned .claude/ content. Everything above
+    # this line rewrites .claude/ -- settings.json from the template, then
+    # rules/, agents/, output-styles/. Without this call the next tool call in
+    # the updated instance sees all of it as drift, quarantines it, and rolls the
+    # update BACK. The updater already printed OK. Silent, and on 23 machines.
+    #
+    # A sanction and not an exclusion: `kipi update` propagates the skeleton's
+    # git HEAD, which is the same reviewed provenance the tripwire's own
+    # attributable() already treats as sanctioned. Excluding settings.json from
+    # the watch set would hand back the whole hole. Phase 3 of the probe holds
+    # the other end: a tamper AFTER this call is still caught.
+    #
+    # --register, NOT a blanket --baseline (review finding, PR #85). A blanket
+    # re-baseline re-measures the WHOLE watch set, so any unrelated tamper that
+    # happened to be sitting in .claude/ at that moment became sanctioned
+    # content, fleet-wide, on every update. The applier's own docstring already
+    # named that "the blinding version of this fix"; the updater was doing it.
+    # The path list below is exactly what this run writes -- settings.json, every
+    # .md copied above, and the two guard scripts the q-system rsync replaced --
+    # so an unrelated file cannot ride along.
+    #
+    # THE WATCH SET IS NOT ONLY .claude/ (review finding, PR #85 round 14, MAJOR).
+    # The list was written from the .claude/ half of it while the tripwire's
+    # EXTRA_WATCHED has always held two files OUTSIDE .claude/: both guard
+    # scripts, which the rsync at the top of this block rewrites on every update.
+    # A fresh local commit is in no remote default branch, so head_is_reviewed()
+    # is False and nothing absorbed them. Measured on a stand-in instance
+    # (probe_round14_findings.sh phase 1): every tool call after a routine update
+    # printed `SECURITY: unsanctioned .claude/ change -- 2 modified`, forever, on
+    # 23 machines, until a human ran --baseline on each. An alarm nobody reads is
+    # the same as no alarm, which is the failure mode both scripts' headers exist
+    # to avoid.
+    #
+    # DERIVED FROM THE TRIPWIRE, NOT TRANSCRIBED: the paths come out of the
+    # instance's own EXTRA_WATCHED, so adding a third watched file outside
+    # .claude/ cannot leave this list behind.
+    #
+    # Best-effort by design: an instance that has not adopted the tripwire has no
+    # script here, and a sanction failure must never abandon a good update.
+    if [ -f "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" ]; then
+      TRIPWIRE_WROTE=()
+      [ -f "$path/.claude/settings.json" ] && TRIPWIRE_WROTE+=(".claude/settings.json")
+      for config_kind in agents output-styles rules; do
+        if compgen -G "$SCRIPT_DIR/.claude/$config_kind/*.md" >/dev/null; then
+          for src in "$SCRIPT_DIR"/.claude/"$config_kind"/*.md; do
+            TRIPWIRE_WROTE+=(".claude/$config_kind/$(basename "$src")")
+          done
+        fi
+      done
+      while IFS= read -r extra_rel; do
+        [ -n "$extra_rel" ] || continue
+        [ -f "$path/$extra_rel" ] && TRIPWIRE_WROTE+=("$extra_rel")
+      done < <(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("t", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.EXTRA_WATCHED))
+' "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" 2>/dev/null)
+      KIPI_NOTIFY=/usr/bin/true python3 \
+        "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
+        --root "$path" --quiet \
+        --register ${TRIPWIRE_WROTE[@]+"${TRIPWIRE_WROTE[@]}"} >/dev/null 2>&1 ||
+        echo "    WARN: could not sanction .claude/ tripwire writes (next tool call may revert this update)"
+    fi
 
     # Sync plugins (copy contents, not directory, to avoid plugins/plugins/ nesting).
     # rsync instead of rm -rf + cp -R: --delete-excluded strips embedded .git dirs
@@ -1524,6 +1768,9 @@ fi
 echo "=== Summary ==="
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
+if [ -n "$FAILED_NAMES" ]; then
+  echo "  NOT UPDATED (still on their previous skeleton version):$FAILED_NAMES"
+fi
 echo "  Skipped: $SKIP"
 if [ -n "${GATE_FAIL:-}" ]; then
   echo "  CAPABILITY GATE RED in:$GATE_FAIL"

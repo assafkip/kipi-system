@@ -341,7 +341,7 @@ PYEOF
 SYNC_LOG="$W/sync-calls.log"; : > "$SYNC_LOG"
 SYNC_CALL_LOG="$SYNC_LOG" run_case postone "$REAL_HEAD" --post --issue ASK-901
 
-CALLS="$(grep -c . "$SYNC_LOG" 2>/dev/null || echo 0)"
+CALLS="$({ grep -c . "$SYNC_LOG" 2>/dev/null || echo 0; } | head -1)"
 [ "$CALLS" -eq 1 ] \
   || fail "THE DEFECT: the success path made $CALLS calls to linear-sync.py, not 1. Each one is a
       PERMANENT comment on the issue. Calls were:

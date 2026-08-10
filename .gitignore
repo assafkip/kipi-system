@@ -13,6 +13,13 @@ security-remediation/
 Thumbs.db
 
 # Output (generated daily, don't commit)
+# ASK-605: the whole directory, not a list of extensions. auto-commit.py
+# declares q-system/output/ skip-because-gitignored; when that claim was
+# only true for *.html/*.json/*.log, a .md file there was invisible to the
+# hook AND blocked every fleet sync. Keep the negation for .gitkeep so the
+# directory survives a clone.
+q-system/output/**
+!q-system/output/.gitkeep
 q-system/output/*.html
 q-system/output/*.json
 q-system/output/*.log
@@ -107,4 +114,17 @@ q-system/output/capability-maps/
 # .claude/settings.json from settings-template.json, so a shared baseline can
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
+q-system/.q-system/claude-integrity-baseline.json.lock
 q-system/output/claude-integrity/
+# The armed marker (ASK-291 round 11) is ignored for the SAME reason and it is
+# load-bearing that it stays that way: a committed marker propagates via kipi
+# update, so every fresh instance would claim prior arming, refuse to arm, and
+# Slack-page SECURITY on its first run -- the round-2 outage exactly.
+q-system/.q-system/.claude-integrity-armed
+
+# PR-review scratch trees. 537 of these files were swept into the repo by an
+# unattended `chore: update project files` auto-commit (ec5efddf). Removing them
+# without ignoring the pattern just waits for the next sweep to re-add them.
+.pr*rev*/
+.review-scratch/
+.fable-wt/
