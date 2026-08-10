@@ -65,8 +65,14 @@ def invokes(code, target_file):
     # Direct: `bash /path/to/target.sh`, `python3 "$D/target.py"`
     if re.search(INTERPRETERS + r'\s+"?[^\n|;&"]*' + esc, code):
         return True
-    # Executed directly: `./target.sh`, `"$SKEL/target.sh" --flag`
-    if re.search(r'(?:\./|\$\{?\w+\}?/)[^\n"]*' + esc, code):
+    # Executed directly: `./target.sh`, `"$SKEL/target.sh" --flag`.
+    # COMMAND POSITION only -- start of a line, or after ; & | && || ( or `!`.
+    # Matching the path anywhere made `chmod +x "$SKEL/kipi-update.sh"` read as
+    # an invocation, so the check could not fail for the reason it exists. Caught
+    # by mutation-testing the lint itself: deleting the real invocation from the
+    # converted test left it reporting clean.
+    if re.search(r'(?:^|[;&|(]|\|\||&&|!)\s*"?(?:\./|\$\{?\w+\}?/)[^\n";|&]*' + esc,
+                 code, re.M):
         return True
     # Through a variable: VAR=...target...  then  `python3 "$VAR"`.
     for var in re.findall(r'(\w+)=[^\n]*' + esc, code):

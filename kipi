@@ -262,6 +262,13 @@ PY
       cd "$KIPI_HOME"
       python3 validate-separation.py "${1:-5}"
     fi
+    # ADVISORY, and deliberately after the gate: a test named for a script it
+    # never runs is usually re-implementing it, which proves the algorithm and
+    # can never see the wiring or the interpreter (ASK-607 shipped green that
+    # way). Invoking the target is necessary but not sufficient -- a test can run
+    # the real script and still assert nothing that could fail -- so this reports
+    # and does not block. `|| true` keeps a finding from failing `kipi check`.
+    python3 "$KIPI_HOME/reimplementing-test-lint.py" || true
     ;;
   migrate)
     shift
