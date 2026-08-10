@@ -1424,8 +1424,25 @@ PY
     # happened to be sitting in .claude/ at that moment became sanctioned
     # content, fleet-wide, on every update. The applier's own docstring already
     # named that "the blinding version of this fix"; the updater was doing it.
-    # The path list below is exactly what the block above writes -- settings.json
-    # plus every .md this run copied -- so an unrelated file cannot ride along.
+    # The path list below is exactly what this run writes -- settings.json, every
+    # .md copied above, and the two guard scripts the q-system rsync replaced --
+    # so an unrelated file cannot ride along.
+    #
+    # THE WATCH SET IS NOT ONLY .claude/ (review finding, PR #85 round 14, MAJOR).
+    # The list was written from the .claude/ half of it while the tripwire's
+    # EXTRA_WATCHED has always held two files OUTSIDE .claude/: both guard
+    # scripts, which the rsync at the top of this block rewrites on every update.
+    # A fresh local commit is in no remote default branch, so head_is_reviewed()
+    # is False and nothing absorbed them. Measured on a stand-in instance
+    # (probe_round14_findings.sh phase 1): every tool call after a routine update
+    # printed `SECURITY: unsanctioned .claude/ change -- 2 modified`, forever, on
+    # 23 machines, until a human ran --baseline on each. An alarm nobody reads is
+    # the same as no alarm, which is the failure mode both scripts' headers exist
+    # to avoid.
+    #
+    # DERIVED FROM THE TRIPWIRE, NOT TRANSCRIBED: the paths come out of the
+    # instance's own EXTRA_WATCHED, so adding a third watched file outside
+    # .claude/ cannot leave this list behind.
     #
     # Best-effort by design: an instance that has not adopted the tripwire has no
     # script here, and a sanction failure must never abandon a good update.
@@ -1439,6 +1456,16 @@ PY
           done
         fi
       done
+      while IFS= read -r extra_rel; do
+        [ -n "$extra_rel" ] || continue
+        [ -f "$path/$extra_rel" ] && TRIPWIRE_WROTE+=("$extra_rel")
+      done < <(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("t", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("\n".join(mod.EXTRA_WATCHED))
+' "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" 2>/dev/null)
       KIPI_NOTIFY=/usr/bin/true python3 \
         "$path/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
         --root "$path" --quiet --register "${TRIPWIRE_WROTE[@]}" >/dev/null 2>&1 ||
