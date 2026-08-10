@@ -2,7 +2,7 @@
 # Regression suite for slack-notify.sh's fixture-run guard.
 #
 # THE INVARIANT: a worker running against a FIXTURE Linear API must never be
-# able to page a real human.
+# able to raise a real alert.
 #
 # SCAR 2026-08-01. Three tests were found paging the founder's real Slack and
 # were fixed by stubbing KIPI_NOTIFY per test (PR #54). While that PR sat open
@@ -13,15 +13,25 @@
 # remembered to fix. The guard under test here is the chokepoint that protects
 # every test on every branch, including tests nobody has written yet.
 #
-# WHY THE ASSERTIONS RUN IN BOTH DIRECTIONS: a guard that refuses everything
-# would pass a refusal-only suite while silently disabling every real founder
-# alert -- strictly worse than the bug it fixes. So every loopback case is
-# paired with a production case that must still SEND.
+# SCAR 2026-08-10, and it is why this file's transport changed. The destination
+# became a Linear ticket for Sana instead of a Slack message to the founder
+# (ASK-636). This suite isolated itself by pointing KIPI_SLACK_WEBHOOK at a
+# loopback capture server -- a stub aimed at a transport that no longer runs. It
+# kept passing its own direction-1 assertions while its direction-2 cases filed
+# a REAL ticket (ASK-635, canceled). Switching a chokepoint's destination
+# silently invalidates every stub aimed at the old one, and the tests keep
+# passing right up until they write to production.
 #
-# THIS SUITE NEVER TOUCHES REAL SLACK. It exports KIPI_SLACK_WEBHOOK at its own
-# loopback capture server before the first invocation, and slack-notify.sh
-# checks that variable BEFORE ~/.config/kipi/slack-webhook, so the founder's
-# real hook file is never read even on a machine where it exists.
+# So the capture seam now belongs to the DESTINATION, not to this suite:
+# KIPI_ALERT_CAPTURE is read inside alert-to-linear.py before anything else, so
+# any runner that can set an env var is isolated, including runners nobody has
+# written yet. That is the same reasoning that put the guard below in the shim
+# rather than in each test.
+#
+# WHY THE ASSERTIONS RUN IN BOTH DIRECTIONS: a guard that refuses everything
+# would pass a refusal-only suite while silently disabling every real alert --
+# strictly worse than the bug it fixes. So every loopback case is paired with a
+# production case that must still FILE.
 #
 # REF HATCH: KIPI_NOTIFY_UNDER_TEST points the suite at a different copy of
 # slack-notify.sh, so the PRE-GUARD copy can be checked out from a git ref and
@@ -35,61 +45,44 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NOTIFY="${KIPI_NOTIFY_UNDER_TEST:-$SCRIPT_DIR/../slack-notify.sh}"
+WRITER="$SCRIPT_DIR/../alert-to-linear.py"
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 
 WORK="$(mktemp -d)"
-trap 'kill "${CAP_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"' EXIT
 
-# --- capture endpoint: stands in for the founder's Incoming Webhook ----------
-# Its stdout/stderr go to FILES, never to the inherited ones. A long-lived child
-# holding this suite's stderr open keeps the pipeline's write end open, so a
-# caller doing `| tail` hangs forever after the script already exited.
-cat > "$WORK/capture.py" <<'PY'
-import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
-CAPTURE_FILE = os.environ["CAPTURE_FILE"]
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(n).decode("utf-8", "replace")
-        with open(CAPTURE_FILE, "a") as fh:
-            fh.write(body.replace("\n", " ") + "\n")
-        out = b"ok"
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
-srv = HTTPServer(("127.0.0.1", 0), H)
-print(srv.server_port, flush=True)
-srv.serve_forever()
-PY
-
+# --- the capture seam: stands in for a filed Linear ticket -------------------
+# One appended line per alert that got through, which is what `wc -l` counts
+# below. No server, no port, no background child: the previous HTTP capture
+# server was the thing that went stale, and a file cannot drift from the
+# transport because it IS the transport's own documented test seam.
 export CAPTURE_FILE="$WORK/captured.txt"
+export KIPI_ALERT_CAPTURE="$CAPTURE_FILE"
 : > "$CAPTURE_FILE"
-python3 "$WORK/capture.py" > "$WORK/port" 2> "$WORK/cap.err" &
-CAP_PID=$!
-for _ in $(seq 1 100); do
-  PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1
-done
-[ -n "${PORT:-}" ] || { echo "capture server did not start: $(cat "$WORK/cap.err" 2>/dev/null)"; exit 1; }
-export KIPI_SLACK_WEBHOOK="http://127.0.0.1:$PORT/capture"
 
 echo "== slack-notify.sh fixture guard (notify under test: $NOTIFY)"
 
-# --- HARNESS SELF-TEST: prove the capture endpoint can register a hit --------
+# --- HARNESS SELF-TEST: prove the capture seam can register a hit ------------
 # Without this, every "0 captured" below is ambiguous between "the guard
-# refused" and "the capture endpoint was broken the whole time". A check that
+# refused" and "the capture seam was broken the whole time". A check that
 # cannot record a hit cannot prove a miss.
-curl -fsS -X POST -H 'Content-type: application/json' \
-     --data '{"text":"harness probe, not a real page"}' "$KIPI_SLACK_WEBHOOK" >/dev/null 2>&1
+# The loopback URL is a SECOND layer, not redundancy. KIPI_ALERT_CAPTURE alone
+# is what isolates this call, and if the export were ever broken this one line
+# would file a live ticket before the self-test below could notice -- which is
+# precisely how ASK-635 happened. With a dead loopback URL, a broken capture
+# seam degrades to a failed HTTP call instead of a real ticket. The writer
+# returns on capture before it ever reads a URL, so this costs nothing when the
+# seam works.
+# fable-discipline-lint-skip -- KIPI_ALERT_CAPTURE + the loopback URL are the stub
+env KIPI_LINEAR_API_URL="http://127.0.0.1:1/graphql" \
+    python3 "$WRITER" "harness probe, not a real alert" >/dev/null 2>&1
 if [ "$(wc -l < "$CAPTURE_FILE" | tr -d ' ')" = "1" ]; then
-  ok "harness self-test: capture endpoint records a hit (a later 0 means refusal, not a dead harness)"
+  ok "harness self-test: capture seam records a hit (a later 0 means refusal, not a dead harness)"
 else
-  bad "harness self-test: capture endpoint records a hit" "probe was not captured -- every assertion below is inert"
+  bad "harness self-test: capture seam records a hit" "probe was not captured -- every assertion below is inert"
   echo "  $PASS passed, $FAIL failed"; exit 1
 fi
 
@@ -101,7 +94,6 @@ send() {
   else
     env -u KIPI_LINEAR_API_URL bash "$NOTIFY" "guard suite probe" 2> "$WORK/err"
   fi
-  sleep 0.3
   printf '%s|%s' "$(wc -l < "$CAPTURE_FILE" | tr -d ' ')" "$(cat "$WORK/err")"
 }
 
@@ -124,9 +116,9 @@ for url in "http://127.0.0.1:54321/graphql" \
   R="$(send "KIPI_LINEAR_API_URL=$url")"
   N="${R%%|*}"; ERR="${R#*|}"
   if [ "$N" = "0" ]; then
-    ok "refuses to page from a fixture run ($url)"
+    ok "refuses to alert from a fixture run ($url)"
   else
-    bad "refuses to page from a fixture run ($url)" "$N message(s) reached the webhook"
+    bad "refuses to alert from a fixture run ($url)" "$N message(s) got through"
   fi
   # A refusal that says nothing is a silently dropped alert -- the exact failure
   # mode founder-notifications.md exists to prevent. The diagnostic must survive.
@@ -136,14 +128,20 @@ for url in "http://127.0.0.1:54321/graphql" \
   esac
 done
 
-# --- direction 2: production API -> STILL SENDS -----------------------------
+# --- direction 2: production API -> STILL FILES -----------------------------
 # The half that keeps this guard from becoming an outage. If these go red, the
-# fleet has lost founder alerting entirely and nobody would be told.
+# fleet has lost alerting entirely and nobody would be told.
 #
 # 127.example.com is a PR #58 review finding. The old `127.*` shell pattern
-# classified it as a fixture and SILENTLY SUPPRESSED its alert -- a real page
+# classified it as a fixture and SILENTLY SUPPRESSED its alert -- a real alert
 # swallowed, the failure mode this guard exists to avoid becoming. Only four
 # numeric octets in range are the 127.0.0.0/8 block; a string prefix is not.
+#
+# These reach alert-to-linear.py for real. They do not reach LINEAR for real,
+# because KIPI_ALERT_CAPTURE is exported at the top of this file and the writer
+# honors it before it looks at a key, a URL or a network. That is the fix for
+# the ASK-635 incident, and it is asserted rather than assumed: the harness
+# self-test above fails the suite if the seam is not working.
 for url in "https://api.linear.app/graphql" \
            "https://127.example.com/graphql" \
            "https://127.EXAMPLE.COM/graphql" \
@@ -153,9 +151,9 @@ for url in "https://api.linear.app/graphql" \
   R="$(send "KIPI_LINEAR_API_URL=$url")"
   N="${R%%|*}"
   if [ "$N" = "1" ]; then
-    ok "still pages from a production run ($url)"
+    ok "still alerts from a production run ($url)"
   else
-    bad "still pages from a production run ($url)" "expected 1 delivered message, got $N -- founder alerting is BROKEN"
+    bad "still alerts from a production run ($url)" "expected 1 captured alert, got $N -- fleet alerting is BROKEN"
   fi
 done
 
@@ -163,9 +161,9 @@ done
 # a missing variable would silence every launchd job on the fleet.
 R="$(send "")"
 if [ "${R%%|*}" = "1" ]; then
-  ok "still pages when KIPI_LINEAR_API_URL is unset entirely (the launchd shape)"
+  ok "still alerts when KIPI_LINEAR_API_URL is unset entirely (the launchd shape)"
 else
-  bad "still pages when KIPI_LINEAR_API_URL is unset entirely" "expected 1 delivered message, got ${R%%|*}"
+  bad "still alerts when KIPI_LINEAR_API_URL is unset entirely" "expected 1 captured alert, got ${R%%|*}"
 fi
 
 # --- NEGATIVE SELF-TEST -----------------------------------------------------
@@ -178,18 +176,16 @@ cat > "$UNGUARDED" <<'SH'
 #!/bin/bash
 set -uo pipefail
 MSG="${1:-}"; [ -n "$MSG" ] || exit 0
-HOOK="${KIPI_SLACK_WEBHOOK:-}"; [ -n "$HOOK" ] || exit 0
-PAYLOAD="$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$MSG" 2>/dev/null)"
-curl -fsS -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$HOOK" >/dev/null 2>&1 || true
+OUT="${KIPI_ALERT_CAPTURE:-}"; [ -n "$OUT" ] || exit 0
+printf '%s\n' "$MSG" >> "$OUT"
 exit 0
 SH
 : > "$CAPTURE_FILE"
 env KIPI_LINEAR_API_URL="http://127.0.0.1:54321/graphql" bash "$UNGUARDED" "probe" 2>/dev/null
-sleep 0.3
 if [ "$(wc -l < "$CAPTURE_FILE" | tr -d ' ')" = "1" ]; then
-  ok "negative self-test: an UNGUARDED notify does page from a fixture run, so direction-1 is a real check"
+  ok "negative self-test: an UNGUARDED notify does alert from a fixture run, so direction-1 is a real check"
 else
-  bad "negative self-test" "an unguarded notify did not page either -- direction-1 passes for the wrong reason"
+  bad "negative self-test" "an unguarded notify did not alert either -- direction-1 passes for the wrong reason"
 fi
 
 echo
