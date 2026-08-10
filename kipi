@@ -269,6 +269,15 @@ PY
     # the real script and still assert nothing that could fail -- so this reports
     # and does not block. `|| true` keeps a finding from failing `kipi check`.
     python3 "$KIPI_HOME/reimplementing-test-lint.py" || true
+    # ADVISORY, and PINNED at the measured backlog (ASK-627, sp-ebe6a2b5). The
+    # notifier has a real exit contract and 44 call sites still ignore it, so a
+    # caller can record a delivery that never happened. Pinning the count means
+    # the number can only shrink: a new caller that ignores the status moves it
+    # up and this line says so. Lower the pin in the same commit that fixes a
+    # site. `|| true` keeps it from failing `kipi check` while the backlog runs
+    # down.
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/notify-callsite-audit.py" \
+      --expect-findings 44 --quiet || true
     ;;
   migrate)
     shift
