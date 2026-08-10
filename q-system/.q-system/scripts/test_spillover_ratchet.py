@@ -233,6 +233,83 @@ class PathedMentionTest(unittest.TestCase):
         self.assertEqual([h["id"] for h in hits], ["sp-bare"])
 
 
+class AckKeyTest(unittest.TestCase):
+    """The daily acknowledgement is per FILE, not per basename (Codex minor, ASK-457).
+
+    The suppression key was `<date>-<basename>`, so acknowledging
+    `plugins/prd-os/hooks/hooks.json` also silenced `.claude/hooks/hooks.json`
+    for the rest of the day. That is a silent absence, and the pathed-mention
+    fix made it reachable: findings can now address a specific same-named file,
+    and this key threw that distinction away one step later.
+
+    Same-named files in different directories are the ordinary case here
+    (`hooks.json`, `settings.json`, `README.md`), so this is not exotic.
+    """
+
+    ROWS = [
+        {"id": "sp-plug", "status": "open", "severity": "minor", "source": "s",
+         "description": "plugins/prd-os/hooks/hooks.json wires a script that is absent"},
+        {"id": "sp-claude", "status": "open", "severity": "minor", "source": "s",
+         "description": ".claude/hooks/hooks.json has a different, unrelated gap"},
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / ".prd-os").mkdir(parents=True)
+        (self.root / ".prd-os" / "spillover.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in self.ROWS))
+        for rel in ("plugins/prd-os/hooks", ".claude/hooks"):
+            (self.root / rel).mkdir(parents=True)
+            (self.root / rel / "hooks.json").write_text("{}\n")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, capture_output=True)
+        self.home = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        self.home.cleanup()
+
+    def run_hook(self, rel, day="d1"):
+        env = dict(os.environ, HOME=self.home.name, KIPI_RATCHET_DATE=day)
+        return subprocess.run([sys.executable, str(SCRIPT), str(self.root / rel)],
+                              capture_output=True, text=True, env=env, cwd=self.root)
+
+    def test_a_same_named_file_elsewhere_still_fires_the_same_day(self):
+        first = self.run_hook("plugins/prd-os/hooks/hooks.json")
+        self.assertEqual(first.returncode, 2)
+        self.assertIn("sp-plug", first.stderr)
+        second = self.run_hook(".claude/hooks/hooks.json")
+        self.assertEqual(second.returncode, 2,
+                         "acknowledging one hooks.json silenced a DIFFERENT "
+                         "hooks.json: the ack key is keyed on the basename")
+        self.assertIn("sp-claude", second.stderr)
+
+    def test_the_same_file_twice_is_still_suppressed(self):
+        """The property the key exists for, unchanged: one file, one interruption."""
+        self.assertEqual(self.run_hook("plugins/prd-os/hooks/hooks.json").returncode, 2)
+        self.assertEqual(self.run_hook("plugins/prd-os/hooks/hooks.json").returncode, 0)
+
+    def test_the_same_file_through_two_paths_is_one_acknowledgement(self):
+        """One file reached by two spellings is one acknowledgement. Keying on
+        the raw argument would re-interrupt on every route to the same file.
+
+        The detour is `.claude/..`, chosen so the four trailing components the
+        finding cites survive it -- a `..` inside the cited part would make
+        `findings_for` miss and the hook would exit 0 before ever reaching the
+        ack key, which is a test passing for the wrong reason. Caught by mutation
+        (M4 survived against the first version of this test)."""
+        first = self.run_hook("plugins/prd-os/hooks/hooks.json")
+        self.assertEqual(first.returncode, 2)
+        detour = ".claude/../plugins/prd-os/hooks/hooks.json"
+        self.assertEqual(
+            [h["id"] for h in sr.findings_for(str(self.root / detour), self.ROWS)],
+            ["sp-plug"],
+            "the detour spelling stopped matching, so this test would pass "
+            "without the ack key being consulted at all")
+        self.assertEqual(self.run_hook(detour).returncode, 0,
+                         "the same file spelled differently re-interrupted")
+
+
 class WorktreeLedgerTest(unittest.TestCase):
     """The ledger lives in ONE place for the whole worktree set (ASK-457).
 

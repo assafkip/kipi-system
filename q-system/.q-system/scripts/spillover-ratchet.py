@@ -217,9 +217,29 @@ def main() -> int:
     # One interruption per file per day. Without this, a file with 17 notes
     # would block every edit 17 times and the hook would be switched off within
     # the hour -- which is how a gate that protects nothing gets created.
+    #
+    # Keyed on the RESOLVED PATH, not the basename (Codex minor, ASK-457).
+    # `<date>-hooks.json` made one acknowledgement silence every same-named file
+    # in the repo for the day, and same-named files in different directories are
+    # the ordinary case here: hooks.json, settings.json, config.json, README.md.
+    # The pathed-mention fix above made findings able to address ONE of them
+    # specifically; this key threw that distinction away one step later, so the
+    # note about the other one went silently undelivered.
+    #
+    # The path is resolved first, so `a/./b/f.json` and `a/b/f.json` are one
+    # acknowledgement rather than two -- keying on the raw argument would
+    # re-interrupt on every spelling. Digested rather than sanitised inline
+    # because a full path flattens to a name past the 255-byte filename limit.
     import datetime
+    import hashlib
     stamp = os.environ.get("KIPI_RATCHET_DATE") or datetime.date.today().isoformat()
-    key = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{stamp}-{os.path.basename(target)}")
+    try:
+        resolved = str(p.resolve())
+    except OSError:
+        resolved = os.path.abspath(target)
+    digest = hashlib.sha256(resolved.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_",
+                 f"{stamp}-{os.path.basename(target)}-{digest}")
     ack = ACK_DIR / key
     if ack.exists():
         return 0

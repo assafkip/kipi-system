@@ -26,6 +26,7 @@ Usage:
 """
 import argparse
 import contextlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -133,22 +134,64 @@ def ledger_lock(repo_root: Path):
     whole contract; building a real Config here would couple this script to a
     constructor it has no other use for.
 
-    DEGRADES, NEVER REFUSES, inherited deliberately: `_spillover_lock` warns to
-    stderr and proceeds unlocked when the directory is read-only (Codex sandboxes
-    are read-only here routinely). A promotion that cannot lock is still better
-    than a conveyor that stops; the re-read below still closes the window for
-    every sequential caller.
+    AN UNIMPORTABLE MODULE IS NOT AN UNLOCKABLE DIRECTORY (Codex major, PR #136).
+    This used to inherit `_spillover_lock`'s degrade for both, and warned its way
+    into an unlocked promotion whenever `prd_runner()` came back None -- which it
+    does for a plugin that is not checked out, has a syntax error, or is missing
+    a dependency, none of which say anything about whether a lock can be taken.
+    The directory is writable in every one of those cases and `flock` is in the
+    standard library, so the fallback below takes the SAME lock file directly.
+    Not a second lock path: a private one would serialize promotions against each
+    other and against nothing else, while a concurrent `resolve` holds this one.
     """
     m = prd_runner(repo_root)
-    if m is None or not hasattr(m, "_spillover_lock"):
-        sys.stderr.write(
-            "WARNING: prd_runner._spillover_lock is unavailable; promoting "
-            "UNLOCKED. Two concurrent promotions could file two issues for one "
-            "finding.\n")
-        yield
+    if m is not None and hasattr(m, "_spillover_lock"):
+        with m._spillover_lock(SimpleNamespace(repo_root=Path(repo_root))):
+            yield
         return
-    with m._spillover_lock(SimpleNamespace(repo_root=Path(repo_root))):
+    sys.stderr.write(
+        "WARNING: prd_runner._spillover_lock is unavailable; locking the ledger "
+        "directly instead.\n")
+    with direct_ledger_lock(ledger_root(repo_root) / ".prd-os" / "spillover.jsonl"):
         yield
+
+
+@contextlib.contextmanager
+def direct_ledger_lock(ledger: Path):
+    """flock `<ledger>.lock`, or warn and proceed when it cannot be taken.
+
+    Byte-for-byte the mechanism `_spillover_lock` uses -- same sibling `.lock`
+    path, same `LOCK_EX` -- so the two interoperate: a promotion holding this one
+    blocks a `resolve` holding that one, because they are the same file.
+
+    DEGRADES, NEVER REFUSES, and here the reason actually applies: taking the
+    lock must CREATE a file, so it needs write permission on the DIRECTORY, while
+    appending to an existing ledger needs it only on the FILE. Read-only sandboxes
+    are routine (every Codex round this session ran in one), and a promotion that
+    cannot lock still beats a conveyor that stops. The re-read under the lock in
+    `promote_locked` closes the window for every sequential caller regardless.
+    """
+    lock_path = ledger.with_name(ledger.name + ".lock")
+    fh = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+            fh = None
+        sys.stderr.write(
+            f"WARNING: cannot lock {lock_path} ({exc}); promoting UNLOCKED. Two "
+            "concurrent promotions could file two issues for one finding.\n")
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
 
 def linear_module():

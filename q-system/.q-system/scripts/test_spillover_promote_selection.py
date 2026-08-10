@@ -529,7 +529,7 @@ class ConcurrentPromotionTest(unittest.TestCase):
     yields one.
     """
 
-    def _run_two(self, tmp):
+    def _run_two(self, tmp, break_prd_runner=False):
         root = Path(tmp)
         (root / ".prd-os").mkdir(parents=True, exist_ok=True)
         (root / ".prd-os" / "spillover.jsonl").write_text(json.dumps({
@@ -558,6 +558,11 @@ class ConcurrentPromotionTest(unittest.TestCase):
 
         mod = load_promote()
         mod.linear_module = lambda: SlowLinear()
+        if break_prd_runner:
+            # The plugin is not importable: not checked out, a syntax error, a
+            # missing dependency. `prd_runner()` swallows all of those and
+            # returns None, which is exactly what this stands in for.
+            mod.prd_runner = lambda repo_root: None
 
         sys.argv = ["spillover-promote.py", "sp-test01", "--title", "conveyor test",
                     "--dor-file", str(dor), "--repo-root", str(root)]
@@ -607,6 +612,87 @@ class ConcurrentPromotionTest(unittest.TestCase):
             promoted = [r for r in rows if r.get("status") == "promoted"]
             self.assertEqual(len(promoted), 1,
                              f"{len(promoted)} promoted rows for one finding")
+
+
+class LockUnavailableTest(ConcurrentPromotionTest):
+    """The serialization must not depend on the plugin being importable (ASK-457).
+
+    Codex major, PR #136: the lock is IMPORTED from prd_runner, and when that
+    import came back None the promotion proceeded UNLOCKED with a warning. The
+    warning is printed to a stderr nobody blocks on, and the duplicate Linear
+    issue it permits is permanent.
+
+    That degrade was inherited from `_spillover_lock`, where it is correct and
+    for a different reason: a read-only DIRECTORY cannot hold a lock file at
+    all, so refusing would turn a working resolve into a traceback. A missing
+    MODULE is not that. The directory is writable, `flock` is in the standard
+    library, and the lock path is derived by this script already -- so there is
+    nothing to degrade FROM. Degrading here traded a permanent duplicate for an
+    import that could simply have been done without.
+
+    Same barrier, same slow create as the parent class. The only change is that
+    prd_runner is unavailable, which is the condition under test.
+    """
+
+    def test_two_concurrent_promotions_create_one_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            creates, rcs, _ = self._run_two(tmp, break_prd_runner=True)
+            self.assertEqual(len(creates), 1,
+                             f"{len(creates)} Linear issues for one finding: with "
+                             "prd_runner unavailable the promotion ran unlocked")
+            self.assertEqual(sorted(rcs.values()), [0, 2],
+                             "the loser must REFUSE (exit 2), not report success")
+
+    def test_the_loser_appends_no_second_promoted_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, root = self._run_two(tmp, break_prd_runner=True)
+            rows = [json.loads(l) for l in
+                    (root / ".prd-os" / "spillover.jsonl").read_text().splitlines()
+                    if l.strip()]
+            promoted = [r for r in rows if r.get("status") == "promoted"]
+            self.assertEqual(len(promoted), 1,
+                             f"{len(promoted)} promoted rows for one finding")
+
+    def test_it_locks_the_same_file_prd_runner_would_have(self):
+        """A private second lock path would serialize promotions against each
+        other and against NOTHING else -- a concurrent `resolve` or `reclassify`
+        takes `spillover.jsonl.lock`, so the fallback has to take that one too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".prd-os").mkdir(parents=True)
+            mod = load_promote()
+            mod.prd_runner = lambda repo_root: None
+            with mod.ledger_lock(root):
+                pass
+            self.assertTrue((root / ".prd-os" / "spillover.jsonl.lock").exists(),
+                            "the fallback did not lock the shared ledger lock file")
+
+
+class ReadOnlyLockTest(unittest.TestCase):
+    """A lock that CANNOT be taken still degrades, loudly (ASK-457).
+
+    The read-only sandbox case is real and every Codex round this session ran in
+    one. Refusing to promote there would trade a recoverable race for a stopped
+    conveyor, which is the trade `_spillover_lock` already refused to make.
+    """
+
+    def test_an_unwritable_directory_warns_and_proceeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".prd-os").mkdir(parents=True)
+            mod = load_promote()
+            mod.prd_runner = lambda repo_root: None
+            os.chmod(root / ".prd-os", 0o500)
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(buf):
+                    with mod.ledger_lock(root):
+                        ran = True
+            finally:
+                os.chmod(root / ".prd-os", 0o700)
+            self.assertTrue(ran, "an unlockable directory must not stop a promotion")
+            self.assertIn("UNLOCKED", buf.getvalue(),
+                          "an unlocked promotion has to say so out loud")
 
 
 if __name__ == "__main__":
