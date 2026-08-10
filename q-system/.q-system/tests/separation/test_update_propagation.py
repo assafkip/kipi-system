@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,64 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 VALIDATOR = REPO_ROOT / "validate-separation.py"
 REGISTRY = REPO_ROOT / "instance-registry.json"
 UPDATER = REPO_ROOT / "kipi-update.sh"
+
+# Files the fixture's skeleton must carry because the updater invokes them from
+# its own directory and is fail-closed on each. HAND-MAINTAINED, and that is
+# precisely the problem: kipi-update-deletion-guard.py arrived with the
+# sp-737ce1ae work, was never added, and two tests then failed on a missing
+# fixture rather than on anything they assert (ASK-608). A comment describing
+# that trap already sat beside the list and did not prevent the second instance,
+# because a comment is not a guard.
+#
+# So the list is now CHECKED against what the updater actually invokes, by
+# test_the_fixture_carries_every_helper_the_updater_invokes below. Adding a new
+# fail-closed dependency to kipi-update.sh without adding it here now fails a
+# test instead of silently breaking the propagation model.
+UPDATER_HELPERS = (
+    "kipi-update-preserve-scan.py",
+    "kipi-update-deletion-guard.py",
+    "kipi-settings-merge.py",
+    "settings-template.json",
+)
+
+# The fixture writes its own registry, so the updater referencing it is not a
+# copy obligation.
+_HELPER_DERIVATION_EXEMPT = frozenset({"instance-registry.json"})
+
+
+def updater_invoked_files():
+    """Every FILE kipi-update.sh reaches for in its own directory.
+
+    Derived from the shipping script rather than restated, so the two cannot
+    drift apart quietly. Directories (.claude, plugins, q-system) are excluded:
+    the fixture builds those itself.
+    """
+    text = UPDATER.read_text(encoding="utf-8")
+    found = set(re.findall(r'\$SCRIPT_DIR/([A-Za-z0-9._-]+\.[A-Za-z0-9]+)', text))
+    return found - _HELPER_DERIVATION_EXEMPT
+
+
+def test_the_fixture_carries_every_helper_the_updater_invokes():
+    """The divergence check the missing-file scar earned.
+
+    Both directions. A missing helper breaks the fixture silently, which is the
+    bug that happened twice. A helper listed here but no longer invoked is dead
+    weight that makes the next reader trust a stale list.
+    """
+    invoked = updater_invoked_files()
+    listed = set(UPDATER_HELPERS)
+    assert invoked, "derivation found no helpers; the pattern or the script moved"
+    missing = invoked - listed
+    assert not missing, (
+        f"kipi-update.sh invokes {sorted(missing)} from its own directory but the "
+        f"fixture never copies them, so the skeleton is incomplete and the "
+        f"propagation model will not run"
+    )
+    stale = listed - invoked
+    assert not stale, (
+        f"the fixture copies {sorted(stale)}, which kipi-update.sh no longer "
+        f"invokes; remove them rather than leaving a stale list"
+    )
 
 UNARMED_BASELINE = """{
   "schema_version": 1,
@@ -190,8 +249,7 @@ def build_skeleton(root, env, body):
     # Same shape as the leak-gate note below, which is the tell: the fixture
     # enumerates the updater's hard dependencies by hand, so every new
     # fail-closed dependency silently breaks it until someone adds a line.
-    for helper in ("kipi-update-preserve-scan.py", "kipi-update-deletion-guard.py",
-                   "kipi-settings-merge.py", "settings-template.json"):
+    for helper in UPDATER_HELPERS:
         shutil.copy(REPO_ROOT / helper, skeleton / helper)
     # A valid skeleton ships the propagation leak gate. kipi-update.sh is
     # fail-closed on it by design, so a fixture without it aborts before any
