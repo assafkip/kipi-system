@@ -503,8 +503,18 @@ restore_instance() {
   # and it asserts the first commit survives. Undoing it also strands the
   # index against a HEAD it no longer matches, which manufactures the exact
   # dirty tree this function exists to prevent.
-  git -C "$target" reset -q HEAD 2>/dev/null || true
-  git -C "$target" checkout -q -- . 2>/dev/null || true
+  # SCOPED to the sync's own write set (ASK-609), and this is load-bearing.
+  # `checkout -- .` discards every unstaged tracked modification in the repo.
+  # That was safe ONLY because the dirty-tree guard had just proved the whole
+  # tree clean, so there was nothing of the founder's to discard. Once that
+  # guard is scoped, an instance with founder edits outside the sync's reach
+  # passes it legitimately -- and an unscoped checkout here would then delete
+  # exactly the work the scoping was meant to stop blocking on. The two must
+  # move together; the pathspec below is the same one the guard uses.
+  git -C "$target" reset -q HEAD -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
+    $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
+  git -C "$target" checkout -q -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
+    $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
   # Finally, remove files this run created: untracked NOW, absent from the
   # checkpoint, and inside the sync's own scope. Never a recursive delete of a
   # directory this run was not observed to create.
@@ -1271,8 +1281,27 @@ because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null
 
     # Refuse tracked work in progress. The updater owns only its scoped sync
     # commits and must never package unrelated founder edits into an infra commit.
-    if ! git diff --cached --quiet 2>/dev/null ||
-        ! git diff --quiet 2>/dev/null; then
+    #
+    # SCOPED, not repo-wide (ASK-609). The sync writes exactly three things:
+    # $prefix/ minus the instance-owned subtrees, .claude/, and plugins/. A
+    # dirty file anywhere else is in a path this run is not permitted to write,
+    # so it cannot be packaged into an infra commit and cannot be damaged.
+    # Measured 2026-08-10: 182 dirty files across the four blocked instances,
+    # ZERO of them reachable by the sync. Alice's 162 are investigation
+    # evidence under q-investigate/. The guard was protecting an empty set and
+    # charging four instances every future fix for it -- including the ASK-607
+    # fix written to unblock stuck instances.
+    #
+    # Same pathspec as checkpoint_untracked_list, deliberately: that function
+    # already carries the rule ("restore can never even propose deleting a path
+    # the sync was never permitted to touch"). One scope, and the BLOCK
+    # decision and the RESTORE decision must not be allowed to drift apart --
+    # see restore_instance, which reduces its reset and checkout to this same
+    # set. If they diverge, restore discards founder work the guard let past.
+    if ! git diff --cached --quiet -- "$prefix/" .claude/ plugins/ \
+          $(pathspec_owned_excludes "$prefix") 2>/dev/null ||
+        ! git diff --quiet -- "$prefix/" .claude/ plugins/ \
+          $(pathspec_owned_excludes "$prefix") 2>/dev/null; then
       if [ "$MODEL_RUN" = "1" ]; then
         echo "  Changes vs skeleton: blocked by dirty working tree"
       fi
