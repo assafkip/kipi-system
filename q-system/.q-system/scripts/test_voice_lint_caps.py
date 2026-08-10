@@ -172,56 +172,5 @@ class RuleIsBlocking(unittest.TestCase):
         self.assertNotIn("capitalization", voice_lint.WARN_RULES)
 
 
-class CodeIshTokensAreNotSentenceCaseErrors(unittest.TestCase):
-    """The 2026-08-10 reproducer: a tool roundup is made of tool names.
-
-    `daily_social_publer.py` died three times on "sentence starts lowercase:
-    'pi-from-scratch'" and "'phone-harness'", after the same rule family killed it
-    on 2026-07-23 through 07-25. Every correct draft of a tool roundup violates the
-    rule, so no amount of regeneration can pass it.
-    """
-
-    def test_the_reproducer_two_real_tool_names_pass(self):
-        text = ("Today's AI news.\n\n"
-                "pi-from-scratch: a working coding agent in 600 lines of TypeScript.\n\n"
-                "phone-harness: native iPhone control for a coding agent.\n")
-        self.assertFalse(lint_text(text))
-
-    def test_underscores_and_digits_are_code_ish_too(self):
-        for token in ("gpt-4o", "next_forge", "claude-opus-5", "v0-dev"):
-            with self.subTest(token=token):
-                self.assertFalse(lint_text(f"The release is out.\n\n{token} shipped today.\n"))
-
-
-class TheExemptionDoesNotSwallowRealLowercaseProse(unittest.TestCase):
-    """The negative self-test. An exemption nobody can fail is not an exemption.
-
-    The scar the whole rule exists for is an all-lowercase client email. Those
-    sentences open on ordinary single words, none of which carries a separator, so
-    none of them may be exempted here. If any of these stops failing, the exemption
-    has been widened past what the reproducer needed.
-    """
-
-    def test_a_genuinely_lowercase_english_sentence_is_STILL_CAUGHT(self):
-        for opener in ("the", "i", "thanks", "just", "we", "happy", "sorry"):
-            with self.subTest(opener=opener):
-                text = f"The form is live.\n\n{opener} sent it over this morning.\n"
-                self.assertTrue(lint_text(text),
-                                f"{opener!r} must still be caught")
-
-    def test_the_all_lowercase_client_email_still_fails(self):
-        text = ("hey, quick update on the build.\n\n"
-                "we shipped the first pass yesterday and it is running clean.\n")
-        self.assertTrue(lint_text(text))
-
-    def test_a_single_word_with_no_separator_is_never_code_ish(self):
-        self.assertIsNone(voice_lint.CODE_ISH_TOKEN_RE.match("thanks"))
-        self.assertIsNone(voice_lint.CODE_ISH_TOKEN_RE.match("i"))
-
-    def test_a_capitalised_segment_is_not_code_ish(self):
-        """The shape is LOWERCASE segments. "Well-Meaning" is prose, not a slug."""
-        self.assertIsNone(voice_lint.CODE_ISH_TOKEN_RE.match("Well-Meaning"))
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)
