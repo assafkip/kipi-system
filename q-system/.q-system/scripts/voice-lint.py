@@ -152,6 +152,30 @@ LINE_PREFIX_RE = re.compile(r"^[\s>]*(?:#{1,6}\s+)?(?:(?:[-*+]|\d+[.)])\s+)?[*_]
 URL_LINE_RE = re.compile(r"^\s*(?:https?://|www\.|!?\[)")
 LIST_OR_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)")
 TABLE_ROW_RE = re.compile(r"^\s*\|")
+# A code-ish identifier: two or more lowercase alphanumeric segments joined by a
+# hyphen or an underscore. Repo slugs, package names, CLI tools, skill names.
+#
+# WHY (2026-08-10): the daily podcast tool roundup is MADE of tool names, and a tool
+# name is a lowercase hyphenated identifier. The job died on
+# "sentence starts lowercase: 'pi-from-scratch'" and "'phone-harness'", regenerated
+# three times, and shipped nothing. The same rule family had already killed it on
+# 2026-07-23 through 07-25. A gate that rejects the content its job exists to produce
+# cannot be satisfied by regenerating, because every correct draft violates it. Same
+# defect class as a word-list gate blocking the founder's real vocabulary.
+#
+# The exemption is the SHAPE, not a name list. A list would need an edit for every
+# new tool, which is the same outage one release later.
+#
+# WHAT IT COSTS, stated rather than assumed: a genuine English hyphenated compound
+# opening a sentence ("well-meaning advice is still advice.") is exempt too. That is
+# accepted. The scar this rule exists for is an all-lowercase client email, where
+# sentences open on ordinary single words -- "i", "thanks", "just", "the" -- none of
+# which carries a separator, so none of them is exempted here. Measured over the
+# fleet's published corpus before shipping. Tests: test_voice_lint_caps.py, classes
+# CodeIshTokensAreNotSentenceCaseErrors and
+# TheExemptionDoesNotSwallowRealLowercaseProse.
+CODE_ISH_TOKEN_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)+$")
+
 # "i" alone. i.e. is excluded; inline code is already stripped upstream.
 BARE_I_RE = re.compile(r"\bi\b(?!\.e\.)")
 # A period that ends a sentence, not one inside an abbreviation or a decimal.
@@ -614,6 +638,10 @@ def check_capitalization(text, file_path=""):
             continue
         word = token.group()
         if word[0].isupper():
+            continue
+        # A tool name is not a sentence that forgot its capital. See
+        # CODE_ISH_TOKEN_RE for the scar and for what this exemption costs.
+        if CODE_ISH_TOKEN_RE.match(word):
             continue
         violations.append({
             "rule": "capitalization",
