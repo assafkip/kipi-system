@@ -394,7 +394,7 @@ mkdir -p "$(dirname "$MUTE")"
 python3 - "$SCRIPT_DIR/../apply_claude_changes.py" "$MUTE" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
-out = re.sub(r'\n    \("instruction-budget",\n.*?\n.*?\n', "\n", src, count=1, flags=re.S)
+out = re.sub(r'\n    \("instruction-budget", gate_instruction_budget\),\n', "\n", src, count=1)
 assert out != src, "instruction-budget gate entry not found; update the mutation"
 open(sys.argv[2], "w").write(out)
 PY
@@ -1170,6 +1170,76 @@ else
   ok "mutant banks the four deleted lines as headroom (cap $(cap_of "$RM8"))"
 fi
 AUDIT="$AUDIT_SAVE"
+
+echo "== 35. an ALREADY over-cap tree does not license another over-cap edit"
+# gate_regression asked one question of every gate: was it passing before and not
+# passing after. That is right for a parse gate -- a settings.json that was already
+# broken is not this tool's doing -- and wrong for a BUDGET. A tree the founder had
+# already pushed past the cap made the gate FAIL before AND after, which is not
+# pass -> fail, so the engine grew it further and printed "gates held". That is
+# section 4's defect exactly, reached through the one door section 4 left open
+# (PR #88 round 10).
+R30=$(mktemp -d); mk_fixture "$R30"
+audit_rc "$R30"                      # bootstrap: cap 33, total 33, headroom 0
+# Straight into the tree, not through the engine: this is the founder hand-editing
+# a rule, which is how a tree gets over its cap in the first place.
+printf '\nA founder edit, one line past the cap.\n' >> "$R30/.claude/rules/alpha.md"
+audit_rc "$R30"
+check "the tree is already red before the engine runs" 1 "cap 33 exceeded by 1" "$AUDIT_RC" "$AUDIT_OUT"
+append_proposal "$R30/prop.json" alpha.md "And one more on top of that."
+apply "$R30/prop.json" "$R30"
+check "the engine refuses to make a red tree redder" 3 "gate 'instruction-budget'" "$APPLY_RC" "$APPLY_OUT"
+check "and names how much worse it got" 3 "always-on overage 1 -> 2" "$APPLY_RC" "$APPLY_OUT"
+if grep -q "And one more on top of that" "$R30/.claude/rules/alpha.md"; then
+  bad "reverted apply left its line on disk"
+else
+  ok "reverted apply restored alpha.md"
+fi
+audit_rc "$R30"
+check "the tree is no worse than the engine found it" 1 "cap 33 exceeded by 1" "$AUDIT_RC" "$AUDIT_OUT"
+# NEGATIVE CONTROL, and the reason the fix is "not worse" rather than "must be
+# green": a paths-scoped rule costs 0 always-on lines. The overage is unchanged, so
+# this still lands. A blanket refusal on a red tree would wall off every edit that
+# does not touch the budget at all, including the ones that walk it back.
+cat > "$R30/prop2.json" <<'JSON'
+{
+  "schema_version": 1,
+  "slug": "scoped-rule-on-a-red-tree",
+  "reason": "PR #88 round 10 control: costs 0 always-on lines, so the overage holds",
+  "edits": [
+    {
+      "file": ".claude/rules/delta.md",
+      "op": "create_file",
+      "insert": "---\npaths:\n  - \"q-system/output/**\"\n---\n\n# Delta Rule\n\nDelta line 1.\n",
+      "reason": "scoped, so it never enters the always-on total"
+    }
+  ]
+}
+JSON
+apply "$R30/prop2.json" "$R30"
+check "an edit that costs no always-on lines still lands on a red tree" 0 "OK applied scoped-rule-on-a-red-tree" "$APPLY_RC" "$APPLY_OUT"
+
+echo "== 36. mutation: ask the gate only 'was it passing' -> section 35 goes RED"
+# The ref hatch reaches the previous commit; this puts the boolean-only comparison
+# back in place, so the case is watched failing for the reason it exists.
+MUTC=$(mktemp -d)/mutant-boolgate.py
+mkdir -p "$(dirname "$MUTC")"
+python3 - "$SCRIPT_DIR/../apply_claude_changes.py" "$MUTC" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+needle = "        if isinstance(b, tuple):\n"
+assert needle in src, "the overage compare moved; update the mutation"
+head, sep, tail = src.partition(needle)
+# Everything from the tuple arm to the end of gate_regression becomes dead.
+end = tail.index("    return None\n")
+open(sys.argv[2], "w").write(head + "        if False:\n            pass\n" + tail[end:])
+PY
+RM9=$(mktemp -d); mk_fixture "$RM9"
+audit_rc "$RM9"
+printf '\nA founder edit, one line past the cap.\n' >> "$RM9/.claude/rules/alpha.md"
+append_proposal "$RM9/prop.json" alpha.md "And one more on top of that."
+APPLY_ENGINE="$MUTC" apply "$RM9/prop.json" "$RM9"
+check "mutant grows a tree that was already over its cap" 0 "OK applied" "$APPLY_RC" "$APPLY_OUT"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

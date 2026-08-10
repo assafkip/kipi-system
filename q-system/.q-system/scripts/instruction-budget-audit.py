@@ -260,6 +260,38 @@ def read_baseline(project_root):
         return json.load(f)
 
 
+def cap_of(baseline):
+    """The ratchet cap a baseline declares, or None when there is no baseline.
+
+    A pre-ASK-285 baseline carries one number that meant both cap and total, so
+    the cap falls back to it. Three callers needed this reading (the ratchet, the
+    plain report, the overage line) and two spellings of one judgement is the
+    drift class that opened the nested-rules hole in PR #88 round 1.
+    """
+    if baseline is None:
+        return None
+    return baseline.get(KEY_CAP, baseline.get(KEY_TOTAL))
+
+
+def overage_line(claude_md_lines, total, cap):
+    """One machine-readable line saying HOW FAR past its caps this tree is.
+
+    apply_claude_changes.py runs this script as a gate before and after it writes,
+    and asked only "was it passing". That is right for a parse gate -- a
+    settings.json that was already broken is not the engine's doing -- and wrong
+    for a budget: a tree the founder had already pushed over the cap failed BOTH
+    runs, which is not pass -> fail, so the engine grew it further and printed
+    "gates held" (PR #88 round 10). An exit code cannot express "still red, but no
+    worse", and a boolean is the whole reason that hole existed.
+
+    Both caps are reported separately rather than summed, so a shrinking always-on
+    total can never pay for a growing CLAUDE.md.
+    """
+    always_on_over = 0 if cap is None else max(0, total - cap)
+    return "RATCHET-OVERAGE claude_md=%d always_on=%d" % (
+        max(0, claude_md_lines - BUDGET_CLAUDE_MD), always_on_over)
+
+
 def write_baseline(project_root, cap, total, always_on, body):
     path = baseline_path(project_root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -775,7 +807,7 @@ def run_ratchet(project_root, claude_md_lines, total, always_on, conditional, bo
     # A pre-ASK-285 baseline carries one number that meant both cap and total.
     # Reading it as both is exactly the old behaviour, so the upgrade run cannot
     # move the gate: it only records the snapshot the next run needs.
-    cap = baseline.get(KEY_CAP, baseline.get(KEY_TOTAL))
+    cap = cap_of(baseline)
     prev_total = baseline.get(KEY_TOTAL, cap)
     snapshot = baseline.get(KEY_SNAPSHOT)
     body_snapshot = baseline.get(KEY_BODY)
@@ -888,9 +920,15 @@ def main():
     total = claude_md_lines + sum(always_on.values())
 
     if "--ratchet" in argv:
-        sys.exit(run_ratchet(project_root, claude_md_lines, total,
-                             always_on, conditional, body, rules_dir,
-                             audited=audited, write=write, stage=stage))
+        rc = run_ratchet(project_root, claude_md_lines, total,
+                         always_on, conditional, body, rules_dir,
+                         audited=audited, write=write, stage=stage)
+        if "--overage" in argv:
+            # After the run, so the cap is the one the run just judged against
+            # (--no-write keeps it still; the engine's gate always passes it).
+            print(overage_line(claude_md_lines, total,
+                               cap_of(read_baseline(project_root))))
+        sys.exit(rc)
 
     print(f"CLAUDE.md (with imports): {claude_md_lines} / {BUDGET_CLAUDE_MD}")
     print(f"Always-on rules ({len(always_on)} files):")
@@ -903,7 +941,7 @@ def main():
 
     baseline = read_baseline(project_root)
     if baseline is not None:
-        cap = baseline.get(KEY_CAP, baseline.get(KEY_TOTAL))
+        cap = cap_of(baseline)
         print(f"Ratchet cap: {cap} (headroom {cap - total})")
 
     failed = False

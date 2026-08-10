@@ -833,7 +833,12 @@ def gate_hook_scripts_exist(root):
     return True
 
 
-def _external_gate(root, rel, args):
+def _run_gate_script(root, rel, args):
+    """(returncode, output) for a gate script, or None when it cannot run here.
+
+    One spelling of "run a script as a gate", because the instruction-budget gate
+    needs the OUTPUT and every other gate needs only the code.
+    """
     script = os.path.join(root, rel)
     if not os.path.isfile(script):
         return None
@@ -847,7 +852,53 @@ def _external_gate(root, rel, args):
         )
     except OSError:
         return None
-    return proc.returncode == 0
+    return proc.returncode, (proc.stdout or b"").decode("utf-8", "replace")
+
+
+def _external_gate(root, rel, args):
+    ran = _run_gate_script(root, rel, args)
+    if ran is None:
+        return None
+    return ran[0] == 0
+
+
+_OVERAGE_RE = re.compile(r"^RATCHET-OVERAGE claude_md=(\d+) always_on=(\d+)$", re.M)
+
+
+def gate_instruction_budget(root):
+    """True when the ratchet is green, else HOW FAR past its caps the tree is.
+
+    A boolean was not enough. gate_regression counts only pass -> fail, which is
+    right for a parse gate -- a settings.json that was already broken is not this
+    tool's doing -- and wrong for a budget. A tree the founder had already pushed
+    over the cap failed this gate BEFORE and AFTER, so the engine grew it further
+    and reported "gates held": the landed-but-uncommittable change the gate exists
+    to refuse, reached through the one door it left open (PR #88 round 10).
+
+    Returning the overage lets the comparison be "not worse" instead of "green",
+    which matters: a paths-scoped rule costs 0 always-on lines, so refusing every
+    edit on a red tree would wall off the edits that walk the overage back.
+
+    False (not a zero overage) when the ratchet fails for a reason that prints no
+    overage -- a baseline it could not stage, say. Unmeasurable red keeps the old
+    already-failing-is-not-a-regression reading rather than guessing at a number.
+
+    --no-write because a gate must not mutate the baseline it is reading; --root
+    because the audit otherwise derives its tree from __file__ and would grade the
+    real repo during a --root'ed run.
+    """
+    ran = _run_gate_script(root, "q-system/.q-system/scripts/instruction-budget-audit.py",
+                           ["--ratchet", "--no-write", "--overage", "--root", root])
+    if ran is None:
+        return None
+    code, out = ran
+    if code == 0:
+        return True
+    m = _OVERAGE_RE.search(out)
+    if not m:
+        return False
+    return (("CLAUDE.md overage", int(m.group(1))),
+            ("always-on overage", int(m.group(2))))
 
 
 def gate_template_parses(root):
@@ -881,12 +932,10 @@ GATES = (
     # always-on instruction total, printed "OK applied", and the founder found
     # out at `git commit` when the pre-commit ratchet refused -- a landed change
     # that cannot be committed is worse than a refusal, because everything
-    # downstream believes it shipped. --no-write because a gate must not mutate
-    # the baseline it is reading; --root because the audit otherwise derives its
-    # tree from __file__ and would grade the real repo during a --root'ed run.
-    ("instruction-budget",
-     lambda root: _external_gate(root, "q-system/.q-system/scripts/instruction-budget-audit.py",
-                                 ["--ratchet", "--no-write", "--root", root])),
+    # downstream believes it shipped. Not an _external_gate: this one reports how
+    # far past the cap the tree is, because a boolean cannot say "still red, but
+    # no worse" and reading it as one let an already-red tree grow (round 10).
+    ("instruction-budget", gate_instruction_budget),
 )
 
 
@@ -896,9 +945,32 @@ def run_gates(root):
 
 
 def gate_regression(before, after):
+    """(gate name, what happened to it) for the first gate this run made worse.
+
+    A gate that was ALREADY failing is not a regression -- this tool cannot be
+    held to a tree it did not break, and `gates run` is red today. But a gate that
+    reports HOW FAR it is failing gets a second question, because "already
+    failing" and "failing worse than I found it" are not the same fact, and
+    reading them as one let the engine grow an over-cap tree and call it
+    "gates held" (PR #88 round 10).
+    """
     for name in before:
-        if before.get(name) is True and after.get(name) is not True:
-            return name
+        b = before.get(name)
+        a = after.get(name)
+        if b is True:
+            if a is not True:
+                return name, "regressed pass->fail"
+            continue
+        if isinstance(b, tuple):
+            if a is True:
+                continue
+            if not isinstance(a, tuple) or len(a) != len(b):
+                # It was measurable and no longer is, so this run cannot show it
+                # did no harm. Fail closed; the burden is on the writer.
+                return name, "worsened: no longer measurable"
+            for (label, was), (_, now) in zip(b, a):
+                if now > was:
+                    return name, "worsened: %s %d -> %d" % (label, was, now)
     return None
 
 
@@ -1125,10 +1197,11 @@ def main(argv):
     log.append("gates after: %s" % _fmt_gates(gates_after))
     bad = gate_regression(gates_before, gates_after)
     if bad:
+        name, how = bad
         restore(root, backup_dir, written)
         log.append("AUTO-REVERTED from %s" % backup_dir)
-        return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
-                    % (slug, bad, len(written)), log, root, 3)
+        return emit("REVERTED %s: gate %r %s, %d file(s) restored"
+                    % (slug, name, how, len(written)), log, root, 3)
 
     return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held"
                 % (slug, len(prop["edits"]), len(written),
@@ -1147,8 +1220,17 @@ def restore(root, backup_dir, written):
 
 
 def _fmt_gates(g):
-    return ", ".join("%s=%s" % (k, {True: "pass", False: "FAIL", None: "n/a"}[v])
-                     for k, v in sorted(g.items()))
+    def one(v):
+        if v is True:
+            return "pass"
+        if v is False:
+            return "FAIL"
+        if v is None:
+            return "n/a"
+        # A gate that measures its own failure logs the measurement, so the log
+        # shows a red tree getting worse rather than "FAIL" twice.
+        return "FAIL(%s)" % ", ".join("%s %d" % (label, n) for label, n in v)
+    return ", ".join("%s=%s" % (k, one(v)) for k, v in sorted(g.items()))
 
 
 def emit(line, log, root, code):
