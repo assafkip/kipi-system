@@ -131,6 +131,32 @@ def classify(filepath):
     return SKIP_UNCLASSIFIED
 
 
+# Commit types that are the SYSTEM's own exhaust rather than the founder's
+# writing. "chore" is session memory and system infrastructure; "content" and
+# "feat" are canonical, my-project, marketing and plugins, all founder-authored.
+SYSTEM_STATE_TYPES = frozenset(("chore",))
+
+
+def system_state_paths(paths):
+    """Subset of paths safe for the FLEET SYNC to commit unattended.
+
+    why (ASK-605): kipi-update.sh carried its own three-entry
+    SYSTEM_OWNED_PATHS list meaning exactly what classify() already means, and
+    the two disagreed. `q-system/memory/open-loops.json` is written by a
+    background heartbeat, is `chore` here, was absent there -- and on
+    2026-08-10 it alone left 4 of 7 instances permanently unsyncable. One
+    concept, one list, and this is the list.
+
+    Deliberately NARROWER than classify(). The Stop hook may commit content in
+    an active session where the founder is present; a fleet-wide sweep across
+    every instance at once is a different blast radius, and half-finished
+    canonical edits are not the updater's to take.
+    """
+    return [p for p in paths
+            if isinstance(classify(p), tuple)
+            and classify(p)[0] in SYSTEM_STATE_TYPES]
+
+
 def group_files(files):
     """(groups, unclassified). Only classified files are ever committed."""
     groups = defaultdict(list)
@@ -309,6 +335,15 @@ def main():
 
 
 if __name__ == "__main__":
+    # `--system-state`: read paths on stdin, print the subset the FLEET SYNC may
+    # commit unattended. This is the shared-classifier chokepoint for ASK-605 --
+    # kipi-update.sh shells this instead of keeping a second list that drifts.
+    # Pure and side-effect free: it touches no git state and commits nothing.
+    if "--system-state" in sys.argv:
+        for path in system_state_paths(
+                [ln.strip() for ln in sys.stdin if ln.strip()]):
+            print(path)
+        sys.exit(0)
     try:
         main()
     except Exception as e:

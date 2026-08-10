@@ -1204,6 +1204,35 @@ PY
         sys_owned_dirty+=("$sys_path")
       fi
     done < <(system_owned_paths_for_run)
+
+    # ASK-605. The list above is hand-maintained and names 3 paths. auto-commit.py's
+    # classifier answers the SAME question -- "is this the system's own exhaust?" --
+    # for the whole tree, and the two disagreed. `q-system/memory/open-loops.json`
+    # is written by a background heartbeat, is `chore` to the classifier, was absent
+    # from the list, and on 2026-08-10 left 4 of 7 instances permanently unsyncable:
+    # dirty forever, so never synced, so never given the fix that would help.
+    #
+    # We shell the SKELETON's copy, never the instance's. A blocked instance is by
+    # definition running stale code -- Alice's own pre-ASK-498 copy still had the
+    # `chore: update project files` catch-all and swept 162 files of investigation
+    # evidence when run there. The instance most in need of sweeping is the one whose
+    # sweeper cannot be trusted, and this is how that circle breaks.
+    #
+    # `chore` only: content/feat are founder-authored and not the updater's to take.
+    sys_classifier="$SCRIPT_DIR/q-system/hooks/auto-commit.py"
+    if [ -f "$sys_classifier" ]; then
+      while IFS= read -r sys_path; do
+        [ -n "$sys_path" ] || continue
+        case " ${sys_owned_dirty[*]} " in *" $sys_path "*) continue ;; esac
+        sys_owned_dirty+=("$sys_path")
+      # -uall, not the default: plain --porcelain collapses untracked content into
+      # the DIRECTORY ("q-system/"), which matches no classifier prefix, so every
+      # untracked system file silently classified as nothing. Caught by running it
+      # against a scratch repo rather than by reading it.
+      done < <(git status --porcelain -uall 2>/dev/null | cut -c4- \
+                 | python3 "$sys_classifier" --system-state 2>/dev/null)
+    fi
+
     if [ "${#sys_owned_dirty[@]}" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
       echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
