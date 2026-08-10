@@ -71,6 +71,37 @@ INSTANCE_OWNED_SUBTREES=(
   .q-system/agent-pipeline/bus
 )
 
+# sp-a4a933ad. A dry run's output was TEXTUALLY IDENTICAL to a real one, because
+# dry mode really does perform the update -- against a throwaway clone. It printed
+# "OK (686 files updated)" and full commit diffs, and only a single banner 700
+# lines earlier said it was a preview.
+#
+# The trap runs both ways, and the second direction is the dangerous one: a
+# reader of a dry log reasonably concludes the instance was mutated, and a reader
+# of a REAL log can mistake it for a dry one and believe nothing happened. That
+# second reading is the one sp-46c73c76 needed a human to catch -- a guard let
+# --dry-run genuinely commit into live instances, and the only defence was
+# someone noticing. The log gave them nothing to notice with.
+#
+# say() tags the script's own lines. dry_filter tags the output of commands we
+# shell out to (git prints its own "create mode ..." lines and does not know it
+# is being previewed).
+say() {
+  if [ "${DRY_RUN:-}" = "--dry-run" ]; then
+    printf 'DRY | %s\n' "$*"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
+dry_filter() {
+  if [ "${DRY_RUN:-}" = "--dry-run" ]; then
+    sed 's/^/DRY | /'
+  else
+    cat
+  fi
+}
+
 rsync_owned_excludes() {
   local sub
   for sub in "${INSTANCE_OWNED_SUBTREES[@]}"; do printf -- '--exclude=/%s/\n' "$sub"; done
@@ -802,8 +833,11 @@ SH
     GUARDED_HOOK_DIR="$guard_dir" \
     GUARDED_ORIGINAL_HOOKS="$original_hooks" \
     git -C "$target" -c core.hooksPath="$guard_dir" \
-      commit --no-gpg-sign -m "$message" </dev/null
-  rc=$?
+      commit --no-gpg-sign -m "$message" </dev/null | dry_filter
+  # PIPESTATUS[0], not $?: with dry_filter on the end of the pipe, $? is sed's
+  # status and a FAILED commit would read as success. sp-a4a933ad's tagging must
+  # not cost the exit code it is printed next to.
+  rc=${PIPESTATUS[0]}
   set -e
   if [ "$rc" -ne 0 ]; then
     cp "$guard_dir/index.before" "$index_path" || true
@@ -1284,7 +1318,7 @@ PY
     # "dry" run commit MORE.
     if [ "${#sys_owned_dirty[@]}" -gt 0 ] &&
         { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
-      echo "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
+      say "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
       # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
       # with no pathspec commits everything ALREADY STAGED, so a founder with
@@ -1358,7 +1392,7 @@ because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null
         echo "  WARN: rebase failed, trying merge..."
         git rebase --abort 2>/dev/null || true
         if git merge origin/"$SKELETON_BRANCH" --no-edit 2>&1; then
-          echo "  OK (merged)"
+          say "  OK (merged)"
           PASS=$((PASS + 1))
         else
           echo "  WARN: merge failed (needs manual resolve)"
@@ -1499,7 +1533,7 @@ PY
         # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
         if ! ( cd "$path" && while IFS= read -r -d '' uf; do
             if ! { [ -e "$uf" ] || [ -L "$uf" ]; } && { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
-              mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && echo "  restored untracked: $uf"
+              mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && say "  restored untracked: $uf"
             fi
           done < "$SNAP/list" ); then
           abandon_instance "  ERROR: preserved-file restore failed" && continue
@@ -1517,9 +1551,9 @@ PY
               "chore: sync q-system from skeleton $(date +%Y-%m-%d)"; then
             abandon_instance "  ERROR: could not commit q-system sync" && continue
           fi
-          echo "  OK ($CHANGES files updated)"
+          say "  OK ($CHANGES files updated)"
         else
-          echo "  OK (already up to date)"
+          say "  OK (already up to date)"
         fi
         PASS=$((PASS + 1))
       else
