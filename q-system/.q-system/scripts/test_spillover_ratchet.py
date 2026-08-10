@@ -179,6 +179,60 @@ class BareWordTest(unittest.TestCase):
         self.assertEqual([h["id"] for h in hits], ["sp-dot"])
 
 
+class PathedMentionTest(unittest.TestCase):
+    """A real description cites a PATH, not a bare basename (Codex minor, ASK-457).
+
+    `spillover add --desc` is written by an agent that has the path in hand, so
+    that is what lands in the ledger. The basename branch excluded a preceding
+    `/` and the stem branch only ran for stems carrying a separator, so a finding
+    about an ordinary-stem file -- `hooks.json`, `config.json`, `settings.json` --
+    fell between the two and could never fire. The conveyor's first stage was
+    silently absent for a whole class of file.
+
+    The two directions are tested together on purpose: dropping the `/`
+    restriction alone fixes the miss and creates a worse bug, because a repo is
+    full of same-named files in different directories.
+    """
+    ROWS = [
+        {"id": "sp-here", "status": "open", "severity": "minor", "source": "s",
+         "description": "plugins/prd-os/hooks/hooks.json wires the lint but the "
+                        "script it names is absent"},
+        {"id": "sp-elsewhere", "status": "open", "severity": "minor", "source": "s",
+         "description": ".claude/hooks/hooks.json has a different, unrelated gap"},
+        {"id": "sp-deep", "status": "open", "severity": "minor", "source": "s",
+         "description": "q-system/.q-system/config.json still pins the old tier"},
+    ]
+
+    def test_an_ordinary_stem_fires_on_a_pathed_mention(self):
+        hits = sr.findings_for("plugins/prd-os/hooks/hooks.json", self.ROWS)
+        self.assertEqual([h["id"] for h in hits], ["sp-here"],
+                         "a note citing this file's path did not reach the file")
+
+    def test_a_pathed_mention_of_another_directory_does_not_fire(self):
+        """Same basename, different directory, different file. Firing here is
+        the cry-wolf failure the `/` restriction was over-solving."""
+        hits = sr.findings_for("plugins/prd-os/hooks/hooks.json",
+                               [self.ROWS[1]])
+        self.assertEqual(hits, [], "a note about .claude/hooks/hooks.json fired "
+                                   "on plugins/prd-os/hooks/hooks.json")
+
+    def test_a_ledger_path_matches_the_worktree_path_it_is_edited_through(self):
+        """The description is written from one checkout and read from another,
+        so the comparison has to be a suffix, not equality."""
+        hits = sr.findings_for(
+            "/Users/x/.config/kipi/worktrees/ask-457/q-system/.q-system/config.json",
+            self.ROWS)
+        self.assertEqual([h["id"] for h in hits], ["sp-deep"])
+
+    def test_a_bare_basename_still_fires_anywhere(self):
+        """The old behaviour, unchanged: a finding from another checkout that
+        names only the file still reaches whatever path you edit it through."""
+        rows = [{"id": "sp-bare", "status": "open", "severity": "minor",
+                 "source": "s", "description": "settings.json wires the hook"}]
+        hits = sr.findings_for("/anywhere/at/all/settings.json", rows)
+        self.assertEqual([h["id"] for h in hits], ["sp-bare"])
+
+
 class WorktreeLedgerTest(unittest.TestCase):
     """The ledger lives in ONE place for the whole worktree set (ASK-457).
 

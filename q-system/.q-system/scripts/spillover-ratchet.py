@@ -116,6 +116,28 @@ def repo_root_for(path: Path) -> Path:
     return SKELETON
 
 
+def path_suffix_matches(token: str, target: str) -> bool:
+    """Does `token` (a path fragment from a description) name `target`?
+
+    Compared component-wise from the right, so `plugins/prd-os/hooks/hooks.json`
+    names the file you are editing at `/w/ask-457/plugins/prd-os/hooks/hooks.json`
+    while `.claude/hooks/hooks.json` does not. Suffix, never substring: a repo
+    is full of same-named files in different directories and firing a note about
+    one of them on all of them is the cry-wolf failure by another route.
+    """
+    want = [p for p in token.split("/") if p]
+    have = [p for p in Path(target).as_posix().split("/") if p]
+    return bool(want) and len(want) <= len(have) and have[-len(want):] == want
+
+
+def basename_names_this_file(pat, description: str, target: str) -> bool:
+    """A basename hit counts when it is bare, or when its path fits `target`."""
+    for m in pat.finditer(description):
+        if not m.group(1) or path_suffix_matches(m.group(0), target):
+            return True
+    return False
+
+
 def findings_for(filename: str, rows: list) -> list:
     """Findings whose text names this file.
 
@@ -123,6 +145,15 @@ def findings_for(filename: str, rows: list) -> list:
     checkout names `capability-gate.py`, not the path you happen to be editing
     it through. Word-boundary anchored so `gate.py` does not match
     `capability-gate.py`.
+
+    A PATHED mention counts too, and that is not cosmetic (Codex minor, ASK-457).
+    Real producer descriptions cite `plugins/prd-os/hooks/hooks.json`, not a bare
+    basename -- `spillover add --desc` is written by an agent that has the path in
+    hand. The basename branch excluded a preceding `/`, and the stem branch only
+    runs for stems carrying a separator, so every finding about an ORDINARY-stem
+    file (`hooks.json`, `config.json`, `settings.json`) fell between the two and
+    could never fire. Silent absence, which is the failure this whole ledger
+    exists to stop.
     """
     base = os.path.basename(filename)
     if not base or len(base) < 4:
@@ -144,7 +175,12 @@ def findings_for(filename: str, rows: list) -> list:
     # exact fate this file's README guard was written to avoid.
     if not ext and "-" not in base and "_" not in base and not base.startswith("."):
         return []
-    pat = re.compile(r"(?<![\w/-])" + re.escape(base) + r"(?![\w])")
+    # `/` is no longer excluded by the lookbehind. It is CAPTURED instead, in
+    # group 1, so the directory part is checked against the file being edited
+    # rather than used to reject the mention outright. Excluding it was what made
+    # a pathed mention invisible; accepting it blindly would fire every
+    # `hooks.json` note on every hooks.json in the repo.
+    pat = re.compile(r"(?<![\w.-])((?:[\w.-]+/)+)?" + re.escape(base) + r"(?![\w])")
     # Stem matching only for DISTINCTIVE stems, i.e. ones carrying a separator
     # ("capability-gate", "linear_dor_drafter"). Caught 2026-08-03: matching any
     # stem over 4 chars made README.md fire, because "README" appears in dozens
@@ -155,7 +191,7 @@ def findings_for(filename: str, rows: list) -> list:
     hits = []
     for r in rows:
         d = r.get("description", "") or ""
-        if pat.search(d) or (spat and spat.search(d)):
+        if basename_names_this_file(pat, d, filename) or (spat and spat.search(d)):
             hits.append(r)
     return hits
 

@@ -53,6 +53,11 @@ REQUIRED_LABELS = ("owner:sana",)
 
 LABEL_BY_NAME = 'query($name:String!){issueLabels(filter:{name:{eq:$name}}){nodes{id name}}}'
 PROJECT_BY_NAME = 'query($name:String!){projects(filter:{name:{eq:$name}}){nodes{id name}}}'
+# The dedup read. Scoped to the team we create into, because an identifier from
+# another team is not a promotion of this finding.
+ISSUE_BY_MARKER = ('query($q:String!,$team:String!){issues(filter:{'
+                   'team:{key:{eq:$team}},description:{contains:$q}},first:5)'
+                   '{nodes{identifier}}}')
 
 
 def ledger_root(repo_root: Path) -> Path:
@@ -190,9 +195,43 @@ def resolve_one(ls, query: str, name: str, kind: str):
     return nodes[0]["id"] if nodes else None
 
 
+def promotion_marker(finding_id: str) -> str:
+    """The string that makes a Linear issue self-identify as this promotion.
+
+    build_body OPENS with it, so the issue itself carries the dedup key. That is
+    the point: the ledger row is a local file that can fail to be written, the
+    Linear issue is the permanent thing. Ask the permanent record.
+    """
+    return f"Promoted from spillover `{finding_id}`"
+
+
+def existing_issue(ls, finding_id: str):
+    """Identifier of an issue ALREADY filed for this finding, or None.
+
+    why (Codex major, PR #136): the create and the ledger append are two writes
+    to two systems and only one of them can be rolled back. When the append
+    failed the row stayed `open`, so the next run passed the status check and
+    filed a SECOND permanent issue for one finding -- the exact invariant the
+    lock was added to protect, reached by a different door. A lock serializes
+    concurrent runs; it says nothing about a run that already finished halfway.
+
+    So the check that decides is a read of Linear, not of the ledger. It makes
+    the whole promotion idempotent: crash, kill, or failed append, a re-run finds
+    its own issue and repairs the ledger instead of duplicating.
+
+    RAISES on a query failure, deliberately, and main lets that refuse the run.
+    Failing closed costs one promotion; failing open costs a permanent duplicate,
+    and nothing downstream de-duplicates.
+    """
+    res = ls.graphql(ISSUE_BY_MARKER,
+                     {"q": promotion_marker(finding_id), "team": TEAM_KEY})
+    nodes = ((res or {}).get("issues") or {}).get("nodes") or []
+    return nodes[0].get("identifier") if nodes else None
+
+
 def build_body(rec: dict, dor: str, repo: str) -> str:
     return (
-        f"Promoted from spillover `{rec['id']}` (severity: {rec.get('severity')}, "
+        f"{promotion_marker(rec['id'])} (severity: {rec.get('severity')}, "
         f"source: `{rec.get('source')}`, repo: `{repo}`).\n\n"
         f"## The finding\n\n{rec.get('description', '')}\n\n"
         f"## Definition of Ready\n\n{dor}\n\n"
@@ -283,9 +322,51 @@ def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
             "One finding gets ONE issue; nothing downstream de-duplicates.\n")
         return 2
     rec = fresh
-    body = build_body(rec, args._dor, root.name)
-
     ls = linear_module()
+
+    # ASK THE PERMANENT RECORD BEFORE WRITING TO IT. An earlier run may have
+    # created the issue and then failed to append -- the ledger cannot show that,
+    # only Linear can. Read first, and the whole promotion becomes idempotent.
+    ident = existing_issue(ls, rec["id"])
+    if ident:
+        # The REPAIR path. It resolves no label and no project on purpose: the
+        # issue already exists, so a missing project name must not be able to
+        # block the ledger from catching up with it. That would leave the row
+        # `open` forever against an issue that is already on the board.
+        sys.stderr.write(
+            f"{rec['id']} already has issue {ident}; a previous run created it "
+            "and did not record it.\nRecording it now, creating nothing.\n")
+    else:
+        ident = create_issue(ls, args, root, build_body(rec, args._dor, root.name))
+        if not isinstance(ident, str):
+            return ident      # a refusal/failure code from the create path
+
+    # `promoted`, never `resolved`. Promoting is not fixing; a status claiming
+    # otherwise would let the pile launder itself clean without a single fix.
+    promoted = dict(rec)
+    promoted.update({"status": "promoted", "linear_ref": ident,
+                     "promoted_from_ratchet": True})
+    try:
+        with ledger.open("a") as fh:
+            fh.write(json.dumps(promoted) + "\n")
+            fh.flush()
+    except OSError as exc:
+        # LOUD, and it names the recovery. The issue is already permanent; the
+        # row is not. Silence here is what made the duplicate: the next run had
+        # no way to learn that this one had already filed.
+        sys.stderr.write(
+            f"issue {ident} EXISTS but the ledger append failed: {exc}\n"
+            f"  ledger: {ledger}\n"
+            f"{rec['id']} is still 'open'. Re-run this exact command once the "
+            f"ledger is writable;\nit will find {ident} and record it rather "
+            "than filing a second issue.\n")
+        return 1
+    print(json.dumps({"finding": rec["id"], "linear": ident, "status": "promoted"}))
+    return 0
+
+
+def create_issue(ls, args, root: Path, body: str):
+    """The issue, or an int exit code when a required name does not resolve."""
     tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % TEAM_KEY,
                      {})["teams"]["nodes"][0]["id"]
     # Resolved BEFORE the create, so a bad name costs nothing. Resolving after
@@ -322,22 +403,11 @@ def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
         "teamId": tid, "title": args.title, "description": body,
         "priority": args.priority,
         "labelIds": label_ids, "projectId": pid}})
-    issue = (res.get("issueCreate") or {}).get("issue") or {}
-    ident = issue.get("identifier")
+    ident = ((res.get("issueCreate") or {}).get("issue") or {}).get("identifier")
     if not ident:
         sys.stderr.write(f"Linear create failed: {json.dumps(res)[:300]}\n")
         return 1
-
-    # `promoted`, never `resolved`. Promoting is not fixing; a status claiming
-    # otherwise would let the pile launder itself clean without a single fix.
-    promoted = dict(rec)
-    promoted.update({"status": "promoted", "linear_ref": ident,
-                     "promoted_from_ratchet": True})
-    with ledger.open("a") as fh:
-        fh.write(json.dumps(promoted) + "\n")
-        fh.flush()
-    print(json.dumps({"finding": rec["id"], "linear": ident, "status": "promoted"}))
-    return 0
+    return ident
 
 
 if __name__ == "__main__":

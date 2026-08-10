@@ -100,13 +100,24 @@ class RecordingLinear:
 
     ISSUE_CREATE = "mutation($input: IssueCreateInput!) { issueCreate(input: $input) }"
 
-    def __init__(self):
+    def __init__(self, board=None):
         self.created = None
         self.resolved_labels = {}   # id -> name, only for names actually asked for
         self.resolved_projects = {}
+        # The Linear side of the world, SHARED across runs when a test passes one
+        # in. Linear is the only store that survives a failed ledger append, so a
+        # stub with per-run memory could not express the bug being tested.
+        self.board = [] if board is None else board
 
     def graphql(self, query, variables):
         q = " ".join(query.split())
+        # Checked before `issueCreate`: the dedup read is a query on `issues(`,
+        # and a substring test for "issues" would swallow it.
+        if "issues(" in q:
+            needle = variables.get("q") or ""
+            return {"issues": {"nodes": [
+                {"identifier": i["identifier"]} for i in self.board
+                if needle and needle in (i.get("description") or "")]}}
         if "teams(" in q and "issueLabels" not in q:
             return {"teams": {"nodes": [{"id": TEAM_ID}]}}
         if "issueLabels" in q:
@@ -125,8 +136,11 @@ class RecordingLinear:
             return {"projects": {"nodes": node}}
         if "issueCreate" in q:
             self.created = variables["input"]
+            ident = f"ASK-99{len(self.board) + 9}"
+            self.board.append({"identifier": ident,
+                               "description": variables["input"]["description"]})
             return {"issueCreate": {"success": True,
-                                    "issue": {"id": "i1", "identifier": "ASK-999"}}}
+                                    "issue": {"id": "i1", "identifier": ident}}}
         raise AssertionError(f"stub got an unhandled query: {q[:120]}")
 
 
@@ -393,6 +407,108 @@ class TestPromotedIssueIsSelectable(unittest.TestCase):
                     (root / ".prd-os" / "spillover.jsonl").read_text().splitlines() if l.strip()]
             self.assertEqual(rows[-1]["status"], "promoted")
             self.assertEqual(rows[-1]["linear_ref"], "ASK-999")
+
+
+class InterruptedPromotionTest(unittest.TestCase):
+    """A half-finished promotion must not become a second issue (Codex, PR #136).
+
+    The create and the ledger append are two writes to two systems, and only one
+    of them can be taken back. When the append failed the row stayed `open`, so
+    the next run passed the status check and filed a SECOND permanent issue for
+    one finding. The lock added on PR #120 does not reach this: it serializes two
+    runs happening AT ONCE, and says nothing about a run that already finished
+    halfway and left the ledger telling a lie.
+
+    The append is broken with a read-only ledger file rather than by patching
+    the script's own function, so the failure enters through the same door a real
+    one would (a read-only checkout, a full disk) and the code under test is the
+    shipped code.
+    """
+
+    def _setup(self, tmp):
+        root = Path(tmp)
+        (root / ".prd-os").mkdir(parents=True, exist_ok=True)
+        ledger = root / ".prd-os" / "spillover.jsonl"
+        ledger.write_text(json.dumps({
+            "id": "sp-test01", "status": "open", "severity": "major",
+            "source": "ASK-457", "description": "the conveyor is dead"}) + "\n")
+        (root / "dor.md").write_text(DOR)
+        return root, ledger
+
+    def _run(self, root, stub, project="kipi-system"):
+        mod = load_promote()
+        mod.linear_module = lambda: stub
+        old_argv, old_env = sys.argv, dict(os.environ)
+        sys.argv = ["spillover-promote.py", "sp-test01", "--title", "conveyor test",
+                    "--dor-file", str(root / "dor.md"), "--repo-root", str(root)]
+        os.environ["KIPI_LINEAR_PROJECT"] = project
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mod.main()
+        except Exception as exc:
+            # An uncaught crash is one of the shapes this defect takes, so the
+            # reproducer has to survive it and go on to the RETRY. Letting it
+            # propagate would end the test at the crash and never measure the
+            # duplicate, which is the finding.
+            rc, _ = 70, err.write(f"UNCAUGHT {type(exc).__name__}: {exc}\n")
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_env)
+        return rc, err.getvalue()
+
+    def test_a_failed_append_does_not_become_a_duplicate_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, ledger = self._setup(tmp)
+            board = []                      # Linear: survives the failed append
+
+            os.chmod(ledger, 0o444)
+            rc1, err1 = self._run(root, RecordingLinear(board))
+            os.chmod(ledger, 0o644)
+
+            self.assertEqual(len(board), 1,
+                             "fixture invalid: run 1 did not create the issue")
+            rows = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+            self.assertEqual(rows[-1]["status"], "open",
+                             "fixture invalid: the append was not actually blocked")
+
+            # THE FINDING. This is the run that used to file the duplicate, and
+            # it is asserted before the message-quality checks below so that a
+            # regression fails here rather than on the wording.
+            rc2, err2 = self._run(root, RecordingLinear(board))
+            self.assertEqual(
+                len(board), 1,
+                f"{len(board)} Linear issues for one finding: the retry after a "
+                "failed append filed a permanent duplicate")
+            self.assertEqual(rc2, 0, f"the retry did not repair the ledger: {err2}")
+            rows = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+            self.assertEqual(rows[-1]["status"], "promoted")
+            self.assertEqual(rows[-1]["linear_ref"], board[0]["identifier"],
+                             "the ledger must point at the issue that exists, "
+                             "not at one this run invented")
+
+            # And run 1 has to have been recoverable by a human, not a traceback.
+            self.assertNotEqual(rc1, 70, f"run 1 crashed instead of refusing: {err1}")
+            self.assertNotEqual(rc1, 0, "a promotion whose ledger append failed "
+                                        "must not report success")
+            self.assertIn(board[0]["identifier"], err1,
+                          "the failure must name the issue that now exists, or "
+                          "nobody can recover it")
+
+    def test_the_repair_run_does_not_need_the_project_to_resolve(self):
+        """The issue is already on the board. A name that fails to resolve must
+        not be able to keep the ledger `open` against it forever."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root, ledger = self._setup(tmp)
+            board = [{"identifier": "ASK-777",
+                      "description": "Promoted from spillover `sp-test01` (severity: major)"}]
+            stub = RecordingLinear(board)
+            rc, err = self._run(root, stub, project="no-such-project")
+            self.assertEqual(rc, 0, f"the repair path refused: {err}")
+            self.assertIsNone(stub.created, "the repair path created an issue")
+            rows = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
+            self.assertEqual(rows[-1]["linear_ref"], "ASK-777")
 
 
 class ConcurrentPromotionTest(unittest.TestCase):
