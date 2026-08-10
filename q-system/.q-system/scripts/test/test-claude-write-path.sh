@@ -879,6 +879,62 @@ case "$_r14" in
     echo "       write is handed to a backstop the same call erases (rounds 8, 11, 13)." ;;
 esac
 
+# F15 MAJOR (round 15): "path-shaped" was still SPELLING. A bare filename is one
+# token whose basename IS the name wherever it sits, so an option's VALUE read as
+# an invocation -- while the QUOTED form of the same message did not, which made
+# the verdict depend on whether the operator happened to type quotes.
+#
+# Both sides in ONE case on purpose: this narrows a fail-CLOSED test, so every
+# shape it drops has to be one the shell cannot execute. Narrowing further turns
+# INVOKE red; widening back turns DATA red.
+#   * DATA must not void: a filename in an option value, a plain operand of a
+#     program that executes nothing, an interpreter's NON-first operand.
+#   * INVOCATION must still void: bare, behind an assignment, behind env(1),
+#     behind nice/timeout/command/nohup/stdbuf, direct with no interpreter,
+#     direct behind a wrapper, from an assignment VALUE, and handed over a pipe
+#     to a sink that reads its program from stdin.
+_r15="$(python3 - "$GUARD" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+trip = "q-system/.q-system/scripts/claude-integrity-tripwire.py"
+data = ["git commit -m claude-integrity-tripwire.py -- q-system/*",
+        "python3 build.py --label claude-integrity-tripwire.py --out dist/*.js",
+        "python3 build.py --manifest=apply_claude_changes.py --out dist/*.js",
+        "grep -n kipi-update.sh docs/*.md",
+        "git log --oneline -- kipi-update.sh q-system/*",
+        "git log --oneline -- kipi-update.sh | grep fix"]
+bad = [c for c in data if g._voids_layer2(c, "/repo")]
+print("DATAOK" if not bad else "DATABLOCK %s" % bad)
+invoke = ["python3 %s --baseline" % trip,
+          "KIPI_NOTIFY=/usr/bin/true python3 %s --baseline" % trip,
+          "env -i KIPI_NOTIFY=x python3 %s --baseline" % trip,
+          "nice python3 %s --baseline" % trip,
+          "timeout 20 python3 %s --baseline" % trip,
+          "command python3 %s --baseline" % trip,
+          "nohup python3 %s --baseline" % trip,
+          "stdbuf -oL python3 %s --baseline" % trip,
+          "./%s --register .claude/settings.json" % trip,
+          "nice ./%s --register .claude/settings.json" % trip,
+          "TOOL=%s make build" % trip,
+          "echo %s | xargs python3" % trip,
+          "bash apply-claude-changes.sh p.json"]
+missed = [c for c in invoke if not g._voids_layer2(c, "/repo")]
+print("INVOKEOK" if not missed else "INVOKEMISS %s" % missed)
+PY
+)"
+case "$_r15" in
+  "DATAOK"*"INVOKEOK"*)
+    pass "round-15 class: a filename in a data position is not an invocation, and every invocation shape still voids" ;;
+  *)
+    fail "round-15 class is open again"
+    echo "       $_r15"
+    echo "       DATABLOCK: a filename the shell passes as DATA voids Layer 2, so any"
+    echo "       glob beside it is a hard block -- the reviewer's own commit shape."
+    echo "       INVOKEMISS: a real re-baseliner runs unseen, so an unanchorable"
+    echo "       .claude/ write is handed to a backstop the same call erases." ;;
+esac
+
 # F14 MAJOR, second half: the watch set is not only `.claude/`. `kipi update`
 # rsyncs q-system/ -- both EXTRA_WATCHED guard scripts -- and then sanctioned only
 # the `.claude/` files it wrote, so every instance reported SECURITY drift on
