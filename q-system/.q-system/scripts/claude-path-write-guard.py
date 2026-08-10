@@ -138,7 +138,9 @@ SANCTIONED = ("apply-claude-changes.sh", "apply_claude_changes.py",
 # it once they have written). Being sanctioned to write and being able to erase
 # the backstop are not the same claim -- a future entrypoint could be one without
 # the other -- so the next person editing one list does not silently change the
-# other. See _rebaselines_layer2(), which is the only reader.
+# other. Read by _voids_layer2(), which matches these names against a stage's
+# TEXT rather than its program position -- see the comment there for why the
+# loose match is the safe direction in that one place.
 REBASELINERS = SANCTIONED
 
 # Layer 2's baseline, named here because Layer 1 is the only thing that can
@@ -822,7 +824,7 @@ def _analyse_statements(command, cwd, layer2_blind=False):
     """The statement-and-stage walk over one command string.
 
     `layer2_blind` is True when this command also re-baselines Layer 2, which
-    voids every handoff to it. See _rebaselines_layer2()."""
+    voids every handoff to it. See _voids_layer2()."""
     assigns = {}
     effective_cwd = cwd
     command = strip_heredocs(command)
@@ -913,16 +915,108 @@ def _is_sanctioned(tokens):
     return any(c in SANCTIONED for c in _program_names(tokens))
 
 
-def _program_names(tokens):
-    """The basenames a segment could be EXECUTING: argv[0], plus argv[1] when
-    argv[0] is an interpreter, since `bash apply-claude-changes.sh ...` is the
-    normal form.
+# `env`'s two options whose value is a SEPARATE token. Deliberately short: an
+# option this tuple does not know costs one skipped token, and the only thing
+# downstream of a miss here is a false block on the sanctioned route.
+ENV_SEPARATE_VALUE_OPTS = ("-u", "--unset", "-C", "--chdir")
 
-    Factored out so the re-baseline test below asks the SAME structural question
-    of the SAME positions. Two program allowlists reading argv two ways is how a
-    bypass survives a round: round 1 shipped a substring match here and it took
-    a review to notice the other test had never agreed with it.
+
+def _env_split_string(tok, tokens, i):
+    """`env -S "python3 x --baseline"` hides an entire command line inside ONE
+    token. Returns that line's tokens, or None when this is not that option."""
+    if tok in ("-S", "--split-string"):
+        value = tokens[i + 1] if i + 1 < len(tokens) else ""
+    elif tok.startswith("--split-string="):
+        value = tok.split("=", 1)[1]
+    elif tok.startswith("-S") and len(tok) > 2:
+        value = tok[2:]
+    else:
+        return None
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def _strip_one_prefix(tokens):
+    """Remove ONE layer of what stands between the shell and the executable: the
+    leading `NAME=value` assignments, plus one `env` and its own arguments.
+    Returns the shorter list, or None when there was nothing to strip -- which is
+    how _exec_position() terminates."""
+    i = 0
+    while i < len(tokens) and ASSIGN.match(tokens[i]):
+        i += 1
+    if i >= len(tokens) or os.path.basename(tokens[i]) != "env":
+        return tokens[i:] if i else None
+    i += 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--":
+            return tokens[i + 1:]
+        if ASSIGN.match(tok):
+            i += 1
+        elif not tok.startswith("-"):
+            break
+        elif tok in ENV_SEPARATE_VALUE_OPTS:
+            i += 2
+        else:
+            inner = _env_split_string(tok, tokens, i)
+            if inner is not None:
+                return inner
+            i += 1
+    return tokens[i:]
+
+
+def _exec_position(tokens):
+    """The tokens from the EXECUTABLE onward.
+
+    SCAR (review finding, PR #85 round 13, BLOCKER). `_program_names` read argv[0]
+    literally, so in
+
+        touch $UNSET/.claude/rules/pwn.md; KIPI_NOTIFY=/usr/bin/true python3 <tripwire> --baseline
+
+    the program was `KIPI_NOTIFY=/usr/bin/true`, whose basename is `true` -- not an
+    interpreter, so argv[1] was never consulted either. Measured by the reviewer:
+    voids_layer2=False, trusted_sha=pwned, next_enforce_rc=0. `_stage()` has
+    stripped these tokens since round 2; this function never did, and one file
+    holding two answers to "what is argv[0]" is the drift `_program_names` was
+    factored out to prevent.
+
+    It also shuts a hole nobody had named: `os.path.basename` of an assignment
+    reads its VALUE, so `FOO=path/to/apply-claude-changes.sh <write>` reported
+    SANCTIONED and disarmed the pipeline rule at _analyse_statements, which passes
+    RAW tokens. Pinned as a non-sanction, probe_round13 phase 5.
+
+    WRAPPER PROGRAMS (`nice`, `timeout`, `command`, `nohup`, `stdbuf`) are
+    deliberately NOT stripped here. Each carries its own operand grammar --
+    `timeout`'s duration is neither an option nor an assignment -- and a table of
+    which flags take a value is the fail-open surface round 10 deleted one for.
+    They are covered where a miss is actually a hole: _voids_layer2 names the
+    rebaseliners with no grammar at all. Missing one HERE can only cost a false
+    block on the sanctioned route, which is the safe direction to be wrong in.
     """
+    for _ in range(8):  # bounded: `env env env ...` must not loop forever
+        stripped = _strip_one_prefix(tokens)
+        if stripped is None:
+            return tokens
+        tokens = stripped
+    return tokens
+
+
+def _program_names(tokens):
+    """The basenames a segment could be EXECUTING: argv[0] once the assignment and
+    `env` prefix is off it, plus argv[1] when argv[0] is an interpreter, since
+    `bash apply-claude-changes.sh ...` is the normal form.
+
+    ONE CALLER NOW: `_is_sanctioned`, which GRANTS an exemption. Round 1 shipped a
+    substring match here and it took a review to catch, because in this direction
+    matching loose text is fail-OPEN. `_voids_layer2` used to share this function
+    and no longer does -- it withdraws a handoff rather than granting anything, so
+    loose text there is fail-CLOSED and it names the rebaseliners directly
+    (round 13). Two callers with opposite failure directions were never really
+    asking one question; pretending they were is what let an `env` prefix pass.
+    """
+    tokens = _exec_position(tokens)
     if not tokens:
         return []
     cands = [os.path.basename(tokens[0])]
@@ -1102,12 +1196,30 @@ def _voids_layer2(command, cwd=None):
             for stage in split_outside_quotes(stmt, ("|",)):
                 if LAYER2_BASELINE_NAME in stage:
                     return True
+                # THE NAME, NOT THE POSITION (review finding, round 13 BLOCKER).
+                # This used to ask `_program_names` whether a rebaseliner sat in
+                # the program position, and an environment assignment in front of
+                # it answered no. Fixing the parser fixes that ONE spelling; the
+                # next one is `nice`, then `timeout 20`, then `command`, then
+                # `nohup`, each with its own operand grammar to get right.
+                #
+                # So this test now has no grammar at all, exactly like the
+                # baseline-filename test one line above (round 11). The direction
+                # of failure is why that is safe HERE and was round 2's blocker in
+                # `_is_sanctioned`: matching text there GRANTS an exemption
+                # (fail-open); matching text here WITHDRAWS a handoff
+                # (fail-closed). Same rule, opposite consequence.
+                #
+                # The cost is the one round 8 priced and round 11 already charged:
+                # naming one of these four files in a command that ALSO makes an
+                # unanchorable `.claude/` write blocks. The escape hatch is
+                # unchanged and free -- two Bash calls, with Layer 2 in between.
+                if any(name in stage for name in REBASELINERS):
+                    return True
                 try:
                     tokens = shlex.split(stage, comments=True)
                 except ValueError:
                     tokens = stage.split()
-                if any(c in REBASELINERS for c in _program_names(tokens)):
-                    return True
                 assigns = dict(a.groups() for a in
                                (ASSIGN.match(t) for t in tokens) if a)
                 if any(_could_name_baseline(t, cwd, assigns) for t in tokens):

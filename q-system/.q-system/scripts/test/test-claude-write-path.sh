@@ -194,6 +194,9 @@ echo "== D2. MUTATION: disable the tripwire, the evasion must go red =="
 # A green test that cannot fail proves nothing. Blind the detector and confirm
 # the decisive case stops passing -- otherwise something ELSE was catching it.
 MUTANT="$WORK/tripwire-mutant.py"
+# fable-discipline-lint-skip -- $TRIPWIRE is READ AS TEXT here (open(argv[1])) to
+# build the mutant; it is never executed, so it cannot reach the notifier. The two
+# invocations that DO run it (lines below) both stub KIPI_NOTIFY.
 python3 - "$TRIPWIRE" "$MUTANT" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
@@ -774,6 +777,54 @@ case "$_marker_watched" in
     pass "armed marker is written, and is deliberately NOT watched (no flap)" ;;
   *)
     fail "armed marker watch-set/creation invariant broken: $_marker_watched" ;;
+esac
+
+# F13 BLOCKER (round 13): the executable is not always argv[0]. An environment
+# assignment in front of a re-baselining command hid the program from
+# `_program_names`, so `_voids_layer2` never saw the tripwire and an unanchorable
+# `.claude/` write was handed to a backstop the same call erased.
+#
+# The pin holds BOTH sides, because they fail in opposite directions and a later
+# edit that merges them re-opens one of the two:
+#   * the WITHDRAWAL side (_voids_layer2) must see a rebaseliner behind ANY
+#     prefix -- assignments, env, and the wrapper programs that carry their own
+#     operand grammar. It matches the NAME, not the position, so this holds
+#     without a table of which flags take a value.
+#   * the EXEMPTION side (_is_sanctioned) must find the real executable behind an
+#     assignment prefix, and must NOT be fooled by a sanctioned name sitting in an
+#     assignment VALUE -- `os.path.basename("FOO=.../apply-claude-changes.sh")` is
+#     `apply-claude-changes.sh`, which sanctioned the statement outright until
+#     round 13. That is round 2's blocker arriving through the assignment door.
+_r13="$(python3 - "$GUARD" <<'PY'
+import importlib.util, shlex, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+trip = "q-system/.q-system/scripts/claude-integrity-tripwire.py"
+appl = "q-system/.q-system/scripts/apply-claude-changes.sh"
+write = "touch $UNSET/.claude/rules/pwn.md; "
+prefixes = ["KIPI_NOTIFY=/usr/bin/true ", "A=1 B=2 ", "env KIPI_NOTIFY=x ",
+            "env -i ", "env -u KIPI_NOTIFY ", "env --unset=X ", "env -i -- ",
+            "nice ", "timeout 20 ", "command ", "nohup ", "stdbuf -oL "]  # portability-lint-skip: parser input, never executed
+missed = [p for p in prefixes
+          if not g._voids_layer2("%s%spython3 %s --baseline" % (write, p, trip), "/repo")]
+print("VOIDSOK" if not missed else "VOIDSMISS %s" % missed)
+print("EXECOK" if "claude-integrity-tripwire.py" in
+      g._program_names(shlex.split("KIPI_NOTIFY=x python3 %s --baseline" % trip))
+      else "EXECMISS")
+print("VALUEOK" if not g._is_sanctioned(shlex.split("FOO=%s touch .claude/x" % appl))
+      else "VALUEBAD")
+PY
+)"
+case "$_r13" in
+  "VOIDSOK"*"EXECOK"*"VALUEOK"*)
+    pass "round-13 class: a prefix cannot hide the executable, and a sanctioned name in an assignment VALUE does not sanction" ;;
+  *)
+    fail "round-13 class is open again"
+    echo "       $_r13"
+    echo "       VOIDSMISS: that prefix hides a rebaseliner from _voids_layer2, so an"
+    echo "       unanchorable .claude/ write is handed to a backstop the same call erases."
+    echo "       VALUEBAD: an assignment VALUE ending in a sanctioned filename exempts the"
+    echo "       whole statement from Layer 1 -- round 2's blocker through a new door." ;;
 esac
 
 echo
