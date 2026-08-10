@@ -1066,7 +1066,178 @@ def detect_untracked_unwired(_ctx) -> list:
     return out
 
 
+def detect_stale_runtime_plugins(_ctx) -> list:
+    """The RUNNING plugin copy is older than the merged one.
+
+    THE PRODUCTION CALLER for runtime-plugin-freshness.py. Without an entry here
+    the checker was reachable only from its own test, so the capability gate
+    proved it works on fixtures and nothing ever pointed it at real runtime
+    state -- a detector that cannot fire is documentation (codex review of PR
+    #105, blocker). This job is the right surface because the failure is a
+    property of THIS MACHINE at rest, not of any commit: CI has no
+    ~/.claude/plugins to look at, so a CI-only check would be structurally blind.
+
+    REUSES THE CHECKER'S OWN READERS via importlib, the same shape
+    `_paused_labels` uses for the watchdog's ledger. Shelling it and parsing its
+    stderr would be a SECOND definition of "stale" that can drift from the first;
+    importing means the detector and the exit code can never disagree.
+
+    SCOPE, AND WHAT THIS DELIBERATELY DOES NOT DETECT. This covers the two
+    conditions readable from the registry alone: an installed version that does
+    not match the marketplace, and a plugin still installed after the marketplace
+    stopped shipping it. It does NOT detect commit-level drift -- a plugin whose
+    files changed without a version bump reports the SAME version string on both
+    sides and is invisible here. Measured on this box: kipi-ops@kipi reports
+    1.2.0 from commit 8a38de80 while the clone sits at 021dd2b7. That gap is real
+    and is tracked in sp-54384f8f, which carries the split-out drift detection.
+    Nine review rounds produced seven defects, every one of them in that surface,
+    so it ships separately rather than holding this wiring hostage.
+
+    `subject` is the dedup key and `finding_hash` covers title + body, so the body
+    carries only names that change when the CONDITION changes -- never a count
+    that moves on every merge, which is the cry-wolf failure this file already
+    fixed once for the launchd keys.
+    """
+    import importlib.util
+
+    # A DETECTOR THAT CANNOT RUN SAYS SO. Every `return []` below used to cover
+    # the checker being missing or unimportable, which is the silent-disable
+    # shape: the job stays green because the thing that would have failed it
+    # never loaded, and quiet is indistinguishable from healthy (codex review of
+    # PR #105 round 2, major, raised against the ValueError twin of this path).
+    # A distinct subject keeps it from colliding with a real staleness finding.
+    def _broken(reason: str) -> list:
+        return [{
+            "subject": "runtime-plugin-freshness-unreadable",
+            "title": "the runtime plugin freshness detector could not run",
+            "body": (
+                f"`detect_stale_runtime_plugins` could not evaluate runtime state: {reason}\n\n"
+                "While this is true the fleet has NO check that the running plugins "
+                "are the merged ones -- the failure mode that made the Judgment "
+                "Compiler unreachable for a day. Absence of a finding here is not "
+                "evidence the runtime is fresh.\n\n"
+                "## Action\nRun `python3 q-system/.q-system/scripts/runtime-plugin-freshness.py` "
+                "by hand and fix what it reports, then confirm this issue stops re-filing."
+            ),
+        }]
+
+    checker = HERE / "runtime-plugin-freshness.py"
+    if not checker.is_file():
+        return _broken(f"the checker is missing at {checker}")
+    spec = importlib.util.spec_from_file_location("rpf", checker)
+    if spec is None or spec.loader is None:
+        return _broken(f"python could not build an import spec for {checker}")
+    rpf = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(rpf)
+    except Exception as exc:
+        return _broken(f"importing the checker raised {type(exc).__name__}")
+
+    root = rpf.DEFAULT_PLUGIN_ROOT
+    registry = root / "installed_plugins.json"
+    marketplace = root / "marketplaces" / "kipi"
+    # NO REGISTRY = this box does not run Claude Code plugins at all. Absence
+    # there is genuinely not staleness, and the checker treats it as SKIP too.
+    if not registry.is_file():
+        return []
+    # A MISSING MARKETPLACE IS ONLY QUIET IF NOTHING IS INSTALLED FROM IT (codex
+    # review round 9, major). This used to be folded into the line above, so a
+    # registry that still lists kipi plugins with the marketplace directory gone
+    # returned [] -- reported healthy while those plugins keep loading from cache
+    # with nothing left to compare them against. Same silent-disable shape the
+    # unreadable-registry and missing-checker paths were already corrected for;
+    # this was the third door into it.
+    #
+    # The discriminator is whether anything is actually installed from this
+    # marketplace. Nothing installed -> genuinely nothing to say. Something
+    # installed with no marketplace -> we cannot answer the question, and saying
+    # so is the whole contract of the cannot-run subject.
+    if not marketplace.is_dir():
+        try:
+            still_installed = rpf.installed_versions(registry, "kipi")
+        except ValueError as exc:
+            return _broken(f"the plugin registry is unreadable ({exc})")
+        if not still_installed:
+            return []
+        return _broken(
+            f"{len(still_installed)} kipi plugin(s) are installed but the "
+            f"marketplace directory is missing at {marketplace}, so the running "
+            "copies cannot be compared against anything")
+    try:
+        live = rpf.marketplace_versions(marketplace)
+        installed = rpf.installed_versions(registry, "kipi")
+    except ValueError as exc:
+        # Malformed input is the checker's exit 2, and it is NOT a staleness
+        # claim -- filing "your plugins are stale" off unparseable JSON would be
+        # a fabricated finding. But returning [] made unreadable state look
+        # exactly like healthy state, which disables the detector silently
+        # (codex review round 2, major). Report the inability, not a staleness
+        # verdict: separate subject, separate title, no invented severity.
+        return _broken(f"the plugin registry or a manifest is unreadable ({exc})")
+
+    stale = sorted(
+        f"`{name}` scope={scope} installed **{version}**, marketplace **{live[name]}**"
+        for name, scope, version in installed
+        if live.get(name) and live[name] != version
+    )
+    # RETIRED PLUGINS ARE STILL RUNNING CODE (codex review round 4, major). A
+    # plugin installed from a marketplace that no longer ships it was skipped by
+    # the comprehension above -- `live.get(name)` is None, so the row fell
+    # through and produced nothing. The checker at least prints a `note` line;
+    # this detector emitted silence, which on the ONE unattended surface means
+    # nobody ever learns that a retired plugin is still loaded. That is the same
+    # class as the version drift this whole thing exists to catch: the runtime is
+    # running code that the merged marketplace does not have.
+    retired = sorted(
+        f"`{name}` scope={scope} installed **{version}**, no longer in the marketplace"
+        for name, scope, version in installed
+        if live.get(name) is None
+    )
+    if not stale and not retired:
+        return []
+
+    parts = []
+    if stale:
+        parts.append(
+            "## Installed versions behind the marketplace\n"
+            + "\n".join(f"- {s}" for s in stale)
+        )
+    if retired:
+        parts.append(
+            "## Installed but no longer in the marketplace\n"
+            "These are still LOADED at runtime while the merged marketplace no "
+            "longer ships them. Either the plugin was retired and the install "
+            "should be removed, or it was renamed and the install should follow.\n"
+            + "\n".join(f"- {r}" for r in retired)
+        )
+    parts.append(
+        "## Action\n"
+        "```\nclaude plugin marketplace update kipi\n"
+        "claude plugin update <plugin>@kipi --scope <scope>\n```\n"
+        "The second is not optional: the marketplace update moves the clone, but "
+        "Claude loads the version-keyed cache the registry pins. Recover any "
+        "hand-edit above into a PR before refreshing."
+    )
+    return [{
+        "subject": "runtime-plugin-freshness",
+        "title": "running kipi plugins are older than the merged ones",
+        "body": "\n\n".join(parts),
+    }]
+
+
 DETECTORS = [
+    {
+        "id": "runtime-plugin-stale",
+        "description": "the RUNNING plugin copy is older than the merged one, or hand-edited",
+        "detect": detect_stale_runtime_plugins,
+        "action": "file_issue",
+        "lesson_waived": (
+            "Not a recurring defect class with a lesson to cite -- it is a "
+            "machine-state drift that reappears whenever an install is left "
+            "pinned to an old version. The detector is the durable answer; a "
+            "lesson would only restate it."
+        ),
+    },
     {
         "id": "unwired-untracked",
         "description": "a repo has unwired engines but no audit issue tracking them",

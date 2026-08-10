@@ -223,6 +223,64 @@ def sec_wiring():
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("wiring: declared_inert passes with note", rc == 0 and "DECLARED-INERT" in out)
+    # ASK-517: an engine wired by a PYTHON IMPORT must not read as inert.
+    # The matcher was `p.name in surface`, i.e. "loops_path.py" WITH the
+    # extension, while an import names the module by its stem -- so
+    # q-system/.q-system/scripts/loops_path.py, imported by the wired hook
+    # q-system/hooks/session-start.py, reddened origin/main and blocked every
+    # merge in the repo. Three cases, because the dangerous fix is one that
+    # loosens the matcher until nothing is ever inert again.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/imported_engine.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("import imported_engine\nimported_engine.go()\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: engine wired by `import <stem>` is NOT inert",
+              rc == 0 and "imported_engine" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/from_imported.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("from from_imported import thing\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: `from <stem> import ...` also counts",
+              rc == 0 and "from_imported" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # PRECISION half: a bare mention of the stem in prose is NOT wiring.
+        # Matching a bare stem would make any script called utils.py read as
+        # wired anywhere the word "utils" appears, which turns the check off
+        # without anyone noticing.
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/only_mentioned.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("# only_mentioned is a nice idea, nobody calls it\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: a prose mention is NOT wiring, still RED",
+              rc == 1 and "only_mentioned.py" in out)
+
+    # plugins/ is scanned but REPORT-ONLY: it must surface as a note and must
+    # NOT fail the gate, because the widening could not be validated from a
+    # worktree (sp-1cb1a348). Both halves are asserted -- a note-only check
+    # that silently became blocking would red 27 scripts across 22 instances.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/dead-plugin-engine.py")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: unwired plugin engine is REPORTED",
+              "dead-plugin-engine.py" in out and "report-only" in out)
+        check("wiring: unwired plugin engine does NOT fail the gate", rc == 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/wired-plugin-engine.py")
+        hooks = root / "plugins/prd-os/hooks"; hooks.mkdir(parents=True, exist_ok=True)
+        (hooks / "hooks.json").write_text('{"c": "wired-plugin-engine.py"}')
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: wired plugin engine is not reported",
+              rc == 0 and "wired-plugin-engine.py" not in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         engine(root, "q-system/.q-system/scripts/hooked-engine.py")

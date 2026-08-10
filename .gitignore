@@ -114,3 +114,10 @@ q-system/output/claude-integrity/
 # update, so every fresh instance would claim prior arming, refuse to arm, and
 # Slack-page SECURITY on its first run -- the round-2 outage exactly.
 q-system/.q-system/.claude-integrity-armed
+
+# PR-review scratch trees. 537 of these files were swept into the repo by an
+# unattended `chore: update project files` auto-commit (ec5efddf). Removing them
+# without ignoring the pattern just waits for the next sweep to re-add them.
+.pr*rev*/
+.review-scratch/
+.fable-wt/

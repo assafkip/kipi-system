@@ -50,9 +50,65 @@ def manifest_path(repo=None) -> Path:
     return instance_root(repo) / "canonical" / MANIFEST_NAME
 
 
+MANIFEST_OK = "ok"
+MANIFEST_ABSENT = "absent"
+MANIFEST_UNREADABLE = "unreadable"
+
+
+def health(repo=None) -> tuple[str, str]:
+    """(status, human detail). The runtime-path answer to "can coverage be computed?"
+
+    WHY THIS EXISTS SEPARATELY FROM `load()` (ASK-533). `load()` returns {} for BOTH
+    "no manifest" and "manifest I could not parse", so its callers cannot tell a
+    correct no-op from a broken one. `check()` already distinguishes them correctly --
+    but nothing on the runtime path calls `check()`; the Stop hook only ever reaches
+    `load()`. So the gate was weakest on exactly the corrupted evidence that should
+    alarm it, which is the finding this closes.
+
+    ABSENT IS NOT A PROBLEM AND MUST NOT BE REPORTED AS ONE. Most instances declare no
+    data path; no-op is their correct steady state, and it is where every instance
+    starts. Only PRESENT-BUT-UNREADABLE is the defect. Conflating the two would turn a
+    Stop hook that fires every turn into a fleet-wide wedge, so the distinction here is
+    load-bearing rather than cosmetic.
+
+    Deliberately returns a status instead of raising: the caller is an unattended hook
+    whose job is to keep running, and an exception would just get swallowed by another
+    broad `except` somewhere up the stack, which is how this defect happened.
+    """
+    path = manifest_path(repo)
+    if not path.exists():
+        return (MANIFEST_ABSENT, "")
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception as exc:
+        return (MANIFEST_UNREADABLE, f"{path}: not valid JSON ({exc})")
+    if not isinstance(obj, dict):
+        return (MANIFEST_UNREADABLE,
+                f"{path}: top level must be an object, got {type(obj).__name__}")
+    # STRUCTURAL VALIDITY IS `check()`'s JOB, AND ONLY `check()`'s (Codex round 1 on
+    # PR #132, MAJOR). The first cut of this function validated only the top level, so
+    # `{"subsystems": "not-a-list"}` -- valid JSON, and a dict -- reported `ok` while
+    # `subsystems()` returned [] and coverage silently did nothing. That is the same
+    # fail-open this issue exists to close, one level deeper, reintroduced by the fix.
+    #
+    # Two functions answering "is this manifest usable?" with different rules is how
+    # they drift apart; `check()` is the authority and this delegates to it rather than
+    # restating a subset. Cost is one extra parse on a path that runs once per turn.
+    problems = check(repo)
+    if problems:
+        head = "; ".join(problems[:5])
+        more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
+        return (MANIFEST_UNREADABLE, f"{path}: {head}{more}")
+    return (MANIFEST_OK, "")
+
+
 def load(repo=None) -> dict:
     """The manifest, or {} when absent or unreadable. Absence is never an error --
-    most instances have no declared data path, and the gate must no-op for them."""
+    most instances have no declared data path, and the gate must no-op for them.
+
+    NOTE (ASK-533): this deliberately still swallows. Callers that need to tell absent
+    from unreadable ask `health()`; changing this return contract would alter every
+    read path at once on a hook that runs every turn."""
     path = manifest_path(repo)
     if not path.exists():
         return {}
@@ -64,7 +120,15 @@ def load(repo=None) -> dict:
 
 
 def subsystems(repo=None) -> list[dict]:
+    # Same blind-iteration root as check() (Codex round 2, PR #132): a non-list here
+    # is not merely wrong, it RAISES -- `{"subsystems": 0}` and `{"subsystems": null}`
+    # both give TypeError: not iterable. The guard's broad `except` around mentions()
+    # swallowed that into an empty result, so a malformed manifest crashed this
+    # accessor on every turn and nobody ever saw it. Return the empty set instead and
+    # let health()/check() be the things that SAY so.
     subs = load(repo).get("subsystems", [])
+    if not isinstance(subs, list):
+        return []
     return [s for s in subs if isinstance(s, dict)]
 
 
@@ -84,7 +148,28 @@ def check(repo=None) -> list[str]:
     seen_ids: set[str] = set()
     seen_labels: dict[str, str] = {}  # lowercase label -> owning subsystem id
 
-    for i, sub in enumerate(obj.get("subsystems", [])):
+    # VALIDATE THE CONTAINER'S TYPE BEFORE ITERATING IT (Codex round 2, PR #132,
+    # MAJOR). This used to iterate `obj.get("subsystems", [])` blind, and Python
+    # iterates almost anything: a STRING yields characters (each fails the
+    # "not an object" test, so that shape was caught by accident), but a DICT yields
+    # its keys -- and an EMPTY dict yields nothing at all. So `{"subsystems": {}}`
+    # walked zero iterations, produced zero problems, and check() called it clean.
+    # health() then reported `ok` and the Stop hook ran with zero coverage, silently.
+    # The round-1 fix cited check() as the structural authority; this input falsified
+    # that, so the authority is being made real rather than re-cited.
+    #
+    # EMPTY-BUT-RIGHT-TYPE STAYS LEGAL on purpose. `{}` with no key, and
+    # `{"subsystems": []}`, both mean "nothing declared yet", which is the same
+    # legitimate state as having no manifest. Only the wrong TYPE is a defect.
+    # Rejecting empties would wedge every instance mid-authoring on a hook that fires
+    # every turn, which is the outage this whole issue is being careful to avoid.
+    declared = obj.get("subsystems", [])
+    if not isinstance(declared, list):
+        problems.append(
+            f"`subsystems` must be a list, got {type(declared).__name__}; "
+            "coverage would silently cover nothing")
+        declared = []
+    for i, sub in enumerate(declared):
         where = f"subsystems[{i}]"
         if not isinstance(sub, dict):
             problems.append(f"{where}: not an object")

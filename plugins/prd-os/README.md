@@ -4,9 +4,11 @@ Portable Claude Code plugin for PRD creation and PRD execution with Codex review
 
 ## Status
 
-Scaffold only. Version `0.1.0`. No commands, scripts, hooks, or templates are wired yet. Tracking tree is in place so later steps can drop logic into the right directories without further structural decisions.
+Shipped and wired. The authoritative version is `.claude-plugin/plugin.json`; per-version history is in `CHANGELOG.md`. Commands live in `commands/`, runner scripts in `scripts/`, hooks in `hooks/hooks.json`, templates in `templates/`.
 
-## What this plugin will do (once built)
+This line read "Version `0.1.0`, nothing wired yet" until 0.18.0, long after all of it shipped. Do not restate the version number here -- a second copy is a second thing to drift (ASK-402).
+
+## What this plugin does
 
 **PRD creation flow.** Turn a rough idea into a reviewable PRD, run it through `/codex:review` and `/codex:adversarial-review` as a formal gate, triage findings, approve, and decompose the approved PRD into atomic issue specs.
 
@@ -91,17 +93,20 @@ Two install paths will be supported:
 1. **Local plugin** (this repo): add `plugins/prd-os` to the local plugins directory. Already discoverable once hooks/commands are wired in later steps.
 2. **Marketplace** (cross-repo): publish `plugins/prd-os` to a Claude Code marketplace (GitHub source). Other repos enable via `claude plugin install prd-os`.
 
-Per-repo bootstrap happens via `/prd-os-init` (lands in step 8). That command creates `.prd-os/` in the target repo, writes `config.json` with defaults, adds the runtime state dir to `.gitignore`, and registers hooks in `.claude/settings.json` idempotently with a backup.
+Per-repo bootstrap happens via `/prd-os-init`. That command creates `.prd-os/` in the target repo, writes `config.json` with defaults, and adds the runtime state dir to `.gitignore`.
 
-## Out of scope for the scaffold step
+It does NOT register hooks. Both this file and `SKILL.md` claimed it did, through 0.17.0, with no such code in `prd_os_init.py` -- the exact defect class this plugin exists to catch, surviving in the plugin's own docs (ASK-402). Hooks are wired by the plugin's `hooks/hooks.json`, which Claude Code loads when the plugin is enabled; nothing writes to a host repo's `.claude/settings.json`.
 
-- No command files yet
-- No runner scripts yet
-- No hooks wired yet
-- No templates yet
-- No tests yet
+## Deliberately still out of scope
+
 - No changes to the host repo's `.claude/settings.json`
 - No changes to existing `/issue-*` commands in `.claude/commands/`
+
+A five-item scaffold-era list used to sit here, asserting that no commands, no
+runner scripts, no hooks, no templates and no tests existed yet. Every item was
+false from roughly 0.5.0 onward and it survived to 0.18.0 because no test read
+this file. `test_docs_do_not_carry_scaffold_era_text` now reads THIS file too,
+not only `SKILL.md` (ASK-402).
 - No changes to existing `q-ktlyst/.q-system/` runtime
 
 Those land in steps 3-10 per the approved build order.
