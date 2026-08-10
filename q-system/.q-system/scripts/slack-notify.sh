@@ -23,10 +23,23 @@ MSG="${1:-}"
 # Project label so the founder always knows which instance pinged. Resolved in order:
 #   KIPI_INSTANCE_NAME (set by the fleet heartbeat = exact registry name)
 #   -> git repo root basename -> cwd basename. Every message is prefixed "[label] ".
-LABEL="${KIPI_INSTANCE_NAME:-}"
+# KIPI_NOTIFY_LABEL first: a caller that KNOWS which project it is reporting on
+# states it, instead of leaving this script to re-derive it from ambient state.
+# ASK-604. The prefix and the message body were two independent derivations, so
+# they disagreed: one message read "[qep_agent]" while its body named
+# consulting's files, and another posted as "[/]". auto-commit.py builds its body
+# from basename(CLAUDE_PROJECT_DIR) but invoked this script with NO cwd, so the
+# git-toplevel fallback resolved against whatever directory the agent happened to
+# be in. basename(".") and basename("/") are where "[/]" came from.
+LABEL="${KIPI_NOTIFY_LABEL:-${KIPI_INSTANCE_NAME:-}}"
 if [ -z "$LABEL" ]; then
   LABEL="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
 fi
+# A degenerate label is worse than no label: it looks like a real answer. Say so
+# instead of prefixing "[/]" and letting the founder guess which instance pinged.
+case "$LABEL" in
+  ""|"/"|"."|"..") LABEL="unknown-project" ;;
+esac
 MSG="[$LABEL] $MSG"
 
 # --- fixture-run guard: a test must never be able to page a human -------------

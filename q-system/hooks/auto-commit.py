@@ -267,11 +267,18 @@ def _notify_slack(unclassified):
         return
     head = ", ".join(unclassified[:3])
     more = f" (+{len(unclassified) - 3} more)" if len(unclassified) > 3 else ""
+    # ASK-604: ONE source for the project name. The prefix slack-notify.sh adds
+    # and the name in this body used to be derived independently -- the body from
+    # PROJ_DIR, the prefix from the script's ambient cwd -- so a message could
+    # read "[qep_agent]" while naming consulting's files. abspath first, because
+    # PROJ_DIR defaults to "." and basename(".") is ".".
+    project = os.path.basename(os.path.abspath(PROJ_DIR)) or "unknown-project"
+    env = dict(os.environ, KIPI_NOTIFY_LABEL=project)
     try:
         subprocess.run(["bash", script,
                         f"auto-commit left {len(unclassified)} file(s) uncommitted "
-                        f"in {os.path.basename(PROJ_DIR)}: {head}{more}"],
-                       capture_output=True, timeout=10)
+                        f"in {project}: {head}{more}"],
+                       capture_output=True, timeout=10, cwd=PROJ_DIR, env=env)
         record_notified(digest, path=state)
     except (OSError, subprocess.SubprocessError):
         pass                       # a Stop hook never fails because Slack did
