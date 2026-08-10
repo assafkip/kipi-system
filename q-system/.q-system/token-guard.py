@@ -39,6 +39,8 @@ Exit codes:
   2 = block (stderr message goes to Claude as feedback)
 """
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -127,7 +129,11 @@ def sweep_stale_caches(max_age_days=CACHE_TTL_DAYS):
     this sweep is their cleanup path."""
     import glob
     cutoff = time.time() - max_age_days * 86400
-    for path in glob.glob("/tmp/claude-guard-*.json"):
+    # Both patterns: the sidecar lock files (sp-016776e6) do not end in .json,
+    # so the original glob would have left one per actor in /tmp forever.
+    stale = glob.glob("/tmp/claude-guard-*.json") + glob.glob(
+        "/tmp/claude-guard-*.lock")
+    for path in stale:
         try:
             if os.path.getmtime(path) < cutoff:
                 os.remove(path)
@@ -171,6 +177,147 @@ def save_cache(actor_key, cache):
             json.dump(cache, f)
     except IOError:
         pass
+
+
+# --- The single-writer chokepoint (sp-016776e6) ------------------------------
+# load_cache/save_cache are a read-modify-write, and Claude Code fires this hook
+# once per tool call — so parallel tool calls mean parallel guard processes on
+# ONE actor's cache file. Unlocked, each read the same pre-state and the last
+# writer won; every other process's mutation was silently dropped.
+#
+# The lost mutation that cost real money is `fable_escalations`, the counter
+# request_escalation reads to decide whether this actor has spent its
+# KIPI_FABLE_CAP budget of billed `claude -p --model claude-fable-5` calls. A
+# dropped increment let the next process read a stale count, believe it was
+# under the cap, and buy another one.
+#
+# MEASURED over the shipped ledger before the fix (188 rows,
+# q-system/output/fable-escalations/, 2026-08-08): 172 rows attempted a real
+# call against a cap of 2 per actor. 90 landed in a second that already carried
+# another real call, 7 in the worst single second, and 8 distinct seconds carry
+# two DIFFERENT triggers — two concurrent guard processes is the only thing that
+# produces that. The two colliding CAPPED pairs are 2026-08-04T03:35:31Z and
+# 2026-08-08T22:07:13Z, each one `exact-retry` racing one `volume-ceiling`.
+#
+# WHY A LOCK AND NOT AN ATOMIC WRITE. tmpfile + os.replace was the tempting fix
+# and it does not work: it makes the WRITE atomic, not the read-modify-write.
+# Both processes still read the same pre-state, so the update is still lost —
+# just lost cleanly. The read and the write have to be inside one critical
+# section, which is what this is.
+#
+# LOST UPDATES WERE NOT THE WORST OF IT. save_cache truncates and rewrites in
+# place, so two concurrent writers can interleave: running the concurrency suite
+# against a no-lock mutant produced a cache whose JSON ended at byte 464 with a
+# longer writer's tail still after it. load_cache catches JSONDecodeError and
+# returns fresh defaults, so a torn write silently reset every counter this
+# guard owns — the ceiling, the retry map and the escalation budget all back to
+# zero, with nothing logged and nothing to see afterwards.
+#
+# WHY THE REGION HOLDS NO SUBPROCESS. This hook is wired at `timeout: 5` on all
+# three events fleet-wide, and a hook that overruns its timeout has its exit 2
+# DISCARDED (measured 2026-08-03; see the escalation block comment below). So a
+# lock held across `_head_commit_epoch`'s git call (capped at 3s) could turn
+# contention into a SPENT refusal — trading this defect for a worse one. The git
+# probe is therefore hoisted out of the region by main(), leaving only in-memory
+# work under the lock: microseconds, not milliseconds.
+LOCK_WAIT_SECONDS = 2.0     # unreachable in practice; the region is pure CPU
+LOCK_POLL_SECONDS = 0.002
+
+
+def lock_path(actor_key):
+    """A sidecar, never the cache file itself.
+
+    HONEST ABOUT WHY, because the first version of this comment was wrong.
+    It claimed save_cache's mode-"w" truncate would drop a lock taken on the
+    cache path; a mutant that pointed this function AT the cache file survived
+    the concurrency suite 8/8, because truncation keeps the same inode and flock
+    follows the inode. So that is not the reason.
+
+    The real reasons are narrower and both structural: the lock must exist
+    before the cache does (an actor's first tool call has no cache file yet, and
+    load_cache is happy to return defaults for one), and a sidecar cannot be
+    invalidated by any future change that REPLACES the cache rather than
+    rewriting it in place — an os.replace-based atomic write, the obvious next
+    edit here, swaps the inode and would silently orphan every held lock.
+    """
+    return f"/tmp/claude-guard-{actor_key}.lock"
+
+
+def _acquire(handle, deadline_s=LOCK_WAIT_SECONDS):
+    """Bounded LOCK_EX. True if held, False if the wait ran out."""
+    end = time.time() + deadline_s
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.time() >= end:
+                return False
+            time.sleep(LOCK_POLL_SECONDS)
+
+
+# Holds the open lock handles for this process's lifetime. Module-level on
+# purpose: a handle kept only in a local could be garbage-collected, and closing
+# the fd releases the flock — silently, mid-region, with everything still
+# looking correct.
+_HELD_LOCKS = []
+
+
+def hold_actor_lock(actor_key):
+    """Take this actor's lock and keep it until the process exits.
+
+    The PreToolUse path cannot use a `with` block: every check ends in
+    block()/warn(), both of which sys.exit, and the path already saves the cache
+    itself at each of those exits. Rather than re-indent ~110 lines of checks
+    (a mechanical edit with plenty of room to hide a defect) the lock is simply
+    held for the rest of the invocation and released by the OS on process exit,
+    which is the one exit every path shares.
+
+    Fails open on purpose — see locked_cache.
+    """
+    try:
+        handle = open(lock_path(actor_key), "a+")
+    except OSError:
+        return False
+    _HELD_LOCKS.append(handle)
+    return _acquire(handle)
+
+
+@contextlib.contextmanager
+def locked_cache(actor_key):
+    """Yield this actor's cache under an exclusive lock; write it back on exit.
+
+    Every load-mutate-save site in this file goes through here — that is what
+    makes it a chokepoint rather than N per-site locks that the next new caller
+    forgets. The yielded dict is written back on exit, including when the body
+    raises SystemExit, which is how block() and warn() leave. Every mutator in
+    this file mutates in place and returns the same object, so rebinding the
+    name inside the body is safe.
+
+    FAILS OPEN, DELIBERATELY. If the lock cannot be taken the body still runs
+    unlocked — today's behaviour, no worse. This hook's whole job is refusing a
+    runaway loop, and a guard that withheld its refusal because it could not get
+    a lock would be a guard that fails closed on its own plumbing. Same posture
+    as request_escalation: the mechanism may only ADD to a refusal, never
+    withhold one.
+    """
+    handle = None
+    try:
+        handle = open(lock_path(actor_key), "a+")
+        _acquire(handle)
+    except OSError:
+        handle = None
+    cache = load_cache(actor_key)
+    try:
+        yield cache
+    finally:
+        save_cache(actor_key, cache)
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
 
 
 def update_counters(tool_name, tool_input, cache):
@@ -1020,16 +1167,22 @@ def _head_commit_epoch():
     return None
 
 
-def reset_volume_if_committed(cache):
+def reset_volume_if_committed(cache, head_epoch):
     """The commit-progress valve, PreToolUse side. A repo HEAD commit newer
     than the last volume reset means the run is shipping — zero the volume
     counters (gate lack-of-progress, not raw volume). Only consulted once the
     counter is near the ceiling, so the common path stays subprocess-free.
     Works even when PostToolUse delivery is missing (the dead-valve defect
-    this issue closes)."""
+    this issue closes).
+
+    `head_epoch` is PASSED IN, not read here (sp-016776e6). This function now
+    runs inside the cache lock, and _head_commit_epoch shells out to git with a
+    3s cap — long enough that holding the lock across it could push a waiting
+    hook past its own 5s timeout, at which point the runner discards its exit 2
+    and the refusal is lost. The subprocess stays outside the region; only the
+    comparison happens inside."""
     if cache.get("tool_calls_since_user", 0) < VOLUME_WARNING:
         return cache
-    head_epoch = _head_commit_epoch()
     if head_epoch and head_epoch > cache.get("last_volume_reset", 0):
         cache["tool_calls_since_user"] = 0
         cache["agent_calls_since_user"] = 0
@@ -1062,9 +1215,8 @@ def main():
     # Only the main actor receives this event; subagent caches age out via
     # the TTL sweep.
     if hook_event == "UserPromptSubmit":
-        cache = load_cache(actor)
-        cache = reset_per_message_counters(cache)
-        save_cache(actor, cache)
+        with locked_cache(actor) as cache:
+            reset_per_message_counters(cache)
         sweep_stale_caches()
         sys.exit(0)
 
@@ -1082,9 +1234,9 @@ def main():
                 isinstance(resp, str) and resp.strip().lower().startswith(
                     ("error", "edit failed", "no match", "string not found")))
             if not failed:
-                cache = load_cache(actor)
-                cache.get("edit_targets", {}).pop(tool_input.get("file_path", ""), None)
-                save_cache(actor, cache)
+                with locked_cache(actor) as cache:
+                    cache.get("edit_targets", {}).pop(
+                        tool_input.get("file_path", ""), None)
         # A SUCCESSFUL `git commit` is a durable check-in, so it resets the volume counter —
         # the same shape as the edit-spiral reset above (progress clears the counter). The
         # 50-call ceiling exists to catch a stuck/spinning run, NOT to punish a run that is
@@ -1093,13 +1245,12 @@ def main():
         # makes the guard gate lack-of-progress, not raw volume. (sr-staff call 2026-06-11.)
         elif tool_name == "Bash" and _is_successful_commit(
                 tool_input.get("command", ""), hook_input.get("tool_response")):
-            cache = load_cache(actor)
-            cache["tool_calls_since_user"] = 0
-            cache["agent_calls_since_user"] = 0
-            cache["warnings_issued"] = 0
-            cache["last_volume_reset"] = time.time()
-            cache = clear_gate_grace(cache)
-            save_cache(actor, cache)
+            with locked_cache(actor) as cache:
+                cache["tool_calls_since_user"] = 0
+                cache["agent_calls_since_user"] = 0
+                cache["warnings_issued"] = 0
+                cache["last_volume_reset"] = time.time()
+                clear_gate_grace(cache)
         # A commit REFUSED by a pre-commit gate is the other half of the valve.
         # It is not progress, so it must not reset the counter — but the gate's
         # precondition needs an Edit the ceiling blocks, so the run gets a bounded
@@ -1108,17 +1259,35 @@ def main():
             gate = _commit_gate_refusal(
                 tool_input.get("command", ""), hook_input.get("tool_response"))
             if gate:
-                cache = load_cache(actor)
-                cache = grant_gate_grace(cache, gate)
-                save_cache(actor, cache)
+                with locked_cache(actor) as cache:
+                    grant_gate_grace(cache, gate)
         sys.exit(0)
+
+    # The commit probe shells out to git, so it runs BEFORE the lock is taken —
+    # holding the cache lock across a 3s subprocess could push a waiting hook
+    # past its own 5s timeout, and an overrun hook has its exit 2 discarded
+    # (sp-016776e6; see the chokepoint comment above reset_volume_if_committed).
+    #
+    # The peek deciding whether to pay for the probe is an unlocked read. Being
+    # wrong about it costs one wasted or one skipped probe on a single tool
+    # call, never correctness: the authoritative count is re-read under the lock
+    # on the very next line, and a missed reset lands on the following call.
+    head_epoch = None
+    if load_cache(actor).get("tool_calls_since_user", 0) >= VOLUME_WARNING:
+        head_epoch = _head_commit_epoch()
+
+    # Everything from here to process exit runs under this actor's lock, so the
+    # load-mutate-save below is one critical section rather than a race. The
+    # existing save_cache calls at each block/warn exit are unchanged; they now
+    # simply happen while the lock is held.
+    hold_actor_lock(actor)
 
     # Load cache, update counters from this invocation. The commit-progress
     # valve runs before the checks so a freshly-shipped commit lifts the
     # ceiling even when the PostToolUse event never arrived (wiring B).
     cache = load_cache(actor)
     cache = update_counters(tool_name, tool_input, cache)
-    cache = reset_volume_if_committed(cache)
+    cache = reset_volume_if_committed(cache, head_epoch)
 
     # A triage from an earlier stuck refusal, if the detached call has landed.
     # One cheap open() on the common path (the file is absent almost always).

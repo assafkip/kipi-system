@@ -2,12 +2,41 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+      "runner": "python3"
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
       "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
       "runner": "python3"
     },
     {
+      "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "runner": "python3",
+      "timeout_s": 240
+    },
+    {
       "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
       "runner": "python3"
+    },
+    {
+      "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
+      "runner": "python3",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test-ripple.py",
@@ -30,8 +59,13 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
-      "runner": "bash"
+      "runner": "bash",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-claim-page-once-routing.sh",
@@ -51,27 +85,16 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-pr-review-root-guard.sh",
       "runner": "bash",
       "timeout_s": 120
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
-      "runner": "bash"
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
       "runner": "bash"
     },
     {
@@ -121,6 +144,11 @@
     {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-leak-preflight.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
+      "runner": "bash",
+      "timeout_s": 300
     },
     {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
@@ -207,6 +235,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-exit-contract.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
       "runner": "bash"
     },
@@ -223,12 +255,13 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
-      "runner": "bash"
+      "path": "q-system/.q-system/scripts/test/test-pr-review-root-guard.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
-      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
-      "runner": "python3"
+      "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
@@ -251,6 +284,11 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash",
+      "timeout_s": 600
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
@@ -259,20 +297,38 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
+      "runner": "bash",
+      "timeout_s": 240
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive-absent.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
       "runner": "bash",
       "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
       "runner": "bash",
       "timeout_s": 120
     },
@@ -283,7 +339,7 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash",
-      "timeout_s": 420
+      "timeout_s": 600
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
@@ -307,15 +363,25 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-update-preservation-manifest.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-receipt-contract.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh",
@@ -338,11 +404,20 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
+      "runner": "bash",
+      "timeout_s": 60
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test_autocapture_wiring.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
     },
     {
@@ -368,6 +443,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_launchd_health_check.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_launchd_intent_verify.py",
       "runner": "python3"
     },
     {
@@ -431,6 +510,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_spillover_promote_selection.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
       "runner": "python3"
     },
@@ -455,75 +542,22 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/tests/test_fable_cap_page_deleted.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/tests/test_fable_escalation.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
-      "runner": "python3",
-      "timeout_s": 240
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
-      "runner": "bash",
-      "timeout_s": 300
-    },
-    {
-      "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
-      "runner": "python3",
-      "timeout_s": 120
-    },
-    {
-      "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
       "runner": "python3",
       "timeout_s": 180
     },
     {
-      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
-      "runner": "python3",
-      "timeout_s": 120
-    },
-    {
-      "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
-      "runner": "python3",
-      "timeout_s": 120
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
-      "runner": "bash",
-      "timeout_s": 60
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_spillover_promote_selection.py",
+      "path": "q-system/.q-system/tests/test_grounding_manifest_health.py",
       "runner": "python3"
     },
     {
-      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
-      "runner": "python3"
+      "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
+      "runner": "python3",
+      "timeout_s": 120
     }
   ],
   "required_data": [],
