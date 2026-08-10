@@ -180,8 +180,18 @@ def build_skeleton(root, env, body):
     (skeleton / "q-system" / ".q-system" / "scripts").mkdir(parents=True)
     (skeleton / ".claude" / "agents").mkdir(parents=True)
     shutil.copy(UPDATER, skeleton / "kipi-update.sh")
-    for helper in ("kipi-update-preserve-scan.py", "kipi-settings-merge.py",
-                   "settings-template.json"):
+    # kipi-update-deletion-guard.py added 2026-08-10 (ASK-608). It arrived with
+    # the sp-737ce1ae fix and was never added here, so the fixture's skeleton
+    # lacked a script the updater invokes unconditionally before its rsync. The
+    # run died with "can't open file '.../skeleton/kipi-update-deletion-guard.py'",
+    # nothing propagated, and this file's two propagation tests failed on a
+    # missing fixture rather than on anything they assert.
+    #
+    # Same shape as the leak-gate note below, which is the tell: the fixture
+    # enumerates the updater's hard dependencies by hand, so every new
+    # fail-closed dependency silently breaks it until someone adds a line.
+    for helper in ("kipi-update-preserve-scan.py", "kipi-update-deletion-guard.py",
+                   "kipi-settings-merge.py", "settings-template.json"):
         shutil.copy(REPO_ROOT / helper, skeleton / helper)
     # A valid skeleton ships the propagation leak gate. kipi-update.sh is
     # fail-closed on it by design, so a fixture without it aborts before any
@@ -373,7 +383,26 @@ def test_final_state_rejects_an_injected_fact_in_every_layout(tmp_path):
     # standalone is not skeleton-managed, so it has NO propagation path. Its
     # contribution is that the fact is still detected there and that the updater
     # refuses to build a managed tree inside it.
-    assert "SKIP: standalone" in result.stdout
+    # The refusal VOCABULARY changed; the refusal did not. "SKIP: standalone"
+    # became "UNDECLARED NON-PROPAGATING: standalone-instance" -- the same
+    # decision reported by the check that now catches every instance with no
+    # declared propagation target. Pinning the old phrase made a passing
+    # behaviour read as a regression (ASK-608).
+    #
+    # Rebound to the property rather than the sentence, and deliberately
+    # STRICTER than what it replaces: the refusal line must NAME the instance.
+    # The original substring would have accepted a refusal about some other
+    # instance entirely. The two assertions below are the real proof -- nothing
+    # was written, and no managed tree was created -- and they could not run
+    # while this line failed first.
+    refusal = [line for line in result.stdout.splitlines()
+               if "standalone" in line
+               and ("SKIP" in line or "UNDECLARED" in line
+                    or "NON-PROPAGATING" in line)]
+    assert refusal, (
+        "the updater did not report refusing the standalone instance: "
+        f"{result.stdout}"
+    )
     assert tree_digest(standalone) == standalone_before, (
         "the updater wrote into a standalone instance"
     )
