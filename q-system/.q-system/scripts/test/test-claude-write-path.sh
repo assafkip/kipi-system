@@ -827,6 +827,87 @@ case "$_r13" in
     echo "       whole statement from Layer 1 -- round 2's blocker through a new door." ;;
 esac
 
+# F14 MAJOR (round 14): round 13's grammar-free match read a MENTION as an
+# INVOCATION. `_stage`'s no-backstop rule then refused any unreadable argument, so
+# a rebaseliner name in a comment or a quoted commit message plus any glob was a
+# hard block -- on a PreToolUse hook shipping to 23 machines, and on the exact
+# commit shape this issue's own commits use.
+#
+# Three sides, pinned together because narrowing one is what re-opens another:
+#   * PROSE must not void. A comment (which the shell never runs) and a phrase
+#     carrying the name as one word among several.
+#   * INVOCATION must still void, behind every prefix round 13 closed and from
+#     inside an inline code string, where no path-shaped token exists.
+#   * A GLOB must not reach past a leading dot. No shell expands `q-system/*` to
+#     `q-system/.q-system`; fnmatch does, which made a plain recursive copy of
+#     that glob a block whose stderr claimed it re-baselines Layer 2.
+_r14="$(python3 - "$GUARD" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+trip = "q-system/.q-system/scripts/claude-integrity-tripwire.py"
+prose = ["python3 build.py --out dist/*.js  # see kipi-update.sh",
+         "python3 build.py --out d/*.js --note 'see kipi-update.sh'",
+         "git commit -m 'fix apply_claude_changes.py' -- q-system/plugins",
+         "cp -r q-system/* /tmp/backup/",
+         "tar -cf /tmp/b.tar q-system/*"]
+bad = [c for c in prose if g._voids_layer2(c, "/repo")]
+print("PROSEOK" if not bad else "PROSEBLOCK %s" % bad)
+invoke = ["python3 %s --baseline" % trip,
+          "KIPI_NOTIFY=x python3 %s --baseline" % trip,
+          "nice python3 %s --baseline" % trip,
+          "bash apply-claude-changes.sh p.json",
+          "python3 -c \"import runpy; runpy.run_path('%s')\"" % trip,
+          "nice bash -c 'python3 %s --baseline'" % trip,
+          "rm q-system/.q-system/claude-integrity-baseline.json",
+          "rm -rf q-system",
+          "rm -rf q-system/.q-*"]
+missed = [c for c in invoke if not g._voids_layer2(c, "/repo")]
+print("INVOKEOK" if not missed else "INVOKEMISS %s" % missed)
+PY
+)"
+case "$_r14" in
+  "PROSEOK"*"INVOKEOK"*)
+    pass "round-14 class: prose naming a rebaseliner is not an invocation, and a glob does not cross a leading dot" ;;
+  *)
+    fail "round-14 class is open again"
+    echo "       $_r14"
+    echo "       PROSEBLOCK: a mention the shell never executes voids Layer 2, so any"
+    echo "       glob argument beside it is a hard block. That refuses the commit that"
+    echo "       describes this guard -- the false-block class that nearly killed it five times."
+    echo "       INVOKEMISS: a real re-baseliner is invisible, so an unanchorable .claude/"
+    echo "       write is handed to a backstop the same call erases (rounds 8, 11, 13)." ;;
+esac
+
+# F14 MAJOR, second half: the watch set is not only `.claude/`. `kipi update`
+# rsyncs q-system/ -- both EXTRA_WATCHED guard scripts -- and then sanctioned only
+# the `.claude/` files it wrote, so every instance reported SECURITY drift on
+# every tool call after a routine update, forever. Producer-derived: the list-
+# building block is CUT OUT of kipi-update.sh and executed, so editing that block
+# is what changes this answer.
+_upd_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+_wrote="$(awk '/^ *TRIPWIRE_WROTE=\(\)/{on=1} on&&/KIPI_NOTIFY=/{on=0} on' \
+            "$_upd_root/kipi-update.sh")"
+_missing="$(
+  path="$_upd_root"; SCRIPT_DIR="$_upd_root"
+  eval "$_wrote" 2>/dev/null
+  python3 - "$_upd_root/q-system/.q-system/scripts/claude-integrity-tripwire.py" \
+           "${TRIPWIRE_WROTE[@]:-}" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("t", sys.argv[1])
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+have = set(sys.argv[2:])
+print(" ".join(r for r in mod.EXTRA_WATCHED if r not in have))
+PY
+)"
+if [ -z "$_missing" ]; then
+  pass "kipi update sanctions every EXTRA_WATCHED path its own rsync rewrote"
+else
+  fail "kipi update leaves watched files unsanctioned:$_missing"
+  echo "       Every tool call on every updated instance reports SECURITY drift,"
+  echo "       permanently, until a human runs --baseline on each machine."
+fi
+
 echo
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
