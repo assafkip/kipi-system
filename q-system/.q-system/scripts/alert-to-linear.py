@@ -90,6 +90,15 @@ _VOLATILE = [
     (re.compile(r"\(\+\d+ more\)"), " "),
     (re.compile(r"\b[0-9a-f]{7,40}\b"), " "),               # sha / run ids
     (re.compile(r"\d+"), " "),                              # every remaining count
+    # PUNCTUATION IS RESIDUE, and it split tickets. Found by a live check, not by
+    # the suite: with 2 files the separators survive as ", ", with 1 file they do
+    # not, so two firings of ONE condition hashed differently and opened two
+    # tickets. The suite missed it because every real #general fixture names
+    # paths WITH slashes, and `\S*/\S*` is greedy enough to swallow the trailing
+    # comma along with the token -- so the bug is invisible exactly where the
+    # fixtures live and appears on any message naming a bare filename.
+    # Word content decides the fingerprint; nothing else does.
+    (re.compile(r"[^a-z0-9 ]+"), " "),
     (re.compile(r"\s+"), " "),
 ]
 

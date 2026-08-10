@@ -219,3 +219,36 @@ def test_title_is_one_bounded_line():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --- the live-check regression -----------------------------------------------
+
+def test_bare_filenames_without_a_directory_still_collapse():
+    """Found by a LIVE check, not by this suite, which is the point of keeping it.
+
+    Every fixture above names paths with slashes, and the path rule is greedy
+    enough to swallow a trailing comma with the token. So separator residue was
+    invisible here and split real tickets: with two files the ", " survived,
+    with one file it did not, and one condition opened two tickets."""
+    a = "[consulting] auto-commit left 3 file(s) uncommitted in consulting: a.md, b.json"
+    b = "[consulting] auto-commit left 9 file(s) uncommitted in consulting: c.py (+6 more)"
+    assert mod.fingerprint(a) == mod.fingerprint(b)
+
+
+def test_punctuation_alone_never_decides_a_ticket():
+    """Trailing punctuation, quoting and separators are formatting, not identity."""
+    base = "[x] huntkit sync BLOCKED: not a git repo"
+    for variant in (base + ".", base + "!", base.replace(":", " --"),
+                    base.replace("BLOCKED:", "BLOCKED --"), '"' + base + '"'):
+        assert mod.fingerprint(variant) == mod.fingerprint(base), variant
+
+
+def test_the_punctuation_strip_did_not_collapse_everything():
+    """Re-guards the negative case at the new, more aggressive normalization."""
+    distinct = [
+        "[a] auto-commit left 2 file(s) uncommitted",
+        "[a] SECURITY: unsanctioned .claude/ change",
+        "[a] Meeting loop could not run: NOTION_TOKEN_ASK missing",
+        "[a] huntkit sync BLOCKED: not a git repo",
+    ]
+    assert len({mod.fingerprint(m) for m in distinct}) == len(distinct)
