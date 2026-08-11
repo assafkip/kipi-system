@@ -126,6 +126,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/notify-receipts-surface.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/notify-receipts-surface.py\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" 2>/dev/null || true"
           },
           {

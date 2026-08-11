@@ -214,6 +214,21 @@ fi
 # here as one JSON row, and notify-receipts-surface.py reads it at SessionStart
 # so the agent sees overnight machine activity instead of the founder seeing it.
 #
+# THAT SENTENCE WAS A CLAIM BEFORE IT WAS A FACT, and PR #72 review caught it as
+# a major. The surfacer did not exist; nothing in the repo opened this file. So
+# "recorded, not delivered" meant three dispatch pages that say the Linear loop
+# is DEAD reached no human AND no machine, while page_once wrote its dedupe
+# marker because this script exits 0 for a receipt. A sink with no reader is a
+# drop with extra steps. The reader ships alongside this file now, is wired into
+# SessionStart in BOTH .claude/settings.json and settings-template.json, and
+# test-notify-receipts-surface.sh fails loudly if it goes missing again.
+#
+# READ-STATE LIVES IN A CURSOR THE READER OWNS, NOT IN THE ROW. A `read` field
+# here would have made the surfacer a second writer to a file whose entire
+# design is that two dispatchers, a converge run and a heartbeat cannot corrupt
+# it. One writer per file: this script owns the ledger, the surfacer owns
+# <ledger>.cursor.
+#
 # AT THE SOURCE, NOT BY POLLING SLACK. ASK-294 forbids a Slack reader and it is
 # right: the producer already knows the condition, so round-tripping it through a
 # chat channel would add a failure mode and buy nothing. The producer writes the
@@ -237,7 +252,6 @@ row = {
     "refused": refused == "1",
     "reason": reason,
     "message": msg,
-    "read": False,
 }
 with open(path, "a", encoding="utf-8") as fh:
     fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
