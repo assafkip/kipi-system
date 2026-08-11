@@ -73,6 +73,16 @@ import sys
 
 EXIT_OK = 0
 EXIT_USAGE = 1
+# The sweep RAN and at least one removal it asked for did not land (codex, PR
+# #77 round 6). Distinct from EXIT_USAGE, which means it never ran, and from
+# EXIT_INFRA, which means Linear was unreachable: here the probes were re-tested
+# and the recovery path is the thing that is broken. It exits nonzero because
+# this job is unattended before every pick, so exit 0 plus a summary that adds
+# up is all anyone downstream reads -- and a recovery that cannot recover
+# reporting itself as a healthy run is the silence ASK-288 exists to end.
+# linear-worker.sh branches on this value; test-capability-block-expiry.sh pins
+# its copy of the number against this constant so the two cannot drift.
+EXIT_PARTIAL = 2
 # Matches linear-worker.sh: 9 means the ENVIRONMENT is down and this run did no
 # work. A caller can tell a dead Linear from a bad invocation.
 EXIT_INFRA = 9
@@ -215,15 +225,35 @@ def probe_env(value: str):
 
 
 def probe_write(value: str):
-    """The capability is write access to a directory.
+    """The capability is write access to THE NAMED DIRECTORY. No parent fallback.
 
     Tests by create-and-remove rather than os.access: os.access answers from the
     permission bits, which is the wrong answer on a read-only mount, inside a
     container, or under any guard that intercepts the write itself. The bits are
     not the capability; writing is.
+
+    THE PARENT IS NOT THE TARGET (codex, PR #77 round 6). This used to read
+    `target if os.path.isdir(target) else os.path.dirname(target)`, so a park
+    over a directory that DOES NOT EXIST YET -- which is the commonest shape of
+    this kind, since a directory you can already write to is not a block --
+    tested the parent instead. The parent is normally writable, so the probe
+    passed at park time, and validate_recorded_probe then discarded it as
+    already-passing and wrote `none`. `none` is hand-clear-only: the one probe
+    kind whose capability is most often genuinely absent became the one kind
+    that could never expire, which is this issue's defect wearing a fallback.
+
+    A missing target is now a FAIL, which is the honest answer and the one that
+    lets the probe be recorded: the block clears itself the run after the
+    directory arrives. A target that exists and is not a directory is also a
+    fail rather than a redirect to its parent -- linear-worker.sh documents this
+    kind as `write:</abs/dir>`, so anything else is a probe that did not record
+    what its author meant, and guessing at intent is the un-parking direction.
     """
     target = os.path.expanduser(value)
-    directory = target if os.path.isdir(target) else os.path.dirname(target) or "."
+    if not os.path.isdir(target):
+        return False, (f"{target} is not a directory (exists={os.path.exists(target)}) "
+                       f"-- there is nothing to write into yet")
+    directory = target
     stamp = os.path.join(directory, f".capability-probe-{os.getpid()}")
     if os.path.exists(stamp):
         # Never overwrite. A probe that clobbers a file to prove it can write is
@@ -343,6 +373,16 @@ PARK_HISTORY = """query($id:String!){issue(id:$id){
 
 TEAM_ID_QUERY = 'query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}'
 
+# The park's own comments, and ONLY those. linear-sync.ISSUE_COMMENTS asks for
+# `comments(first: 100)` with no cursor, which is right for a human reading a
+# thread and wrong for this: see recorded_probe. Both the `gte` filter and the
+# pageInfo shape were verified against the live API on 2026-08-11 (ASK-288
+# returned 10 comments for a gte of that morning, and hasNextPage true with an
+# endCursor at first:3) rather than read off the schema.
+PARK_COMMENTS = """query($id:String!,$s:DateTimeOrDuration!,$a:String){issue(id:$id){
+ comments(first:100,after:$a,filter:{createdAt:{gte:$s}}){
+  nodes{id createdAt body} pageInfo{hasNextPage endCursor}}}}"""
+
 
 def blocked_issues(ls, team_key: str, repo_project: str | None):
     """Every parked issue this checkout owns. A repo scope is REQUIRED.
@@ -420,13 +460,40 @@ def recorded_probe(ls, identifier: str, since: str | None) -> str | None:
     unreadable, or a label applied outside the history window) means the marker
     cannot be dated against the park, so nothing is trusted -- fail closed, the
     same direction every other ambiguity in this file takes.
+
+    AND IT READS EVERY PAGE (codex, PR #77 round 6). This used to borrow
+    linear-sync.ISSUE_COMMENTS, which asks for `comments(first: 100)` with no
+    cursor. Linear serves that connection NEWEST-FIRST, so 100 comments arriving
+    after a park pushed the park's own marker off the only page anyone looked
+    at, and the sweep then reported a live, passing probe as "no probe recorded"
+    -- parked forever, with a human the only way out. That is not a corner case
+    on this board: a reviewed issue collects a park comment, a review round and
+    a reply every pass, and this very issue is past 28.
+
+    Two changes doing two different jobs. The `gte` filter is pushed to the
+    SERVER so the pages walked are only the ones that can hold the marker; the
+    client-side `< since` check below stays, because the trust boundary for
+    what counts as this park belongs here and not in a remote filter argument.
+    The cursor loop is what makes it CORRECT -- a filter alone still truncates
+    at 100 when the park itself is the chatty one.
     """
     if not since:
         return None
-    issue = ls.graphql(ls.ISSUE_COMMENTS, {"id": identifier}).get("issue")
-    if not issue:
-        return None
-    nodes = (issue.get("comments") or {}).get("nodes") or []
+    nodes, after, seen_cursors = [], None, set()
+    while True:
+        conn = ((ls.graphql(PARK_COMMENTS, {"id": identifier, "s": since, "a": after})
+                 .get("issue") or {}).get("comments")) or {}
+        nodes += conn.get("nodes") or []
+        info = conn.get("pageInfo") or {}
+        cursor = info.get("endCursor")
+        # Normal exit is hasNextPage. The other two guards are for the ways a
+        # remote connection hands back a loop with no end -- a missing cursor,
+        # or one that stops advancing -- and this runs unattended before every
+        # pick, where a spin costs the whole pick rather than one issue.
+        if not info.get("hasNextPage") or not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+        after = cursor
     nodes.sort(key=lambda n: n.get("createdAt") or "")
     found = None
     for node in nodes:
@@ -576,7 +643,7 @@ def main(argv=None) -> int:
 
     counts = {"pass": 0, ROTATED: 0, "fail": 0, "unprobeable": 0, "unknown": 0,
               "cleared": 0, "cleared_unverified": 0, "already_cleared": 0,
-              "cleared_without_evidence": 0}
+              "cleared_without_evidence": 0, "unblock_failed": 0}
     if not parked:
         print(f"capability-expiry: no issue parked at {BLOCK_LABEL}"
               + (f" in {args.repo_project}" if args.repo_project else ""))
@@ -640,6 +707,16 @@ def main(argv=None) -> int:
             # Same reasoning as the worker's failed-label branch: if the write
             # did not land, the issue is still parked and saying "cleared" would
             # report a recovery that did not happen.
+            #
+            # AND IT IS COUNTED (codex, PR #77 round 6). This branch used to
+            # print and nothing else: no counter, absent from `still_blocked`,
+            # and the process exited 0. So the one outcome that means "the
+            # recovery path itself is broken" was the one outcome invisible to
+            # every reader downstream of the line -- a run whose summary added
+            # up and whose exit code said healthy. An unattended job reporting
+            # its own failure as success is the same shape as the never-expiring
+            # block: real state, nobody notified, no next actor.
+            counts["unblock_failed"] += 1
             print(f"capability-expiry: {ident} probe passed but the unblock did NOT "
                   f"apply ({detail}) -- still parked")
 
@@ -655,12 +732,23 @@ def main(argv=None) -> int:
         # board from Linear alone will find nothing on them.
         "cleared_without_evidence": counts["cleared_without_evidence"],
         "already_cleared": counts["already_cleared"],
-        "still_blocked": counts["fail"],
+        # Probe-failed PLUS removal-refused. Both leave the label on the issue,
+        # and a reader asking "how many are still parked" is asking about the
+        # BOARD, not about which step fell over. Leaving the refused ones out
+        # made the summary add up to a healthier board than Linear held.
+        "still_blocked": counts["fail"] + counts["unblock_failed"],
+        # ...and named apart, because it is the only still-blocked this process
+        # is responsible for: the probe said the capability is there and the
+        # write did not land.
+        "unblock_failed": counts["unblock_failed"],
         "unprobeable": counts["unprobeable"],
         "unrunnable_probe": counts["unknown"],
         "applied": bool(args.apply),
     }))
-    return EXIT_OK
+    # A refused removal is the recovery path failing, so the process says so in
+    # the only field a supervisor reads without parsing. Probe failures are NOT
+    # in here: "the capability still is not there" is this job working.
+    return EXIT_PARTIAL if counts["unblock_failed"] else EXIT_OK
 
 
 if __name__ == "__main__":

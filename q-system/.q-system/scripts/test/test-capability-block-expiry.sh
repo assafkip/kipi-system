@@ -53,6 +53,10 @@ trap 'kill "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
 PRESENT="$WORK/capability-that-now-exists"
 : > "$PRESENT"
 ABSENT="$WORK/capability-that-is-still-missing"
+# The `write:` capability class: a DIRECTORY that does not exist yet and has to
+# be created before anything can be written into it. Its parent (WORK) exists
+# and is writable, which is the whole of codex's round-6 finding on probe_write.
+ABSENT_DIR="$WORK/a-directory-that-has-not-been-created-yet"
 
 # --- the credential fixtures, RECORDED BY THE PRODUCER -----------------------
 # ASK-909 and ASK-910 are both `env:` parks, and the difference between them is
@@ -92,6 +96,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REQ_LOG = "$WORK/requests.log"
 PRESENT = "$PRESENT"
 ABSENT  = "$ABSENT"
+ABSENT_DIR = "$ABSENT_DIR"
 
 # One comment body per issue, in the shape linear-worker.sh writes at park time:
 # prose for the human, plus a machine-readable probe marker for this script.
@@ -125,7 +130,27 @@ PROBES = {
     #    observed, which is exactly the point.
     "ASK-909": os.environ.get("FIXTURE_PROBE_909") or "none",
     "ASK-910": os.environ.get("FIXTURE_PROBE_910") or "none",
+    # 11. A BUSY THREAD (codex PR #77 round 6, capability_block_expiry.py:426).
+    #    The probe is real, current and passing -- it is just old news on a
+    #    thread that kept talking. The reader asked for comments(first:100) with
+    #    no pagination, and this connection is served NEWEST-FIRST (verified live
+    #    on ASK-288, 2026-08-11), so 100 later comments push the park's marker
+    #    out of the only page anyone looked at. The block then reads as
+    #    unprobeable forever: the never-expiring park, back by a different door.
+    "ASK-914": "path:" + PRESENT,
+    # 12. The removal is REFUSED by Linear. Lives in its own project so its
+    #    nonzero run does not move the exit code of the main sweep above.
+    "ASK-915": "path:" + PRESENT,
+    # 13. A `write:` park over a directory that DOES NOT EXIST YET (codex round
+    #    6, capability_block_expiry.py:225) -- the commonest shape of this kind,
+    #    since a directory you can already write to is not a block.
+    "ASK-916": "write:" + ABSENT_DIR,
 }
+
+# A thread that kept talking after the park. Every one of these is NEWER than
+# ASK-914's marker and none of them carries a probe, which is what an ordinary
+# review conversation looks like (this very issue is past 28 comments).
+CHATTY = {"ASK-914": 120}
 
 # When \`blocked:capability\` was last ADDED, per issue. Linear records this as a
 # history entry carrying addedLabelIds; verified live against ASK-281 on
@@ -133,7 +158,8 @@ PROBES = {
 # model of the API is a test of that model (the scar this repo already carries).
 PARKED_AT = {ident: "2026-08-01T00:00:30.000Z" for ident in
              ("ASK-901", "ASK-902", "ASK-903", "ASK-904", "ASK-905",
-              "ASK-906", "ASK-909", "ASK-910")}
+              "ASK-906", "ASK-909", "ASK-910", "ASK-914", "ASK-915",
+              "ASK-916")}
 # The stale case: parked LAST, marker written FIRST. Everything else about the
 # thread looks healthy.
 PARKED_AT["ASK-908"] = "2026-08-02T12:00:00.000Z"
@@ -151,6 +177,15 @@ def comments_for(ident):
         nodes.append({"id": "c1-" + ident, "createdAt": MARKED_AT.get(ident, "2026-08-01T00:01:00.000Z"),
                       "body": "**sana** · park\n\nBlocked on a missing capability, not on scope.\n\n<!-- capability-probe: " + probe + " -->",
                       "user": {"name": "t"}, "botActor": None})
+    for n in range(CHATTY.get(ident, 0)):
+        # Timestamps strictly AFTER the marker, one per minute, so the marker is
+        # genuinely the oldest thing in the window a `since`-filtered read asks
+        # for. No probe marker in any of them -- an ordinary review thread.
+        nodes.append({
+            "id": "cx-%s-%03d" % (ident, n),
+            "createdAt": "2026-08-01T%02d:%02d:00.000Z" % (1 + n // 60, n % 60),
+            "body": "**codex-reviewer** · round %d\n\nordinary review chatter" % n,
+            "user": {"name": "t"}, "botActor": None})
     return nodes
 
 def history_for(ident):
@@ -178,7 +213,13 @@ def issue(ident, labels):
 
 BOARD = [issue(i, ["owner:sana", "blocked:capability"])
          for i in ("ASK-901", "ASK-902", "ASK-903", "ASK-904", "ASK-905",
-                   "ASK-908", "ASK-909", "ASK-910")]
+                   "ASK-908", "ASK-909", "ASK-910", "ASK-914", "ASK-916")]
+# The removal-refused case, in its OWN project so it gets its own sweep. Putting
+# it on the main board would move that run's exit code for every assertion
+# above, and the exit code is precisely what this case is about.
+FAILSTOP = issue("ASK-915", ["owner:sana", "blocked:capability"])
+FAILSTOP["project"] = {"name": "kipi-failstop"}
+BOARD = BOARD + [FAILSTOP]
 # A parked issue in ANOTHER repo's project. The expiry script scopes to this
 # checkout for the same reason the picker does: unblocking an issue this
 # checkout cannot check out just moves the stall somewhere quieter.
@@ -244,11 +285,18 @@ class H(BaseHTTPRequestHandler):
         if "teams(" in q:
             data = {"teams": {"nodes": [{"id": "t", "key": "ASK", "name": "ASK"}]}}
         elif "issueRemoveLabel" in q:
-            # Idempotent and always successful, like the live mutation. The
-            # second remover of the same label gets the same answer as the first.
-            with STATE_LOCK:
-                REMOVED.add((v.get("id"), v.get("labelId")))
-            data = {"issueRemoveLabel": {"success": True}}
+            # ONE issue's removal is REFUSED the way Linear refuses one: the
+            # request is accepted and success comes back false. linear-sync
+            # already reads that and exits nonzero; what is under test is
+            # whether the SWEEP carries the failure into its report.
+            if v.get("id") == "ASK-915":
+                data = {"issueRemoveLabel": {"success": False}}
+            else:
+                # Idempotent and always successful, like the live mutation. The
+                # second remover of the same label gets the same answer as the first.
+                with STATE_LOCK:
+                    REMOVED.add((v.get("id"), v.get("labelId")))
+                data = {"issueRemoveLabel": {"success": True}}
         elif "issueUpdate" in q:
             data = {"issueUpdate": {"success": True}}
         elif "commentCreate" in q:
@@ -265,7 +313,34 @@ class H(BaseHTTPRequestHandler):
             data = {"issue": {"history": {"nodes": history_for(i["identifier"])}} if i else None}
         elif "comments(" in q:
             i = BY_ID.get(v.get("id"))
-            data = {"issue": dict(i, comments={"nodes": comments_for(i["identifier"])}) if i else None}
+            if not i:
+                data = {"issue": None}
+            else:
+                # SERVED THE WAY LINEAR SERVES IT, verified live against ASK-288
+                # on 2026-08-11 rather than invented here (the fixtures-from-
+                # producers scar): NEWEST-FIRST, capped at \`first\`, with a
+                # pageInfo carrying hasNextPage and an endCursor, and honouring
+                # filter.createdAt.gte when the caller sends one. The old
+                # fixture returned every comment in one unpaged ascending list,
+                # so a reader that only ever looked at page one passed here and
+                # lost the marker in production.
+                nodes = sorted(comments_for(i["identifier"]),
+                               key=lambda n: n["createdAt"], reverse=True)
+                gte = (((v.get("s") or "") if "gte:" in q or "gte: " in q else "") or "")
+                if gte:
+                    nodes = [n for n in nodes if n["createdAt"] >= gte]
+                after = v.get("a")
+                if after:
+                    ids = [n["id"] for n in nodes]
+                    nodes = nodes[ids.index(after) + 1:] if after in ids else []
+                import re as _re
+                mm = _re.search(r"comments\(\s*first:\s*(\d+)", q)
+                size = int(mm.group(1)) if mm else 100
+                page, more = nodes[:size], len(nodes) > size
+                data = {"issue": dict(i, comments={
+                    "nodes": page,
+                    "pageInfo": {"hasNextPage": more,
+                                 "endCursor": page[-1]["id"] if page else None}})}
         elif "issue(" in q:
             ident = v.get("id")
             if ident == RACE:
@@ -842,6 +917,104 @@ if grep -q "cleared_without_evidence" "$REPO_SCRIPTS/capability_block_expiry.py"
 else
   bad "the run summary counts a clear that lost its evidence" \
       "no cleared_without_evidence key -- the count folds an un-park with no record into the ordinary total"
+fi
+
+# --- 15. a busy thread does not hide the current park's probe ---------------
+# (codex PR #77 round 6, capability_block_expiry.py:426.) The reader asked for
+# `comments(first: 100)` and never paginated. That connection is served
+# NEWEST-FIRST -- verified live against ASK-288 on 2026-08-11, not assumed -- so
+# an issue that collected 100 comments after its park pushed the park's own
+# marker off the only page anyone read. The probe is present, current and
+# passing; the sweep reports "no recorded probe" and leaves it parked forever.
+# That is the never-expiring block ASK-288 removes, arriving through a
+# pagination default instead of through a missing label verb.
+if printf '%s' "$MUTATIONS" | grep -q "ASK-914"; then
+  ok "a park's probe survives 120 later comments on the thread"
+else
+  bad "a park's probe survives 120 later comments on the thread" \
+      "ASK-914 stayed parked -- its passing marker fell off page one of a newest-first comment connection, so a chatty issue is a permanent block again"
+fi
+# The absence of a mutation is also what a crashed read looks like. Pin that the
+# issue was examined and that the reason it was NOT cleared is not 'unprobeable'.
+if printf '%s\n' "$OUT" | grep "ASK-914" | grep -q "no recorded probe"; then
+  bad "negative self-test: ASK-914 found its probe" \
+      "the sweep reported ASK-914 as unprobeable -- the marker is on the thread, just not on the page that was read"
+else
+  ok "negative self-test: ASK-914 is never reported as unprobeable"
+fi
+
+# --- 16. a REFUSED removal is counted, said, and exits nonzero --------------
+# (codex PR #77 round 6, capability_block_expiry.py:639.) A failed unblock
+# printed a line and then vanished: it incremented no counter, it was left out
+# of `still_blocked`, and the process exited 0. This sweep runs unattended
+# before every pick, so exit 0 plus a summary that adds up is the only thing
+# anyone downstream looks at. A recovery path that cannot recover reported
+# itself as a healthy run -- the same silence ASK-288 exists to end.
+FAILSTOP_OUT="$WORK/failstop.out"
+env "${LINEAR_ENV[@]}" python3 "$EXPIRY" --repo-project kipi-failstop --apply \
+  > "$FAILSTOP_OUT" 2>&1
+FAILSTOP_RC=$?
+if [ "$FAILSTOP_RC" -ne 0 ]; then
+  ok "a sweep whose unblock was refused exits nonzero (rc=$FAILSTOP_RC)"
+else
+  bad "a sweep whose unblock was refused exits nonzero" \
+      "rc=0 -- an unattended recovery failure is indistinguishable from a clean run: $(head -3 "$FAILSTOP_OUT")"
+fi
+if grep -q '"still_blocked": 1' "$FAILSTOP_OUT"; then
+  ok "the refused removal is counted in still_blocked"
+else
+  bad "the refused removal is counted in still_blocked" \
+      "the issue is still parked and the summary does not say so: $(grep 'capability-expiry: {' "$FAILSTOP_OUT" | head -c 300)"
+fi
+if grep -q '"unblock_failed": 1' "$FAILSTOP_OUT"; then
+  ok "the summary names the removal that Linear refused"
+else
+  bad "the summary names the removal that Linear refused" \
+      "no unblock_failed key -- a probe that passed and a write that did not land reads as an ordinary still-blocked issue: $(grep 'capability-expiry: {' "$FAILSTOP_OUT" | head -c 300)"
+fi
+# NEGATIVE SELF-TEST: the three above also describe a sweep that never reached
+# ASK-915 at all. Pin that the removal really was attempted.
+if grep "issueRemoveLabel" "$WORK/requests.log" | grep -q "ASK-915"; then
+  ok "negative self-test: the refused removal was actually attempted"
+else
+  bad "negative self-test: the refused removal was actually attempted" \
+      "no issueRemoveLabel for ASK-915 -- the assertions above passed without the failure path running"
+fi
+
+# --- 17. a write probe over a MISSING directory is kept, not discarded ------
+# (codex PR #77 round 6, capability_block_expiry.py:225.) probe_write fell back
+# to the PARENT when its target was not already a directory. So the commonest
+# shape of this kind -- "the directory I have to write into does not exist yet"
+# -- tested a parent that was writable all along, passed at park time, and the
+# record-time validator then threw it away as already-passing and wrote `none`.
+# `none` is hand-clear-only. The one probe kind whose capability is most often
+# genuinely absent was the one kind that could never expire.
+KEPT_916="$(record_probe "" "write:$ABSENT_DIR")"
+if [ "$KEPT_916" = "write:$ABSENT_DIR" ]; then
+  ok "a park over a missing directory RECORDS the write probe"
+else
+  bad "a park over a missing directory records the write probe" \
+      "the validator returned '$KEPT_916' -- it tested $WORK (the writable parent), called it a pass, and dropped the probe, so this block is hand-clear-only"
+fi
+if printf '%s' "$MUTATIONS" | grep -q "ASK-916"; then
+  bad "a write probe fails while its directory is missing" \
+      "ASK-916 was un-parked while $ABSENT_DIR does not exist"
+else
+  ok "a write probe fails while its directory is missing"
+fi
+# ...and the arrival half, which is the point of the whole issue: create the
+# directory and the SAME recorded probe clears the block with no human acting.
+mkdir -p "$ABSENT_DIR"
+BEFORE_MKDIR="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" python3 "$EXPIRY" --repo-project kipi-system --apply \
+  > "$WORK/mkdir.out" 2>&1
+MKDIR_MUTATIONS="$(tail -n +"$((BEFORE_MKDIR + 1))" "$WORK/requests.log" \
+  | grep -E "issueRemoveLabel|issueUpdate" || true)"
+if printf '%s' "$MKDIR_MUTATIONS" | grep -q "ASK-916"; then
+  ok "creating the directory clears the block with no human in the path"
+else
+  bad "creating the directory clears the block" \
+      "ASK-916 stayed parked after $ABSENT_DIR was created: $(grep ASK-916 "$WORK/mkdir.out" | head -c 300)"
 fi
 
 # --- unblock verb ------------------------------------------------------------
