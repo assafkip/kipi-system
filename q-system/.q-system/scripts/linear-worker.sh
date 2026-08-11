@@ -333,7 +333,19 @@ if [ -f "$EXPIRY" ]; then
   [ -n "$EXPIRY_OUT" ] && printf '%s\n' "$EXPIRY_OUT" | while IFS= read -r line; do
     say "$line"
   done
-  [ "$EXPIRY_RC" -ne 0 ] && say "worker: the capability re-test exited $EXPIRY_RC -- parked blocks were NOT re-tested this run (the pick continues)"
+  # TWO DIFFERENT FAILURES, TWO DIFFERENT LINES (codex, PR #77 round 6). 2 is
+  # capability_block_expiry.EXIT_PARTIAL: the sweep RAN, every probe was
+  # re-tested, and at least one removal was refused by Linear. Every other
+  # nonzero means it did not run at all. Printing "parked blocks were NOT
+  # re-tested" for the first is false, and a false line here is how a real
+  # recovery failure gets read as the usual noise and skipped.
+  # test-capability-block-expiry.sh pins this literal against the module
+  # constant, because a number copied into bash is one contract in two places.
+  if [ "$EXPIRY_RC" -eq 2 ]; then
+    say "worker: the capability re-test ran, but Linear REFUSED at least one unblock -- those issues passed their probe and are still parked (the pick continues; the per-issue lines are above)"
+  elif [ "$EXPIRY_RC" -ne 0 ]; then
+    say "worker: the capability re-test exited $EXPIRY_RC -- parked blocks were NOT re-tested this run (the pick continues)"
+  fi
 fi
 
 # --- pick ready issues ------------------------------------------------------

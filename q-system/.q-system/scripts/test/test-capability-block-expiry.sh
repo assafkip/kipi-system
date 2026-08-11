@@ -981,6 +981,25 @@ else
       "no issueRemoveLabel for ASK-915 -- the assertions above passed without the failure path running"
 fi
 
+# ...and the worker has to tell that exit code apart from "the sweep did not
+# run", or its one line about this step is false exactly when the step failed
+# in the way that matters. The literal is READ FROM THE MODULE, never typed
+# here: a number copied into bash is one contract in two files, and this
+# assertion is the only thing that notices when they stop agreeing.
+PARTIAL_CODE="$(python3 - "$REPO_SCRIPTS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import capability_block_expiry as cbe
+print(cbe.EXIT_PARTIAL)
+PY
+)"
+if grep -q "EXPIRY_RC\" -eq $PARTIAL_CODE" "$WORKER"; then
+  ok "the worker branches on EXIT_PARTIAL ($PARTIAL_CODE) rather than lumping it in"
+else
+  bad "the worker branches on EXIT_PARTIAL" \
+      "no test for rc=$PARTIAL_CODE in $WORKER -- a refused unblock is reported as 'parked blocks were NOT re-tested', which is false and reads as ordinary noise"
+fi
+
 # --- 17. a write probe over a MISSING directory is kept, not discarded ------
 # (codex PR #77 round 6, capability_block_expiry.py:225.) probe_write fell back
 # to the PARENT when its target was not already a directory. So the commonest

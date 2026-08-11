@@ -496,7 +496,7 @@ expect_red "mutation: deleting a row whose site is adopted by a neighbour -> cou
 # inserted directly BENEATH an existing marker, which inherits that marker --
 # caught only by the `sites` count.
 SRCMUT="$WORK/worker-extra-exit.sh"
-python3 - "$SRC" "$SRCMUT" <<'EOF'
+KIPI_NOTIFY=/usr/bin/true python3 - "$SRC" "$SRCMUT" <<'EOF'
 import re, sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 for i, ln in enumerate(lines):
@@ -514,7 +514,7 @@ else
 fi
 
 SRCMUT2="$WORK/worker-inherited-exit.sh"
-python3 - "$SRC" "$SRCMUT2" <<'EOF'
+KIPI_NOTIFY=/usr/bin/true python3 - "$SRC" "$SRCMUT2" <<'EOF'
 import sys
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 for i, ln in enumerate(lines):
