@@ -240,7 +240,7 @@ delivered "$D" && bad "fixture guard outranks the decision gate" "curl was calle
 if [ ! -f "$AUDIT" ]; then
   bad "notify-callsite-audit.py exists" "missing at $AUDIT"
 else
-  if python3 "$AUDIT" --repo "$REPO" >"$WORK/audit.out" 2>&1; then
+  if python3 "$AUDIT" --repo "$REPO" >"$WORK/audit.out" 2>&1; then  # fable-discipline-lint-skip: the audit only READS files; it never execs the notifier
     ok "every notifier call site in this repo declares a --kind"
   else
     bad "every notifier call site declares a --kind" "$(head -20 "$WORK/audit.out")"
@@ -265,12 +265,72 @@ else
   grep -q 'notify-kind-skip' "$PLANT/q-system/.q-system/scripts/rogue-producer.sh" \
     && bad "harness: the planted rogue is pre-exempted" "it carries a skip marker"
   ( cd "$PLANT" && git init -q . && git add -A && git -c user.email=t@t -c user.name=t commit -qm t ) >/dev/null 2>&1
-  if python3 "$AUDIT" --repo "$PLANT" >"$WORK/plant.out" 2>&1; then
+  if python3 "$AUDIT" --repo "$PLANT" >"$WORK/plant.out" 2>&1; then  # fable-discipline-lint-skip: the audit only READS files; it never execs the notifier
     bad "audit CATCHES a bare call site (negative self-test)" "planted rogue producer passed"
   else
     grep -q 'rogue-producer.sh' "$WORK/plant.out" \
       && ok "audit CATCHES a bare call site and names the file" \
       || bad "audit names the offending file" "$(head -10 "$WORK/plant.out")"
+  fi
+
+  # --- 6b. THE SHAPES IT MISSED (PR #72 review, minor) ------------------------
+  # One planted rogue proved the gate can fire; it did not prove the gate covers
+  # the forms a real producer takes. The reviewer planted four and the gate
+  # caught ONE. Every miss below would page the founder:
+  #   * `"$NOTIFY" "msg"` -- slack-notify.sh is mode 755, so a direct exec is
+  #     the NATURAL form, not an exotic one.
+  #   * `sh "$NOTIFY" "msg"` -- any interpreter, not just bash.
+  #   * a bare call whose 4-line window contains --kind in a COMMENT. The window
+  #     exists for the Python producers that build argv across lines; a comment
+  #     satisfying it means a rogue call can be exempted by prose next to it.
+  # This is a hole for FUTURE producers, which is the gate's entire stated
+  # purpose, so it is asserted shape by shape rather than in aggregate.
+  SHAPES="$WORK/shapes"; rm -rf "$SHAPES"; mkdir -p "$SHAPES/q-system/.q-system/scripts"
+  cp "$AUDIT" "$SHAPES/q-system/.q-system/scripts/" 2>/dev/null || true
+  # The REAL sink goes into the plant too. Case 6c asserts the fix text against
+  # ALLOWED_CLASSES, and the audit reads that list out of slack-notify.sh -- a
+  # plant without it exercises the "cannot read the enum" fallback instead of the
+  # thing under test, and 6c would fail for a reason 6c is not about.
+  cp "$NOTIFY" "$SHAPES/q-system/.q-system/scripts/" 2>/dev/null || true
+  # Assembled from a placeholder for the same reason as the plant above: a
+  # heredoc would put these literal call shapes in THIS file and the repo-wide
+  # audit at the top of section 6 would flag them.
+  {
+    echo '#!/bin/bash'
+    echo 'NOTIFY="$SCRIPT_DIR/slack-notify.sh"'
+    printf 'bash "$%s" "shape 1: bash-prefixed, bare"\n' NOTIFY
+    printf '"$%s" "shape 2: direct exec, the script is mode 755"\n' NOTIFY
+    printf 'sh "$%s" "shape 3: a different interpreter"\n' NOTIFY
+    printf 'bash "$%s" "shape 4: bare, but a comment below mentions the flag"\n' NOTIFY
+    echo '# TODO(ASK-999): decide whether this should be --kind receipt or a decision.'
+  } > "$SHAPES/q-system/.q-system/scripts/shapes-producer.sh"
+  ( cd "$SHAPES" && git init -q . && git add -A && git -c user.email=t@t -c user.name=t commit -qm t ) >/dev/null 2>&1
+  python3 "$AUDIT" --repo "$SHAPES" >"$WORK/shapes.out" 2>&1  # fable-discipline-lint-skip: the audit only READS files; it never execs the notifier
+  CAUGHT="$(grep -c 'shapes-producer.sh:' "$WORK/shapes.out" 2>/dev/null || echo 0)"
+  for n in 1 2 3 4; do
+    if grep -q "shape $n:" "$WORK/shapes.out"; then
+      ok "audit catches shape $n"
+    else
+      bad "audit catches shape $n" "$CAUGHT of 4 caught; output: $(head -20 "$WORK/shapes.out")"
+    fi
+  done
+
+  # --- 6c. the gate's fix text cannot drift from the runtime allowlist --------
+  # PR #72 review, minor: the fix text listed four classes while ALLOWED_CLASSES
+  # permits five, and kipi-dispatch.sh already uses the fifth (`credential`). An
+  # author following the gate's own instruction could not discover a class the
+  # codebase relies on. Asserted against slack-notify.sh rather than against a
+  # copy of the list, so the two cannot drift apart again silently.
+  RUNTIME_CLASSES="$(sed -n 's/^ALLOWED_CLASSES="\(.*\)"$/\1/p' "$NOTIFY")"
+  [ -n "$RUNTIME_CLASSES" ] || bad "harness: could not read ALLOWED_CLASSES from slack-notify.sh"
+  MISSING=""
+  for c in $RUNTIME_CLASSES; do
+    grep -q -- "$c" "$WORK/shapes.out" || MISSING="$MISSING $c"
+  done
+  if [ -z "$MISSING" ]; then
+    ok "the audit's fix text names every class the runtime actually allows"
+  else
+    bad "the audit's fix text names every allowed class" "absent from the fix text:$MISSING"
   fi
 fi
 
