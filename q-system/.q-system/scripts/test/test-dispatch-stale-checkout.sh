@@ -59,6 +59,11 @@ done
 HARNESS="$WORK/stale_check.sh"
 {
   echo 'set -uo pipefail'
+  # ONE LINE PER PROCESS IMAGE. Case 2c asserts that a successful self-heal
+  # REPLACES the running image rather than finishing the cycle on the control
+  # code the merge just superseded, and the only way to observe that from
+  # outside is to count how many times the script started.
+  echo 'printf "HARNESS-START\n" >&2'
   echo 'REPO="$PWD"'
   # say() goes to STDERR, matching production where it appends to $LOG. On stdout it
   # would be swallowed by any command substitution around the code under test.
@@ -165,6 +170,33 @@ echo "$OUT" | grep -q 'VERDICT=RUN' \
 echo "$OUT" | grep -q '^PAGE ' \
   && bad "THE DEFECT: paged the founder about something it handled itself" \
   || ok "no page: the condition was handled, so there is nothing to tell him"
+
+echo
+echo "== 2c. after a self-heal the cycle must RESTART, not finish on old code =="
+# PR #72 review, minor. On ff_rc == 0 the function returned 0 and the SAME bash
+# process carried on. The refusal this handler replaced existed precisely because
+# dispatching "would run superseded control code" -- and after the fast-forward
+# that is exactly what the rest of the cycle did. git unlinks and recreates, so
+# the open fd survives and bash keeps executing the PRE-merge bytes: no
+# corruption, and no new code either. The guard's own text named the hazard and
+# then walked into it.
+#
+# Counting process starts is the check because it is the only thing observable
+# from outside that distinguishes "returned" from "re-executed".
+C2C="$(fresh_clone c-reexec)"
+advance_origin two-c
+S2C="$WORK/s2c"; mkdir -p "$S2C"
+OUT2C="$(run_check "$C2C" "$S2C" 2>&1)"
+STARTS="$(printf '%s\n' "$OUT2C" | grep -c 'HARNESS-START')"
+[ "$STARTS" -eq 2 ] \
+  && ok "the merged control code runs the rest of the cycle (2 process images)" \
+  || bad "THE DEFECT: $STARTS image(s); the cycle finished on pre-merge control code"
+# BOUNDED, AND THAT BOUND IS THE POINT. A re-exec inside a 15-minute launchd job
+# is a spin risk, so the second image must not re-exec again even though it will
+# take the same code path. Exactly 2 above is that assertion; this one names why.
+printf '%s\n' "$OUT2C" | grep -q 'VERDICT=RUN' \
+  && ok "the second image reaches a verdict and stops (no exec loop)" \
+  || bad "the re-exec did not terminate in a verdict: $(printf '%s' "$OUT2C" | tr '\n' ' ')"
 
 echo
 echo "== 2b. behind + a path the merge would clobber -> REFUSE and page =="

@@ -35,6 +35,11 @@
 # class this repo keeps finding. One source of truth, asked politely.
 set -uo pipefail
 
+# Captured at ENTRY so stale_check's post-self-heal `exec` can replay the exact
+# invocation. "$@" inside a function is that function's argv, not the script's,
+# so reading it there would silently drop every flag launchd passed.
+DISPATCH_ARGV=("$@")
+
 REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # HARDCODED OFF $REPO, DELIBERATELY NOT AN ENV VAR. Every other path in this file
 # takes a KIPI_* override for testability; this one must not. A variable here would
@@ -320,7 +325,38 @@ stale_check() {
   if [ "$ff_rc" -eq 0 ]; then
     # Handled. The founder hears nothing, which is the entire point.
     page_clear stale-checkout
-    return 0
+    # RE-EXEC, DO NOT RETURN (PR #72 review, minor). Returning 0 here let the SAME
+    # bash process finish the cycle -- on the control code the fast-forward had
+    # just superseded, which is verbatim the hazard this guard's own text at the
+    # top of the block names as its reason for existing. git unlinks and recreates
+    # the file, so the open fd survives and bash keeps executing the PRE-merge
+    # bytes: nothing corrupts, and nothing new runs either. Self-healing into a
+    # cycle of stale code is the refusal it replaced, minus the page.
+    #
+    # BOUNDED AT ONE. An unbounded re-exec inside a 15-minute launchd job is a
+    # spin, and the second image takes this same code path. It cannot loop --
+    # after the merge HEAD equals origin/main, so stale_check returns early well
+    # before here -- but "cannot" is an argument and the env flag is a brake.
+    # Exported so it survives the exec; test 2c asserts exactly 2 images.
+    if [ "${KIPI_DISPATCH_REEXECED:-0}" = "1" ]; then
+      say "stale-check: already re-executed once this cycle; continuing on the current image"
+      return 0
+    fi
+    export KIPI_DISPATCH_REEXECED=1
+    say "stale-check: fast-forwarded; re-executing so the rest of this cycle runs the merged code"
+    # $DISPATCH_ARGV is captured at entry because "$@" inside a function is the
+    # FUNCTION's argv, not the script's. The ${x[@]+"${x[@]}"} guard is required:
+    # under `set -u`, bash 3.2 (what macOS ships) errors on "${arr[@]}" for an
+    # EMPTY array, and it also keeps this line safe in the test harness, which
+    # extracts this function without the capture above it.
+    # THE INTERPRETER IS EXPLICIT, NOT INHERITED FROM THE EXEC BIT. `exec "$0"`
+    # requires $0 to be executable and to carry a usable shebang, which is true
+    # of this file and NOT true of a caller that invokes it as `bash <path>` --
+    # the paired test harness does exactly that and got "Permission denied,
+    # cannot execute". Re-execing through the same bash that is already running
+    # depends on neither, and keeps the second image on the same interpreter as
+    # the first instead of whatever `bash` resolves to on PATH.
+    exec "${BASH:-bash}" "$0" ${DISPATCH_ARGV[@]+"${DISPATCH_ARGV[@]}"}
   fi
   if [ "$ff_rc" -eq 2 ]; then
     # No answer is not proof of staleness. Same fail-open posture as the fetch above.
