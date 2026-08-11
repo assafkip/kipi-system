@@ -820,10 +820,29 @@ class _IssueLock:
     recovery path permanently -- which would recreate the never-expiring block
     this whole issue exists to remove.
 
-    Two failure directions, decided opposite ways on purpose:
-      - the lock cannot be CREATED (read-only home, missing dir): run unlocked.
-        A lock that refuses every unblock is worse than the duplicate comment it
-        prevents.
+    BOTH failure directions refuse (codex, PR #77 round 5). Round 4 had the
+    can't-CREATE case run unlocked, reasoning that a lock refusing every unblock
+    is worse than the duplicate comment it prevents. That is wrong in the only
+    direction that matters here. The two racers share one home directory, so a
+    broken lock dir is not a coin flip that hits one of them -- it hits both, at
+    the same time, and hands back exactly the unserialised read-decide-write this
+    class exists to remove. The failure is silent and its damage is permanent:
+    Linear comments cannot be deleted. A refusal is loud, writes nothing, leaves
+    the issue in the state it was already in, and the sweep retries in 15 minutes.
+
+    NO FALLBACK DIRECTORY, deliberately. A second location only serialises the
+    two processes if both CHOSE it, and one process can fail on the primary
+    (ENOSPC, EMFILE, a transient perms change) while the other succeeds -- then
+    they hold two different locks, both believe they are serialised, and the
+    duplicate lands anyway. Exclusion theatre is worse than a refusal, because a
+    refusal is visible. And this is not the never-expiring block the issue
+    removes: that block needed a HUMAN to delete a label, while this one clears
+    itself the moment the directory works, which is a precondition every other
+    part of the loop already has.
+
+      - the lock cannot be CREATED (read-only home, a file where the dir goes):
+        refuse, naming the path, so the operator fixes the directory instead of
+        reading exit 1 as "Linear is down".
       - the lock cannot be ACQUIRED within LOCK_WAIT_SECONDS: refuse. The holder
         is past its own transport timeouts, and writing anyway is exactly the
         duplicate this class is here to stop. The sweep runs again in 15 minutes.
@@ -834,6 +853,7 @@ class _IssueLock:
         self.path = os.path.join(_lock_dir(), f"unblock-{safe}.lock")
         self.fh = None
         self.held = False
+        self.error = None
 
     def __enter__(self):
         import fcntl
@@ -842,8 +862,7 @@ class _IssueLock:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self.fh = open(self.path, "a+")
         except OSError as exc:
-            print(f"WARN: no write lock ({exc}); a concurrent unblock could "
-                  f"double-report this removal", file=sys.stderr)
+            self.error = exc
             return self
         deadline = time.monotonic() + LOCK_WAIT_SECONDS
         while True:
@@ -862,9 +881,25 @@ class _IssueLock:
         return False
 
     @property
-    def contended(self) -> bool:
-        """The lock exists, someone else holds it, and waiting timed out."""
-        return self.fh is not None and not self.held
+    def refusal(self) -> str | None:
+        """Why this write must not go out, or None when the lock is held.
+
+        One property for both directions so the caller cannot handle one and
+        forget the other -- which is how the creation case shipped unlocked.
+        """
+        if self.held:
+            return None
+        if self.error is not None:
+            return (f"the unblock lock at {self.path} could not be created "
+                    f"({self.error}). Refusing to write without mutual exclusion: "
+                    f"a second sweep in the same window posts a second permanent "
+                    f"recovery comment, and Linear comments cannot be deleted. "
+                    f"Fix the directory (or set $KIPI_LOCK_DIR); the next sweep "
+                    f"clears the block with no human in the path.")
+        return (f"another process has held the unblock lock for longer than "
+                f"{LOCK_WAIT_SECONDS}s ({self.path}). Refusing to write blind -- "
+                f"that is how one removal becomes two recovery comments. "
+                f"The next sweep retries.")
 
 
 def cmd_unblock(args) -> int:
@@ -899,15 +934,13 @@ def cmd_unblock(args) -> int:
     THE READ AND THE WRITE ARE ONE CRITICAL SECTION (codex, PR #77 round 4).
     Separating "did I remove it" from "was it already gone" only works if no
     other process can remove it between the two, which is what _IssueLock buys.
-    See that class for why the lock is a host lock and why it fails open on
-    creation and closed on contention.
+    See that class for why the lock is a host lock and why NEITHER failure
+    direction -- cannot create, cannot acquire -- is allowed to write anyway.
     """
     with _IssueLock(args.issue) as lock:
-        if lock.contended:
-            print(f"BLOCK: another process has held the unblock lock for "
-                  f"{args.issue} longer than {LOCK_WAIT_SECONDS}s ({lock.path}). "
-                  f"Refusing to write blind -- that is how one removal becomes "
-                  f"two recovery comments. The next sweep retries.", file=sys.stderr)
+        refusal = lock.refusal
+        if refusal:
+            print(f"BLOCK: {args.issue}: {refusal}", file=sys.stderr)
             return EXIT_USAGE
         return _unblock_locked(args)
 

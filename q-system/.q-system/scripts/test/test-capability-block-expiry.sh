@@ -204,6 +204,15 @@ BY_ID = {i["identifier"]: i for i in BOARD}
 # API does, which is precisely why the loser cannot tell it lost by asking.
 RACE = "ASK-911"
 BY_ID[RACE] = issue(RACE, ["owner:sana", "blocked:capability"])
+# Two more issues held OFF the board for the same reason ASK-911 is: each one
+# exercises cmd_unblock / clear_block directly, and a tenth clearable issue in
+# the sweep would move every count assertion above for an unrelated reason.
+# 912: the lock cannot be created (codex PR #77 round 5, linear-sync.py:844).
+# 913: the removal lands and the recovery COMMENT is rejected (round 5,
+#      capability_block_expiry.py:519).
+NOLOCK, REJECT_COMMENT = "ASK-912", "ASK-913"
+for _ident in (NOLOCK, REJECT_COMMENT):
+    BY_ID[_ident] = issue(_ident, ["owner:sana", "blocked:capability"])
 RACE_READ_DELAY = float(os.environ.get("FIXTURE_RACE_DELAY") or "1.0")
 STATE_LOCK = threading.Lock()
 REMOVED = set()  # (issue identifier, label id) pairs actually taken off
@@ -243,7 +252,14 @@ class H(BaseHTTPRequestHandler):
         elif "issueUpdate" in q:
             data = {"issueUpdate": {"success": True}}
         elif "commentCreate" in q:
-            data = {"commentCreate": {"success": True, "comment": {"id": "new"}}}
+            # One issue's comments are REJECTED the way Linear rejects one: the
+            # request is accepted, success comes back false, nothing is created.
+            # linear-sync.cmd_progress already catches that shape and exits
+            # nonzero -- what is under test is whether the CALLER reads the code.
+            if ((v.get("input") or {}).get("issueId")) == REJECT_COMMENT:
+                data = {"commentCreate": {"success": False, "comment": None}}
+            else:
+                data = {"commentCreate": {"success": True, "comment": {"id": "new"}}}
         elif "history(" in q:
             i = BY_ID.get(v.get("id"))
             data = {"issue": {"history": {"nodes": history_for(i["identifier"])}} if i else None}
@@ -714,6 +730,118 @@ if grep -q "capability-probe:" "$WORKER"; then
   ok "the worker records a capability-probe marker when it parks"
 else
   bad "the worker records a capability-probe marker" "no capability-probe: in $WORKER"
+fi
+
+# --- 13. the lock cannot be CREATED: refuse, never write unlocked -----------
+# (codex PR #77 round 5, linear-sync.py:844.) Round 4 added the host lock and
+# decided that a lock which cannot be created should run UNLOCKED, on the theory
+# that a lock refusing every unblock is worse than a duplicate comment. That
+# reasoning is wrong in the one direction that matters: the failure is silent,
+# both racers take it at the same time (they share one home directory), and the
+# damage it lets through -- a second permanent "the capability arrived" comment
+# on an object whose comments cannot be deleted -- is the exact thing the lock
+# was added for. A refusal is loud, it changes nothing, and the sweep retries in
+# 15 minutes.
+#
+# The lock dir is put UNDER A REGULAR FILE so makedirs raises for real. A
+# non-existent path would just be created, and a chmod-000 dir is not reliable
+# when the test runs as root in CI.
+NOT_A_DIR="$WORK/this-is-a-file"
+: > "$NOT_A_DIR"
+BEFORE_NOLOCK="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" KIPI_LOCK_DIR="$NOT_A_DIR/locks" \
+  python3 "$REPO_SCRIPTS/linear-sync.py" unblock ASK-912 blocked:capability \
+  > "$WORK/nolock.out" 2>&1
+NOLOCK_RC=$?
+NOLOCK_MUTATIONS="$(tail -n +"$((BEFORE_NOLOCK + 1))" "$WORK/requests.log" \
+  | grep -c "issueRemoveLabel" || true)"
+if [ "$NOLOCK_RC" -ne 0 ]; then
+  ok "an unblock that cannot take the lock refuses (rc=$NOLOCK_RC)"
+else
+  bad "an unblock that cannot take the lock refuses" \
+      "rc=0 -- the write went out with no mutual exclusion, which is how one removal becomes two permanent comments: $(head -3 "$WORK/nolock.out")"
+fi
+if [ "$NOLOCK_MUTATIONS" = "0" ]; then
+  ok "an unlockable unblock sends no mutation at all"
+else
+  bad "an unlockable unblock sends no mutation" \
+      "$NOLOCK_MUTATIONS removal(s) sent without the lock held"
+fi
+# The refusal has to name the lock, or the operator reads exit 1 as "Linear is
+# down" and never fixes the directory that is actually broken.
+if grep -qi "lock" "$WORK/nolock.out"; then
+  ok "the refusal names the lock it could not take"
+else
+  bad "the refusal names the lock it could not take" \
+      "nothing about a lock in: $(head -3 "$WORK/nolock.out")"
+fi
+# NEGATIVE SELF-TEST. The three assertions above also describe a script that is
+# simply broken for ASK-912. Same command, same issue, WORKING lock dir: it must
+# succeed. Without this the case passes for any failure whatsoever.
+env "${LINEAR_ENV[@]}" KIPI_LOCK_DIR="$WORK/locks" \
+  python3 "$REPO_SCRIPTS/linear-sync.py" unblock ASK-912 blocked:capability \
+  > "$WORK/nolock-control.out" 2>&1
+NOLOCK_CONTROL_RC=$?
+if [ "$NOLOCK_CONTROL_RC" -eq 0 ]; then
+  ok "negative self-test: the same unblock with a usable lock dir succeeds"
+else
+  bad "negative self-test: the same unblock with a usable lock dir succeeds" \
+      "rc=$NOLOCK_CONTROL_RC -- the refusal above proved nothing about the lock: $(head -3 "$WORK/nolock-control.out")"
+fi
+
+# --- 14. a REJECTED recovery comment is not reported as a plain clear -------
+# (codex PR #77 round 5, capability_block_expiry.py:519.) The label removal is
+# checked; the comment that follows it was fire-and-forget. So a rejected
+# commentCreate left the issue un-parked with NO record of which probe cleared
+# it -- the recorded probe is the only evidence the un-park was legitimate --
+# and the run still counted a clean recovery. Silent loss of the only durable
+# evidence, reported as success.
+#
+# The removal itself must still count: the label really did come off, and
+# reporting zero recoveries would be the opposite lie. What changes is that the
+# missing evidence is SAID, in the run line and in the summary.
+BEFORE_REJECT="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" python3 - "$REPO_SCRIPTS" > "$WORK/reject.out" 2>&1 <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import capability_block_expiry as cbe
+outcome, detail = cbe.clear_block("ASK-913", "path:/fixture", "fixture evidence")
+print("outcome=%s is_plain_clear=%s detail=%s" % (outcome, outcome == cbe.CLEARED, detail))
+PY
+REJECT_REQS="$(tail -n +"$((BEFORE_REJECT + 1))" "$WORK/requests.log" || true)"
+if grep -q "is_plain_clear=False" "$WORK/reject.out"; then
+  ok "a clear whose recovery comment was rejected is not reported as a plain clear"
+else
+  bad "a clear whose recovery comment was rejected is not reported as a plain clear" \
+      "clear_block returned the ordinary success verdict for an un-park that left no evidence on the issue: $(head -3 "$WORK/reject.out")"
+fi
+if grep -qi "comment" "$WORK/reject.out"; then
+  ok "the verdict says the comment is what failed"
+else
+  bad "the verdict says the comment is what failed" \
+      "the detail does not mention the comment, so the log cannot tell this from a failed removal: $(head -3 "$WORK/reject.out")"
+fi
+# NEGATIVE SELF-TESTS. The assertions above must not pass because clear_block
+# crashed, and must not pass because it never got as far as the comment.
+if grep -q "^outcome=" "$WORK/reject.out"; then
+  ok "negative self-test: clear_block ran to a verdict (not an exception)"
+else
+  bad "negative self-test: clear_block ran to a verdict" \
+      "no verdict line -- the assertions above passed vacuously: $(head -5 "$WORK/reject.out")"
+fi
+if printf '%s' "$REJECT_REQS" | grep -q "issueRemoveLabel"; then
+  ok "negative self-test: the removal really happened, only the comment failed"
+else
+  bad "negative self-test: the removal really happened" \
+      "no removal mutation -- this case is testing a failed unblock, not a failed comment"
+fi
+# ...and the sweep's summary has to carry it, or a reader counting recoveries
+# cannot tell which of them are on the record.
+if grep -q "cleared_without_evidence" "$REPO_SCRIPTS/capability_block_expiry.py"; then
+  ok "the run summary counts a clear that lost its evidence"
+else
+  bad "the run summary counts a clear that lost its evidence" \
+      "no cleared_without_evidence key -- the count folds an un-park with no record into the ordinary total"
 fi
 
 # --- unblock verb ------------------------------------------------------------

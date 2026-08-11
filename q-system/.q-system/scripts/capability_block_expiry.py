@@ -457,10 +457,12 @@ def _sync(*args) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-# What clear_block did. Only CLEARED may be counted as a recovery or write a
-# comment; NOOP and FAILED both mean this process changed nothing, for opposite
-# reasons that a reader of the log has to be able to tell apart.
-CLEARED, NOOP, FAILED = "cleared", "noop", "failed"
+# What clear_block did. Only CLEARED and CLEARED_SILENT removed the label, so
+# only those two count as a recovery; NOOP and FAILED both mean this process
+# changed nothing, for opposite reasons a reader of the log has to be able to
+# tell apart. CLEARED_SILENT is a real recovery whose EVIDENCE did not land --
+# see clear_block for why that is its own word and not a warning inside CLEARED.
+CLEARED, CLEARED_SILENT, NOOP, FAILED = "cleared", "cleared_no_evidence", "noop", "failed"
 
 
 def clear_block(identifier: str, probe: str, evidence: str,
@@ -516,8 +518,29 @@ def clear_block(identifier: str, probe: str, evidence: str,
             f"**Next:** normal dispatch. If the new value is dead too, the run parks it "
             f"again with a fresh fingerprint and no human is in the path either way."
         )
-    _sync("progress", identifier, note, "--agent", "capability-expiry",
-          "--evidence", f"{probe} -> {evidence}")
+    # THE COMMENT'S EXIT CODE IS READ (codex, PR #77 round 5). It used to be
+    # discarded, so a rejected commentCreate -- which linear-sync already
+    # detects and exits nonzero on -- left the issue un-parked with NO record of
+    # which probe cleared it. The recorded probe is the only evidence the
+    # un-park was legitimate, and the run still reported an ordinary recovery:
+    # silent loss of the only durable evidence, counted as success.
+    #
+    # The removal still counts. The label really did come off and the picker
+    # will offer the issue again; reporting no recovery would be the opposite
+    # lie, and it would also strand the issue -- a second sweep finds the label
+    # already gone (NOOP) and never comments either. What changes is that the
+    # missing evidence gets its own word, which travels into the run line and
+    # the summary.
+    #
+    # ORDER IS DELIBERATE: remove first, comment second. Commenting first would
+    # mean a failed removal leaves a permanent "the capability arrived" comment
+    # on an issue that is still parked -- a false claim that cannot be deleted,
+    # which is worse than a true recovery with no note attached.
+    note_rc, note_detail = _sync("progress", identifier, note,
+                                 "--agent", "capability-expiry",
+                                 "--evidence", f"{probe} -> {evidence}")
+    if note_rc != 0:
+        return CLEARED_SILENT, f"{detail}; recovery COMMENT REJECTED: {note_detail}"
     return CLEARED, detail
 
 
@@ -552,7 +575,8 @@ def main(argv=None) -> int:
         return EXIT_USAGE
 
     counts = {"pass": 0, ROTATED: 0, "fail": 0, "unprobeable": 0, "unknown": 0,
-              "cleared": 0, "cleared_unverified": 0, "already_cleared": 0}
+              "cleared": 0, "cleared_unverified": 0, "already_cleared": 0,
+              "cleared_without_evidence": 0}
     if not parked:
         print(f"capability-expiry: no issue parked at {BLOCK_LABEL}"
               + (f" in {args.repo_project}" if args.repo_project else ""))
@@ -592,9 +616,19 @@ def main(argv=None) -> int:
                   f"(probe `{probe}` {verdict}: {evidence}) -- dry, use --apply")
             continue
         outcome, detail = clear_block(ident, probe, evidence, verified=verified)
-        if outcome == CLEARED:
+        if outcome in (CLEARED, CLEARED_SILENT):
+            # Both removed the label, so both are recoveries. The one that lost
+            # its comment is ALSO counted apart, because "this issue came back"
+            # and "this issue came back and says why" are different states and
+            # only the second one can be audited later from the issue itself.
             counts["cleared" if verified else "cleared_unverified"] += 1
-            print(f"capability-expiry: {ident} CLEARED -- probe `{probe}` {verdict} ({evidence})")
+            if outcome == CLEARED_SILENT:
+                counts["cleared_without_evidence"] += 1
+                print(f"capability-expiry: {ident} CLEARED but its recovery comment "
+                      f"did NOT post ({detail}) -- the issue is un-parked with no "
+                      f"record of the probe `{probe}` that cleared it")
+            else:
+                print(f"capability-expiry: {ident} CLEARED -- probe `{probe}` {verdict} ({evidence})")
         elif outcome == NOOP:
             # A concurrent sweep got there first. Reported, never counted: the
             # recovery is real but it is not THIS run's, and a count that adds
@@ -616,6 +650,10 @@ def main(argv=None) -> int:
         # lifted on evidence" gets a different number from "how many lifted
         # because a precondition moved", and one total cannot answer both.
         "cleared_unverified": counts["cleared_unverified"],
+        # A SUBSET of the two counts above, not a fourth bucket: these issues
+        # were un-parked and carry no comment saying why. A reader auditing the
+        # board from Linear alone will find nothing on them.
+        "cleared_without_evidence": counts["cleared_without_evidence"],
         "already_cleared": counts["already_cleared"],
         "still_blocked": counts["fail"],
         "unprobeable": counts["unprobeable"],
