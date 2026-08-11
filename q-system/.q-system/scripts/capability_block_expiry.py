@@ -119,6 +119,19 @@ def ls_exit_noop() -> int:
 
 
 # --- the probe allowlist -----------------------------------------------------
+# A probe answers with a bool -- or with one of these, when "it passed" would be
+# a stronger claim than the probe actually made. ROTATED clears the block like a
+# pass and reports itself as unverified; see probe_env.
+ROTATED = "rotated"
+# Every status run_probe may return. A probe returning anything else is a defect
+# in the probe, and this file's rule for anything it cannot account for is to
+# fail closed rather than un-park on a string it does not recognise.
+STATUSES = ("pass", ROTATED, "fail", "unprobeable", "unknown")
+# The two that take the label off. Kept as one name because main() and the
+# reporting both branch on it, and two copies of "which statuses clear" is how a
+# status ends up clearing in one place and not the other.
+CLEARING = ("pass", ROTATED)
+
 # Each returns (passed, evidence). The evidence string goes onto the Linear issue
 # verbatim: "I ran X and got Y" is this repo's bar, and an unblock that says only
 # "the probe passed" cannot be checked by the person reading it later.
@@ -168,6 +181,18 @@ def probe_env(value: str):
     Presence still answers the other case, where the variable was genuinely
     absent when the park was written and unset -> set is real evidence.
 
+    A ROTATION IS NOT AN ARRIVAL (codex, PR #77 round 4). The fingerprint proves
+    the value CHANGED. Nothing in this process can prove the replacement
+    authenticates -- pasting a second expired token rotates the value exactly as
+    well as pasting a working one -- so the rotation branch returns its own
+    status instead of `pass`. It still clears the block, because a rotation is
+    precisely the event the park is waiting on and refusing would make the
+    commonest capability block hand-clear-only again, which is the defect
+    ASK-288 exists to remove. What changes is the claim: an unverified clear is
+    reported and commented as unverified, and if the new credential is also dead
+    the next run parks it again with a fresh fingerprint. Bounded without a cap:
+    every cycle costs one human rotation, so nothing here can loop on its own.
+
     Reports SET/UNSET and the length, never the value. This string is posted to
     Linear, and a probe that proves a token exists by printing it is a leak.
     """
@@ -183,9 +208,10 @@ def probe_env(value: str):
         return False, (f"os.environ[{name!r}] -> unset; the park recorded a value, "
                        f"so an unset variable is a regression, not an arrival")
     changed = _env_fingerprint(name, raw) != fingerprint
-    return changed, (f"os.environ[{name!r}] -> set (len {len(raw)}), "
-                     f"{'differs from' if changed else 'IDENTICAL to'} the value "
-                     f"the park refused (fingerprint {fingerprint})")
+    return (ROTATED if changed else False), (
+        f"os.environ[{name!r}] -> set (len {len(raw)}), "
+        f"{'differs from' if changed else 'IDENTICAL to'} the value "
+        f"the park refused (fingerprint {fingerprint})")
 
 
 def probe_write(value: str):
@@ -223,7 +249,8 @@ PROBES = {
 def run_probe(spec: str):
     """Evaluate one recorded probe. Returns (status, evidence).
 
-    status is one of: pass, fail, unprobeable, unknown. Only `pass` may unblock.
+    status is one of STATUSES. Only the CLEARING ones may unblock, and only
+    `pass` may be reported as the capability having arrived.
     """
     spec = (spec or "").strip()
     if not spec or spec.lower() == PROBE_NONE:
@@ -242,6 +269,15 @@ def run_probe(spec: str):
         passed, evidence = fn(value)
     except Exception as exc:  # noqa: BLE1 -- fail closed on ANY probe defect
         return "fail", f"probe {spec!r} raised {type(exc).__name__}: {exc}"
+    if isinstance(passed, str):
+        # A probe may answer with a status of its own when "it passed" would
+        # overstate what it checked. An unrecognised one is a defect in the
+        # probe, and un-parking on a string this file cannot account for is the
+        # unrecoverable direction, so it fails closed rather than being trusted.
+        if passed not in STATUSES:
+            return "unknown", (f"probe {spec!r} returned unknown status "
+                               f"{passed!r} -- not trusted. {evidence}")
+        return passed, evidence
     return ("pass" if passed else "fail"), evidence
 
 
@@ -427,7 +463,8 @@ def _sync(*args) -> tuple[int, str]:
 CLEARED, NOOP, FAILED = "cleared", "noop", "failed"
 
 
-def clear_block(identifier: str, probe: str, evidence: str) -> tuple[str, str]:
+def clear_block(identifier: str, probe: str, evidence: str,
+                verified: bool = True) -> tuple[str, str]:
     """Remove the block label and, ONLY on a real removal, say why it came back.
 
     TWO SWEEPS CAN BE IN FLIGHT (codex, PR #77 round 3). The worker runs this
@@ -440,11 +477,14 @@ def clear_block(identifier: str, probe: str, evidence: str) -> tuple[str, str]:
     and the recovery reads as having happened twice.
 
     linear-sync now separates the two with EXIT_NOOP, so the caller stops
-    guessing. The residual window is the sub-second one INSIDE linear-sync,
-    between its label read and its mutation; two sweeps interleaved there both
-    see the label present and both comment. That is narrower than the 15-minute
-    overlap this closes, and closing it needs an atomic conditional write Linear
-    does not offer. Stated rather than papered over.
+    guessing. The overlapping half -- both sweeps inside linear-sync's own
+    read-decide-write together, both answered success -- is closed there too
+    (round 4), by a host lock around that critical section; see _IssueLock.
+
+    `verified` is the difference between "the capability arrived" and "the thing
+    the park was waiting on changed". Only a probe that tested the capability
+    itself may claim the first. See probe_env: a rotated credential is a real
+    reason to retry and is not evidence that the new credential works.
     """
     rc, detail = _sync("unblock", identifier, BLOCK_LABEL)
     if rc == ls_exit_noop():
@@ -454,14 +494,28 @@ def clear_block(identifier: str, probe: str, evidence: str) -> tuple[str, str]:
     # The comment is how a reader learns why the issue reappeared. Posted only
     # on a state CHANGE -- a re-test that changes nothing must not write a
     # comment, or a 15-minute loop becomes a comment every 15 minutes on an
-    # object whose comments cannot be deleted.
-    note = (
-        f"**The capability arrived. Un-parked automatically.** `{BLOCK_LABEL}` removed; "
-        f"the picker offers this issue again on the next run.\n\n"
-        f"Recorded probe: `{probe}`\n\n"
-        f"**Next:** normal dispatch. No founder action, no capability grant pending. "
-        f"If the block is still real, the run will park it again with a fresh probe."
-    )
+    # object whose comments cannot be deleted. For the same reason the headline
+    # must be true the first time: there is no editing it later.
+    if verified:
+        note = (
+            f"**The capability arrived. Un-parked automatically.** `{BLOCK_LABEL}` removed; "
+            f"the picker offers this issue again on the next run.\n\n"
+            f"Recorded probe: `{probe}`\n\n"
+            f"**Next:** normal dispatch. No founder action, no capability grant pending. "
+            f"If the block is still real, the run will park it again with a fresh probe."
+        )
+    else:
+        note = (
+            f"**The blocked precondition changed. Un-parked automatically, UNVERIFIED.** "
+            f"`{BLOCK_LABEL}` removed; the picker offers this issue again on the next run.\n\n"
+            f"Recorded probe: `{probe}`\n\n"
+            f"**What was checked:** the value this park refused is no longer the value "
+            f"in the environment. That is the event this block was waiting on. It is "
+            f"**not proof** the replacement works -- nothing here can authenticate a "
+            f"credential on the runner's behalf.\n\n"
+            f"**Next:** normal dispatch. If the new value is dead too, the run parks it "
+            f"again with a fresh fingerprint and no human is in the path either way."
+        )
     _sync("progress", identifier, note, "--agent", "capability-expiry",
           "--evidence", f"{probe} -> {evidence}")
     return CLEARED, detail
@@ -497,8 +551,8 @@ def main(argv=None) -> int:
         print(f"BLOCK: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    counts = {"pass": 0, "fail": 0, "unprobeable": 0, "unknown": 0,
-              "cleared": 0, "already_cleared": 0}
+    counts = {"pass": 0, ROTATED: 0, "fail": 0, "unprobeable": 0, "unknown": 0,
+              "cleared": 0, "cleared_unverified": 0, "already_cleared": 0}
     if not parked:
         print(f"capability-expiry: no issue parked at {BLOCK_LABEL}"
               + (f" in {args.repo_project}" if args.repo_project else ""))
@@ -521,21 +575,26 @@ def main(argv=None) -> int:
         status, evidence = run_probe(probe if probe is not None else PROBE_NONE)
         counts[status] = counts.get(status, 0) + 1
 
-        if status != "pass":
+        if status not in CLEARING:
             reason = {"unprobeable": "no recorded probe -- stays parked, nothing to re-test",
                       "unknown": "probe not runnable -- stays parked (fail closed)",
                       "fail": "still blocked"}[status]
             print(f"capability-expiry: {ident} {reason} [{evidence}]")
             continue
 
+        # A rotation clears, but it is never called a pass. The word travels
+        # into the dry-run line, the run log and the permanent Linear comment,
+        # and an operator plans against all three.
+        verified = status == "pass"
+        verdict = "passed" if verified else "changed (UNVERIFIED)"
         if not args.apply:
             print(f"capability-expiry: {ident} WOULD BE CLEARED "
-                  f"(probe `{probe}` passed: {evidence}) -- dry, use --apply")
+                  f"(probe `{probe}` {verdict}: {evidence}) -- dry, use --apply")
             continue
-        outcome, detail = clear_block(ident, probe, evidence)
+        outcome, detail = clear_block(ident, probe, evidence, verified=verified)
         if outcome == CLEARED:
-            counts["cleared"] += 1
-            print(f"capability-expiry: {ident} CLEARED -- probe `{probe}` passed ({evidence})")
+            counts["cleared" if verified else "cleared_unverified"] += 1
+            print(f"capability-expiry: {ident} CLEARED -- probe `{probe}` {verdict} ({evidence})")
         elif outcome == NOOP:
             # A concurrent sweep got there first. Reported, never counted: the
             # recovery is real but it is not THIS run's, and a count that adds
@@ -553,6 +612,10 @@ def main(argv=None) -> int:
     print("capability-expiry: " + json.dumps({
         "parked": len(parked),
         "cleared": counts["cleared"],
+        # Reported separately, never folded in: a reader asking "how many blocks
+        # lifted on evidence" gets a different number from "how many lifted
+        # because a precondition moved", and one total cannot answer both.
+        "cleared_unverified": counts["cleared_unverified"],
         "already_cleared": counts["already_cleared"],
         "still_blocked": counts["fail"],
         "unprobeable": counts["unprobeable"],

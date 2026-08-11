@@ -86,8 +86,8 @@ export FIXTURE_PROBE_909 FIXTURE_PROBE_910
 # request body is appended to requests.log so the assertions can ask what was
 # actually sent rather than what the script says it sent.
 cat > "$WORK/fixture-server.py" <<PY
-import json, os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import json, os, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REQ_LOG = "$WORK/requests.log"
 PRESENT = "$PRESENT"
@@ -189,17 +189,56 @@ FREE = issue("ASK-907", ["owner:sana"])
 BOARD = BOARD + [FOREIGN, FREE]
 BY_ID = {i["identifier"]: i for i in BOARD}
 
+# --- the concurrency fixture (codex PR #77 round 4) --------------------------
+# ASK-911 is deliberately NOT on the team board: the surface under test is
+# cmd_unblock itself, called directly by two processes at once, and putting a
+# tenth clearable issue into the sweep would move every count assertion above
+# for a reason that has nothing to do with this finding.
+#
+# Two things make the race real instead of theoretical here. The label state is
+# MUTABLE -- a removal actually takes the label off, the way Linear does -- and
+# the label READ for this issue is held for a second, so two processes started
+# together both read "still parked" before either one mutates. That is the
+# window inside cmd_unblock: read, decide, write, with nothing serialising the
+# three. issueRemoveLabel answers success=True either way, exactly as the live
+# API does, which is precisely why the loser cannot tell it lost by asking.
+RACE = "ASK-911"
+BY_ID[RACE] = issue(RACE, ["owner:sana", "blocked:capability"])
+RACE_READ_DELAY = float(os.environ.get("FIXTURE_RACE_DELAY") or "1.0")
+STATE_LOCK = threading.Lock()
+REMOVED = set()  # (issue identifier, label id) pairs actually taken off
+
+def visible(ident):
+    i = BY_ID.get(ident)
+    # Mutable for the RACE issue ONLY. Making every issue's label state stick
+    # would silently change what the second --apply run in this file sees, and
+    # a fixture that moves under the assertions above is a fixture that makes
+    # them pass or fail for reasons unrelated to the code under test.
+    if not i or ident != RACE:
+        return i
+    with STATE_LOCK:
+        gone = {lid for (who, lid) in REMOVED if who == ident}
+    if not gone:
+        return i
+    kept = [n for n in i["labels"]["nodes"] if n["id"] not in gone]
+    return dict(i, labels={"nodes": kept})
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"])).decode()
-        with open(REQ_LOG, "a") as fh:
-            fh.write(body + "\n")
+        with STATE_LOCK:
+            with open(REQ_LOG, "a") as fh:
+                fh.write(body + "\n")
         payload = json.loads(body)
         q, v = payload["query"], payload.get("variables") or {}
         if "teams(" in q:
             data = {"teams": {"nodes": [{"id": "t", "key": "ASK", "name": "ASK"}]}}
         elif "issueRemoveLabel" in q:
+            # Idempotent and always successful, like the live mutation. The
+            # second remover of the same label gets the same answer as the first.
+            with STATE_LOCK:
+                REMOVED.add((v.get("id"), v.get("labelId")))
             data = {"issueRemoveLabel": {"success": True}}
         elif "issueUpdate" in q:
             data = {"issueUpdate": {"success": True}}
@@ -212,7 +251,10 @@ class H(BaseHTTPRequestHandler):
             i = BY_ID.get(v.get("id"))
             data = {"issue": dict(i, comments={"nodes": comments_for(i["identifier"])}) if i else None}
         elif "issue(" in q:
-            data = {"issue": BY_ID.get(v.get("id"))}
+            ident = v.get("id")
+            if ident == RACE:
+                time.sleep(RACE_READ_DELAY)
+            data = {"issue": visible(ident)}
         else:
             data = {"issues": {"nodes": BOARD,
                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}
@@ -221,7 +263,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
 
-srv = HTTPServer(("127.0.0.1", 0), H)
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
 print(srv.server_port, flush=True)
 srv.serve_forever()
 PY
@@ -446,6 +488,109 @@ if printf '%s' "$ROTATED_MUTATIONS" | grep -q "ASK-909"; then
 else
   bad "rotating the credential clears the block" \
       "ASK-909 stayed parked after KIPI_FIXTURE_CRED changed -- the block is permanent, which is the defect ASK-288 exists to remove"
+fi
+
+# --- 9c. a rotation is not an arrival, and must not be reported as one ------
+# (codex PR #77 round 4, capability_block_expiry.py:185.) The fingerprint proves
+# the credential CHANGED. Nothing here can prove the replacement authenticates --
+# an operator pasting a second expired token rotates the value just as well as an
+# operator pasting a working one. Clearing on rotation is still right (the block
+# is waiting on exactly that event, and refusing would make the commonest park
+# hand-clear-only again), but the permanent comment it writes said "The
+# capability arrived", which is a claim this script never checked. Linear
+# comments cannot be deleted, so the false claim is the durable damage.
+#
+# ASK-910 in the SAME run is the control: it was parked while the variable was
+# genuinely unset, so unset -> set is real evidence and it keeps the verified
+# wording. One run, two verdicts, so the assertions cannot both pass by the
+# script simply never claiming anything.
+ROTATED_COMMENTS="$(tail -n +"$((BEFORE_ROTATE + 1))" "$WORK/requests.log" | grep "commentCreate" || true)"
+ROT_909="$(printf '%s\n' "$ROTATED_COMMENTS" | grep "ASK-909" || true)"
+ROT_910="$(printf '%s\n' "$ROTATED_COMMENTS" | grep "ASK-910" || true)"
+if [ -n "$ROT_909" ] && ! printf '%s' "$ROT_909" | grep -q "The capability arrived"; then
+  ok "a rotation-cleared block does not claim the capability arrived"
+else
+  bad "a rotation-cleared block does not claim the capability arrived" \
+      "ASK-909 cleared on a fingerprint change and the permanent comment asserted arrival, which nothing tested: $(printf '%s' "$ROT_909" | head -c 300)"
+fi
+if printf '%s' "$ROT_909" | grep -q "not proof"; then
+  ok "the rotation comment says what it actually checked"
+else
+  bad "the rotation comment says what it actually checked" \
+      "no 'not proof' caveat on ASK-909 -- the reader cannot tell an unverified clear from a verified one: $(printf '%s' "$ROT_909" | head -c 300)"
+fi
+if [ -n "$ROT_910" ] && printf '%s' "$ROT_910" | grep -q "The capability arrived"; then
+  ok "control: a genuine unset -> set arrival keeps the verified wording"
+else
+  bad "control: a genuine unset -> set arrival keeps the verified wording" \
+      "ASK-910 was parked with the variable absent, so presence IS the evidence -- if this lost the arrival wording the fix over-corrected: $(printf '%s' "$ROT_910" | head -c 300)"
+fi
+if grep -q '"cleared_unverified": 1' "$WORK/rotated.out"; then
+  ok "the summary counts an unverified clear apart from a verified one"
+else
+  bad "the summary counts an unverified clear apart from a verified one" \
+      "the run summary folds both into one number, so the log cannot answer how many blocks were lifted on evidence: $(grep 'capability-expiry: {' "$WORK/rotated.out" | head -c 300)"
+fi
+
+# --- 12. two processes unblocking at once: exactly one clears ---------------
+# (codex PR #77 round 4, linear-sync.py:813.) Round 3 taught the CALLER to tell
+# a real removal from a no-op, which fixed the case where the loser arrives
+# after the winner finished. It left the case where they overlap: both read the
+# label present, both call issueRemoveLabel, both are answered success=True, so
+# both report a clear and both post the permanent recovery comment.
+#
+# The fixture holds the label read for a second so the two processes are
+# genuinely inside that window together. Without serialisation this is not a
+# rare interleaving -- it is what happens every time the pre-pick sweep and the
+# scheduled sweep land on the same issue.
+RACE_LOCKS="$WORK/locks"
+BEFORE_RACE="$(wc -l < "$WORK/requests.log")"
+env "${LINEAR_ENV[@]}" KIPI_LOCK_DIR="$RACE_LOCKS" \
+  python3 "$REPO_SCRIPTS/linear-sync.py" unblock ASK-911 blocked:capability \
+  > "$WORK/race-a.out" 2>&1 &
+RACE_A=$!
+env "${LINEAR_ENV[@]}" KIPI_LOCK_DIR="$RACE_LOCKS" \
+  python3 "$REPO_SCRIPTS/linear-sync.py" unblock ASK-911 blocked:capability \
+  > "$WORK/race-b.out" 2>&1 &
+RACE_B=$!
+wait "$RACE_A"; RC_A=$?
+wait "$RACE_B"; RC_B=$?
+# EXIT_NOOP read from the module, not typed as 4 here: a literal is a second
+# copy of the contract and would keep passing after the contract moved.
+NOOP_CODE="$(python3 - "$REPO_SCRIPTS" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ls", sys.argv[1] + "/linear-sync.py")
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+print(mod.EXIT_NOOP)
+PY
+)"
+RACE_WINNERS=0; RACE_LOSERS=0
+for rc in "$RC_A" "$RC_B"; do
+  [ "$rc" = "0" ] && RACE_WINNERS=$((RACE_WINNERS+1))
+  [ "$rc" = "$NOOP_CODE" ] && RACE_LOSERS=$((RACE_LOSERS+1))
+done
+if [ "$RACE_WINNERS" = "1" ] && [ "$RACE_LOSERS" = "1" ]; then
+  ok "two overlapping unblocks report exactly one clear and one no-op"
+else
+  bad "two overlapping unblocks report exactly one clear and one no-op" \
+      "rc=$RC_A and rc=$RC_B (noop=$NOOP_CODE): $RACE_WINNERS reported a clear, so the caller posts that many permanent recovery comments"
+fi
+RACE_REMOVALS="$(tail -n +"$((BEFORE_RACE + 1))" "$WORK/requests.log" \
+  | grep -c "issueRemoveLabel" || true)"
+if [ "$RACE_REMOVALS" = "1" ]; then
+  ok "only one removal mutation is sent for one label"
+else
+  bad "only one removal mutation is sent for one label" \
+      "$RACE_REMOVALS removals sent -- both processes were inside the read-decide-write window at once"
+fi
+# The two assertions above must not pass because BOTH runs failed -- "one clear
+# and one no-op" and "one removal" are also what two crashes would look like if
+# the counters were reading errors. Pin that the label really came off.
+if [ "$RACE_REMOVALS" -ge 1 ] && grep -qh "removed blocked:capability" "$WORK/race-a.out" "$WORK/race-b.out"; then
+  ok "negative self-test: the race actually removed the label (not two failures)"
+else
+  bad "negative self-test: the race actually removed the label" \
+      "no successful removal: a=$(head -2 "$WORK/race-a.out") b=$(head -2 "$WORK/race-b.out")"
 fi
 
 # --- 10. an UNSCOPED run refuses; it does not sweep the whole team ----------

@@ -54,6 +54,12 @@ EXIT_COLLISION = 3
 # lead to different reporting -- see cmd_unblock.
 EXIT_NOOP = 4
 
+# How long a writer waits for another process to finish ITS read-decide-write on
+# the same issue. Two graphql calls at timeout=30 each is the whole of that
+# critical section, so anything past this is a wedged holder rather than a busy
+# one, and the caller is told to try again instead of writing blind.
+LOCK_WAIT_SECONDS = 90
+
 MARKER_RE = re.compile(r"<!--\s*kipi-key:\s*([^\s>]+)\s*-->")
 PROJECT_SUFFIX = "__project__"
 
@@ -780,6 +786,87 @@ def cmd_label(args) -> int:
     return EXIT_OK
 
 
+def _lock_dir() -> str:
+    """Where the per-issue write locks live.
+
+    `~/.config/kipi` and not the system temp dir: the two processes that race
+    here are a launchd sweep and an interactive worker, and on macOS those get
+    DIFFERENT per-session TMPDIRs, so a lock taken there would be two locks and
+    no mutual exclusion at all. The override exists for tests, which must not
+    write into the operator's real config; production never sets it.
+    """
+    return os.environ.get("KIPI_LOCK_DIR") or os.path.expanduser("~/.config/kipi/locks")
+
+
+class _IssueLock:
+    """Serialise one issue's read-decide-write across processes on this host.
+
+    WHY A LOCK AND NOT A SMARTER READ (codex, PR #77 round 4). cmd_unblock reads
+    the labels, decides, and mutates. Two sweeps land in that window together --
+    the worker runs the expiry before every pick and a scheduled sweep runs it on
+    its own clock -- and then both see the label present, both call
+    issueRemoveLabel, and both are answered `success: true`, because the live
+    mutation is idempotent. Nothing in the answer distinguishes the process that
+    took the label off from the one that asked for a label already gone. So both
+    reported a recovery and both posted the permanent "the capability arrived"
+    comment. A Linear comment cannot be deleted; the duplicate is on the issue
+    forever. Round 3 fixed only the non-overlapping half of this, where the loser
+    arrives after the winner has finished.
+
+    Linear offers no conditional write to close it server-side, so it is closed
+    where the concurrency actually is: both racers are processes on one Mac.
+    flock is the right primitive rather than a lockfile-exists check because the
+    kernel releases it when the holder dies, so a crashed sweep cannot wedge the
+    recovery path permanently -- which would recreate the never-expiring block
+    this whole issue exists to remove.
+
+    Two failure directions, decided opposite ways on purpose:
+      - the lock cannot be CREATED (read-only home, missing dir): run unlocked.
+        A lock that refuses every unblock is worse than the duplicate comment it
+        prevents.
+      - the lock cannot be ACQUIRED within LOCK_WAIT_SECONDS: refuse. The holder
+        is past its own transport timeouts, and writing anyway is exactly the
+        duplicate this class is here to stop. The sweep runs again in 15 minutes.
+    """
+
+    def __init__(self, issue: str):
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", issue) or "issue"
+        self.path = os.path.join(_lock_dir(), f"unblock-{safe}.lock")
+        self.fh = None
+        self.held = False
+
+    def __enter__(self):
+        import fcntl
+        import time
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self.fh = open(self.path, "a+")
+        except OSError as exc:
+            print(f"WARN: no write lock ({exc}); a concurrent unblock could "
+                  f"double-report this removal", file=sys.stderr)
+            return self
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return self
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.fh:
+            self.fh.close()
+        return False
+
+    @property
+    def contended(self) -> bool:
+        """The lock exists, someone else holds it, and waiting timed out."""
+        return self.fh is not None and not self.held
+
+
 def cmd_unblock(args) -> int:
     """Remove ONE label from an issue, keeping every other label on it.
 
@@ -808,7 +895,25 @@ def cmd_unblock(args) -> int:
     arithmetic under its own lock. The read below is only to resolve the label
     NAME to an id and to answer "was it even applied"; nothing read there is
     written back.
+
+    THE READ AND THE WRITE ARE ONE CRITICAL SECTION (codex, PR #77 round 4).
+    Separating "did I remove it" from "was it already gone" only works if no
+    other process can remove it between the two, which is what _IssueLock buys.
+    See that class for why the lock is a host lock and why it fails open on
+    creation and closed on contention.
     """
+    with _IssueLock(args.issue) as lock:
+        if lock.contended:
+            print(f"BLOCK: another process has held the unblock lock for "
+                  f"{args.issue} longer than {LOCK_WAIT_SECONDS}s ({lock.path}). "
+                  f"Refusing to write blind -- that is how one removal becomes "
+                  f"two recovery comments. The next sweep retries.", file=sys.stderr)
+            return EXIT_USAGE
+        return _unblock_locked(args)
+
+
+def _unblock_locked(args) -> int:
+    """cmd_unblock's body, running with this issue's write lock held."""
     try:
         issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
     except LinearAPIError as exc:
