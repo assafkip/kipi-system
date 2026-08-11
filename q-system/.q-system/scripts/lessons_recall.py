@@ -87,7 +87,12 @@ def title_of(path):
 
 def corpus(lessons_dir=None):
     directory = lessons_dir or LESSONS
-    return sorted(p for p in glob.glob(os.path.join(directory, "*.md"))
+    # realpath, so the self-exclusion in `similar_to` can compare identities rather
+    # than strings. LESSONS is built with ".." segments, a caller passes a clean path,
+    # and a file then failed to exclude itself and scored 1.00 against itself. Found by
+    # using the tool on a new lesson, which is the only way that surfaces.
+    return sorted(os.path.realpath(p)
+                  for p in glob.glob(os.path.join(directory, "*.md"))
                   if os.path.basename(p) != "README.md")
 
 
@@ -137,6 +142,7 @@ def search(query, k=5, lessons_dir=None):
 
 def similar_to(path, k=5, lessons_dir=None):
     """Nearest existing lessons to a draft. The de-duplication half."""
+    path = os.path.realpath(path)
     paths = corpus(lessons_dir)
     index = Index(paths + ([path] if path not in paths else []))
     return index.rank(index.vectors[path], exclude=path)[:k]
