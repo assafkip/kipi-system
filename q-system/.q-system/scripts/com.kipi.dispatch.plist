@@ -67,9 +67,26 @@
 	<key>RunAtLoad</key>
 	<false/>
 
+	<!-- LAUNCHD'S RAW SINKS, NAMED SO THEY CANNOT BE MISTAKEN FOR THE LOG.
+	     These were `dispatch.out` / `dispatch.err`, one path away from
+	     `dispatch.log`, which is what the script itself writes via say().
+	     dispatch.out has been 0 bytes since 2026-07-27 because nothing in the
+	     script writes to stdout -- and on 2026-08-02 that empty file was read as
+	     evidence that the loop was dead. It was not: launchctl showed 474 runs,
+	     exit 0, and a dispatch 8 minutes earlier. A plausible stale artifact
+	     sitting beside the live one is a trap, so the sink now says whose it is.
+
+	     NOT REPOINTED AT dispatch.log, deliberately. launchd appends to this
+	     file on its own schedule; aiming it at the script's log would put a
+	     second writer on a single-writer file and interleave raw stdout with
+	     structured say() lines. Two writers to one file is a corruption waiting
+	     for a race, which is the thing to avoid, not the thing to arrange.
+
+	     For liveness, read the job and the process, never these files:
+	       python3 q-system/.q-system/scripts/will-it-run.py --all   (ASK-292) -->
 	<key>StandardOutPath</key>
-	<string>__HOME__/.config/kipi/dispatch.out</string>
+	<string>__HOME__/.config/kipi/dispatch.launchd-stdout</string>
 	<key>StandardErrorPath</key>
-	<string>__HOME__/.config/kipi/dispatch.err</string>
+	<string>__HOME__/.config/kipi/dispatch.launchd-stderr</string>
 </dict>
 </plist>

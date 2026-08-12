@@ -2,6 +2,10 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+      "runner": "python3"
+    },
+    {
       "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
       "runner": "python3"
     },
@@ -26,11 +30,11 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+      "path": "q-system/.q-system/scripts/test/test-capability-block-expiry.sh",
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-capability-block-expiry.sh",
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
       "runner": "bash"
     },
     {
@@ -59,10 +63,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
       "runner": "bash"
     },
     {
@@ -202,14 +202,6 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -224,10 +216,6 @@
     {
       "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
       "runner": "bash"
-    },
-    {
-      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
-      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
@@ -250,6 +238,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
@@ -259,6 +251,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-scheduling-claim-gate.sh",
       "runner": "bash"
     },
     {
@@ -312,6 +308,18 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-voice-lint-warn-detectors.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-will-it-run.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
       "runner": "bash"
     },
     {
@@ -396,6 +404,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -405,10 +417,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_review_tier.py",
       "runner": "python3"
     },
     {
@@ -515,7 +523,7 @@
     },
     {
       "path": "q-system/.q-system/scripts/stat-verify.py",
-      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance — wiring it is a founder product decision",
+      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance \u2014 wiring it is a founder product decision",
       "spillover_id": "sp-72b60bff"
     },
     {
@@ -535,8 +543,8 @@
     }
   ],
   "uncovered_known": [
-    "plugins/*/tests — prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
+    "plugins/*/tests \u2014 prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
     "repo-root *.sh utilities are wiring surfaces, not test artifacts",
-    "stat-registry.json: NOT expressible as required_data in v1 — the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
+    "stat-registry.json: NOT expressible as required_data in v1 \u2014 the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
   ]
 }
