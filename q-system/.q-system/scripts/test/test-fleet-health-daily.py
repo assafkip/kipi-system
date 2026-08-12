@@ -602,23 +602,28 @@ check("and detecting it wrote nothing durable", _reported_now(), [])
 # whether Linear ever heard.
 _again = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
 check("an unfiled sha is re-surfaced on the next run", len(_again), 1)
-check("and it is still the same sha", _again[0]["body"].count("deadbeef1"), 1)
+# Guarded, like every other index into a findings list in this file: when the
+# defect under test is "no finding was produced", an unguarded [0] reports an
+# IndexError traceback and the remaining assertions never run at all.
+check("and it is still the same sha",
+      _again[0]["body"].count("deadbeef1") if _again else "no finding", 1)
 
-# A dry run files nothing, so it reports nothing and records nothing.
-_again[0]["key"] = "fleet-health/x/y"
-fh.file_findings([_again[0]], apply=False, linear=_FakeLinear(_live_body))
-check("a dry run records no sha as reported", _reported_now(), [])
+if _again:
+    # A dry run files nothing, so it reports nothing and records nothing.
+    _again[0]["key"] = "fleet-health/x/y"
+    fh.file_findings([_again[0]], apply=False, linear=_FakeLinear(_live_body))
+    check("a dry run records no sha as reported", _reported_now(), [])
 
-# Linear unreachable: the filing is counted as dropped, so the sha is still owed.
-fh.file_findings([_again[0]], apply=True, linear=_DeadLinear())
-check("an unreachable Linear records no sha as reported", _reported_now(), [])
+    # Linear unreachable: the filing is counted as dropped, so the sha is owed.
+    fh.file_findings([_again[0]], apply=True, linear=_DeadLinear())
+    check("an unreachable Linear records no sha as reported", _reported_now(), [])
 
-# Accepted: now, and only now, the sha is marked.
-fh.file_findings([_again[0]], apply=True, linear=_FakeLinear(_live_body))
-check("a filed finding records the sha it carried", _reported_now(), ["deadbeef1"])
+    # Accepted: now, and only now, the sha is marked.
+    fh.file_findings([_again[0]], apply=True, linear=_FakeLinear(_live_body))
+    check("a filed finding records the sha it carried", _reported_now(), ["deadbeef1"])
 
-_clean = _with_sweeper(payload=_OK)
-check("and the same sweep result then produces no finding", _clean, [])
+    _clean = _with_sweeper(payload=_OK)
+    check("and the same sweep result then produces no finding", _clean, [])
 
 # --- THE CRASH THIS DESIGN EXISTS FOR --------------------------------------
 # The sweeper is a CHILD process and it appends its ledger row before this
@@ -650,14 +655,15 @@ _many = [f"{i:09x}" for i in range(30)]
 _big = _with_sweeper(payload={**_OK, "commits": _many, "unaccounted_commits": _many,
                               "unaccounted": 30})
 check("a 30-sha sweep produces one finding", len(_big), 1)
-_big[0]["key"] = "fleet-health/x/y"
-fh.file_findings([_big[0]], apply=True, linear=_FakeLinear(_live_body))
-check("filing marks exactly the 25 the body carried", len(_reported_now()), 25)
-_rest = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
-                               "unaccounted_commits": _many, "unaccounted": 30})
-check("and the 5 it never named come back", len(_rest), 1)
-check("as the 5 that were left over",
-      _rest[0]["body"].count("`" + _many[25][:9] + "`") if _rest else "no finding", 1)
+if _big:
+    _big[0]["key"] = "fleet-health/x/y"
+    fh.file_findings([_big[0]], apply=True, linear=_FakeLinear(_live_body))
+    check("filing marks exactly the 25 the body carried", len(_reported_now()), 25)
+    _rest = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                   "unaccounted_commits": _many, "unaccounted": 30})
+    check("and the 5 it never named come back", len(_rest), 1)
+    check("as the 5 that were left over",
+          _rest[0]["body"].count("`" + _many[25][:9] + "`") if _rest else "no finding", 1)
 _forget_reported()
 
 # --- a failed mark re-reports; it never suppresses --------------------------
@@ -671,10 +677,11 @@ _wedge_finding = _with_sweeper(payload={**_OK, "commits": ["cccccccc1"],
                                         "unaccounted_commits": ["cccccccc1"]})
 check("the finding is produced even though the record is unwritable",
       len(_wedge_finding), 1)
-fh.BYPASS_REPORTED = _wedged
-_wedge_finding[0]["key"] = "fleet-health/x/y"
-fh.file_findings([_wedge_finding[0]], apply=True, linear=_FakeLinear(_live_body))
-fh.BYPASS_REPORTED = _real_reported
+if _wedge_finding:
+    fh.BYPASS_REPORTED = _wedged
+    _wedge_finding[0]["key"] = "fleet-health/x/y"
+    fh.file_findings([_wedge_finding[0]], apply=True, linear=_FakeLinear(_live_body))
+    fh.BYPASS_REPORTED = _real_reported
 check("a failed mark leaves the real record alone", _reported_now(), [])
 check("so the sha is reported again rather than lost",
       len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
