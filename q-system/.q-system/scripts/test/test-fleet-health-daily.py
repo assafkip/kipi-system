@@ -534,13 +534,17 @@ import json as _json
 import tempfile as _tempfile
 
 _tmpdir = _tempfile.TemporaryDirectory()
-fh.BYPASS_PENDING = Path(_tmpdir.name) / "linear-bypass-pending.json"
+fh.BYPASS_REPORTED = Path(_tmpdir.name) / "linear-bypass-reported.json"
 
 
-def _pending_now():
-    if not fh.BYPASS_PENDING.is_file():
+def _reported_now():
+    if not fh.BYPASS_REPORTED.is_file():
         return []
-    return _json.loads(fh.BYPASS_PENDING.read_text())
+    return _json.loads(fh.BYPASS_REPORTED.read_text())
+
+
+def _forget_reported():
+    fh._write_reported([])
 
 
 class _StubSweep:
@@ -573,7 +577,8 @@ def _blind(name, **kwargs):
     failures.append(f"{name}: reported a clean result instead of going blind")
 
 
-_OK = {"status": "ok", "fetched": "ok", "commits": ["deadbeef1"], "recorded": 1,
+_OK = {"status": "ok", "fetched": "ok", "commits": ["deadbeef1"],
+       "unaccounted_commits": ["deadbeef1"], "recorded": 1,
        "unaccounted": 1, "scanned": 10, "rev": "origin/main"}
 
 # --- a sweeper that could not look must not read as "nothing found" ---------
@@ -587,125 +592,139 @@ _blind("a sweeper whose ledger write failed is blind",
 _blind("a stale ref (fetch failed) is blind, because the count may be low",
        payload={**_OK, "fetched": "failed"})
 
-# --- the finding is not spent until Linear takes it -------------------------
+# --- nothing is written before the board takes it ---------------------------
 _first = _with_sweeper(payload=_OK)
-check("a newly recorded sha produces a finding", len(_first), 1)
-check("the sha is held pending until it is filed", _pending_now(), ["deadbeef1"])
+check("an unreported unaccounted sha produces a finding", len(_first), 1)
+check("and detecting it wrote nothing durable", _reported_now(), [])
 
-# The sweep dedupes on sha forever, so the SECOND run reports nothing new. Before
-# this fix that meant the finding vanished if the first filing never landed.
+# The sweep dedupes on sha forever, so the SECOND run ledgers nothing new. The
+# finding has to survive that, because "already ledgered" says nothing about
+# whether Linear ever heard.
 _again = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
 check("an unfiled sha is re-surfaced on the next run", len(_again), 1)
 check("and it is still the same sha", _again[0]["body"].count("deadbeef1"), 1)
 
-# A dry run files nothing, so it reports nothing and clears nothing.
+# A dry run files nothing, so it reports nothing and records nothing.
 _again[0]["key"] = "fleet-health/x/y"
 fh.file_findings([_again[0]], apply=False, linear=_FakeLinear(_live_body))
-check("a dry run does not clear the pending shas", _pending_now(), ["deadbeef1"])
+check("a dry run records no sha as reported", _reported_now(), [])
 
-# Linear unreachable: the filing is counted as dropped and the sha stays owed.
+# Linear unreachable: the filing is counted as dropped, so the sha is still owed.
 fh.file_findings([_again[0]], apply=True, linear=_DeadLinear())
-check("an unreachable Linear does not clear the pending shas",
-      _pending_now(), ["deadbeef1"])
+check("an unreachable Linear records no sha as reported", _reported_now(), [])
 
-# Accepted: now, and only now, the sha is spent.
+# Accepted: now, and only now, the sha is marked.
 fh.file_findings([_again[0]], apply=True, linear=_FakeLinear(_live_body))
-check("a filed finding clears the pending shas", _pending_now(), [])
+check("a filed finding records the sha it carried", _reported_now(), ["deadbeef1"])
 
-_clean = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
-check("with nothing owed and nothing new, there is no finding", _clean, [])
+_clean = _with_sweeper(payload=_OK)
+check("and the same sweep result then produces no finding", _clean, [])
 
-# --- one run's success must not spend another run's sha ---------------------
-# The pending file is SHARED (the daily launchd job and a hand run write the same
-# path). Clearing all of it on any successful filing meant the older run's success
-# consumed the newer run's sha; that run's own filing then failed, and the sweep
-# ledger had already deduped the sha, so it was owed by nobody and lost forever.
-_run_a = _with_sweeper(payload={**_OK, "commits": ["aaaaaaaaa"]})
-_run_b = _with_sweeper(payload={**_OK, "commits": ["bbbbbbbbb"]})
-check("both runs' shas are owed", _pending_now(), ["aaaaaaaaa", "bbbbbbbbb"])
+# --- THE CRASH THIS DESIGN EXISTS FOR --------------------------------------
+# The sweeper is a CHILD process and it appends its ledger row before this
+# process ever sees the JSON. Kill the parent anywhere after that append and the
+# sha is ledgered, unreported, and — to anything keyed on `commits` — never new
+# again. That was a permanent silence: the ledger suppressed the row on every
+# later run and no finding was ever filed (PR #66 round 7).
+#
+# The crashed run is simulated by never running it: the ledger row exists, so
+# the NEXT run reports recorded=0 and commits=[], and the sha survives only in
+# the unaccounted list, which is a fact about history rather than about a run.
+_forget_reported()
+_crashed = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                  "unaccounted_commits": ["c0ffee123"],
+                                  "unaccounted": 1})
+check("a sha ledgered by a run that died is still surfaced", len(_crashed), 1)
+check("with the sha itself",
+      _crashed[0]["body"].count("c0ffee123") if _crashed else "no finding", 1)
+if _crashed:
+    _crashed[0]["key"] = "fleet-health/x/y"
+    fh.file_findings([_crashed[0]], apply=True, linear=_FakeLinear(_live_body))
+    check("and once filed it is marked", _reported_now(), ["c0ffee123"])
+_forget_reported()
 
-_run_a[0]["key"] = "fleet-health/x/y"
-_run_b[0]["key"] = "fleet-health/x/y"
-fh.file_findings([_run_a[0]], apply=True, linear=_FakeLinear(_live_body))
-check("an older run's success clears only its own shas",
-      _pending_now(), ["bbbbbbbbb"])
+# --- a filing marks only the shas it actually named -------------------------
+# The body prints at most 25 shas. Marking the whole set would tell the record
+# about shas the finding never carried, and they would never be filed again.
+_many = [f"{i:09x}" for i in range(30)]
+_big = _with_sweeper(payload={**_OK, "commits": _many, "unaccounted_commits": _many,
+                              "unaccounted": 30})
+check("a 30-sha sweep produces one finding", len(_big), 1)
+_big[0]["key"] = "fleet-health/x/y"
+fh.file_findings([_big[0]], apply=True, linear=_FakeLinear(_live_body))
+check("filing marks exactly the 25 the body carried", len(_reported_now()), 25)
+_rest = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                               "unaccounted_commits": _many, "unaccounted": 30})
+check("and the 5 it never named come back", len(_rest), 1)
+check("as the 5 that were left over",
+      _rest[0]["body"].count("`" + _many[25][:9] + "`") if _rest else "no finding", 1)
+_forget_reported()
 
-fh.file_findings([_run_b[0]], apply=True, linear=_DeadLinear())
-check("the newer run's failed filing leaves its sha owed",
-      _pending_now(), ["bbbbbbbbb"])
-
-_survivor = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
-check("and the surviving sha is re-surfaced", len(_survivor), 1)
-# Guarded: when the sha was already spent there is no finding to index, and a
-# reproducer that dies on IndexError reports a crash instead of the defect.
-check("with the right sha",
-      _survivor[0]["body"].count("bbbbbbbbb") if _survivor else "no finding", 1)
-
-if _survivor:
-    _survivor[0]["key"] = "fleet-health/x/y"
-    fh.file_findings([_survivor[0]], apply=True, linear=_FakeLinear(_live_body))
-    check("filing the survivor drains the ledger", _pending_now(), [])
-
-# --- a pending write that FAILED must not report a filed-able finding -------
-# `_write_pending` logged the OSError and returned success, so the sweep ledger
-# had already deduped the sha while nothing durable held it. The next morning
-# read clean. A write that did not land is a detector that could not look.
-_wedged = Path(_tmpdir.name) / "wedged" / "linear-bypass-pending.json"
+# --- a failed mark re-reports; it never suppresses --------------------------
+# The record is written AFTER the board accepted the finding, so a write that
+# does not land costs a duplicate line on a standing issue. That is the whole
+# point of the direction: the other one loses the finding.
+_wedged = Path(_tmpdir.name) / "wedged" / "linear-bypass-reported.json"
 _wedged.mkdir(parents=True)  # the path exists as a DIRECTORY, so writes fail
-_real_pending = fh.BYPASS_PENDING
-fh.BYPASS_PENDING = _wedged
-_blind("a pending write that failed is blind, not a finding",
-       payload={**_OK, "commits": ["cccccccc1"]})
-fh.BYPASS_PENDING = _real_pending
+_real_reported = fh.BYPASS_REPORTED
+_wedge_finding = _with_sweeper(payload={**_OK, "commits": ["cccccccc1"],
+                                        "unaccounted_commits": ["cccccccc1"]})
+check("the finding is produced even though the record is unwritable",
+      len(_wedge_finding), 1)
+fh.BYPASS_REPORTED = _wedged
+_wedge_finding[0]["key"] = "fleet-health/x/y"
+fh.file_findings([_wedge_finding[0]], apply=True, linear=_FakeLinear(_live_body))
+fh.BYPASS_REPORTED = _real_reported
+check("a failed mark leaves the real record alone", _reported_now(), [])
+check("so the sha is reported again rather than lost",
+      len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                 "unaccounted_commits": ["cccccccc1"]})), 1)
+_forget_reported()
 
-# The wedged run must not have disturbed the real record either.
-check("a failed pending write leaves the real record alone", _pending_now(), [])
-
-# --- the write is atomic: a crash mid-write cannot truncate the retry set ----
-# A partially-written pending file parses as invalid JSON, `_read_pending`
-# returns [], and every sha owed at that moment is silently forgiven.
-fh._write_pending(["ddddddddd", "eeeeeeeee"])
+# --- the write is atomic: a crash mid-write cannot truncate the record ------
+# A partially-written record parses as invalid JSON, `_read_reported` returns [],
+# and every sha ever filed is reported again.
+fh._write_reported(["ddddddddd", "eeeeeeeee"])
 _real_replace = fh.os.replace
 fh.os.replace = lambda *_a, **_k: (_ for _ in ()).throw(OSError("killed mid-write"))
 try:
-    fh._write_pending(["fffffffff"])
+    fh._write_reported(["fffffffff"])
 except OSError:
     pass
 finally:
     fh.os.replace = _real_replace
-check("a killed write leaves the previous retry set intact",
-      _pending_now(), ["ddddddddd", "eeeeeeeee"])
+check("a killed write leaves the previous record intact",
+      _reported_now(), ["ddddddddd", "eeeeeeeee"])
 check("and no temp file is left behind",
-      [p.name for p in fh.BYPASS_PENDING.parent.iterdir() if ".tmp" in p.name],
+      [p.name for p in fh.BYPASS_REPORTED.parent.iterdir() if ".tmp" in p.name],
       [])
-fh._write_pending([])
+_forget_reported()
 
 # --- a truncated scan is blind: the window may have cut off an older bypass --
 # The scan reads a fixed number of commits back. When history within the floor
 # runs past that cap, "nothing unaccounted" describes the window, not the range.
 _blind("a truncated scan window is blind, not clean",
-       payload={**_OK, "commits": [], "recorded": 0, "truncated": True})
+       payload={**_OK, "commits": [], "recorded": 0, "unaccounted_commits": [],
+                "truncated": True})
 
-# --- going blind must not SPEND the shas the sweeper already ledgered -------
-# The sweeper writes its dedup rows before the detector ever sees the JSON, so
-# every raise between that write and `_record_pending` consumed the sha: the
-# ledger suppressed it on each later run and no finding was ever filed. Blind
-# and spent are different failures, and the blindness raises were causing both.
-# The shas enter the durable retry record FIRST; the run then still goes blind.
-fh._write_pending([])
+# --- a blind run spends nothing, because a run spends nothing --------------
+# Blind and spent used to be entangled: the sweeper's dedup rows were already
+# written when the detector raised, so going blind also consumed the shas that
+# run had seen. Now the only durable write is the post-filing mark, so a run
+# that raises leaves the record exactly as it found it, by construction.
 _blind("a fetch-failed run is still blind",
-       payload={**_OK, "commits": ["cafe12345"], "fetched": "failed"})
-check("but the sha its sweeper ledgered is held, not spent",
-      _pending_now(), ["cafe12345"])
-check("so the next healthy run re-surfaces it",
-      len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0})), 1)
+       payload={**_OK, "commits": ["cafe12345"],
+                "unaccounted_commits": ["cafe12345"], "fetched": "failed"})
+check("and it recorded nothing", _reported_now(), [])
+check("so the next healthy run surfaces the sha",
+      len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                 "unaccounted_commits": ["cafe12345"]})), 1)
 
-fh._write_pending([])
 _blind("a truncated run is still blind",
-       payload={**_OK, "commits": ["cafe67890"], "truncated": True})
-check("and the sha inside its window is held too",
-      _pending_now(), ["cafe67890"])
-fh._write_pending([])
+       payload={**_OK, "commits": ["cafe67890"],
+                "unaccounted_commits": ["cafe67890"], "truncated": True})
+check("and it recorded nothing either", _reported_now(), [])
+_forget_reported()
 
 # --- a refusal has to arrive with its reason attached -----------------------
 # The sweep refuses when it cannot derive the activation floor from the swept
@@ -733,7 +752,7 @@ except RuntimeError as exc:
 # founder's tree after the first health run. Asked of git, not of the ignore
 # file's text: a pattern that reads right and does not match is the whole bug.
 _repo = Path(__file__).resolve().parents[4]
-for _lock in ("q-system/output/linear-bypass-pending.json.lock",
+for _lock in ("q-system/output/linear-bypass-reported.json.lock",
               "q-system/output/linear-bypass.jsonl.lock"):
     _rc = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-q", _lock],
                          capture_output=True).returncode

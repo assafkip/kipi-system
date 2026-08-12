@@ -590,6 +590,64 @@ check "an explicit --max-count is still a hard bound" "True" \
 check "and it stays at the size the operator pinned" 2 \
   "$(printf '%s' "$OUT_PINNED" | field window)"
 
+# --- a window that cannot hold a commit is a refusal, not a clean bill -------
+# `--max-count=-1` asked git for `--max-count=0`, which returns nothing, so the
+# walk found no commits, nothing beyond the cap, and reported
+# {"scanned": 0, "truncated": false, "status": "ok"} -- a clean result from
+# having looked at nothing at all. `truncated` is the honest signal for a
+# window that stopped early, and it cannot fire when the window is empty.
+#
+# `--all-history` is not decoration: without it this fixture refuses on the
+# activation floor instead, and every assertion below would pass on a refusal
+# that has nothing to do with the window (observed while writing this).
+for BAD_COUNT in -1 0; do
+  BAD_OUT=$(cd "$WORK" && LINEAR_BYPASS_LEDGER="$TMP/badcount.jsonl" \
+    python3 "$SWEEP" --rev origin/main --all-history --max-count="$BAD_COUNT" --dry --json 2>&1)
+  BAD_RC=$?
+  check "--max-count=$BAD_COUNT exits non-zero" 1 "$BAD_RC"
+  if printf '%s' "$BAD_OUT" | grep -q '"status"'; then
+    no "--max-count=$BAD_COUNT reported a result instead of refusing ($BAD_OUT)"
+  else
+    ok "--max-count=$BAD_COUNT reports no result to be believed"
+  fi
+done
+check "a refused --max-count wrote no ledger" "False" \
+  "$(python3 -c "import os;print(os.path.exists('$TMP/badcount.jsonl'))")"
+
+# --- the detector's retry set comes from the range, not from freshness -------
+# `commits` is what this run newly ledgered, and the ledger dedupes on sha
+# forever: a run that dies after the append leaves a sha that is never "new"
+# again, so a consumer keyed on freshness can never re-surface it. So the sweep
+# also reports every unaccounted sha IN RANGE, which is a property of history
+# and is therefore identical on every run (PR #66 round 7).
+UNACC_LEDGER="$TMP/unacc.jsonl"
+OUT_U1=$(cd "$WORK" && LINEAR_BYPASS_LEDGER="$UNACC_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --all-history --json 2>/dev/null)
+U1_FRESH=$(printf '%s' "$OUT_U1" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['commits']))")
+U1_ALL=$(printf '%s' "$OUT_U1" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['unaccounted_commits']))")
+check "the first sweep reports its unaccounted shas" "$(printf '%s' "$OUT_U1" | field unaccounted)" "$U1_ALL"
+check "and on that first run they are also the fresh ones" "$U1_ALL" "$U1_FRESH"
+
+# The second run against the SAME ledger is the case the crash produces: the
+# rows are already there, so nothing is fresh, and freshness alone would report
+# a clean repo over commits that are still unaccounted in history.
+OUT_U2=$(cd "$WORK" && LINEAR_BYPASS_LEDGER="$UNACC_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --all-history --json 2>/dev/null)
+check "a re-run ledgers nothing new" 0 \
+  "$(printf '%s' "$OUT_U2" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['commits']))")"
+check "but it still reports the same unaccounted shas" "$U1_ALL" \
+  "$(printf '%s' "$OUT_U2" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['unaccounted_commits']))")"
+check "and they are the same shas, not a new set" \
+  "$(printf '%s' "$OUT_U1" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['unaccounted_commits'])")" \
+  "$(printf '%s' "$OUT_U2" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['unaccounted_commits'])")"
+
+# A dry run writes no rows, so its two lists differ from the re-run above only
+# because nothing was ever ledgered. The list must not depend on --dry either.
+OUT_U3=$(cd "$WORK" && LINEAR_BYPASS_LEDGER="$UNACC_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --all-history --dry --json 2>/dev/null)
+check "a dry run reports the same unaccounted shas" "$U1_ALL" \
+  "$(printf '%s' "$OUT_U3" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['unaccounted_commits']))")"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

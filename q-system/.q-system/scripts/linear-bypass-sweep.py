@@ -484,14 +484,15 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since=None,
         known = recorded_shas(path)
 
         fresh = []
-        unaccounted = 0
+        seen = []
         for commit in commits:
             if is_accounted(commit["message"], gate):
                 continue
-            unaccounted += 1
+            seen.append(commit)
             if commit["sha"] in known:
                 continue
             fresh.append(commit)
+        unaccounted = len(seen)
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         entries = [{
@@ -526,7 +527,16 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since=None,
         "window": window,
         "unaccounted": unaccounted,
         "recorded": 0 if (dry or not written) else len(entries),
+        # What this run newly ledgered. EPHEMERAL by nature: the ledger dedupes on
+        # sha forever, so the same commit appears here exactly once in the life of
+        # the repo, on whichever run happened to write the row.
         "commits": [c["sha"] for c in reversed(fresh)],
+        # Every unaccounted sha in range, ledgered or not. A property of history,
+        # so it is identical on every run over the same range — which is what lets
+        # a consumer recover from dying mid-run. A consumer keyed on `commits`
+        # cannot: the run that saw the sha as new was the one that died, and no
+        # later run will ever call it new again (PR #66 round 7).
+        "unaccounted_commits": [c["sha"] for c in reversed(seen)],
         "status": "dry" if dry else ("ok" if written else "ledger-write-failed"),
     }
 
@@ -561,6 +571,19 @@ def main(argv: list) -> int:
 
     grow = args.max_count is None
     max_count = DEFAULT_MAX_COUNT if grow else args.max_count
+
+    # A window that cannot hold a commit is not a small scan, it is no scan.
+    # `--max-count=-1` asked git for `--max-count=0`, got nothing back, found
+    # nothing beyond the cap either, and reported {"scanned": 0, "truncated":
+    # false, "status": "ok"} — a clean bill of health from having looked at
+    # nothing. `truncated` is the signal for a window that stopped early and it
+    # structurally cannot fire when the window is empty, so the refusal has to
+    # be here, before anything reports a status at all.
+    if max_count < 1:
+        print(f"linear-bypass-sweep: --max-count must be at least 1, got "
+              f"{max_count}. A window of {max_count} scans no commits and would "
+              f"report a clean result over nothing.", file=sys.stderr)
+        return 1
 
     try:
         result = sweep(rev, max_count, root, args.dry, since, args.fetch, grow)
