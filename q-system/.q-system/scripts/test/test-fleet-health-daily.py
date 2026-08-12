@@ -686,6 +686,27 @@ fh._write_pending([])
 _blind("a truncated scan window is blind, not clean",
        payload={**_OK, "commits": [], "recorded": 0, "truncated": True})
 
+# --- going blind must not SPEND the shas the sweeper already ledgered -------
+# The sweeper writes its dedup rows before the detector ever sees the JSON, so
+# every raise between that write and `_record_pending` consumed the sha: the
+# ledger suppressed it on each later run and no finding was ever filed. Blind
+# and spent are different failures, and the blindness raises were causing both.
+# The shas enter the durable retry record FIRST; the run then still goes blind.
+fh._write_pending([])
+_blind("a fetch-failed run is still blind",
+       payload={**_OK, "commits": ["cafe12345"], "fetched": "failed"})
+check("but the sha its sweeper ledgered is held, not spent",
+      _pending_now(), ["cafe12345"])
+check("so the next healthy run re-surfaces it",
+      len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0})), 1)
+
+fh._write_pending([])
+_blind("a truncated run is still blind",
+       payload={**_OK, "commits": ["cafe67890"], "truncated": True})
+check("and the sha inside its window is held too",
+      _pending_now(), ["cafe67890"])
+fh._write_pending([])
+
 # --- a refusal has to arrive with its reason attached -----------------------
 # The sweep refuses when it cannot derive the activation floor from the swept
 # rev, and the fix is a flag the operator has to choose. "the sweeper exited 1"

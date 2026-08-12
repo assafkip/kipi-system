@@ -1163,6 +1163,33 @@ def detect_unaccounted_commits(_ctx) -> list:
         raise RuntimeError("the sweeper produced no parseable JSON") from exc
     if result.get("status") not in ("ok", "dry"):
         raise RuntimeError(f"the sweeper reported status {result.get('status')!r}")
+    # Newly recorded shas UNION whatever a previous run recorded but never got
+    # onto the board. The sweep dedupes on sha permanently, so once it has
+    # written a row that sha is never "new" again — which meant a transient
+    # Linear outage between the ledger write and the filing consumed the finding
+    # forever and the next morning read clean. The ledger's job is the COUNT; the
+    # pending file is the separate, independently-cleared record of what still
+    # owes a report.
+    #
+    # This runs BEFORE the blindness checks below, and that order is the whole
+    # point. The sweeper wrote its dedup rows before this process ever saw the
+    # JSON, so a raise between that write and this line SPENT the shas: the
+    # ledger suppressed them on every later run and no finding was ever filed.
+    # Blind and spent are different failures. Going blind is a statement about
+    # the RANGE ("commits may have gone unread"); it must not also discard what
+    # the scan did see. Only `ok`/`dry` reach here, which are exactly the two
+    # statuses whose ledger rows landed — `ledger-write-failed` wrote nothing,
+    # so it has nothing to hold and raised above.
+    try:
+        pending = _record_pending(result.get("commits") or [])
+    except OSError as exc:
+        # Nothing durable holds these shas and the sweep ledger has already
+        # deduped them. Filing now would spend a finding the retry set cannot
+        # re-surface, so the honest result is "could not look", not a finding.
+        raise RuntimeError(
+            f"the pending record at {BYPASS_PENDING} could not be written: {exc}"
+        ) from exc
+
     if result.get("fetched") == "failed":
         # A remote-tracking ref is a local cache. If the fetch failed, the range
         # just scanned may be missing commits pushed from anywhere else, and
@@ -1175,23 +1202,6 @@ def detect_unaccounted_commits(_ctx) -> list:
         # the false zero this detector exists to stop.
         raise RuntimeError(
             "the sweeper's scan window was truncated; commits in range went unread")
-
-    # Newly recorded shas UNION whatever a previous run recorded but never got
-    # onto the board. The sweep dedupes on sha permanently, so once it has
-    # written a row that sha is never "new" again — which meant a transient
-    # Linear outage between the ledger write and the filing consumed the finding
-    # forever and the next morning read clean. The ledger's job is the COUNT; the
-    # pending file is the separate, independently-cleared record of what still
-    # owes a report.
-    try:
-        pending = _record_pending(result.get("commits") or [])
-    except OSError as exc:
-        # Nothing durable holds these shas and the sweep ledger has already
-        # deduped them. Filing now would spend a finding the retry set cannot
-        # re-surface, so the honest result is "could not look", not a finding.
-        raise RuntimeError(
-            f"the pending record at {BYPASS_PENDING} could not be written: {exc}"
-        ) from exc
     if not pending:
         return []
 
