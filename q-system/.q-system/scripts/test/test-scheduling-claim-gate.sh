@@ -53,7 +53,10 @@ build "$TMP/no_claim.jsonl" "[
  {'role':'assistant','content':[{'type':'tool_use','input':{'command':'ls'}}]},
  {'role':'assistant','content':[{'type':'text','text':'Read it. It does what you said.'}]}]"
 
-ANSWER='OBSERVED 2026-08-02T11:32:16  lane=production  cap=3  spent=2  budget_day=2026-08-02\\nASK-287: TODAY'
+# SINGLE-quoted, so `\n` (one backslash) is what reaches the Python literal and
+# becomes a real newline there. `\\n` would survive as a literal backslash-n and
+# the verdict line would never start a line -- invisible to VERDICT_RE's `^`.
+ANSWER='OBSERVED 2026-08-02T11:32:16  lane=production  cap=3  spent=2  budget_day=2026-08-02\nASK-287: TODAY'
 build "$TMP/claim_checked.jsonl" "[
  {'role':'assistant','content':[{'type':'tool_use','input':{'command':'python3 will-it-run.py ASK-287'}}]},
  {'role':'user','content':[{'type':'tool_result','content':'$ANSWER'}]},
@@ -93,6 +96,53 @@ build "$TMP/ls_only.jsonl" "[
  {'role':'user','content':[{'type':'tool_result','content':'linear_pick.py\\nwill-it-run.py\\ncapability-gate.py'}]},
  {'role':'assistant','content':[{'type':'text','text':'ASK-291 is queued and the loop will pick it up on the next run.'}]}]"
 case_rc "an ls listing the filename does NOT arm the gate" "$TMP/ls_only.jsonl"       2
+
+# codex round 2, major 1: evidence is PER ISSUE. A rendered answer about ASK-287
+# says nothing about ASK-291 -- pickability, project and pool position differ per
+# issue, which is why one run printed TODAY and NEVER on the same day.
+build "$TMP/other_issue.jsonl" "[
+ {'role':'assistant','content':[{'type':'tool_use','input':{'command':'python3 will-it-run.py ASK-287'}}]},
+ {'role':'user','content':[{'type':'tool_result','content':'$ANSWER'}]},
+ {'role':'assistant','content':[{'type':'text','text':'ASK-291 is queued and goes out today.'}]}]"
+case_rc "an answer about ASK-287 does NOT back a claim about ASK-291" "$TMP/other_issue.jsonl" 2
+run_gate "$TMP/other_issue.jsonl" >/dev/null
+grep -q 'ASK-291' "$TMP/err" \
+  && ok "the block names the issue the checker never covered" \
+  || bad "block message does not name the unanswered issue"
+
+# codex round 2, major 2: a wiring FILENAME is not an opened wiring surface. The
+# grep below merely SEARCHES for settings.json; nothing was read.
+build "$TMP/wiring_name_only.jsonl" "[
+ {'role':'assistant','content':[{'type':'tool_use','input':{'pattern':'scheduling-claim-gate','path':'.claude/settings.json'}}]},
+ {'role':'user','content':[{'type':'tool_result','content':'.claude/settings.json'}]},
+ {'role':'assistant','content':[{'type':'text','text':'The Stop hook is now wired and the gate is enforced.'}]}]"
+case_rc "naming a wiring surface without opening it -> exit 2" "$TMP/wiring_name_only.jsonl" 2
+
+# ...and the real registration body DOES satisfy it. Split so this fixture file
+# cannot itself become a universal arming key when read.
+BODY='{\"hoo'
+BODY="$BODY"'ks\": {\"St'
+BODY="$BODY"'op\": [{\"ty'
+BODY="$BODY"'pe\": \"command\", \"command\": \"scheduling-claim-gate.py\"}]}}'
+build "$TMP/wiring_body.jsonl" "[
+ {'role':'assistant','content':[{'type':'tool_use','input':{'file_path':'.claude/settings.json'}}]},
+ {'role':'user','content':[{'type':'tool_result','content':'$BODY'}]},
+ {'role':'assistant','content':[{'type':'text','text':'The Stop hook is now wired in settings.json.'}]}]"
+case_rc "reading the real hook registration -> exit 0" "$TMP/wiring_body.jsonl" 0
+
+# THE SELF-ARMING CASE: reading the gate's own source must not arm a wiring claim.
+# Its remedy text names every wiring surface, so under the old substring rule this
+# file was a skeleton key to the check it implements.
+python3 - "$GATE" "$TMP" <<'PY'
+import json, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+rows = [{"role": "assistant", "content": [{"type": "tool_use", "input": {"file_path": sys.argv[1]}}]},
+        {"role": "user", "content": [{"type": "tool_result", "content": src}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "The Stop hook is now wired and armed."}]}]
+open(sys.argv[2] + "/read_self.jsonl", "w", encoding="utf-8").write(
+    "\n".join(json.dumps({"message": r}) for r in rows))
+PY
+case_rc "reading the gate's OWN source does not arm a wiring claim" "$TMP/read_self.jsonl" 2
 
 # The blocked turn must TEACH, not just fail: the stderr is what Claude reads back.
 run_gate "$TMP/claim_nocheck.jsonl" >/dev/null

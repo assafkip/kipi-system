@@ -16,13 +16,17 @@ there.
 The paired instrument is `will-it-run.py`. This gate does not judge the claim; it
 requires that the instrument ran.
 
-TWO CHECKS
+THREE CHECKS
   1. CLAIM WITHOUT A CHECK. The answer makes a scheduling/armed claim and
      `will-it-run.py` appears nowhere in this session's TOOL activity -> exit 2.
   2. CLAIM CONTRADICTING THE CHECK. The instrument ran, printed a verdict for an
      issue, and the answer makes a POSITIVE claim about that same issue anyway
      -> exit 2. Running a checker and then ignoring its answer is the failure
      mode a run-happened check alone cannot see.
+  3. CLAIM ABOUT AN ISSUE THE CHECK NEVER COVERED. The instrument answered, but
+     about a DIFFERENT issue than the one the answer names -> exit 2. Evidence
+     is per-issue, because the verdict is: ASK-287 being dispatchable today says
+     nothing whatever about ASK-291 (round 2, major 1).
 
 Evidence for check one is read from tool_use inputs and tool_result contents ONLY,
 never from my own prose. Otherwise writing the words "will-it-run.py" in the answer
@@ -38,6 +42,8 @@ coverage, do not assume a regex is complete):
      instance, and that requirement is itself a miss source.
   c. Past-tense observation claims ("it ran", "it dispatched", "the review
      happened"). Different class, no instrument, deliberately out of scope.
+     CAPTURED as sp-b852db3e, not dropped -- it needs a did-it-run checker
+     before a gate can demand anything answerable.  # spillover-skip
   d. Whether the claim is TRUE. Check two only catches a contradiction with a
      verdict actually printed this session for an issue named in the answer.
   e. Claims about schedulers `will-it-run.py` does not model (the morning
@@ -46,9 +52,13 @@ coverage, do not assume a regex is complete):
      wiring claims now route to a wiring surface instead (major 1), and the
      dispatch remedy is at least runnable, but a morning-pipeline claim still
      gets pointed at the Linear dispatch job.
-  g. Wiring evidence is a SURFACE TOUCH, not a verdict. Opening settings.json
-     satisfies a "wired" claim even if the file says the opposite; only the
-     dispatch class has a machine verdict to contradict.
+  g. Wiring evidence is a SURFACE TOUCH, not a verdict. Reading the real hook
+     registration satisfies a "wired" claim even if that file says the OPPOSITE
+     of the claim; only the dispatch class has a machine verdict to contradict.
+  h. A dispatch claim naming NO issue ("the loop picks it up on the next run")
+     is still armed by any real answer, because the header it prints (lane, cap,
+     spend, budget day) genuinely is a lane-wide fact and there is no subject to
+     attribute the claim to. Check three needs a named issue to bite.
   f. A log line quoted inline. Fenced code blocks are stripped; inline quotes
      are not.
 
@@ -105,8 +115,23 @@ COMPILED = [(n, re.compile(p, re.I), "dispatch") for n, p in DISPATCH_SHAPES] + 
 # A wiring claim is answerable by having actually TOUCHED a wiring surface this
 # session. Reading the settings file IS the check for "is it wired", the way a
 # will-it-run answer is the check for "will it dispatch".
-WIRING_SURFACES = ("settings.json", "settings-template.json", "hooks.json",
-                   "lefthook.yml", "capability-manifest.json", ".github/workflows")
+#
+# EVIDENCE IS THE FILE'S BODY, NOT ITS NAME (round 2, major 2). The old check was
+# `"settings.json" in tool_blob`, so an `ls`, a grep PATTERN, or a Read of any
+# source file that merely mentions the filename armed every wiring claim for the
+# rest of the session -- including a Read of THIS file, whose own remedy text
+# names all six surfaces. That is the identical substitution round 1 major 2
+# found on the dispatch side: presence of the name accepted as proof of the act.
+# So the signature is the registration itself -- a hook block, or a workflow's
+# job body -- which only appears when the surface was actually opened or written.
+WIRING_BODY_RE = re.compile(
+    r'"(PreToolUse|PostToolUse|Stop|SubagentStop|SessionStart|SessionEnd|'
+    r'UserPromptSubmit|PreCompact|PostCompact|Notification)"\s*:\s*\['
+    r'|"hooks"\s*:\s*[\[{]'
+    r'|"type"\s*:\s*"command"'
+    r'|"capabilities"\s*:\s*\['
+    r'|^\s*(?:jobs|runs-on|uses)\s*:',
+    re.M)
 
 # PROOF THE INSTRUMENT RAN AND ANSWERED, not that its NAME appeared (major 2).
 # The old check was `CHECKER in tool_blob`, so `ls` of the scripts directory, a
@@ -213,9 +238,31 @@ def checker_answered(tool_blob):
 
 
 def wiring_evidence(tool_blob):
-    """True when a wiring surface was actually opened or run this session."""
-    blob = tool_blob or ""
-    return any(surface in blob for surface in WIRING_SURFACES)
+    """True when a wiring surface's BODY was actually seen this session."""
+    return bool(WIRING_BODY_RE.search(tool_blob or ""))
+
+
+def unbacked_issue_claims(claims, verdicts):
+    """Dispatch claims naming an issue the instrument never answered for.
+
+    The gate's whole premise is that a scheduling claim is only as good as the
+    observation behind it, and the observation is PER ISSUE: pickability, pool
+    position and project all differ issue by issue, which is exactly why one run
+    printed TODAY for ASK-287 and NEVER for ASK-291 on the same day. Treating a
+    single successful run as session-wide arming let the one answer license every
+    other claim -- a run-happened check wearing a per-issue check's clothes.
+
+    A NEGATIVE_ECHO sentence is NOT excused here (it is, in contradictions()).
+    That exemption exists so an accurate RESTATEMENT of a printed verdict passes;
+    with no verdict for that issue there is nothing being restated, and "ASK-291
+    will never be dispatched" is then just as unobserved as the positive form.
+    """
+    out = []
+    for name, sentence, _kind in claims:
+        idents = [i.upper() for i in ISSUE_RE.findall(sentence)]
+        if idents and not any(i in verdicts for i in idents):
+            out.append((name, sentence, idents))
+    return out
 
 
 def observed_verdicts(tool_blob):
@@ -293,6 +340,23 @@ def evaluate(final_text, tool_blob):
             "The NAME appearing in a command is not enough, deliberately: a run "
             "that refused to answer proves nothing, and neither does an `ls`.\n"
             + scar)
+    # CHECK THREE: it answered, but about a different issue (round 2, major 1).
+    unbacked = unbacked_issue_claims(dispatch, verdicts)
+    if unbacked:
+        missing = sorted({i for _n, _s, ids in unbacked for i in ids
+                          if i not in verdicts})
+        listed = "\n".join(f"  [{n}] \"{t[:150]}\"" for n, t, _ in unbacked[:8])
+        return 2, (
+            "SCHEDULING CLAIM GATE (blocked): " + CHECKER + " answered this "
+            "session, but not about " + ", ".join(missing) + ":\n" + listed +
+            "\n\nIt printed a verdict for: " +
+            (", ".join(sorted(verdicts)) or "no issue at all") + ".\n"
+            "Evidence is per-issue. Pickability, pool position and project "
+            "differ issue by issue -- one 2026-08-02 run printed TODAY for one "
+            "issue and NEVER for another. Run it for the issue you are "
+            "claiming:\n"
+            "  python3 q-system/.q-system/scripts/" + CHECKER + " " +
+            missing[0] + "\n" + scar)
     if wiring and not wiring_evidence(tool_blob):
         listed = "\n".join(f"  [{n}] \"{t[:150]}\"" for n, t, _ in wiring[:8])
         return 2, (
@@ -338,13 +402,31 @@ def _self_test():
     RAN = ("$ python3 q-system/.q-system/scripts/will-it-run.py ASK-287\n"
            "OBSERVED 2026-08-02T11:32:16  lane=production  cap=3  spent=3  "
            "budget_day=2026-08-02\nASK-287: TODAY")
-    WIRED_EV = 'read .claude/settings.json and settings-template.json'
+    # Wiring evidence is now the SURFACE'S BODY, not its name (round 2, major 2).
+    # ASSEMBLED, never written contiguously: a literal hook-registration blob
+    # sitting in this file would mean that merely READING this gate's source arms
+    # every wiring claim for the session -- the same name-is-not-proof hole the
+    # finding reports, reintroduced by its own test fixture. `_body` keeps the
+    # signature out of the source text while still producing it at runtime.
+    def _body(*parts):
+        return "".join(parts)
+
+    REAL_SETTINGS = _body('read .claude/settings.json\n{"hoo', 'ks": {"St',
+                          'op": [{"ty', 'pe": "comm', 'and", "command": '
+                          '"scheduling-claim-gate.py"}]}}')
+    REAL_HOOKS_JSON = _body('{"hoo', 'ks": {"PostToolU', 'se": [{"matcher": '
+                            '"Write|Edit", "command": "voice-lint.py"}]}}')
+    REAL_WORKFLOW = _body('cat .github/workflows/ci.yml\njo', 'bs:\n  check:\n'
+                          '    runs-on: ubuntu-latest')
+    WIRED_EV = REAL_SETTINGS
 
     # --- check one: dispatch claim without a real run ------------------------
     check("queued claim with no checker run blocks",
           evaluate("ASK-291 is queued, it'll go out today.", NO_TOOLS)[0], 2)
+    # RAN answers about ASK-287, so ASK-287 is the claim it can back. The same
+    # sentence about ASK-291 is check three's case below, not this one.
     check("same claim passes once the checker actually answered",
-          evaluate("ASK-291 is queued, it'll go out today.", RAN)[0], 0)
+          evaluate("ASK-287 is queued, it'll go out today.", RAN)[0], 0)
     check("next-run claim blocks",
           evaluate("The loop will grab it on the next run.", NO_TOOLS)[0], 2)
     check("will-dispatch claim blocks",
@@ -364,10 +446,17 @@ def _self_test():
                    "run.")[0], 2)
     check("MAJOR2: a real rendered answer DOES arm it",
           evaluate("ASK-287 is queued for today.", RAN)[0], 0)
+    # Pin WHICH check fired. Since check three also blocks an issue the run never
+    # covered, an rc of 2 alone would no longer prove check one is still alive.
+    check("MAJOR2: the block is check ONE (no answer), not check three",
+          "produced no answer this session" in evaluate(
+              "ASK-291 is queued.",
+              "capability-gate.py\nwill-it-run.py\nlinear_pick.py")[1], True)
 
     # --- minor 1 (codex): --json output must count and be readable -----------
     JSON_OUT = ('{"observed_at": "2026-08-02T11:32:16", "cap": 3, "answers": '
-                '[{"issue": "ASK-291", "verdict": "NEVER", "position": null}]}')
+                '[{"issue": "ASK-291", "verdict": "NEVER", "position": null},'
+                ' {"issue": "ASK-287", "verdict": "TODAY", "position": 1}]}')
     check("MINOR1: --json output arms the gate",
           evaluate("ASK-287 is queued for today.", JSON_OUT)[0], 0)
     check("MINOR1: --json verdicts are visible to the contradiction check",
@@ -383,6 +472,37 @@ def _self_test():
                    WIRED_EV)[0], 0)
     check("MAJOR1: the wiring block names a wiring surface, not the dispatcher",
           "settings.json" in evaluate("The hook is now wired.", NO_TOOLS)[1], True)
+
+    # --- round 2, major 1: an answer for ONE issue is not an answer for ALL ---
+    RAN_287 = RAN  # a real, rendered answer -- but only about ASK-287
+    check("R2MAJOR1: a run for ASK-287 does NOT back a claim about ASK-291",
+          evaluate("ASK-291 is queued, it goes out today.", RAN_287)[0], 2)
+    check("R2MAJOR1: the block names the unanswered issue",
+          "ASK-291" in evaluate("ASK-291 is queued.", RAN_287)[1], True)
+    check("R2MAJOR1: the issue the checker DID answer still passes",
+          evaluate("ASK-287 is queued for today.", RAN_287)[0], 0)
+    check("R2MAJOR1: --json answers back only the issues they name",
+          evaluate("ASK-999 is queued for today.", JSON_OUT)[0], 2)
+
+    # --- round 2, major 2: a wiring FILENAME is not an opened wiring surface --
+    check("R2MAJOR2: a grep pattern naming settings.json does NOT arm wiring",
+          evaluate("The Stop hook is now wired.",
+                   '{"pattern": "settings.json", "path": "."}')[0], 2)
+    check("R2MAJOR2: an ls listing settings.json does NOT arm wiring",
+          evaluate("The Stop hook is now wired.",
+                   "settings.json\nsettings.local.json\nCLAUDE.md")[0], 2)
+    check("R2MAJOR2: reading a SOURCE file that merely mentions the surface "
+          "does NOT arm wiring",
+          evaluate("The Stop hook is now wired.",
+                   'WIRING_SURFACES = ("settings.json", "hooks.json")')[0], 2)
+    check("R2MAJOR2: the real content of settings.json DOES arm wiring",
+          evaluate("The Stop hook is now wired in settings.json.",
+                   REAL_SETTINGS)[0], 0)
+    check("R2MAJOR2: a plugin hooks.json body arms wiring",
+          evaluate("The lint is now enforced on every Write.",
+                   REAL_HOOKS_JSON)[0], 0)
+    check("R2MAJOR2: a workflow body arms wiring",
+          evaluate("The required check is now live.", REAL_WORKFLOW)[0], 0)
 
     # --- major 4 (codex): an accurate restatement is the desired report ------
     NEVER_OUT = (RAN + "\nASK-291: NEVER\n    project is UNSET"
@@ -409,7 +529,7 @@ def _self_test():
           evaluate("The deal is live and Chris signed.", NO_TOOLS)[0], 0)
     check("plain conversational answer passes",
           evaluate("I read the file and it does what you said.", NO_TOOLS)[0], 0)
-    check("past-tense observation is out of scope by design",
+    check("past-tense observation is out of scope by design (sp-b852db3e)",  # spillover-skip
           evaluate("The loop dispatched ASK-289 at 17:57.", NO_TOOLS)[0], 0)
 
     # --- hatches -------------------------------------------------------------
