@@ -16,8 +16,9 @@ Thumbs.db
 q-system/output/*.html
 q-system/output/*.json
 q-system/output/*.log
-# flock sidecars for the local ledgers (linear-bypass-sweep.py's .jsonl ledger,
-# fleet-health-daily.py's .json pending set). Runtime state, never content:
+# flock sidecars for the local ledgers (linear-bypass-sweep.py's .jsonl ledger;
+# fleet-health-daily.py kept a .json one until PR #66 round 8 deleted the record
+# it guarded). Runtime state, never content:
 # committing one would ship a lock file to every instance.
 #
 # Matched on the .lock SUFFIX, not on `*.jsonl.lock`. That narrower pattern read

@@ -531,20 +531,6 @@ check("cron-shells-claude's lesson slug is a real file",
 # ===========================================================================
 
 import json as _json
-import tempfile as _tempfile
-
-_tmpdir = _tempfile.TemporaryDirectory()
-fh.BYPASS_REPORTED = Path(_tmpdir.name) / "linear-bypass-reported.json"
-
-
-def _reported_now():
-    if not fh.BYPASS_REPORTED.is_file():
-        return []
-    return _json.loads(fh.BYPASS_REPORTED.read_text())
-
-
-def _forget_reported():
-    fh._write_reported([])
 
 
 class _StubSweep:
@@ -592,120 +578,70 @@ _blind("a sweeper whose ledger write failed is blind",
 _blind("a stale ref (fetch failed) is blind, because the count may be low",
        payload={**_OK, "fetched": "failed"})
 
-# --- nothing is written before the board takes it ---------------------------
+# --- the finding is a fact about history, not about this run ----------------
+# The sweep dedupes on sha forever, so the SECOND run ledgers nothing new
+# (`commits: []`). The finding has to survive that: "already ledgered" says
+# nothing about whether Linear ever heard. It reads `unaccounted_commits`, which
+# is every unaccounted sha in range whether or not this run discovered it.
 _first = _with_sweeper(payload=_OK)
-check("an unreported unaccounted sha produces a finding", len(_first), 1)
-check("and detecting it wrote nothing durable", _reported_now(), [])
-
-# The sweep dedupes on sha forever, so the SECOND run ledgers nothing new. The
-# finding has to survive that, because "already ledgered" says nothing about
-# whether Linear ever heard.
+check("an unaccounted sha produces a finding", len(_first), 1)
 _again = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0})
-check("an unfiled sha is re-surfaced on the next run", len(_again), 1)
+check("a run that ledgered nothing new still produces it", len(_again), 1)
 # Guarded, like every other index into a findings list in this file: when the
 # defect under test is "no finding was produced", an unguarded [0] reports an
 # IndexError traceback and the remaining assertions never run at all.
 check("and it is still the same sha",
       _again[0]["body"].count("deadbeef1") if _again else "no finding", 1)
-
-if _again:
-    # A dry run files nothing, so it reports nothing and records nothing.
-    _again[0]["key"] = "fleet-health/x/y"
-    fh.file_findings([_again[0]], apply=False, linear=_FakeLinear(_live_body))
-    check("a dry run records no sha as reported", _reported_now(), [])
-
-    # Linear unreachable: the filing is counted as dropped, so the sha is owed.
-    fh.file_findings([_again[0]], apply=True, linear=_DeadLinear())
-    check("an unreachable Linear records no sha as reported", _reported_now(), [])
-
-    # Accepted: now, and only now, the sha is marked.
-    fh.file_findings([_again[0]], apply=True, linear=_FakeLinear(_live_body))
-    check("a filed finding records the sha it carried", _reported_now(), ["deadbeef1"])
-
-    _clean = _with_sweeper(payload=_OK)
-    check("and the same sweep result then produces no finding", _clean, [])
+check("two runs over the same history build the same body",
+      _first[0]["body"] == _again[0]["body"] if _first and _again else "no finding",
+      True)
 
 # --- THE CRASH THIS DESIGN EXISTS FOR --------------------------------------
 # The sweeper is a CHILD process and it appends its ledger row before this
 # process ever sees the JSON. Kill the parent anywhere after that append and the
-# sha is ledgered, unreported, and — to anything keyed on `commits` — never new
-# again. That was a permanent silence: the ledger suppressed the row on every
-# later run and no finding was ever filed (PR #66 round 7).
+# sha is ledgered and — to anything keyed on `commits` — never new again. That
+# was a permanent silence (PR #66 round 7).
 #
 # The crashed run is simulated by never running it: the ledger row exists, so
-# the NEXT run reports recorded=0 and commits=[], and the sha survives only in
-# the unaccounted list, which is a fact about history rather than about a run.
-_forget_reported()
+# the NEXT run reports recorded=0 and commits=[], and the sha survives in the
+# unaccounted list, which is a fact about history rather than about a run.
 _crashed = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
                                   "unaccounted_commits": ["c0ffee123"],
                                   "unaccounted": 1})
 check("a sha ledgered by a run that died is still surfaced", len(_crashed), 1)
 check("with the sha itself",
       _crashed[0]["body"].count("c0ffee123") if _crashed else "no finding", 1)
-if _crashed:
-    _crashed[0]["key"] = "fleet-health/x/y"
-    fh.file_findings([_crashed[0]], apply=True, linear=_FakeLinear(_live_body))
-    check("and once filed it is marked", _reported_now(), ["c0ffee123"])
-_forget_reported()
 
-# --- a filing marks only the shas it actually named -------------------------
-# The body prints at most 25 shas. Marking the whole set would tell the record
-# about shas the finding never carried, and they would never be filed again.
-_many = [f"{i:09x}" for i in range(30)]
-_big = _with_sweeper(payload={**_OK, "commits": _many, "unaccounted_commits": _many,
-                              "unaccounted": 30})
-check("a 30-sha sweep produces one finding", len(_big), 1)
-if _big:
-    _big[0]["key"] = "fleet-health/x/y"
-    fh.file_findings([_big[0]], apply=True, linear=_FakeLinear(_live_body))
-    check("filing marks exactly the 25 the body carried", len(_reported_now()), 25)
-    _rest = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
-                                   "unaccounted_commits": _many, "unaccounted": 30})
-    check("and the 5 it never named come back", len(_rest), 1)
-    check("as the 5 that were left over",
-          _rest[0]["body"].count("`" + _many[25][:9] + "`") if _rest else "no finding", 1)
-_forget_reported()
-
-# --- a failed mark re-reports; it never suppresses --------------------------
-# The record is written AFTER the board accepted the finding, so a write that
-# does not land costs a duplicate line on a standing issue. That is the whole
-# point of the direction: the other one loses the finding.
-_wedged = Path(_tmpdir.name) / "wedged" / "linear-bypass-reported.json"
-_wedged.mkdir(parents=True)  # the path exists as a DIRECTORY, so writes fail
-_real_reported = fh.BYPASS_REPORTED
-_wedge_finding = _with_sweeper(payload={**_OK, "commits": ["cccccccc1"],
-                                        "unaccounted_commits": ["cccccccc1"]})
-check("the finding is produced even though the record is unwritable",
-      len(_wedge_finding), 1)
-if _wedge_finding:
-    fh.BYPASS_REPORTED = _wedged
-    _wedge_finding[0]["key"] = "fleet-health/x/y"
-    fh.file_findings([_wedge_finding[0]], apply=True, linear=_FakeLinear(_live_body))
-    fh.BYPASS_REPORTED = _real_reported
-check("a failed mark leaves the real record alone", _reported_now(), [])
-check("so the sha is reported again rather than lost",
-      len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
-                                 "unaccounted_commits": ["cccccccc1"]})), 1)
-_forget_reported()
-
-# --- the write is atomic: a crash mid-write cannot truncate the record ------
-# A partially-written record parses as invalid JSON, `_read_reported` returns [],
-# and every sha ever filed is reported again.
-fh._write_reported(["ddddddddd", "eeeeeeeee"])
-_real_replace = fh.os.replace
-fh.os.replace = lambda *_a, **_k: (_ for _ in ()).throw(OSError("killed mid-write"))
-try:
-    fh._write_reported(["fffffffff"])
-except OSError:
-    pass
-finally:
-    fh.os.replace = _real_replace
-check("a killed write leaves the previous record intact",
-      _reported_now(), ["ddddddddd", "eeeeeeeee"])
-check("and no temp file is left behind",
-      [p.name for p in fh.BYPASS_REPORTED.parent.iterdir() if ".tmp" in p.name],
+# --- the detector writes nothing durable, so no crash can spend a finding ---
+# Seven rounds of "remember what was already reported" each left a window where
+# the memory and the board disagreed and the memory won. There is no memory now:
+# a finding is rebuilt from git history every run, so the only way to stop
+# reporting a sha is for it to leave history.
+check("the detector keeps no local record of what was reported",
+      [n for n in ("_read_reported", "_write_reported", "_record_reported",
+                   "BYPASS_REPORTED", "_mark_filed") if hasattr(fh, n)],
       [])
-_forget_reported()
+check("and a finding carries no state-consuming callback",
+      "on_filed" in (_crashed[0] if _crashed else {}), False)
+
+# --- the body names every sha it can, and points at the ledger for the rest --
+_many = [f"{i:09x}" for i in range(30)]
+_big = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                              "unaccounted_commits": _many, "unaccounted": 30})
+check("a 30-sha sweep produces one finding", len(_big), 1)
+check("and the body names all 30, not a batch of them",
+      sum(f"`{s[:9]}`" in _big[0]["body"] for s in _many) if _big else "no finding",
+      30)
+
+_over = [f"{i:09x}" for i in range(fh.MAX_SHAS_IN_BODY + 7)]
+_capped = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                 "unaccounted_commits": _over,
+                                 "unaccounted": len(_over)})
+check("over the cap the body still states the true total",
+      f"**{len(_over)} commit(s)**" in _capped[0]["body"] if _capped else "no finding",
+      True)
+check("and points at the ledger that holds the ones it could not print",
+      "linear-bypass.jsonl" in _capped[0]["body"] if _capped else "no finding", True)
 
 # --- a truncated scan is blind: the window may have cut off an older bypass --
 # The scan reads a fixed number of commits back. When history within the floor
@@ -722,7 +658,6 @@ _blind("a truncated scan window is blind, not clean",
 _blind("a fetch-failed run is still blind",
        payload={**_OK, "commits": ["cafe12345"],
                 "unaccounted_commits": ["cafe12345"], "fetched": "failed"})
-check("and it recorded nothing", _reported_now(), [])
 check("so the next healthy run surfaces the sha",
       len(_with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
                                  "unaccounted_commits": ["cafe12345"]})), 1)
@@ -730,8 +665,6 @@ check("so the next healthy run surfaces the sha",
 _blind("a truncated run is still blind",
        payload={**_OK, "commits": ["cafe67890"],
                 "unaccounted_commits": ["cafe67890"], "truncated": True})
-check("and it recorded nothing either", _reported_now(), [])
-_forget_reported()
 
 # --- a refusal has to arrive with its reason attached -----------------------
 # The sweep refuses when it cannot derive the activation floor from the swept
@@ -752,6 +685,136 @@ except RuntimeError as exc:
             f"a refusal reason reaches the operator: the sweeper's stderr was "
             f"dropped, message was {str(exc)!r}")
 
+# ===========================================================================
+# THE BOARD IS THE ARTIFACT (PR #66 round 8)
+# ===========================================================================
+# Every assertion above this line checks a LOCAL record. None of them ever read
+# the issue body that came back, and that is exactly where both round-8 findings
+# lived: the local bookkeeping was right and the permanent artifact was wrong.
+#
+# `_refresh_one` REPLACES the managed region of the description. So any finding
+# whose body is a DELTA — only the shas not yet reported — erases the shas an
+# earlier delta put there, while the local record says they were reported. Two
+# routes into it: a second batch (>25 shas), and an older overlapping run landing
+# its mutation after a newer one.
+#
+# The fix is to stop building a delta. The body is a pure function of the
+# unaccounted set in git history, so every write is the whole truth and a
+# late/duplicate write cannot subtract from it.
+
+
+class _Board:
+    """A Linear double that KEEPS the body it was sent, so a second run reads it.
+
+    `_FakeLinear` returns its constructor's description forever, which is why a
+    replace-vs-splice defect could not be seen through it: every run looked like
+    the first one.
+    """
+
+    ISSUE_CREATE = "create"
+    ISSUE_UPDATE = "update"
+
+    def __init__(self):
+        self.description = "seed body"
+        self.mutations = 0
+
+    def fetch_remote_state(self, *_a, **_k):
+        return "team-1", None, {"fleet-health/x/y": {
+            "linear_id": "id-1", "identifier": "ASK-1",
+            "description": self.description, "state_type": "unstarted",
+            "team_id": "team-1",
+        }}
+
+    def read_ledger(self):
+        return {}
+
+    def append_ledger(self, records):
+        return len(records)
+
+    def reopen_state_id(self, _team_id):
+        return "state-todo"
+
+    def graphql(self, query, variables):
+        if query == self.ISSUE_UPDATE:
+            self.description = variables["input"]["description"]
+            self.mutations += 1
+            return {"issueUpdate": {"success": True, "issue": {"id": "id-1"}}}
+        return {"issueCreate": {"issue": {"id": "id-2", "identifier": "ASK-2"}}}
+
+
+def _file_to(board, finding):
+    finding["key"] = "fleet-health/x/y"
+    fh.file_findings([finding], apply=True, linear=board)
+
+
+def _on_board(board, shas):
+    return sum(1 for sha in shas if f"`{sha[:9]}`" in board.description)
+
+
+# --- finding 2: batching must not delete the previous batch from the board ---
+_thirty = [f"{i:09x}" for i in range(30)]
+_sweep30 = {**_OK, "commits": [], "recorded": 0,
+            "unaccounted_commits": _thirty, "unaccounted": 30}
+
+_board = _Board()
+_batch1 = _with_sweeper(payload=_sweep30)
+if _batch1:
+    _file_to(_board, _batch1[0])
+_batch2 = _with_sweeper(payload=_sweep30)
+if _batch2:
+    _file_to(_board, _batch2[0])
+
+check("every unaccounted sha reaches the board across batches",
+      _on_board(_board, _thirty), 30)
+check("and nothing is left owed that the board never named",
+      len(_with_sweeper(payload=_sweep30)) and
+      _on_board(_board, _thirty) == 30, True)
+
+# --- finding 1: an older overlapping run must not subtract from the board ----
+# Two runs race. The newer one saw one more sha. The older one's mutation lands
+# last, so whatever it writes is what the operator reads tomorrow.
+_board = _Board()
+_older_set = ["aaaaaaaaa"]
+_newer_set = ["aaaaaaaaa", "bbbbbbbbb"]
+_newer = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                "unaccounted_commits": _newer_set, "unaccounted": 2})
+_older = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                                "unaccounted_commits": _older_set, "unaccounted": 1})
+if _newer:
+    _file_to(_board, _newer[0])
+if _older:
+    _file_to(_board, _older[0])
+# The older run's body is the whole truth AS OF ITS OWN SCAN, so it does write a
+# shorter list, and for one cycle the board is stale. That window is real and is
+# not claimed away here. What the finding was about is PERMANENCE: the sha used
+# to be marked reported, so nothing ever put it back. Nothing is marked now, so
+# the next run rebuilds from history and restores it without anyone noticing.
+check("the older run does leave the board a cycle stale",
+      _on_board(_board, _newer_set), 1)
+_next = _with_sweeper(payload={**_OK, "commits": [], "recorded": 0,
+                               "unaccounted_commits": _newer_set, "unaccounted": 2})
+if _next:
+    _file_to(_board, _next[0])
+check("and the next run restores the sha the race dropped",
+      _on_board(_board, _newer_set), 2)
+
+# --- the body may not move just because history did --------------------------
+# The body is rebuilt from history every run now, so anything in it that grows
+# on its own turns `body_stale` true daily: one mutation and one Slack line per
+# cycle, which is the ASK-283 rule this detector was built to honour. The count
+# of commits SCANNED is such a number; the unaccounted set is not.
+_board = _Board()
+_stable = {**_OK, "commits": [], "recorded": 0,
+           "unaccounted_commits": ["dddddddd1"], "unaccounted": 1, "scanned": 10}
+_day1 = _with_sweeper(payload=_stable)
+if _day1:
+    _file_to(_board, _day1[0])
+_before = _board.mutations
+_day2 = _with_sweeper(payload={**_stable, "scanned": 411})
+if _day2:
+    _file_to(_board, _day2[0])
+check("a day with no new bypass sends no mutation", _board.mutations - _before, 0)
+
 # --- the lock sidecars this file opens must not dirty a checkout ------------
 # `_pending_lock` creates `<BYPASS_PENDING>.lock` on every --apply run. The
 # ignore rule written for the sweep ledger is `*.jsonl.lock`, which does not
@@ -759,8 +822,7 @@ except RuntimeError as exc:
 # founder's tree after the first health run. Asked of git, not of the ignore
 # file's text: a pattern that reads right and does not match is the whole bug.
 _repo = Path(__file__).resolve().parents[4]
-for _lock in ("q-system/output/linear-bypass-reported.json.lock",
-              "q-system/output/linear-bypass.jsonl.lock"):
+for _lock in ("q-system/output/linear-bypass.jsonl.lock",):
     _rc = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-q", _lock],
                          capture_output=True).returncode
     check(f"git ignores the {Path(_lock).name} sidecar", _rc, 0)

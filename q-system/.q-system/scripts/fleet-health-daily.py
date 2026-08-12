@@ -1004,120 +1004,37 @@ def detect_open_spillover(_ctx) -> list:
     }]
 
 
-# What Linear has ALREADY been told, not what it still owes.
+# How many shas one issue description carries. The rest are named by reference
+# to the sweep ledger, which holds every one of them.
+MAX_SHAS_IN_BODY = 200
+
+# THERE IS NO LOCAL RECORD OF WHAT LINEAR HAS BEEN TOLD, AND THAT IS THE DESIGN.
 #
-# The predecessor of this file recorded the debt: the sweep found a sha, the
-# detector wrote "still owed" here, and a filing cleared it. That put a durable
-# write BETWEEN detection and filing, and every crash in that window was a
-# permanent loss — the sweep ledger dedupes on sha forever, so a sha whose debt
-# was never written is never "new" again and no finding is ever filed. Five
-# review rounds moved that write around (order it before the raises, make it
-# atomic, spend only what was reported) and each fix narrowed the window without
-# closing it. The last one left was a SIGKILL between the child sweep's ledger
-# append and the parent's first line (PR #66 round 7); no ordering inside the
-# parent can reach that.
+# Seven review rounds tried to keep one. The shape was always: the sweep finds a
+# sha, something local remembers "this one is handled", and the next run subtracts
+# what it remembers from what it found. Every round moved that memory (owed-set,
+# then reported-set), hardened its write (atomic, locked, post-filing only), and
+# narrowed which shas a filing was allowed to spend. Every round left a way for
+# the memory and the board to disagree, and each time the memory won and a real
+# bypass went silent.
 #
-# So nothing durable is written before the finding is filed. The retry set is
-# recomputed from history every run — the sweep reports every unaccounted sha in
-# range, which is a property of the commits and therefore identical on every run
-# — minus the shas already reported here. A crash anywhere before the filing
-# changes no state and the next run asks the same question. A crash after Linear
-# accepted but before this file is updated re-reports one sha, which is the safe
-# direction and the only one left.
-BYPASS_REPORTED = QROOT / "output" / "linear-bypass-reported.json"
-
-
-def _read_reported() -> list:
-    """Shas a finding has already carried onto the board.
-
-    Unreadable or corrupt reads as EMPTY, and that direction is deliberate: the
-    consequence is re-reporting a sha (a duplicate line on a standing issue),
-    where the other direction is suppressing one forever.
-    """
-    try:
-        data = json.loads(BYPASS_REPORTED.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
-
-
-def _write_reported(shas: list) -> None:
-    """Replace the record atomically, and let a failed write BE a failure.
-
-    The write lands in a sibling temp file and is `os.replace`d in, so a process
-    killed mid-write leaves the previous record whole. A truncated file parses as
-    invalid JSON and `_read_reported` returns [], which re-reports every sha ever
-    filed — noisy, and the reason the write is atomic rather than in-place.
-
-    The OSError propagates instead of being swallowed. It reaches `on_filed`,
-    which logs it; the sha then stays unreported and is filed again next run.
-    """
-    BYPASS_REPORTED.parent.mkdir(parents=True, exist_ok=True)
-    # PID-suffixed: two processes writing concurrently must not replace each
-    # other's half-written temp file into place.
-    tmp = BYPASS_REPORTED.with_suffix(f"{BYPASS_REPORTED.suffix}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(json.dumps(shas), encoding="utf-8")
-        os.replace(tmp, BYPASS_REPORTED)
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-
-
-@contextmanager
-def _reported_lock():
-    """Hold the record's read-then-write as ONE critical section.
-
-    The update is read-modify-write and the file is SHARED: the daily launchd job
-    and a hand run write the same path. Two of them interleaving between the read
-    and the write lose whichever sha was added in between, which re-reports it —
-    the recoverable direction, and still worth holding the lock for.
-
-    Yields even when the lock cannot be taken (read-only dir). An unlocked update
-    beats losing the record entirely; the weaker guarantee is warned about, not
-    assumed away.
-    """
-    path = BYPASS_REPORTED.with_suffix(BYPASS_REPORTED.suffix + ".lock")
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = path.open("a+")
-    except OSError as exc:
-        print(f"  could not lock {path}: {exc}", file=sys.stderr)
-        yield False
-        return
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield True
-    finally:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass
-        handle.close()
-
-
-def _record_reported(shas) -> None:
-    """Add ONLY the shas this finding carried, after Linear accepted it.
-
-    Adds rather than replaces: a concurrent run's sha must survive this write, and
-    what a filing may mark reported is what it reported. Order-stable and deduped
-    so the file reads chronologically.
-
-    This is the only durable write in the whole path, and it happens strictly
-    AFTER the board took the finding. Everything upstream of it is a pure
-    function of git history, so a crash upstream costs a cycle, never a finding.
-    """
-    with _reported_lock():
-        merged = list(_read_reported())
-        seen = set(merged)
-        for sha in shas:
-            if sha not in seen:
-                seen.add(sha)
-                merged.append(sha)
-        _write_reported(merged)
+# Round 8 found the two that outlived all of it, and both were the same shape.
+# `_refresh_one` REPLACES the managed region of the description, so a body built
+# by subtraction is a DELTA, and a delta overwrites the delta before it: batch
+# two of a 30-sha sweep deleted batch one from the issue while the record marked
+# all 30 reported, and an older overlapping run landing last subtracted the newer
+# run's sha the same way. Local bookkeeping correct, permanent artifact wrong.
+#
+# The subtraction was the defect, not any particular way of storing it. So the
+# body is now the WHOLE unaccounted set, straight out of git history. Every write
+# is the entire truth, which makes a late write, a duplicate write, and a
+# replayed write all harmless — there is nothing for them to subtract. A crash
+# anywhere costs a cycle, because nothing durable was riding on the run.
+#
+# What stops a daily ping is `_refresh_one`'s body-hash compare: an unchanged
+# body sends no mutation and lands in `existing`, which `should_notify` does not
+# count. That check is generic, already tested, and shared with all eight
+# detectors — one mechanism instead of a private one that could drift from it.
 
 
 def detect_unaccounted_commits(_ctx) -> list:
@@ -1186,42 +1103,41 @@ def detect_unaccounted_commits(_ctx) -> list:
         # the false zero this detector exists to stop.
         raise RuntimeError(
             "the sweeper's scan window was truncated; commits in range went unread")
-    # Every unaccounted sha the scan saw, minus the ones already on the board.
-    # Derived from history and the reported record only — no state this run
-    # created — so an identical run tomorrow computes an identical set.
-    already = set(_read_reported())
-    owed = [sha for sha in (result.get("unaccounted_commits") or [])
-            if isinstance(sha, str) and sha and sha not in already]
-    if not owed:
+    # EVERY unaccounted sha in range, oldest first, and nothing subtracted.
+    # Purely a fact about git history: the same commits produce the same list on
+    # every run, on any machine, with no local record consulted.
+    unaccounted = [sha for sha in (result.get("unaccounted_commits") or [])
+                   if isinstance(sha, str) and sha]
+    if not unaccounted:
         return []
 
-    # The body carries at most 25 shas, so only those 25 may be marked reported.
-    # Marking all of them would tell the board about shas the finding never
-    # named, and the ledger would then suppress them forever (PR #66 round 4).
-    shown = owed[:25]
-    more = len(owed) - len(shown)
+    # The cap bounds one issue description, and the ledger below carries the rest.
+    # 200 rather than a tight number because dropping a sha off this list is the
+    # expensive direction and a sha line is ~14 bytes.
+    shown = unaccounted[:MAX_SHAS_IN_BODY]
+    more = len(unaccounted) - len(shown)
     return [{
-        # Written ONLY after Linear accepted the finding, and only for the shas
-        # this finding actually printed. A dry run writes nothing: nothing was
-        # filed, so nothing was reported. Bound at build time, so a sha that
-        # appears after this finding was assembled is not marked by it.
-        "on_filed": lambda spent=tuple(shown): _record_reported(spent),
         # Stable subject: ONE standing issue for this class. The shas live in the
         # body, which is updatable; putting them in the dedup key would fork a
         # permanent issue per bypass.
         "subject": "linear-bypass-unaccounted",
         "title": "Commits reached origin outside the Linear gate and outside its ledger",
         "body": (
-            f"**{len(owed)} commit(s)** found by `linear-bypass-sweep.py` on "
-            f"`{result.get('rev')}` and not reported before: they reached origin "
+            f"**{len(unaccounted)} commit(s)** found by `linear-bypass-sweep.py` on "
+            f"`{result.get('rev')}`: they reached origin "
             "with neither an issue id nor a "
             "`[no-issue:]` tag, which means the commit-msg gate did not run for them "
             "(`--no-verify`, or a repo without lefthook installed).\n\n"
             + "\n".join(f"- `{sha[:9]}`" for sha in shown)
-            + (f"\n- ...and {more} more" if more else "")
-            + f"\n\nRunning total of unaccounted commits in range: "
-              f"**{result.get('unaccounted')}** of {result.get('scanned')} scanned.\n\n"
-              "## Action\nThe accounting is already done — the sweep wrote these rows to "
+            + (f"\n- ...and {more} more, in `q-system/output/linear-bypass.jsonl`"
+               if more else "")
+            # Deliberately NOT the count of commits scanned. `_refresh_one`
+            # rewrites the issue whenever this body's hash moves, so a number
+            # that grows on its own — and the scan window grows with every
+            # ordinary commit — would mutate the issue and earn a Slack line
+            # every single cycle, which is the one-ping-per-occurrence rule
+            # (ASK-283) broken from the inside.
+            + "\n\n## Action\nThe accounting is already done — the sweep wrote these rows to "
               "`q-system/output/linear-bypass.jsonl`, so the count is true again. What is "
               "left is provenance: for each sha, `git show --no-patch <sha>` and decide "
               "whether it belongs to an existing issue.\n\n"
@@ -1576,7 +1492,6 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
         try:
             if key not in known:
                 result[_create_one(ls, f, apply, team_id, project, filer)] += 1
-                _mark_filed(f, apply)
                 continue
             tracked = _tracked_issue(ls, key, remote_keys, ledger)
             if not tracked:
@@ -1595,35 +1510,12 @@ def file_findings(findings: list, apply: bool, filer: str = "fleet-health-daily.
                       file=sys.stderr)
                 _create_one(ls, f, apply, team_id, project, filer)
                 result["relisted"] += 1
-                _mark_filed(f, apply)
                 continue
             result[_refresh_one(ls, f, apply, tracked, team_id, filer)] += 1
-            _mark_filed(f, apply)
         except Exception as exc:  # noqa: BLE001 - one finding's failure is not the run's
             print(f"  filing {key} FAILED: {exc}", file=sys.stderr)
             result["errors"] += 1
     return result
-
-
-def _mark_filed(finding: dict, apply: bool) -> None:
-    """Tell a detector its finding actually reached the board.
-
-    Only a detector that CONSUMES state on detection needs this: the bypass sweep
-    dedupes on sha forever, so without a confirmation the shas were spent whether
-    or not Linear took them, and a transient outage made the next run read clean
-    (PR #66 review, major 1). Reached on `existing` too — an unchanged tracked
-    issue already carries the content, which is what "reported" means here.
-
-    Never on a dry run: nothing was filed, so nothing was reported. A callback
-    that raises is one detector's bookkeeping failing, never the filing run's.
-    """
-    hook = finding.get("on_filed")
-    if not apply or not callable(hook):
-        return
-    try:
-        hook()
-    except Exception as exc:  # noqa: BLE001
-        print(f"  on_filed for {finding.get('key')} failed: {exc}", file=sys.stderr)
 
 
 def _tracked_issue(ls, key: str, remote_keys: dict, ledger: dict) -> dict:
