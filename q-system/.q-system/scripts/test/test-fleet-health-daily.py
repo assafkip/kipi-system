@@ -714,14 +714,17 @@ class _Board:
     ISSUE_CREATE = "create"
     ISSUE_UPDATE = "update"
 
-    def __init__(self):
+    def __init__(self, state_type="unstarted"):
         self.description = "seed body"
         self.mutations = 0
+        # The operator's board state, settable so a test can CLOSE the issue
+        # between two runs and read what the next run does to it.
+        self.state_type = state_type
 
     def fetch_remote_state(self, *_a, **_k):
         return "team-1", None, {"fleet-health/x/y": {
             "linear_id": "id-1", "identifier": "ASK-1",
-            "description": self.description, "state_type": "unstarted",
+            "description": self.description, "state_type": self.state_type,
             "team_id": "team-1",
         }}
 
@@ -826,6 +829,63 @@ for _lock in ("q-system/output/linear-bypass.jsonl.lock",):
     _rc = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-q", _lock],
                          capture_output=True).returncode
     check(f"git ignores the {Path(_lock).name} sidecar", _rc, 0)
+
+# --- a triaged bypass stays closed; only a NEW sha may reopen it ------------
+# `_refresh_one` reopens a CLOSED issue whose finding is still true, and for
+# every other detector that is right: the finding names a LIVE state and its fix
+# turns the finding off (move the job to a LaunchAgent and cron-shells-claude
+# goes quiet), so a closed issue with the finding still true is a false
+# all-clear.
+#
+# This detector inverts that. Its finding is a fact about IMMUTABLE commit
+# messages, and the action it prescribes is provenance triage -- explicitly NOT
+# a history rewrite, which is a force-push and the founder's call. So the
+# finding can NEVER go false. The operator triages every sha, closes the issue,
+# and the 09:30 run reopens it with a byte-identical body. Tomorrow the same.
+# There is no state the operator can reach that ends it.
+#
+# Closing IS the acknowledgement for this class. A genuinely new bypass changes
+# the body, and body_stale is already the reopen signal, so the one occurrence
+# that should come back still does.
+
+
+def _file_result(board, finding):
+    finding["key"] = "fleet-health/x/y"
+    return fh.file_findings([finding], apply=True, linear=board)
+
+
+_triaged = {**_OK, "commits": [], "recorded": 0,
+            "unaccounted_commits": ["aaaaaaaa1", "bbbbbbbb2"], "unaccounted": 2}
+_board = _Board()
+_first = _with_sweeper(payload=_triaged)
+if _first:
+    _file_result(_board, _first[0])
+
+# The operator reads each sha, decides where it belongs, and closes the issue.
+_board.state_type = "completed"
+_after_triage = _with_sweeper(payload=_triaged)
+_res = _file_result(_board, _after_triage[0]) if _after_triage else {}
+check("a triaged bypass issue is not reopened by the next run",
+      _res.get("reopened", 0), 0)
+check("and the run sends no mutation to it at all", _res.get("existing", 0), 1)
+
+# A genuinely new bypass must still reach the board, closed issue or not.
+_new_sha = {**_triaged, "unaccounted_commits": ["aaaaaaaa1", "bbbbbbbb2", "cccccccc3"],
+            "unaccounted": 3}
+_next = _with_sweeper(payload=_new_sha)
+_res2 = _file_result(_board, _next[0]) if _next else {}
+check("a NEW sha reopens the closed issue", _res2.get("reopened", 0), 1)
+check("and the new sha is on the board", _on_board(_board, ["cccccccc3"]), 1)
+
+# Negative control: the rule is this detector's, not a global weakening. A
+# remediable finding whose fix was never applied must still come back.
+_live = _Board()
+_remediable = {"title": "cron still shells claude", "body": "line 3"}
+_file_result(_live, dict(_remediable))
+_live.state_type = "completed"
+_res3 = _file_result(_live, dict(_remediable))
+check("a remediable finding still reopens when closed without a fix",
+      _res3.get("reopened", 0), 1)
 
 if failures:
     print("FAIL:")

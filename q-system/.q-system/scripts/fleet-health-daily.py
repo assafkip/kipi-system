@@ -1121,6 +1121,12 @@ def detect_unaccounted_commits(_ctx) -> list:
         # body, which is updatable; putting them in the dedup key would fork a
         # permanent issue per bypass.
         "subject": "linear-bypass-unaccounted",
+        # Provenance triage is the terminal action and it leaves git history
+        # untouched, so this finding stays true forever and the generic
+        # reopen-while-true rule would reopen this issue every morning with an
+        # unchanged body. Closing it is how the operator records the triage; a
+        # new sha moves the body and brings it back. See `_refresh_one`.
+        "close_is_acknowledgement": True,
         "title": "Commits reached origin outside the Linear gate and outside its ledger",
         "body": (
             f"**{len(unaccounted)} commit(s)** found by `linear-bypass-sweep.py` on "
@@ -1591,6 +1597,19 @@ def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str,
     # not the text moved. An OPEN issue's state is never touched, so an issue the
     # operator moved to In Progress is not dragged back to Todo daily.
     closed = tracked.get("state_type") in CLOSED_STATE_TYPES
+    if closed and not body_stale and finding.get("close_is_acknowledgement"):
+        # This finding's truth is a permanent historical fact, so the rule above
+        # never terminates for it. Reopen-while-true assumes the finding names a
+        # LIVE state that its fix turns off; a finding about immutable commit
+        # messages can never go false, and the action it asks for (provenance
+        # triage, never a history rewrite) does not try to. The operator closes
+        # it and the next unattended run reopens the same issue with an
+        # identical body, every day, with no state they can reach that ends it.
+        #
+        # For this class, closing IS the acknowledgement. Reopening stays wired
+        # to `body_stale`, which is exactly the new-occurrence signal: a new
+        # bypass adds a sha, the body moves, and the issue comes back.
+        closed = False
     if not body_stale and not closed:
         return "existing"
     if not apply:
