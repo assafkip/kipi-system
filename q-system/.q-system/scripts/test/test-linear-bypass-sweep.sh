@@ -507,6 +507,15 @@ git init -q -b main "$GROW"
 git -C "$GROW" config user.email sweep@test.local
 git -C "$GROW" config user.name "Sweep Test"
 git -C "$GROW" config commit.gpgsign false
+# This is the only fixture that writes hundreds of objects, and it was the only
+# one that flaked: roughly 1 run in 5, `git push` died with `fatal: bad object
+# <sha>`, origin/main never existed, and every case below silently degraded to a
+# rev-not-found no-op. Auto-maintenance kicked off by the commit loop repacks
+# underneath the push. A flaky fixture is worse than a missing one -- it reports
+# green four times out of five for a reason unrelated to the code under test.
+git -C "$GROW" config gc.auto 0
+git -C "$GROW" config gc.autoDetach false
+git -C "$GROW" config maintenance.auto false
 
 mkdir -p "$GROW/q-system/.q-system/scripts"
 cp "$SCRIPT_DIR/../linear-issue-ref-check.py" "$GROW/q-system/.q-system/scripts/"
@@ -537,15 +546,20 @@ while [ "$i" -lt "$GROW_FILL" ]; do
     git -C "$GROW" commit -q --allow-empty --no-verify -m "chore: filler $i (ASK-2)"
 done
 git -C "$GROW" remote add origin "$GROW_ORIGIN"
-git -C "$GROW" push -q -u origin main
+GROW_PUSH_ERR=$(git -C "$GROW" push -q -u origin main 2>&1)
+GROW_PUSH_RC=$?
+if [ "$GROW_PUSH_RC" -ne 0 ]; then
+  no "the growth fixture failed to push (rc=$GROW_PUSH_RC): $GROW_PUSH_ERR"
+fi
 
 # The fixture proves itself before it proves anything: in-range volume must
 # actually exceed the default window, or the growth path never runs.
-GROW_INRANGE=$(git -C "$GROW" rev-list --count origin/main)
+GROW_INRANGE=$(git -C "$GROW" rev-list --count origin/main 2>&1)
+GROW_LOCAL=$(git -C "$GROW" rev-list --count HEAD 2>&1)
 if [ "$GROW_INRANGE" -gt "$GROW_FILL" ]; then
   ok "the fixture exceeds the default window ($GROW_INRANGE > $GROW_FILL)"
 else
-  no "the fixture fits inside the default window; the growth case proves nothing"
+  no "the fixture fits inside the default window; the growth case proves nothing (origin=$GROW_INRANGE local=$GROW_LOCAL want>$GROW_FILL)"
 fi
 
 OUT_GROW=$(cd "$GROW" && LINEAR_BYPASS_LEDGER="$GROW_LEDGER" \
