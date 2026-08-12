@@ -61,6 +61,18 @@ The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.
 This rule is enforced end to end and covers every path in the repo.
 MD
   echo "print('lint')" > "$r/q-system/.q-system/scripts/existing-lint.py"
+  # A rule whose named enforcer DOES NOT EXIST. This is the false-claim shape
+  # ASK-290 is about: the rule says a script enforces it, no such file is on
+  # disk, so the sentence is a lie and correcting it is exactly a `replace`.
+  # A census that counted the route regardless of existence made that
+  # correction look like enforcement being removed, and refused it.
+  cat > "$r/.claude/rules/false-claim-rule.md" <<'MD'
+# Stale Rule (ENFORCED)
+
+The deterministic half is `retired-lint.py`, wired PostToolUse on Edit|Write.
+
+Nothing on disk carries that name; the check moved and the sentence did not.
+MD
   # A rule carrying NEITHER token class the content census counts, plus the
   # frontmatter that decides whether it loads at all. 5 of this repo's 34 real
   # rules look exactly like this (security.md, content-output.md, ...), so it is
@@ -829,6 +841,68 @@ run_engine "$ENGINE" "$T/reword.json" "$T"
 check "same-length reword still succeeds" 0 "OK applied reword-advisory" "$RC" "$OUT"
 rm -r "$T"
 
+# ------------------------- 15j. a route to a script that does not exist (ASK-290)
+# The whole reason `replace` exists is to CORRECT a false enforcement claim, and
+# the commonest false claim is a rule naming an enforcer that is not there. A
+# census that counted every .py/.sh a rule mentions counted that lie as
+# enforcement, so removing it read as enforcement disappearing and the engine
+# refused the one edit it was built for. Existence is the qualifier: a route
+# that resolves to no file is not enforcement and is not a census member.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/fixstale.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-stale-route",
+  "reason": "the named enforcer does not exist; say so instead of naming it",
+  "edits": [ { "file": ".claude/rules/false-claim-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `retired-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "No script carries this today; it is advisory until one is wired.",
+               "reason": "retired-lint.py is not on disk, so the sentence is a lie" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/fixstale.json" "$T"
+check "correcting a route to a NONEXISTENT script succeeds" 0 "OK applied fix-stale-route" "$RC" "$OUT"
+check_one_line "correcting a route to a nonexistent script" "$OUT"
+if grep -q "retired-lint.py" "$T/.claude/rules/false-claim-rule.md"; then
+  bad "the false route survived; the correction this op exists for is still blocked"
+else ok "the false route is gone"; fi
+if grep -q "(ENFORCED)" "$T/.claude/rules/false-claim-rule.md"; then
+  ok "correcting the route left the (ENFORCED) marker alone"
+else bad "correcting the route collaterally dropped the (ENFORCED) marker"; fi
+
+# The permissive half must not leak into the strict half. Same edit shape, on
+# the rule whose script IS on disk, stays refused -- that is 15c, restated here
+# so the two live side by side and the qualifier cannot be read as a blanket
+# amnesty for exec routes.
+cat > "$T/fixreal.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "drop-real-route",
+  "reason": "same shape, but the named script exists",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "No script carries this today; it is advisory until one is wired.",
+               "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/fixreal.json" "$T"
+check "dropping a route to an EXISTING script still refused" 2 "enforcement ratchet" "$RC" "$OUT"
+
+# Rerouting a live enforcer to a path that does not exist is the weakening this
+# qualifier could have opened: the old mark goes, and the new route is not a
+# member because it resolves to nothing. The set difference is what refuses it.
+cat > "$T/reroute.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "reroute-to-nowhere",
+  "reason": "point the reader at a path that does not exist",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `existing-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "The deterministic half is `q-system/retired/existing-lint.py`, still wired.",
+               "reason": "r" } ]
+}
+JSON
+run_engine "$ENGINE" "$T/reroute.json" "$T"
+check "rerouting a live enforcer to a dead path refused" 2 "enforcement ratchet" "$RC" "$OUT"
+rm -r "$T"
+
 # 15j. narrowing frontmatter so the rule never loads (PR #70 round 3, major).
 # Same body, same tokens, same line count -- every content check sees no change,
 # and the rule is dead because its paths: no longer match anything.
@@ -1434,7 +1508,7 @@ echo "--- mutation: stop counting which headings carry (ENFORCED ---"
 # the marker be lifted off the heading and parked in prose saying the opposite.
 T=$(mktemp -d); mk_fixture "$T"
 MUT="$T/mutant_head.py"
-mutate "$MUT" '                token_marks.add("%s|enforced-heading|%d" % (name, index))' \
+mutate "$MUT" '                enforced_marks.add("%s|enforced-heading|%d" % (name, index))' \
               '                pass'
 cat > "$T/park.json" <<'JSON'
 {
@@ -1491,8 +1565,8 @@ MUT="$T/mutant_marks.py"
 # Both (ENFORCED counters, because either one alone still refuses the demotion:
 # the occurrence count and the heading count each see this edit.
 mutate2 "$MUT" \
-  '                token_marks.add("%s|enforced|%d" % (name, index))' '                pass' \
-  '                token_marks.add("%s|enforced-heading|%d" % (name, index))' '                pass'
+  '                enforced_marks.add("%s|enforced|%d" % (name, index))' '                pass' \
+  '                enforced_marks.add("%s|enforced-heading|%d" % (name, index))' '                pass'
 cat > "$T/demote.json" <<'JSON'
 {
   "schema_version": 1, "slug": "demote-rule", "reason": "quietly downgrade a rule",
@@ -1544,6 +1618,65 @@ if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
   ok "MUTATION spelling: collapse removed -> the unchecked spelling widened permissions.allow (rc=$MRC), test goes RED as required"
 else
   bad "MUTATION spelling: mutant did not widen permissions - case 15p is not load-bearing"
+fi
+rm -r "$T"
+
+echo
+echo "--- mutation: count exec routes that resolve to nothing (ASK-290) ---"
+# Without the existence qualifier, a rule's route to a script that is NOT ON
+# DISK counts as enforcement, so correcting that false claim reads as
+# enforcement disappearing and is refused. That refusal is the observed RED this
+# issue started from; the mutant has to reproduce it or case 15j proves nothing.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/fixstale.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-stale-route",
+  "reason": "the named enforcer does not exist; say so instead of naming it",
+  "edits": [ { "file": ".claude/rules/false-claim-rule.md", "op": "replace",
+               "anchor": "The deterministic half is `retired-lint.py`, wired PostToolUse on Edit|Write.",
+               "insert": "No script carries this today; it is advisory until one is wired.",
+               "reason": "r" } ]
+}
+JSON
+MUT="$T/mutant_exists.py"
+mutate "$MUT" '                if not _exec_ref_resolves(ref, script_index):' \
+              '                if False:'
+set +e
+MOUT=$(python3 "$MUT" "$T/fixstale.json" --root "$T" 2>&1); MRC=$?
+set -e
+if [ "$MRC" = "2" ]; then
+  ok "MUTATION exists: qualifier removed -> correcting a route to a missing script refused again (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION exists: mutant still applied - case 15j is not load-bearing :: $MOUT"
+fi
+rm -r "$T"
+
+echo "--- mutation: resolve the AFTER census against the copy tree (ASK-290) ---"
+# The copy holds .claude/ and nothing else. Resolving there finds zero scripts,
+# so every named_executables mark vanishes on the after side and EVERY replace
+# on a rule that names a live enforcer is refused -- the qualifier turned into
+# an outage on the safe route. Case 15's plain correction is what catches it.
+T=$(mktemp -d); mk_fixture "$T"
+cat > "$T/fixclaim.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "fix-false-claim",
+  "reason": "correct an overbroad enforcement sentence",
+  "edits": [ { "file": ".claude/rules/enforced-rule.md", "op": "replace",
+               "anchor": "This rule is enforced end to end and covers every path in the repo.",
+               "insert": "This rule is enforced on Edit|Write only; other paths are advisory.",
+               "reason": "r" } ]
+}
+JSON
+MUT="$T/mutant_resolveroot.py"
+mutate "$MUT" '        after_census = census(copy_root, resolve_root=root)' \
+              '        after_census = census(copy_root)'
+set +e
+MOUT=$(python3 "$MUT" "$T/fixclaim.json" --root "$T" 2>&1); MRC=$?
+set -e
+if [ "$MRC" = "2" ]; then
+  ok "MUTATION resolve-root: resolved against the copy -> an honest correction refused (rc=$MRC), test goes RED as required"
+else
+  bad "MUTATION resolve-root: mutant still applied - the resolve-root choice is not load-bearing :: $MOUT"
 fi
 rm -r "$T"
 
