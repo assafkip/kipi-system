@@ -72,8 +72,14 @@ SHA_MERGE=$(GIT_AUTHOR_DATE="2026-07-27T10:05:00+00:00" \
   && git rev-parse HEAD)
 git push -q origin main
 
+# --all-history is not decoration here. This fixture repo has no commit-msg gate
+# in its history at all, so there is no activation floor to derive and the sweep
+# now REFUSES rather than silently scanning unfloored (round 5, finding 2). The
+# whole-window scan is exactly what these cases want, and asking for it out loud
+# is the difference between an opt-in bound and an accident.
 sweep() {
-  LINEAR_BYPASS_LEDGER="$LEDGER" python3 "$SWEEP" --rev origin/main --json 2>/dev/null
+  LINEAR_BYPASS_LEDGER="$LEDGER" python3 "$SWEEP" --rev origin/main --all-history \
+    --json 2>/dev/null
 }
 
 field() { python3 -c "import json,sys; print(json.loads(sys.stdin.read())[sys.argv[1]])" "$1"; }
@@ -305,7 +311,8 @@ else
 fi
 
 LEDGER_CLONE="$TMP/clone.jsonl"
-(cd "$CLONE" && LINEAR_BYPASS_LEDGER="$LEDGER_CLONE" python3 "$SWEEP" --json >/dev/null 2>&1)
+(cd "$CLONE" && LINEAR_BYPASS_LEDGER="$LEDGER_CLONE" python3 "$SWEEP" --all-history \
+  --json >/dev/null 2>&1)
 if grep -q "$SHA_ELSEWHERE" "$LEDGER_CLONE" 2>/dev/null; then
   ok "the sweep fetched and recorded a commit pushed from elsewhere"
 else
@@ -316,7 +323,7 @@ fi
 git -C "$CLONE" update-ref refs/remotes/origin/main "$CLONE_BEFORE"
 LEDGER_NOFETCH="$TMP/nofetch.jsonl"
 OUT_NF=$(cd "$CLONE" && LINEAR_BYPASS_LEDGER="$LEDGER_NOFETCH" \
-  python3 "$SWEEP" --no-fetch --json 2>/dev/null)
+  python3 "$SWEEP" --no-fetch --all-history --json 2>/dev/null)
 check "--no-fetch reports that it did not refresh" "skipped" \
   "$(printf '%s' "$OUT_NF" | field fetched)"
 
@@ -340,7 +347,12 @@ env = dict(os.environ, LINEAR_BYPASS_LEDGER=ledger)
 
 with open(ledger + ".lock", "a+") as lock:
     fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-    proc = subprocess.Popen([sys.executable, sweep, "--rev", "origin/main", "--json"],
+    # --all-history: this fixture repo has no gate in history, so without it the
+    # sweep REFUSES and writes nothing -- and this case counts rows containing the
+    # sha, so the competing writer's single row would satisfy it. The case would
+    # pass while testing no lock at all.
+    proc = subprocess.Popen([sys.executable, sweep, "--rev", "origin/main",
+                             "--all-history", "--json"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     time.sleep(1.0)  # the sweep is either blocked on the lock, or already past it
     with open(ledger, "a") as fh:
@@ -357,7 +369,7 @@ RACE_ROWS=$(cd "$WORK" && python3 "$TMP/contend.py" "$SWEEP" "$LEDGER_LOCK" "$SH
 check "a contended sha is recorded exactly once" 1 "$RACE_ROWS"
 
 OUT_LOCK=$(LINEAR_BYPASS_LEDGER="$TMP/lockflag.jsonl" python3 "$SWEEP" --rev origin/main \
-  --dry --json 2>/dev/null)
+  --all-history --dry --json 2>/dev/null)
 check "the sweep reports that it held the lock" "True" \
   "$(printf '%s' "$OUT_LOCK" | field locked)"
 
@@ -403,6 +415,166 @@ OUT_FULL=$(LINEAR_BYPASS_LEDGER="$TMP/full.jsonl" python3 "$SWEEP" --rev origin/
   --all-history --max-count=1000 --dry --json 2>/dev/null)
 check "a scan that reached the end of history is not truncated" "False" \
   "$(printf '%s' "$OUT_FULL" | field truncated)"
+
+echo "=== a repo with no gate in history REFUSES, it does not scan unfloored ==="
+
+# "No floor" used to be the fallback when the activation date could not be
+# derived, on the reasoning that over-counting beats dropping the window. But the
+# over-count lands as rows in a permanent, sha-deduped ledger whose entire job is
+# a true count, and a row written once is never re-evaluated. Refusing is the
+# recoverable direction: the operator picks --all-history or --since.
+LEDGER_NOGATE="$TMP/nogate.jsonl"
+LINEAR_BYPASS_LEDGER="$LEDGER_NOGATE" python3 "$SWEEP" --rev origin/main \
+  --json >/dev/null 2>&1
+check "an underivable floor exits non-zero" 1 "$?"
+if [ -s "$LEDGER_NOGATE" ]; then
+  no "an underivable floor still wrote rows (silently became no floor)"
+else
+  ok "an underivable floor writes nothing"
+fi
+
+echo "=== the floor comes from the swept REV, not from whatever HEAD is ==="
+
+# gate_live_since ran `git log` with no rev, so it answered about HEAD while the
+# sweep scanned origin/main. Check out anything predating the gate -- a bisect, a
+# detached CI checkout, an old tag -- and the floor silently became "" for a scan
+# of a ref that has the gate right there in its history.
+REVF="$TMP/revfloor"
+REVF_ORIGIN="$TMP/revfloor-origin.git"
+REVF_LEDGER="$TMP/revfloor.jsonl"
+git init --bare -q "$REVF_ORIGIN"
+git init -q -b main "$REVF"
+git -C "$REVF" config user.email sweep@test.local
+git -C "$REVF" config user.name "Sweep Test"
+git -C "$REVF" config commit.gpgsign false
+
+echo pre > "$REVF/pre.txt"
+git -C "$REVF" add pre.txt
+GIT_AUTHOR_DATE=2026-07-01T10:00:00Z GIT_COMMITTER_DATE=2026-07-01T10:00:00Z \
+  git -C "$REVF" commit -q --no-verify -m 'chore: pre-gate work with no id'
+REVF_PRE=$(git -C "$REVF" rev-parse HEAD)
+
+mkdir -p "$REVF/q-system/.q-system/scripts"
+cp "$SCRIPT_DIR/../linear-issue-ref-check.py" "$REVF/q-system/.q-system/scripts/"
+git -C "$REVF" add .
+GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+  git -C "$REVF" commit -q --no-verify -m 'feat: install the gate (ASK-1)'
+
+echo post > "$REVF/post.txt"
+git -C "$REVF" add post.txt
+GIT_AUTHOR_DATE=2026-08-02T10:00:00Z GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
+  git -C "$REVF" commit -q --no-verify -m 'fix: post-gate bypass'
+REVF_POST=$(git -C "$REVF" rev-parse HEAD)
+git -C "$REVF" remote add origin "$REVF_ORIGIN"
+git -C "$REVF" push -q -u origin main
+
+# HEAD is moved BEFORE the gate. origin/main still carries it.
+git -C "$REVF" checkout -q --detach "$REVF_PRE"
+if [ -f "$REVF/q-system/.q-system/scripts/linear-issue-ref-check.py" ]; then
+  no "the detached HEAD still has the gate file; the case proves nothing"
+else
+  ok "HEAD predates the gate while origin/main carries it"
+fi
+
+OUT_REVF=$(cd "$REVF" && LINEAR_BYPASS_LEDGER="$REVF_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --json 2>/dev/null)
+check "a floor derived from the rev skips the pre-gate commit" 1 \
+  "$(printf '%s' "$OUT_REVF" | field recorded)"
+if [ -s "$REVF_LEDGER" ] && grep -q "$REVF_POST" "$REVF_LEDGER"; then
+  ok "the post-gate bypass is recorded"
+else
+  no "the post-gate bypass is NOT recorded"
+fi
+if [ -s "$REVF_LEDGER" ] && grep -q "$REVF_PRE" "$REVF_LEDGER"; then
+  no "the pre-gate commit was recorded (the floor came from HEAD)"
+else
+  ok "the pre-gate commit is not recorded"
+fi
+
+echo "=== the window grows to cover the range; it does not blind on volume ==="
+
+# The floor is pinned at gate activation and never advances, so the number of
+# in-range commits only grows. Against a FIXED cap that is a clock: the day
+# in-range volume passes the cap, `truncated` is true on every run forever, the
+# daily detector raises, and the operator gets BLIND SPOT every morning on a repo
+# where nothing is wrong. `truncated` has to mean "something really went unread",
+# not "the calendar moved", so an unpinned window grows until it covers the range.
+GROW="$TMP/grow"
+GROW_ORIGIN="$TMP/grow-origin.git"
+GROW_LEDGER="$TMP/grow.jsonl"
+git init --bare -q "$GROW_ORIGIN"
+git init -q -b main "$GROW"
+git -C "$GROW" config user.email sweep@test.local
+git -C "$GROW" config user.name "Sweep Test"
+git -C "$GROW" config commit.gpgsign false
+
+mkdir -p "$GROW/q-system/.q-system/scripts"
+cp "$SCRIPT_DIR/../linear-issue-ref-check.py" "$GROW/q-system/.q-system/scripts/"
+git -C "$GROW" add .
+GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+  git -C "$GROW" commit -q --no-verify -m 'feat: install the gate (ASK-1)'
+
+# The bypass sits at the BOTTOM of the range, right above the gate commit, so a
+# window that merely "happened to be big enough" is not enough -- it has to reach
+# all the way down. Everything above it is compliant, which is the shape that
+# makes a truncated scan report a clean zero.
+echo hole > "$GROW/hole.txt"
+git -C "$GROW" add hole.txt
+GIT_AUTHOR_DATE=2026-08-01T10:01:00Z GIT_COMMITTER_DATE=2026-08-01T10:01:00Z \
+  git -C "$GROW" commit -q --no-verify -m 'fix: the deep bypass'
+GROW_HOLE=$(git -C "$GROW" rev-parse HEAD)
+
+# One more than the default window. Empty commits: the cap is about how many
+# commits git walks, and nothing here depends on their contents.
+GROW_FILL=$(python3 -c "import sys;sys.path.insert(0,'$SCRIPT_DIR/..');
+import importlib.util as u
+s=u.spec_from_file_location('sw','$SWEEP');m=u.module_from_spec(s);s.loader.exec_module(m)
+print(m.DEFAULT_MAX_COUNT)")
+i=0
+while [ "$i" -lt "$GROW_FILL" ]; do
+  i=$((i + 1))
+  GIT_AUTHOR_DATE=2026-08-02T10:00:00Z GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
+    git -C "$GROW" commit -q --allow-empty --no-verify -m "chore: filler $i (ASK-2)"
+done
+git -C "$GROW" remote add origin "$GROW_ORIGIN"
+git -C "$GROW" push -q -u origin main
+
+# The fixture proves itself before it proves anything: in-range volume must
+# actually exceed the default window, or the growth path never runs.
+GROW_INRANGE=$(git -C "$GROW" rev-list --count origin/main)
+if [ "$GROW_INRANGE" -gt "$GROW_FILL" ]; then
+  ok "the fixture exceeds the default window ($GROW_INRANGE > $GROW_FILL)"
+else
+  no "the fixture fits inside the default window; the growth case proves nothing"
+fi
+
+OUT_GROW=$(cd "$GROW" && LINEAR_BYPASS_LEDGER="$GROW_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --dry --json 2>/dev/null)
+check "an unpinned window is not truncated by ordinary volume" "False" \
+  "$(printf '%s' "$OUT_GROW" | field truncated)"
+check "and it read the whole range, not the default window" "$GROW_INRANGE" \
+  "$(printf '%s' "$OUT_GROW" | field scanned)"
+check "so the deep bypass is found" 1 "$(printf '%s' "$OUT_GROW" | field unaccounted)"
+if printf '%s' "$OUT_GROW" | grep -q "$GROW_HOLE"; then
+  ok "and it is the commit the fixture planted"
+else
+  no "the grown scan found a different commit than the fixture planted"
+fi
+
+# The reported window says how far it actually had to go. Without this the fix
+# could satisfy every case above by never reporting truncation at all.
+check "the grown window is reported, not hidden" "True" \
+  "$(printf '%s' "$OUT_GROW" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['window'] > $GROW_FILL)")"
+
+# Negative control: an EXPLICIT --max-count is a hard bound the operator asked
+# for, so it must still truncate. If growth ignored the flag, `truncated` would
+# be False here and "not truncated" above would prove nothing.
+OUT_PINNED=$(cd "$GROW" && LINEAR_BYPASS_LEDGER="$TMP/grow-pinned.jsonl" \
+  python3 "$SWEEP" --rev origin/main --max-count=2 --dry --json 2>/dev/null)
+check "an explicit --max-count is still a hard bound" "True" \
+  "$(printf '%s' "$OUT_PINNED" | field truncated)"
+check "and it stays at the size the operator pinned" 2 \
+  "$(printf '%s' "$OUT_PINNED" | field window)"
 
 echo
 echo "passed=$pass failed=$fail"

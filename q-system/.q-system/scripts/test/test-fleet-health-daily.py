@@ -14,6 +14,7 @@ Run: python3 test-fleet-health-daily.py   (exit 0 = pass)
 """
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -545,15 +546,16 @@ def _pending_now():
 class _StubSweep:
     """Stands in for the linear-bypass-sweep.py subprocess."""
 
-    def __init__(self, payload=None, returncode=0, stdout=None):
+    def __init__(self, payload=None, returncode=0, stdout=None, stderr=""):
         self.returncode = returncode
         self.stdout = _json.dumps(payload) if stdout is None else stdout
+        self.stderr = stderr
 
 
-def _with_sweeper(payload=None, returncode=0, stdout=None, exists=True):
+def _with_sweeper(payload=None, returncode=0, stdout=None, exists=True, stderr=""):
     """Run the detector against a stubbed sweeper. Returns its findings."""
     real_run, real_isfile = fh.subprocess.run, Path.is_file
-    fh.subprocess.run = lambda *_a, **_k: _StubSweep(payload, returncode, stdout)
+    fh.subprocess.run = lambda *_a, **_k: _StubSweep(payload, returncode, stdout, stderr)
     Path.is_file = lambda self: exists if self.name == "linear-bypass-sweep.py" \
         else real_isfile(self)
     try:
@@ -683,6 +685,38 @@ fh._write_pending([])
 # runs past that cap, "nothing unaccounted" describes the window, not the range.
 _blind("a truncated scan window is blind, not clean",
        payload={**_OK, "commits": [], "recorded": 0, "truncated": True})
+
+# --- a refusal has to arrive with its reason attached -----------------------
+# The sweep refuses when it cannot derive the activation floor from the swept
+# rev, and the fix is a flag the operator has to choose. "the sweeper exited 1"
+# names the symptom and drops the instruction, so the 3am Slack line says
+# something is blind without saying what would unblind it.
+try:
+    _with_sweeper(payload=_OK, returncode=1,
+                  stderr="linear-bypass-sweep: the gate file is not in "
+                         "origin/main's history; re-run with --all-history")
+    failures.append("a refusal reason reaches the operator: "
+                    "reported a clean result instead of going blind")
+except RuntimeError as exc:
+    if "--all-history" in str(exc):
+        print("  ok: a refusal reason reaches the operator")
+    else:
+        failures.append(
+            f"a refusal reason reaches the operator: the sweeper's stderr was "
+            f"dropped, message was {str(exc)!r}")
+
+# --- the lock sidecars this file opens must not dirty a checkout ------------
+# `_pending_lock` creates `<BYPASS_PENDING>.lock` on every --apply run. The
+# ignore rule written for the sweep ledger is `*.jsonl.lock`, which does not
+# match a `.json.lock` sibling, so the lock landed as an untracked file in the
+# founder's tree after the first health run. Asked of git, not of the ignore
+# file's text: a pattern that reads right and does not match is the whole bug.
+_repo = Path(__file__).resolve().parents[4]
+for _lock in ("q-system/output/linear-bypass-pending.json.lock",
+              "q-system/output/linear-bypass.jsonl.lock"):
+    _rc = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-q", _lock],
+                         capture_output=True).returncode
+    check(f"git ignores the {Path(_lock).name} sidecar", _rc, 0)
 
 if failures:
     print("FAIL:")

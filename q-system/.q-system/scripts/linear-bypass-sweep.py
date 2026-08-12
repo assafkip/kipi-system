@@ -90,6 +90,11 @@ FIELD_SEP_FMT = "%x00"
 RECORD_SEP_FMT = "%x1e"
 
 DEFAULT_MAX_COUNT = 500
+# The ceiling on automatic growth. It exists so an --all-history scan of a repo
+# with a million commits cannot walk forever; it is NOT a correctness boundary,
+# because a scan that hits it still reports `truncated` and the detector goes
+# blind rather than clean.
+MAX_AUTO_COUNT = 100_000
 SWEEP_REASON = "unaccounted: reached origin with no issue ref and no [no-issue:] tag"
 
 
@@ -215,8 +220,14 @@ def ledger_lock(ledger: Path):
         handle.close()
 
 
-def gate_live_since(cwd: Path) -> str:
-    """COMMITTER date of the commit that ADDED the commit-msg gate.
+def gate_live_since(rev: str, cwd: Path) -> str:
+    """COMMITTER date of the commit that ADDED the commit-msg gate, ON `rev`.
+
+    Asked of the ref being SWEPT, not of HEAD. It used to run `git log` with no
+    rev, so it answered about whatever was checked out while the sweep read
+    origin/main. Check out anything predating the gate — a bisect, a detached CI
+    checkout, an old tag — and the floor silently became "" for a scan of a ref
+    carrying the gate right there in its history (PR #66 round 5).
 
     A commit made before the gate existed did not bypass anything, so counting it
     as a bypass makes the ledger lie in the opposite direction — the first real
@@ -231,12 +242,15 @@ def gate_live_since(cwd: Path) -> str:
     activation and no hook ever saw it. Committer dates also stay order-preserving
     under a rebase, which rewrites both the floor commit and everything above it.
 
-    Empty string when it cannot be derived, which means no floor: better to
-    over-count than to silently drop the whole window.
+    Empty string when it cannot be derived. That is NOT "no floor" any more — the
+    caller refuses. An unfloored scan of a repo whose gate is unknown wrote 240
+    rows into a permanent, sha-deduped ledger whose entire job is a true count,
+    and a row written once is never re-evaluated. Refusing is the recoverable
+    direction: the operator picks `--all-history` or `--since`.
     """
     rel = GATE_PATH.name
     code, out = git(
-        ["log", "--diff-filter=A", "--format=%cI", "--", f"*{rel}"], cwd,
+        ["log", "--diff-filter=A", "--format=%cI", rev, "--", f"*{rel}"], cwd,
     )
     if code != 0 or not out.strip():
         return ""
@@ -333,6 +347,33 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:
     return commits, truncated
 
 
+def scan_commits(rev: str, max_count: int, cwd: Path, since: str = "",
+                 grow: bool = True) -> tuple:
+    """(commits, truncated, window) — the window covers the range, not a constant.
+
+    The floor is pinned at gate activation and never advances, so the number of
+    in-range commits only grows. Against a FIXED cap that is a clock rather than a
+    guard: the day in-range volume passes the cap, `truncated` is true on every
+    run forever, the daily detector raises, and the operator is paged with
+    BLIND SPOT every morning on a repo where nothing is wrong (PR #66 round 5 —
+    245 of 500 at the time, roughly ten days out).
+
+    So `truncated` has to keep meaning "something really went unread". An unpinned
+    window doubles until it covers the range. The cap survives as a bound on WORK,
+    not on correctness: growth stops at MAX_AUTO_COUNT and reports truncation
+    honestly if the range is genuinely larger than that.
+
+    An explicit `--max-count` sets `grow=False`. That is a hard bound the operator
+    asked for, and silently exceeding it would make the flag a lie.
+    """
+    window = max_count
+    commits, truncated = read_commits(rev, window, cwd, since)
+    while grow and truncated and window < MAX_AUTO_COUNT:
+        window = min(window * 2, MAX_AUTO_COUNT)
+        commits, truncated = read_commits(rev, window, cwd, since)
+    return commits, truncated, window
+
+
 def is_accounted(message: str, gate) -> bool:
     """True when the gate would have let this message through on its own terms.
 
@@ -401,8 +442,9 @@ def append_entries(path: Path, entries: list) -> bool:
     return True
 
 
-def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
-          fetch: bool = True) -> dict:
+def sweep(rev: str, max_count: int, root: Path, dry: bool, since=None,
+          fetch: bool = True, grow: bool = True) -> dict:
+    """`since=None` means derive the floor from `rev`; `""` means no floor."""
     gate = load_gate()
     path = ledger_path(root)
 
@@ -415,11 +457,25 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
         fetched = fetch_remote(remote, root)
 
     if not rev_exists(rev, root):
-        return {"rev": rev, "since": since, "fetched": fetched, "locked": False,
-                "scanned": 0, "unaccounted": 0, "recorded": 0, "commits": [],
-                "truncated": False, "status": "rev-not-found"}
+        return {"rev": rev, "since": since or "", "fetched": fetched,
+                "locked": False, "scanned": 0, "unaccounted": 0, "recorded": 0,
+                "commits": [], "truncated": False, "window": max_count,
+                "status": "rev-not-found"}
 
-    commits, truncated = read_commits(rev, max_count, root, since)
+    # AFTER the fetch and AFTER the rev check, both deliberately: the floor is
+    # read off the ref actually about to be scanned, in the state it is about to
+    # be scanned in, and an unresolvable rev stays the quiet no-op it was.
+    if since is None:
+        since = gate_live_since(rev, root)
+        if not since:
+            raise RuntimeError(
+                f"cannot derive the gate-activation floor: no commit on {rev} "
+                f"adds {GATE_PATH.name}. Scanning unfloored would record every "
+                "pre-gate commit as a bypass, permanently. Re-run with "
+                "--all-history to count the whole window on purpose, or "
+                "--since <ISO-8601> to set the floor yourself.")
+
+    commits, truncated, window = scan_commits(rev, max_count, root, since, grow)
 
     # The read and the append are ONE critical section: the dedup asks "is this
     # sha already in the file", so a concurrent sweep landing between them
@@ -465,6 +521,9 @@ def sweep(rev: str, max_count: int, root: Path, dry: bool, since: str = "",
         # below this line is true OF THE WINDOW; it is not a statement about the
         # range, and a consumer that treats it as one is reporting a false zero.
         "truncated": truncated,
+        # How far the walk actually had to go. Reported so "not truncated" is a
+        # claim with a size attached rather than an unfalsifiable constant.
+        "window": window,
         "unaccounted": unaccounted,
         "recorded": 0 if (dry or not written) else len(entries),
         "commits": [c["sha"] for c in reversed(fresh)],
@@ -476,8 +535,10 @@ def main(argv: list) -> int:
     parser = argparse.ArgumentParser(
         description="Record commits that reached origin without a Linear issue ref.")
     parser.add_argument("--rev", help="ref to sweep (default: tracked upstream)")
-    parser.add_argument("--max-count", type=int, default=DEFAULT_MAX_COUNT,
-                        help=f"how many commits back to scan (default {DEFAULT_MAX_COUNT})")
+    parser.add_argument("--max-count", type=int, default=None,
+                        help="hard cap on how many commits to scan. Unset, the "
+                             f"window starts at {DEFAULT_MAX_COUNT} and grows "
+                             "until it covers the range.")
     parser.add_argument("--since", help="floor date (default: when the gate went live)")
     parser.add_argument("--all-history", action="store_true",
                         help="ignore the gate-activation floor and scan the whole window")
@@ -496,10 +557,13 @@ def main(argv: list) -> int:
     elif args.since:
         since = args.since
     else:
-        since = gate_live_since(root)
+        since = None  # sweep() derives it from rev, or refuses
+
+    grow = args.max_count is None
+    max_count = DEFAULT_MAX_COUNT if grow else args.max_count
 
     try:
-        result = sweep(rev, args.max_count, root, args.dry, since, args.fetch)
+        result = sweep(rev, max_count, root, args.dry, since, args.fetch, grow)
     except RuntimeError as exc:
         print(f"linear-bypass-sweep: {exc}", file=sys.stderr)
         return 1
@@ -516,10 +580,10 @@ def main(argv: list) -> int:
         print(f"linear-bypass-sweep: WARNING fetch of {remote_of(rev, root)} failed; "
               f"{rev} may be stale and this count may be low.", file=sys.stderr)
     if result["truncated"]:
-        print(f"linear-bypass-sweep: WARNING the scan stopped at --max-count="
-              f"{args.max_count} with commits still in range; this count covers the "
-              f"window, not the range. Re-run with a larger --max-count.",
-              file=sys.stderr)
+        print(f"linear-bypass-sweep: WARNING the scan stopped at "
+              f"{result['window']} commits with more still in range; this count "
+              f"covers the window, not the range. Re-run with a larger "
+              f"--max-count.", file=sys.stderr)
     print(f"linear-bypass-sweep: {rev} — scanned {result['scanned']}, "
           f"unaccounted {result['unaccounted']}, newly recorded {result['recorded']} "
           f"(fetch: {result['fetched']})")

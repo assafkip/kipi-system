@@ -1149,7 +1149,14 @@ def detect_unaccounted_commits(_ctx) -> list:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc
     if res.returncode != 0:
-        raise RuntimeError(f"the sweeper exited {res.returncode}")
+        # Carry the sweeper's own stderr through. Its non-zero exits are mostly
+        # REFUSALS whose fix is a flag (an underivable activation floor wants
+        # --all-history or --since), and "the sweeper exited 1" names the symptom
+        # while dropping the instruction — a 3am Slack line saying something is
+        # blind without saying what would unblind it.
+        detail = (res.stderr or "").strip().splitlines()
+        why = f": {detail[-1]}" if detail else ""
+        raise RuntimeError(f"the sweeper exited {res.returncode}{why}")
     try:
         result = json.loads(res.stdout or "{}")
     except json.JSONDecodeError as exc:
