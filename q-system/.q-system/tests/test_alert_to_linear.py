@@ -61,7 +61,7 @@ def test_different_alerts_do_not_collapse_together():
         CARVEOUT[0],
         "[ask-317] SECURITY: unsanctioned .claude/ change -- 2 modified, 4 added, 0 removed",
         "[/] Meeting loop could not run: NOTION_TOKEN_ASK is not in the launchd environment.",
-        "[4_points_consulting] huntkit sync BLOCKED: /Users/assafkipnis/projects/huntkit is not a git repo",
+        "[example_instance] repo sync BLOCKED: /path/to/repo is not a git repo",
     ]
     prints = {mod.fingerprint(m) for m in distinct}
     assert len(prints) == len(distinct), "distinct alerts collapsed into one ticket"
