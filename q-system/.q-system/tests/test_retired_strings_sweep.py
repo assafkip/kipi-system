@@ -19,6 +19,7 @@ with a stale copy of itself.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
+# Set in the mutant child only, so the entrypoint test does not spawn itself.
+MUTANT_ENV = "KIPI_RETIRED_SWEEP_MUTANT"
 SWEEP = REPO / "q-system" / ".q-system" / "scripts" / "retired-strings-sweep.py"
 RETIRED_SET = REPO / "q-system" / ".q-system" / "scripts" / "retired-strings.json"
 
@@ -109,6 +112,70 @@ def test_sweep_fails_when_a_retired_string_is_planted(tmp_path):
     assert entry["id"] in result.stdout + result.stderr
 
 
+def test_sweep_catches_a_retired_string_wrapped_across_lines(tmp_path):
+    """The corpus this sweep guards is hard-wrapped prose, so a retired sentence
+    normally STRADDLES a line break. A matcher that only ever looks at one physical
+    line would miss the exact shape the corpus stores, and the gate would report
+    green on the file it was built for. Split a blocking entry over two lines and
+    require the sweep to still block."""
+    entry = blocking_entries()[0]
+    words = entry["text"].split()
+    assert len(words) > 1, f"{entry['id']} is one word, cannot straddle a wrap"
+    half = len(words) // 2
+    wrapped = " ".join(words[:half]) + "\n" + " ".join(words[half:])
+
+    tree = tmp_path / "tree"
+    target = tree / "plugins" / "kipi-core" / "skills" / "founder-voice" / "references"
+    target.mkdir(parents=True)
+    (target / "voice-dna.md").write_text(
+        f"# wrapped like the real corpus\n\n{wrapped}\n", encoding="utf-8"
+    )
+    shutil.copy(RETIRED_SET, tree / "retired-strings.json")
+
+    result = run_sweep("--root", str(tree), "--retired-set", str(tree / "retired-strings.json"))
+    assert result.returncode != 0, (
+        "a retired string wrapped across two lines walked past the sweep; every "
+        f"reference file in the corpus is wrapped this way. stdout={result.stdout}"
+    )
+    assert entry["id"] in result.stdout + result.stderr
+
+
+def test_running_this_file_as_a_script_actually_runs_its_tests(tmp_path):
+    """The capability gate runs a `runner: python3` entry as `python3 <file>`
+    (capability-gate.py:423). A pytest-only module run that way DEFINES its tests,
+    calls none of them, and exits 0 -- registered, green, and enforcing nothing.
+
+    Proven against a copy, not against this file's own exit code: write a mutant
+    sibling carrying a test that cannot pass, run it the way the gate would, and
+    require a non-zero exit. The mutant lives in this directory so `parents[3]`
+    resolves to the same repo; it is `_`-prefixed so a normal pytest run skips it.
+    """
+    if os.environ.get(MUTANT_ENV):
+        pytest.skip("running inside the mutant child; the guard stops the recursion")
+
+    mutant = Path(__file__).resolve().parent / "_retired_sweep_entrypoint_mutant.py"
+    mutant.write_text(
+        Path(__file__).read_text(encoding="utf-8")
+        + "\n\ndef test_planted_failure():\n"
+        + "    assert False, 'planted so the run has something to report'\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(mutant)],
+            capture_output=True, text=True, cwd=str(REPO),
+            env={**os.environ, MUTANT_ENV: "1"},
+        )
+    finally:
+        mutant.unlink(missing_ok=True)
+
+    assert result.returncode != 0, (
+        "`python3 <this file>` exited 0 on a copy containing a failing test, so the "
+        "capability manifest entry runs nothing and the sweep is unenforced; "
+        f"stdout={result.stdout[-400:]}"
+    )
+
+
 def test_warn_tier_does_not_block(tmp_path):
     """A 2-word retired phrase is warn tier: reported, never a red build. Without
     this the sweep would fire on every ordinary use of a short phrase and get
@@ -126,3 +193,12 @@ def test_warn_tier_does_not_block(tmp_path):
     result = run_sweep("--root", str(tree), "--retired-set", str(tree / "retired-strings.json"))
     assert result.returncode == 0, result.stdout
     assert warn[0]["id"] in result.stdout, result.stdout
+
+
+if __name__ == "__main__":
+    # REQUIRED, not decoration. capability-gate.py:423 runs a `runner: python3`
+    # entry as `python3 <file>`, so a pytest-only module would define its tests,
+    # call none of them, and exit 0 -- registered, green, enforcing nothing.
+    # test_running_this_file_as_a_script_actually_runs_its_tests is what holds
+    # this line: delete the block and that test goes red against a mutant copy.
+    sys.exit(pytest.main([__file__, "-q"]))

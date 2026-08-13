@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+
+WHITESPACE = re.compile(r"\s+")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -71,6 +74,38 @@ def covered_files(root: Path) -> list[Path]:
     return found
 
 
+def flatten(body: str) -> tuple[str, list[int]]:
+    """Collapse every whitespace run to one space, and return the line number each
+    surviving character came from.
+
+    WHY, and it is the whole point of this function: the corpus this sweeps is
+    hard-wrapped markdown prose, so a retired SENTENCE is stored straddling a line
+    break far more often than it sits on one physical line. Matching line by line
+    would therefore miss the exact shape the files actually store, and the sweep
+    would report green on the corpus it was built for. Matching the flattened text
+    and mapping the offset back is what makes a wrapped hit reportable at all.
+    """
+    chars: list[str] = []
+    linenos: list[int] = []
+    lineno = 1
+    i = 0
+    while i < len(body):
+        run = WHITESPACE.match(body, i)
+        if run:
+            lineno += body.count("\n", i, run.end())
+            # One separator stands in for the run, so a wrap reads as a space.
+            # Never lead or trail with it: a match starts on a real character.
+            if chars and run.end() < len(body):
+                chars.append(" ")
+                linenos.append(lineno)
+            i = run.end()
+            continue
+        chars.append(body[i])
+        linenos.append(lineno)
+        i += 1
+    return "".join(chars), linenos
+
+
 def scan(root: Path, retired: list[dict]) -> tuple[list[str], list[str]]:
     """Returns (blocking, warning) human-readable hit lines."""
     echo = _echo_module()
@@ -79,18 +114,19 @@ def scan(root: Path, retired: list[dict]) -> tuple[list[str], list[str]]:
 
     for path in covered_files(root):
         body = path.read_text(encoding="utf-8", errors="replace")
-        lines = body.splitlines()
+        flat, linenos = flatten(body)
         for entry in retired:
-            text = entry["text"]
-            if text not in body:
+            needle = WHITESPACE.sub(" ", entry["text"]).strip()
+            if not needle:
                 continue
-            is_lift = len(echo._words(text)) >= echo.NGRAM
-            for lineno, line in enumerate(lines, 1):
-                if text not in line:
-                    continue
+            is_lift = len(echo._words(entry["text"])) >= echo.NGRAM
+            at = flat.find(needle)
+            while at != -1:
                 rel = path.relative_to(root)
-                hit = f"{rel}:{lineno}: retired {entry['id']!r} ({entry.get('retired_by', 'unknown')})"
+                hit = (f"{rel}:{linenos[at]}: retired {entry['id']!r} "
+                       f"({entry.get('retired_by', 'unknown')})")
                 (blocking if is_lift else warning).append(hit)
+                at = flat.find(needle, at + 1)
 
     return blocking, warning
 
