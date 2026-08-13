@@ -616,6 +616,65 @@ else
       "no reviewer call for ASK-804. Log: '${REVIEWED:-<empty>}'"
 fi
 
+# --- 13. the sentinels are NOT COMMITTABLE (codex round 1 on PR #141) --------
+# THE DEFECT, found on this suite's own branch. Case 5 proves the worker DELETES
+# the sentinel from the worktree after consuming it. That is a different fact
+# from "the sentinel is not in git", and ASK-700 shipped the gap between them:
+# Sana wrote her refusal to `.sana-needs-scope` and then `git add -A` swept it
+# into the commit. The worker later deleted the worktree copy exactly as case 5
+# demands, so case 5 stayed green while the file sat in the branch tip.
+#
+# What that costs on merge: `.sana-needs-scope` lands at the root of main, and
+# every worktree cut from main after that materializes it at checkout -- before
+# any agent runs. The worker reads a sentinel it did not write and refuses a
+# completely unrelated issue, carrying ASK-700's reason text into that issue's
+# Linear comment and needs-scope label. One stale file, and every subsequent
+# issue refuses itself with someone else's argument.
+#
+# THE FIX IS THE IGNORE, NOT A REVIEWER CATCHING IT. A sentinel that `git add -A`
+# cannot stage cannot be committed by any future agent on any future branch --
+# that deletes the defect class instead of guarding one instance of it. So this
+# asserts BOTH halves: not tracked now, and not stageable later.
+REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "${REPO_ROOT:-}" ]; then
+  for SENTINEL in .sana-needs-scope .sana-blocked-capability .codex-blocked-capability; do
+    if git -C "$REPO_ROOT" ls-files --error-unmatch "$SENTINEL" >/dev/null 2>&1; then
+      bad "$SENTINEL is not tracked in git" \
+          "THE DEFECT: it is committed, so merging puts it on main and every new worktree refuses itself with a stale reason"
+    else
+      ok "$SENTINEL is not tracked in git"
+    fi
+    # `check-ignore` is asked about a path that need not exist: the question is
+    # whether the RULE covers the name, not whether the file is here right now.
+    if git -C "$REPO_ROOT" check-ignore -q "$SENTINEL" 2>/dev/null; then
+      ok "$SENTINEL is gitignored, so a future 'git add -A' cannot stage it"
+    else
+      bad "$SENTINEL is gitignored" \
+          "THE DEFECT: nothing stops the next agent's 'git add -A' from committing this sentinel"
+    fi
+  done
+
+  # 13b. NEGATIVE SELF-TEST. Both halves above pass for free if `ls-files` and
+  # `check-ignore` are silently erroring in this environment (wrong cwd, not a
+  # repo, git missing) -- an always-false ls-files reads as "not tracked" and an
+  # always-true check-ignore reads as "ignored". Pin each against a path whose
+  # answer is known and OPPOSITE, so a stuck verb is visible.
+  if git -C "$REPO_ROOT" ls-files --error-unmatch CLAUDE.md >/dev/null 2>&1; then
+    ok "negative self-test: ls-files DOES find a tracked file (the not-tracked results are real)"
+  else
+    bad "negative self-test: ls-files finds a tracked file" \
+        "ls-files could not find CLAUDE.md either -- the 'not tracked' results above are vacuous"
+  fi
+  if git -C "$REPO_ROOT" check-ignore -q CLAUDE.md 2>/dev/null; then
+    bad "negative self-test: check-ignore rejects a NON-ignored path" \
+        "check-ignore called CLAUDE.md ignored -- it is matching everything, so the 'is ignored' results above are vacuous"
+  else
+    ok "negative self-test: check-ignore rejects a non-ignored path (the ignore results are real)"
+  fi
+else
+  bad "the sentinels are not committable" "could not resolve the repo root from $SCRIPT_DIR"
+fi
+
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
 # Every assertion above greps a combined output blob. Prove the greps can miss:
 # a worker that refuses NOTHING must fail assertion 1. Without this, an empty
