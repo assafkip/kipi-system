@@ -129,6 +129,15 @@ NEVER_AUTO_COMMIT_DIRS = (
     ".prd-os/findings/",     # review findings are authored
 )
 
+# Executable source, in ANY area. See the note in `classify`: the AREA_MAP rows
+# `plugins/` and `q-system/.q-system/` are named for directories that happen to
+# contain Python, so code was still being swept under a generic subject with no
+# Linear id after ASK-498 supposedly ended that. Extension is the durable axis --
+# a new code directory appears far more often than a new language does.
+SOURCE_EXTENSIONS = (
+    ".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+)
+
 
 def classify(filepath):
     """(type, message) for an auto-committable file, else a SKIP_* reason string.
@@ -140,6 +149,25 @@ def classify(filepath):
     """
     if filepath.endswith(NEVER_AUTO_COMMIT) or \
             filepath.startswith(NEVER_AUTO_COMMIT_DIRS):
+        return SKIP_UNCLASSIFIED
+    # EXECUTABLE SOURCE IS NEVER SWEPT, whatever area it lands in (2026-08-13).
+    #
+    # ASK-498 removed the generic fallback and this file's own comment says source
+    # trees are "deliberately absent: code is what an agent commits deliberately".
+    # Two AREA_MAP rows still contradicted that, because they are named for
+    # DIRECTORIES that happen to contain code: `plugins/` (the kipi-core plugin,
+    # which is a Python package) and `q-system/.q-system/` (which holds scripts/).
+    #
+    # Measured 2026-08-13 on this instance, in one session: `test_length_axis.py`
+    # was committed as "feat: update plugins" and `voice-dna-loader.py` as "chore:
+    # update system infrastructure", both while the agent was still working on them
+    # and before it could write a real message with a Linear id. That is the same
+    # race and the same generic-subject outcome ASK-498 was opened to end; the fix
+    # was scoped by directory when the real axis is WHAT THE FILE IS.
+    #
+    # Extension, not directory, because a new code directory is added far more often
+    # than a new language is.
+    if filepath.endswith(SOURCE_EXTENSIONS):
         return SKIP_UNCLASSIFIED
     for prefix, commit_type, msg in AREA_MAP:
         if filepath.startswith(prefix):

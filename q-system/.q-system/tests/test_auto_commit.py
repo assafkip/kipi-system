@@ -410,3 +410,49 @@ class TestTheNeverList:
         """Not a .prd-os special case: a lock is a race wherever it lives."""
         assert auto_commit.system_state_paths(
             ["q-system/memory/open-loops.json.lock"]) == []
+
+
+class TestExecutableSourceIsNeverSwept:
+    """ASK-498 removed the generic fallback but scoped the fix by DIRECTORY, and two
+    AREA_MAP rows are named for directories that hold Python: `plugins/` (kipi-core is
+    a package) and `q-system/.q-system/` (holds scripts/).
+
+    Measured 2026-08-13 in one session on this fleet: `test_length_axis.py` was
+    committed as "feat: update plugins" and `voice-dna-loader.py` as "chore: update
+    system infrastructure", both while an agent was still editing them and before it
+    could write a message carrying a Linear id.
+    """
+
+    SWEPT_ON_2026_08_13 = (
+        "plugins/kipi-core/voicekit/tests/test_length_axis.py",
+        "q-system/.q-system/scripts/voice-dna-loader.py",
+    )
+
+    def test_the_two_files_actually_swept_are_now_reported(self):
+        for p in self.SWEPT_ON_2026_08_13:
+            assert auto_commit.classify(p) == auto_commit.SKIP_UNCLASSIFIED, p
+            assert auto_commit.system_state_paths([p]) == [], p
+
+    def test_source_is_refused_in_every_area(self):
+        for p in ("plugins/kipi-core/voicekit/selector.py",
+                  "q-system/hooks/auto-commit.py",
+                  "q-system/.q-system/agent-pipeline/runner.py",
+                  "q-system/canonical/helper.py",
+                  "scripts/voice_ref.py",
+                  "sites/build.mjs",
+                  "q-system/marketing/gen.sh"):
+            assert auto_commit.classify(p) == auto_commit.SKIP_UNCLASSIFIED, p
+
+    def test_the_generated_state_safety_net_still_commits(self):
+        """Removing the sweep must not disable the net it was built for."""
+        for p in ("q-system/canonical/voice-sources.md",
+                  "q-system/memory/last-handoff.md",
+                  "q-system/marketing/brand-voice.md",
+                  ".prd-os/spillover.jsonl"):
+            assert not isinstance(auto_commit.classify(p), str), p
+
+    def test_a_plugin_manifest_is_not_source(self):
+        """plugin.json must still be taken: the version-bump gate refuses a plugin
+        commit until it is bumped, so refusing it here would deadlock that gate."""
+        r = auto_commit.classify("plugins/kipi-core/.claude-plugin/plugin.json")
+        assert not isinstance(r, str), r
