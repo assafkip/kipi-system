@@ -558,6 +558,10 @@
       "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
       "runner": "python3",
       "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/tests/test_retired_strings_sweep.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],
