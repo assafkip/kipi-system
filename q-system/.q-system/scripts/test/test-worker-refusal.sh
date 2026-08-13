@@ -675,6 +675,116 @@ else
   bad "the sentinels are not committable" "could not resolve the repo root from $SCRIPT_DIR"
 fi
 
+# --- 14. a STALE sentinel does not refuse the NEXT issue (codex round 2) -----
+# THE DEFECT CASE 13's FIX INTRODUCED. Before the ignore, a sentinel left behind
+# by a killed run was an UNTRACKED file, so `git status --porcelain` reported the
+# tree dirty and `position_tree_on_pr_head` declined the round. That decline was
+# accidental protection, but it was the only thing standing between a stale
+# `.sana-blocked-capability` and the next issue -- and gitignoring the sentinels
+# makes them invisible to `status`, so the tree now reads CLEAN and the round
+# proceeds into a tree that already holds someone else's refusal.
+#
+# The window is real, not theoretical: the agent writes the sentinel at the end
+# of its run and the worker consumes it a few lines later. A SIGKILL, a timeout,
+# a slept laptop or a reboot in between leaves the file, and the worktree is
+# reused across runs by design.
+#
+# THE FIX IS TO CLEAR BEFORE DISPATCH, not to restore the dirty-tree wedge.
+# Presence-after-run then means exactly one thing -- THIS run wrote it -- which
+# is the property the sentinel protocol assumed all along and never established.
+# `.codex-blocked-capability` already had its clear immediately before the Codex
+# dispatch; this is the same move at the Sana dispatch.
+#
+# A SEPARATE SKELETON, not the one above: run 1 left `sana/ask-801` checked out
+# in its own worktree, and git refuses to check one branch out twice. Second
+# repo, second state dir, second stub set -- no shared mutable state with run 1.
+# The BASENAME is load-bearing: the worker derives the repo identity from the
+# checkout's directory name and filters the board to the Linear project matching
+# it, so a second skeleton called anything else picks nothing and every
+# assertion below goes vacuous. Same name, different parent.
+mkdir -p "$WORK/stale-run"
+SKEL2="$WORK/stale-run/kipi-system"
+git init --quiet --bare "$WORK/origin-stale.git"
+git init --quiet "$SKEL2"
+git -C "$SKEL2" config user.email t@t; git -C "$SKEL2" config user.name t
+: > "$SKEL2/seed"; git -C "$SKEL2" add seed; git -C "$SKEL2" commit --quiet -m seed
+git -C "$SKEL2" remote add origin "$WORK/origin-stale.git"
+git -C "$SKEL2" push --quiet -u origin HEAD:main 2>/dev/null
+
+# The agent for THIS run writes NOTHING. That is the whole point: any sentinel
+# the worker finds afterwards can only be the planted one, so "did it refuse"
+# has exactly one possible cause and the case cannot pass for the wrong reason.
+STUB2="$WORK/stub-quiet"; mkdir -p "$STUB2"
+cp "$STUB/gh" "$STUB2/gh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB2/claude"
+chmod +x "$STUB2/claude" "$STUB2/gh"
+
+STATE2="$WORK/state-stale"
+STALE_TREE="$STATE2/worktrees/ask-801"
+mkdir -p "$STATE2/worktrees"
+git -C "$SKEL2" worktree add -q -B sana/ask-801 "$STALE_TREE" HEAD 2>>"$WORK/stale-setup.err"
+STALE_REASON="STALE: left by a run killed while working a DIFFERENT issue"
+printf '%s' "$STALE_REASON" > "$STALE_TREE/.sana-blocked-capability"
+
+PATH="$STUB2:$PATH" \
+   KIPI_SKEL="$SKEL2" KIPI_STATE_DIR="$STATE2" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_NOTIFY="/usr/bin/true" \
+   TEST_PR_MARKER="$WORK/pr-stale-none" \
+   bash "$WORKER" --apply --limit 1 > "$WORK/run-stale.out" 2>&1
+STALE_OUT="$(cat "$WORK/run-stale.out")
+$(cat "$STATE2/linear-worker.log" 2>/dev/null)"
+
+# 14a. POSITIVE SELF-TEST FIRST. Every assertion below is "the output does NOT
+# contain X", and a run that never reached ASK-801 at all satisfies all of them
+# for free. Pin that the dispatch really happened before reading its absence.
+if grep -q "start ASK-801" <<<"$STALE_OUT"; then
+  ok "positive self-test: the stale-sentinel run really dispatched ASK-801 (the absences below are real)"
+else
+  bad "positive self-test: the stale-sentinel run dispatched ASK-801" \
+      "no 'start ASK-801' line -- the assertions below would pass on a run that did nothing. Setup err: $(cat "$WORK/stale-setup.err" 2>/dev/null). Run output: $STALE_OUT"
+fi
+
+if grep -q "ASK-801 BLOCKED on a missing capability" <<<"$STALE_OUT"; then
+  bad "a stale sentinel does not refuse the next issue" \
+      "THE DEFECT: the worker read a sentinel its own agent never wrote and blocked ASK-801 with a previous issue's reason"
+else
+  ok "a stale sentinel does not refuse the next issue"
+fi
+
+# ...and specifically that the previous issue's REASON TEXT did not travel. This
+# is the half that reaches a human: the reason is what the worker puts in the
+# Linear comment, so a stale one mislabels an unrelated issue in the board.
+if grep -q "$STALE_REASON" <<<"$STALE_OUT"; then
+  bad "a previous issue's refusal reason does not reach this issue's report" \
+      "THE DEFECT: the stale reason text was carried into ASK-801's log line and Linear comment"
+else
+  ok "a previous issue's refusal reason does not reach this issue's report"
+fi
+
+# 14b. The clear must be a CLEAR, not a read-and-ignore: a sentinel still on
+# disk after the run refuses the round after this one instead. Assert the file
+# is gone, which is the only state that terminates the chain.
+if [ -e "$STALE_TREE/.sana-blocked-capability" ]; then
+  bad "the stale sentinel is cleared from the tree, not just ignored once" \
+      "THE DEFECT: it survives to refuse the NEXT round in this same reusable worktree"
+else
+  ok "the stale sentinel is cleared from the tree, not just ignored once"
+fi
+
+# 14c. NEGATIVE SELF-TEST for the clear. `[ -e ]` on a path in a directory that
+# does not exist also reports absent, so 14b passes for free if the worktree was
+# never created. Pin a file that IS there.
+if [ -e "$STALE_TREE/seed" ]; then
+  ok "negative self-test: the stale worktree exists (14b measured a deleted file, not a missing tree)"
+else
+  bad "negative self-test: the stale worktree exists" \
+      "$STALE_TREE has no seed file -- 14b is vacuous"
+fi
+
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
 # Every assertion above greps a combined output blob. Prove the greps can miss:
 # a worker that refuses NOTHING must fail assertion 1. Without this, an empty

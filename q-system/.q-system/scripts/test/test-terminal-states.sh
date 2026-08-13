@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# fable-discipline-lint-skip
+# WHY THE SKIP (ASK-700). The lint blocks an edit to a pager-capable runner when
+# a test "drives it unstubbed", and it names lines 499 and 517 here. Both are
+# `python3 - "$SRC" "$SRCMUT" <<'EOF'` -- this suite READS linear-worker.sh as
+# text and mutates copies of it for a static validator. It never executes the
+# worker, so `slack-notify.sh` is unreachable from here and there is no channel
+# to stub: grep this file for `bash "$SRC"` and it returns nothing. The lint is
+# matching a runner path appearing as an ARGUMENT rather than as a command.
+# Captured as a lint-precision finding rather than left as a silent bypass.
+#
 # test-terminal-states.sh -- the gate that stops a tenth dead end shipping.
 #
 # Pairs with q-system/.q-system/terminal-states.json (Piece B,
