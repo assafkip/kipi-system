@@ -275,9 +275,19 @@ def run_capture(problems, fleet_health, dry=False, state=None):
     The stub RECORDS its calls rather than swallowing them, so the wiring
     ("intent runs BEFORE the early return in run()") stays pinned by an assertion
     instead of by the live call that used to prove it as a side effect.
+
+    `run_roster_check` is stubbed for exactly the same reason, and it is the same
+    scar a second time (ASK-717): the roster shells the operator's real
+    `launchctl list`, globs their real ~/Library/LaunchAgents and pages on a
+    CHANGE, so leaving it live made every ping-count assertion below depend on
+    whether the founder's fleet happened to have drifted since the last run.
+    Measured before stubbing: `a dead filer adds no extra ping` got 2, want 1 --
+    the roster's page, counted as the filer's. Stubbed the same way, recording
+    its call so the ordering stays pinned by an assertion.
     """
     saved = (wd.discover_problems, wd.load_state, wd.write_state,
-             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check)
+             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check,
+             wd.run_roster_check)
     pings, writes = [], []
     _intent_calls.clear()
     wd.discover_problems = lambda: (_intent_calls.append("discover"), problems)[1]
@@ -286,13 +296,15 @@ def run_capture(problems, fleet_health, dry=False, state=None):
     wd.send_ping = lambda message: (pings.append(message), True)[1]
     wd._FLEET_HEALTH = fleet_health
     wd.run_intent_check = lambda dry_run: _intent_calls.append(f"intent:{dry_run}")
+    wd.run_roster_check = lambda dry_run: _intent_calls.append(f"roster:{dry_run}")
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             wd.run(dry)
     finally:
         (wd.discover_problems, wd.load_state, wd.write_state,
-         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check) = saved
+         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check,
+         wd.run_roster_check) = saved
     return out.getvalue(), err.getvalue(), pings, writes
 
 
@@ -687,11 +699,18 @@ check("every detector the watchdog files under is in fleet-health's registry",
 # path was never entered -- and it goes red the moment the stub is removed.
 run_capture(_TWO_REAL, _fh_stub(created="all"))
 check("run_capture never loads the live intent module", wd._INTENT, None)
-check("the intent check still runs, and BEFORE problems are discovered",
-      _intent_calls[:2], ["intent:False", "discover"])
+# The roster is FIRST (ASK-717): it is the denominator the rest of the output is
+# implicitly a fraction of, so it prints even on a run where nothing is wrong.
+# The property this has always pinned is unchanged and still asserted -- both
+# subsystems run, and both run BEFORE problems are discovered, which is what
+# keeps them off the dead side of the `if not problems` early return.
+check("roster and intent both run, and BEFORE problems are discovered",
+      _intent_calls[:3], ["roster:False", "intent:False", "discover"])
+check("discover is not reached before either subsystem",
+      _intent_calls.index("discover") > _intent_calls.index("intent:False"), True)
 run_capture(_NOTHING_TO_FILE, _fh_stub(), dry=True)
-check("dry mode reaches the intent check in dry mode too",
-      _intent_calls[0], "intent:True")
+check("dry mode reaches both checks in dry mode too",
+      _intent_calls[:2], ["roster:True", "intent:True"])
 
 # --- an undelivered alert must not be recorded as seen (PR #134 review, major) -
 # THE REPRODUCER: run_intent_check() called commit() unconditionally. With Linear
