@@ -52,7 +52,6 @@ Assaf frames problems through the attacker's advantage. This is the analyst brai
 
 - "Abuse actors treat every enforcement as a data point. A block tells them where the wall is."
 - "Adversaries have the ability to hit our defenses with hundreds and thousands of cheap accounts. The enforcement actions we apply provide the adversaries with critical information."
-- "Defenders reset after every incident. Attackers build on every success."
 - "In the same way that we, as defenders, look to collect data to understand the attackers, so do the attackers collect data about us."
 
 ### 5. The Tester
