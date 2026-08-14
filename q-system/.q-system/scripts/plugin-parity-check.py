@@ -71,16 +71,41 @@ def default_marketplace():
     )
 
 
+class ManifestUnreadable(Exception):
+    """A manifest exists but could not be read as a versioned plugin manifest."""
+
+
 def read_version(plugin_dir):
-    """Return the plugin's declared version, or None if it has no manifest."""
+    """Return the plugin's declared version, or None if it has NO manifest.
+
+    ABSENT AND MALFORMED ARE DIFFERENT ANSWERS (Codex review of #142, minor).
+    This returned None for three unrelated situations: no manifest file, JSON
+    that will not parse, and a manifest carrying no `version` key. The caller
+    reads None as "not a plugin, skip it", which is right for the first and
+    silently drops a real plugin for the other two.
+
+    That is worse than it sounds because of how the exit code is derived: the
+    verdict is `any(status != MATCH for row in rows)`, and `any([])` is False.
+    So a skeleton whose manifests all failed to parse produced ZERO rows, exit
+    0, and the sentence "PASS: all 0 plugins in version parity." A drift
+    detector reporting PASS precisely when it could not read the thing it
+    checks is the failure mode worth spending an exception on.
+
+    So absence stays None (a directory under plugins/ that is genuinely not a
+    plugin is not this check's business) and unreadable RAISES.
+    """
     manifest = os.path.join(plugin_dir, ".claude-plugin", "plugin.json")
     if not os.path.isfile(manifest):
         return None
     try:
         with open(manifest, encoding="utf-8") as handle:
-            return json.load(handle).get("version")
-    except (json.JSONDecodeError, OSError):
-        return None
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ManifestUnreadable(f"{manifest}: {exc}") from exc
+    version = data.get("version") if isinstance(data, dict) else None
+    if version is None:
+        raise ManifestUnreadable(f"{manifest}: no 'version' key")
+    return version
 
 
 def content_files(plugin_dir):
@@ -142,10 +167,31 @@ def compare(skeleton_root, marketplace_root):
         skel_version = read_version(skel_dir)
         if skel_version is None:
             # Not a plugin (no manifest). Not this check's business.
+            # A manifest that EXISTS and will not parse raises instead of
+            # landing here -- see read_version.
             continue
 
         clone_dir = os.path.join(marketplace_root, "plugins", name)
-        clone_version = read_version(clone_dir)
+        # The clone is the untrusted side, so its unreadable manifest is a ROW
+        # (reported, non-MATCH, fails the run) rather than an exception that
+        # would abandon the other plugins. The skeleton's own manifest is
+        # different: if that will not parse the check has no baseline at all,
+        # so read_version's raise propagates.
+        try:
+            clone_version = read_version(clone_dir)
+        except ManifestUnreadable:
+            clone_version = None
+            status = "UNREADABLE"
+            rows.append(
+                {
+                    "plugin": name,
+                    "skeleton_version": skel_version,
+                    "marketplace_version": None,
+                    "status": status,
+                    "advisory_content": {"differing": 0, "missing": 0, "clone_only": 0},
+                }
+            )
+            continue
 
         if clone_version is None:
             status = "MISSING"
@@ -196,6 +242,11 @@ def render(rows, skeleton_root, marketplace_root):
             f"FAIL: {len(bad)} of {len(rows)} plugins out of parity. "
             "Slash commands run the runtime column."
         )
+    elif not rows:
+        lines.append(
+            "FAIL: no plugins were checked. The skeleton exposed no readable "
+            "plugin manifest, so this run proves nothing about parity."
+        )
     else:
         lines.append(f"PASS: all {len(rows)} plugins in version parity.")
         advisory = [r for r in rows if any(r["advisory_content"].values())]
@@ -221,7 +272,13 @@ def main(argv=None):
 
     try:
         rows = compare(args.skeleton, marketplace)
-    except FileNotFoundError as exc:
+    # ManifestUnreadable joins FileNotFoundError here because they are the same
+    # answer to the operator: the check could not establish a baseline, so it is
+    # reporting nothing rather than parity. Letting it escape as a traceback
+    # still exits non-zero (the verdict was right), but a stack trace reads as
+    # "the tool is broken" instead of "your skeleton manifest will not parse",
+    # and the second one is the sentence that gets it fixed.
+    except (FileNotFoundError, ManifestUnreadable) as exc:
         print(f"CHECK FAILED TO RUN: {exc}", file=sys.stderr)
         return 2
 
@@ -239,6 +296,12 @@ def main(argv=None):
     else:
         print(render(rows, args.skeleton, marketplace))
 
+    # ZERO ROWS IS NOT PARITY (Codex review of #142, minor). `any([])` is False,
+    # so an empty result set used to exit 0 -- the check reported success in the
+    # one case where it had inspected nothing at all. Absence of a finding is
+    # only good news when something was actually examined.
+    if not rows:
+        return 1
     return 1 if any(r["status"] != "MATCH" for r in rows) else 0
 
 

@@ -212,3 +212,73 @@ def test_missing_plugins_dir_exits_2_not_0(tmp_path):
     )
     assert proc.returncode == 2
     assert "CHECK FAILED TO RUN" in proc.stderr
+
+
+def write_raw_manifest(root, name, body):
+    """A manifest written as literal bytes, so it can be malformed on purpose."""
+    plugin_dir = os.path.join(root, "plugins", name, ".claude-plugin")
+    os.makedirs(plugin_dir, exist_ok=True)
+    with open(os.path.join(plugin_dir, "plugin.json"), "w", encoding="utf-8") as handle:
+        handle.write(body)
+
+
+def test_malformed_skeleton_manifest_never_reports_pass(tmp_path):
+    """The round-5 minor on PR #142, pinned.
+
+    `read_version` used to answer None for THREE different situations: no
+    manifest, JSON that will not parse, and a manifest with no version key. The
+    caller reads None as "not a plugin, skip", so a broken manifest silently
+    dropped a real plugin. With one plugin in the tree that emptied the result
+    set, and the verdict is `any(status != MATCH)` -- `any([])` is False.
+
+    Measured against the pre-fix file: exit 0 and the sentence
+    "PASS: all 0 plugins in version parity." A drift detector claiming PASS in
+    the one case where it read nothing is the worst output it can produce.
+    """
+    skeleton = tmp_path / "skeleton"
+    clone = tmp_path / "clone"
+    write_raw_manifest(str(skeleton), "prd-os", "{ this is not json")
+    write_plugin(str(clone), "prd-os", "0.27.0")
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--marketplace", str(clone)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "PASS" not in proc.stdout
+    assert "CHECK FAILED TO RUN" in proc.stderr
+
+
+def test_manifest_without_version_key_never_reports_pass(tmp_path):
+    """Parses fine, carries no version. Same silent drop as malformed JSON, and
+    it is the likelier one in practice: a hand-edited manifest keeps valid JSON
+    far more often than it keeps every key."""
+    skeleton = tmp_path / "skeleton"
+    clone = tmp_path / "clone"
+    write_raw_manifest(str(skeleton), "prd-os", '{"name": "prd-os"}')
+    write_plugin(str(clone), "prd-os", "0.27.0")
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--marketplace", str(clone)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "PASS" not in proc.stdout
+
+
+def test_unreadable_clone_manifest_is_a_row_not_an_abandoned_run(tmp_path):
+    """The clone is the UNTRUSTED side, so its broken manifest must not abandon
+    the plugins after it in the walk. It is reported as a non-MATCH row and the
+    other plugin is still compared -- otherwise one corrupt runtime plugin would
+    hide the parity state of every other one."""
+    skeleton = tmp_path / "skeleton"
+    clone = tmp_path / "clone"
+    write_plugin(str(skeleton), "aaa-first", "1.0.0")
+    write_plugin(str(skeleton), "zzz-last", "2.0.0")
+    write_raw_manifest(str(clone), "aaa-first", "{ broken")
+    write_plugin(str(clone), "zzz-last", "2.0.0")
+    code, payload, _ = run_check(str(skeleton), str(clone))
+    assert code != 0
+    statuses = {r["plugin"]: r["status"] for r in payload["plugins"]}
+    assert statuses["aaa-first"] == "UNREADABLE"
+    assert statuses["zzz-last"] == "MATCH"
