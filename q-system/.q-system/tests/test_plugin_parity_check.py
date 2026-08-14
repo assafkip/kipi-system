@@ -1,13 +1,24 @@
-"""Tests for plugin-parity-check.py (ASK-721).
+"""Tests for plugin-parity-check.py (ASK-721, ASK-728).
 
-The check's whole job is to go RED when the marketplace clone lags the skeleton.
+The check's whole job is to go RED when the RUNNING plugin lags the skeleton.
 A check that cannot go GREEN is useless, and a check that cannot go RED is a lie,
 so both directions are pinned here against built fixtures -- never against the
 live tree, which changes under the suite.
 
+WHAT "RUNNING" MEANS, AND WHY THE FIXTURES LOOK LIKE THIS (Codex review of #152,
+major). The first cut compared the marketplace CLONE. The clone is a git worktree
+of the skeleton; the runtime executes a version-pinned directory under
+plugins/cache/<marketplace>/<plugin>/<version> and picks it from
+installed_plugins.json. Measured 2026-08-14: the clone read prd-os 0.27.2 while
+the record pinned 0.16.5 and `claude plugin list` agreed with the record. Aimed at
+the clone the checker compared 0.27.2 to 0.27.2 and printed MATCH while the plugin
+actually loading was eleven minor versions behind.
+
+So every fixture here builds a real installed_plugins.json plus the cache
+directories it points at. A fixture that skipped the record would test the bug.
+
 The mutation cases at the bottom are the point: each one makes ONE change to an
-otherwise-green fixture and asserts the verdict flips. If any of them stays green,
-the check is not measuring what its name says.
+otherwise-green fixture and asserts the verdict flips.
 """
 import json
 import os
@@ -36,184 +47,6 @@ def write_plugin(root, name, version, files=None):
     return plugin_dir
 
 
-def run_check(skeleton, marketplace):
-    proc = subprocess.run(
-        [
-            sys.executable,
-            CHECK,
-            "--skeleton",
-            skeleton,
-            "--marketplace",
-            marketplace,
-            "--json",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
-    return proc.returncode, payload, proc.stderr
-
-
-@pytest.fixture
-def in_parity(tmp_path):
-    """Two trees that agree on every plugin version AND every byte."""
-    skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
-    for root in (skeleton, clone):
-        write_plugin(str(root), "prd-os", "0.27.0", {"scripts/runner.py": "ok\n"})
-        write_plugin(str(root), "kipi-core", "1.6.0", {"skills/a/SKILL.md": "a\n"})
-    return str(skeleton), str(clone)
-
-
-def test_green_when_versions_agree(in_parity):
-    """The control. Without this passing, every RED below proves nothing."""
-    skeleton, clone = in_parity
-    code, payload, _ = run_check(skeleton, clone)
-    assert code == 0
-    assert [r["status"] for r in payload["plugins"]] == ["MATCH", "MATCH"]
-
-
-def test_green_fixture_has_no_advisory_drift(in_parity):
-    """Guards the control itself: a fixture that already drifts would make the
-    advisory numbers meaningless in every other case."""
-    skeleton, clone = in_parity
-    _, payload, _ = run_check(skeleton, clone)
-    for row in payload["plugins"]:
-        assert row["advisory_content"] == {
-            "differing": 0,
-            "missing": 0,
-            "clone_only": 0,
-        }
-
-
-# --- mutation cases: one change each, verdict must flip ----------------------
-
-
-def test_red_when_clone_version_lags(in_parity):
-    """The ASK-721 shape itself: clone behind the skeleton."""
-    skeleton, clone = in_parity
-    write_plugin(clone, "prd-os", "0.25.1", {"scripts/runner.py": "ok\n"})
-    code, payload, _ = run_check(skeleton, clone)
-    assert code == 1
-    row = next(r for r in payload["plugins"] if r["plugin"] == "prd-os")
-    assert row["status"] == "MISMATCH"
-    assert row["skeleton_version"] == "0.27.0"
-    assert row["marketplace_version"] == "0.25.1"
-
-
-def test_red_when_clone_version_leads(in_parity):
-    """Parity is equality, not "clone >= skeleton". A clone AHEAD is also drift:
-    it means the runtime carries code this repo never shipped."""
-    skeleton, clone = in_parity
-    write_plugin(clone, "prd-os", "9.9.9", {"scripts/runner.py": "ok\n"})
-    code, payload, _ = run_check(skeleton, clone)
-    assert code == 1
-    row = next(r for r in payload["plugins"] if r["plugin"] == "prd-os")
-    assert row["status"] == "MISMATCH"
-
-
-def test_red_when_plugin_absent_from_clone(tmp_path):
-    """A plugin the runtime has never seen at all. Reported as MISSING, not
-    silently skipped -- skipping is how a never-deployed plugin reads as fine."""
-    skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
-    write_plugin(str(skeleton), "prd-os", "0.27.0")
-    write_plugin(str(clone), "kipi-core", "1.6.0")
-    code, payload, _ = run_check(str(skeleton), str(clone))
-    assert code == 1
-    row = next(r for r in payload["plugins"] if r["plugin"] == "prd-os")
-    assert row["status"] == "MISSING"
-    assert row["marketplace_version"] is None
-
-
-def test_every_plugin_is_compared_not_just_the_first(tmp_path):
-    """The defect was found in prd-os; kipi-core was stale too and nobody looked.
-    A check that stops at the first mismatch would have repeated that."""
-    skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
-    write_plugin(str(skeleton), "prd-os", "0.27.0")
-    write_plugin(str(skeleton), "kipi-core", "1.6.0")
-    write_plugin(str(skeleton), "kipi-ops", "1.2.0")
-    write_plugin(str(clone), "prd-os", "0.25.1")
-    write_plugin(str(clone), "kipi-core", "1.5.26")
-    write_plugin(str(clone), "kipi-ops", "1.2.0")
-    code, payload, _ = run_check(str(skeleton), str(clone))
-    assert code == 1
-    statuses = {r["plugin"]: r["status"] for r in payload["plugins"]}
-    assert statuses == {
-        "prd-os": "MISMATCH",
-        "kipi-core": "MISMATCH",
-        "kipi-ops": "MATCH",
-    }
-
-
-# --- the deliberate non-gate, pinned so nobody "fixes" it by accident --------
-
-
-def test_content_drift_is_advisory_and_does_not_fail(in_parity):
-    """Byte drift with matching versions stays GREEN, and the count is reported.
-
-    This is the trade documented in the module docstring: nothing in this repo can
-    delete a file inside .claude/, so gating on byte-equality would make green
-    unreachable and the check would get switched off. The advisory count is the
-    only signal for a version bumped without its content."""
-    skeleton, clone = in_parity
-    target = os.path.join(clone, "plugins", "prd-os", "scripts", "runner.py")
-    with open(target, "w", encoding="utf-8") as handle:
-        handle.write("DRIFTED\n")
-    with open(os.path.join(clone, "plugins", "prd-os", "stray.bak"), "w") as handle:
-        handle.write("x\n")
-
-    code, payload, _ = run_check(skeleton, clone)
-    assert code == 0, "content drift must not fail the gate"
-    row = next(r for r in payload["plugins"] if r["plugin"] == "prd-os")
-    assert row["status"] == "MATCH"
-    assert row["advisory_content"]["differing"] == 1
-    assert row["advisory_content"]["clone_only"] == 1
-
-
-def test_pycache_is_not_counted_as_drift(in_parity):
-    """A working checkout always has __pycache__. Counting it would bury the real
-    advisory numbers in noise."""
-    skeleton, clone = in_parity
-    cache = os.path.join(clone, "plugins", "prd-os", "scripts", "__pycache__")
-    os.makedirs(cache, exist_ok=True)
-    with open(os.path.join(cache, "runner.cpython-311.pyc"), "wb") as handle:
-        handle.write(b"\x00\x01")
-    code, payload, _ = run_check(skeleton, clone)
-    assert code == 0
-    row = next(r for r in payload["plugins"] if r["plugin"] == "prd-os")
-    assert row["advisory_content"]["clone_only"] == 0
-
-
-def test_non_plugin_directory_is_skipped(tmp_path):
-    """A directory under plugins/ with no manifest is not a plugin. Treating it
-    as MISSING would make the check permanently red on stray scratch dirs."""
-    skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
-    write_plugin(str(skeleton), "prd-os", "0.27.0")
-    write_plugin(str(clone), "prd-os", "0.27.0")
-    os.makedirs(os.path.join(str(skeleton), "plugins", "scratch"), exist_ok=True)
-    code, payload, _ = run_check(str(skeleton), str(clone))
-    assert code == 0
-    assert [r["plugin"] for r in payload["plugins"]] == ["prd-os"]
-
-
-def test_missing_plugins_dir_exits_2_not_0(tmp_path):
-    """"Nothing to compare" must never read as "everything is in parity"."""
-    skeleton = tmp_path / "empty"
-    skeleton.mkdir()
-    clone = tmp_path / "clone"
-    write_plugin(str(clone), "prd-os", "0.27.0")
-    proc = subprocess.run(
-        [sys.executable, CHECK, "--skeleton", str(skeleton), "--marketplace", str(clone)],
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 2
-    assert "CHECK FAILED TO RUN" in proc.stderr
-
-
 def write_raw_manifest(root, name, body):
     """A manifest written as literal bytes, so it can be malformed on purpose."""
     plugin_dir = os.path.join(root, "plugins", name, ".claude-plugin")
@@ -222,25 +55,257 @@ def write_raw_manifest(root, name, body):
         handle.write(body)
 
 
+def make_cache_dir(cache_root, marketplace, name, version, files=None):
+    """The version-pinned directory the loader actually executes."""
+    target = os.path.join(cache_root, marketplace, name, version)
+    os.makedirs(os.path.join(target, ".claude-plugin"), exist_ok=True)
+    with open(
+        os.path.join(target, ".claude-plugin", "plugin.json"), "w", encoding="utf-8"
+    ) as handle:
+        json.dump({"name": name, "version": version}, handle)
+    for rel, body in (files or {}).items():
+        full = os.path.join(target, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as handle:
+            handle.write(body)
+    return target
+
+
+def write_record(path, plugins):
+    """installed_plugins.json in the real shape: a LIST of scoped entries."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"version": 2, "plugins": plugins}, handle, indent=2)
+    return path
+
+
+def entry(install_path, version, scope="user", project_path=None):
+    row = {"scope": scope, "installPath": install_path, "version": version}
+    if project_path is not None:
+        row["projectPath"] = project_path
+    return row
+
+
+def run_check(skeleton, record, project=None, extra=None):
+    argv = [sys.executable, CHECK, "--skeleton", skeleton, "--installed", record, "--json"]
+    if project is not None:
+        argv += ["--project", project]
+    argv += extra or []
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
+    return proc.returncode, payload, proc.stderr
+
+
+@pytest.fixture
+def in_parity(tmp_path):
+    """Skeleton and the RUNNING install agree on every version."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.0", {"scripts/runner.py": "ok\n"})
+    write_plugin(str(skeleton), "kipi-core", "1.6.0", {"skills/a/SKILL.md": "a\n"})
+    a = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.0", {"scripts/runner.py": "ok\n"})
+    b = make_cache_dir(str(cache), "kipi", "kipi-core", "1.6.0", {"skills/a/SKILL.md": "a\n"})
+    record = write_record(
+        str(tmp_path / "installed_plugins.json"),
+        {"prd-os@kipi": [entry(a, "0.27.0")], "kipi-core@kipi": [entry(b, "1.6.0")]},
+    )
+    return str(skeleton), record
+
+
+def test_green_when_versions_agree(in_parity):
+    """The control. Without this passing, every RED below proves nothing."""
+    skeleton, record = in_parity
+    code, payload, _ = run_check(skeleton, record)
+    assert code == 0
+    assert [r["status"] for r in payload["plugins"]] == ["MATCH", "MATCH"]
+
+
+def test_red_when_running_version_lags(tmp_path):
+    """The whole point: the skeleton moved and the installed copy did not."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    old = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(old, "0.16.5")]}
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    assert payload["plugins"][0]["status"] == "MISMATCH"
+    assert payload["plugins"][0]["installed_version"] == "0.16.5"
+
+
+def test_every_verdict_names_the_path_it_read(tmp_path):
+    """The fix for the pattern that produced this bug three times in one day: a
+    parity claim that does not say which artifact it read looks identical whether
+    it is right or wrong."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    old = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(old, "0.16.5")]}
+    )
+    _, payload, _ = run_check(str(skeleton), record)
+    assert payload["plugins"][0]["install_path"] == old
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
+        capture_output=True,
+        text=True,
+    )
+    assert old in proc.stdout
+
+
+def test_project_scoped_entry_wins_for_its_own_project(tmp_path):
+    """Option 3, the property that made it worth the extra argument.
+
+    A project pinning an older build must be reported against THAT build. The
+    rejected alternative -- always read the user entry -- would print MATCH here
+    and rebuild, one level down, the exact wrong-artifact bug this check exists
+    to catch.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    proj = str(tmp_path / "someproject")
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
+    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {
+            "prd-os@kipi": [
+                entry(user_dir, "0.27.2"),
+                entry(proj_dir, "0.16.5", scope="project", project_path=proj),
+            ]
+        },
+    )
+    code, payload, _ = run_check(str(skeleton), record, project=proj)
+    assert code == 1
+    assert payload["plugins"][0]["installed_version"] == "0.16.5"
+    assert payload["plugins"][0]["scope"] == "project"
+
+    # Same record, a DIFFERENT project: the user entry is what loads.
+    code2, payload2, _ = run_check(str(skeleton), record, project=str(tmp_path / "other"))
+    assert code2 == 0
+    assert payload2["plugins"][0]["scope"] == "user"
+
+
+def test_not_installed_is_not_parity(tmp_path):
+    """A skeleton plugin with no install record is not MATCH by default."""
+    skeleton = tmp_path / "skeleton"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    record = write_record(str(tmp_path / "rec.json"), {})
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    assert payload["plugins"][0]["status"] == "NOT_INSTALLED"
+
+
+def test_recorded_path_that_does_not_exist_is_not_parity(tmp_path):
+    """Matching version strings are not enough when the directory is gone: the
+    loader would have nothing to load. Seen live -- kipi-ops pinned a projectPath
+    under a home directory that no longer exists."""
+    skeleton = tmp_path / "skeleton"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {"prd-os@kipi": [entry(str(tmp_path / "gone" / "0.27.2"), "0.27.2")]},
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    assert payload["plugins"][0]["status"] == "PATH_MISSING"
+
+
+def test_content_drift_is_advisory_and_does_not_fail(tmp_path):
+    """Versions agree, bytes differ. Reported, never fatal: the cache legitimately
+    carries build artifacts the skeleton does not."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.0", {"scripts/r.py": "one\n"})
+    live = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.0", {"scripts/r.py": "two\n"})
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(live, "0.27.0")]}
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 0
+    assert payload["plugins"][0]["advisory_content"]["differing"] == 1
+
+
+def test_non_plugin_directory_is_skipped(tmp_path):
+    """A directory under plugins/ with no manifest is not a plugin."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.0")
+    live = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.0")
+    os.makedirs(os.path.join(str(skeleton), "plugins", "scratch"), exist_ok=True)
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(live, "0.27.0")]}
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 0
+    assert [r["plugin"] for r in payload["plugins"]] == ["prd-os"]
+
+
+def test_missing_plugins_dir_exits_2_not_0(tmp_path):
+    """"Nothing to compare" must never read as "everything is in parity"."""
+    skeleton = tmp_path / "empty"
+    skeleton.mkdir()
+    record = write_record(str(tmp_path / "rec.json"), {})
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    assert "CHECK FAILED TO RUN" in proc.stderr
+
+
+def test_absent_installed_record_exits_2(tmp_path):
+    """No record means the check cannot know what runs. That is a failed run, not
+    a pass."""
+    skeleton = tmp_path / "skeleton"
+    write_plugin(str(skeleton), "prd-os", "0.27.0")
+    proc = subprocess.run(
+        [
+            sys.executable, CHECK, "--skeleton", str(skeleton),
+            "--installed", str(tmp_path / "nope.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    assert "CHECK FAILED TO RUN" in proc.stderr
+
+
+def test_malformed_installed_record_exits_2(tmp_path):
+    """Same reasoning as a malformed manifest: unreadable is not parity."""
+    skeleton = tmp_path / "skeleton"
+    write_plugin(str(skeleton), "prd-os", "0.27.0")
+    bad = tmp_path / "rec.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", str(bad)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    assert "CHECK FAILED TO RUN" in proc.stderr
+
+
 def test_malformed_skeleton_manifest_never_reports_pass(tmp_path):
     """The round-5 minor on PR #142, pinned.
 
-    `read_version` used to answer None for THREE different situations: no
+    `read_version` used to answer None for three unrelated situations: no
     manifest, JSON that will not parse, and a manifest with no version key. The
     caller reads None as "not a plugin, skip", so a broken manifest silently
-    dropped a real plugin. With one plugin in the tree that emptied the result
-    set, and the verdict is `any(status != MATCH)` -- `any([])` is False.
-
-    Measured against the pre-fix file: exit 0 and the sentence
-    "PASS: all 0 plugins in version parity." A drift detector claiming PASS in
-    the one case where it read nothing is the worst output it can produce.
+    dropped a real plugin -- and with one plugin in the tree that emptied the
+    result set, where the verdict `any(status != MATCH)` is False for an empty
+    list. Measured against the pre-fix file: exit 0, "PASS: all 0 plugins".
     """
     skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
     write_raw_manifest(str(skeleton), "prd-os", "{ this is not json")
-    write_plugin(str(clone), "prd-os", "0.27.0")
+    record = write_record(str(tmp_path / "rec.json"), {})
     proc = subprocess.run(
-        [sys.executable, CHECK, "--skeleton", str(skeleton), "--marketplace", str(clone)],
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
         capture_output=True,
         text=True,
     )
@@ -250,15 +315,13 @@ def test_malformed_skeleton_manifest_never_reports_pass(tmp_path):
 
 
 def test_manifest_without_version_key_never_reports_pass(tmp_path):
-    """Parses fine, carries no version. Same silent drop as malformed JSON, and
-    it is the likelier one in practice: a hand-edited manifest keeps valid JSON
-    far more often than it keeps every key."""
+    """Parses fine, carries no version. The likelier one in practice: a
+    hand-edited manifest keeps valid JSON more often than it keeps every key."""
     skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
     write_raw_manifest(str(skeleton), "prd-os", '{"name": "prd-os"}')
-    write_plugin(str(clone), "prd-os", "0.27.0")
+    record = write_record(str(tmp_path / "rec.json"), {})
     proc = subprocess.run(
-        [sys.executable, CHECK, "--skeleton", str(skeleton), "--marketplace", str(clone)],
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
         capture_output=True,
         text=True,
     )
@@ -266,19 +329,15 @@ def test_manifest_without_version_key_never_reports_pass(tmp_path):
     assert "PASS" not in proc.stdout
 
 
-def test_unreadable_clone_manifest_is_a_row_not_an_abandoned_run(tmp_path):
-    """The clone is the UNTRUSTED side, so its broken manifest must not abandon
-    the plugins after it in the walk. It is reported as a non-MATCH row and the
-    other plugin is still compared -- otherwise one corrupt runtime plugin would
-    hide the parity state of every other one."""
+def test_zero_readable_plugins_is_not_pass(tmp_path):
+    """`any([])` is False. An empty result set must not inherit that as success."""
     skeleton = tmp_path / "skeleton"
-    clone = tmp_path / "clone"
-    write_plugin(str(skeleton), "aaa-first", "1.0.0")
-    write_plugin(str(skeleton), "zzz-last", "2.0.0")
-    write_raw_manifest(str(clone), "aaa-first", "{ broken")
-    write_plugin(str(clone), "zzz-last", "2.0.0")
-    code, payload, _ = run_check(str(skeleton), str(clone))
-    assert code != 0
-    statuses = {r["plugin"]: r["status"] for r in payload["plugins"]}
-    assert statuses["aaa-first"] == "UNREADABLE"
-    assert statuses["zzz-last"] == "MATCH"
+    os.makedirs(os.path.join(str(skeleton), "plugins", "scratch"), exist_ok=True)
+    record = write_record(str(tmp_path / "rec.json"), {})
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "PASS" not in proc.stdout

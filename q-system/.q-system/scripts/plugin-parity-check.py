@@ -71,6 +71,70 @@ def default_marketplace():
     )
 
 
+def default_installed_record():
+    env = os.environ.get("KIPI_INSTALLED_PLUGINS")
+    if env:
+        return env
+    return os.path.join(
+        os.path.expanduser("~"), ".claude", "plugins", "installed_plugins.json"
+    )
+
+
+def read_installed(record_path):
+    """Parse installed_plugins.json into {"<plugin>@<marketplace>": [entry, ...]}.
+
+    THIS FILE, NOT THE MARKETPLACE CLONE, IS WHAT RUNS (Codex review of #152,
+    major). The clone is a git worktree of the skeleton; the runtime executes a
+    VERSION-PINNED directory under plugins/cache/<marketplace>/<plugin>/<version>
+    and decides which one from this record. The two disagree freely: measured
+    2026-08-14, the clone read prd-os 0.27.2 while this record pinned 0.16.5 and
+    `claude plugin list` agreed with the record.
+
+    That is why the first cut of this checker was worse than useless. Aimed at
+    the clone it compared 0.27.2 against 0.27.2 and printed MATCH while the
+    plugin actually loading was eleven minor versions behind. A parity checker
+    that reports parity because it read the wrong artifact is the exact failure
+    it exists to catch.
+    """
+    if not os.path.isfile(record_path):
+        raise FileNotFoundError(f"no installed-plugins record at {record_path}")
+    try:
+        with open(record_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ManifestUnreadable(f"{record_path}: {exc}") from exc
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        raise ManifestUnreadable(f"{record_path}: no 'plugins' object")
+    return plugins
+
+
+def resolve_live_entry(entries, project):
+    """Pick the entry the LOADER would use, or None if the plugin is not installed.
+
+    The value under "<plugin>@<marketplace>" is a LIST, and each entry carries a
+    scope. A project-scoped install pins a version for one projectPath only; a
+    user-scoped install is the fallback everywhere else. So "the version Claude
+    executes" is a question that cannot be answered without naming a project,
+    which is why --project exists rather than a default guess.
+
+    Checking only the user entry (the simpler option considered and rejected)
+    would rebuild the very hole this fix closes: it would report parity for a
+    project that pins something older, one level further down.
+    """
+    project_entries = [e for e in entries if e.get("scope") == "project"]
+    if project is not None:
+        target = os.path.abspath(project)
+        for entry in project_entries:
+            recorded = entry.get("projectPath")
+            if recorded and os.path.abspath(recorded) == target:
+                return entry
+    for entry in entries:
+        if entry.get("scope") == "user":
+            return entry
+    return None
+
+
 class ManifestUnreadable(Exception):
     """A manifest exists but could not be read as a versioned plugin manifest."""
 
@@ -153,8 +217,16 @@ def content_drift(skeleton_dir, clone_dir):
     return {"differing": differing, "missing": missing, "clone_only": extra}
 
 
-def compare(skeleton_root, marketplace_root):
-    """One row per plugin in the skeleton. Rows are the whole result."""
+def compare(skeleton_root, installed, marketplace_name="kipi", project=None):
+    """One row per plugin in the skeleton. Rows are the whole result.
+
+    `installed` is the parsed plugins map from read_installed. Every row names
+    the install_path it judged, because the defect this check exists to catch
+    appeared three times in one day (2026-08-14) in three different places, and
+    each time the tell was the same: a parity claim that did not say which
+    artifact it read. Printing the path makes the next wrong answer obvious
+    instead of ambient.
+    """
     plugins_dir = os.path.join(skeleton_root, "plugins")
     if not os.path.isdir(plugins_dir):
         raise FileNotFoundError(f"no plugins/ directory under {skeleton_root}")
@@ -171,55 +243,64 @@ def compare(skeleton_root, marketplace_root):
             # landing here -- see read_version.
             continue
 
-        clone_dir = os.path.join(marketplace_root, "plugins", name)
-        # The clone is the untrusted side, so its unreadable manifest is a ROW
-        # (reported, non-MATCH, fails the run) rather than an exception that
-        # would abandon the other plugins. The skeleton's own manifest is
-        # different: if that will not parse the check has no baseline at all,
-        # so read_version's raise propagates.
-        try:
-            clone_version = read_version(clone_dir)
-        except ManifestUnreadable:
-            clone_version = None
-            status = "UNREADABLE"
+        entries = installed.get(f"{name}@{marketplace_name}") or []
+        entry = resolve_live_entry(entries, project) if entries else None
+
+        if entry is None:
             rows.append(
                 {
                     "plugin": name,
                     "skeleton_version": skel_version,
-                    "marketplace_version": None,
-                    "status": status,
+                    "installed_version": None,
+                    "install_path": None,
+                    "scope": None,
+                    "status": "NOT_INSTALLED",
                     "advisory_content": {"differing": 0, "missing": 0, "clone_only": 0},
                 }
             )
             continue
 
-        if clone_version is None:
-            status = "MISSING"
-        elif clone_version == skel_version:
+        live_version = entry.get("version")
+        install_path = entry.get("installPath")
+
+        # A record that names a directory which is not there is NOT parity, even
+        # when the version string matches. The loader would have nothing to load.
+        if not install_path or not os.path.isdir(install_path):
+            status = "PATH_MISSING"
+        elif live_version is None:
+            status = "UNREADABLE"
+        elif live_version == skel_version:
             status = "MATCH"
         else:
             status = "MISMATCH"
+
+        drift = {"differing": 0, "missing": 0, "clone_only": 0}
+        if install_path and os.path.isdir(install_path):
+            drift = content_drift(skel_dir, install_path)
 
         rows.append(
             {
                 "plugin": name,
                 "skeleton_version": skel_version,
-                "marketplace_version": clone_version,
+                "installed_version": live_version,
+                "install_path": install_path,
+                "scope": entry.get("scope"),
                 "status": status,
-                "advisory_content": content_drift(skel_dir, clone_dir),
+                "advisory_content": drift,
             }
         )
     return rows
 
 
-def render(rows, skeleton_root, marketplace_root):
+def render(rows, skeleton_root, record_path, project=None):
     lines = []
-    lines.append(f"skeleton    : {skeleton_root}")
-    lines.append(f"marketplace : {marketplace_root}")
+    lines.append(f"skeleton  : {skeleton_root}")
+    lines.append(f"installed : {record_path}")
+    lines.append(f"project   : {project or '(user scope)'}")
     lines.append("")
-    lines.append(f"{'PLUGIN':<18} {'SKELETON':<12} {'RUNTIME':<12} STATUS")
+    lines.append(f"{'PLUGIN':<18} {'SKELETON':<12} {'RUNNING':<12} STATUS")
     for row in rows:
-        runtime = row["marketplace_version"] or "-"
+        runtime = row["installed_version"] or "-"
         lines.append(
             f"{row['plugin']:<18} {row['skeleton_version']:<12} "
             f"{runtime:<12} {row['status']}"
@@ -228,10 +309,15 @@ def render(rows, skeleton_root, marketplace_root):
     lines.append("")
     for row in bad:
         drift = row["advisory_content"]
+        # THE PATH IS PART OF THE VERDICT, not decoration. Every wrong answer
+        # this checker has given came from reading the wrong directory, and in
+        # each case the output looked identical to a right answer.
         lines.append(
             f"OUT OF PARITY: {row['plugin']} "
             f"skeleton={row['skeleton_version']} "
-            f"runtime={row['marketplace_version'] or 'absent'} "
+            f"running={row['installed_version'] or 'absent'} "
+            f"scope={row['scope'] or '-'} "
+            f"read={row['install_path'] or 'no install path recorded'} "
             f"(advisory: {drift['differing']} files differ, "
             f"{drift['missing']} absent from runtime, "
             f"{drift['clone_only']} runtime-only)"
@@ -264,14 +350,31 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     repo_default = os.path.abspath(os.path.join(here, "..", "..", ".."))
     parser.add_argument("--skeleton", default=repo_default)
-    parser.add_argument("--marketplace", default=None)
+    parser.add_argument(
+        "--installed",
+        default=None,
+        help="path to installed_plugins.json (what the loader actually reads)",
+    )
+    parser.add_argument(
+        "--project",
+        default=None,
+        help=(
+            "resolve project-scoped installs for this project path. Omit to "
+            "check the user-scoped install, which is what a session outside any "
+            "project-pinned plugin loads."
+        ),
+    )
+    parser.add_argument("--marketplace-name", default="kipi")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    marketplace = args.marketplace or default_marketplace()
+    record_path = args.installed or default_installed_record()
 
     try:
-        rows = compare(args.skeleton, marketplace)
+        installed = read_installed(record_path)
+        rows = compare(
+            args.skeleton, installed, args.marketplace_name, args.project
+        )
     # ManifestUnreadable joins FileNotFoundError here because they are the same
     # answer to the operator: the check could not establish a baseline, so it is
     # reporting nothing rather than parity. Letting it escape as a traceback
@@ -287,14 +390,15 @@ def main(argv=None):
             json.dumps(
                 {
                     "skeleton": args.skeleton,
-                    "marketplace": marketplace,
+                    "installed_record": record_path,
+                    "project": args.project,
                     "plugins": rows,
                 },
                 indent=2,
             )
         )
     else:
-        print(render(rows, args.skeleton, marketplace))
+        print(render(rows, args.skeleton, record_path, args.project))
 
     # ZERO ROWS IS NOT PARITY (Codex review of #142, minor). `any([])` is False,
     # so an empty result set used to exit 0 -- the check reported success in the
