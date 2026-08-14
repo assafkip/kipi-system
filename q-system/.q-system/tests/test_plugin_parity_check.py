@@ -86,12 +86,14 @@ def entry(install_path, version, scope="user", project_path=None):
     return row
 
 
-def run_check(skeleton, record, project=None, extra=None):
+def run_check(skeleton, record, project=None, extra=None, cwd=None):
     argv = [sys.executable, CHECK, "--skeleton", skeleton, "--installed", record, "--json"]
     if project is not None:
         argv += ["--project", project]
     argv += extra or []
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    # cwd matters: --project now defaults to the working directory, because that
+    # is how the loader resolves "which version runs".
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
     payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
     return proc.returncode, payload, proc.stderr
 
@@ -315,6 +317,78 @@ def test_removed_marketplace_flag_is_an_error_not_a_prefix_match(tmp_path):
     assert proc.returncode == 2
     assert "NOT_INSTALLED" not in proc.stdout
     assert "unrecognized arguments" in proc.stderr
+
+
+def test_default_invocation_resolves_the_cwd_project(tmp_path):
+    """Codex review of #152 round 4, major.
+
+    --project defaulted to None, which meant a bare run resolved the USER entry.
+    Run inside a project that pins its own older build, that printed MATCH while
+    the session in that directory loaded the stale project-scoped one. It is the
+    exact hole named when rejecting "just read the user entry" the round before,
+    reintroduced as the default: the argument existed and its default undid it.
+
+    The loader answers "which version runs" relative to where you are, so a bare
+    run must too. --user-scope is the explicit opt-out.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    proj = tmp_path / "someproject"
+    proj.mkdir()
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
+    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {
+            "prd-os@kipi": [
+                entry(user_dir, "0.27.2"),
+                entry(proj_dir, "0.16.5", scope="project", project_path=str(proj)),
+            ]
+        },
+    )
+    # No --project, but CWD is the pinned project: must see the stale build.
+    code, payload, _ = run_check(str(skeleton), record, cwd=str(proj))
+    assert code == 1
+    assert payload["plugins"][0]["scope"] == "project"
+    assert payload["plugins"][0]["installed_version"] == "0.16.5"
+
+    # --user-scope is the way to ask the other question, and still works.
+    code2, payload2, _ = run_check(
+        str(skeleton), record, extra=["--user-scope"], cwd=str(proj)
+    )
+    assert code2 == 0
+    assert payload2["plugins"][0]["scope"] == "user"
+
+
+def test_running_column_shows_the_on_disk_version_not_the_record(tmp_path):
+    """Codex review of #152 round 4, minor.
+
+    The table's RUNNING column printed the RECORD's version, so in the one case
+    where the two provably disagree -- RECORD_DRIFT, which the previous round
+    added detection for -- the human-readable output named the number it had just
+    disproved. Detecting drift and then displaying the wrong side of it is worse
+    than not detecting it.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    stale = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(stale, "0.27.2")]}
+    )
+    proc = subprocess.run(
+        [sys.executable, CHECK, "--skeleton", str(skeleton), "--installed", record],
+        capture_output=True,
+        text=True,
+    )
+    table_line = [
+        ln for ln in proc.stdout.splitlines() if ln.startswith("prd-os")
+    ][0]
+    assert "0.16.5" in table_line, table_line
+    # Both numbers are still reported, but the detail line labels each one.
+    assert "running=0.16.5" in proc.stdout
+    assert "record=0.27.2" in proc.stdout
 
 
 def test_non_plugin_directory_is_skipped(tmp_path):

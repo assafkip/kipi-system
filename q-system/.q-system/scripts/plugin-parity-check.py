@@ -45,8 +45,11 @@ USAGE
     --installed FILE        installed_plugins.json, the record the LOADER reads
                             (default: $KIPI_INSTALLED_PLUGINS, else
                              ~/.claude/plugins/installed_plugins.json)
-    --project DIR           resolve project-scoped installs for this project.
-                            Omit to check the user-scoped install.
+    --project DIR           resolve project-scoped installs for this project
+                            (default: the current working directory, because the
+                             loader answers "which version runs" relative to
+                             where you are)
+    --user-scope            ignore project-scoped installs entirely
     --marketplace-name NAME marketplace key in the record (default: kipi)
 
 There is deliberately no --marketplace option. It was removed when this check
@@ -348,7 +351,13 @@ def render(rows, skeleton_root, record_path, project=None):
     lines.append("")
     lines.append(f"{'PLUGIN':<18} {'SKELETON':<12} {'RUNNING':<12} STATUS")
     for row in rows:
-        runtime = row["installed_version"] or "-"
+        # THE ON-DISK MANIFEST IS THE RUNNING VERSION (Codex review of #152
+        # round 4, minor). This printed the RECORD's version under a column
+        # headed RUNNING, so in the one case where the two provably disagree --
+        # RECORD_DRIFT, which the previous round added detection for -- the
+        # human-readable output named the wrong number. Detecting the drift and
+        # then displaying the value it disproved is worse than not detecting it.
+        runtime = row.get("runtime_manifest_version") or row["installed_version"] or "-"
         lines.append(
             f"{row['plugin']:<18} {row['skeleton_version']:<12} "
             f"{runtime:<12} {row['status']}"
@@ -363,7 +372,8 @@ def render(rows, skeleton_root, record_path, project=None):
         lines.append(
             f"OUT OF PARITY: {row['plugin']} "
             f"skeleton={row['skeleton_version']} "
-            f"running={row['installed_version'] or 'absent'} "
+            f"running={row.get('runtime_manifest_version') or 'absent'} "
+            f"record={row['installed_version'] or 'absent'} "
             f"scope={row['scope'] or '-'} "
             f"read={row['install_path'] or 'no install path recorded'} "
             f"(advisory: {drift['differing']} files differ, "
@@ -413,10 +423,14 @@ def main(argv=None):
         "--project",
         default=None,
         help=(
-            "resolve project-scoped installs for this project path. Omit to "
-            "check the user-scoped install, which is what a session outside any "
-            "project-pinned plugin loads."
+            "resolve project-scoped installs for this project path "
+            "(default: the current working directory)"
         ),
+    )
+    parser.add_argument(
+        "--user-scope",
+        action="store_true",
+        help="ignore project-scoped installs and check only the user install",
     )
     parser.add_argument("--marketplace-name", default="kipi")
     parser.add_argument("--json", action="store_true")
@@ -424,10 +438,22 @@ def main(argv=None):
 
     record_path = args.installed or default_installed_record()
 
+    # DEFAULT TO THE CWD, NOT TO USER SCOPE (Codex review of #152 round 4, major).
+    # A bare run inside a project that pins its own older build resolved the USER
+    # entry and printed MATCH, while the session in that directory loaded the
+    # stale project-scoped one. That is precisely the hole I named when rejecting
+    # "just read the user entry" last round, reintroduced as the default -- the
+    # argument existed and its default undid it.
+    #
+    # The loader answers "which version runs" relative to where you are, so the
+    # faithful default is here. --user-scope is the explicit opt-out; silence now
+    # means "resolve like the loader would", not "skip the harder question".
+    effective_project = None if args.user_scope else (args.project or os.getcwd())
+
     try:
         installed = read_installed(record_path)
         rows = compare(
-            args.skeleton, installed, args.marketplace_name, args.project
+            args.skeleton, installed, args.marketplace_name, effective_project
         )
     # ManifestUnreadable joins FileNotFoundError here because they are the same
     # answer to the operator: the check could not establish a baseline, so it is
@@ -445,14 +471,14 @@ def main(argv=None):
                 {
                     "skeleton": args.skeleton,
                     "installed_record": record_path,
-                    "project": args.project,
+                    "project": effective_project,
                     "plugins": rows,
                 },
                 indent=2,
             )
         )
     else:
-        print(render(rows, args.skeleton, record_path, args.project))
+        print(render(rows, args.skeleton, record_path, effective_project))
 
     # ZERO ROWS IS NOT PARITY (Codex review of #142, minor). `any([])` is False,
     # so an empty result set used to exit 0 -- the check reported success in the
