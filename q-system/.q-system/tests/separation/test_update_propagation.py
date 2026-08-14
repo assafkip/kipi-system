@@ -44,6 +44,7 @@ UPDATER_HELPERS = (
     "kipi-update-preserve-scan.py",
     "kipi-update-deletion-guard.py",
     "kipi-settings-merge.py",
+    "kipi-update-gitignore-block.py",
     "settings-template.json",
 )
 

@@ -141,6 +141,63 @@ def test_mode_only_drift_is_chmodded_not_committed(world):
     assert os.access(inst / "plugins/kipi-core/tool.py", os.X_OK), "+x not restored"
 
 
+def test_a_mode_change_carrying_content_drift_is_not_a_mode_fix(world):
+    """THE MISSING REFUSAL (added 2026-08-14 while auditing the three actions).
+
+    `commit` and `unstage` each had a test proving they refuse when their proof
+    is absent -- test_founder_edit_is_refused and
+    test_staged_add_with_no_rescued_copy_is_refused. `restore-mode` had none.
+    Its proof is "index and worktree hold the SAME blob", and nothing asserted
+    what happens when they do not.
+
+    That is the dangerous direction. decide() checks mode FIRST, so if the
+    same-blob condition were ever loosened, a file that lost +x AND was edited
+    would be chmodded, the tree would go clean, the guard would clear, and the
+    edit would ride into the next sync unattributed. Cleanliness is not the
+    property that matters here; attribution is.
+    """
+    skel, inst = world
+    rel = "plugins/kipi-core/tool.py"
+    write(inst, rel, "#!/usr/bin/env python3\nprint('hi')\n", mode=0o755)
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+
+    # Both at once: the mode dropped AND somebody changed the bytes.
+    write(inst, rel, "#!/usr/bin/env python3\nprint('edited by a human')\n")
+    (inst / rel).chmod(0o644)
+
+    rc, out = run(skel, "--apply")
+    assert rc == 0, out
+    assert "restore-mode" not in out, (
+        "a content edit was treated as a mode fix; chmod would clear the guard "
+        "and carry the edit along unattributed\n" + out)
+    assert "REFUSE" in out, out
+    assert is_dirty(inst, rel), "the drift must still be there for a human to see"
+
+
+def test_the_mode_refusal_would_notice_if_the_same_blob_proof_were_dropped(world):
+    """Negative control for the test above: prove the assertion has teeth.
+
+    Same fixture, but the content is left ALONE so the row really is mode-only.
+    If restore-mode fires here and not above, the classifier is discriminating
+    on the proof rather than on the mode difference -- which is the thing the
+    test above is actually asserting.
+    """
+    skel, inst = world
+    rel = "plugins/kipi-core/tool.py"
+    write(inst, rel, "#!/usr/bin/env python3\nprint('hi')\n", mode=0o755)
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    (inst / rel).chmod(0o644)
+
+    rc, out = run(skel, "--apply")
+    assert rc == 0, out
+    assert "restore-mode" in out, (
+        "the mode-only case stopped firing, so the refusal test above proves "
+        "nothing -- it would pass even if restore-mode were deleted entirely\n"
+        + out)
+
+
 def test_mode_fix_is_not_applied_on_a_dry_run(world):
     """Negative self-test for the dry run: the default must write nothing."""
     skel, inst = world
