@@ -768,6 +768,154 @@ WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
   || bad "the hold does not precede the worker call, so an agent could still start"
 
 echo
+echo "== 19. a CLIENT ENGAGEMENT repo is refused even when opted in (ASK-741) =="
+# Founder decision 2026-08-13: "no. unattended agents should not reach a client repo."
+#
+# The property under test is NOT "client repos are off by default" -- case 5 already
+# covers default-off, and a default is not a refusal. It is that an engagement repo
+# carrying dispatch.enabled: true, and passing all seven other items, is STILL
+# absent from the pick list. Opt-in is what this has to survive.
+#
+# EVERY NAME HERE IS INVENTED. This repo is public (102 stars, 23 forks) and
+# client-name-guard.py blocks client names reaching it; a fixture named after a real
+# engagement would be the leak the guard exists to stop. The test is about the PATH
+# SHAPE, so invented names test it exactly as well as real ones would -- which is
+# itself the evidence that the derivation is not a name list.
+
+# make_good_repo builds at $WORK/$name and pins origin to that same name, so it
+# cannot build a NESTED path whose registry row name differs. Engagement-ness is a
+# property of the path and nothing else, so the two have to be separable here.
+make_good_repo_at() {
+  local rowname="$1"
+  local sub="$2"
+  local dir
+  dir="$(make_good_repo "$sub")"
+  fixture_git "$dir" remote set-url origin "https://github.com/assafkip/$rowname.git" >/dev/null 2>&1
+  printf '%s' "$dir"
+}
+
+# A client that DOES NOT EXIST TODAY. If this is refused, the refusal cannot be
+# coming from a list of the twelve engagements currently in the registry -- which is
+# the only durable proof that onboarding client thirteen needs no code change.
+NEWCLIENT="$(make_good_repo_at newclient consulting/projects/zzz-new-client)"
+# The negative control, built by the SAME builder, differing ONLY in path shape.
+# Without this the section could pass by refusing everything.
+OWNPROJ="$(make_good_repo_at ownproj cole-gtm/projects/own-thing)"
+INTELCLIENT="$(make_good_repo_at intelclient intel/projects/zzz-other-client)"
+
+OUT="$(run_preflight "$NEWCLIENT" "https://github.com/assafkip/newclient.git")"
+{ [ "$(pf_rc "$NEWCLIENT" "https://github.com/assafkip/newclient.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "an engagement repo that does not exist today is refused, and names client-repo" \
+  || bad "THE DEFECT: a not-yet-existing client repo was accepted: $OUT"
+
+printf '%s' "$OUT" | grep -q 'even when dispatch.enabled is true' \
+  && ok "the refusal states WHY, naming opt-in explicitly" \
+  || bad "the refusal does not say why, so it reads like any other skip: $OUT"
+
+OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")"
+{ [ "$(pf_rc "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "the second engagement root is refused too, not just the first" \
+  || bad "an engagement root was not covered: $OUT"
+
+# THE OTHER DIRECTION. A check that refuses everything is not a check, and the
+# founder's own projects/ dirs are the same SHAPE one level up -- so this is the
+# case that proves the derivation discriminates rather than pattern-matching
+# "/projects/".
+[ "$(pf_rc "$OWNPROJ" "https://github.com/assafkip/ownproj.git")" = "0" ] \
+  && ok "a NON-engagement repo under the founder's own root still passes" \
+  || bad "the guard over-matched and refused one of the founder's own repos: $(run_preflight "$OWNPROJ" "https://github.com/assafkip/ownproj.git")"
+
+# The engagement ROOT itself is the founder's own instance, not an engagement. The
+# founder's wording was "the engagement instances NESTED UNDER consulting/projects/*",
+# so <root>/projects/<x> refuses and <root> does not.
+ROOTREPO="$(make_good_repo_at rootrepo consulting)"
+[ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" = "0" ] \
+  && ok "the engagement ROOT itself is not treated as a client engagement" \
+  || bad "the guard swallowed the persona root, which is the founder's own instance"
+
+# NO BYPASS SURFACE, same rule the dispatcher is held to by case 8.
+grep -qE '^ENGAGEMENT_ROOTS="[a-z ]+"$' "$PREFLIGHT" \
+  && ok "the engagement roots are a literal in the script, not an override" \
+  || bad "the engagement roots are not a plain literal, so they may be overridable"
+grep -nE 'ENGAGEMENT_ROOTS="?\$\{|KIPI_[A-Z_]*ENGAGEMENT|KIPI_[A-Z_]*CLIENT' "$PREFLIGHT" \
+  && bad "an env var can redefine what counts as a client repo" \
+  || ok "no env var can redefine what counts as a client repo"
+
+echo
+echo "== 20. the client-repo refusal is ABSENT from the pick list, and SAID (ASK-741) =="
+# End to end through the dispatcher's own selection, not the preflight in isolation.
+# Both rows are opted in; only the shape differs.
+REG5="$WORK/reg5.json"
+mk_registry "$REG5" "newclient|$NEWCLIENT|true" "ownproj|$OWNPROJ|true"
+# stdout is the SELECTION; stderr carries say(). Merging them makes `grep newclient`
+# match the refusal REASON, which reports a correctly-refused repo as selected.
+PICKS5="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursor5" bash "$HARNESS" 2>"$WORK/say5.log")"
+printf '%s' "$PICKS5" | grep -q 'ownproj' \
+  && ok "the opted-in NON-client repo IS selected (so the absence below means something)" \
+  || bad "the non-client control never reached the pick list, so this section proves nothing"
+printf '%s' "$PICKS5" | grep -q 'newclient' \
+  && bad "THE DEFECT: an opted-in client engagement repo is SELECTED for unattended dispatch" \
+  || ok "an opted-in client engagement repo is ABSENT from the pick list"
+
+# A SILENT REFUSAL IS THE DEFECT, NOT THE FIX. The founder has to be able to tell a
+# refusal from an empty queue, so the reason is asserted, not just the absence.
+grep -q 'FAIL client-repo' "$WORK/say5.log" \
+  && ok "the run output states WHY the repo was refused" \
+  || bad "the refusal is silent in the run output: $(cat "$WORK/say5.log")"
+# The counted shape daily-linear-digest.py's third section scrapes.
+grep -qE '[0-9]+ repo\(s\) REFUSED as client engagement repos' "$WORK/say5.log" \
+  && ok "the run output carries the counted line the daily digest reads" \
+  || bad "no counted line, so the digest's third section cannot show this: $(cat "$WORK/say5.log")"
+
+echo
+echo "== 21. MUTATION: break the derivation and case 20 must go RED (ASK-741) =="
+# A guard whose test stays green with the guard removed is decoration.
+# THE MUTANT MUST SIT AT THE SAME DEPTH AS THE REAL SCRIPT. repo-preflight.sh
+# derives SKELETON from its own ${BASH_SOURCE[0]} as "../../.." -- deliberately, so
+# the control-code reference follows the code rather than $PWD. A mutant dropped at
+# $WORK/mutant-preflight.sh therefore resolves SKELETON to a directory three levels
+# above mktemp, finds no linear-worker.sh there, and refuses on CONTROL-CODE. It was
+# measured doing exactly that: the mutant "still refused the client repo" and the
+# case read SURVIVED, when in truth the derivation under test had never run. A false
+# SURVIVED is worse than a false KILL -- it reports a load-bearing guard as
+# decorative. So the mutant gets a skeleton of its own, at the right depth.
+MUTSKEL="$WORK/mutskel"
+mkdir -p "$MUTSKEL/q-system/.q-system/scripts" "$MUTSKEL/.claude"
+cp "$SKEL_WORKER" "$MUTSKEL/q-system/.q-system/scripts/linear-worker.sh"
+cp "$SKEL_SETTINGS" "$MUTSKEL/.claude/settings.json"
+copy_guards "$MUTSKEL"
+MUTPF="$MUTSKEL/q-system/.q-system/scripts/repo-preflight.sh"
+sed 's|^ENGAGEMENT_ROOTS=.*|ENGAGEMENT_ROOTS="zzzz-no-such-root"|' "$PREFLIGHT" > "$MUTPF"
+# VALIDATE THE MUTANT APPLIED. A sed that matched nothing produces a byte-identical
+# file and a "SURVIVED" that means the edit never happened, not that the guard is weak.
+if cmp -s "$MUTPF" "$PREFLIGHT"; then
+  bad "the mutation changed nothing -- the mutant is not a mutant, so this proves nothing"
+elif grep -q '^ENGAGEMENT_ROOTS="zzzz-no-such-root"$' "$MUTPF"; then
+  ok "the mutant applied (the engagement roots were replaced with a root nothing is under)"
+  MUTH2="$WORK/select-mutant-pf.sh"
+  {
+    echo 'set -uo pipefail'
+    echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+    echo "REPO=\"$REPO\""
+    echo "PREFLIGHT=\"$MUTPF\""
+    awk '/^cursor_get\(\) \{/,/^\}/'       "$DISPATCH"
+    awk '/^cursor_set\(\) \{/,/^\}/'       "$DISPATCH"
+    awk '/^fleet_candidates\(\) \{/,/^\}/' "$DISPATCH"
+    awk '/^rotation\(\) \{/,/^\}/'         "$DISPATCH"
+    awk '/^pick_list\(\) \{/,/^\}/'        "$DISPATCH"
+    echo 'pick_list'
+  } > "$MUTH2"
+  MP="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursorM2" bash "$MUTH2" 2>/dev/null)"
+  printf '%s' "$MP" | grep -q 'newclient' \
+    && ok "with the derivation broken the client repo REAPPEARS -- case 20 is load-bearing" \
+    || bad "the mutant still refused the client repo, so case 20 is not driven by the derivation"
+else
+  bad "the mutant was written but does not carry the expected replacement"
+fi
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"

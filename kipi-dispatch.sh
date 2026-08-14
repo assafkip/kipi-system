@@ -464,19 +464,39 @@ rotation() {
 # carries on past it; a repo that is permanently unsafe must not stall the repos
 # behind it forever.
 pick_list() {
-  local name path remote
+  local name path remote out client_n=0 client_names=""
   while IFS=$'\t' read -r name path remote; do
     [ -n "$name" ] || continue
     if [ "$path" = "$REPO" ]; then
       printf '%s\t%s\n' "$name" "$path"
       continue
     fi
-    if bash "$PREFLIGHT" "$path" "$remote" >/dev/null 2>&1; then
+    # STDOUT IS CAPTURED, NOT DISCARDED (ASK-741). This used to be
+    # `>/dev/null 2>&1`, so the preflight named every failed check on stdout and
+    # the dispatcher threw all of it away, logging only "REFUSED". A founder
+    # reading that line cannot tell a client-repo refusal from an expired token
+    # from an empty queue -- and "silent refusal is indistinguishable from nothing
+    # to do" is the exact failure this issue exists to remove. The reason the gate
+    # gives is the only thing that makes the gate legible.
+    if out="$(bash "$PREFLIGHT" "$path" "$remote" 2>&1)"; then
       printf '%s\t%s\n' "$name" "$path"
     else
-      say "preflight REFUSED $name ($path); not entering it"
+      say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
+      case "$out" in
+        *"FAIL client-repo:"*)
+          client_n=$((client_n + 1))
+          client_names="${client_names:+$client_names, }$name" ;;
+      esac
     fi
   done < <(rotation)
+  # COUNTED, AND IN THE DIGEST'S OWN SHAPE. daily-linear-digest.py's third section
+  # ("tried, could not be worked") scrapes this log for `N thing(s) <what>` lines,
+  # so a refusal phrased any other way is invisible in the one surface the founder
+  # actually reads once a day. Emitted only when it happened: a client repo being
+  # refused is a real event, and a "0 refused" line every 15 minutes is the
+  # cry-wolf noise that gets a channel muted.
+  [ "$client_n" -gt 0 ] && say "$client_n repo(s) REFUSED as client engagement repos (unattended dispatch is not allowed there, even when opted in): $client_names"
+  return 0
 }
 
 # --- LIVENESS BEACON: page when the heartbeat COMES BACK ------------------
