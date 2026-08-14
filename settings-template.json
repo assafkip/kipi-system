@@ -180,6 +180,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
+            "timeout": 5
           }
         ]
       }
