@@ -48,6 +48,18 @@ LOG="${KIPI_DISPATCH_LOG:-$HOME/.config/kipi/dispatch.log}"
 
 say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "pinned: $*" >>"$LOG" 2>/dev/null || true; }
 
+# A SILENT exit 0 IS THE FAILURE MODE THIS FILE EXISTS TO END (codex major, r1).
+# Every refusal below returns 0 so launchd records a clean run -- which is right,
+# because a nonzero exit would make launchd throttle a job that is behaving
+# correctly. But a clean launchd record plus a line in a log nobody reads is
+# exactly the shape of the 22.5h outage above: dispatch stopped, and the only
+# evidence was a file. So a refusal PAGES, and the log line stops being the only
+# copy. Routed through slack-notify.sh because it is the one channel that reaches
+# the founder's phone from a headless launchd context; osascript is silently
+# dropped there (founder-notifications rule).
+NOTIFY="${KIPI_NOTIFY:-$REPO_MAIN/q-system/.q-system/scripts/slack-notify.sh}"
+page() { [ -f "$NOTIFY" ] && bash "$NOTIFY" "$1" >/dev/null 2>&1 || true; }
+
 # Fetch in the MAIN checkout: the worktree shares its object store, so one fetch
 # updates origin/main for both. A failure here is not fatal -- stale_check() runs
 # its own fetch and has a documented fail-open path for offline.
@@ -60,6 +72,7 @@ if [ ! -e "$PINNED/.git" ]; then
     # Deliberately not exec'ing dispatch against $REPO_MAIN here. Falling back to
     # the parked checkout is what this change exists to stop, and a fallback would
     # make the outage silent again instead of loud.
+    page "kipi dispatch: STOPPED. The pinned checkout at $PINNED could not be created, and dispatch will not fall back to the shared checkout. No issues are being worked. Do: run \`git -C $REPO_MAIN worktree add --detach $PINNED origin/main\` and read the error."
     exit 0
   fi
   say "created pinned checkout at $PINNED"
@@ -72,6 +85,7 @@ fi
 
 if [ ! -f "$PINNED/kipi-dispatch.sh" ]; then
   say "no kipi-dispatch.sh in $PINNED -- refusing"
+  page "kipi dispatch: STOPPED. $PINNED exists but holds no kipi-dispatch.sh, so there is nothing to run. No issues are being worked. Do: inspect that checkout, or remove it and let the next tick rebuild it."
   exit 0
 fi
 

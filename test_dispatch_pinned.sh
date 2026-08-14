@@ -117,5 +117,69 @@ grep -q "NOT falling back" "$R2/log" 2>/dev/null \
   && ok "T4 logs the refusal loudly" \
   || bad "T4 logs the refusal loudly" "no refusal line in the log"
 
+# ---------------------------------------------------------------------------
+# TEST 5: the refusal PAGES, it does not only write a log line (codex major r1).
+# ---------------------------------------------------------------------------
+# A refusal exits 0 so launchd does not throttle a job behaving correctly. That
+# is right, and it is also why the log cannot be the only copy: launchd records a
+# clean run while dispatch is stopped. This is the 22.5h outage shape. The
+# notifier is replaced by a recorder so the assertion is "a page went out", not
+# "a page could have gone out".
+R3="$(build_fixture)"
+: >"$R3/pinned"
+NOTE="$R3/paged.txt"
+cat >"$R3/notify.sh" <<'NOTIFY'
+#!/bin/bash
+printf '%s\n' "$1" >> "$PAGE_SINK"
+NOTIFY
+chmod +x "$R3/notify.sh"
+out3="$(PAGE_SINK="$NOTE" KIPI_NOTIFY="$R3/notify.sh" run_wrapper "$R3" "$WRAPPER")"
+if [ -s "$NOTE" ]; then
+  ok "T5 a refusal pages the founder, not just the log"
+else
+  bad "T5 a refusal pages the founder, not just the log" "notifier was never called; launchd would report success while dispatch is stopped"
+fi
+grep -qi 'stopped' "$NOTE" 2>/dev/null \
+  && ok "T5 the page says dispatch is STOPPED, so the state is unambiguous" \
+  || bad "T5 the page says dispatch is STOPPED" "page text did not name the state: $(cat "$NOTE" 2>/dev/null)"
+
+# T5-neg: strip the page call and T5 must go red, or it proves nothing.
+STRIPPED="$R3/wrapper-nopage.sh"
+# Indentation-agnostic on purpose: the first cut anchored on two leading spaces
+# while the call sits at four, so the "mutant" was byte-identical to the real
+# wrapper and T5-neg passed a page it had not removed. A negative self-test that
+# fails to mutate reports the opposite of the truth.
+sed 's/^[[:space:]]*page "kipi dispatch: STOPPED\. The pinned.*$/  :/' "$WRAPPER" > "$STRIPPED"
+grep -q 'STOPPED. The pinned' "$STRIPPED" \
+  && bad "T5-neg the mutant was actually applied" "the page call survived the strip, so the negative test is inert" \
+  || :
+chmod +x "$STRIPPED"
+R4="$(build_fixture)"; : >"$R4/pinned"; NOTE2="$R4/paged.txt"
+cp "$R3/notify.sh" "$R4/notify.sh"
+PAGE_SINK="$NOTE2" KIPI_NOTIFY="$R4/notify.sh" run_wrapper "$R4" "$STRIPPED" >/dev/null 2>&1
+[ -s "$NOTE2" ] \
+  && bad "T5-neg the assertion CAN fail" "the stripped variant still paged, so T5 is not load-bearing" \
+  || ok "T5-neg the assertion CAN fail (stripped variant sent no page)"
+
+# ---------------------------------------------------------------------------
+# TEST 6: the shipped plist actually INVOKES this wrapper (codex major r1).
+# ---------------------------------------------------------------------------
+# Without this the wrapper is dead code: the scheduler keeps running dispatch out
+# of the shared checkout and merging changes nothing. A test that only exercises
+# the wrapper cannot see that, which is exactly how it was missed.
+PLIST="$HERE/q-system/.q-system/scripts/com.kipi.dispatch.plist"
+if [ -f "$PLIST" ]; then
+  grep -q 'kipi-dispatch-pinned.sh' "$PLIST" \
+    && ok "T6 the plist runs the pinned wrapper, so it has a production invoker" \
+    || bad "T6 the plist runs the pinned wrapper" "ProgramArguments still points at kipi-dispatch.sh; the wrapper would be inert"
+  # KIPI_REPO in the plist would OVERRIDE what the wrapper sets and re-point
+  # dispatch at the shared checkout -- the outage rebuilt through config.
+  grep -q '<key>KIPI_REPO</key>' "$PLIST" \
+    && bad "T6 the plist declares no KIPI_REPO" "KIPI_REPO here overrides the wrapper and re-points dispatch at the parked checkout" \
+    || ok "T6 the plist declares no KIPI_REPO, so the wrapper's choice stands"
+else
+  bad "T6 the plist is present" "no plist at $PLIST"
+fi
+
 [ "$fails" -eq 0 ] && { echo "PASS: dispatch-pinned"; exit 0; }
 echo "FAIL: $fails check(s)"; exit 1
