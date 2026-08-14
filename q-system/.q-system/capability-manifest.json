@@ -626,6 +626,11 @@
     {
       "path": "test_dispatch_pinned.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
+      "runner": "python3",
+      "timeout_s": 60
     }
   ],
   "required_data": [],

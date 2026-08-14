@@ -379,7 +379,29 @@ GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
 # NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
 # PRIMARY wiring locations; treating every dotted component as scratch is what
 # made _witness_rank cite the wrong file (Fable A1).
-SCRATCH_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
+# `.review-scratch/` AND `.review-tmp-*` ARE COMMITTED, AND WERE NOT MATCHED.
+# Measured 2026-08-14: `git ls-files` returns 20 tracked files under those two
+# prefixes, including full copies of linear-worker.sh, linear-claim.py and
+# pr-review-agent.sh. Because the pattern only knew `.prNNrev`, every one of
+# those copies was walked as a live surface -- emitted as a capability and
+# eligible to sync into a duplicate permanent Linear issue for a script that
+# already has one. Being COMMITTED is what made them invisible to this rule and
+# to a `git status` check alike.
+#
+# `.wt-`, `.fable-wt` and `.sana-tmp` are here for the same reason, not as
+# scope creep: repo-preflight.sh's `_shipping()` already excludes exactly that
+# set, and two scratch definitions that disagree is the defect this file keeps
+# rediscovering (sp-505140ae was the same shape in test-repo-preflight.sh).
+# Keep the two lists in step.
+#
+# STILL NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this
+# fleet's PRIMARY wiring locations; treating every dotted component as scratch
+# is what made _witness_rank cite the wrong file (Fable A1). Each prefix here is
+# named on purpose.
+SCRATCH_DIR_RE = re.compile(
+    r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$"
+    r"|^\.review-|^\.wt-|^\.fable-wt|^\.sana-tmp"
+)
 
 
 def _is_excluded_part(part: str) -> bool:
@@ -461,6 +483,37 @@ MODULE_REF_RE = re.compile(
 # it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
 # the only way to "fix" it is to delete a rollback artifact (ASK-122).
 DATED_SNAPSHOT_RE = re.compile(r"\.\d{4}-\d{2}-\d{2}$")
+
+
+def _normalize_engine_name(s: str) -> str:
+    """`-` and `_` are used interchangeably across this fleet; leading underscores
+    are a private-name convention, not part of the identity."""
+    return s.strip("_").replace("_", "-").lower()
+
+
+def _names_this_engine(stem: str, test_name: str) -> bool:
+    """True when test_name is the test FOR stem, not merely a name containing it.
+
+    EXACT, NOT A BOUNDARY MATCH. A word-boundary rule cannot separate
+    `test_sync_all.py` from `test_sync_all_helpers.py` -- `sync_all` is a
+    complete token in both -- so it would still hand `_sync_all` a test that
+    belongs to a different engine. Strip the `test` prefix and the extension,
+    and require what is left to EQUAL the engine name.
+
+    (A boundary regex was tried first and was worse than wrong: `_` is a word
+    character, so `(?:^|[^\\w])sync_all` did not even match `test_sync_all`,
+    and every engine would have read UNWIRED.)
+    """
+    name = test_name
+    for suffix in (".py", ".sh"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    for prefix in ("test_", "test-", "test"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return bool(name) and _normalize_engine_name(name) == _normalize_engine_name(stem)
 
 
 def _is_test_file(p: Path) -> bool:
@@ -554,8 +607,26 @@ def collect_engines(root: Path) -> list:
     # shape survived inside the very change written to eliminate it. The count
     # of consumers is not fixed at three; grep is_excluded_tree before adding a
     # new walk over the repo.
+    # A DOCUMENT IS NOT A TEST, AND A MENTION IS NOT A PAIRING.
+    #
+    # This used to collect every file whose NAME starts with "test", regardless
+    # of extension, and `has_test` then asked whether the engine's stem appeared
+    # ANYWHERE inside one of those names as a substring. Two ways that goes wrong,
+    # and both were live:
+    #
+    #   1. A Markdown fixture (`test-something.md`, a DoR dump, a review note)
+    #      counted as a test. That is the Fable B2 shape one layer down -- a
+    #      document that merely NAMES a script was the thing certifying it tested.
+    #   2. The substring made `_sync_all` match `test_sync_all_helpers.md`, so
+    #      unwired copies of _sync_all.py reported LIVE.
+    #
+    # So: only executable test files count, and the engine's stem must appear as
+    # a whole token rather than as a substring of a longer word. Same principle
+    # the skill-hook-pairing rule states as "a name is not an executable".
+    TEST_SUFFIXES = {".py", ".sh"}
     tests = {p.name for p in root.rglob("test*")
-             if p.is_file() and not is_vendored(p) and not is_excluded_tree(p, root)}
+             if p.is_file() and p.suffix in TEST_SUFFIXES
+             and not is_vendored(p) and not is_excluded_tree(p, root)}
 
     engines = []
     for p in root.rglob("*.py"):
@@ -592,7 +663,9 @@ def collect_engines(root: Path) -> list:
         # sounds: the citation is the only part a human re-checks.
         test_sources = sorted((s for s in sources if _is_test_file(s)), key=_witness_rank)
         wiring_sources = sorted((s for s in sources if not _is_test_file(s)), key=_witness_rank)
-        has_test = any(p.stem in t for t in tests) or bool(test_sources)
+        # Token match, not substring. `p.stem in t` made every engine whose name
+        # is a prefix of another engine's inherit its neighbour's test file.
+        has_test = any(_names_this_engine(p.stem, t) for t in tests) or bool(test_sources)
         referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
         bits = []
