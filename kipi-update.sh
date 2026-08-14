@@ -251,15 +251,39 @@ PLUGIN_COPY_EXCLUDES=(
 #
 # Bounded on purpose: only paths already known dirty reach here (a handful per
 # instance), and the walk is limited to commits touching that one path.
+# "SHIPPED" IS THE FAN-OUT BRANCH, NOT EVERY REF IN THE CLONE (Codex review of
+# #151 round 7, major). The first version walked `rev-list --all`, which includes
+# unmerged feature branches, other people's work, and anything else this clone
+# happens to hold. A blob that only ever existed on a branch was never shipped to
+# any instance, so accepting it lets an unattended update commit over founder
+# work that merely resembles someone's WIP. The fleet fans out from
+# $SKELETON_BRANCH and only from there, so that is the boundary.
+#
+# origin/<branch> is preferred over the local branch deliberately: the ASK-762
+# preflight already refuses to run unless HEAD equals origin/$SKELETON_BRANCH, so
+# the remote ref is the one with a proven meaning. The local fallbacks exist for
+# fixtures and clones with no origin, where there is no remote to disagree with.
+fleet_ship_ref() {
+  local ref
+  for ref in "refs/remotes/origin/$SKELETON_BRANCH" "refs/heads/$SKELETON_BRANCH" HEAD; do
+    if git -C "$SCRIPT_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+      printf '%s\n' "$ref"
+      return 0
+    fi
+  done
+  return 1
+}
+
 fleet_authored_blob() {
-  local rel="$1" file="$2" blob candidate commit
+  local rel="$1" file="$2" blob candidate commit ship_ref
+  ship_ref="$(fleet_ship_ref)" || return 1
   blob="$(git -C "$SCRIPT_DIR" hash-object -- "$file" 2>/dev/null || true)"
   [ -n "$blob" ] || return 1
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
     candidate="$(git -C "$SCRIPT_DIR" rev-parse "$commit:$rel" 2>/dev/null || true)"
     [ "$candidate" = "$blob" ] && return 0
-  done < <(git -C "$SCRIPT_DIR" rev-list --all -- "$rel" 2>/dev/null || true)
+  done < <(git -C "$SCRIPT_DIR" rev-list "$ship_ref" -- "$rel" 2>/dev/null || true)
   return 1
 }
 

@@ -467,8 +467,47 @@ assert_older_fleet_content_is_attributed_to_the_fleet() {
   echo "PASS: content from any shipped skeleton revision is the fleet's; never-shipped content is not"
 }
 
+# ------------------------------------------------------------------ property 9
+# "Shipped" means the fan-out branch, not every ref in the clone.
+#
+# Codex review of #151 round 7, major. The first attribution walked `rev-list
+# --all`, which includes unmerged feature branches. A blob that only ever lived
+# on a branch was never sent to any instance, so accepting it would let an
+# unattended update commit over founder work that merely matches someone's WIP.
+assert_a_blob_only_on_an_unmerged_branch_is_not_shipped() {
+  local work sk inst carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  printf 'def api():\n    return "main"\n' > "$sk/plugins/demo/api.py"
+  printf 'def api():\n    return "main"\n' > "$inst/plugins/demo/api.py"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships main version" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance commits it" )
+
+  # A version that exists ONLY on an unmerged branch. Never fanned out.
+  ( cd "$sk" && G checkout -q -b someones/wip
+    printf 'def api():\n    return "never merged"\n' > plugins/demo/api.py
+    G add -A && G commit -qm "wip, never merged"
+    G checkout -q main )
+
+  # The instance's working tree happens to hold exactly that content. Under
+  # `rev-list --all` this reads as fleet-shipped and gets committed over.
+  printf 'def api():\n    return "never merged"\n' > "$inst/plugins/demo/api.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
+  if [ -n "$carve" ] && G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+       | grep -qx "plugins/demo/api.py"; then
+    fail "content that exists only on an unmerged branch was treated as fleet-shipped"
+  fi
+
+  echo "PASS: a blob that only exists on an unmerged branch is not treated as shipped"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
 assert_older_fleet_content_is_attributed_to_the_fleet
+assert_a_blob_only_on_an_unmerged_branch_is_not_shipped
 assert_a_staged_founder_edit_is_never_overwritten
 assert_a_staged_edit_survives_deletion_from_both_sides
 assert_deletions_split_by_authorship
