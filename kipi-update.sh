@@ -339,6 +339,29 @@ SYSTEM_OWNED_PATHS=(
 SYSTEM_NEVER_COMMIT=(
   "q-system/.q-system/claude-integrity-baseline.json"
   "q-system/.q-system/claude-integrity-baseline.json.lock"
+  # THE COMMENT ABOVE NAMED THIS PATH AND THE ARRAY DID NOT, AND THAT GAP COST
+  # 13 OF 22 INSTANCES (measured 2026-08-14 by fleet-reach-audit.py, ASK-797).
+  #
+  # The marker's one line is a TIMESTAMP -- "armed 2026-08-14T20:13:59Z" -- that
+  # claude-integrity-tripwire.py rewrites every time it arms. So committing it is
+  # not merely untidy, it is self-poisoning, and the run that does it is the run
+  # that blocks the next one:
+  #
+  #   13:10  this updater commits the marker as system state
+  #   20:13  the tripwire arms and rewrites the timestamp
+  #   next run: tracked, dirty, inside the synced prefix -> the dirty-tree guard
+  #             refuses, forever, and the instance never receives another update
+  #
+  # Verified in two registered instances (commits bdcf7a2 and 50040a6): the sole
+  # commit that ever added the path is this updater's own "commit system-written
+  # state before skeleton sync". Nothing founder-authored is in the loop at all.
+  #
+  # The skeleton has gitignored this path since .gitignore:123 and has never
+  # tracked it. Instances only carry it tracked because auto-commit.py classifies
+  # it as `chore` exhaust and no filter stopped the commit -- which is exactly the
+  # "one filter, past both" the comment above demands. Naming it here puts it past
+  # both: the classifier can still propose it, and the chokepoint now declines.
+  "q-system/.q-system/.claude-integrity-armed"
 )
 # Skeleton-managed plugin dirs are appended at run time from the SAME
 # enumeration the sync itself uses (managed_plugin_names), never as a blanket
