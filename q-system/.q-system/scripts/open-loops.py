@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CAP = 25
@@ -44,6 +45,17 @@ TERMINAL_STATES = frozenset({"archived", "closed", "cancelled", "canceled", "don
 # Bounds on the report-mode cache refresh. Hook mode never refreshes at all.
 REFRESH_ID_CAP = 10
 REFRESH_TIMEOUT_SECONDS = 8
+
+# A cached Linear state is a snapshot, not a fact -- an issue closes, or a closed
+# one is REOPENED, and the cache keeps answering with whatever it saw first. So a
+# record expires: past this age it is unresolvable (offline) and a refresh
+# candidate (report mode). Both halves are needed. Expiring alone would strand
+# every id in the catch-all; re-asking alone would keep serving a wrong answer
+# until the refresh happened to run. A day is short enough that a reopened issue
+# resurfaces within one heartbeat and long enough that an ordinary session never
+# waits on the network. An undated record (the pre-ASK-759 shape) has no provable
+# age, so it is stale: the failure direction of trusting it is a silent drop.
+CACHE_TTL = timedelta(days=1)
 
 
 def get_qroot(project_dir):
@@ -164,25 +176,54 @@ def linear_cache_path(qroot):
     return Path(qroot) / "output" / "linear-issue-cache.json"
 
 
-def linear_pointer_states(qroot):
-    """{issue-id: 'open'|'closed'} from the on-disk cache. NEVER a network call.
+def _read_linear_cache(qroot):
+    """{ISSUE-ID: {'state': ..., 'fetched_at': ...}} exactly as stored, no filtering.
 
-    open-loops.py runs as a SessionStart hook, so a live Linear lookup here would
-    put an API round-trip in front of every session. The cache is the offline
-    half; `refresh_linear_cache` (report mode only) is the online half. A missing
-    or junk cache yields {} -> every Linear pointer is unresolvable -> the finding
-    stays counted. Failing open is the whole point: a lookup miss must never
-    silently drop a parked item.
+    The raw view exists so the writer can preserve records it did not refresh
+    (with their original stamps) instead of re-dating them by round-tripping
+    through the fresh-only view.
     """
     try:
         data = json.loads(linear_cache_path(qroot).read_text())
     except Exception:
         return {}
-    states = {}
+    raw = {}
     for issue_id, record in (data.get("issues") or {}).items():
-        state = str((record or {}).get("state", "")).lower()
-        if state in ("open", "closed"):
-            states[str(issue_id).upper()] = state
+        if isinstance(record, dict):
+            raw[str(issue_id).upper()] = record
+    return raw
+
+
+def _is_fresh(record, now):
+    """True only if the record carries a parseable stamp newer than CACHE_TTL."""
+    stamp = str((record or {}).get("fetched_at", "")).strip()
+    if not stamp:
+        return False  # undated -> no provable age -> stale (never trusted forever)
+    try:
+        fetched = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    return now - fetched <= CACHE_TTL
+
+
+def linear_pointer_states(qroot):
+    """{issue-id: 'open'|'closed'} for FRESH cache records only. NEVER a network call.
+
+    open-loops.py runs as a SessionStart hook, so a live Linear lookup here would
+    put an API round-trip in front of every session. The cache is the offline
+    half; `refresh_linear_cache` (report mode only) is the online half. A missing,
+    junk, or EXPIRED record yields no entry -> that Linear pointer is unresolvable
+    -> the finding stays counted. Failing open is the whole point: a lookup miss,
+    or an answer too old to trust, must never silently drop a parked item.
+    """
+    now = datetime.now(timezone.utc)
+    states = {}
+    for issue_id, record in _read_linear_cache(qroot).items():
+        state = str(record.get("state", "")).lower()
+        if state in ("open", "closed") and _is_fresh(record, now):
+            states[issue_id] = state
     return states
 
 
@@ -212,7 +253,13 @@ def _fetch_linear_states(issue_ids):
 
 
 def refresh_linear_cache(qroot, pointers):
-    """Report mode ONLY: top the cache up for pointers it does not already answer.
+    """Report mode ONLY: top the cache up for pointers it cannot FRESHLY answer.
+
+    "Cannot freshly answer" is the same test `linear_pointer_states` applies, on
+    purpose and via the same function: whatever the offline half refuses to trust
+    is exactly what the online half must re-ask. Skipping every id already present
+    (the pre-fix rule) made an id's first answer its last one forever, so a closed
+    issue kept alerting and a REOPENED one stayed silently dropped.
 
     Bounded three ways so a human running `--report` can never be parked on it:
     at most REFRESH_ID_CAP ids, a hard REFRESH_TIMEOUT_SECONDS wall via a daemon
@@ -222,9 +269,14 @@ def refresh_linear_cache(qroot, pointers):
     """
     if os.environ.get("KIPI_OPEN_LOOPS_OFFLINE") == "1":
         return
-    known = linear_pointer_states(qroot)
-    wanted = sorted({p.upper() for p in pointers
-                     if p.upper().startswith("ASK-") and p.upper() not in known})[:REFRESH_ID_CAP]
+    raw = _read_linear_cache(qroot)
+    fresh = linear_pointer_states(qroot)
+    candidates = {p.upper() for p in pointers
+                  if p.upper().startswith("ASK-") and p.upper() not in fresh}
+    # Oldest answer first, so the cap rotates through a long backlog instead of
+    # re-asking the alphabetically-first ten every run. Never-seen ids sort first.
+    wanted = sorted(candidates,
+                    key=lambda i: (str(raw.get(i, {}).get("fetched_at", "")), i))[:REFRESH_ID_CAP]
     if not wanted:
         return
     import threading
@@ -236,7 +288,7 @@ def refresh_linear_cache(qroot, pointers):
     worker.join(REFRESH_TIMEOUT_SECONDS)
     if worker.is_alive() or not fetched:
         return  # timed out or nothing came back -> leave the cache exactly as it was
-    _write_linear_cache(qroot, known, fetched)
+    _write_linear_cache(qroot, raw, fetched)
 
 
 def _swallow(fn, arg):
@@ -246,14 +298,21 @@ def _swallow(fn, arg):
         return {}
 
 
-def _write_linear_cache(qroot, known, fetched):
-    merged = dict(known)
-    merged.update(fetched)
+def _write_linear_cache(qroot, raw, fetched):
+    """Stamp what was just fetched; carry everything else through untouched.
+
+    Only a record this run actually re-asked gets today's `fetched_at`. Re-dating
+    a record the run never verified would launder a stale answer into a fresh one,
+    which is the defect this whole path exists to close.
+    """
+    stamped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    merged = {k: dict(v) for k, v in raw.items()}
+    for issue_id, state in fetched.items():
+        merged[issue_id.upper()] = {"state": state, "fetched_at": stamped_at}
     path = linear_cache_path(qroot)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(
-            {"issues": {k: {"state": v} for k, v in sorted(merged.items())}}, indent=2))
+        path.write_text(json.dumps({"issues": dict(sorted(merged.items()))}, indent=2))
     except Exception:
         pass  # a cache we cannot write is a cache we do without
 

@@ -12,6 +12,13 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # deterministic and free, and keeps a real API key out of a test's blast radius.
 export KIPI_OPEN_LOOPS_OFFLINE=1
 
+# Linear cache records carry an age, so fixtures date theirs explicitly rather
+# than relying on whatever "no stamp" happens to mean (see sections 11/11c).
+stamp() {  # $1 = days ago
+  python3 -c 'import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"
+}
+NOW="$(stamp 0)"; OLD="$(stamp 30)"
+
 # 1. report mode runs clean against the live registry (STRUCTURAL check only).
 # Was: grep for two hardcoded loop titles ("cc-spex closeout-gate PR", ...).
 # That pinned live, legitimately-changing registry content into a test — the
@@ -154,9 +161,9 @@ printf '%s\n' \
  '{"id":"l1","disposition":"deferred","body":"linear open owner","rationale":"folded into ASK-419"}' \
  '{"id":"l2","disposition":"deferred","body":"linear closed owner","rationale":"owned by ASK-420"}' \
  > "$T7/.prd-os/findings/s.jsonl"
-cat > "$T7/q-system/output/linear-issue-cache.json" <<'JSON'
-{"issues":{"ASK-419":{"state":"open"},"ASK-420":{"state":"closed"}}}
-JSON
+printf '%s' \
+ "{\"issues\":{\"ASK-419\":{\"state\":\"open\",\"fetched_at\":\"$NOW\"},\"ASK-420\":{\"state\":\"closed\",\"fetched_at\":\"$NOW\"}}}" \
+ > "$T7/q-system/output/linear-issue-cache.json"
 OUT10="$(CLAUDE_PROJECT_DIR="$T7" python3 "$S" --report 2>&1)"
 echo "$OUT10" | grep -q "ASK-419" || fail "open Linear pointer not surfaced with its id: $OUT10"
 echo "$OUT10" | grep -qi "linear closed owner" && fail "closed Linear pointer wrongly surfaced: $OUT10" || true
@@ -170,4 +177,79 @@ OUT10B="$(CLAUDE_PROJECT_DIR="$T7" python3 "$S" --report 2>&1)"
 echo "$OUT10B" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
   || fail "cache-absent Linear pointers must both fail open into the catch-all: $OUT10B"
 
-echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, resolves pointer-style deferrals (closed drops, open surfaces with its id, unresolvable fails open), catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
+# ---------------------------------------------------------------------------
+# Cache freshness (ASK-759 round-1 review finding). A cached Linear state is a
+# SNAPSHOT, not a fact: an issue closes, or a closed one is REOPENED, and the
+# cache still says whatever it said the first time. `refresh_linear_cache` used
+# to skip every id already present, so an id's FIRST answer was also its LAST,
+# forever. A stale "closed" is the dangerous half -- it silently DROPS a live
+# parked item, the one outcome this whole script exists to prevent.
+# ---------------------------------------------------------------------------
+
+mk_linear_fixture() {  # $1=dir  $2=cache JSON body
+  mkdir -p "$1/q-system/memory" "$1/q-system/output" "$1/.prd-os/findings"
+  echo '{"loops":[]}' > "$1/q-system/memory/open-loops.json"
+  printf '%s\n' \
+   '{"id":"l1","disposition":"deferred","body":"linear open owner","rationale":"folded into ASK-419"}' \
+   '{"id":"l2","disposition":"deferred","body":"linear closed owner","rationale":"owned by ASK-420"}' \
+   > "$1/.prd-os/findings/s.jsonl"
+  printf '%s' "$2" > "$1/q-system/output/linear-issue-cache.json"
+}
+# 11. STALE entries expire to unresolvable -> BOTH land in the catch-all. The
+#     closed one must not be dropped: a month-old "closed" cannot outvote a
+#     parked item that may have been reopened since.
+T8="$(mktemp -d)"; mk_linear_fixture "$T8" \
+  "{\"issues\":{\"ASK-419\":{\"state\":\"open\",\"fetched_at\":\"$OLD\"},\"ASK-420\":{\"state\":\"closed\",\"fetched_at\":\"$OLD\"}}}"
+OUT11="$(CLAUDE_PROJECT_DIR="$T8" python3 "$S" --report 2>&1)"
+echo "$OUT11" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
+  || fail "stale cache entries must expire to unresolvable and fail open into the catch-all: $OUT11"
+
+# 11b. mutation guard: the SAME fixture with fresh timestamps resolves normally
+#      (open surfaces with its id, closed drops). Proves 11 expires on the
+#      TIMESTAMP; a resolver that had simply stopped reading the cache would pass
+#      11 and go red here.
+T9="$(mktemp -d)"; mk_linear_fixture "$T9" \
+  "{\"issues\":{\"ASK-419\":{\"state\":\"open\",\"fetched_at\":\"$NOW\"},\"ASK-420\":{\"state\":\"closed\",\"fetched_at\":\"$NOW\"}}}"
+OUT11B="$(CLAUDE_PROJECT_DIR="$T9" python3 "$S" --report 2>&1)"
+echo "$OUT11B" | grep -q "ASK-419" || fail "fresh open pointer not surfaced with its id: $OUT11B"
+echo "$OUT11B" | grep -qi "linear closed owner" && fail "fresh closed pointer wrongly surfaced: $OUT11B" || true
+echo "$OUT11B" | grep -qi "not auto-classified" && fail "fresh pointers still counted in catch-all: $OUT11B" || true
+
+# 11c. a legacy record (no `fetched_at` -- the shape written before this fix) has
+#      no provable age, so it is stale. Fail open; the refresh below re-answers it.
+T10="$(mktemp -d)"; mk_linear_fixture "$T10" \
+  '{"issues":{"ASK-419":{"state":"open"},"ASK-420":{"state":"closed"}}}'
+OUT11C="$(CLAUDE_PROJECT_DIR="$T10" python3 "$S" --report 2>&1)"
+echo "$OUT11C" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
+  || fail "undated legacy cache records must be treated as stale, not trusted forever: $OUT11C"
+
+# 12. the online half: refresh re-asks for a STALE id and does NOT re-ask for a
+#     FRESH one. Expiring an entry offline is useless if nothing ever re-fetches
+#     it, and re-fetching everything would put an API call in front of every
+#     --report. The fetcher is STUBBED here, so no network is touched;
+#     KIPI_OPEN_LOOPS_OFFLINE is dropped only for this block and only because the
+#     stub has already replaced the call that switch guards.
+T11="$(mktemp -d)"; mk_linear_fixture "$T11" \
+  "{\"issues\":{\"ASK-419\":{\"state\":\"open\",\"fetched_at\":\"$OLD\"},\"ASK-420\":{\"state\":\"closed\",\"fetched_at\":\"$NOW\"}}}"
+ASKED="$(env -u KIPI_OPEN_LOOPS_OFFLINE python3 - "$S" "$T11" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("_ol_under_test", sys.argv[1])
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+asked = []
+mod._fetch_linear_states = lambda ids: (asked.extend(ids) or {i: "open" for i in ids})
+mod.refresh_linear_cache(Path(sys.argv[2]) / "q-system", {"ASK-419", "ASK-420"})
+print(",".join(sorted(asked)))
+PY
+)"
+[ "$ASKED" = "ASK-419" ] || fail "refresh must re-ask the stale id and only it (asked: '$ASKED')"
+
+# 12b. and the refreshed answer must be usable offline on the next run, which is
+#      only true if the write path stamps `fetched_at`. ASK-419 now resolves OPEN
+#      (surfaced with its id) and ASK-420 is still fresh-closed (dropped), so the
+#      catch-all is empty.
+OUT12B="$(CLAUDE_PROJECT_DIR="$T11" python3 "$S" --report 2>&1)"
+echo "$OUT12B" | grep -q "ASK-419" || fail "refreshed id unusable offline (write path must stamp fetched_at): $OUT12B"
+echo "$OUT12B" | grep -qi "not auto-classified" && fail "refreshed id still in the catch-all: $OUT12B" || true
+
+echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, resolves pointer-style deferrals (closed drops, open surfaces with its id, unresolvable fails open), expires stale Linear cache entries and re-asks only those, catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
