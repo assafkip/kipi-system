@@ -510,6 +510,8 @@ checkpoint_instance() {
 
 restore_instance() {
   local target="${CHECKPOINT_TARGET:-}" uf
+  local spec
+  local -a restore_specs=()
   [ -n "$target" ] || return 0
   [ -d "$CHECKPOINT_DIR" ] || return 0
   # An interrupted rebase, first, because aborting one restores HEAD and the
@@ -570,8 +572,32 @@ restore_instance() {
   # move together; the pathspec below is the same one the guard uses.
   git -C "$target" reset -q HEAD -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
     $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
-  git -C "$target" checkout -q -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
-    $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
+  # `git checkout -- A B C` is ALL-OR-NOTHING. If ANY pathspec matches nothing
+  # in the index it errors ("pathspec '.claude/' did not match any file(s)
+  # known to git") and restores NONE of them -- while `git reset` above accepts
+  # the same unmatched pathspec and returns 0. An instance that tracks no
+  # .claude/ or plugins/ (a subtree instance that has never had a config sync
+  # land is exactly that) therefore had its ENTIRE worktree restore silently
+  # no-op: `2>/dev/null || true` hid the message and the exit code both, so the
+  # index looked restored while the worktree kept the run's writes.
+  #
+  # That is what stranded instances: a failed run left `M q-system/tracked.md`
+  # behind and every later run refused at the dirty-tree guard, reading the
+  # updater's own debris as founder work. Measured 2026-08-13 (ASK-740): with
+  # the unmatched specs passed, checkout rc=1 and the file stays modified; with
+  # them dropped, rc=0 and the file is restored.
+  #
+  # Filtering by `ls-files` rather than by a directory test on purpose: what
+  # checkout requires is a match in the INDEX, not a directory on disk.
+  for spec in "$CHECKPOINT_PREFIX/" .claude/ plugins/; do
+    if [ -n "$(git -C "$target" ls-files -- "$spec" 2>/dev/null)" ]; then
+      restore_specs+=("$spec")
+    fi
+  done
+  if [ "${#restore_specs[@]}" -gt 0 ]; then
+    git -C "$target" checkout -q -- "${restore_specs[@]}" \
+      $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
+  fi
   # Finally, remove files this run created: untracked NOW, absent from the
   # checkpoint, and inside the sync's own scope. Never a recursive delete of a
   # directory this run was not observed to create.
