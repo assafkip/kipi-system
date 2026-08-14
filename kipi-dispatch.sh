@@ -307,6 +307,74 @@ stale_check || exit 0
 # and under a bare assignment yields an empty string. Force a number.
 live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
 
+# --- PER-REPO CONCURRENCY (sp-e45251f7) --------------------------------------
+# WHY THE GLOBAL CAP WAS 1, AND WHY THIS IS THE HONEST WAY TO RAISE IT.
+#
+# com.kipi.dispatch pinned KIPI_DISPATCH_MAX=1 with a written precondition:
+# "Raise this only once dispatch is file-disjointness aware." That was correct.
+# The dispatcher picks by READINESS and has no idea which files an issue touches,
+# so two concurrent runs IN ONE REPO can land on the same file -- observed
+# 2026-07-28, ASK-223 editing the same linear-worker.sh region as the live
+# ASK-222. Unattended, that yields conflicted PRs, which is worse than half the
+# throughput.
+#
+# TWO RUNS IN DIFFERENT REPOS CANNOT CONFLICT. They share no working tree, no
+# branch namespace and no file. So the conflict argument -- the whole reason the
+# cap was 1 -- says nothing about cross-repo concurrency. This makes the rule
+# structural instead of numeric: the GLOBAL cap becomes a spend ceiling, and
+# AT MOST ONE live run per repo is enforced here, where a repo is chosen.
+#
+# This deliberately does NOT unlock same-repo concurrency. File-disjointness is
+# still unbuilt, and sp-f3a2ad81 shows why the obvious version is not enough:
+# capability-manifest.json is a magnet file every test-adding issue appends to,
+# so a naive disjointness rule would serialize the whole board on it anyway
+# (sp-4caf5d7b measured 19 of 22 conflicting PRs conflicting on that one file).
+# Cross-repo is the slice that is safe TODAY, on the conflict argument's own terms.
+#
+# WHY A LEDGER AND NOT pgrep. The converge argv is `./kipi converge --issue N`;
+# the target repo crosses as the KIPI_TARGET_REPO env var, which converge.sh
+# inherits. Environment is not in the process command line, so pgrep can count
+# live runs but CANNOT attribute one to a repo. Recording the pair at launch is
+# what makes the question answerable at all.
+LIVE_LEDGER="${KIPI_DISPATCH_LIVE_LEDGER:-$HOME/.config/kipi/dispatch-live.tsv}"
+
+# A pid alone is not proof: pids are reused, and a recycled pid pointing at some
+# unrelated process would hold a repo hostage forever. Both halves must agree --
+# the pid is alive AND that pid is still the converge for that issue.
+live_repos() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local pid issue repo
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$repo" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    ps -p "$pid" -o args= 2>/dev/null | grep -q -- "--issue $issue" || continue
+    printf '%s\n' "$repo"
+  done < "$LIVE_LEDGER"
+}
+
+# Append-only at launch; compacted here so a long-lived box does not grow the
+# file without bound. Compaction rewrites via temp+rename so a reader never sees
+# a torn file.
+record_live_run() {
+  local pid="$1" issue="$2" repo="$3" tmp
+  mkdir -p "$(dirname "$LIVE_LEDGER")" 2>/dev/null || true
+  printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null || true
+}
+
+compact_live_ledger() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local tmp pid issue repo
+  tmp="$(mktemp "${LIVE_LEDGER}.XXXXXX")" || return 0
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null || continue
+    ps -p "$pid" -o args= 2>/dev/null | grep -q -- "--issue $issue" || continue
+    printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$tmp"
+  done < "$LIVE_LEDGER"
+  mv -f "$tmp" "$LIVE_LEDGER" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
 # --- FLEET SELECTION (finding-8 and finding-9) ----------------------------
 # 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,
 # because exactly one dispatch job exists fleet-wide and it is bound to this
@@ -733,8 +801,20 @@ say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted i
 
 TARGET_NAME=""
 TARGET_PATH=""
+# THE PER-REPO RULE IS ENFORCED HERE, WHERE A REPO IS CHOSEN (sp-e45251f7).
+# A repo that already has a live converge is SKIPPED rather than aborting the
+# cycle, so the rotation continues to the next repo instead of the whole fleet
+# stalling behind one busy one -- skipping is the entire throughput win, and an
+# early `exit 0` here would leave the cap at 1 by another name.
+LIVE_REPOS="$(live_repos)"
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
+  # Exact line match. A substring test would let ~/projects/foo suppress
+  # ~/projects/foo-bar, silently starving a repo nothing is running in.
+  if [ -n "$LIVE_REPOS" ] && printf '%s\n' "$LIVE_REPOS" | grep -qxF -- "$PPATH"; then
+    say "skip $PNAME: a converge run is already live in $PPATH (one run per repo)"
+    continue
+  fi
   TARGET_NAME="$PNAME"
   TARGET_PATH="$PPATH"
   break
@@ -1095,6 +1175,18 @@ print(p.pid)
 PY
 )"
 RC=$?
+# RECORD BEFORE THE LIVENESS WAIT, NOT AFTER (sp-e45251f7). The assert below
+# watches the child for 10 seconds. Recording after it would leave a window in
+# which this repo has a live run that live_repos() cannot see, and a concurrent
+# tick landing in that window would pick the same repo -- rebuilding the very
+# same-file collision the per-repo rule exists to prevent. A row for a child that
+# dies immediately costs nothing: live_repos() drops it on the next read, because
+# the pid is gone.
+case "$CHILD_PID" in
+  ''|*[!0-9]*) : ;;
+  *) record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
+esac
+compact_live_ledger
 if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
   # the bug above. The budget slot is already spent, so say so plainly.
